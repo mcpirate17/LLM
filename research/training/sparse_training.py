@@ -29,9 +29,37 @@ import torch.nn as nn
 
 class RigLScheduler:
     """RigL-style dynamic sparse training scheduler.
-    ... (omitting docstring for brevity in replace call) ...
+
+    AUDIT: Stub — body was never implemented. Callers (RigLOptimizer.step)
+    invoke .step() and .get_telemetry() which are no-ops until this is filled in.
     """
-    # ... (rest of RigLScheduler) ...
+
+    def __init__(
+        self,
+        model: nn.Module,
+        sparsity: float = 0.8,
+        update_freq: int = 100,
+        total_steps: int = 1000,
+    ):
+        self._model = model
+        self._sparsity = sparsity
+        self._update_freq = update_freq
+        self._total_steps = total_steps
+        self._step_count = 0
+
+    def step(self) -> None:
+        """Periodically update sparsity masks (NOT YET IMPLEMENTED)."""
+        self._step_count += 1
+        # TODO: Implement grow/prune mask update based on gradient magnitude
+
+    def get_telemetry(self) -> Dict:
+        """Return scheduler telemetry."""
+        return {
+            "step": self._step_count,
+            "sparsity": self._sparsity,
+            "implemented": False,
+        }
+
 
 class RigLOptimizer(torch.optim.Optimizer):
     """AdamW optimizer with integrated RigL dynamic sparse mask updates.
@@ -103,8 +131,8 @@ class RigLOptimizer(torch.optim.Optimizer):
                 m.mul_(beta1).add_(grad, alpha=1 - beta1)
                 v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
                 step = state["step"]
-                m_hat = m / (1 - beta1 ** step)
-                v_hat = v / (1 - beta2 ** step)
+                m_hat = m / (1 - beta1**step)
+                v_hat = v / (1 - beta2**step)
                 if wd > 0:
                     p.data.mul_(1 - lr * wd)
                 p.data.addcdiv_(m_hat, v_hat.sqrt() + 1e-8, value=-lr)

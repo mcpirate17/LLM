@@ -10,23 +10,48 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from research.defaults import (
-    MODEL_DIM, VOCAB_SIZE, MAX_SEQ_LEN, VALIDATION_SEQ_LEN,
-    STAGE1_STEPS, STAGE1_LR, STAGE1_BATCH_SIZE,
-    INVESTIGATION_STEPS, INVESTIGATION_BATCH_SIZE,
-    VALIDATION_STEPS, VALIDATION_BATCH_SIZE,
-    SCALE_UP_STEPS, SCALE_UP_BATCH_SIZE, SCALE_UP_SEQ_LEN,
+    MODEL_DIM,
+    VOCAB_SIZE,
+    MAX_SEQ_LEN,
+    VALIDATION_SEQ_LEN,
+    STAGE1_STEPS,
+    STAGE1_LR,
+    STAGE1_BATCH_SIZE,
+    INVESTIGATION_STEPS,
+    INVESTIGATION_BATCH_SIZE,
+    VALIDATION_STEPS,
+    VALIDATION_BATCH_SIZE,
+    SCALE_UP_STEPS,
+    SCALE_UP_BATCH_SIZE,
+    SCALE_UP_SEQ_LEN,
 )
 
 
 class ModelCandidate:
     """Unified representation of a candidate model from any source."""
-    __slots__ = ("source", "model", "description", "graph", "graph_json",
-                 "arch_spec", "arch_spec_json", "fingerprint")
 
-    def __init__(self, source: str = "graph_synthesis", model: Any = None,
-                 description: str = "", graph: Any = None,
-                 graph_json: Optional[str] = None, arch_spec: Any = None,
-                 arch_spec_json: Optional[str] = None, fingerprint: str = ""):
+    __slots__ = (
+        "source",
+        "model",
+        "description",
+        "graph",
+        "graph_json",
+        "arch_spec",
+        "arch_spec_json",
+        "fingerprint",
+    )
+
+    def __init__(
+        self,
+        source: str = "graph_synthesis",
+        model: Any = None,
+        description: str = "",
+        graph: Any = None,
+        graph_json: Optional[str] = None,
+        arch_spec: Any = None,
+        arch_spec_json: Optional[str] = None,
+        fingerprint: str = "",
+    ):
         self.source = source
         self.model = model
         self.description = description
@@ -46,6 +71,7 @@ _TRAINING_STEP_SSE_EVERY = 10
 @dataclass(slots=True)
 class RunConfig:
     """Configuration for an experiment run."""
+
     mode: str = "single"
     n_programs: int = 100
     model_dim: int = MODEL_DIM
@@ -65,12 +91,12 @@ class RunConfig:
     starvation_check_interval: int = 8
     enable_cuda_graphs: bool = False
     # Early stopping: halt training when loss plateaus
-    early_stop_patience: int = 300       # steps without improvement before stopping
-    early_stop_min_delta: float = 1e-3   # minimum loss improvement to reset patience
-    early_stop_min_steps: int = 100      # don't early-stop before this many steps
+    early_stop_patience: int = 300  # steps without improvement before stopping
+    early_stop_min_delta: float = 1e-3  # minimum loss improvement to reset patience
+    early_stop_min_steps: int = 100  # don't early-stop before this many steps
     # Inflight training checks: abort hopeless runs early
-    inflight_spike_ratio: float = 2.0    # kill if loss > 2x running minimum
-    inflight_spike_window: int = 10      # check spike over this many steps
+    inflight_spike_ratio: float = 2.0  # kill if loss > 2x running minimum
+    inflight_spike_window: int = 10  # check spike over this many steps
     inflight_grad_norm_limit: float = 100.0  # kill if grad_norm exceeds this
     inflight_grad_norm_strikes: int = 3  # consecutive violations before kill
     cuda_graph_warmup_steps: int = 3
@@ -79,10 +105,11 @@ class RunConfig:
     kernel_profile_top_k: int = 20
     # Training data source
     data_mode: str = "corpus"  # "random" | "corpus" | "hydra"
-    corpus_path: str = "/home/tim/Projects/LLM/research/micro_corpus.txt"      # TXT or JSONL path for corpus mode
+    corpus_path: str = "/home/tim/Projects/LLM/research/micro_corpus.txt"  # TXT or JSONL path for corpus mode
     corpus_format: str = "auto"  # "auto" | "txt" | "jsonl"
     corpus_text_key: str = "text"  # JSONL key when format is jsonl
     tokenizer_mode: str = "byte"  # "byte" | "whitespace" | "tiktoken"
+    tiktoken_encoding: str = "gpt2"  # "gpt2" | "cl100k_base"
     corpus_max_chars: int = 200000
     corpus_train_fraction: float = 0.9
     corpus_val_fraction: float = 0.1
@@ -97,10 +124,10 @@ class RunConfig:
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
     hydra_project_root: str = "../HYDRA"
     # HuggingFace dataset (data_mode="huggingface")
-    hf_dataset: str = ""           # e.g. "roneneldan/TinyStories", "wikitext"
-    hf_subset: str = ""            # e.g. "wikitext-2-raw-v1"
-    hf_split: str = "train"        # train | validation | test
-    hf_text_key: str = "text"      # column name containing text
+    hf_dataset: str = ""  # e.g. "roneneldan/TinyStories", "wikitext"
+    hf_subset: str = ""  # e.g. "wikitext-2-raw-v1"
+    hf_split: str = "train"  # train | validation | test
+    hf_text_key: str = "text"  # column name containing text
     # Screening WikiText eval (fast real-token perplexity at screening time)
     skip_screening_wikitext: bool = False  # set True to disable screening WikiText eval
     # Escalation threshold: auto-escalate if ppl_200/ppl_500 exceeds this ratio
@@ -120,9 +147,11 @@ class RunConfig:
     continuous: bool = False
     max_experiments: int = 100
     rest_between_experiments: int = 5  # seconds
-    control_experiment_interval: int = 5  # run every Nth synthesis as control (0 disables)
-    max_time_minutes: int = 0        # 0 = no limit
-    max_cost_dollars: float = 0.0    # 0 = no limit (estimated LLM API cost)
+    control_experiment_interval: int = (
+        5  # run every Nth synthesis as control (0 disables)
+    )
+    max_time_minutes: int = 0  # 0 = no limit
+    max_cost_dollars: float = 0.0  # 0 = no limit (estimated LLM API cost)
     # LLM next-step planner (local preferred, remote fallback)
     enable_llm_decision_planner: bool = True
     llm_decision_local_backend: str = ""
@@ -162,7 +191,7 @@ class RunConfig:
     archive_threshold: float = 0.3
     # Scale-up mode
     scale_up: bool = False
-    scale_up_result_ids: str = ""   # comma-separated result IDs
+    scale_up_result_ids: str = ""  # comma-separated result IDs
     scale_up_steps: int = SCALE_UP_STEPS
     scale_up_batch_size: int = SCALE_UP_BATCH_SIZE
     scale_up_seq_len: int = SCALE_UP_SEQ_LEN
@@ -173,36 +202,50 @@ class RunConfig:
     one_shot_pruning_eval_batches: int = 4
     one_shot_pruning_batch_size: int = 2
     # Automation
-    auto_scale_up: bool = True         # auto-trigger scale-up when criteria met
+    auto_scale_up: bool = True  # auto-trigger scale-up when criteria met
     auto_scale_up_min_survivors: int = 3  # min S1 survivors to trigger
     auto_scale_up_min_novelty: float = 0.5  # min avg novelty of survivors
-    auto_scale_up_top_n: int = 5       # how many to scale up
-    auto_report: bool = True           # auto-generate report at session end
-    auto_report_every_n: int = 5       # also generate report every N experiments (continuous)
+    auto_scale_up_top_n: int = 5  # how many to scale up
+    auto_report: bool = True  # auto-generate report at session end
+    auto_report_every_n: int = (
+        5  # also generate report every N experiments (continuous)
+    )
     # Model source
-    model_source: str = "graph_synthesis"  # "graph_synthesis", "morphological_box", "mixed"
-    morph_ratio: float = 0.5           # fraction of morphological candidates in mixed mode
-    morph_focus_sparse: bool = False   # force sparse weight-storage options in morphological mode
+    model_source: str = (
+        "graph_synthesis"  # "graph_synthesis", "morphological_box", "mixed"
+    )
+    morph_ratio: float = 0.5  # fraction of morphological candidates in mixed mode
+    morph_focus_sparse: bool = (
+        False  # force sparse weight-storage options in morphological mode
+    )
     morph_sparse_weight_storage: str = ""  # optional explicit sparse storage choice
-    morph_compute_routing: str = ""   # optional fixed compute_routing choice for morphology
-    morph_channel_mixing: str = ""    # optional fixed channel_mixing choice for morphology
-    refine_source_result_ids: str = ""  # comma-separated source result IDs for local fingerprint refinement
+    morph_compute_routing: str = (
+        ""  # optional fixed compute_routing choice for morphology
+    )
+    morph_channel_mixing: str = (
+        ""  # optional fixed channel_mixing choice for morphology
+    )
+    refine_source_result_ids: str = (
+        ""  # comma-separated source result IDs for local fingerprint refinement
+    )
     refine_mutations_per_source: int = 4
     refine_intent: str = "balanced"  # balanced|quality|compression|sparsity|novelty
     refine_pool_multiplier: int = 3
-    refine_analysis_json: str = ""  # serialized RefinementAnalyzer output for data-driven refinement
+    refine_analysis_json: str = (
+        ""  # serialized RefinementAnalyzer output for data-driven refinement
+    )
     # Training program variation
     use_synthesized_training: bool = False  # use random training programs
-    n_training_programs: int = 3       # how many to try per candidate (investigation)
-    loss_type: str = "cross_entropy"       # "cross_entropy" | "synthesized"
-    optimizer_type: str = "adamw"          # "adamw" | "muon" | "synthesized"
-    optimizer_betas: tuple = (0.9, 0.95)   # Adam betas (only used for adamw)
-    optimizer_weight_decay: float = 0.01   # decoupled weight decay
+    n_training_programs: int = 3  # how many to try per candidate (investigation)
+    loss_type: str = "cross_entropy"  # "cross_entropy" | "synthesized"
+    optimizer_type: str = "adamw"  # "adamw" | "muon" | "synthesized"
+    optimizer_betas: tuple = (0.9, 0.95)  # Adam betas (only used for adamw)
+    optimizer_weight_decay: float = 0.01  # decoupled weight decay
     # Phase-specific optimizer overrides (empty/"" = inherit from optimizer_type)
-    screening_optimizer: str = ""          # optimizer for screening phase
-    screening_lr: float = 0.0             # 0 = use stage1_lr
-    investigation_optimizer: str = ""      # optimizer for investigation phase
-    investigation_lr: float = 0.0         # 0 = use stage1_lr
+    screening_optimizer: str = ""  # optimizer for screening phase
+    screening_lr: float = 0.0  # 0 = use stage1_lr
+    investigation_optimizer: str = ""  # optimizer for investigation phase
+    investigation_lr: float = 0.0  # 0 = use stage1_lr
     # Investigation phase
     investigation_steps: int = INVESTIGATION_STEPS
     investigation_batch_size: int = INVESTIGATION_BATCH_SIZE
@@ -219,7 +262,9 @@ class RunConfig:
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_max_baseline_ratio: float = 0.60
-    auto_validate_min_composite_score: float = 0.0  # 0 = use best reference as dynamic floor
+    auto_validate_min_composite_score: float = (
+        0.0  # 0 = use best reference as dynamic floor
+    )
     breakthrough_raw_threshold: float = 0.70
     breakthrough_normalized_threshold: float = 0.85
     auto_validate_min_novelty_confidence: float = 0.50
@@ -245,10 +290,12 @@ class RunConfig:
     switch_epic_stagnation_cycles: int = 6
     # External scaling comparison
     enable_scaling_comparison: bool = True
-    scaling_reference_families: str = "gpt2"        # comma-separated: "gpt2,mamba"
-    scaling_d512_enabled: bool = True                # retrain breakthrough candidates at d=512
-    scaling_param_efficiency_target: float = 3.0     # min param efficiency for breakthrough
-    scaling_flop_ceiling: float = 2.0                # max FLOP ratio vs reference
+    scaling_reference_families: str = "gpt2"  # comma-separated: "gpt2,mamba"
+    scaling_d512_enabled: bool = True  # retrain breakthrough candidates at d=512
+    scaling_param_efficiency_target: float = (
+        3.0  # min param efficiency for breakthrough
+    )
+    scaling_flop_ceiling: float = 2.0  # max FLOP ratio vs reference
     # Checkpoint/resume
     checkpoint_dir: str = "checkpoints"
     checkpoint_interval: int = 1  # save continuous checkpoint every N experiments
@@ -284,14 +331,16 @@ class RunConfig:
     category_weights: Optional[Dict[str, float]] = None
     op_weights: Optional[Dict[str, float]] = None
     # Branching / width control (passed to GrammarConfig)
-    min_splits: int = 0              # minimum forced split-merge blocks per graph
+    min_splits: int = 0  # minimum forced split-merge blocks per graph
     three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)
-    branch_depth: int = 1            # depth of processing on each branch (1=shallow, 2+=deep)
-    max_recursion_depth: int = 4     # iteration cap for recursive ops
+    branch_depth: int = 1  # depth of processing on each branch (1=shallow, 2+=deep)
+    max_recursion_depth: int = 4  # iteration cap for recursive ops
     # Healer/agent settings
     max_agent_seconds: int = 300
     # LLM consultation in continuous mode
-    llm_decision_interval: int = 5  # call Sonnet every N cycles (0 = never in continuous)
+    llm_decision_interval: int = (
+        5  # call Sonnet every N cycles (0 = never in continuous)
+    )
 
     def to_dict(self) -> Dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -306,6 +355,7 @@ class RunConfig:
 @dataclass(slots=True)
 class LiveProgress:
     """Real-time progress of a running experiment."""
+
     experiment_id: str = ""
     status: str = "idle"  # idle, generating, evaluating, training, analyzing, completed, failed, stopped
     current_program: int = 0
@@ -333,7 +383,9 @@ class LiveProgress:
     # Preflight hypothesis critique
     hypothesis_critique: Optional[Dict] = None
     # Native runner adapter telemetry
-    native_runner: Dict[str, Any] = field(default_factory=_native_runner_progress_report)
+    native_runner: Dict[str, Any] = field(
+        default_factory=_native_runner_progress_report
+    )
 
     def to_dict(self) -> Dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}

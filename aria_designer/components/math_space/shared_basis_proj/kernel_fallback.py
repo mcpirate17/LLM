@@ -1,6 +1,7 @@
 """Kernel handler for shared_basis_proj — dispatches to aria_core.linear_shared_basis_f32."""
-import torch
+
 from components.base import NativeComponentHandler, _make_weight
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "linear_shared_basis"

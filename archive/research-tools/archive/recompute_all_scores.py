@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import sys
-import sqlite3
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -9,10 +8,11 @@ from research.scientist.notebook import LabNotebook
 
 DB_PATH = "research/lab_notebook.db"
 
+
 def main():
     db = LabNotebook(DB_PATH)
     cursor = db.conn.cursor()
-    
+
     # Fetch all entries from leaderboard with the metrics needed for scoring
     cursor.execute("""
         SELECT l.entry_id, l.result_id, 
@@ -29,12 +29,35 @@ def main():
     """)
     rows = cursor.fetchall()
     print(f"Recomputing scores for {len(rows)} entries...")
-    
+
     for row in tqdm(rows):
-        (eid, rid, s_lr, s_nov, i_lr, i_rob, v_lr, v_base, v_std, nov_conf, 
-         scal_eff, is_ref, rout_sav, comp_ratio, rout_coll, disc_lr, spec_norm, 
-         rob_noise, q_ret, long_ctx, init_std, loss_imp, q_qual, w_perp) = row
-        
+        (
+            eid,
+            rid,
+            s_lr,
+            s_nov,
+            i_lr,
+            i_rob,
+            v_lr,
+            v_base,
+            v_std,
+            nov_conf,
+            scal_eff,
+            is_ref,
+            rout_sav,
+            comp_ratio,
+            rout_coll,
+            disc_lr,
+            spec_norm,
+            rob_noise,
+            q_ret,
+            long_ctx,
+            init_std,
+            loss_imp,
+            q_qual,
+            w_perp,
+        ) = row
+
         # Call the updated scoring function
         new_score = LabNotebook.compute_composite_score(
             screening_lr=s_lr,
@@ -49,7 +72,7 @@ def main():
             is_reference=bool(is_ref),
             routing_savings=rout_sav,
             compression_ratio=comp_ratio,
-            entropy=rout_coll, # Using collapse score as proxy for entropy penalty if high
+            entropy=rout_coll,  # Using collapse score as proxy for entropy penalty if high
             discovery_lr=disc_lr,
             spectral_norm=spec_norm,
             robustness_noise=rob_noise,
@@ -58,14 +81,18 @@ def main():
             init_std=init_std,
             loss_improvement_rate=loss_imp,
             quant_quality_per_byte=q_qual,
-            wikitext_perplexity=w_perp
+            wikitext_perplexity=w_perp,
         )
-        
-        cursor.execute("UPDATE leaderboard SET composite_score = ? WHERE entry_id = ?", (new_score, eid))
-        
+
+        cursor.execute(
+            "UPDATE leaderboard SET composite_score = ? WHERE entry_id = ?",
+            (new_score, eid),
+        )
+
     db.conn.commit()
     db.conn.close()
     print("Scores recomputed and database updated.")
+
 
 if __name__ == "__main__":
     main()

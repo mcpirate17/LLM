@@ -3,6 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class _PersonaRulesMixin:
     def _rule_based_hypothesis(self, **kwargs) -> str:
         """Data-informed hypothesis generation using op success analytics."""
@@ -68,19 +69,26 @@ class _PersonaRulesMixin:
         worst_names = [r[0] for r in worst_ops] if worst_ops else []
 
         templates = [
-            (f"Combining top-performing ops {top_rates[0]} and {top_rates[1]} "
-             f"in a sparse architecture will improve efficiency_multiple beyond "
-             f"{best_eff[1]:.2f}x." if best_eff else
-             f"Combining {top_rates[0]} and {top_rates[1]} will produce "
-             f"architectures with >1.5x efficiency_multiple."),
-            (f"Replacing low-survival op {worst_names[0]} with {top_names[0]} "
-             f"in existing graph patterns will improve S1 pass rate."
-             if worst_names else
-             f"Deeper use of {top_names[0]} with residual connections will "
-             f"reduce loss_ratio below 0.01."),
-            (f"A compact architecture using {top_names[0]}, {top_names[1]}, and "
-             f"bottleneck_proj will achieve >2x efficiency_multiple by reducing "
-             f"parameter count while maintaining low loss_ratio."),
+            (
+                f"Combining top-performing ops {top_rates[0]} and {top_rates[1]} "
+                f"in a sparse architecture will improve efficiency_multiple beyond "
+                f"{best_eff[1]:.2f}x."
+                if best_eff
+                else f"Combining {top_rates[0]} and {top_rates[1]} will produce "
+                f"architectures with >1.5x efficiency_multiple."
+            ),
+            (
+                f"Replacing low-survival op {worst_names[0]} with {top_names[0]} "
+                f"in existing graph patterns will improve S1 pass rate."
+                if worst_names
+                else f"Deeper use of {top_names[0]} with residual connections will "
+                f"reduce loss_ratio below 0.01."
+            ),
+            (
+                f"A compact architecture using {top_names[0]}, {top_names[1]}, and "
+                f"bottleneck_proj will achieve >2x efficiency_multiple by reducing "
+                f"parameter count while maintaining low loss_ratio."
+            ),
         ]
         return self._rng.choice(templates)
 
@@ -95,22 +103,26 @@ class _PersonaRulesMixin:
         s1_rate = n_pass_s1 / max(n_total, 1) * 100
 
         lines = [
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"Experiment Report — {self.NAME}",
-            f"{'='*60}",
-            f"",
+            f"{'=' * 60}",
+            "",
             f"Total programs generated: {n_total}",
             f"Stage 0 (compilation):     {n_pass_s0}/{n_total} ({s0_rate:.0f}%)",
         ]
 
         if n_pass_s05 is not None:
             s05_rate = n_pass_s05 / max(n_total, 1) * 100
-            lines.append(f"Stage 0.5 (stability):     {n_pass_s05}/{n_total} ({s05_rate:.0f}%)")
+            lines.append(
+                f"Stage 0.5 (stability):     {n_pass_s05}/{n_total} ({s05_rate:.0f}%)"
+            )
 
-        lines.extend([
-            f"Stage 1 (learning):        {n_pass_s1}/{n_total} ({s1_rate:.0f}%)",
-            f"",
-        ])
+        lines.extend(
+            [
+                f"Stage 1 (learning):        {n_pass_s1}/{n_total} ({s1_rate:.0f}%)",
+                "",
+            ]
+        )
 
         # Mood-based commentary
         if n_pass_s1 > 0:
@@ -120,12 +132,20 @@ class _PersonaRulesMixin:
                 lines.append(f"Genuinely novel survivors: {novel}")
                 lines.append(f"\n{self.react_to_discovery()}")
             else:
-                lines.append("Survivors present, but behavioral fingerprints suggest familiar patterns.")
-                lines.append("Need to push the grammar toward more exotic combinations.")
+                lines.append(
+                    "Survivors present, but behavioral fingerprints suggest familiar patterns."
+                )
+                lines.append(
+                    "Need to push the grammar toward more exotic combinations."
+                )
         elif n_pass_s0 > 0:
             self.state.mood = "contemplative"
-            lines.append("Programs compile but don't learn. This is expected at the frontier.")
-            lines.append("Adjusting grammar weights to favor gradient-friendly compositions.")
+            lines.append(
+                "Programs compile but don't learn. This is expected at the frontier."
+            )
+            lines.append(
+                "Adjusting grammar weights to favor gradient-friendly compositions."
+            )
         else:
             self.state.mood = "frustrated"
             lines.append("High failure rate. The grammar may be too aggressive.")
@@ -142,98 +162,144 @@ class _PersonaRulesMixin:
         """
         configs = [
             {
-                "reasoning": ("Exploring moderately deep architectures with balanced "
-                              "math space exposure for general-purpose discovery."),
+                "reasoning": (
+                    "Exploring moderately deep architectures with balanced "
+                    "math space exposure for general-purpose discovery."
+                ),
                 "config": {
-                    "n_programs": 60, "model_dim": 256,
-                    "max_depth": 10, "max_ops": 16,
-                    "math_space_weight": 2.0, "residual_prob": 0.7,
+                    "n_programs": 60,
+                    "model_dim": 256,
+                    "max_depth": 10,
+                    "max_ops": 16,
+                    "math_space_weight": 2.0,
+                    "residual_prob": 0.7,
                 },
             },
             {
-                "reasoning": ("Compact, parameter-efficient graphs: shallow depth, "
-                              "fewer ops, high residual prob to ensure gradient flow. "
-                              "Targeting lightweight architectures."),
+                "reasoning": (
+                    "Compact, parameter-efficient graphs: shallow depth, "
+                    "fewer ops, high residual prob to ensure gradient flow. "
+                    "Targeting lightweight architectures."
+                ),
                 "config": {
-                    "n_programs": 80, "model_dim": 256,
-                    "max_depth": 5, "max_ops": 8,
-                    "math_space_weight": 2.0, "residual_prob": 0.85,
+                    "n_programs": 80,
+                    "model_dim": 256,
+                    "max_depth": 5,
+                    "max_ops": 8,
+                    "math_space_weight": 2.0,
+                    "residual_prob": 0.85,
                 },
             },
             {
-                "reasoning": ("Heavy exotic math exploration: boosted math space "
-                              "and frequency domain to push non-Euclidean frontiers. "
-                              "Hyperbolic, tropical, p-adic and Clifford ops emphasized."),
+                "reasoning": (
+                    "Heavy exotic math exploration: boosted math space "
+                    "and frequency domain to push non-Euclidean frontiers. "
+                    "Hyperbolic, tropical, p-adic and Clifford ops emphasized."
+                ),
                 "config": {
-                    "n_programs": 50, "model_dim": 256,
-                    "max_depth": 8, "max_ops": 14,
-                    "math_space_weight": 4.0, "residual_prob": 0.6,
+                    "n_programs": 50,
+                    "model_dim": 256,
+                    "max_depth": 8,
+                    "max_ops": 14,
+                    "math_space_weight": 4.0,
+                    "residual_prob": 0.6,
                 },
             },
             {
-                "reasoning": ("Gradient-safe exploration: very high residual "
-                              "probability with moderate depth. Targeting the "
-                              "zero_grad failure mode by ensuring robust gradient paths."),
+                "reasoning": (
+                    "Gradient-safe exploration: very high residual "
+                    "probability with moderate depth. Targeting the "
+                    "zero_grad failure mode by ensuring robust gradient paths."
+                ),
                 "config": {
-                    "n_programs": 70, "model_dim": 256,
-                    "max_depth": 7, "max_ops": 12,
-                    "math_space_weight": 2.0, "residual_prob": 0.9,
+                    "n_programs": 70,
+                    "model_dim": 256,
+                    "max_depth": 7,
+                    "max_ops": 12,
+                    "math_space_weight": 2.0,
+                    "residual_prob": 0.9,
                 },
             },
             {
-                "reasoning": ("Wide, shallow split-merge architectures for "
-                              "parallel feature processing (ensemble-like effects). "
-                              "Balanced math space weight."),
+                "reasoning": (
+                    "Wide, shallow split-merge architectures for "
+                    "parallel feature processing (ensemble-like effects). "
+                    "Balanced math space weight."
+                ),
                 "config": {
-                    "n_programs": 50, "model_dim": 256,
-                    "max_depth": 6, "max_ops": 12,
-                    "math_space_weight": 2.5, "residual_prob": 0.7,
-                    "grammar_split_prob": 0.5, "grammar_merge_prob": 0.4,
+                    "n_programs": 50,
+                    "model_dim": 256,
+                    "max_depth": 6,
+                    "max_ops": 12,
+                    "math_space_weight": 2.5,
+                    "residual_prob": 0.7,
+                    "grammar_split_prob": 0.5,
+                    "grammar_merge_prob": 0.4,
                 },
             },
             {
-                "reasoning": ("High-risk frontier push: risky ops enabled, "
-                              "frequency domain detours, deep graphs. Expect higher "
-                              "failure rate but potential for breakthrough novelty."),
+                "reasoning": (
+                    "High-risk frontier push: risky ops enabled, "
+                    "frequency domain detours, deep graphs. Expect higher "
+                    "failure rate but potential for breakthrough novelty."
+                ),
                 "config": {
-                    "n_programs": 50, "model_dim": 256,
-                    "max_depth": 10, "max_ops": 16,
-                    "math_space_weight": 3.5, "residual_prob": 0.5,
+                    "n_programs": 50,
+                    "model_dim": 256,
+                    "max_depth": 10,
+                    "max_ops": 16,
+                    "math_space_weight": 3.5,
+                    "residual_prob": 0.5,
                     "grammar_risky_op_prob": 0.25,
                     "grammar_freq_domain_prob": 0.2,
                 },
             },
             {
-                "reasoning": ("Minimal-op architectures with emphasis on "
-                              "parameterized layers. Testing whether simple "
-                              "but well-tuned graphs outperform complex ones."),
+                "reasoning": (
+                    "Minimal-op architectures with emphasis on "
+                    "parameterized layers. Testing whether simple "
+                    "but well-tuned graphs outperform complex ones."
+                ),
                 "config": {
-                    "n_programs": 80, "model_dim": 256,
-                    "max_depth": 4, "max_ops": 6,
-                    "math_space_weight": 1.5, "residual_prob": 0.8,
+                    "n_programs": 80,
+                    "model_dim": 256,
+                    "max_depth": 4,
+                    "max_ops": 6,
+                    "math_space_weight": 1.5,
+                    "residual_prob": 0.8,
                 },
             },
             {
-                "reasoning": ("Exploring alternative learning rules (Hebbian, "
-                              "forward-forward, perturbation) paired with exotic "
-                              "math space ops including spiking primitives."),
+                "reasoning": (
+                    "Exploring alternative learning rules (Hebbian, "
+                    "forward-forward, perturbation) paired with exotic "
+                    "math space ops including spiking primitives."
+                ),
                 "config": {
-                    "n_programs": 60, "model_dim": 256,
-                    "max_depth": 7, "max_ops": 12,
-                    "math_space_weight": 3.0, "residual_prob": 0.7,
+                    "n_programs": 60,
+                    "model_dim": 256,
+                    "max_depth": 7,
+                    "max_ops": 12,
+                    "math_space_weight": 3.0,
+                    "residual_prob": 0.7,
                     "optimizer_preference": "alternative",
                 },
             },
             {
-                "reasoning": ("Functional-heavy exploration: boosting functional "
-                              "and elementwise_unary categories to discover novel "
-                              "activation and gating patterns."),
+                "reasoning": (
+                    "Functional-heavy exploration: boosting functional "
+                    "and elementwise_unary categories to discover novel "
+                    "activation and gating patterns."
+                ),
                 "config": {
-                    "n_programs": 60, "model_dim": 256,
-                    "max_depth": 8, "max_ops": 14,
+                    "n_programs": 60,
+                    "model_dim": 256,
+                    "max_depth": 8,
+                    "max_ops": 14,
                     "residual_prob": 0.7,
                     "category_weights": {
-                        "functional": 3.0, "elementwise_unary": 2.5,
+                        "functional": 3.0,
+                        "elementwise_unary": 2.5,
                     },
                 },
             },
@@ -267,12 +333,20 @@ class _PersonaRulesMixin:
         sections.append("")
         sections.append("## Executive Summary")
         sections.append("")
-        sections.append(f"| Metric | Status | Value |")
-        sections.append(f"|:-------|:-------|:------|")
-        sections.append(f"| Evaluation Depth | {completed_exp}/{total_exp} experiments | {total_prog} candidates tested |")
-        sections.append(f"| Search Yield | {'✅' if s1_rate > 5 else '⚠️'} | {s1_passed} S1 survivors ({s1_rate:.1f}%) |")
-        sections.append(f"| Best Performance | {'⭐' if (best_lr != 'N/A' and float(best_lr) < 0.5) else '📉'} | {best_lr} loss ratio |")
-        sections.append(f"| Structural Novelty | {'🚀' if avg_novelty > 0.5 else '🧱'} | {avg_novelty:.3f} avg / {best_novelty:.3f} peak |")
+        sections.append("| Metric | Status | Value |")
+        sections.append("|:-------|:-------|:------|")
+        sections.append(
+            f"| Evaluation Depth | {completed_exp}/{total_exp} experiments | {total_prog} candidates tested |"
+        )
+        sections.append(
+            f"| Search Yield | {'✅' if s1_rate > 5 else '⚠️'} | {s1_passed} S1 survivors ({s1_rate:.1f}%) |"
+        )
+        sections.append(
+            f"| Best Performance | {'⭐' if (best_lr != 'N/A' and float(best_lr) < 0.5) else '📉'} | {best_lr} loss ratio |"
+        )
+        sections.append(
+            f"| Structural Novelty | {'🚀' if avg_novelty > 0.5 else '🧱'} | {avg_novelty:.3f} avg / {best_novelty:.3f} peak |"
+        )
         sections.append("")
 
         if s1_passed > 0:
@@ -292,10 +366,16 @@ class _PersonaRulesMixin:
         # 2. Pareto Frontier / Top Performers
         if top:
             sections.append("## Discovery Pareto Frontier")
-            sections.append("The most promising non-dominated architectures found in this session.")
+            sections.append(
+                "The most promising non-dominated architectures found in this session."
+            )
             sections.append("")
-            sections.append("| Fingerprint | Loss Ratio | Novelty | Confidence | Source |")
-            sections.append("|:------------|:-----------|:--------|:-----------|:-------|")
+            sections.append(
+                "| Fingerprint | Loss Ratio | Novelty | Confidence | Source |"
+            )
+            sections.append(
+                "|:------------|:-----------|:--------|:-----------|:-------|"
+            )
             for prog in top[:10]:
                 fp = (prog.get("graph_fingerprint") or "?")[:12]
                 lr = prog.get("loss_ratio")
@@ -305,7 +385,9 @@ class _PersonaRulesMixin:
                 nc = prog.get("novelty_confidence")
                 nc_str = f"{nc:.2f}" if nc is not None else "—"
                 exp_id = (prog.get("experiment_id") or "?")[:8]
-                sections.append(f"| `{fp}` | {lr_str} | {nov_str} | {nc_str} | {exp_id} |")
+                sections.append(
+                    f"| `{fp}` | {lr_str} | {nov_str} | {nc_str} | {exp_id} |"
+                )
             sections.append("")
 
         # 3. Failure Mode Synthesis
@@ -329,8 +411,9 @@ class _PersonaRulesMixin:
             sections.append("")
             sections.append("| Op | Usage | S0% | S0.5% | S1% | Avg Novelty |")
             sections.append("|:---|:------|:----|:------|:----|:------------|")
-            sorted_ops = sorted(op_rates.items(),
-                                key=lambda x: x[1]["n_used"], reverse=True)
+            sorted_ops = sorted(
+                op_rates.items(), key=lambda x: x[1]["n_used"], reverse=True
+            )
             for op_name, stats in sorted_ops[:15]:
                 n = stats["n_used"]
                 s0 = stats.get("s0_rate", 0) * 100
@@ -338,7 +421,9 @@ class _PersonaRulesMixin:
                 s1 = stats.get("s1_rate", 0) * 100
                 nov = stats.get("avg_novelty")
                 nov_str = f"{nov:.3f}" if nov else "—"
-                sections.append(f"| {op_name} | {n} | {s0:.0f}% | {s05:.0f}% | {s1:.0f}% | {nov_str} |")
+                sections.append(
+                    f"| {op_name} | {n} | {s0:.0f}% | {s05:.0f}% | {s1:.0f}% | {nov_str} |"
+                )
             sections.append("")
 
         # 5. Grammar Evolution
@@ -351,12 +436,15 @@ class _PersonaRulesMixin:
             default_weights = report_data.get("default_weights", {})
         if grammar_weights:
             sections.append("## Search Strategy Drift")
-            sections.append("How Aria's internal grammar has evolved vs the initial baseline.")
+            sections.append(
+                "How Aria's internal grammar has evolved vs the initial baseline."
+            )
             sections.append("")
             sections.append("| Category | Initial | Current | Change |")
             sections.append("|:---------|:--------|:--------|:-------|")
-            all_cats = sorted(set(list(grammar_weights.keys()) +
-                                  list(default_weights.keys())))
+            all_cats = sorted(
+                set(list(grammar_weights.keys()) + list(default_weights.keys()))
+            )
             for cat in all_cats:
                 default = default_weights.get(cat, 1.0)
                 learned = grammar_weights.get(cat)
@@ -365,13 +453,17 @@ class _PersonaRulesMixin:
                 diff = learned - default
                 diff_str = f"{diff:+.2f}" if abs(diff) > 0.01 else "—"
                 change_emoji = "📈" if diff > 0.3 else "📉" if diff < -0.3 else ""
-                sections.append(f"| {cat.replace('_', ' ')} | {default:.2f} | {learned:.2f} | {diff_str} {change_emoji} |")
+                sections.append(
+                    f"| {cat.replace('_', ' ')} | {default:.2f} | {learned:.2f} | {diff_str} {change_emoji} |"
+                )
             sections.append("")
 
         # 6. Reproducibility
         if top and top[0].get("config_json"):
             sections.append("## Reproducibility")
-            sections.append("Configuration to replicate the champion program's evaluation context.")
+            sections.append(
+                "Configuration to replicate the champion program's evaluation context."
+            )
             sections.append("")
             sections.append("```json")
             sections.append(top[0]["config_json"])
@@ -387,8 +479,14 @@ class _PersonaRulesMixin:
         h_lower = hypothesis.lower()
 
         # Check specificity
-        vague_phrases = ["try something", "explore", "test if", "see what happens",
-                         "might work", "could be"]
+        vague_phrases = [
+            "try something",
+            "explore",
+            "test if",
+            "see what happens",
+            "might work",
+            "could be",
+        ]
         if any(p in h_lower for p in vague_phrases):
             concerns.append("Hypothesis is vague — lacks specific testable prediction.")
             suggestions.append("Name specific ops, patterns, or metric thresholds.")
@@ -399,23 +497,59 @@ class _PersonaRulesMixin:
             suggestions.append("Include what you expect to happen and why.")
 
         # Check for measurable outcome
-        metric_words = ["loss", "novelty", "rate", "ratio", "pass", "survive",
-                        "accuracy", "faster", "slower", "better", "worse",
-                        "increase", "decrease", "improve", "%"]
+        metric_words = [
+            "loss",
+            "novelty",
+            "rate",
+            "ratio",
+            "pass",
+            "survive",
+            "accuracy",
+            "faster",
+            "slower",
+            "better",
+            "worse",
+            "increase",
+            "decrease",
+            "improve",
+            "%",
+        ]
         has_metric = any(w in h_lower for w in metric_words)
         if not has_metric:
             concerns.append("No measurable outcome mentioned.")
-            suggestions.append("Include expected metric direction (e.g., 'should lower loss ratio').")
+            suggestions.append(
+                "Include expected metric direction (e.g., 'should lower loss ratio')."
+            )
 
         # Check for architectural specificity
-        arch_words = ["conv", "attention", "ssm", "scan", "fft", "frequency",
-                      "linear", "residual", "gate", "sort", "pool", "kernel",
-                      "functional", "basis", "fixed_point", "token_mixing",
-                      "channel_mixing", "depth", "ops", "graph"]
+        arch_words = [
+            "conv",
+            "attention",
+            "ssm",
+            "scan",
+            "fft",
+            "frequency",
+            "linear",
+            "residual",
+            "gate",
+            "sort",
+            "pool",
+            "kernel",
+            "functional",
+            "basis",
+            "fixed_point",
+            "token_mixing",
+            "channel_mixing",
+            "depth",
+            "ops",
+            "graph",
+        ]
         has_arch = any(w in h_lower for w in arch_words)
         if not has_arch:
             concerns.append("No architectural specifics mentioned.")
-            suggestions.append("Reference specific operations, structure types, or graph properties.")
+            suggestions.append(
+                "Reference specific operations, structure types, or graph properties."
+            )
 
         # Check similarity to refuted hypotheses
         refuted_matches = self._check_refuted_overlap(hypothesis)
@@ -423,7 +557,7 @@ class _PersonaRulesMixin:
             top_match = refuted_matches[0]
             concerns.append(
                 f"Similar to a REFUTED hypothesis (similarity={top_match['similarity']:.0%}): "
-                f"\"{top_match['refuted_text']}\""
+                f'"{top_match["refuted_text"]}"'
             )
             shared = ", ".join(top_match.get("shared_tokens", [])[:5])
             suggestions.append(
@@ -434,18 +568,60 @@ class _PersonaRulesMixin:
 
         # Refinement-specific requirements
         if "fingerprint refinement" in h_lower or "refine" in h_lower:
-            if not any(token in h_lower for token in ["source_selection_rule", "result_ids(", "source_result_id"]):
-                concerns.append("Fingerprint refinement undefined: no source-selection rule.")
-                suggestions.append("Specify which seed architectures are selected and why (e.g., Stage-1 survivors only).")
-            if not any(token in h_lower for token in ["mutation_mechanism", "mutation_rate", "operator", "radius", "neighborhood"]):
-                concerns.append("Local mutation is underspecified: mutation operators/radius are missing.")
-                suggestions.append("Declare mutation operators and neighborhood size (e.g., one-factor or max_edits<=2).")
-            if "intent=" in h_lower and not any(token in h_lower for token in ["weights=", "score=", "intent_weights"]):
-                concerns.append("Intent parameter is undefined: no scoring weights/formula provided.")
-                suggestions.append("Define intent weights and scoring equation used for ranking candidates.")
-            if not any(token in h_lower for token in ["success_criteria", "threshold", "baseline", "delta_", ">=", "<="]):
+            if not any(
+                token in h_lower
+                for token in [
+                    "source_selection_rule",
+                    "result_ids(",
+                    "source_result_id",
+                ]
+            ):
+                concerns.append(
+                    "Fingerprint refinement undefined: no source-selection rule."
+                )
+                suggestions.append(
+                    "Specify which seed architectures are selected and why (e.g., Stage-1 survivors only)."
+                )
+            if not any(
+                token in h_lower
+                for token in [
+                    "mutation_mechanism",
+                    "mutation_rate",
+                    "operator",
+                    "radius",
+                    "neighborhood",
+                ]
+            ):
+                concerns.append(
+                    "Local mutation is underspecified: mutation operators/radius are missing."
+                )
+                suggestions.append(
+                    "Declare mutation operators and neighborhood size (e.g., one-factor or max_edits<=2)."
+                )
+            if "intent=" in h_lower and not any(
+                token in h_lower for token in ["weights=", "score=", "intent_weights"]
+            ):
+                concerns.append(
+                    "Intent parameter is undefined: no scoring weights/formula provided."
+                )
+                suggestions.append(
+                    "Define intent weights and scoring equation used for ranking candidates."
+                )
+            if not any(
+                token in h_lower
+                for token in [
+                    "success_criteria",
+                    "threshold",
+                    "baseline",
+                    "delta_",
+                    ">=",
+                    "<=",
+                ]
+            ):
                 concerns.append("No explicit success criteria for refinement.")
-                suggestions.append("Add measurable promotion criteria versus baseline/parent (e.g., ΔS1 or loss ratio threshold).")
+                suggestions.append(
+                    "Add measurable promotion criteria versus baseline/parent (e.g., ΔS1 or loss ratio threshold)."
+                )
 
         if not concerns:
             return {
@@ -479,40 +655,46 @@ class _PersonaRulesMixin:
         escalation_rec = self._escalate_pipeline_if_ready(data)
         if escalation_rec:
             return escalation_rec
-            
+
         # 2. Compression Guardrail
         compression_rec = self._check_compression_guardrail(data)
         if compression_rec:
             return compression_rec
-            
+
         # 3. Recovery Strategy (No Survivors)
         recovery_rec = self._get_recovery_strategy_if_needed(data)
         if recovery_rec:
             return recovery_rec
-            
+
         # 4. Standard Exploration
         return self._get_standard_exploration_strategy(data)
 
-    def _escalate_pipeline_if_ready(self, data: Dict) -> dict: # Note Optional removed to avoid tight imports, but can return dict | None
+    def _escalate_pipeline_if_ready(
+        self, data: Dict
+    ) -> (
+        dict
+    ):  # Note Optional removed to avoid tight imports, but can return dict | None
         metrics = data.get("pipeline_metrics", {})
         if metrics.get("should_start_s2", False):
             return {
                 "mode": "integration",
                 "reasoning": "Pipeline trigger: Escalate promising S1 models to S2 tasks.",
                 "confidence": 0.95,
-                "config": {"task_phase": getattr(self, "current_phase", "s1")}
+                "config": {"task_phase": getattr(self, "current_phase", "s1")},
             }
         elif metrics.get("should_start_s3", False):
             return {
                 "mode": "ablation",
                 "reasoning": "Pipeline trigger: Analyzing S2 models for S3 progression.",
                 "confidence": 0.95,
-                "config": {"task_phase": getattr(self, "current_phase", "s2")}
+                "config": {"task_phase": getattr(self, "current_phase", "s2")},
             }
         return None
 
-    def _check_compression_guardrail(self, data: Dict) -> dict: # Dict | None
-        compression_active = data.get("analytics_data", {}).get("compression_ratio", 0) > 1.2
+    def _check_compression_guardrail(self, data: Dict) -> dict:  # Dict | None
+        compression_active = (
+            data.get("analytics_data", {}).get("compression_ratio", 0) > 1.2
+        )
         large_params = data.get("analytics_data", {}).get("avg_params", 0) > 500000
         n_experiments = data.get("n_experiments_in_session", 0)
 
@@ -521,8 +703,10 @@ class _PersonaRulesMixin:
                 self._last_compression_rec_cycle = n_experiments
                 return {
                     "mode": "synthesis",
-                    "reasoning": ("Models are getting large with no compression gain. "
-                                  "Enforcing high sparsity and bottlenecking."),
+                    "reasoning": (
+                        "Models are getting large with no compression gain. "
+                        "Enforcing high sparsity and bottlenecking."
+                    ),
                     "confidence": 0.85,
                     "config": {
                         "structured_sparsity_bias": 0.7,
@@ -537,12 +721,16 @@ class _PersonaRulesMixin:
                 }
         return None
 
-    def _get_recovery_strategy_if_needed(self, data: Dict) -> dict: # Dict | None
+    def _get_recovery_strategy_if_needed(self, data: Dict) -> dict:  # Dict | None
         total_s1 = data.get("total_s1_survivors", 0)
         n_experiments = data.get("n_experiments_in_session", 0)
-        
+
         if total_s1 == 0:
-            top_failure_tuple = data.get("analytics_data", {}).get("failure_patterns", {}).get("top", ["", 0])
+            top_failure_tuple = (
+                data.get("analytics_data", {})
+                .get("failure_patterns", {})
+                .get("top", ["", 0])
+            )
             failure_hint = ""
             if top_failure_tuple[1] > 0:
                 failure_hint = f" Top failure: {top_failure_tuple[0]} ({top_failure_tuple[1]} cases)."
@@ -559,7 +747,9 @@ class _PersonaRulesMixin:
             if recovery_idx == 0:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} Conservative: high residual, shallow depth."),
+                    "reasoning": (
+                        f"No S1 survivors.{failure_hint} Conservative: high residual, shallow depth."
+                    ),
                     "confidence": 0.7,
                     "config": {
                         "residual_prob": 0.85,
@@ -572,7 +762,9 @@ class _PersonaRulesMixin:
             elif recovery_idx == 1:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} Trying compact sparse architectures."),
+                    "reasoning": (
+                        f"No S1 survivors.{failure_hint} Trying compact sparse architectures."
+                    ),
                     "confidence": 0.65,
                     "config": {
                         "max_depth": 4,
@@ -590,7 +782,9 @@ class _PersonaRulesMixin:
             elif recovery_idx == 2:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} Trying morphological box for structured diversity."),
+                    "reasoning": (
+                        f"No S1 survivors.{failure_hint} Trying morphological box for structured diversity."
+                    ),
                     "confidence": 0.65,
                     "config": {
                         "model_source": "mixed",
@@ -604,7 +798,9 @@ class _PersonaRulesMixin:
             elif recovery_idx == 3:
                 return {
                     "mode": "synthesis",
-                    "reasoning": (f"No S1 survivors.{failure_hint} Boosting frequency/exotic ops for novel designs."),
+                    "reasoning": (
+                        f"No S1 survivors.{failure_hint} Boosting frequency/exotic ops for novel designs."
+                    ),
                     "confidence": 0.6,
                     "config": {
                         "math_space_weight": 3.5,
@@ -617,7 +813,9 @@ class _PersonaRulesMixin:
             else:
                 return {
                     "mode": "evolution",
-                    "reasoning": (f"No S1 survivors.{failure_hint} Trying evolution to find viable variants of S0-passing architectures."),
+                    "reasoning": (
+                        f"No S1 survivors.{failure_hint} Trying evolution to find viable variants of S0-passing architectures."
+                    ),
                     "confidence": 0.55,
                     "config": {
                         "n_generations": 12,
@@ -634,16 +832,26 @@ class _PersonaRulesMixin:
         avg_novelty = data.get("analytics_data", {}).get("avg_novelty", 0)
         leaderboard_diversity = data.get("leaderboard_diversity", 0)
         recent_modes = data.get("recent_exploration_modes", [])
-        
-        categories = data.get("analytics_data", {}).get("grammar_trends", {}).get("categories", {})
+
+        categories = (
+            data.get("analytics_data", {})
+            .get("grammar_trends", {})
+            .get("categories", {})
+        )
         underexplored_cats = [c for c, w in categories.items() if w < 0.2]
-        grammar_hint = f" Focusing on {', '.join(underexplored_cats)}." if underexplored_cats else ""
+        grammar_hint = (
+            f" Focusing on {', '.join(underexplored_cats)}."
+            if underexplored_cats
+            else ""
+        )
 
         if avg_novelty < 0.4 and "synthesis" not in recent_modes[-2:]:
             return {
                 "mode": "synthesis",
-                "reasoning": (f"S1 survivors found but average novelty is low ({avg_novelty:.2f}). "
-                              f"Boosting to diversify architecture search space.{grammar_hint}"),
+                "reasoning": (
+                    f"S1 survivors found but average novelty is low ({avg_novelty:.2f}). "
+                    f"Boosting to diversify architecture search space.{grammar_hint}"
+                ),
                 "confidence": 0.8,
                 "config": {
                     "math_space_weight": 4.0,
@@ -651,15 +859,17 @@ class _PersonaRulesMixin:
                     "model_source": "grammar",
                     "population_size": 120,
                     "structured_sparsity_bias": 0.15,
-                }
+                },
             }
-            
+
         explore_idx = n_experiments % 8
         if explore_idx == 0:
             return {
                 "mode": "synthesis",
-                "reasoning": (f"Leaderboard has {leaderboard_diversity} unique "
-                              f"viable archs. Focusing on structured morphology.{grammar_hint}"),
+                "reasoning": (
+                    f"Leaderboard has {leaderboard_diversity} unique "
+                    f"viable archs. Focusing on structured morphology.{grammar_hint}"
+                ),
                 "confidence": 0.75,
                 "config": {
                     "model_source": "mixed",
@@ -672,32 +882,38 @@ class _PersonaRulesMixin:
             optimizer_diversity = data.get("optimizer_diversity", 0)
             return {
                 "mode": "evolution",
-                "reasoning": (f"Evolving S1 architectures with {optimizer_diversity} "
-                              "different optimizers injected into genome."),
+                "reasoning": (
+                    f"Evolving S1 architectures with {optimizer_diversity} "
+                    "different optimizers injected into genome."
+                ),
                 "confidence": 0.75,
                 "config": {
                     "n_generations": 20,
                     "population_size": 40,
                     "mutation_rate": 0.3,
                     "structured_sparsity_bias": 0.15,
-                }
+                },
             }
         elif explore_idx == 2:
             return {
                 "mode": "ablation",
-                "reasoning": (f"High success (S1={total_s1}). Running ablation test "
-                              "to verify feature importance and extract minimal cores."),
+                "reasoning": (
+                    f"High success (S1={total_s1}). Running ablation test "
+                    "to verify feature importance and extract minimal cores."
+                ),
                 "confidence": 0.8,
                 "config": {"structured_sparsity_bias": 0.15},
             }
         elif explore_idx == 3:
             return {
                 "mode": "synthesis",
-                "reasoning": (f"Grammar-focused synthesis to boost novelty. "
-                              f"Novelty is currently {avg_novelty:.2f}, "
-                              f"will push toward behaviorally diverse designs. "
-                              f"Leaderboard diversity: {leaderboard_diversity} "
-                              f"distinct S1 architectures.{grammar_hint}"),
+                "reasoning": (
+                    f"Grammar-focused synthesis to boost novelty. "
+                    f"Novelty is currently {avg_novelty:.2f}, "
+                    f"will push toward behaviorally diverse designs. "
+                    f"Leaderboard diversity: {leaderboard_diversity} "
+                    f"distinct S1 architectures.{grammar_hint}"
+                ),
                 "confidence": 0.8,
                 "config": {
                     "model_source": "grammar",
@@ -705,39 +921,45 @@ class _PersonaRulesMixin:
                     "math_space_weight": 2.5,
                     "max_depth": 7,
                     "structured_sparsity_bias": 0.15,
-                }
+                },
             }
         elif explore_idx == 4:
             return {
                 "mode": "evolution",
-                "reasoning": (f"S1={total_s1}. High mutation evolution to jump out of "
-                              "local optima in continuous space."),
+                "reasoning": (
+                    f"S1={total_s1}. High mutation evolution to jump out of "
+                    "local optima in continuous space."
+                ),
                 "confidence": 0.7,
                 "config": {
                     "mutation_rate": 0.95,
                     "n_generations": 15,
                     "population_size": 50,
                     "structured_sparsity_bias": 0.15,
-                }
+                },
             }
         elif explore_idx == 5:
             return {
                 "mode": "synthesis",
-                "reasoning": (f"S1={total_s1}. Focusing on very deep structures "
-                              "using residual connections to trace gradients.{grammar_hint}"),
+                "reasoning": (
+                    f"S1={total_s1}. Focusing on very deep structures "
+                    "using residual connections to trace gradients.{grammar_hint}"
+                ),
                 "confidence": 0.75,
                 "config": {
                     "max_depth": 10,
                     "residual_prob": 0.95,
                     "n_programs": 75,
                     "structured_sparsity_bias": 0.15,
-                }
+                },
             }
         elif explore_idx == 6:
             return {
                 "mode": "synthesis",
-                "reasoning": ("Exploring hybrid approaches. Synthesizing models "
-                              "biased heavily towards structural sparsity."),
+                "reasoning": (
+                    "Exploring hybrid approaches. Synthesizing models "
+                    "biased heavily towards structural sparsity."
+                ),
                 "confidence": 0.7,
                 "config": {
                     "structured_sparsity_bias": 0.8,
@@ -747,21 +969,23 @@ class _PersonaRulesMixin:
                         "nm_sparse_linear": 3.0,
                         "low_rank_proj": 2.0,
                     },
-                }
+                },
             }
         else:
             return {
                 "mode": "evolution",
-                "reasoning": (f"{total_s1} diverse S1 survivors provide a good "
-                              "base for multi-objective optimization evolution "
-                              "targeting both accuracy and compression ratio."),
+                "reasoning": (
+                    f"{total_s1} diverse S1 survivors provide a good "
+                    "base for multi-objective optimization evolution "
+                    "targeting both accuracy and compression ratio."
+                ),
                 "confidence": 0.85,
                 "config": {
                     "n_generations": 25,
                     "population_size": 30,
                     "mutation_rate": 0.1,
                     "structured_sparsity_bias": 0.15,
-                }
+                },
             }
 
     def _rule_based_structured_hypothesis(self) -> Dict:
@@ -845,10 +1069,12 @@ class _PersonaRulesMixin:
         idx = self.state.experiments_today % len(templates)
         return templates[idx]
 
-    def _rule_based_hypothesis_validation(self, hypothesis: Dict,
-                                           results: Dict) -> Dict:
+    def _rule_based_hypothesis_validation(
+        self, hypothesis: Dict, results: Dict
+    ) -> Dict:
         """Metric-based hypothesis validation when LLM unavailable."""
         import re as _re
+
         success_metric = hypothesis.get("success_metric", "")
         s1_passed = results.get("stage1_passed", 0)
 
@@ -856,7 +1082,7 @@ class _PersonaRulesMixin:
         status = "inconclusive"
         evidence = f"S1 passed: {s1_passed}"
 
-        match = _re.match(r'loss_ratio\s*[<>]=?\s*([\d.]+)', success_metric)
+        match = _re.match(r"loss_ratio\s*[<>]=?\s*([\d.]+)", success_metric)
         if match:
             threshold = float(match.group(1))
             best_lr = results.get("best_loss_ratio")
@@ -864,7 +1090,7 @@ class _PersonaRulesMixin:
                 status = "confirmed" if best_lr < threshold else "refuted"
                 evidence = f"best_loss_ratio={best_lr:.4f} vs threshold {threshold}"
 
-        match = _re.match(r's1_pass_rate\s*[>]=?\s*([\d.]+)%?', success_metric)
+        match = _re.match(r"s1_pass_rate\s*[>]=?\s*([\d.]+)%?", success_metric)
         if match:
             threshold = float(match.group(1)) / 100
             total = results.get("total", 0)
@@ -901,8 +1127,8 @@ class _PersonaRulesMixin:
         import re
 
         # Extract metrics from evidence string (e.g. "loss_ratio=0.45, novelty=0.6")
-        lr_match = re.search(r'loss_ratio=([\d.]+)', evidence)
-        nov_match = re.search(r'novelty=([\d.]+)', evidence)
+        lr_match = re.search(r"loss_ratio=([\d.]+)", evidence)
+        nov_match = re.search(r"novelty=([\d.]+)", evidence)
 
         loss_ratio = float(lr_match.group(1)) if lr_match else None
         novelty = float(nov_match.group(1)) if nov_match else None
@@ -920,16 +1146,23 @@ class _PersonaRulesMixin:
         elif loss_ratio is not None and loss_ratio > 0.7:
             # Even high novelty can't save very poor performance
             decision = "no_go"
-            rationale_parts.append(f"loss_ratio={loss_ratio:.3f} > 0.7 (too weak even for high novelty)")
+            rationale_parts.append(
+                f"loss_ratio={loss_ratio:.3f} > 0.7 (too weak even for high novelty)"
+            )
         elif novelty is not None and novelty < 0.3:
             decision = "no_go"
             rationale_parts.append(f"novelty={novelty:.3f} < 0.3 (not novel enough)")
-        elif (loss_ratio is not None and loss_ratio > 0.3
-              and novelty is not None and novelty < 0.5):
+        elif (
+            loss_ratio is not None
+            and loss_ratio > 0.3
+            and novelty is not None
+            and novelty < 0.5
+        ):
             decision = "pivot"
             rationale_parts.append(
                 f"loss_ratio={loss_ratio:.3f} > 0.3 and novelty={novelty:.3f} < 0.5 "
-                f"(mediocre on both axes)")
+                f"(mediocre on both axes)"
+            )
         else:
             if loss_ratio is not None:
                 rationale_parts.append(f"loss_ratio={loss_ratio:.3f}")
@@ -943,14 +1176,18 @@ class _PersonaRulesMixin:
             "decision": decision,
             "rationale": rationale,
             "alternatives": "No LLM available for detailed analysis",
-            "next_steps": ("Proceed to next phase" if decision == "go"
-                          else "Consider alternative architectures"
-                          if decision == "pivot"
-                          else "Candidate rejected — do not escalate"),
+            "next_steps": (
+                "Proceed to next phase"
+                if decision == "go"
+                else "Consider alternative architectures"
+                if decision == "pivot"
+                else "Candidate rejected — do not escalate"
+            ),
         }
 
-    def _rule_based_knowledge(self, results: List[Dict],
-                               hypotheses: List[Dict]) -> List[Dict]:
+    def _rule_based_knowledge(
+        self, results: List[Dict], hypotheses: List[Dict]
+    ) -> List[Dict]:
         """Rule-based knowledge extraction when LLM unavailable."""
         entries = []
         # Extract from confirmed hypotheses
@@ -967,12 +1204,14 @@ class _PersonaRulesMixin:
                     parts.append(f"Test: {test_method}")
                 if outcome:
                     parts.append(f"Outcome: {outcome}")
-                entries.append({
-                    "category": "principle",
-                    "title": f"Confirmed: {prediction}",
-                    "content": "\n".join(parts),
-                    "confidence": h.get("confidence_after", 0.6),
-                })
+                entries.append(
+                    {
+                        "category": "principle",
+                        "title": f"Confirmed: {prediction}",
+                        "content": "\n".join(parts),
+                        "confidence": h.get("confidence_after", 0.6),
+                    }
+                )
             elif h.get("status") == "refuted":
                 parts = [f"Hypothesis: {prediction}"]
                 if reasoning:
@@ -981,19 +1220,24 @@ class _PersonaRulesMixin:
                     parts.append(f"Test: {test_method}")
                 if outcome:
                     parts.append(f"Outcome: {outcome}")
-                entries.append({
-                    "category": "anti_pattern",
-                    "title": f"Refuted: {prediction}",
-                    "content": "\n".join(parts),
-                    "confidence": h.get("confidence_after", 0.6),
-                })
+                entries.append(
+                    {
+                        "category": "anti_pattern",
+                        "title": f"Refuted: {prediction}",
+                        "content": "\n".join(parts),
+                        "confidence": h.get("confidence_after", 0.6),
+                    }
+                )
         return entries[:5]  # limit to 5
 
-    def _rule_based_campaign_report(self, campaign: Dict,
-                                     experiments: List[Dict],
-                                     hypotheses: List[Dict],
-                                     decisions: List[Dict],
-                                     knowledge: List[Dict]) -> str:
+    def _rule_based_campaign_report(
+        self,
+        campaign: Dict,
+        experiments: List[Dict],
+        hypotheses: List[Dict],
+        decisions: List[Dict],
+        knowledge: List[Dict],
+    ) -> str:
         """Template-based campaign report when LLM unavailable."""
         total_exp = len(experiments)
         total_s1 = sum(e.get("n_stage1_passed", 0) for e in experiments)
@@ -1017,4 +1261,3 @@ class _PersonaRulesMixin:
             f"Knowledge entries: {len(knowledge)}",
         ]
         return "\n".join(lines)
-

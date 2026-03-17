@@ -4,11 +4,12 @@ Verifies that SubgraphDispatcher correctly identifies all-native graphs,
 dispatches them through the Rust scheduler, and falls back gracefully when
 ops are unsupported or the scheduler is unavailable.
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -18,8 +19,8 @@ _root = str(Path(__file__).resolve().parents[1].parent)
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from research.synthesis.graph import ComputationGraph, OpNode, ShapeInfo
-from research.scientist.native_runner import SubgraphDispatcher, dispatch_graph_native_cached
+from research.synthesis.graph import ComputationGraph
+from research.scientist.native_runner import SubgraphDispatcher
 
 pytestmark = pytest.mark.native
 
@@ -28,7 +29,10 @@ pytestmark = pytest.mark.native
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_simple_graph(model_dim: int = 4, ops: list[str] | None = None) -> ComputationGraph:
+
+def _make_simple_graph(
+    model_dim: int = 4, ops: list[str] | None = None
+) -> ComputationGraph:
     """Build a simple chain graph: input -> op1 -> op2 -> ... -> output.
 
     Default ops: ["relu", "add"] (add uses the input as both operands).
@@ -42,6 +46,7 @@ def _make_simple_graph(model_dim: int = 4, ops: list[str] | None = None) -> Comp
         prim = None
         try:
             from research.synthesis.primitives import get_primitive
+
             prim = get_primitive(op_name)
         except Exception:
             pass
@@ -73,6 +78,7 @@ def _make_diamond_graph(model_dim: int = 4) -> ComputationGraph:
 # ---------------------------------------------------------------------------
 # Test 1: SubgraphDispatcher detects all-native graph
 # ---------------------------------------------------------------------------
+
 
 def test_subgraph_dispatcher_all_native():
     """SubgraphDispatcher.all_native should be True when all ops are supported."""
@@ -110,6 +116,7 @@ def test_subgraph_dispatcher_diamond_partial():
 # Test 2: try_dispatch returns None when not all-native
 # ---------------------------------------------------------------------------
 
+
 def test_try_dispatch_returns_none_when_not_all_native():
     """When some ops are unsupported, try_dispatch returns None."""
     g = _make_simple_graph(ops=["relu"])
@@ -124,6 +131,7 @@ def test_try_dispatch_returns_none_when_not_all_native():
 # ---------------------------------------------------------------------------
 # Test 3: try_dispatch calls dispatch_graph_native_cached when all-native
 # ---------------------------------------------------------------------------
+
 
 @patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_try_dispatch_calls_graph_dispatch(mock_cached_dispatch):
@@ -151,7 +159,11 @@ def test_try_dispatch_calls_graph_dispatch(mock_cached_dispatch):
 # Test 4: try_dispatch falls back on dispatch_graph_native error
 # ---------------------------------------------------------------------------
 
-@patch("research.scientist.native_runner.dispatch_graph_native_cached", side_effect=RuntimeError("boom"))
+
+@patch(
+    "research.scientist.native_runner.dispatch_graph_native_cached",
+    side_effect=RuntimeError("boom"),
+)
 def test_try_dispatch_falls_back_on_error(mock_cached_dispatch):
     """If dispatch_graph_native_cached raises, try_dispatch returns None."""
     g = _make_simple_graph(ops=["relu"])
@@ -168,6 +180,7 @@ def test_try_dispatch_falls_back_on_error(mock_cached_dispatch):
 # ---------------------------------------------------------------------------
 # Test 5: try_dispatch converts torch tensors
 # ---------------------------------------------------------------------------
+
 
 @patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_try_dispatch_torch_conversion(mock_cached_dispatch):
@@ -194,6 +207,7 @@ def test_try_dispatch_torch_conversion(mock_cached_dispatch):
 # Test 6: empty graph returns all_native=False
 # ---------------------------------------------------------------------------
 
+
 def test_subgraph_dispatcher_empty_graph():
     """A graph with no non-input nodes should not be all-native."""
     g = ComputationGraph(4)
@@ -209,6 +223,7 @@ def test_subgraph_dispatcher_empty_graph():
 # ---------------------------------------------------------------------------
 # Test 7: stats tracking
 # ---------------------------------------------------------------------------
+
 
 @patch("research.scientist.native.autograd.dispatch_graph_native_cached")
 def test_stats_tracking(mock_cached_dispatch):
@@ -237,6 +252,7 @@ def test_stats_tracking(mock_cached_dispatch):
 # ---------------------------------------------------------------------------
 # Test 8: CompiledLayer uses subgraph dispatcher when attached
 # ---------------------------------------------------------------------------
+
 
 def test_compiled_layer_subgraph_dispatch_integration():
     """CompiledLayer.forward() should use _subgraph_dispatcher when attached."""
@@ -286,7 +302,7 @@ def test_compiled_layer_no_dispatcher_unchanged():
 
     g = _make_simple_graph(model_dim=8, ops=["relu"])
     layer = CompiledLayer(g)
-    assert not hasattr(layer, '_subgraph_dispatcher')
+    assert not hasattr(layer, "_subgraph_dispatcher")
 
     x = torch.randn(1, 4, 8)
     result = layer(x)
@@ -298,6 +314,7 @@ def test_compiled_layer_no_dispatcher_unchanged():
 # ---------------------------------------------------------------------------
 # Test 9: Multi-op chain
 # ---------------------------------------------------------------------------
+
 
 def test_subgraph_dispatcher_multi_op_chain():
     """SubgraphDispatcher handles a chain of multiple ops."""
@@ -325,6 +342,7 @@ def test_subgraph_dispatcher_multi_op_chain_partial():
 # Test 10: graph_to_native_ir_json interop
 # ---------------------------------------------------------------------------
 
+
 def test_graph_converts_to_native_ir():
     """Ensure the test graphs produce valid native_ir JSON."""
     import json
@@ -343,6 +361,7 @@ def test_graph_converts_to_native_ir():
 # ---------------------------------------------------------------------------
 # Test 11: IR JSON caching in SubgraphDispatcher
 # ---------------------------------------------------------------------------
+
 
 def test_subgraph_dispatcher_caches_ir_json():
     """SubgraphDispatcher should pre-convert and cache the IR JSON at init."""

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -10,13 +11,13 @@ from ..json_utils import fast_loads as _json_loads
 
 class _MiscMixin:
     """Misc operations for the Lab Notebook."""
+
     __slots__ = ()
     _DASHBOARD_SUMMARY_TTL_S = 2.0
 
     # ── Training Curves ──
 
-    def store_training_curve(self, result_id: str,
-                             curve: List[Dict]) -> None:
+    def store_training_curve(self, result_id: str, curve: List[Dict]) -> None:
         """Store per-step training data for survivors only.
 
         curve: list of dicts with keys step, loss, grad_norm, step_time_ms
@@ -36,12 +37,18 @@ class _MiscMixin:
             """INSERT OR REPLACE INTO training_curves
                (result_id, step, loss, grad_norm, step_time_ms)
                VALUES (?, ?, ?, ?, ?)""",
-            [(result_id, d.get("step", i), d.get("loss"),
-              d.get("grad_norm"), d.get("step_time_ms"))
-             for i, d in enumerate(curve)],
+            [
+                (
+                    result_id,
+                    d.get("step", i),
+                    d.get("loss"),
+                    d.get("grad_norm"),
+                    d.get("step_time_ms"),
+                )
+                for i, d in enumerate(curve)
+            ],
         )
         self._maybe_commit()
-
 
     def get_training_curve(self, result_id: str) -> List[Dict]:
         """Get per-step training data for a program."""
@@ -52,7 +59,6 @@ class _MiscMixin:
             (result_id,),
         ).fetchall()
         return [dict(r) for r in rows]
-
 
     def strip_graph_json_for_failures(self, experiment_id: str) -> int:
         """Clear graph_json for S1 failures with no loss data.
@@ -72,7 +78,6 @@ class _MiscMixin:
         if n:
             self._maybe_commit()
         return n
-
 
     def merge_op_failure_counts(self, op_counts: Dict[str, Dict[str, int]]) -> None:
         """Merge S0 failure op counts into op_success_rates.
@@ -97,15 +102,18 @@ class _MiscMixin:
                     n_stage0_passed = n_stage0_passed + excluded.n_stage0_passed,
                     n_stage05_passed = n_stage05_passed + excluded.n_stage05_passed,
                     last_updated = excluded.last_updated""",
-                (op_name, counts.get("n_used", 0), counts.get("n_s0", 0),
-                 counts.get("n_s05", 0), now),
+                (
+                    op_name,
+                    counts.get("n_used", 0),
+                    counts.get("n_s0", 0),
+                    counts.get("n_s05", 0),
+                    now,
+                ),
             )
         self._maybe_commit()
 
-
     # ── Failure Signatures ──
 
-    
     @staticmethod
     def _extract_op_bigrams(graph_json: str) -> List[str]:
         """Extract sorted op-pair bigrams from a graph JSON.
@@ -131,10 +139,12 @@ class _MiscMixin:
                     bigrams.add(f"{pop}->{op}")
         return sorted(bigrams)
 
-
-    def get_entries(self, experiment_id: Optional[str] = None,
-                    entry_type: Optional[str] = None,
-                    limit: int = 50) -> List[Dict]:
+    def get_entries(
+        self,
+        experiment_id: Optional[str] = None,
+        entry_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict]:
         query = "SELECT * FROM entries WHERE 1=1"
         params = []
         if experiment_id:
@@ -147,7 +157,6 @@ class _MiscMixin:
         params.append(limit)
         rows = self.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
-
 
     def set_external_benchmarks(self, result_id: str, payload: Any) -> bool:
         """Store external benchmark payload for a program result."""
@@ -184,7 +193,6 @@ class _MiscMixin:
         )
         self._maybe_commit()
         return cur.rowcount > 0
-
 
     def get_failure_analysis(self, experiment_id: str) -> Dict:
         """Get failure analysis data for an experiment."""
@@ -231,13 +239,13 @@ class _MiscMixin:
             "stage_deaths": stage_deaths,
         }
 
-
-
     def get_dashboard_summary(self) -> Dict:
         """Get aggregate stats for the dashboard."""
         now = time.time()
         cached = getattr(self, "_dashboard_summary_cache", None)
-        expires_at = float(getattr(self, "_dashboard_summary_cache_expires_at", 0.0) or 0.0)
+        expires_at = float(
+            getattr(self, "_dashboard_summary_cache_expires_at", 0.0) or 0.0
+        )
         if cached is not None and now < expires_at:
             return dict(cached)
 
@@ -298,7 +306,11 @@ class _MiscMixin:
         if latest_perf_row and latest_perf_row["results_json"]:
             try:
                 latest_results = _json_loads(latest_perf_row["results_json"])
-                perf_report = latest_results.get("perf_report") if isinstance(latest_results, dict) else None
+                perf_report = (
+                    latest_results.get("perf_report")
+                    if isinstance(latest_results, dict)
+                    else None
+                )
                 if isinstance(perf_report, dict):
                     queue = perf_report.get("queue_telemetry") or {}
                     kernel_hotspots = perf_report.get("kernel_hotspots") or []
@@ -306,10 +318,21 @@ class _MiscMixin:
                     latest_perf_report = {
                         "experiment_id": latest_perf_row["experiment_id"],
                         "completed_at": latest_perf_row["completed_at"],
-                        "programs_profiled": int(perf_report.get("programs_profiled", 0) or 0),
-                        "avg_submit_wait_ms": float(queue.get("submit_wait_avg_ms", 0.0) or 0.0),
-                        "avg_scheduling_wait_ms": float(queue.get("scheduling_wait_avg_ms", 0.0) or 0.0),
-                        "gpu_starvation_events": int((perf_report.get("gpu_starvation") or {}).get("event_count", 0) or 0),
+                        "programs_profiled": int(
+                            perf_report.get("programs_profiled", 0) or 0
+                        ),
+                        "avg_submit_wait_ms": float(
+                            queue.get("submit_wait_avg_ms", 0.0) or 0.0
+                        ),
+                        "avg_scheduling_wait_ms": float(
+                            queue.get("scheduling_wait_avg_ms", 0.0) or 0.0
+                        ),
+                        "gpu_starvation_events": int(
+                            (perf_report.get("gpu_starvation") or {}).get(
+                                "event_count", 0
+                            )
+                            or 0
+                        ),
                         "top_kernel": top_kernel,
                     }
                 # Extract dedup stats from latest experiment
@@ -319,64 +342,141 @@ class _MiscMixin:
                         "dedup_rate": latest_results.get("dedup_rate", 0),
                         "skipped_dedup": latest_results.get("skipped_dedup", 0),
                         "novel_count": latest_results.get("dedup_novel_count", 0),
-                        "known_fingerprints": latest_results.get("dedup_known_fingerprints", 0),
+                        "known_fingerprints": latest_results.get(
+                            "dedup_known_fingerprints", 0
+                        ),
                     }
             except (TypeError, ValueError, json.JSONDecodeError):
                 latest_perf_report = None
 
-        total_programs = int((program_row["total_programs_evaluated"] or 0) if program_row else 0)
-        stage1_survivors = int((program_row["stage1_survivors"] or 0) if program_row else 0)
+        total_programs = int(
+            (program_row["total_programs_evaluated"] or 0) if program_row else 0
+        )
+        stage1_survivors = int(
+            (program_row["stage1_survivors"] or 0) if program_row else 0
+        )
         summary = {
-            "total_experiments": int((exp_row["total_experiments"] or 0) if exp_row else 0),
-            "completed_experiments": int((exp_row["completed_experiments"] or 0) if exp_row else 0),
+            "total_experiments": int(
+                (exp_row["total_experiments"] or 0) if exp_row else 0
+            ),
+            "completed_experiments": int(
+                (exp_row["completed_experiments"] or 0) if exp_row else 0
+            ),
             "total_programs_evaluated": total_programs,
             "stage1_survivors": stage1_survivors,
             "survival_rate": stage1_survivors / max(total_programs, 1),
-            "avg_novelty_score": float((program_row["avg_novelty_score"] or 0.0) if program_row else 0.0),
-            "top_novelty_score": float((program_row["top_novelty_score"] or 0.0) if program_row else 0.0),
-            "active_insights": int((insight_row["active_insights"] or 0) if insight_row else 0),
-            "learning_events": int((learning_row["learning_events"] or 0) if learning_row else 0),
-            "latest_learning": (learning_row["latest_learning"] if learning_row else None),
-            "avg_step_time_ms": float((program_row["avg_step_time_ms"] or 0.0) if program_row else 0.0),
-            "avg_throughput_tok_s": float((program_row["avg_throughput_tok_s"] or 0.0) if program_row else 0.0),
-            "avg_routing_entropy": (float(program_row["avg_routing_entropy"]) if program_row and program_row["avg_routing_entropy"] is not None else None),
-            "avg_depth_savings": (float(program_row["avg_depth_savings"]) if program_row and program_row["avg_depth_savings"] is not None else None),
-            "avg_recursion_savings": (float(program_row["avg_recursion_savings"]) if program_row and program_row["avg_recursion_savings"] is not None else None),
-            "avg_routing_token_retention": (float(program_row["avg_routing_token_retention"]) if program_row and program_row["avg_routing_token_retention"] is not None else None),
-            "avg_sparsity_ratio": (float(program_row["avg_sparsity_ratio"]) if program_row and program_row["avg_sparsity_ratio"] is not None else None),
+            "avg_novelty_score": float(
+                (program_row["avg_novelty_score"] or 0.0) if program_row else 0.0
+            ),
+            "top_novelty_score": float(
+                (program_row["top_novelty_score"] or 0.0) if program_row else 0.0
+            ),
+            "active_insights": int(
+                (insight_row["active_insights"] or 0) if insight_row else 0
+            ),
+            "learning_events": int(
+                (learning_row["learning_events"] or 0) if learning_row else 0
+            ),
+            "latest_learning": (
+                learning_row["latest_learning"] if learning_row else None
+            ),
+            "avg_step_time_ms": float(
+                (program_row["avg_step_time_ms"] or 0.0) if program_row else 0.0
+            ),
+            "avg_throughput_tok_s": float(
+                (program_row["avg_throughput_tok_s"] or 0.0) if program_row else 0.0
+            ),
+            "avg_routing_entropy": (
+                float(program_row["avg_routing_entropy"])
+                if program_row and program_row["avg_routing_entropy"] is not None
+                else None
+            ),
+            "avg_depth_savings": (
+                float(program_row["avg_depth_savings"])
+                if program_row and program_row["avg_depth_savings"] is not None
+                else None
+            ),
+            "avg_recursion_savings": (
+                float(program_row["avg_recursion_savings"])
+                if program_row and program_row["avg_recursion_savings"] is not None
+                else None
+            ),
+            "avg_routing_token_retention": (
+                float(program_row["avg_routing_token_retention"])
+                if program_row
+                and program_row["avg_routing_token_retention"] is not None
+                else None
+            ),
+            "avg_sparsity_ratio": (
+                float(program_row["avg_sparsity_ratio"])
+                if program_row and program_row["avg_sparsity_ratio"] is not None
+                else None
+            ),
             "latest_perf_report": latest_perf_report,
-            "unique_fingerprints": int((program_row["unique_fingerprints"] or 0) if program_row else 0),
+            "unique_fingerprints": int(
+                (program_row["unique_fingerprints"] or 0) if program_row else 0
+            ),
             "latest_dedup": latest_dedup,
         }
         self._dashboard_summary_cache = dict(summary)
         self._dashboard_summary_cache_expires_at = now + self._DASHBOARD_SUMMARY_TTL_S
         return summary
 
-
     # ── Leaderboard ──
 
     # Ops considered "routing" for the structural complexity bonus
-    _ROUTING_OPS = frozenset({
-        "route_topk", "route_lanes", "route_recursion", "token_merge",
-        "mod_topk", "early_exit", "adaptive_recursion", "token_merging",
-        "cascade", "speculative", "moe_topk", "adaptive_lane_mixer",
-        "mixed_recursion_gate", "relu_gate_routing", "routing_conditioned_compression",
-        "token_type_classifier", "entropy_score", "progressive_compression_gate",
-        "compression_mixture_experts", "latent_attention_compressor",
-    })
+    _ROUTING_OPS = frozenset(
+        {
+            "route_topk",
+            "route_lanes",
+            "route_recursion",
+            "token_merge",
+            "mod_topk",
+            "early_exit",
+            "adaptive_recursion",
+            "token_merging",
+            "cascade",
+            "speculative",
+            "moe_topk",
+            "adaptive_lane_mixer",
+            "mixed_recursion_gate",
+            "relu_gate_routing",
+            "routing_conditioned_compression",
+            "token_type_classifier",
+            "entropy_score",
+            "progressive_compression_gate",
+            "compression_mixture_experts",
+            "latent_attention_compressor",
+        }
+    )
 
-    _SPARSE_OPS = frozenset({
-        "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
-        "structured_sparse", "block_sparse", "semi_structured_2_4",
-        "hash_trick", "sparse_topk", "latent_attention_compressor",
-        "routing_conditioned_compression", "compression_mixture_experts",
-        "progressive_compression_gate",
-    })
+    _SPARSE_OPS = frozenset(
+        {
+            "nm_sparse_linear",
+            "block_sparse_linear",
+            "semi_structured_2_4_linear",
+            "structured_sparse",
+            "block_sparse",
+            "semi_structured_2_4",
+            "hash_trick",
+            "sparse_topk",
+            "latent_attention_compressor",
+            "routing_conditioned_compression",
+            "compression_mixture_experts",
+            "progressive_compression_gate",
+        }
+    )
 
-    _MOE_OPS = frozenset({
-        "moe_topk", "route_topk", "route_lanes", "adaptive_lane_mixer",
-        "compression_mixture_experts", "entropy_score",
-    })
+    _MOE_OPS = frozenset(
+        {
+            "moe_topk",
+            "route_topk",
+            "route_lanes",
+            "adaptive_lane_mixer",
+            "compression_mixture_experts",
+            "entropy_score",
+        }
+    )
     _TIER_ORDER = {
         "screening": 0,
         "investigation": 1,
@@ -384,7 +484,9 @@ class _MiscMixin:
         "breakthrough": 3,
     }
 
-    def _graph_structural_counts(self, result_id: str, graph_json: Optional[str] = None) -> Dict[str, Optional[int]]:
+    def _graph_structural_counts(
+        self, result_id: str, graph_json: Optional[str] = None
+    ) -> Dict[str, Optional[int]]:
         """Return routing/sparse/MoE op counts with at most one graph lookup."""
         try:
             raw_graph_json = graph_json
@@ -428,21 +530,17 @@ class _MiscMixin:
         except Exception:
             return {"routing": None, "sparse": None, "moe": None}
 
-
     def _count_routing_ops(self, result_id: str) -> Optional[int]:
         """Count routing/branching ops in the graph for a program result."""
         return self._graph_structural_counts(result_id).get("routing")
-
 
     def _count_sparse_ops(self, result_id: str) -> Optional[int]:
         """Count sparsity/compression ops in the graph for a program result."""
         return self._graph_structural_counts(result_id).get("sparse")
 
-
     def _count_moe_ops(self, result_id: str) -> Optional[int]:
         """Count MoE-specific ops in the graph for a program result."""
         return self._graph_structural_counts(result_id).get("moe")
-
 
     @staticmethod
     def _best_min(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
@@ -454,7 +552,6 @@ class _MiscMixin:
         except Exception:
             return None
 
-
     @staticmethod
     def _best_max(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
         vals = [r.get(key) for r in rows if r.get(key) is not None]
@@ -465,7 +562,6 @@ class _MiscMixin:
         except Exception:
             return None
 
-
     @staticmethod
     def _best_bool(rows: List[Dict[str, Any]], key: str) -> Optional[int]:
         vals = [r.get(key) for r in rows if r.get(key) is not None]
@@ -473,9 +569,8 @@ class _MiscMixin:
             return None
         return int(any(bool(v) for v in vals))
 
-
-    
-    def compute_efficiency_multiple(self, 
+    def compute_efficiency_multiple(
+        self,
         loss_ratio: Optional[float] = None,
         param_count: Optional[float] = None,
         flops_forward: Optional[float] = None,
@@ -527,15 +622,13 @@ class _MiscMixin:
         ratios["n_dimensions"] = float(len(ratios) - 1)  # exclude geomean itself
         return ratios
 
-
-    
     @staticmethod
     def compute_composite_score(**kwargs) -> float:
-        """Delegate to canonical implementation in leaderboard_scoring."""
-        from ..leaderboard_scoring import compute_composite_score as _ccs
-        result = _ccs(**kwargs)
-        return result if isinstance(result, float) else float(result)
+        """Delegate to v6 scoring (GPT-2 = 100 anchor, open-ended)."""
+        from ..leaderboard_scoring import compute_composite_v6
 
+        result = compute_composite_v6(**kwargs)
+        return result if isinstance(result, (int, float)) else float(result)
 
     @staticmethod
     def _reference_novelty_for_display(novelty: Optional[float]) -> Optional[float]:
@@ -554,7 +647,6 @@ class _MiscMixin:
         value = max(0.0, min(1.0, value))
         return min(0.35, value * 0.4)
 
-
     def pin_reference(self, entry_id: str, reference_name: str) -> None:
         """Pin a leaderboard entry as a reference architecture."""
         self.conn.execute(
@@ -566,7 +658,6 @@ class _MiscMixin:
             (reference_name, entry_id),
         )
         self._maybe_commit()
-
 
     # ── Pre-investigation gate helpers ──────────────────────────────────
 
@@ -611,8 +702,7 @@ class _MiscMixin:
                     " ORDER BY composite_score ASC"
                 ).fetchall()
                 min_composite_score = (
-                    scr_scores[3 * len(scr_scores) // 4][0]
-                    if scr_scores else 0.0
+                    scr_scores[3 * len(scr_scores) // 4][0] if scr_scores else 0.0
                 )
         rows = self.conn.execute(
             """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
@@ -634,14 +724,19 @@ class _MiscMixin:
                  AND COALESCE(pr.loss_improvement_rate, 0) >= ?
                  AND COALESCE(l.composite_score, 0) >= ?
                ORDER BY l.composite_score DESC""",
-            (min_stability, min_spectral_norm, max_spectral_norm,
-             min_improvement_rate, min_composite_score),
+            (
+                min_stability,
+                min_spectral_norm,
+                max_spectral_norm,
+                min_improvement_rate,
+                min_composite_score,
+            ),
         ).fetchall()
         return [dict(r) for r in rows]
 
-
-    
-    def compute_pre_investigation_score(row: Dict, best_ref_lr: Optional[float] = None) -> float:
+    def compute_pre_investigation_score(
+        row: Dict, best_ref_lr: Optional[float] = None
+    ) -> float:
         """Stage B composite readiness score (0-100 scale).
 
         Components:
@@ -653,6 +748,7 @@ class _MiscMixin:
         - Reference penalty (-20pts): if loss_ratio > 1.5 * best_reference_lr
         """
         import math
+
         score = 0.0
 
         # ── Performance (40 pts) ──
@@ -737,7 +833,6 @@ class _MiscMixin:
 
         return max(0, min(100, round(score, 2)))
 
-
     def get_references(self) -> List[Dict]:
         """Get all pinned reference architectures."""
         rows = self.conn.execute(
@@ -763,8 +858,6 @@ class _MiscMixin:
             refs.append(entry)
         return refs
 
-
-    
     @staticmethod
     def _classify_architecture_family(
         graph_json: Optional[str],
@@ -793,15 +886,50 @@ class _MiscMixin:
             return "Unknown"
 
         attention_ops = {
-            "attention", "self_attention", "mha", "multihead_attention", "qkv_attention",
-            "softmax_attention", "linear_attention",
+            "attention",
+            "self_attention",
+            "mha",
+            "multihead_attention",
+            "qkv_attention",
+            "softmax_attention",
+            "linear_attention",
         }
         conv_ops = {"conv1d", "conv1d_seq", "depthwise_conv1d", "conv_only"}
-        spectral_ops = {"sin", "cos", "fft", "ifft", "fourier_mix", "fourier_mixing", "rfft_seq", "irfft_seq"}
-        gating_ops = {"sigmoid", "tanh", "silu", "gelu", "maximum", "minimum", "swiglu", "topk_gate", "moe_topk"}
-        mlp_ops = {"linear_proj", "linear_proj_up", "linear_proj_down", "learnable_bias", "swiglu_mlp"}
+        spectral_ops = {
+            "sin",
+            "cos",
+            "fft",
+            "ifft",
+            "fourier_mix",
+            "fourier_mixing",
+            "rfft_seq",
+            "irfft_seq",
+        }
+        gating_ops = {
+            "sigmoid",
+            "tanh",
+            "silu",
+            "gelu",
+            "maximum",
+            "minimum",
+            "swiglu",
+            "topk_gate",
+            "moe_topk",
+        }
+        mlp_ops = {
+            "linear_proj",
+            "linear_proj_up",
+            "linear_proj_down",
+            "learnable_bias",
+            "swiglu_mlp",
+        }
         ssm_ops = {"state_space", "selective_scan"}
-        adaptive_ops = {"mod_topk", "early_exit", "adaptive_recursion", "fixed_point_iter"}
+        adaptive_ops = {
+            "mod_topk",
+            "early_exit",
+            "adaptive_recursion",
+            "fixed_point_iter",
+        }
 
         has_attention = bool(ops & attention_ops)
         has_conv = bool(ops & conv_ops)
@@ -809,7 +937,11 @@ class _MiscMixin:
         has_gating = bool(ops & gating_ops)
         has_mlp = bool(ops & mlp_ops)
         has_ssm = bool(ops & ssm_ops)
-        has_adaptive = bool(ops & adaptive_ops) or routing_mode in ("mod_topk", "early_exit", "adaptive_recursion")
+        has_adaptive = bool(ops & adaptive_ops) or routing_mode in (
+            "mod_topk",
+            "early_exit",
+            "adaptive_recursion",
+        )
 
         family = "Hybrid-Mixer"
         if has_ssm:
@@ -840,9 +972,9 @@ class _MiscMixin:
 
         return family
 
-
-    def get_unresolved_hypotheses(self,
-                                  campaign_id: Optional[str] = None) -> List[Dict]:
+    def get_unresolved_hypotheses(
+        self, campaign_id: Optional[str] = None
+    ) -> List[Dict]:
         """Get pending/testing hypotheses."""
         query = "SELECT * FROM hypotheses WHERE status IN ('pending', 'testing')"
         params: List[Any] = []
@@ -853,15 +985,18 @@ class _MiscMixin:
         rows = self.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
-
     # ── Decisions ──
 
-    def record_decision(self, campaign_id: Optional[str],
-                        decision_type: str, subject: str,
-                        rationale: str,
-                        evidence_ids: Optional[List[str]] = None,
-                        alternatives: Optional[List[Dict]] = None,
-                        evidence_pack: Optional[Dict] = None) -> str:
+    def record_decision(
+        self,
+        campaign_id: Optional[str],
+        decision_type: str,
+        subject: str,
+        rationale: str,
+        evidence_ids: Optional[List[str]] = None,
+        alternatives: Optional[List[Dict]] = None,
+        evidence_pack: Optional[Dict] = None,
+    ) -> str:
         """Record a go/no-go or other decision. Returns decision_id."""
         decision_id = str(uuid.uuid4())[:12]
         now = time.time()
@@ -871,18 +1006,24 @@ class _MiscMixin:
              subject, rationale, evidence_ids, alternatives_considered,
              evidence_pack_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (decision_id, campaign_id, now, decision_type, subject,
-             rationale,
-             json.dumps(evidence_ids) if evidence_ids else None,
-             json.dumps(alternatives) if alternatives else None,
-             json.dumps(evidence_pack) if evidence_pack else None),
+            (
+                decision_id,
+                campaign_id,
+                now,
+                decision_type,
+                subject,
+                rationale,
+                json.dumps(evidence_ids) if evidence_ids else None,
+                json.dumps(alternatives) if alternatives else None,
+                json.dumps(evidence_pack) if evidence_pack else None,
+            ),
         )
         self._maybe_commit()
         return decision_id
 
-
-    def get_decisions(self, campaign_id: Optional[str] = None,
-                      decision_type: Optional[str] = None) -> List[Dict]:
+    def get_decisions(
+        self, campaign_id: Optional[str] = None, decision_type: Optional[str] = None
+    ) -> List[Dict]:
         """Get decisions, optionally filtered."""
         query = "SELECT * FROM decisions WHERE 1=1"
         params: List[Any] = []
@@ -910,7 +1051,6 @@ class _MiscMixin:
                     d["evidence_pack"] = None
             results.append(d)
         return results
-
 
     # ── Selection Decisions / Family Bandit Stats ──
 
@@ -950,7 +1090,6 @@ class _MiscMixin:
         self._maybe_commit()
         return decision_id
 
-
     def get_selection_decisions(
         self,
         context: Optional[str] = None,
@@ -984,14 +1123,10 @@ class _MiscMixin:
             out.append(item)
         return out
 
-
     def get_selection_family_stats(self) -> Dict[str, Dict[str, Any]]:
         """Return family bandit stats keyed by family name."""
-        rows = self.conn.execute(
-            "SELECT * FROM selection_family_stats"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM selection_family_stats").fetchall()
         return {r["family"]: dict(r) for r in rows}
-
 
     def update_selection_family_stats(self, family: str, reward: float) -> None:
         """Update per-family running reward estimate for UCB/uncertainty."""
@@ -1012,7 +1147,6 @@ class _MiscMixin:
             (family_name, float(reward), float(reward), float(reward), now),
         )
         self._maybe_commit()
-
 
     # ── Novelty Calibration ──
 
@@ -1058,7 +1192,6 @@ class _MiscMixin:
         )
         self._maybe_commit()
         return calibration_id
-
 
     def get_latest_novelty_calibration(
         self,

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -9,23 +10,26 @@ from typing import Any, Dict, List, Optional
 from ._shared import LOGGER, sanitize_for_db
 from ..leaderboard_scoring import build_score_kwargs
 
-_LEADERBOARD_MANAGED_COLUMNS = frozenset({
-    "entry_id",
-    "result_id",
-    "timestamp",
-    "model_source",
-    "architecture_desc",
-    "tier",
-    "composite_score",
-    "is_reference",
-    "reference_name",
-    "tags",
-    "notes",
-})
+_LEADERBOARD_MANAGED_COLUMNS = frozenset(
+    {
+        "entry_id",
+        "result_id",
+        "timestamp",
+        "model_source",
+        "architecture_desc",
+        "tier",
+        "composite_score",
+        "is_reference",
+        "reference_name",
+        "tags",
+        "notes",
+    }
+)
 
 
 class _LeaderboardMixin:
     """Leaderboard operations for the Lab Notebook."""
+
     __slots__ = ()
 
     @staticmethod
@@ -46,8 +50,12 @@ class _LeaderboardMixin:
             except (json.JSONDecodeError, TypeError):
                 payload = None
 
-        screening = payload.get("screening_wikitext") if isinstance(payload, dict) else None
-        screening_metrics = screening.get("metrics") if isinstance(screening, dict) else {}
+        screening = (
+            payload.get("screening_wikitext") if isinstance(payload, dict) else None
+        )
+        screening_metrics = (
+            screening.get("metrics") if isinstance(screening, dict) else {}
+        )
 
         wikitext_ppl = self._coerce_float(
             entry.get("wikitext_ppl")
@@ -69,14 +77,22 @@ class _LeaderboardMixin:
 
         if screening:
             entry.setdefault("screening_wikitext_status", screening.get("status"))
-            entry.setdefault("screening_wikitext_metric_version", screening.get("metric_version"))
+            entry.setdefault(
+                "screening_wikitext_metric_version", screening.get("metric_version")
+            )
             entry.setdefault("screening_wikitext_variant", screening.get("variant"))
             elapsed_ms = self._coerce_float(screening.get("elapsed_ms"))
             if elapsed_ms is not None:
                 entry.setdefault("screening_wikitext_elapsed_ms", elapsed_ms)
 
-        trajectory_payload = payload.get("wikitext_trajectory") if isinstance(payload, dict) else None
-        checkpoints = trajectory_payload.get("checkpoints") if isinstance(trajectory_payload, dict) else None
+        trajectory_payload = (
+            payload.get("wikitext_trajectory") if isinstance(payload, dict) else None
+        )
+        checkpoints = (
+            trajectory_payload.get("checkpoints")
+            if isinstance(trajectory_payload, dict)
+            else None
+        )
         if isinstance(checkpoints, dict):
             ordered_steps = []
             for step, values in checkpoints.items():
@@ -105,7 +121,9 @@ class _LeaderboardMixin:
             return None
         return max(tiers, key=lambda t: self._TIER_ORDER.get(t, -1))
 
-    def _leaderboard_update_items(self, kwargs: Dict[str, Any]) -> List[tuple[str, Any]]:
+    def _leaderboard_update_items(
+        self, kwargs: Dict[str, Any]
+    ) -> List[tuple[str, Any]]:
         allowed = self._get_leaderboard_columns() - _LEADERBOARD_MANAGED_COLUMNS
         update_items: List[tuple[str, Any]] = []
         for col, val in kwargs.items():
@@ -113,7 +131,6 @@ class _LeaderboardMixin:
                 continue
             update_items.append((col, int(val) if isinstance(val, bool) else val))
         return update_items
-
 
     def upsert_leaderboard(
         self,
@@ -159,23 +176,38 @@ class _LeaderboardMixin:
         # Merge caller kwargs into d first so derived fields can read them
         for col, val in self._leaderboard_update_items(kwargs):
             d[col] = val
-        if tags is not None: d["tags"] = tags
-        if notes is not None: d["notes"] = notes
+        if tags is not None:
+            d["tags"] = tags
+        if notes is not None:
+            d["notes"] = notes
         # Never downgrade tier — only allow promotion or same-tier updates
-        _TIER_RANK = {"screened_out": 0, "screening": 1, "investigation": 2, "validation": 3, "breakthrough": 4}
+        _TIER_RANK = {
+            "screened_out": 0,
+            "screening": 1,
+            "investigation": 2,
+            "validation": 3,
+            "breakthrough": 4,
+        }
         existing_tier = d.get("tier") or "screening"
         if _TIER_RANK.get(tier, 0) >= _TIER_RANK.get(existing_tier, 0):
             d["tier"] = tier
         else:
             import logging as _log
+
             _log.getLogger(__name__).warning(
-                "Blocked tier downgrade for %s: %s -> %s", resolved_result_id, existing_tier, tier)
+                "Blocked tier downgrade for %s: %s -> %s",
+                resolved_result_id,
+                existing_tier,
+                tier,
+            )
             tier = existing_tier  # preserve existing tier for SQL write below
             d["tier"] = existing_tier
         d["model_source"] = model_source
-        if architecture_desc: d["architecture_desc"] = architecture_desc
+        if architecture_desc:
+            d["architecture_desc"] = architecture_desc
         d["is_reference"] = int(is_reference)
-        if reference_name: d["reference_name"] = reference_name
+        if reference_name:
+            d["reference_name"] = reference_name
 
         # Auto-derive robustness_grade from investigation_robustness.
         # A: >=2/3, B: 1/3-2/3, C: <1/3, None: untested.
@@ -224,9 +256,15 @@ class _LeaderboardMixin:
 
         if existing:
             entry_id = existing["entry_id"]
-            sets = ["timestamp = ?", "model_source = ?", "tier = ?", "composite_score = ?", "is_reference = ?"]
+            sets = [
+                "timestamp = ?",
+                "model_source = ?",
+                "tier = ?",
+                "composite_score = ?",
+                "is_reference = ?",
+            ]
             params = [time.time(), model_source, tier, composite, int(is_reference)]
-            
+
             if architecture_desc:
                 sets.append("architecture_desc = ?")
                 params.append(architecture_desc)
@@ -251,15 +289,37 @@ class _LeaderboardMixin:
             )
         else:
             entry_id = str(uuid.uuid4())[:12]
-            cols = ["entry_id", "result_id", "timestamp", "model_source", "architecture_desc",
-                    "tier", "composite_score", "is_reference", "reference_name", "tags", "notes"]
-            vals = [entry_id, resolved_result_id, time.time(), model_source, architecture_desc,
-                    tier, composite, int(is_reference), reference_name, tags, notes]
+            cols = [
+                "entry_id",
+                "result_id",
+                "timestamp",
+                "model_source",
+                "architecture_desc",
+                "tier",
+                "composite_score",
+                "is_reference",
+                "reference_name",
+                "tags",
+                "notes",
+            ]
+            vals = [
+                entry_id,
+                resolved_result_id,
+                time.time(),
+                model_source,
+                architecture_desc,
+                tier,
+                composite,
+                int(is_reference),
+                reference_name,
+                tags,
+                notes,
+            ]
 
             for col, val in update_items:
                 cols.append(col)
                 vals.append(val)
-            
+
             placeholders = ", ".join(["?"] * len(cols))
             self.conn.execute(
                 f"INSERT INTO leaderboard ({', '.join(cols)}) VALUES ({placeholders})",
@@ -269,20 +329,29 @@ class _LeaderboardMixin:
         self._maybe_commit()
         return entry_id
 
-
-    def get_leaderboard(self, tier: Optional[str] = None,
-                        limit: int = 50,
-                        sort_by: str = "composite_score",
-                        include_family: bool = True,
-                        include_references: bool = True) -> List[Dict]:
+    def get_leaderboard(
+        self,
+        tier: Optional[str] = None,
+        limit: int = 50,
+        sort_by: str = "composite_score",
+        include_family: bool = True,
+        include_references: bool = True,
+    ) -> List[Dict]:
         """Get leaderboard entries, optionally filtered by tier."""
-        valid_sorts = {"composite_score", "screening_loss_ratio",
-                       "investigation_loss_ratio", "validation_loss_ratio",
-                       "screening_novelty", "timestamp",
-                       "robustness_noise_score", "quant_int8_retention",
-                       "robustness_long_ctx_score",
-                       "discovery_loss_ratio", "generalization_gap",
-                       "efficiency_multiple"}
+        valid_sorts = {
+            "composite_score",
+            "screening_loss_ratio",
+            "investigation_loss_ratio",
+            "validation_loss_ratio",
+            "screening_novelty",
+            "timestamp",
+            "robustness_noise_score",
+            "quant_int8_retention",
+            "robustness_long_ctx_score",
+            "discovery_loss_ratio",
+            "generalization_gap",
+            "efficiency_multiple",
+        }
         if sort_by not in valid_sorts:
             sort_by = "composite_score"
 
@@ -368,14 +437,20 @@ class _LeaderboardMixin:
             d = dict(r)
             # Prefer leaderboard-curated phase metrics, but backfill from raw
             # program_results when leaderboard fields are absent.
-            if d.get("discovery_loss_ratio") is None and d.get("_pr_discovery_loss_ratio") is not None:
+            if (
+                d.get("discovery_loss_ratio") is None
+                and d.get("_pr_discovery_loss_ratio") is not None
+            ):
                 d["discovery_loss_ratio"] = d.get("_pr_discovery_loss_ratio")
             # Only backfill validation metrics for entries actually at
             # validation tier — program_results stores val eval data from
             # training but that doesn't mean the entry was promoted.
             tier = str(d.get("tier") or "").strip().lower()
             if tier in ("validation", "breakthrough"):
-                if d.get("validation_loss_ratio") is None and d.get("_pr_validation_loss_ratio") is not None:
+                if (
+                    d.get("validation_loss_ratio") is None
+                    and d.get("_pr_validation_loss_ratio") is not None
+                ):
                     d["validation_loss_ratio"] = d.get("_pr_validation_loss_ratio")
             if include_family:
                 d["architecture_family"] = self._classify_architecture_family(
@@ -390,17 +465,21 @@ class _LeaderboardMixin:
             d["novelty_confidence"] = d.pop("_novelty_confidence", None)
             d["cka_source"] = d.pop("_cka_source", None)
             d["routing_confidence_mean"] = d.pop("_routing_confidence_mean", None)
-            if d.get("efficiency_multiple") is None and d.get("_pr_efficiency_multiple") is not None:
+            if (
+                d.get("efficiency_multiple") is None
+                and d.get("_pr_efficiency_multiple") is not None
+            ):
                 d["efficiency_multiple"] = d.get("_pr_efficiency_multiple")
             d.pop("_pr_discovery_loss_ratio", None)
             d.pop("_pr_validation_loss_ratio", None)
             d.pop("_pr_efficiency_multiple", None)
             self._normalize_benchmark_fields(d)
-            
+
             if d.get("investigation_best_training"):
                 try:
                     d["investigation_best_training_parsed"] = json.loads(
-                        d["investigation_best_training"])
+                        d["investigation_best_training"]
+                    )
                 except (json.JSONDecodeError, TypeError):
                     pass
             if d.get("is_reference"):
@@ -431,7 +510,9 @@ class _LeaderboardMixin:
                 if fp in seen_ref_fps:
                     # Keep best reference for this fingerprint
                     existing_idx = seen_ref_fps[fp]
-                    if (entry.get("composite_score") or 0) > (deduped_refs[existing_idx].get("composite_score") or 0):
+                    if (entry.get("composite_score") or 0) > (
+                        deduped_refs[existing_idx].get("composite_score") or 0
+                    ):
                         deduped_refs[existing_idx] = entry
                     continue
                 seen_ref_fps[fp] = len(deduped_refs)
@@ -472,7 +553,6 @@ class _LeaderboardMixin:
                     merged.append(ref)
         return merged
 
-
     def set_leaderboard_pin(self, entry_id: str, pinned: bool):
         """Pin or unpin a leaderboard entry for dashboard priority."""
         self._submit_write(
@@ -480,9 +560,7 @@ class _LeaderboardMixin:
             (1 if pinned else 0, entry_id),
         )
 
-
-    def promote_to_tier(self, entry_id: str, tier: str,
-                        **kwargs) -> None:
+    def promote_to_tier(self, entry_id: str, tier: str, **kwargs) -> None:
         """Update a leaderboard entry's tier and phase-specific results."""
         sets = ["tier = ?"]
         params: List[Any] = [tier]
@@ -509,37 +587,43 @@ class _LeaderboardMixin:
             structural_counts = {"routing": None}
             if d.get("result_id"):
                 pr = self.conn.execute(
-                    "SELECT novelty_confidence, graph_json FROM program_results WHERE result_id = ?",
+                    "SELECT novelty_confidence, behavioral_novelty, structural_novelty, "
+                    "fp_cka_vs_transformer, final_loss, param_count, n_train_steps, loss_ratio "
+                    "FROM program_results WHERE result_id = ?",
                     (d["result_id"],),
                 ).fetchone()
                 if pr:
-                    nov_conf = pr["novelty_confidence"]
-                    structural_counts = self._graph_structural_counts(
-                        d["result_id"],
-                        graph_json=pr["graph_json"],
-                    )
+                    pr_d = dict(pr)
+            tags = str(d.get("tags") or "")
+            is_wiki_tik = "tiktoken_native" in tags and "wikitext103" in tags
             composite = self.compute_composite_score(
+                wikitext_perplexity=d.get("wikitext_perplexity"),
+                final_loss=pr_d.get("final_loss") if pr else None,
+                is_wikitext_tiktoken=is_wiki_tik,
                 screening_lr=d.get("screening_loss_ratio"),
-                screening_nov=d.get("screening_novelty"),
                 inv_lr=d.get("investigation_loss_ratio"),
-                inv_robust=d.get("investigation_robustness"),
                 val_lr=d.get("validation_loss_ratio"),
                 val_baseline=d.get("validation_baseline_ratio"),
                 val_std=d.get("validation_multi_seed_std"),
-                robustness_score=d.get("validation_robustness_score"),
-                is_unstable=d.get("validation_is_unstable"),
-                novelty_confidence=nov_conf,
-                scaling_param_efficiency=d.get("scaling_param_efficiency"),
+                inv_robust=d.get("investigation_robustness"),
+                loss_ratio=pr_d.get("loss_ratio") if pr else None,
+                screening_nov=d.get("screening_novelty"),
+                novelty_confidence=pr_d.get("novelty_confidence") if pr else None,
+                behavioral_novelty=pr_d.get("behavioral_novelty") if pr else None,
+                structural_novelty=pr_d.get("structural_novelty") if pr else None,
+                cka_reference_quality=(
+                    pr is not None
+                    and pr_d.get("fp_cka_vs_transformer") is not None
+                    and (pr_d.get("fp_cka_vs_transformer") or 0) > 0
+                ),
                 is_reference=bool(d.get("is_reference")),
-                routing_savings=d.get("routing_savings_ratio"),
-                compression_ratio=d.get("compression_ratio"),
-                n_routing_ops=structural_counts.get("routing"),
-                wikitext_score=d.get("wikitext_score"),
-                peak_ppl=d.get("peak_ppl"),
-                ppl_500=d.get("ppl_500"),
-                steps_to_divergence=d.get("steps_to_divergence"),
+                loss_improvement_rate=d.get("loss_improvement_rate"),
+                param_count=pr_d.get("param_count") if pr else None,
+                n_train_steps=pr_d.get("n_train_steps") if pr else None,
                 investigation_passed=d.get("investigation_passed"),
                 validation_passed=d.get("validation_passed"),
+                spectral_norm=d.get("fp_jacobian_spectral_norm"),
+                gpt2_raw_anchor=95.0,
             )
             sets.append("composite_score = ?")
             params.append(composite)
@@ -567,9 +651,10 @@ class _LeaderboardMixin:
             if rid_row and rid_row["result_id"]:
                 self._sync_fingerprint_leaderboard(str(rid_row["result_id"]))
         except Exception as e:
-            LOGGER.debug("Fingerprint leaderboard sync skipped for entry %s: %s", entry_id, e)
+            LOGGER.debug(
+                "Fingerprint leaderboard sync skipped for entry %s: %s", entry_id, e
+            )
         self._maybe_commit()
-
 
     # ── Scaling Summary ──
 

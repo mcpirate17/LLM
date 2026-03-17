@@ -20,11 +20,10 @@ Requirements:
 - aria_scheduler.so must be built (Rust PyO3 module)
 - libaria_native_runtime.so must be built with OpenMP (ARIA_HAS_OPENMP)
 """
+
 from __future__ import annotations
 
-import math
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -103,15 +102,19 @@ def _numpy_sigmoid(x: np.ndarray) -> np.ndarray:
 # Test 1: Large tensors that trigger OpenMP (unary ops)
 # ---------------------------------------------------------------------------
 
+
 class TestOpenMPUnaryLargeTensors:
     """Verify correctness with tensors > 16384 elements (OpenMP threshold)."""
 
-    @pytest.mark.parametrize("dim", [
-        OMP_THRESHOLD + 1,      # Just above threshold
-        OMP_THRESHOLD * 2,      # 32768
-        OMP_THRESHOLD * 4,      # 65536
-        OMP_THRESHOLD * 8,      # 131072
-    ])
+    @pytest.mark.parametrize(
+        "dim",
+        [
+            OMP_THRESHOLD + 1,  # Just above threshold
+            OMP_THRESHOLD * 2,  # 32768
+            OMP_THRESHOLD * 4,  # 65536
+            OMP_THRESHOLD * 8,  # 131072
+        ],
+    )
     def test_relu_large_tensor(self, dim: int):
         """relu on large tensors: negatives zeroed, positives unchanged."""
         graph = _make_relu_graph(dim=dim)
@@ -125,14 +128,19 @@ class TestOpenMPUnaryLargeTensors:
 
         expected = _numpy_relu(x)
         np.testing.assert_allclose(
-            result, expected, atol=1e-6,
+            result,
+            expected,
+            atol=1e-6,
             err_msg=f"relu mismatch at dim={dim} (OpenMP should be active)",
         )
 
-    @pytest.mark.parametrize("dim", [
-        OMP_THRESHOLD + 1,
-        OMP_THRESHOLD * 4,
-    ])
+    @pytest.mark.parametrize(
+        "dim",
+        [
+            OMP_THRESHOLD + 1,
+            OMP_THRESHOLD * 4,
+        ],
+    )
     def test_sigmoid_large_tensor(self, dim: int):
         """sigmoid on large tensors: output in (0, 1)."""
         g = ComputationGraph(model_dim=dim)
@@ -145,20 +153,28 @@ class TestOpenMPUnaryLargeTensors:
         x = rng.randn(dim).astype(np.float32) * 5.0
         x_list = x.tolist()
 
-        result = np.array(aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32)
+        result = np.array(
+            aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32
+        )
 
         expected = _numpy_sigmoid(x)
         np.testing.assert_allclose(
-            result, expected, rtol=1e-5, atol=1e-6,
+            result,
+            expected,
+            rtol=1e-5,
+            atol=1e-6,
             err_msg=f"sigmoid mismatch at dim={dim}",
         )
         # All values must be in [0, 1] (exact 0.0/1.0 possible due to f32 saturation)
         assert np.all(result >= 0.0) and np.all(result <= 1.0)
 
-    @pytest.mark.parametrize("dim", [
-        OMP_THRESHOLD + 1,
-        OMP_THRESHOLD * 4,
-    ])
+    @pytest.mark.parametrize(
+        "dim",
+        [
+            OMP_THRESHOLD + 1,
+            OMP_THRESHOLD * 4,
+        ],
+    )
     def test_tanh_large_tensor(self, dim: int):
         """tanh on large tensors: output in (-1, 1)."""
         g = ComputationGraph(model_dim=dim)
@@ -171,11 +187,16 @@ class TestOpenMPUnaryLargeTensors:
         x = rng.randn(dim).astype(np.float32) * 3.0
         x_list = x.tolist()
 
-        result = np.array(aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32)
+        result = np.array(
+            aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32
+        )
 
         expected = np.tanh(x)
         np.testing.assert_allclose(
-            result, expected, rtol=1e-5, atol=1e-6,
+            result,
+            expected,
+            rtol=1e-5,
+            atol=1e-6,
             err_msg=f"tanh mismatch at dim={dim}",
         )
         # f32 saturation can produce exact -1.0/1.0 for large inputs
@@ -185,6 +206,7 @@ class TestOpenMPUnaryLargeTensors:
 # ---------------------------------------------------------------------------
 # Test 2: Large tensors with multi-op chains (binary + unary)
 # ---------------------------------------------------------------------------
+
 
 class TestOpenMPMultiOpLargeTensors:
     """Multi-op graphs with large tensors triggering OpenMP at each step."""
@@ -199,11 +221,16 @@ class TestOpenMPMultiOpLargeTensors:
         x = rng.randn(dim).astype(np.float32)
         x_list = x.tolist()
 
-        result = np.array(aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32)
+        result = np.array(
+            aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32
+        )
 
         expected = np.tanh(_numpy_sigmoid(_numpy_relu(x)))
         np.testing.assert_allclose(
-            result, expected, rtol=1e-5, atol=1e-6,
+            result,
+            expected,
+            rtol=1e-5,
+            atol=1e-6,
             err_msg="chain (relu->sigmoid->tanh) mismatch on large tensor",
         )
 
@@ -217,12 +244,17 @@ class TestOpenMPMultiOpLargeTensors:
         x = rng.randn(dim).astype(np.float32)
         x_list = x.tolist()
 
-        result = np.array(aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32)
+        result = np.array(
+            aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32
+        )
 
         relu_x = _numpy_relu(x)
         expected = _numpy_sigmoid(x + relu_x)
         np.testing.assert_allclose(
-            result, expected, rtol=1e-5, atol=1e-6,
+            result,
+            expected,
+            rtol=1e-5,
+            atol=1e-6,
             err_msg="residual graph mismatch on large tensor",
         )
 
@@ -236,11 +268,16 @@ class TestOpenMPMultiOpLargeTensors:
         x = rng.randn(dim).astype(np.float32) * 3.0
         x_list = x.tolist()
 
-        result = np.array(aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32)
+        result = np.array(
+            aria_scheduler.execute_graph(ir_json, x_list), dtype=np.float32
+        )
 
         expected = _numpy_relu(_numpy_sigmoid(x) * np.tanh(x))
         np.testing.assert_allclose(
-            result, expected, rtol=1e-5, atol=1e-6,
+            result,
+            expected,
+            rtol=1e-5,
+            atol=1e-6,
             err_msg="diamond graph mismatch on large tensor",
         )
 
@@ -248,6 +285,7 @@ class TestOpenMPMultiOpLargeTensors:
 # ---------------------------------------------------------------------------
 # Test 3: Arena stats with large tensors
 # ---------------------------------------------------------------------------
+
 
 class TestArenaStatsLargeTensors:
     """Verify arena allocation bookkeeping is correct for large tensors."""
@@ -293,6 +331,7 @@ class TestArenaStatsLargeTensors:
 # Test 4: Concurrent graph executions (arena-per-execution isolation)
 # ---------------------------------------------------------------------------
 
+
 class TestConcurrentExecution:
     """Verify that concurrent graph executions don't corrupt each other.
 
@@ -323,14 +362,18 @@ class TestConcurrentExecution:
 
                 expected = _numpy_relu(x)
                 np.testing.assert_allclose(
-                    output, expected, atol=1e-6,
+                    output,
+                    expected,
+                    atol=1e-6,
                     err_msg=f"thread {thread_id} relu mismatch",
                 )
                 results[thread_id] = True
             except Exception as e:
                 errors[thread_id] = e
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+        threads = [
+            threading.Thread(target=worker, args=(i,)) for i in range(num_threads)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -378,7 +421,10 @@ class TestConcurrentExecution:
                 )
                 expected = expected_fns[name](x)
                 np.testing.assert_allclose(
-                    output, expected, rtol=1e-5, atol=1e-6,
+                    output,
+                    expected,
+                    rtol=1e-5,
+                    atol=1e-6,
                     err_msg=f"{name} graph mismatch in concurrent execution",
                 )
                 with lock:
@@ -398,7 +444,9 @@ class TestConcurrentExecution:
 
         for name in [n for _, n in graph_fns]:
             if name in errors:
-                raise AssertionError(f"Graph '{name}' failed: {errors[name]}") from errors[name]
+                raise AssertionError(
+                    f"Graph '{name}' failed: {errors[name]}"
+                ) from errors[name]
             assert results.get(name) is True, f"Graph '{name}' did not complete"
 
     def test_concurrent_repeated_execution(self):
@@ -425,7 +473,10 @@ class TestConcurrentExecution:
                         dtype=np.float32,
                     )
                     np.testing.assert_allclose(
-                        output, expected, rtol=1e-5, atol=1e-6,
+                        output,
+                        expected,
+                        rtol=1e-5,
+                        atol=1e-6,
                         err_msg=(
                             f"thread {thread_id}, iteration {iteration}: "
                             f"non-deterministic result"
@@ -434,7 +485,9 @@ class TestConcurrentExecution:
             except Exception as e:
                 errors[thread_id] = e
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+        threads = [
+            threading.Thread(target=worker, args=(i,)) for i in range(num_threads)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -450,6 +503,7 @@ class TestConcurrentExecution:
 # ---------------------------------------------------------------------------
 # Test 5: ThreadPoolExecutor stress test
 # ---------------------------------------------------------------------------
+
 
 class TestThreadPoolStress:
     """High-concurrency stress test using ThreadPoolExecutor."""
@@ -482,6 +536,7 @@ class TestThreadPoolStress:
 # ---------------------------------------------------------------------------
 # Test 6: Bit-exact determinism across runs
 # ---------------------------------------------------------------------------
+
 
 class TestDeterminism:
     """Verify that repeated executions with the same input produce identical output."""
@@ -518,6 +573,7 @@ class TestDeterminism:
 # ---------------------------------------------------------------------------
 # Test 7: Below-threshold (no OpenMP) vs above-threshold correctness match
 # ---------------------------------------------------------------------------
+
 
 class TestThresholdBoundary:
     """Results must be identical whether OpenMP kicks in or not."""
@@ -557,6 +613,9 @@ class TestThresholdBoundary:
 
         # The first 1024 elements of the large result should match the small result
         np.testing.assert_allclose(
-            result_large[:small_dim], result_small, rtol=1e-6, atol=1e-7,
+            result_large[:small_dim],
+            result_small,
+            rtol=1e-6,
+            atol=1e-7,
             err_msg=f"{op_name}: below-threshold and above-threshold results differ",
         )

@@ -1,54 +1,37 @@
 """Decision packet, fingerprint, and strategy briefing route registration."""
+
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
 import os
 import traceback
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
-from flask import jsonify, request, Response, send_from_directory
+from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
 from ..notebook import LabNotebook
 from ..runner import RunConfig
 from ..persona import get_aria
-from ..code_agent import _spawn_code_agent_task
-from ..evidence import build_evidence_pack
 from ._helpers import (
-    get_runner, with_native_runner_progress, get_run_trigger_snapshot,
-    deduplicate_insights, normalize_result_ids, record_run_trigger,
-    resolve_runner_status,
+    get_runner,
+    with_native_runner_progress,
+    get_run_trigger_snapshot,
+    normalize_result_ids,
 )
 from ._strategy_preflight import (
     build_start_mode_eligibility,
-    normalize_briefing_mode, briefing_action_from_mode,
-    briefing_action_label, augment_sparse_action_config,
+    normalize_briefing_mode,
+    briefing_action_from_mode,
+    briefing_action_label,
+    augment_sparse_action_config,
 )
 from ._strategy_recommendations import (
-    annotate_qkv_usage, compute_cross_run_stability,
-    compute_breakthrough_production_readiness, compute_recommendation,
-    compute_compression_opportunities, compute_sparse_evidence,
+    compute_cross_run_stability,
+    compute_recommendation,
+    compute_compression_opportunities,
+    compute_sparse_evidence,
     sparse_coverage_summary,
-)
-from ._strategy_report import (
-    parse_report_date, report_program_matches_theme,
-    report_experiment_matches_trend, build_filtered_report_summary,
-    build_report_snapshot_key, build_report_action_eligibility,
-    normalize_entries, parse_bool_query,
-)
-from ._strategy_diagnostics import diagnose_research_issues
-from ._chat import (
-    chat_requests_detailed_response, chat_requests_summary_response,
-    chat_requests_brief_response, chat_requests_self_fix_now,
-    chat_requests_codebase_fix,
-    record_chat_guardrail_event, chat_guardrail_snapshot,
-    code_agent_task_snapshot, summarize_agent_task,
-    run_local_chat_agent, chat_workspace_root, query_file_index,
-    parse_action_contract_response, truncate_summary, estimate_tokens,
-    local_ollama_helper_status, get_local_ollama_settings,
 )
 from .deps import ApiRouteContext
 
@@ -57,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 def register_strategy_bp_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
+
     @app.route("/api/decision-packet/<result_id>")
     def api_decision_packet(result_id):
         """One-click evidence bundle for promotion decisions."""
@@ -99,7 +83,8 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     ).fetchone()
                     if hyp_row:
                         hypothesis_chain = nb.get_hypothesis_chain(
-                            hyp_row["hypothesis_id"] if isinstance(hyp_row, dict)
+                            hyp_row["hypothesis_id"]
+                            if isinstance(hyp_row, dict)
                             else hyp_row[0]
                         )
                 except Exception:
@@ -142,8 +127,12 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 if val_lr is not None:
                     outcomes["validation"] = {
                         "loss_ratio": val_lr,
-                        "baseline_ratio": leaderboard_entry.get("validation_baseline_ratio"),
-                        "multi_seed_std": leaderboard_entry.get("validation_multi_seed_std"),
+                        "baseline_ratio": leaderboard_entry.get(
+                            "validation_baseline_ratio"
+                        ),
+                        "multi_seed_std": leaderboard_entry.get(
+                            "validation_multi_seed_std"
+                        ),
                         "passed": bool(leaderboard_entry.get("validation_passed")),
                     }
 
@@ -171,6 +160,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
 
             # Evidence flags
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
             packet_status = analytics.reproducibility_packet_status(
                 leaderboard_entry if leaderboard_entry else program
@@ -183,29 +173,32 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 "repro_packet_ready": packet_status.get("status") == "ready",
             }
 
-            return jsonify({
-                "result_id": result_id,
-                "fingerprint": fingerprint,
-                "experiment_id": experiment_id,
-                "hypothesis_chain": hypothesis_chain,
-                "outcomes": outcomes,
-                "baseline_comparison": baseline_comparison,
-                "failure_context": failure_context,
-                "cross_run_stability": cross_run,
-                "recommendation": recommendation,
-                "evidence_flags": evidence_flags,
-                "compression_metrics": analytics.canonical_compression_metrics(
-                    leaderboard_entry if leaderboard_entry else program
-                ),
-                "reproducibility_packet": packet_status,
-            })
+            return jsonify(
+                {
+                    "result_id": result_id,
+                    "fingerprint": fingerprint,
+                    "experiment_id": experiment_id,
+                    "hypothesis_chain": hypothesis_chain,
+                    "outcomes": outcomes,
+                    "baseline_comparison": baseline_comparison,
+                    "failure_context": failure_context,
+                    "cross_run_stability": cross_run,
+                    "recommendation": recommendation,
+                    "evidence_flags": evidence_flags,
+                    "compression_metrics": analytics.canonical_compression_metrics(
+                        leaderboard_entry if leaderboard_entry else program
+                    ),
+                    "reproducibility_packet": packet_status,
+                }
+            )
         except Exception as e:
-            logger.error(f"Error in /api/decision-packet/{result_id}: {e}\n"
-                         f"{traceback.format_exc()}")
+            logger.error(
+                f"Error in /api/decision-packet/{result_id}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/reproducibility-manifest/<result_id>")
     def api_reproducibility_manifest(result_id):
@@ -213,6 +206,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
         nb = LabNotebook(notebook_path)
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
             program = nb.get_program_detail(result_id)
             if program is None:
@@ -235,7 +229,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 pass
 
             # Grammar weights snapshot from experiment config
-            grammar_weights = config.get("applied_grammar_weights") or config.get("grammar_weights")
+            grammar_weights = config.get("applied_grammar_weights") or config.get(
+                "grammar_weights"
+            )
             grammar_config = config.get("grammar_config", {})
 
             manifest = {
@@ -253,8 +249,10 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "data_mode": config.get("data_mode"),
                     "dataset": config.get("dataset"),
                     "seq_len": training.get("seq_len") or config.get("seq_len"),
-                    "batch_size": training.get("batch_size") or config.get("batch_size"),
-                    "vocab_size": training.get("vocab_size") or config.get("vocab_size"),
+                    "batch_size": training.get("batch_size")
+                    or config.get("batch_size"),
+                    "vocab_size": training.get("vocab_size")
+                    or config.get("vocab_size"),
                 },
                 "grammar": {
                     "max_ops": grammar_config.get("max_ops"),
@@ -262,7 +260,8 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "weights_snapshot": grammar_weights,
                 },
                 "training": {
-                    "learning_rate": training.get("learning_rate") or training.get("lr"),
+                    "learning_rate": training.get("learning_rate")
+                    or training.get("lr"),
                     "steps": training.get("steps") or training.get("n_steps"),
                     "warmup_steps": training.get("warmup_steps"),
                 },
@@ -279,7 +278,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "validation_loss_ratio": program.get("validation_loss_ratio"),
                     "novelty_score": program.get("novelty_score"),
                     "baseline_loss_ratio": program.get("baseline_loss_ratio"),
-                    "validation_baseline_ratio": program.get("validation_baseline_ratio"),
+                    "validation_baseline_ratio": program.get(
+                        "validation_baseline_ratio"
+                    ),
                 },
                 "canonical_metrics": {
                     "compression": analytics.canonical_compression_metrics(program),
@@ -288,12 +289,13 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
             }
             return jsonify(manifest)
         except Exception as e:
-            logger.error(f"Error in /api/reproducibility-manifest/{result_id}: {e}\n"
-                         f"{traceback.format_exc()}")
+            logger.error(
+                f"Error in /api/reproducibility-manifest/{result_id}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/reproducibility-manifest/<result_id>/workflow", methods=["GET"])
     def api_workflow_export(result_id: str):
@@ -306,16 +308,16 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
             ).fetchone()
             if not row or not row["graph_json"]:
                 return jsonify({"error": "Program not found or has no graph"}), 404
-            
+
             from ..synthesis.serializer import graph_from_json
             from ..synthesis.workflow_converter import graph_to_workflow
-            
+
             graph = graph_from_json(row["graph_json"], model_dim=row["model_dim"])
             workflow = graph_to_workflow(
-                graph, 
+                graph,
                 workflow_id=f"aria_{result_id[:8]}",
                 name=f"Aria Discovery {result_id[:8]}",
-                metadata={"result_id": result_id}
+                metadata={"result_id": result_id},
             )
             return jsonify(workflow)
         except Exception as e:
@@ -324,25 +326,26 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/references")
     def api_references():
         """Get pinned reference architectures."""
         nb = LabNotebook(notebook_path)
         try:
             from ..naming import annotate_display_names
+
             refs = nb.get_references()
             annotate_display_names(refs)
-            return jsonify({
-                "entries": _json_safe(refs),
-                "total": len(refs),
-            })
+            return jsonify(
+                {
+                    "entries": _json_safe(refs),
+                    "total": len(refs),
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/references: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/fingerprint/resolve")
     def api_fingerprint_resolve():
@@ -362,12 +365,14 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 (value,),
             ).fetchone()
             if direct:
-                return jsonify({
-                    "result_id": direct["result_id"],
-                    "graph_fingerprint": direct.get("graph_fingerprint"),
-                    "resolved_from": "result_id",
-                    "candidates": [],
-                })
+                return jsonify(
+                    {
+                        "result_id": direct["result_id"],
+                        "graph_fingerprint": direct.get("graph_fingerprint"),
+                        "resolved_from": "result_id",
+                        "candidates": [],
+                    }
+                )
             rows = nb.conn.execute(
                 """
                 SELECT
@@ -400,34 +405,39 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 chosen_row = dict(rows[0])
                 candidates = []
                 for row in rows:
-                    candidates.append({
-                        "result_id": row["result_id"],
-                        "graph_fingerprint": row["graph_fingerprint"],
-                        "experiment_id": row["experiment_id"],
-                        "stage1_passed": bool(row["stage1_passed"]),
-                        "loss_ratio": row["loss_ratio"],
-                        "timestamp": row["timestamp"],
-                        "tier": row["tier"],
-                        "composite_score": row["composite_score"],
-                        "screening_loss_ratio": row["screening_loss_ratio"],
-                        "investigation_loss_ratio": row["investigation_loss_ratio"],
-                        "validation_loss_ratio": row["validation_loss_ratio"],
-                    })
-                return jsonify({
-                    "result_id": chosen_row.get("result_id"),
-                    "graph_fingerprint": chosen_row.get("graph_fingerprint"),
-                    "resolved_from": "graph_fingerprint",
-                    "candidate_count": len(candidates),
-                    "selection_policy": "leaderboard_composite_then_loss",
-                    "candidates": candidates,
-                })
-            return jsonify({"error": "No matching fingerprint or result_id found."}), 404
+                    candidates.append(
+                        {
+                            "result_id": row["result_id"],
+                            "graph_fingerprint": row["graph_fingerprint"],
+                            "experiment_id": row["experiment_id"],
+                            "stage1_passed": bool(row["stage1_passed"]),
+                            "loss_ratio": row["loss_ratio"],
+                            "timestamp": row["timestamp"],
+                            "tier": row["tier"],
+                            "composite_score": row["composite_score"],
+                            "screening_loss_ratio": row["screening_loss_ratio"],
+                            "investigation_loss_ratio": row["investigation_loss_ratio"],
+                            "validation_loss_ratio": row["validation_loss_ratio"],
+                        }
+                    )
+                return jsonify(
+                    {
+                        "result_id": chosen_row.get("result_id"),
+                        "graph_fingerprint": chosen_row.get("graph_fingerprint"),
+                        "resolved_from": "graph_fingerprint",
+                        "candidate_count": len(candidates),
+                        "selection_policy": "leaderboard_composite_then_loss",
+                        "candidates": candidates,
+                    }
+                )
+            return jsonify(
+                {"error": "No matching fingerprint or result_id found."}
+            ), 404
         except Exception as e:
             logger.error(f"Error in /api/fingerprint/resolve: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/fingerprint/history")
     def api_fingerprint_history():
@@ -494,44 +504,47 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 (fingerprint_like,),
             ).fetchone()
             best_by_composite = dict(best_row) if best_row else None
-            return jsonify({
-                "query": value,
-                "resolved_graph_fingerprint": history[0]["graph_fingerprint"] if history else None,
-                "total": len(history),
-                "best_leaderboard_run": best_by_composite,
-                "runs": history,
-            })
+            return jsonify(
+                {
+                    "query": value,
+                    "resolved_graph_fingerprint": history[0]["graph_fingerprint"]
+                    if history
+                    else None,
+                    "total": len(history),
+                    "best_leaderboard_run": best_by_composite,
+                    "runs": history,
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/fingerprint/history: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
 
-
     @app.route("/api/worker/evaluate", methods=["POST"])
     def api_worker_evaluate():
         """Z12: Distributed worker endpoint for evaluating a computation graph."""
         runner = get_runner(notebook_path)
         body = request.get_json(silent=True) or {}
-        
+
         graph_json = body.get("graph_json")
         config_dict = body.get("config")
         seed = body.get("seed", 42)
-        
+
         if not graph_json or not config_dict:
             return jsonify({"error": "Missing graph_json or config"}), 400
-            
+
         try:
             from ..synthesis.graph import json_to_graph
             from ..synthesis.compiler import compile_model
             import torch
-            
+
             graph = json_to_graph(graph_json)
             config = RunConfig.from_dict(config_dict)
-            
+
             dev_str = config.device if torch.cuda.is_available() else "cpu"
             dev = torch.device(dev_str)
-            
+
             # Compile model locally on worker
             layer_graphs = [graph] * config.n_layers
             model = compile_model(
@@ -539,21 +552,22 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 vocab_size=config.vocab_size,
                 max_seq_len=config.max_seq_len,
             ).to(dev)
-            
+
             # Use the runner's async-friendly training method
             result = runner._micro_train_async(model, config, seed, dev)
-            
-            return jsonify({
-                "status": "ok",
-                "result": result,
-                "device": dev_str,
-                "worker_id": os.environ.get("ARIA_WORKER_ID", "anonymous")
-            })
-            
+
+            return jsonify(
+                {
+                    "status": "ok",
+                    "result": result,
+                    "device": dev_str,
+                    "worker_id": os.environ.get("ARIA_WORKER_ID", "anonymous"),
+                }
+            )
+
         except Exception as e:
             logger.error("Worker evaluation failed: %s", e)
             return jsonify({"error": str(e), "passed": False}), 500
-
 
     @app.route("/api/progress")
     def api_progress():
@@ -563,14 +577,15 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
         trigger = get_run_trigger_snapshot(progress_payload.get("experiment_id"))
         progress_payload["run_trigger_source"] = trigger.get("source")
         progress_payload["run_trigger"] = trigger
-        return jsonify({
-            "is_running": runner.is_running,
-            "progress": progress_payload,
-            "native_runner": progress_payload.get("native_runner"),
-            "run_trigger_source": trigger.get("source"),
-            "run_trigger": trigger,
-        })
-
+        return jsonify(
+            {
+                "is_running": runner.is_running,
+                "progress": progress_payload,
+                "native_runner": progress_payload.get("native_runner"),
+                "run_trigger_source": trigger.get("source"),
+                "run_trigger": trigger,
+            }
+        )
 
     @app.route("/api/strategy/briefing")
     def api_strategy_briefing():
@@ -582,13 +597,18 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
         nb = LabNotebook(notebook_path)
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
             summary = nb.get_dashboard_summary()
             recent = nb.get_recent_experiments(10)
             trajectory = analytics.learning_trajectory() or {}
             compression_coverage = analytics.compression_coverage() or {}
-            compression_opportunities = compute_compression_opportunities(compression_coverage)
-            primitive_effectiveness = analytics.compression_primitive_effectiveness() or {}
+            compression_opportunities = compute_compression_opportunities(
+                compression_coverage
+            )
+            primitive_effectiveness = (
+                analytics.compression_primitive_effectiveness() or {}
+            )
             sparse_evidence = compute_sparse_evidence(nb)
             sparse_coverage_data = analytics.sparse_coverage() or {}
             sparse_coverage_overview = sparse_coverage_summary(sparse_coverage_data)
@@ -627,9 +647,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     recent_s1_rates.append(passed / gen)
 
             avg_recent_s1 = (
-                sum(recent_s1_rates) / len(recent_s1_rates)
-                if recent_s1_rates
-                else None
+                sum(recent_s1_rates) / len(recent_s1_rates) if recent_s1_rates else None
             )
 
             # --- Learning trend ---
@@ -647,7 +665,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 "validation": validation,
                 "breakthrough": breakthrough,
             }
-            compression_summary = (compression_opportunities.get("summary") or {})
+            compression_summary = compression_opportunities.get("summary") or {}
             data_block = {
                 "total_experiments": total_exp,
                 "total_programs": total_progs,
@@ -703,7 +721,11 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 fallback_reason = "llm_not_configured"
             else:
                 try:
-                    llm_reachable = bool(llm.is_available()) if hasattr(llm, "is_available") else True
+                    llm_reachable = (
+                        bool(llm.is_available())
+                        if hasattr(llm, "is_available")
+                        else True
+                    )
                 except Exception:
                     llm_reachable = False
                 if not llm_reachable:
@@ -735,7 +757,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                         "FROM leaderboard WHERE COALESCE(is_reference, 0) = 0 "
                         "ORDER BY composite_score DESC LIMIT 3"
                     ).fetchall()
-                    top_progs = [dict(r) for r in top_programs] if top_programs else None
+                    top_progs = (
+                        [dict(r) for r in top_programs] if top_programs else None
+                    )
                 except Exception:
                     top_progs = None
 
@@ -746,23 +770,39 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                         "FROM leaderboard WHERE COALESCE(is_reference, 0) = 1 "
                         "ORDER BY composite_score DESC"
                     ).fetchall()
-                    best_ref_score = max((r["composite_score"] for r in ref_rows), default=None)
+                    best_ref_score = max(
+                        (r["composite_score"] for r in ref_rows), default=None
+                    )
                     if best_ref_score and top_progs:
                         best_synth_score = nb.conn.execute(
                             "SELECT composite_score FROM leaderboard "
                             "WHERE COALESCE(is_reference, 0) = 0 "
                             "ORDER BY composite_score DESC LIMIT 1"
                         ).fetchone()
-                        if best_synth_score and best_synth_score["composite_score"] > best_ref_score:
+                        if (
+                            best_synth_score
+                            and best_synth_score["composite_score"] > best_ref_score
+                        ):
                             ref_comparison = {
                                 "beats_all_references": True,
-                                "best_synthesized_score": float(best_synth_score["composite_score"]),
+                                "best_synthesized_score": float(
+                                    best_synth_score["composite_score"]
+                                ),
                                 "best_reference_score": float(best_ref_score),
                                 "margin_pct": round(
-                                    100.0 * (best_synth_score["composite_score"] - best_ref_score) / best_ref_score, 1
+                                    100.0
+                                    * (
+                                        best_synth_score["composite_score"]
+                                        - best_ref_score
+                                    )
+                                    / best_ref_score,
+                                    1,
                                 ),
                                 "references": [
-                                    {"name": r["reference_name"], "score": float(r["composite_score"])}
+                                    {
+                                        "name": r["reference_name"],
+                                        "score": float(r["composite_score"]),
+                                    }
                                     for r in ref_rows
                                 ],
                             }
@@ -771,7 +811,10 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                                 "beats_all_references": False,
                                 "best_reference_score": float(best_ref_score),
                                 "references": [
-                                    {"name": r["reference_name"], "score": float(r["composite_score"])}
+                                    {
+                                        "name": r["reference_name"],
+                                        "score": float(r["composite_score"]),
+                                    }
                                     for r in ref_rows
                                 ],
                             }
@@ -823,19 +866,32 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     if hypothesis:
                         suggested_config["hypothesis"] = hypothesis
                     # Modes that require result_ids — resolve them automatically
-                    if normalized_mode in ("investigation", "validation") and not suggested_config.get("result_ids"):
-                        _tier = "screening" if normalized_mode == "investigation" else "investigation"
+                    if normalized_mode in (
+                        "investigation",
+                        "validation",
+                    ) and not suggested_config.get("result_ids"):
+                        _tier = (
+                            "screening"
+                            if normalized_mode == "investigation"
+                            else "investigation"
+                        )
                         _TIER_SQL = {
                             "screening": "SELECT result_id FROM leaderboard WHERE tier = ? AND screening_passed = 1 ORDER BY screening_loss_ratio ASC LIMIT 20",
                             "investigation": "SELECT result_id FROM leaderboard WHERE tier = ? AND investigation_passed = 1 ORDER BY investigation_loss_ratio ASC LIMIT 20",
                         }
-                        _tier_rows = nb.conn.execute(_TIER_SQL[_tier], (_tier,)).fetchall()
+                        _tier_rows = nb.conn.execute(
+                            _TIER_SQL[_tier], (_tier,)
+                        ).fetchall()
                         _rids = [r["result_id"] for r in _tier_rows if r["result_id"]]
                         suggested_config["result_ids"] = _rids
 
                     if normalized_mode in ("investigation", "validation"):
-                        _requested = normalize_result_ids(suggested_config.get("result_ids", []))
-                        _eligibility = build_start_mode_eligibility(nb, normalized_mode, _requested)
+                        _requested = normalize_result_ids(
+                            suggested_config.get("result_ids", [])
+                        )
+                        _eligibility = build_start_mode_eligibility(
+                            nb, normalized_mode, _requested
+                        )
                         _eligible = _eligibility.get("eligible_result_ids") or []
                         if _eligible:
                             suggested_config["result_ids"] = _eligible
@@ -856,20 +912,23 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                         normalized_mode,
                         sparse_coverage_data,
                     )
-                    return jsonify({
-                        "briefing": ai_briefing["briefing_text"],
-                        "action": action_key or normalized_mode or "continuous",
-                        "action_label": briefing_action_label(
-                            normalized_mode, hypothesis),
-                        "action_rationale": suggested.get("reasoning", ""),
-                        "ai_powered": True,
-                        "confidence": ai_briefing.get("confidence", 0.5),
-                        "suggested_config": suggested_config or None,
-                        "evidence": recommendation_evidence,
-                        "data": data_block,
-                        "compression_opportunities": compression_opportunities,
-                        "ref_comparison": ref_comparison,
-                    })
+                    return jsonify(
+                        {
+                            "briefing": ai_briefing["briefing_text"],
+                            "action": action_key or normalized_mode or "continuous",
+                            "action_label": briefing_action_label(
+                                normalized_mode, hypothesis
+                            ),
+                            "action_rationale": suggested.get("reasoning", ""),
+                            "ai_powered": True,
+                            "confidence": ai_briefing.get("confidence", 0.5),
+                            "suggested_config": suggested_config or None,
+                            "evidence": recommendation_evidence,
+                            "data": data_block,
+                            "compression_opportunities": compression_opportunities,
+                            "ref_comparison": ref_comparison,
+                        }
+                    )
                 if fallback_reason is None:
                     fallback_reason = "llm_empty_response"
             except Exception as e:
@@ -924,12 +983,14 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     f"{breakthrough} breakthrough{'s' if breakthrough != 1 else ''}"
                 )
             if pipeline_parts:
-                sentences.append(
-                    f"Candidate pipeline: {', '.join(pipeline_parts)}."
-                )
+                sentences.append(f"Candidate pipeline: {', '.join(pipeline_parts)}.")
 
-            compressed_share = float(compression_summary.get("compressed_test_share") or 0.0)
-            compressed_survival = float(compression_summary.get("compressed_survival_rate") or 0.0)
+            compressed_share = float(
+                compression_summary.get("compressed_test_share") or 0.0
+            )
+            compressed_survival = float(
+                compression_summary.get("compressed_survival_rate") or 0.0
+            )
             if compression_summary:
                 sentences.append(
                     "Compression coverage: "
@@ -941,9 +1002,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
             if sparse_n > 0:
                 sparse_density = float(sparse_evidence.get("avg_density_mean") or 0.0)
                 sparse_nm = sparse_evidence.get("avg_nm_compliance")
-                sparse_fragment = (
-                    f"Sparse telemetry: {sparse_n} runs with mean density {sparse_density * 100:.1f}%"
-                )
+                sparse_fragment = f"Sparse telemetry: {sparse_n} runs with mean density {sparse_density * 100:.1f}%"
                 if sparse_nm is not None:
                     sparse_fragment += f", N:M compliance {float(sparse_nm) * 100:.1f}%"
                 sparse_fragment += "."
@@ -956,10 +1015,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 last_gen = last.get("n_programs_generated") or 0
                 last_loss = last.get("best_loss_ratio")
                 last_id = last.get("experiment_id", "")[:8]
-                parts = [
-                    f"Last experiment ({last_id}): "
-                    f"{last_s1}/{last_gen} passed S1"
-                ]
+                parts = [f"Last experiment ({last_id}): {last_s1}/{last_gen} passed S1"]
                 if last_loss is not None:
                     parts.append(f"best loss {last_loss:.4f}")
                 aria_sum = last.get("aria_summary")
@@ -976,11 +1032,11 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "CAST(s1_passes AS REAL) / CAST(total_uses AS REAL) DESC LIMIT 3"
                 ).fetchall()
                 if op_rows:
-                    top_ops = [f"{r['op_name']} ({r['s1_passes']}/{r['total_uses']})"
-                               for r in op_rows]
-                    sentences.append(
-                        f"Top-performing operators: {', '.join(top_ops)}."
-                    )
+                    top_ops = [
+                        f"{r['op_name']} ({r['s1_passes']}/{r['total_uses']})"
+                        for r in op_rows
+                    ]
+                    sentences.append(f"Top-performing operators: {', '.join(top_ops)}.")
 
                 # Failure mode analysis
                 failure_rows = nb.conn.execute(
@@ -989,8 +1045,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "GROUP BY stage_at_death ORDER BY cnt DESC LIMIT 2"
                 ).fetchall()
                 if failure_rows:
-                    failure_parts = [f"{r['stage_at_death']} ({r['cnt']})"
-                                     for r in failure_rows]
+                    failure_parts = [
+                        f"{r['stage_at_death']} ({r['cnt']})" for r in failure_rows
+                    ]
                     sentences.append(
                         f"Dominant failure stages: {', '.join(failure_parts)}."
                     )
@@ -1000,7 +1057,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "SELECT COUNT(DISTINCT SUBSTR(graph_fingerprint, 1, 8)) "
                     "FROM leaderboard"
                 ).fetchone()[0]
-                total_leaderboard = screening + investigation + validation + breakthrough
+                total_leaderboard = (
+                    screening + investigation + validation + breakthrough
+                )
                 if unique_fps is not None and total_leaderboard > 0:
                     diversity_ratio = unique_fps / total_leaderboard
                     if diversity_ratio < 0.5:
@@ -1052,9 +1111,15 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "Run a compactness-focused synthesis batch to improve model efficiency coverage."
                 )
             elif sparse_coverage_overview.get("below_target") and total_exp >= 3:
-                sparse_share = float(sparse_coverage_overview.get("sparse_share") or 0.0)
-                sparse_survival = float(sparse_coverage_overview.get("sparse_survival_rate") or 0.0)
-                target_share = float(sparse_coverage_overview.get("target_share") or 0.15)
+                sparse_share = float(
+                    sparse_coverage_overview.get("sparse_share") or 0.0
+                )
+                sparse_survival = float(
+                    sparse_coverage_overview.get("sparse_survival_rate") or 0.0
+                )
+                target_share = float(
+                    sparse_coverage_overview.get("target_share") or 0.15
+                )
                 action = "novelty_search"
                 action_label = "Run Sparse-Focused Novelty Search"
                 action_rationale = (
@@ -1081,7 +1146,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "AND COALESCE(is_reference, 0) = 0 "
                     "ORDER BY composite_score DESC LIMIT 20"
                 ).fetchall()
-                screening_candidate_ids = [r["result_id"] for r in screening_rows if r["result_id"]]
+                screening_candidate_ids = [
+                    r["result_id"] for r in screening_rows if r["result_id"]
+                ]
                 screening_result_ids = []
                 if screening_candidate_ids:
                     screening_eligibility = build_start_mode_eligibility(
@@ -1089,7 +1156,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                         "investigation",
                         screening_candidate_ids,
                     )
-                    screening_result_ids = screening_eligibility.get("eligible_result_ids") or []
+                    screening_result_ids = (
+                        screening_eligibility.get("eligible_result_ids") or []
+                    )
                 if not screening_result_ids:
                     # No actionable screening survivors — fall through to default
                     action = "continuous"
@@ -1128,8 +1197,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "exploring the architecture space."
                 )
             elif trend == "declining" or (
-                len(recent_s1_rates) >= 3
-                and all(r == 0 for r in recent_s1_rates[:3])
+                len(recent_s1_rates) >= 3 and all(r == 0 for r in recent_s1_rates[:3])
             ):
                 action = "novelty_search"
                 action_label = "Try Evolution / Novelty Search"
@@ -1168,7 +1236,9 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                     "residual_prob": 0.85,
                     "n_programs": 80,
                 }
-            elif action == "novelty_search" and sparse_coverage_overview.get("below_target"):
+            elif action == "novelty_search" and sparse_coverage_overview.get(
+                "below_target"
+            ):
                 det_config = {
                     "mode": "novelty",
                     "model_source": "mixed",
@@ -1189,34 +1259,38 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 }
             else:
                 det_config = (
-                    {"mode": det_mode, "model_source": "mixed"}
-                    if det_mode
-                    else None
+                    {"mode": det_mode, "model_source": "mixed"} if det_mode else None
                 )
 
-            det_config = augment_sparse_action_config(
-                det_config,
-                det_config.get("mode") if isinstance(det_config, dict) else det_mode,
-                sparse_coverage_data,
-            ) if isinstance(det_config, dict) else det_config
+            det_config = (
+                augment_sparse_action_config(
+                    det_config,
+                    det_config.get("mode")
+                    if isinstance(det_config, dict)
+                    else det_mode,
+                    sparse_coverage_data,
+                )
+                if isinstance(det_config, dict)
+                else det_config
+            )
 
-            return jsonify({
-                "briefing": briefing,
-                "action": action,
-                "action_label": action_label,
-                "action_rationale": action_rationale,
-                "ai_powered": False,
-                "fallback_reason": fallback_reason,
-                "suggested_config": det_config,
-                "evidence": recommendation_evidence,
-                "data": data_block,
-                "compression_opportunities": compression_opportunities,
-                "ref_comparison": ref_comparison,
-            })
+            return jsonify(
+                {
+                    "briefing": briefing,
+                    "action": action,
+                    "action_label": action_label,
+                    "action_rationale": action_rationale,
+                    "ai_powered": False,
+                    "fallback_reason": fallback_reason,
+                    "suggested_config": det_config,
+                    "evidence": recommendation_evidence,
+                    "data": data_block,
+                    "compression_opportunities": compression_opportunities,
+                    "ref_comparison": ref_comparison,
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/strategy/briefing: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

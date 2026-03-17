@@ -4,34 +4,24 @@ from __future__ import annotations
 
 import gc
 import json
-import time
-import uuid
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import torch
 
-from ...eval.metrics import novelty_score
-from ...eval.fingerprint import compute_fingerprint
 from ...eval.perf_budget import evaluate_perf_budget_gate
 from ...training.training_program import synthesize_training_program_batch
-from ...training.checkpointing import CheckpointManager
-from ..notebook import LabNotebook, ExperimentEntry
+from ..notebook import LabNotebook
 from ._helpers import (
     _record_investigation_result,
     _submit_benchmark_eval,
 )
-from ..evidence import (
-    build_evidence_pack,
-    validate_selection_decision_log,
-)
 from ..llm.context_experiment import (
     build_investigation_context,
-    build_mode_selection_context,
 )
-from ..llm.context_hypothesis import build_hypothesis_context
 from ..shared_utils import resolve_device
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig, LiveProgress
@@ -42,8 +32,9 @@ class _ContinuousInvestigationMixin:
 
     __slots__ = ()
 
-    def _pre_inv_probe(self, config: RunConfig, nb: LabNotebook,
-                       result_id: str) -> Optional[float]:
+    def _pre_inv_probe(
+        self, config: RunConfig, nb: LabNotebook, result_id: str
+    ) -> Optional[float]:
         """Stage C: single-seed probe at reduced step count.
 
         Runs 1 training program at probe_steps_fraction of investigation_steps.
@@ -60,7 +51,9 @@ class _ContinuousInvestigationMixin:
 
             probe_config = RunConfig.from_dict(config.to_dict())
             probe_config.stage1_steps = max(
-                50, int(config.investigation_steps * config.pre_inv_probe_steps_fraction))
+                50,
+                int(config.investigation_steps * config.pre_inv_probe_steps_fraction),
+            )
             probe_config.stage1_batch_size = config.investigation_batch_size
             probe_config.n_programs = 1
 
@@ -68,11 +61,13 @@ class _ContinuousInvestigationMixin:
             dev_str = str(dev)
 
             from research.synthesis.compiler import compile_model
+
             model = compile_model(graph_json, probe_config, device=dev)
             if model is None:
                 return None
 
             from research.evaluator import evaluate_stage1
+
             result = evaluate_stage1(model, probe_config, device=dev)
             lr = result.get("loss_ratio") if result else None
             return float(lr) if lr is not None else None
@@ -80,8 +75,9 @@ class _ContinuousInvestigationMixin:
             logger.warning("Pre-inv probe failed for %s: %s", result_id[:8], e)
             return None
 
-    def _pre_investigation_gate(self, config: RunConfig, nb: LabNotebook,
-                                leaderboard: list) -> List[str]:
+    def _pre_investigation_gate(
+        self, config: RunConfig, nb: LabNotebook, leaderboard: list
+    ) -> List[str]:
         """Orchestrate three-stage pre-investigation gate.
 
         Stage A: SQL hard reject (numerical health, stability, gradient path)
@@ -95,20 +91,26 @@ class _ContinuousInvestigationMixin:
             # Legacy behavior: filter by loss_ratio threshold only
             investigated_fps = nb.get_investigated_fingerprints()
             candidates = [
-                e for e in leaderboard
+                e
+                for e in leaderboard
                 if e.get("tier") == "screening"
                 and e.get("screening_loss_ratio") is not None
-                and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
+                and e["screening_loss_ratio"]
+                < config.investigation_loss_ratio_threshold
                 and "provisional_random_tokens" not in (e.get("tags") or "")
             ]
             if investigated_fps:
                 candidates = [
-                    c for c in candidates
+                    c
+                    for c in candidates
                     if c.get("graph_fingerprint", c.get("architecture_desc", ""))
                     not in investigated_fps
                 ]
-            return [c["result_id"] for c in candidates[:config.auto_investigate_top_n]
-                    if c.get("result_id")]
+            return [
+                c["result_id"]
+                for c in candidates[: config.auto_investigate_top_n]
+                if c.get("result_id")
+            ]
 
         # ── Stage A: Hard reject via SQL ──
         # Uses composite_score as primary gate (not loss_ratio) — models
@@ -127,23 +129,29 @@ class _ContinuousInvestigationMixin:
         investigated_fps = nb.get_investigated_fingerprints()
         if investigated_fps:
             before = len(eligible)
-            eligible = [e for e in eligible
-                        if e.get("graph_fingerprint") not in investigated_fps]
+            eligible = [
+                e
+                for e in eligible
+                if e.get("graph_fingerprint") not in investigated_fps
+            ]
             skipped = before - len(eligible)
             if skipped:
-                logger.info("Pre-inv gate: skipped %d already-investigated candidates", skipped)
+                logger.info(
+                    "Pre-inv gate: skipped %d already-investigated candidates", skipped
+                )
 
         if not eligible:
             logger.info("Pre-inv gate Stage A: no eligible candidates")
             return []
 
-        logger.info("Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible))
+        logger.info(
+            "Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible)
+        )
 
         # ── Stage B: Composite score + rank ──
         ref_lr = self._get_reference_baseline_lr(nb)
         for row in eligible:
-            base = LabNotebook.compute_pre_investigation_score(
-                row, best_ref_lr=ref_lr)
+            base = LabNotebook.compute_pre_investigation_score(row, best_ref_lr=ref_lr)
             # Judgment boost: up to +15% for high-confidence candidates
             j = row.get("judgment_score")
             if j is not None and isinstance(j, (int, float)) and j > 0.5:
@@ -151,7 +159,7 @@ class _ContinuousInvestigationMixin:
             row["_pre_inv_score"] = base
 
         eligible.sort(key=lambda r: r.get("_pre_inv_score", 0), reverse=True)
-        top_n = eligible[:config.pre_inv_top_n]
+        top_n = eligible[: config.pre_inv_top_n]
 
         # Persist scores to leaderboard
         for row in eligible:
@@ -167,10 +175,11 @@ class _ContinuousInvestigationMixin:
         except Exception:
             pass
 
-        logger.info("Pre-inv gate Stage B: top %d scored [%s]",
-                     len(top_n),
-                     ", ".join(f"{r['result_id'][:8]}={r['_pre_inv_score']:.1f}"
-                               for r in top_n))
+        logger.info(
+            "Pre-inv gate Stage B: top %d scored [%s]",
+            len(top_n),
+            ", ".join(f"{r['result_id'][:8]}={r['_pre_inv_score']:.1f}" for r in top_n),
+        )
 
         # ── Stage C: Optional probe ──
         if config.pre_inv_probe_enabled:
@@ -178,9 +187,12 @@ class _ContinuousInvestigationMixin:
             for row in top_n:
                 probe_lr = self._pre_inv_probe(config, nb, row["result_id"])
                 if probe_lr is not None and probe_lr > config.pre_inv_probe_max_lr:
-                    logger.info("Pre-inv probe rejected %s (lr=%.3f > %.3f)",
-                                row["result_id"][:8], probe_lr,
-                                config.pre_inv_probe_max_lr)
+                    logger.info(
+                        "Pre-inv probe rejected %s (lr=%.3f > %.3f)",
+                        row["result_id"][:8],
+                        probe_lr,
+                        config.pre_inv_probe_max_lr,
+                    )
                     continue
                 probed.append(row)
             top_n = probed
@@ -204,7 +216,10 @@ class _ContinuousInvestigationMixin:
     _MAX_REINVESTIGATION_ATTEMPTS = 2
 
     def _get_reinvestigation_candidates(
-        self, nb: LabNotebook, exclude: set, limit: int = 3,
+        self,
+        nb: LabNotebook,
+        exclude: set,
+        limit: int = 3,
     ) -> List[str]:
         """Find screened_out models with WikiText quality above the investigation tier.
 
@@ -218,7 +233,8 @@ class _ContinuousInvestigationMixin:
         """
         max_attempts = self._MAX_REINVESTIGATION_ATTEMPTS
         try:
-            rows = nb.conn.execute("""
+            rows = nb.conn.execute(
+                """
                 SELECT l.result_id, l.wikitext_score, l.investigation_robustness,
                        COALESCE(l.reinvestigation_count, 0) AS reinvest_count
                 FROM leaderboard l
@@ -233,13 +249,16 @@ class _ContinuousInvestigationMixin:
                   AND COALESCE(l.reinvestigation_count, 0) < ?
                 ORDER BY l.wikitext_score DESC
                 LIMIT ?
-            """, (max_attempts, limit + len(exclude))).fetchall()
+            """,
+                (max_attempts, limit + len(exclude)),
+            ).fetchall()
         except Exception as e:
             logger.debug("Reinvestigation query failed: %s", e)
             return []
 
         candidates = [
-            r["result_id"] for r in rows
+            r["result_id"]
+            for r in rows
             if r["result_id"] and r["result_id"] not in exclude
         ][:limit]
 
@@ -265,7 +284,9 @@ class _ContinuousInvestigationMixin:
 
         return candidates
 
-    def _reference_margin_ceiling(self, config: RunConfig, nb: LabNotebook) -> Optional[float]:
+    def _reference_margin_ceiling(
+        self, config: RunConfig, nb: LabNotebook
+    ) -> Optional[float]:
         """Convert the reference margin knob into a concrete Stage-A LR ceiling."""
         best_ref_lr = self._get_reference_baseline_lr(nb)
         if best_ref_lr is None:
@@ -273,23 +294,29 @@ class _ContinuousInvestigationMixin:
         margin = max(0.1, float(config.pre_inv_reference_margin or 1.0))
         return float(best_ref_lr) * margin
 
-    def _run_inline_investigation(self, config: RunConfig, nb: LabNotebook,
-                                   leaderboard: list, n_experiments: int,
-                                   limit_str: str, mode_reasoning: str):
+    def _run_inline_investigation(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        leaderboard: list,
+        n_experiments: int,
+        limit_str: str,
+        mode_reasoning: str,
+    ):
         """Execute investigation phase inline (not threaded) for continuous mode."""
         # Use pre-investigation gate for candidate selection
         result_ids = self._pre_investigation_gate(config, nb, leaderboard)
         if not result_ids:
             self._run_continuous_synthesis(
-                config, nb, n_experiments, limit_str, mode_reasoning)
+                config, nb, n_experiments, limit_str, mode_reasoning
+            )
             return
 
         # Build context for hypothesis formulation
         inv_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
         inv_map = {d.get("result_id"): d for d in inv_details if d.get("result_id")}
         inv_context = build_investigation_context(inv_details, leaderboard)
-        hypothesis = self.aria.formulate_investigation_hypothesis(
-            context=inv_context)
+        hypothesis = self.aria.formulate_investigation_hypothesis(context=inv_context)
         exp_id = self._start_preregistered_experiment(
             nb=nb,
             experiment_type="investigation",
@@ -311,23 +338,32 @@ class _ContinuousInvestigationMixin:
                 total_programs=len(result_ids),
                 estimated_cost=self.aria.total_cost,
                 total_tokens=self.aria.total_tokens,
-                aria_message=(f"[{limit_str}|investigation] "
-                              f"Studying {len(result_ids)} candidates"),
+                aria_message=(
+                    f"[{limit_str}|investigation] Studying {len(result_ids)} candidates"
+                ),
             )
 
-        self._emit_event("investigation_started", {
-            "experiment_id": exp_id,
-            "n_candidates": len(result_ids),
-        })
+        self._emit_event(
+            "investigation_started",
+            {
+                "experiment_id": exp_id,
+                "n_candidates": len(result_ids),
+            },
+        )
 
         self._live_training_context = {"exp_id": exp_id, "phase": "investigation"}
         try:
             # ── Inline investigation logic (from _run_investigation_thread) ──
             results = {
-                "total": len(result_ids), "stage0_passed": 0, "stage05_passed": 0,
-                "stage1_passed": 0, "novel_count": 0,
-                "best_loss_ratio": None, "best_novelty_score": None,
-                "survivors": [], "investigation_results": [],
+                "total": len(result_ids),
+                "stage0_passed": 0,
+                "stage05_passed": 0,
+                "stage1_passed": 0,
+                "novel_count": 0,
+                "best_loss_ratio": None,
+                "best_novelty_score": None,
+                "survivors": [],
+                "investigation_results": [],
             }
 
             dev = resolve_device(config.device)
@@ -338,15 +374,22 @@ class _ContinuousInvestigationMixin:
             inv_config.stage1_batch_size = config.investigation_batch_size
 
             # Fetch all sources at once to avoid N+1 queries
-            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+            program_details = [
+                d or {} for d in (nb.get_program_details(result_ids) or [])
+            ]
+            source_map = {
+                d.get("result_id"): d for d in program_details if d.get("result_id")
+            }
 
             for prog_idx, source_result_id in enumerate(result_ids):
                 if self._stop_event.is_set():
                     break
 
                 # Cost check mid-investigation
-                if config.max_cost_dollars > 0 and self.aria.total_cost >= config.max_cost_dollars:
+                if (
+                    config.max_cost_dollars > 0
+                    and self.aria.total_cost >= config.max_cost_dollars
+                ):
                     logger.info("Cost limit reached during investigation")
                     break
 
@@ -359,13 +402,16 @@ class _ContinuousInvestigationMixin:
                         f"({config.n_training_programs} training programs)"
                     )
 
-                self._emit_event("investigation_progress", {
-                    "experiment_id": exp_id,
-                    "current": prog_idx + 1,
-                    "total": len(result_ids),
-                    "source_result_id": source_result_id,
-                    "status": "starting",
-                })
+                self._emit_event(
+                    "investigation_progress",
+                    {
+                        "experiment_id": exp_id,
+                        "current": prog_idx + 1,
+                        "total": len(result_ids),
+                        "source_result_id": source_result_id,
+                        "status": "starting",
+                    },
+                )
 
                 # Fetch source program
                 source = inv_map.get(source_result_id)
@@ -383,10 +429,12 @@ class _ContinuousInvestigationMixin:
                     max_seq_len=config.max_seq_len,
                     seed_offset=prog_idx * 1000,
                 )
-                results.setdefault("training_program_scheduling", []).append({
-                    "result_id": source_result_id,
-                    **tp_sched,
-                })
+                results.setdefault("training_program_scheduling", []).append(
+                    {
+                        "result_id": source_result_id,
+                        **tp_sched,
+                    }
+                )
 
                 # Test each (model x training_program) pair
                 tp_results = []
@@ -409,29 +457,36 @@ class _ContinuousInvestigationMixin:
                         logger.debug(f"Model reconstruction failed: {e}")
                         continue
 
-                    self._emit_event("investigation_progress", {
-                        "experiment_id": exp_id,
-                        "current": prog_idx + 1,
-                        "total": len(result_ids),
-                        "source_result_id": source_result_id,
-                        "training_program": tp_i + 1,
-                        "total_programs": len(training_programs),
-                        "status": f"training with {tp.name}",
-                    })
+                    self._emit_event(
+                        "investigation_progress",
+                        {
+                            "experiment_id": exp_id,
+                            "current": prog_idx + 1,
+                            "total": len(result_ids),
+                            "source_result_id": source_result_id,
+                            "training_program": tp_i + 1,
+                            "total_programs": len(training_programs),
+                            "status": f"training with {tp.name}",
+                        },
+                    )
 
                     tp_result = self._train_with_program(
                         model,
                         tp,
                         inv_config,
                         dev,
-                        seed=self._stable_seed(exp_id, source_result_id, tp_i, "investigation"),
+                        seed=self._stable_seed(
+                            exp_id, source_result_id, tp_i, "investigation"
+                        ),
                     )
-                    tp_results.append({
-                        "training_program": tp.name,
-                        "passed": tp_result.get("passed", False),
-                        "loss_ratio": tp_result.get("loss_ratio"),
-                        "final_loss": tp_result.get("final_loss"),
-                    })
+                    tp_results.append(
+                        {
+                            "training_program": tp.name,
+                            "passed": tp_result.get("passed", False),
+                            "loss_ratio": tp_result.get("loss_ratio"),
+                            "final_loss": tp_result.get("final_loss"),
+                        }
+                    )
 
                     del model
                     if dev.type == "cuda":
@@ -456,10 +511,11 @@ class _ContinuousInvestigationMixin:
                 )
                 best_lr = best_tp["loss_ratio"] if best_tp else None
                 screening_lr = source.get("loss_ratio")
-                lr_multiplier = self._investigation_loss_multiplier(screening_lr, best_lr)
-                brittle_risk = (
-                    lr_multiplier is not None
-                    and lr_multiplier > float(config.investigation_max_loss_ratio_multiplier)
+                lr_multiplier = self._investigation_loss_multiplier(
+                    screening_lr, best_lr
+                )
+                brittle_risk = lr_multiplier is not None and lr_multiplier > float(
+                    config.investigation_max_loss_ratio_multiplier
                 )
 
                 if n_passed > 0:
@@ -468,10 +524,8 @@ class _ContinuousInvestigationMixin:
                 results["stage05_passed"] += 1
 
                 # Gate: pass investigation if loss quality is good enough.
-                investigation_passed_early = (
-                    (best_lr or 1.0) < 0.5
-                    and (not brittle_risk
-                         or (best_lr is not None and best_lr < 0.3))
+                investigation_passed_early = (best_lr or 1.0) < 0.5 and (
+                    not brittle_risk or (best_lr is not None and best_lr < 0.3)
                 )
 
                 investigation_entry = {
@@ -486,14 +540,22 @@ class _ContinuousInvestigationMixin:
                     "investigation_passed": investigation_passed_early,
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
-                    "best_training_program": best_tp.get("training_program") if best_tp else None,
-                    "training_program_scheduling_avg_ms": tp_sched.get("scheduling_avg_ms"),
-                    "training_program_scheduling_max_ms": tp_sched.get("scheduling_max_ms"),
+                    "best_training_program": best_tp.get("training_program")
+                    if best_tp
+                    else None,
+                    "training_program_scheduling_avg_ms": tp_sched.get(
+                        "scheduling_avg_ms"
+                    ),
+                    "training_program_scheduling_max_ms": tp_sched.get(
+                        "scheduling_max_ms"
+                    ),
                 }
                 results["investigation_results"].append(investigation_entry)
 
-                if best_lr and (results["best_loss_ratio"] is None
-                                or best_lr < results["best_loss_ratio"]):
+                if best_lr and (
+                    results["best_loss_ratio"] is None
+                    or best_lr < results["best_loss_ratio"]
+                ):
                     results["best_loss_ratio"] = best_lr
                 source_novelty = source.get("novelty_score")
                 if source_novelty is not None and (
@@ -553,14 +615,18 @@ class _ContinuousInvestigationMixin:
 
             # Complete experiment with LLM analysis
             results["perf_report"] = self._build_experiment_perf_report(results)
-            results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
+            results["perf_budget_gate"] = evaluate_perf_budget_gate(
+                results["perf_report"]
+            )
             context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb)
+                results, config, hypothesis, nb
+            )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
 
             nb.complete_experiment(
-                experiment_id=exp_id, results=results,
+                experiment_id=exp_id,
+                results=results,
                 aria_summary=summary,
                 aria_mood=self.aria.state.mood,
                 insights=self._analyze_results(results, exp_id, nb, context=context),
@@ -574,16 +640,24 @@ class _ContinuousInvestigationMixin:
             # Knowledge extraction after investigation
             self._maybe_extract_knowledge(config, nb, n_experiments)
 
-            self._emit_event("investigation_completed", {
-                "experiment_id": exp_id, "results": results,
-                "summary": summary,
-            })
+            self._emit_event(
+                "investigation_completed",
+                {
+                    "experiment_id": exp_id,
+                    "results": results,
+                    "summary": summary,
+                },
+            )
 
         except Exception as e:
             logger.warning(f"Inline investigation failed: {e}")
             nb.fail_experiment(exp_id, str(e))
-            self._emit_event("investigation_completed", {
-                "experiment_id": exp_id, "error": str(e),
-            })
+            self._emit_event(
+                "investigation_completed",
+                {
+                    "experiment_id": exp_id,
+                    "error": str(e),
+                },
+            )
         finally:
             self._live_training_context = None

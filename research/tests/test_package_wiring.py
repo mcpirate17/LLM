@@ -5,9 +5,7 @@ Verifies that package __init__.py files export expected modules,
 math-space registrations work, and dead-code audit tooling runs.
 """
 
-import json
 import os
-import sys
 import unittest
 
 import pytest
@@ -16,7 +14,10 @@ pytestmark = pytest.mark.unit
 
 # Detect available dependencies -- lazy import to reduce memory in parallel runs
 try:
-    import torch; HAS_TORCH = True; del torch  # noqa: E702
+    import torch
+
+    HAS_TORCH = True
+    del torch  # noqa: E702
 except ImportError:
     HAS_TORCH = False
 
@@ -30,7 +31,10 @@ class TestPackageWiring(unittest.TestCase):
         with open(init_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        self.assertIn("from . import clifford, compression, hyperbolic, padic, spiking, tropical", content)
+        self.assertIn(
+            "from . import clifford, compression, hyperbolic, padic, spiking, tropical",
+            content,
+        )
         self.assertIn("from .registry import register_all_mathspaces", content)
         self.assertIn('"hyperbolic"', content)
         self.assertIn('"tropical"', content)
@@ -54,7 +58,12 @@ class TestPackageWiring(unittest.TestCase):
     def test_external_op_nonfinite_sanitization_and_telemetry(self):
         import torch
         from research.synthesis.compiler import _execute_op
-        from research.synthesis.primitives import PrimitiveOp, OpCategory, PRIMITIVE_REGISTRY, register_external_primitive
+        from research.synthesis.primitives import (
+            PrimitiveOp,
+            OpCategory,
+            PRIMITIVE_REGISTRY,
+            register_external_primitive,
+        )
 
         op_name = "test_nonfinite_mathspace_op"
         op = PrimitiveOp(
@@ -89,7 +98,12 @@ class TestPackageWiring(unittest.TestCase):
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
 
         register_all_mathspaces()
-        for op_name in ("hyp_tangent_nonlinear", "tropical_center", "padic_gate", "grade_mix"):
+        for op_name in (
+            "hyp_tangent_nonlinear",
+            "tropical_center",
+            "padic_gate",
+            "grade_mix",
+        ):
             self.assertIn(op_name, PRIMITIVE_REGISTRY)
             op = PRIMITIVE_REGISTRY[op_name]
             self.assertEqual(op.category.value, "math_space")
@@ -105,11 +119,18 @@ class TestPackageWiring(unittest.TestCase):
         register_all_mathspaces()
         x = torch.randn(2, 5, 16)
         module = torch.nn.Module()
-        for op_name in ("hyp_tangent_nonlinear", "tropical_center", "padic_gate", "grade_mix"):
+        for op_name in (
+            "hyp_tangent_nonlinear",
+            "tropical_center",
+            "padic_gate",
+            "grade_mix",
+        ):
             op = PRIMITIVE_REGISTRY[op_name]
             out = op.execute_fn(module, x)
             self.assertEqual(tuple(out.shape), tuple(x.shape))
-            self.assertTrue(torch.isfinite(out).all(), f"{op_name} produced non-finite values")
+            self.assertTrue(
+                torch.isfinite(out).all(), f"{op_name} produced non-finite values"
+            )
 
     def test_llm_package_exports_context_and_prompts(self):
         repo_root = os.path.dirname(os.path.dirname(__file__))

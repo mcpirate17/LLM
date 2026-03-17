@@ -5,7 +5,6 @@ Uses the current ComputationGraph + compile_model + safe_eval API.
 """
 
 import pytest
-import torch
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.compiler import compile_model
 from research.synthesis.primitives import PRIMITIVE_REGISTRY

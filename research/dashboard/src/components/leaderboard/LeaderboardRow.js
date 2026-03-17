@@ -115,6 +115,30 @@ export const LeaderboardRow = React.memo(({
             return <td key={colKey} style={tdStyle}><ScoreBreakdown entry={entry} /></td>;
           case 'tier':
             return <td key={colKey} style={tdStyle}><TierBadge tier={entry.tier} entry={entry} /></td>;
+          case '_verified': {
+            const tags = (entry.tags || '').toLowerCase();
+            const isRef = entry.is_reference;
+            const hasTiktoken = tags.includes('tiktoken_native') || isRef;
+            const hasWikitext = tags.includes('wikitext103') || isRef;
+            let vLabel, vColor;
+            if (hasTiktoken && hasWikitext) { vLabel = '\u2713'; vColor = 'var(--accent-green)'; }
+            else if (hasTiktoken) { vLabel = '\u26A0'; vColor = 'var(--accent-yellow)'; }
+            else { vLabel = '\u2717'; vColor = 'var(--accent-red)'; }
+            return <td key={colKey} style={tdStyle}><span style={{ fontSize: 12, color: vColor, fontWeight: 700 }}>{vLabel}</span></td>;
+          }
+          case '_rate': {
+            const rate = entry.loss_improvement_rate;
+            if (rate == null) return <td key={colKey} style={tdStyle}><span style={{ color: 'var(--text-muted)', fontSize: 10 }}>?</span></td>;
+            const pct = (rate * 100).toFixed(1);
+            const rColor = rate > 0.10 ? 'var(--accent-green)' : rate > 0.05 ? 'var(--accent-yellow)' : 'var(--accent-red)';
+            return <td key={colKey} style={tdStyle}><span style={{ fontSize: 11, color: rColor, fontWeight: 600 }}>{pct}%</span></td>;
+          }
+          case '_gap': {
+            const gap = entry.gap_vs_gpt2;
+            if (gap == null) return <td key={colKey} style={tdStyle}><span style={{ color: 'var(--text-muted)', fontSize: 10 }}>--</span></td>;
+            const gColor = gap < 0 ? 'var(--accent-green)' : gap < 0.1 ? 'var(--accent-yellow)' : 'var(--accent-red)';
+            return <td key={colKey} style={tdStyle}><span style={{ fontSize: 11, color: gColor, fontWeight: 600 }}>{gap > 0 ? '+' : ''}{gap.toFixed(2)}</span></td>;
+          }
           case '_stability': {
             const s = entry.cross_run_stability || {};
             const trend = s.trend || 'unknown';
@@ -156,8 +180,18 @@ export const LeaderboardRow = React.memo(({
           }
           case '_vs_reference':
             return <td key={colKey} style={tdStyle}>{entry._vs_reference != null ? `${entry._vs_reference.toFixed(0)}%` : '--'}</td>;
-          case 'composite_score':
-            return <td key={colKey} style={{ ...tdStyle, color: 'var(--accent-green)' }}>{fmt(entry.composite_score, 3)}</td>;
+          case 'composite_score': {
+            const tags = (entry.tags || '').toLowerCase();
+            const hasTiktoken = tags.includes('tiktoken_native') || entry.is_reference;
+            const tokIcon = hasTiktoken ? '\u2713' : '\u26A0';
+            const tokColor = hasTiktoken ? 'var(--accent-green)' : 'var(--accent-yellow)';
+            return (
+              <td key={colKey} style={{ ...tdStyle, color: 'var(--accent-green)' }}>
+                {fmt(entry.composite_score, 3)}
+                <span style={{ fontSize: 10, marginLeft: 4, color: tokColor }} title={hasTiktoken ? 'tiktoken-native' : 'byte-era'}>{tokIcon}</span>
+              </td>
+            );
+          }
           case 'discovery_loss_ratio': return <td key={colKey} style={tdStyle}>{fmt(entry.discovery_loss_ratio)}</td>;
           case 'validation_loss_ratio': return <td key={colKey} style={tdStyle}>{fmt(entry.validation_loss_ratio)}</td>;
           case 'moe_routing_efficiency': return <td key={colKey} style={tdStyle}>{fmt(entry.moe_routing_efficiency, 3)}</td>;

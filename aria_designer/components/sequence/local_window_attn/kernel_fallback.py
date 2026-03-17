@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for local_window_attn."""
-import torch
+
 import torch.nn as nn
 
 

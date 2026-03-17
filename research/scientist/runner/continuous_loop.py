@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-import gc
-import json
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
-import torch
 
-from ..native_runner import compile_model_native_first as compile_model
-from ...eval.metrics import novelty_score
-from ...eval.fingerprint import compute_fingerprint
-from ...eval.perf_budget import evaluate_perf_budget_gate
-from ...training.training_program import synthesize_training_program_batch
 from ...training.checkpointing import CheckpointManager
 from ..notebook import LabNotebook, ExperimentEntry
 from ..evidence import (
@@ -22,16 +14,14 @@ from ..evidence import (
     validate_selection_decision_log,
 )
 from ..llm.context_experiment import (
-    build_investigation_context,
     build_mode_selection_context,
 )
-from ..llm.context_hypothesis import build_hypothesis_context
-from ..shared_utils import resolve_device
 
 import logging
+
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig, LiveProgress
+from ._types import RunConfig
 
 
 class _ContinuousLoopMixin:
@@ -54,6 +44,7 @@ class _ContinuousLoopMixin:
         try:
             from ..intelligence.distiller import KnowledgeDistiller
             from ..intelligence.digest import ExperimentDigest
+
             db_path = self.notebook_path
             distiller = KnowledgeDistiller(
                 db_path=db_path,
@@ -72,7 +63,9 @@ class _ContinuousLoopMixin:
             distiller.start()
             self._knowledge_distiller = distiller
         except Exception as e:
-            logger.warning("KnowledgeDistiller init failed (degrading gracefully): %s", e)
+            logger.warning(
+                "KnowledgeDistiller init failed (degrading gracefully): %s", e
+            )
             distiller = None
             self._knowledge_distiller = None
         self._set_aria_cycle_phase(
@@ -94,14 +87,20 @@ class _ContinuousLoopMixin:
                 n_experiments = ckpt_state.get("n_experiments", 0)
                 elapsed_prior = ckpt_state.get("elapsed_seconds", 0.0)
                 t_start = time.time() - elapsed_prior
-                logger.info("Resuming continuous session from checkpoint: "
-                            "n_experiments=%d, elapsed=%.0fs",
-                            n_experiments, elapsed_prior)
-                self._emit_event("checkpoint_resumed", {
-                    "experiment_id": resume_id,
-                    "n_experiments": n_experiments,
-                    "elapsed_seconds": elapsed_prior,
-                })
+                logger.info(
+                    "Resuming continuous session from checkpoint: "
+                    "n_experiments=%d, elapsed=%.0fs",
+                    n_experiments,
+                    elapsed_prior,
+                )
+                self._emit_event(
+                    "checkpoint_resumed",
+                    {
+                        "experiment_id": resume_id,
+                        "n_experiments": n_experiments,
+                        "elapsed_seconds": elapsed_prior,
+                    },
+                )
 
         # Clean up stale experiments from previous interrupted runs
         try:
@@ -130,7 +129,9 @@ class _ContinuousLoopMixin:
             if self._pending_heal_retry:
                 retry = self._pending_heal_retry
                 self._pending_heal_retry = None
-                logger.info("Retrying after successful heal: %s", retry.get("scope", "")[:100])
+                logger.info(
+                    "Retrying after successful heal: %s", retry.get("scope", "")[:100]
+                )
                 try:
                     retry_nb = self._make_notebook()
                     retry_nb.log_learning_event(
@@ -142,12 +143,12 @@ class _ContinuousLoopMixin:
                     pass
 
             # Check limits before starting next experiment
-            stop_reason = self._check_continuous_limits(
-                config, t_start, n_experiments)
+            stop_reason = self._check_continuous_limits(config, t_start, n_experiments)
             if stop_reason:
                 self.aria._continuous_mode = False
                 self._end_of_session_automation(
-                    config, reason=f"continuous_session_end ({stop_reason})")
+                    config, reason=f"continuous_session_end ({stop_reason})"
+                )
                 self._set_aria_cycle_phase(
                     "completed",
                     continuous_active=False,
@@ -158,12 +159,15 @@ class _ContinuousLoopMixin:
                 with self._lock:
                     self._progress.status = "completed"
                     self._progress.aria_message = f"Session ended: {stop_reason}"
-                self._emit_event("continuous_limit_reached", {
-                    "reason": stop_reason,
-                    "experiments_completed": n_experiments,
-                    "elapsed_minutes": (time.time() - t_start) / 60,
-                    "estimated_cost": self.aria.total_cost,
-                })
+                self._emit_event(
+                    "continuous_limit_reached",
+                    {
+                        "reason": stop_reason,
+                        "experiments_completed": n_experiments,
+                        "elapsed_minutes": (time.time() - t_start) / 60,
+                        "estimated_cost": self.aria.total_cost,
+                    },
+                )
                 # Stop knowledge distiller
                 if distiller is not None:
                     try:
@@ -184,6 +188,7 @@ class _ContinuousLoopMixin:
                 if n_experiments % 5 == 0:
                     try:
                         from ..analytics import ExperimentAnalytics
+
                         analytics = ExperimentAnalytics(nb)
                         stats = analytics.gate_performance_summary()
                         if stats:
@@ -192,11 +197,16 @@ class _ContinuousLoopMixin:
                                 n_experiments,
                                 stats.get("stage05_pass_rate", 0),
                                 stats.get("causality_violations", 0),
-                                f"{stats.get('discovery_validation_correlation'):.2f}" if stats.get("discovery_validation_correlation") is not None else "N/A",
-                                stats.get("n_correlation_samples", 0)
+                                f"{stats.get('discovery_validation_correlation'):.2f}"
+                                if stats.get("discovery_validation_correlation")
+                                is not None
+                                else "N/A",
+                                stats.get("n_correlation_samples", 0),
                             )
                     except Exception as e:
-                        logger.debug("Failed to generate gate performance summary: %s", e)
+                        logger.debug(
+                            "Failed to generate gate performance summary: %s", e
+                        )
             finally:
                 nb.close()
 
@@ -213,8 +223,10 @@ class _ContinuousLoopMixin:
                 self._progress.total_tokens = self.aria.total_tokens
 
             # Save checkpoint after every checkpoint_interval experiments
-            if (config.checkpoint_interval > 0
-                    and n_experiments % config.checkpoint_interval == 0):
+            if (
+                config.checkpoint_interval > 0
+                and n_experiments % config.checkpoint_interval == 0
+            ):
                 try:
                     ckpt_exp_id = resume_id or "continuous"
                     ckpt.save_continuous(
@@ -255,17 +267,22 @@ class _ContinuousLoopMixin:
         if n_experiments > 0:
             self._end_of_session_automation(
                 config,
-                reason=f"continuous_session_stopped (after {n_experiments} experiments)")
+                reason=f"continuous_session_stopped (after {n_experiments} experiments)",
+            )
 
         with self._lock:
             elapsed_min = (time.time() - t_start) / 60
-            cost_str = f" | Est. cost: ${self.aria.total_cost:.2f}" if self.aria.total_cost > 0 else ""
-            self._progress.status = "completed" if not self._stop_event.is_set() else "stopped"
+            cost_str = (
+                f" | Est. cost: ${self.aria.total_cost:.2f}"
+                if self.aria.total_cost > 0
+                else ""
+            )
+            self._progress.status = (
+                "completed" if not self._stop_event.is_set() else "stopped"
+            )
             self._progress.estimated_cost = self.aria.total_cost
             self._progress.total_tokens = self.aria.total_tokens
-            self._progress.aria_message = (
-                f"Stopped after {n_experiments} experiments ({elapsed_min:.0f}min{cost_str})."
-            )
+            self._progress.aria_message = f"Stopped after {n_experiments} experiments ({elapsed_min:.0f}min{cost_str})."
         self._set_aria_cycle_phase(
             "completed" if not self._stop_event.is_set() else "idle",
             continuous_active=False,
@@ -288,8 +305,9 @@ class _ContinuousLoopMixin:
         # Launch queued auto-scale-up
         self._run_pending_scale_up()
 
-    def _select_next_mode(self, config: RunConfig, nb: LabNotebook,
-                          n_experiments: int, digest=None) -> Dict:
+    def _select_next_mode(
+        self, config: RunConfig, nb: LabNotebook, n_experiments: int, digest=None
+    ) -> Dict:
         """Have Aria decide the next experiment mode."""
         try:
             recent = nb.get_recent_experiments(10)
@@ -310,11 +328,13 @@ class _ContinuousLoopMixin:
             # Build fallback data for rule-based recommendation
             total_s1 = sum(e.get("n_stage1_passed", 0) for e in recent)
             novelty_scores = [
-                e.get("best_novelty_score", 0) for e in recent
+                e.get("best_novelty_score", 0)
+                for e in recent
                 if e.get("best_novelty_score") is not None
             ]
-            avg_novelty = (sum(novelty_scores) / len(novelty_scores)
-                           if novelty_scores else 0)
+            avg_novelty = (
+                sum(novelty_scores) / len(novelty_scores) if novelty_scores else 0
+            )
 
             # Count candidates ready for investigation, excluding those already
             # attempted and failed (checked via program_results in investigation experiments)
@@ -330,27 +350,34 @@ class _ContinuousLoopMixin:
             except Exception:
                 pass
 
-            investigation_ready = len([
-                e for e in leaderboard
-                if e.get("tier") == "screening"
-                and e.get("screening_loss_ratio") is not None
-                and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
-                and e.get("result_id") not in _investigated_fps
-                and "provisional_random_tokens" not in (e.get("tags") or "")
-            ])
+            investigation_ready = len(
+                [
+                    e
+                    for e in leaderboard
+                    if e.get("tier") == "screening"
+                    and e.get("screening_loss_ratio") is not None
+                    and e["screening_loss_ratio"]
+                    < config.investigation_loss_ratio_threshold
+                    and e.get("result_id") not in _investigated_fps
+                    and "provisional_random_tokens" not in (e.get("tags") or "")
+                ]
+            )
             # More robust: filter by fingerprint
             if _investigated_fps:
                 _inv_candidates = []
                 for e in leaderboard:
-                    if (e.get("tier") == "screening"
-                            and e.get("screening_loss_ratio") is not None
-                            and e["screening_loss_ratio"] < config.investigation_loss_ratio_threshold
-                            and "provisional_random_tokens" not in (e.get("tags") or "")):
+                    if (
+                        e.get("tier") == "screening"
+                        and e.get("screening_loss_ratio") is not None
+                        and e["screening_loss_ratio"]
+                        < config.investigation_loss_ratio_threshold
+                        and "provisional_random_tokens" not in (e.get("tags") or "")
+                    ):
                         # Look up the fingerprint for this result
                         try:
                             fp_row = nb.conn.execute(
                                 "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
-                                (e["result_id"],)
+                                (e["result_id"],),
                             ).fetchone()
                             fp = fp_row[0] if fp_row else None
                         except Exception:
@@ -358,12 +385,16 @@ class _ContinuousLoopMixin:
                         if fp and fp not in _investigated_fps:
                             _inv_candidates.append(e)
                 investigation_ready = len(_inv_candidates)
-            validation_ready = len([
-                e for e in leaderboard
-                if e.get("tier") == "investigation"
-                and e.get("investigation_robustness") is not None
-                and e["investigation_robustness"] >= config.investigation_robustness_threshold
-            ])
+            validation_ready = len(
+                [
+                    e
+                    for e in leaderboard
+                    if e.get("tier") == "investigation"
+                    and e.get("investigation_robustness") is not None
+                    and e["investigation_robustness"]
+                    >= config.investigation_robustness_threshold
+                ]
+            )
 
             # Gather richer analytics for data-driven rule-based recommendation
             recent_modes = [e.get("experiment_type", "synthesis") for e in recent]
@@ -377,23 +408,29 @@ class _ContinuousLoopMixin:
             seen_fps: set = set()
 
             # Dynamic threshold: 25th percentile of investigation tier scores
-            inv_scores = sorted([
-                e.get("composite_score") for e in leaderboard
-                if e.get("tier") in ("investigation", "validation")
-                and e.get("composite_score") is not None
-            ])
+            inv_scores = sorted(
+                [
+                    e.get("composite_score")
+                    for e in leaderboard
+                    if e.get("tier") in ("investigation", "validation")
+                    and e.get("composite_score") is not None
+                ]
+            )
             score_threshold = inv_scores[len(inv_scores) // 4] if inv_scores else 50.0
 
             # Sort by composite_score descending — best overall candidates first
-            sorted_lb = sorted(leaderboard,
-                               key=lambda x: x.get("composite_score") or 0, reverse=True)
+            sorted_lb = sorted(
+                leaderboard, key=lambda x: x.get("composite_score") or 0, reverse=True
+            )
 
             for e in sorted_lb:
-                if e.get("tier") != "screening": continue
+                if e.get("tier") != "screening":
+                    continue
                 score = e.get("composite_score") or 0
                 fp = e.get("graph_fingerprint") or e.get("result_id")
 
-                if fp in seen_fps: continue
+                if fp in seen_fps:
+                    continue
                 seen_fps.add(fp)
 
                 if score >= score_threshold and fp not in _investigated_fps:
@@ -406,21 +443,28 @@ class _ContinuousLoopMixin:
             # - After that, at least 40% of recent experiments must be synthesis
             # - Without enough exploration, investigation just re-examines stale data
             synthesis_modes = {"synthesis", "novelty", "evolve"}
-            recent_synthesis_count = sum(1 for m in recent_modes if m in synthesis_modes)
+            recent_synthesis_count = sum(
+                1 for m in recent_modes if m in synthesis_modes
+            )
             synthesis_ratio = recent_synthesis_count / max(len(recent_modes), 1)
             exploration_first = n_experiments < 3
             synthesis_starved = exploration_first or synthesis_ratio < 0.4
 
             if not synthesis_starved:
                 # Only force investigation/validation if we have enough synthesis going
-                if investigation_backlog >= 5 and "investigation" not in recent_modes[:3]:
+                if (
+                    investigation_backlog >= 5
+                    and "investigation" not in recent_modes[:3]
+                ):
                     return {
                         "mode": "investigation",
-                        "reasoning": (f"Score-based investigation: {investigation_backlog} candidates with "
-                                      f"composite_score >= {score_threshold:.1f} (investigation p25). "
-                                      f"These are competitive across loss, efficiency, novelty, and stability."),
+                        "reasoning": (
+                            f"Score-based investigation: {investigation_backlog} candidates with "
+                            f"composite_score >= {score_threshold:.1f} (investigation p25). "
+                            f"These are competitive across loss, efficiency, novelty, and stability."
+                        ),
                         "confidence": 1.0,
-                        "config": {"n_programs": min(investigation_backlog, 15)}
+                        "config": {"n_programs": min(investigation_backlog, 15)},
                     }
 
                 if validation_ready >= 5 and "validation" not in recent_modes[:3]:
@@ -428,7 +472,7 @@ class _ContinuousLoopMixin:
                         "mode": "validation",
                         "reasoning": f"Pipeline bottleneck at validation: {validation_ready} candidates ready. Switching to multi-seed verification.",
                         "confidence": 1.0,
-                        "config": {"n_programs": min(validation_ready, 10)}
+                        "config": {"n_programs": min(validation_ready, 10)},
                     }
 
             recent_failures = [e for e in recent if e.get("status") == "failed"]
@@ -470,8 +514,12 @@ class _ContinuousLoopMixin:
             compression_coverage = analytics_data.get("compression_coverage") or {}
             compression_totals = compression_coverage.get("totals") or {}
             n_tested = int(compression_totals.get("n_tested") or 0)
-            n_compressed_tested = int(compression_totals.get("n_compressed_tested") or 0)
-            n_compressed_survived = int(compression_totals.get("n_compressed_survived") or 0)
+            n_compressed_tested = int(
+                compression_totals.get("n_compressed_tested") or 0
+            )
+            n_compressed_survived = int(
+                compression_totals.get("n_compressed_survived") or 0
+            )
             n_survived = int(compression_totals.get("n_survived") or 0)
             compressed_test_share = (
                 n_compressed_tested / n_tested if n_tested > 0 else 0.0
@@ -493,9 +541,12 @@ class _ContinuousLoopMixin:
             }
 
             rec = self.aria.recommend_next_mode(
-                context=context, fallback_data=fallback_data, digest=digest,
+                context=context,
+                fallback_data=fallback_data,
+                digest=digest,
                 op_success_rates=analytics_data.get("op_success_rates"),
-                compression_coverage=analytics_data.get("compression_coverage"))
+                compression_coverage=analytics_data.get("compression_coverage"),
+            )
 
             compression_override = self._compression_focus_override(rec, fallback_data)
             if compression_override is not None:
@@ -508,8 +559,12 @@ class _ContinuousLoopMixin:
                     trigger_type="plateau",
                     experiment_id=None,
                     scope=f"Safety valve plateau trigger: {trigger.get('reason')}",
-                    reproduction_steps=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
-                    acceptance_tests=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
+                    reproduction_steps=[
+                        "python -m pytest tests/test_selection_policy.py -x --tb=short"
+                    ],
+                    acceptance_tests=[
+                        "python -m pytest tests/test_selection_policy.py -x --tb=short"
+                    ],
                     trigger_payload=trigger,
                 )
                 if trigger.get("mode") == "novelty":
@@ -519,7 +574,9 @@ class _ContinuousLoopMixin:
                     ).strip(" |")
                     rec.setdefault("config", {})
                     rec["config"]["n_generations"] = max(4, int(config.n_generations))
-                    rec["config"]["population_size"] = max(12, int(config.population_size))
+                    rec["config"]["population_size"] = max(
+                        12, int(config.population_size)
+                    )
                 else:
                     rec["mode"] = "synthesis"
                     rec.setdefault("config", {})
@@ -532,10 +589,10 @@ class _ContinuousLoopMixin:
                 rec["safety_valve"] = trigger
 
             refinement_plan = self._build_refinement_plan(nb, config)
-            if (
-                refinement_plan
-                and rec.get("mode") not in {"investigation", "validation"}
-            ):
+            if refinement_plan and rec.get("mode") not in {
+                "investigation",
+                "validation",
+            }:
                 rec.setdefault("config", {})
                 rec["mode"] = "refinement"
                 rec["config"].update(refinement_plan.get("config", {}))
@@ -573,17 +630,19 @@ class _ContinuousLoopMixin:
             )
             rec["evidence_pack"] = evidence_pack
 
-            nb.add_entry(ExperimentEntry(
-                entry_type="decision",
-                title=f"Mode Selection: {rec.get('mode', 'synthesis')}",
-                content=rec.get("reasoning", ""),
-                metadata={
-                    "mode": rec.get("mode"),
-                    "confidence": rec.get("confidence"),
-                    "experiment_number": n_experiments,
-                    "evidence_pack": evidence_pack,
-                },
-            ))
+            nb.add_entry(
+                ExperimentEntry(
+                    entry_type="decision",
+                    title=f"Mode Selection: {rec.get('mode', 'synthesis')}",
+                    content=rec.get("reasoning", ""),
+                    metadata={
+                        "mode": rec.get("mode"),
+                        "confidence": rec.get("confidence"),
+                        "experiment_number": n_experiments,
+                        "evidence_pack": evidence_pack,
+                    },
+                )
+            )
 
             decision_log = {
                 "decision_id": str(uuid.uuid4())[:12],
@@ -596,12 +655,14 @@ class _ContinuousLoopMixin:
                     "total_s1_survivors": total_s1,
                     "avg_novelty": round(avg_novelty, 6),
                 },
-                "score_breakdown": [{
-                    "mode": rec.get("mode"),
-                    "confidence": rec.get("confidence"),
-                    "quality_signal": total_s1,
-                    "novelty_signal": round(avg_novelty, 6),
-                }],
+                "score_breakdown": [
+                    {
+                        "mode": rec.get("mode"),
+                        "confidence": rec.get("confidence"),
+                        "quality_signal": total_s1,
+                        "novelty_signal": round(avg_novelty, 6),
+                    }
+                ],
                 "policy": {
                     "engine": "aria_mode_selection_with_refinement",
                     "safety_valve_triggered": bool(trigger),
@@ -609,10 +670,12 @@ class _ContinuousLoopMixin:
                     "refinement_plan": rec.get("refinement_plan"),
                 },
                 "reason": rec.get("reasoning", ""),
-                "chosen_experiments": [{
-                    "mode": rec.get("mode"),
-                    "config": rec.get("config", {}),
-                }],
+                "chosen_experiments": [
+                    {
+                        "mode": rec.get("mode"),
+                        "config": rec.get("config", {}),
+                    }
+                ],
                 "trigger": trigger,
             }
             try:
@@ -633,8 +696,12 @@ class _ContinuousLoopMixin:
             return rec
         except Exception as e:
             logger.debug(f"Mode selection failed, defaulting to synthesis: {e}")
-            return {"mode": "synthesis", "reasoning": "Fallback", "confidence": 0.3,
-                    "config": {}}
+            return {
+                "mode": "synthesis",
+                "reasoning": "Fallback",
+                "confidence": 0.3,
+                "config": {},
+            }
 
     def _end_of_session_automation(self, config: RunConfig, reason: str):
         """Run end-of-session report and scale-up. Used by both limit-reached and user-stop paths."""
@@ -642,14 +709,15 @@ class _ContinuousLoopMixin:
         try:
             self._maybe_auto_report(config, nb, reason=reason)
             cumulative_results = {"stage1_passed": 0, "survivors": []}
-            top = nb.get_top_programs(
-                config.auto_scale_up_top_n, sort_by="loss_ratio")
+            top = nb.get_top_programs(config.auto_scale_up_top_n, sort_by="loss_ratio")
             for p in top:
                 if p.get("stage1_passed"):
                     cumulative_results["stage1_passed"] += 1
-                    cumulative_results["survivors"].append({
-                        "novelty": p.get("novelty_score", 0),
-                    })
+                    cumulative_results["survivors"].append(
+                        {
+                            "novelty": p.get("novelty_score", 0),
+                        }
+                    )
             self._maybe_auto_scale_up(cumulative_results, config, nb)
         except Exception as e:
             logger.debug(f"End-of-session automation failed: {e}")

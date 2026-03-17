@@ -8,7 +8,6 @@ This keeps native-runner cutover work centralized in
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 
@@ -21,9 +20,7 @@ ALLOWED_PATH_SUFFIXES = {
 }
 
 # Tests are allowed to import legacy compiler for parity assertions.
-ALLOWED_PREFIXES = (
-    "research/tests/",
-)
+ALLOWED_PREFIXES = ("research/tests/",)
 
 IMPORT_PATTERNS = (
     re.compile(r"from\s+research\.synthesis\.compiler\s+import\s+compile_model"),
@@ -47,7 +44,9 @@ def _scan_file(path: Path) -> list[str]:
     except Exception as exc:
         return [f"{path.relative_to(REPO_ROOT)}: read-error: {exc}"]
 
-    if any(pattern.search(text) for pattern in IMPORT_PATTERNS) or CALL_PATTERN.search(text):
+    if any(pattern.search(text) for pattern in IMPORT_PATTERNS) or CALL_PATTERN.search(
+        text
+    ):
         if not _is_allowed(path):
             findings.append(path.relative_to(REPO_ROOT).as_posix())
     return findings
@@ -59,13 +58,19 @@ def main() -> int:
         findings.extend(_scan_file(path))
 
     if findings:
-        print("[native-compile-callsites] ERROR: disallowed direct compile_model usage found:")
+        print(
+            "[native-compile-callsites] ERROR: disallowed direct compile_model usage found:"
+        )
         for rel in sorted(set(findings)):
             print(f"  - {rel}")
-        print("Use research.scientist.native_runner.compile_model_native_first instead.")
+        print(
+            "Use research.scientist.native_runner.compile_model_native_first instead."
+        )
         return 1
 
-    print("[native-compile-callsites] OK: no disallowed direct compile_model callsites found.")
+    print(
+        "[native-compile-callsites] OK: no disallowed direct compile_model callsites found."
+    )
     return 0
 
 

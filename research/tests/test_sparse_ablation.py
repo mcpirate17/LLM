@@ -1,5 +1,4 @@
 import pytest
-import torch
 
 from research.eval.pruning import run_dense_vs_structured_sparse_ablation
 from research.synthesis.kernels import validate_numerical_stability
@@ -18,10 +17,14 @@ def test_dense_vs_structured_sparse_ablation_reports_accuracy_and_speed():
     rows = report.get("rows", [])
     assert rows, "Expected ablation rows."
 
-    dense = next((r for r in rows if r.get("label") == "dense" and r.get("passed")), None)
+    dense = next(
+        (r for r in rows if r.get("label") == "dense" and r.get("passed")), None
+    )
     assert dense is not None, "Dense baseline must run."
 
-    sparse_rows = [r for r in rows if r.get("label") in {"nm_2_4", "block_16"} and r.get("passed")]
+    sparse_rows = [
+        r for r in rows if r.get("label") in {"nm_2_4", "block_16"} and r.get("passed")
+    ]
     assert sparse_rows, "At least one sparse variant should run."
 
     for row in sparse_rows:

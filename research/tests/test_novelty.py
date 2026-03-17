@@ -12,7 +12,6 @@ import pytest
 import importlib
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -24,6 +23,7 @@ pytestmark = pytest.mark.unit
 # Detect available dependencies
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -33,6 +33,7 @@ try:
 except ImportError:
     HAS_FLASK = False
 
+
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
 def _import_module(dotted_path):
@@ -41,14 +42,14 @@ def _import_module(dotted_path):
 
 
 try:
-    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    from research.scientist.notebook import LabNotebook
+
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -56,6 +57,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -63,6 +65,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -76,6 +79,7 @@ class TestNoveltyScoring(unittest.TestCase):
     def _make_graph(self, n_ops=5, op_names=None):
         """Create a simple computation graph for testing."""
         from research.synthesis.graph import ComputationGraph
+
         graph = ComputationGraph(model_dim=256)
 
         # Add input node
@@ -97,23 +101,30 @@ class TestNoveltyScoring(unittest.TestCase):
 
         # Simple graph with few unique ops (all the same)
         simple_graph = self._make_graph(
-            op_names=["relu", "relu", "relu", "relu", "relu"])
+            op_names=["relu", "relu", "relu", "relu", "relu"]
+        )
 
         # Diverse graph with many unique ops
         diverse_graph = self._make_graph(
-            op_names=["relu", "gelu", "tanh", "sigmoid", "silu"])
+            op_names=["relu", "gelu", "tanh", "sigmoid", "silu"]
+        )
 
         simple_nov = novelty_score(simple_graph)
         diverse_nov = novelty_score(diverse_graph)
 
         # Neither should be 1.0 (the old bug)
-        self.assertLess(simple_nov.structural_novelty, 0.95,
-                        "Simple graph should NOT have max novelty")
+        self.assertLess(
+            simple_nov.structural_novelty,
+            0.95,
+            "Simple graph should NOT have max novelty",
+        )
 
         # Diverse should be higher than simple
-        self.assertGreater(diverse_nov.structural_novelty,
-                           simple_nov.structural_novelty,
-                           "Diverse graph should have higher novelty than simple")
+        self.assertGreater(
+            diverse_nov.structural_novelty,
+            simple_nov.structural_novelty,
+            "Diverse graph should have higher novelty than simple",
+        )
 
     def test_no_fingerprint_discount(self):
         """Without behavioral fingerprint, overall_novelty should be discounted."""
@@ -124,8 +135,11 @@ class TestNoveltyScoring(unittest.TestCase):
 
         # Should be discounted (0.6x structural)
         expected_max = nov.structural_novelty * 0.6 + 0.01  # small tolerance
-        self.assertLessEqual(nov.overall_novelty, expected_max,
-                             "No-fingerprint novelty should be discounted")
+        self.assertLessEqual(
+            nov.overall_novelty,
+            expected_max,
+            "No-fingerprint novelty should be discounted",
+        )
 
     def test_with_fingerprint_uses_behavioral(self):
         """With fingerprint, overall should use 70% behavioral weight."""
@@ -151,7 +165,10 @@ class TestNoveltyScoring(unittest.TestCase):
 
     def test_behavior_signature_contributes_to_fingerprint_novelty(self):
         """Fingerprint novelty is not just 1 - max(CKA)."""
-        from research.eval.fingerprint import BehavioralFingerprint, _blend_behavioral_novelty
+        from research.eval.fingerprint import (
+            BehavioralFingerprint,
+            _blend_behavioral_novelty,
+        )
 
         fp = BehavioralFingerprint(
             cka_vs_transformer=0.3,
@@ -181,9 +198,11 @@ class TestNoveltyScoring(unittest.TestCase):
         nov_fresh = novelty_score(graph, known_fingerprints=[])
         nov_dup = novelty_score(graph, known_fingerprints=[fp_str])
 
-        self.assertGreater(nov_fresh.overall_novelty,
-                           nov_dup.overall_novelty,
-                           "Duplicate should be penalized")
+        self.assertGreater(
+            nov_fresh.overall_novelty,
+            nov_dup.overall_novelty,
+            "Duplicate should be penalized",
+        )
 
 
 class TestNoveltyCalibration(unittest.TestCase):
@@ -229,7 +248,9 @@ class TestNoveltyCalibration(unittest.TestCase):
         graph.set_output(op)
 
         fp = BehavioralFingerprint(
-            novelty_score=0.7, quality="full", analyses_succeeded=4,
+            novelty_score=0.7,
+            quality="full",
+            analyses_succeeded=4,
         )
         nov = novelty_score(graph, fingerprint=fp)
         self.assertAlmostEqual(nov.novelty_confidence, 0.9)
@@ -247,12 +268,15 @@ class TestNoveltyCalibration(unittest.TestCase):
 
         for n in (1, 2, 3):
             fp = BehavioralFingerprint(
-                novelty_score=0.5, quality="partial", analyses_succeeded=n,
+                novelty_score=0.5,
+                quality="partial",
+                analyses_succeeded=n,
             )
             nov = novelty_score(graph, fingerprint=fp)
             expected = 0.4 + n * 0.1
-            self.assertAlmostEqual(nov.novelty_confidence, expected,
-                                   msg=f"analyses_succeeded={n}")
+            self.assertAlmostEqual(
+                nov.novelty_confidence, expected, msg=f"analyses_succeeded={n}"
+            )
 
     def test_confidence_none_quality_with_fingerprint(self):
         """quality='none' but fingerprint provided gives confidence=0.3."""
@@ -265,8 +289,9 @@ class TestNoveltyCalibration(unittest.TestCase):
         op = graph.add_op("relu", [inp])
         graph.set_output(op)
 
-        fp = BehavioralFingerprint(novelty_score=0.5, quality="none",
-                                   analyses_succeeded=0)
+        fp = BehavioralFingerprint(
+            novelty_score=0.5, quality="none", analyses_succeeded=0
+        )
         nov = novelty_score(graph, fingerprint=fp)
         self.assertAlmostEqual(nov.novelty_confidence, 0.3)
 
@@ -294,26 +319,35 @@ class TestNoveltyCalibration(unittest.TestCase):
     def test_novelty_confidence_persisted_in_db(self):
         """novelty_confidence column exists and round-trips through DB."""
         from research.scientist.notebook import LabNotebook
-        import tempfile, os
+        import tempfile
+        import os
 
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test.db")
             nb = LabNotebook(db_path)
             exp_id = nb.start_experiment("test", {})
             rid = nb.record_program_result(
-                exp_id, "fp123", "{}",
-                novelty_score=0.7, novelty_confidence=0.85,
+                exp_id,
+                "fp123",
+                "{}",
+                novelty_score=0.7,
+                novelty_confidence=0.85,
             )
             nb.flush_writes()
             detail = nb.get_program_detail(rid)
-            self.assertIsNotNone(detail, "get_program_detail returned None — async write may not have flushed")
+            self.assertIsNotNone(
+                detail,
+                "get_program_detail returned None — async write may not have flushed",
+            )
             self.assertAlmostEqual(detail["novelty_confidence"], 0.85)
             nb.close()
 
     def test_op_success_rates_tracks_novelty_confidence(self):
         """update_op_success_rates persists avg_novelty_confidence."""
         from research.scientist.notebook import LabNotebook
-        import tempfile, os, json
+        import tempfile
+        import os
+        import json
 
         with tempfile.TemporaryDirectory() as td:
             db_path = os.path.join(td, "test.db")
@@ -321,14 +355,22 @@ class TestNoveltyCalibration(unittest.TestCase):
             exp_id = nb.start_experiment("test", {})
             graph = {"nodes": {"n1": {"op_name": "relu", "inputs": ["input"]}}}
             nb.record_program_result(
-                exp_id, "fp1", json.dumps(graph),
-                novelty_score=0.6, novelty_confidence=0.9,
-                stage0_passed=True, stage1_passed=True,
+                exp_id,
+                "fp1",
+                json.dumps(graph),
+                novelty_score=0.6,
+                novelty_confidence=0.9,
+                stage0_passed=True,
+                stage1_passed=True,
             )
             nb.record_program_result(
-                exp_id, "fp2", json.dumps(graph),
-                novelty_score=0.4, novelty_confidence=0.3,
-                stage0_passed=True, stage1_passed=False,
+                exp_id,
+                "fp2",
+                json.dumps(graph),
+                novelty_score=0.4,
+                novelty_confidence=0.3,
+                stage0_passed=True,
+                stage1_passed=False,
             )
             nb.flush_writes()
             nb.update_op_success_rates(exp_id)
@@ -344,7 +386,8 @@ class TestNoveltyCalibration(unittest.TestCase):
 
         config = RunConfig()
         self.assertGreaterEqual(
-            config.auto_validate_min_novelty_confidence, 0.5,
+            config.auto_validate_min_novelty_confidence,
+            0.5,
             "Breakthrough gate must require novelty_confidence >= 0.5",
         )
 
@@ -354,7 +397,8 @@ class TestNoveltyCalibration(unittest.TestCase):
 
         config = RunConfig()
         self.assertGreaterEqual(
-            config.validation_n_seeds, 5,
+            config.validation_n_seeds,
+            5,
             "Breakthrough gate must require >= 5 seeds",
         )
 
@@ -363,31 +407,43 @@ class TestNoveltyCalibration(unittest.TestCase):
         from research.scientist.runner import RunConfig
 
         config = RunConfig()
-        self.assertGreaterEqual(config.validation_n_seeds, 5,
-                                "validation_n_seeds must default to >= 5 for breakthrough eligibility")
+        self.assertGreaterEqual(
+            config.validation_n_seeds,
+            5,
+            "validation_n_seeds must default to >= 5 for breakthrough eligibility",
+        )
 
     def test_grammar_weights_discount_low_confidence_novelty(self):
         """Grammar weight novelty factor should be scaled by confidence."""
         from research.scientist.analytics import ExperimentAnalytics
-        from unittest.mock import MagicMock
 
         analytics = ExperimentAnalytics.__new__(ExperimentAnalytics)
         analytics.nb = MagicMock()
 
         # High confidence novelty vs low confidence novelty
         stats_high_conf = {
-            "total": 100, "s1_total": 20, "novelty_sum": 50.0, "count": 100,
-            "conf_sum": 90.0, "conf_count": 100,  # avg conf = 0.9
+            "total": 100,
+            "s1_total": 20,
+            "novelty_sum": 50.0,
+            "count": 100,
+            "conf_sum": 90.0,
+            "conf_count": 100,  # avg conf = 0.9
         }
         stats_low_conf = {
-            "total": 100, "s1_total": 20, "novelty_sum": 50.0, "count": 100,
-            "conf_sum": 20.0, "conf_count": 100,  # avg conf = 0.2
+            "total": 100,
+            "s1_total": 20,
+            "novelty_sum": 50.0,
+            "count": 100,
+            "conf_sum": 20.0,
+            "conf_count": 100,  # avg conf = 0.2
         }
 
         weights_high = analytics._compute_weights_from_stats(
-            {"activation": stats_high_conf})
+            {"activation": stats_high_conf}
+        )
         weights_low = analytics._compute_weights_from_stats(
-            {"activation": stats_low_conf})
+            {"activation": stats_low_conf}
+        )
 
         # Both should produce weights, but high-conf should weight novelty more
         self.assertIsNotNone(weights_high)
@@ -395,27 +451,44 @@ class TestNoveltyCalibration(unittest.TestCase):
         # With same s1_rate (only one category), both hit statistical guard
         # and return default. Use two categories to get past the guard.
         stats_good = {
-            "total": 100, "s1_total": 30, "novelty_sum": 80.0, "count": 100,
-            "conf_sum": 90.0, "conf_count": 100,
+            "total": 100,
+            "s1_total": 30,
+            "novelty_sum": 80.0,
+            "count": 100,
+            "conf_sum": 90.0,
+            "conf_count": 100,
         }
         stats_bad = {
-            "total": 100, "s1_total": 5, "novelty_sum": 10.0, "count": 100,
-            "conf_sum": 20.0, "conf_count": 100,
+            "total": 100,
+            "s1_total": 5,
+            "novelty_sum": 10.0,
+            "count": 100,
+            "conf_sum": 20.0,
+            "conf_count": 100,
         }
-        w_high = analytics._compute_weights_from_stats({
-            "activation": stats_good, "linear": stats_bad,
-        })
+        w_high = analytics._compute_weights_from_stats(
+            {
+                "activation": stats_good,
+                "linear": stats_bad,
+            }
+        )
         # Replace good stats with low confidence
         stats_good_lowconf = dict(stats_good)
         stats_good_lowconf["conf_sum"] = 10.0  # avg conf = 0.1
-        w_low = analytics._compute_weights_from_stats({
-            "activation": stats_good_lowconf, "linear": stats_bad,
-        })
+        w_low = analytics._compute_weights_from_stats(
+            {
+                "activation": stats_good_lowconf,
+                "linear": stats_bad,
+            }
+        )
         self.assertIsNotNone(w_high)
         self.assertIsNotNone(w_low)
         # High-confidence novelty should give a higher weight
-        self.assertGreater(w_high["activation"], w_low["activation"],
-                           "High-confidence novelty should produce higher grammar weight")
+        self.assertGreater(
+            w_high["activation"],
+            w_low["activation"],
+            "High-confidence novelty should produce higher grammar weight",
+        )
 
     def test_grammar_weights_cap_repeated_fingerprint_influence(self):
         """Fingerprint-capped weighting should reduce repeated architecture dominance."""
@@ -476,19 +549,27 @@ class TestNoveltyCalibration(unittest.TestCase):
             analytics_capped = ExperimentAnalytics(nb)
             analytics_uncapped = ExperimentAnalytics(nb)
 
-            capped_rates, capped_diag = analytics_capped._collect_fingerprint_capped_op_rates(3.0)
-            uncapped_rates, _ = analytics_uncapped._collect_fingerprint_capped_op_rates(1_000_000.0)
+            capped_rates, capped_diag = (
+                analytics_capped._collect_fingerprint_capped_op_rates(3.0)
+            )
+            uncapped_rates, _ = analytics_uncapped._collect_fingerprint_capped_op_rates(
+                1_000_000.0
+            )
 
             self.assertIn("relu", capped_rates)
             self.assertIn("relu", uncapped_rates)
-            self.assertLess(capped_rates["relu"]["n_used"], uncapped_rates["relu"]["n_used"])
+            self.assertLess(
+                capped_rates["relu"]["n_used"], uncapped_rates["relu"]["n_used"]
+            )
             self.assertGreater(capped_diag["rerun_ratio"], 0.5)
             self.assertGreater(capped_diag["top_fingerprint_concentration"], 0.5)
 
-            with _patch.object(ExperimentAnalytics, 'FINGERPRINT_WEIGHT_CAP', 3.0):
+            with _patch.object(ExperimentAnalytics, "FINGERPRINT_WEIGHT_CAP", 3.0):
                 capped_weights = analytics_capped.compute_grammar_weights()
                 diag = analytics_capped.grammar_weight_learning_diagnostics()
-            with _patch.object(ExperimentAnalytics, 'FINGERPRINT_WEIGHT_CAP', 1_000_000.0):
+            with _patch.object(
+                ExperimentAnalytics, "FINGERPRINT_WEIGHT_CAP", 1_000_000.0
+            ):
                 uncapped_weights = analytics_uncapped.compute_grammar_weights()
             self.assertIsNotNone(capped_weights)
             self.assertIsNotNone(uncapped_weights)
@@ -505,30 +586,45 @@ class TestNoveltyCalibration(unittest.TestCase):
 
         # Full confidence: novelty fully counted
         score_full = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.9)
+            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.9
+        )
         # Low confidence: novelty discounted
         score_low = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.2)
+            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.2
+        )
         # No confidence param: defaults to 1.0 (backward compat)
         score_none = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8)
+            screening_lr=0.5, screening_nov=0.8
+        )
 
-        self.assertGreater(score_full, score_low,
-                           "High confidence should yield higher composite score")
-        self.assertEqual(score_none, LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=1.0),
-            "None confidence should behave like 1.0")
+        self.assertGreater(
+            score_full, score_low, "High confidence should yield higher composite score"
+        )
+        self.assertEqual(
+            score_none,
+            LabNotebook.compute_composite_score(
+                screening_lr=0.5, screening_nov=0.8, novelty_confidence=1.0
+            ),
+            "None confidence should behave like 1.0",
+        )
         # Zero confidence should eliminate novelty contribution entirely
         score_zero = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.0)
+            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.0
+        )
         score_no_nov = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.0)
-        self.assertAlmostEqual(score_zero, score_no_nov, places=6,
-                               msg="Zero confidence should be equivalent to zero novelty")
+            screening_lr=0.5, screening_nov=0.0
+        )
+        self.assertAlmostEqual(
+            score_zero,
+            score_no_nov,
+            places=6,
+            msg="Zero confidence should be equivalent to zero novelty",
+        )
 
     def test_upsert_leaderboard_passes_novelty_confidence(self):
         """upsert_leaderboard should use novelty_confidence in composite score."""
-        import tempfile, os
+        import tempfile
+        import os
         from research.scientist.notebook import LabNotebook
 
         with tempfile.TemporaryDirectory() as d:
@@ -544,8 +640,10 @@ class TestNoveltyCalibration(unittest.TestCase):
             )
             # High confidence
             eid_high = nb.upsert_leaderboard(
-                result_id=rid, model_source="test",
-                screening_loss_ratio=0.5, screening_novelty=0.8,
+                result_id=rid,
+                model_source="test",
+                screening_loss_ratio=0.5,
+                screening_novelty=0.8,
                 novelty_confidence=0.9,
             )
             # Low confidence
@@ -558,8 +656,10 @@ class TestNoveltyCalibration(unittest.TestCase):
                 novelty_confidence=0.2,
             )
             eid_low = nb.upsert_leaderboard(
-                result_id=rid2, model_source="test",
-                screening_loss_ratio=0.5, screening_novelty=0.8,
+                result_id=rid2,
+                model_source="test",
+                screening_loss_ratio=0.5,
+                screening_novelty=0.8,
                 novelty_confidence=0.2,
             )
             lb = nb.get_leaderboard(limit=10)
@@ -621,6 +721,7 @@ class TestBaselineDataFn(unittest.TestCase):
         import torch
 
         call_count = [0]
+
         def fake_data(batch_size, seq_len, dev):
             call_count[0] += 1
             return torch.randint(0, 1024, (batch_size, seq_len), device=dev)
@@ -628,8 +729,14 @@ class TestBaselineDataFn(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             bl = TransformerBaseline(cache_path=os.path.join(tmpdir, "bl.db"))
             loss = bl.get_baseline_loss(
-                d_model=64, seq_len=32, n_steps=5, vocab_size=1024,
-                batch_size=2, device="cpu", data_fn=fake_data, data_tag="test",
+                d_model=64,
+                seq_len=32,
+                n_steps=5,
+                vocab_size=1024,
+                batch_size=2,
+                device="cpu",
+                data_fn=fake_data,
+                data_tag="test",
             )
             self.assertTrue(0 < loss < 20)
             self.assertGreater(call_count[0], 0, "data_fn should have been called")
@@ -647,8 +754,14 @@ class TestBaselineDataFn(unittest.TestCase):
             bl = TransformerBaseline(cache_path=os.path.join(tmpdir, "bl.db"))
             ratio = bl.compare(
                 program_loss=5.0,
-                d_model=64, seq_len=32, n_steps=5, vocab_size=1024,
-                batch_size=2, device="cpu", data_fn=fake_data, data_tag="test",
+                d_model=64,
+                seq_len=32,
+                n_steps=5,
+                vocab_size=1024,
+                batch_size=2,
+                device="cpu",
+                data_fn=fake_data,
+                data_tag="test",
             )
             self.assertIsInstance(ratio, float)
             self.assertGreater(ratio, 0)
@@ -710,7 +823,9 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def _make_artifact_dir(self, tmpdir, manifest_override=None, families=None):
         """Helper: create a valid artifact directory with manifest and .pt files."""
-        import json, torch
+        import json
+        import torch
+
         art_dir = os.path.join(tmpdir, "cka_references", "v1")
         os.makedirs(art_dir, exist_ok=True)
 
@@ -732,7 +847,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
         # Create .pt files
         shape = manifest["activation_shape"]
-        for family in (families or ["transformer", "ssm", "conv"]):
+        for family in families or ["transformer", "ssm", "conv"]:
             data = {
                 "activations": torch.randn(shape[0], shape[1]),
                 "config": {"family": family},
@@ -746,6 +861,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Valid manifest loads without error."""
         from research.eval.cka_references import load_manifest
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             m = load_manifest(Path(art_dir))
@@ -758,6 +874,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Missing manifest.json raises ValueError."""
         from research.eval.cka_references import load_manifest
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(ValueError, msg="No manifest.json"):
                 load_manifest(Path(d))
@@ -766,6 +883,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Malformed JSON raises ValueError."""
         from research.eval.cka_references import load_manifest
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "manifest.json")
             with open(p, "w") as f:
@@ -776,7 +894,9 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_missing_fields(self):
         """Manifest missing required fields raises ValueError."""
         from research.eval.cka_references import load_manifest
-        import tempfile, json
+        import tempfile
+        import json
+
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "manifest.json")
             with open(p, "w") as f:
@@ -788,6 +908,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Unsupported schema version raises ValueError."""
         from research.eval.cka_references import load_manifest
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d, {"schema_version": "99"})
             with self.assertRaises(ValueError, msg="Unsupported schema"):
@@ -797,6 +918,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Manifest with incomplete families raises ValueError."""
         from research.eval.cka_references import load_manifest
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(
                 d, {"reference_families": ["transformer"]}
@@ -808,6 +930,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Invalid activation_shape raises ValueError."""
         from research.eval.cka_references import load_manifest
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d, {"activation_shape": [0, 32]})
             with self.assertRaises(ValueError):
@@ -815,8 +938,12 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_load_reference_activations_valid(self):
         """Valid .pt files load as tensors with correct shape."""
-        from research.eval.cka_references import load_manifest, load_reference_activations
+        from research.eval.cka_references import (
+            load_manifest,
+            load_reference_activations,
+        )
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             m = load_manifest(Path(art_dir))
@@ -827,8 +954,12 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_load_reference_activations_missing_file(self):
         """Missing .pt file raises ValueError."""
-        from research.eval.cka_references import load_manifest, load_reference_activations
+        from research.eval.cka_references import (
+            load_manifest,
+            load_reference_activations,
+        )
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             os.remove(os.path.join(art_dir, "ssm.pt"))
@@ -838,8 +969,13 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_load_reference_activations_shape_mismatch(self):
         """Tensor with wrong shape raises ValueError."""
-        from research.eval.cka_references import load_manifest, load_reference_activations
-        import tempfile, torch
+        from research.eval.cka_references import (
+            load_manifest,
+            load_reference_activations,
+        )
+        import tempfile
+        import torch
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             # Overwrite one file with wrong shape
@@ -855,6 +991,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """ReferenceCkaStore with no artifacts returns None references."""
         from research.eval.cka_references import ReferenceCkaStore
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             store = ReferenceCkaStore(artifact_dir=os.path.join(d, "nonexistent"))
             self.assertIsNone(store.get_references())
@@ -866,6 +1003,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """ReferenceCkaStore loads valid artifacts successfully."""
         from research.eval.cka_references import ReferenceCkaStore
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             store = ReferenceCkaStore(artifact_dir=art_dir)
@@ -881,6 +1019,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """reset() clears loaded state so next access reloads."""
         from research.eval.cka_references import ReferenceCkaStore
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             store = ReferenceCkaStore(artifact_dir=art_dir)
@@ -894,6 +1033,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         """Metadata includes all expected provenance fields."""
         from research.eval.cka_references import ReferenceCkaStore
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             store = ReferenceCkaStore(artifact_dir=art_dir)
@@ -946,8 +1086,8 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         reps = torch.randn(1, 16, 32)  # seq_len=16
         ref_activations = {
             "transformer": torch.randn(24, 32),  # seq_len=24 (longer)
-            "ssm": torch.randn(8, 32),           # seq_len=8 (shorter)
-            "conv": torch.randn(16, 32),          # seq_len=16 (same)
+            "ssm": torch.randn(8, 32),  # seq_len=8 (shorter)
+            "conv": torch.randn(16, 32),  # seq_len=16 (same)
         }
         result = _compute_reference_cka(reps, ref_activations=ref_activations)
         self.assertTrue(result["_succeeded"])
@@ -955,6 +1095,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_fingerprint_records_cka_source(self):
         """Fingerprint records cka_source provenance."""
         from research.eval.cka_references import reset_default_store
+
         reset_default_store()  # ensure clean state
 
         fp = self._make_fingerprint()
@@ -970,10 +1111,15 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         reset_default_store()
         # Force a store pointing to nonexistent dir
         fake_store = ReferenceCkaStore(artifact_dir="/nonexistent/path")
-        with patch.object(cka_references, '_default_store', fake_store):
-            with patch.object(cka_references, '_default_lock', cka_references.threading.Lock()):
+        with patch.object(cka_references, "_default_store", fake_store):
+            with patch.object(
+                cka_references, "_default_lock", cka_references.threading.Lock()
+            ):
                 # Override get_default_store to return our fake store
-                with patch('research.eval.cka_references.get_default_store', return_value=fake_store):
+                with patch(
+                    "research.eval.cka_references.get_default_store",
+                    return_value=fake_store,
+                ):
                     fp = self._make_fingerprint()
         self.assertIn(fp.cka_source, ("heuristic_fallback",))
         reset_default_store()
@@ -988,12 +1134,14 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
                 super().__init__()
                 self.embed = nn.Embedding(100, 32)
                 self.linear = nn.Linear(32, 100)
+
             def forward(self, x):
                 return self.linear(self.embed(x))
 
         model = TinyModel()
-        return compute_fingerprint(model, seq_len=8, model_dim=32,
-                                   vocab_size=100, device="cpu", n_probes=4)
+        return compute_fingerprint(
+            model, seq_len=8, model_dim=32, vocab_size=100, device="cpu", n_probes=4
+        )
 
     def test_fingerprint_cka_provenance_fields_exist(self):
         """BehavioralFingerprint has cka_source and cka_artifact_version fields."""
@@ -1014,7 +1162,10 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             art_dir = str(Path(d) / "refs" / "v1")
             export_artifacts(
-                output_dir=art_dir, seed=123, n_steps=10, device="cpu",
+                output_dir=art_dir,
+                seed=123,
+                n_steps=10,
+                device="cpu",
             )
             store = ReferenceCkaStore(artifact_dir=art_dir)
             refs = store.get_references()
@@ -1039,13 +1190,9 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
                 m1 = json.load(f)
             with open(Path(d2) / "manifest.json") as f:
                 m2 = json.load(f)
-            self.assertEqual(
-                m1["probe_protocol_hash"], m2["probe_protocol_hash"]
-            )
+            self.assertEqual(m1["probe_protocol_hash"], m2["probe_protocol_hash"])
             self.assertEqual(m1["activation_shape"], m2["activation_shape"])
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

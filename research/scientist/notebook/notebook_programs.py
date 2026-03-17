@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -11,6 +12,7 @@ from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
 
 class _ProgramsMixin:
     """Programs operations for the Lab Notebook."""
+
     __slots__ = ()
 
     def _ensure_experiment_row(self, experiment_id: Optional[str]) -> None:
@@ -51,7 +53,9 @@ class _ProgramsMixin:
             return {"would_delete": count, "dry_run": True}
 
         junk_ids = [r["result_id"] for r in junk_rows]
-        affected_experiments = {r["experiment_id"] for r in junk_rows if r["experiment_id"]}
+        affected_experiments = {
+            r["experiment_id"] for r in junk_rows if r["experiment_id"]
+        }
 
         # Cascade delete in foreign-key dependency order
         batch_size = 500
@@ -59,13 +63,15 @@ class _ProgramsMixin:
             batch = junk_ids[i : i + batch_size]
             placeholders = ",".join("?" * len(batch))
             self.conn.execute(
-                f"DELETE FROM training_curves WHERE result_id IN ({placeholders})", batch
+                f"DELETE FROM training_curves WHERE result_id IN ({placeholders})",
+                batch,
             )
             self.conn.execute(
                 f"DELETE FROM leaderboard WHERE result_id IN ({placeholders})", batch
             )
             self.conn.execute(
-                f"DELETE FROM program_results WHERE result_id IN ({placeholders})", batch
+                f"DELETE FROM program_results WHERE result_id IN ({placeholders})",
+                batch,
             )
 
         self._maybe_commit()
@@ -79,7 +85,6 @@ class _ProgramsMixin:
 
         return {"deleted": count, "dry_run": False}
 
-
     # ── Entries ──
 
     def add_entry(self, entry: ExperimentEntry) -> str:
@@ -91,13 +96,19 @@ class _ProgramsMixin:
             (entry_id, experiment_id, timestamp, entry_type, title, content,
              metadata_json, tags)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (entry_id, entry.experiment_id, time.time(),
-             entry.entry_type, entry.title, entry.content,
-             json.dumps(entry.metadata), ",".join(entry.tags)),
+            (
+                entry_id,
+                entry.experiment_id,
+                time.time(),
+                entry.entry_type,
+                entry.title,
+                entry.content,
+                json.dumps(entry.metadata),
+                ",".join(entry.tags),
+            ),
         )
         self._maybe_commit()
         return entry_id
-
 
     # ── Program Results ──
 
@@ -111,11 +122,14 @@ class _ProgramsMixin:
         ).fetchone()
         return row is not None
 
-
-    def record_program_result(self, experiment_id: str,
-                              graph_fingerprint: str, graph_json: str,
-                              result_id: Optional[str] = None,
-                              **kwargs) -> str:
+    def record_program_result(
+        self,
+        experiment_id: str,
+        graph_fingerprint: str,
+        graph_json: str,
+        result_id: Optional[str] = None,
+        **kwargs,
+    ) -> str:
         """Record results for a single synthesized program.
 
         Accepts all program_results columns as keyword arguments.
@@ -136,7 +150,10 @@ class _ProgramsMixin:
         if s0 is not None and not s0:
             error_type = kwargs.get("error_type")
             if not error_type:
-                LOGGER.debug("Quality gate: dropping S0 failure with no error_type (fp=%s)", graph_fingerprint)
+                LOGGER.debug(
+                    "Quality gate: dropping S0 failure with no error_type (fp=%s)",
+                    graph_fingerprint,
+                )
                 return ""
 
         # Reject S1 failures that carry no learning signal at all:
@@ -148,22 +165,37 @@ class _ProgramsMixin:
             error_type = kwargs.get("error_type")
             novelty = kwargs.get("novelty_score") or kwargs.get("novelty_confidence")
             if loss_ratio is None and not error_type and not novelty:
-                LOGGER.debug("Quality gate: dropping S1 failure with no signal (fp=%s)", graph_fingerprint)
+                LOGGER.debug(
+                    "Quality gate: dropping S1 failure with no signal (fp=%s)",
+                    graph_fingerprint,
+                )
                 return ""
 
         if not result_id:
             result_id = str(uuid.uuid4())[:12]
         now = time.time()
-        if kwargs.get("novelty_score") is not None and "novelty_scoring_policy_version" not in kwargs:
+        if (
+            kwargs.get("novelty_score") is not None
+            and "novelty_scoring_policy_version" not in kwargs
+        ):
             kwargs["novelty_scoring_policy_version"] = "gated_lightning_v1"
 
         # Convert booleans to int for SQLite
         bool_fields = {
-            "stage0_passed", "stage05_passed", "stage1_passed",
-            "extreme_input_passed", "random_input_passed",
-            "has_nan_output", "has_inf_output", "has_nan_grad", "has_zero_grad",
-            "graph_has_gradient_path", "graph_uses_math_spaces",
-            "graph_uses_frequency_domain", "regression_gate_pass", "fingerprint_full_ran",
+            "stage0_passed",
+            "stage05_passed",
+            "stage1_passed",
+            "extreme_input_passed",
+            "random_input_passed",
+            "has_nan_output",
+            "has_inf_output",
+            "has_nan_grad",
+            "has_zero_grad",
+            "graph_has_gradient_path",
+            "graph_uses_math_spaces",
+            "graph_uses_frequency_domain",
+            "regression_gate_pass",
+            "fingerprint_full_ran",
         }
         for f in bool_fields:
             if f in kwargs and kwargs[f] is not None:
@@ -190,10 +222,14 @@ class _ProgramsMixin:
             )
 
         # Build column list dynamically from what's provided
-        base_cols = ["result_id", "experiment_id", "timestamp",
-                     "graph_fingerprint", "graph_json"]
-        base_vals = [result_id, experiment_id, now,
-                     graph_fingerprint, graph_json]
+        base_cols = [
+            "result_id",
+            "experiment_id",
+            "timestamp",
+            "graph_fingerprint",
+            "graph_json",
+        ]
+        base_vals = [result_id, experiment_id, now, graph_fingerprint, graph_json]
 
         extra_cols = []
         extra_vals = []
@@ -212,10 +248,14 @@ class _ProgramsMixin:
         )
         return result_id
 
-
-    def save_op_rehabilitation_result(self, op_name: str, compile_passed: bool,
-                                       forward_passed: bool, error_message: Optional[str],
-                                       model_dim: int) -> None:
+    def save_op_rehabilitation_result(
+        self,
+        op_name: str,
+        compile_passed: bool,
+        forward_passed: bool,
+        error_message: Optional[str],
+        model_dim: int,
+    ) -> None:
         """Store a rehabilitation test result."""
         self.conn.execute(
             """INSERT INTO op_rehabilitation_cache
@@ -227,17 +267,29 @@ class _ProgramsMixin:
                 error_message = excluded.error_message,
                 tested_at = excluded.tested_at,
                 model_dim = excluded.model_dim""",
-            (op_name, int(compile_passed), int(forward_passed), error_message, time.time(), model_dim),
+            (
+                op_name,
+                int(compile_passed),
+                int(forward_passed),
+                error_message,
+                time.time(),
+                model_dim,
+            ),
         )
         self._maybe_commit()
 
-
-    def get_top_programs(self, n: int = 20,
-                         sort_by: str = "novelty_score") -> List[Dict]:
+    def get_top_programs(
+        self, n: int = 20, sort_by: str = "novelty_score"
+    ) -> List[Dict]:
         self.flush_writes()
-        valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty",
-                       "behavioral_novelty", "validation_loss_ratio",
-                       "discovery_loss_ratio"}
+        valid_sorts = {
+            "novelty_score",
+            "loss_ratio",
+            "structural_novelty",
+            "behavioral_novelty",
+            "validation_loss_ratio",
+            "discovery_loss_ratio",
+        }
         if sort_by not in valid_sorts:
             sort_by = "novelty_score"
 
@@ -250,7 +302,7 @@ class _ProgramsMixin:
                 WHERE stage1_passed = 1
                 ORDER BY {sort_by} {order} NULLS LAST
                 LIMIT ?""",
-            (n,)
+            (n,),
         ).fetchall()
         rows_dicts = [dict(r) for r in rows]
         for d in rows_dicts:
@@ -260,7 +312,6 @@ class _ProgramsMixin:
                     routing_mode=d.get("routing_mode"),
                 )
         return rows_dicts
-
 
     def get_report_top_programs_grouped_by_fingerprint(
         self,
@@ -272,9 +323,14 @@ class _ProgramsMixin:
         Returns one representative survivor per fingerprint, enriched with
         repeat-count and run-spread metadata across all stage1 survivors.
         """
-        valid_sorts = {"novelty_score", "loss_ratio", "structural_novelty",
-                       "behavioral_novelty", "validation_loss_ratio",
-                       "discovery_loss_ratio"}
+        valid_sorts = {
+            "novelty_score",
+            "loss_ratio",
+            "structural_novelty",
+            "behavioral_novelty",
+            "validation_loss_ratio",
+            "discovery_loss_ratio",
+        }
         if sort_by not in valid_sorts:
             sort_by = "loss_ratio"
 
@@ -322,7 +378,9 @@ class _ProgramsMixin:
 
             spread = spread_by_fp.get(fingerprint, {})
             record["repeat_count"] = int(spread.get("repeat_count") or 1)
-            record["repeat_experiment_span"] = int(spread.get("repeat_experiment_span") or 1)
+            record["repeat_experiment_span"] = int(
+                spread.get("repeat_experiment_span") or 1
+            )
             record["repeat_first_seen_ts"] = spread.get("repeat_first_seen_ts")
             record["repeat_last_seen_ts"] = spread.get("repeat_last_seen_ts")
             record["repeat_loss_min"] = spread.get("repeat_loss_min")
@@ -337,9 +395,7 @@ class _ProgramsMixin:
 
         return grouped
 
-
-    def get_program_results(self, experiment_id: str,
-                            limit: int = 500) -> List[Dict]:
+    def get_program_results(self, experiment_id: str, limit: int = 500) -> List[Dict]:
         """Get ALL program results for an experiment (not just survivors)."""
         rows = self.conn.execute(
             """SELECT * FROM program_results
@@ -350,7 +406,6 @@ class _ProgramsMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
-
     def get_program_detail(self, result_id: str) -> Optional[Dict]:
         """Get full detail for a single program result."""
         row = self.conn.execute(
@@ -360,7 +415,6 @@ class _ProgramsMixin:
         if row is None:
             return None
         return self._parse_program_json_fields(dict(row))
-
 
     def get_program_details(self, result_ids: List[str]) -> List[Dict]:
         """Batch fetch full details for multiple program results."""
@@ -378,15 +432,20 @@ class _ProgramsMixin:
             by_id[d.get("result_id")] = d
         return [by_id.get(rid) for rid in ids]
 
-
     @staticmethod
     def _parse_program_json_fields(d: Dict[str, Any]) -> Dict[str, Any]:
         """Parse known JSON fields for program results in-place."""
         json_fields = (
-            "graph_json", "fingerprint_json", "training_program_json",
-            "graph_category_histogram", "external_benchmarks_json",
-            "perf_report_json", "kernel_timings_json", "starvation_report_json",
-            "diagnostic_tasks_json", "sparsity_report_json"
+            "graph_json",
+            "fingerprint_json",
+            "training_program_json",
+            "graph_category_histogram",
+            "external_benchmarks_json",
+            "perf_report_json",
+            "kernel_timings_json",
+            "starvation_report_json",
+            "diagnostic_tasks_json",
+            "sparsity_report_json",
         )
         for json_field in json_fields:
             val = d.get(json_field)
@@ -396,7 +455,6 @@ class _ProgramsMixin:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return d
-
 
     def _sync_fingerprint_leaderboard(self, result_id: str) -> None:
         """Aggregate leaderboard evidence across all runs of a fingerprint.
@@ -428,17 +486,32 @@ class _ProgramsMixin:
 
         pr_cols_all = self._get_program_results_columns()
         wanted_pr_cols = [
-            "result_id", "novelty_confidence", "loss_improvement_rate",
-            "discovery_loss_ratio", "validation_loss_ratio", "efficiency_multiple",
-            "max_viable_seq_len", "robustness_long_ctx_scaling_score",
-            "robustness_long_ctx_assoc_score", "robustness_long_ctx_multi_hop_score",
-            "robustness_long_ctx_passkey_score", "robustness_long_ctx_retrieval_aggregate",
-            "robustness_long_ctx_combined_score", "robustness_noise_score",
-            "activation_sparsity_score", "depth_savings_ratio",
-            "recursion_savings_ratio", "routing_expert_count",
-            "routing_confidence_mean", "routing_drop_rate",
-            "wikitext_perplexity", "wikitext_score", "tinystories_perplexity",
-            "tinystories_score", "cross_task_score", "efficiency_wall_score",
+            "result_id",
+            "novelty_confidence",
+            "loss_improvement_rate",
+            "discovery_loss_ratio",
+            "validation_loss_ratio",
+            "efficiency_multiple",
+            "max_viable_seq_len",
+            "robustness_long_ctx_scaling_score",
+            "robustness_long_ctx_assoc_score",
+            "robustness_long_ctx_multi_hop_score",
+            "robustness_long_ctx_passkey_score",
+            "robustness_long_ctx_retrieval_aggregate",
+            "robustness_long_ctx_combined_score",
+            "robustness_noise_score",
+            "activation_sparsity_score",
+            "depth_savings_ratio",
+            "recursion_savings_ratio",
+            "routing_expert_count",
+            "routing_confidence_mean",
+            "routing_drop_rate",
+            "wikitext_perplexity",
+            "wikitext_score",
+            "tinystories_perplexity",
+            "tinystories_score",
+            "cross_task_score",
+            "efficiency_wall_score",
         ]
         pr_select_cols = [c for c in wanted_pr_cols if c in pr_cols_all]
         if not pr_select_cols:
@@ -452,7 +525,10 @@ class _ProgramsMixin:
         # Use current best composite entry as the anchor for stable metadata.
         anchor = max(
             lb_rows,
-            key=lambda r: (float(r.get("composite_score") or -1e9), float(r.get("timestamp") or 0.0)),
+            key=lambda r: (
+                float(r.get("composite_score") or -1e9),
+                float(r.get("timestamp") or 0.0),
+            ),
         )
         merged = dict(anchor)
 
@@ -530,45 +606,40 @@ class _ProgramsMixin:
         if highest_tier:
             merged["tier"] = highest_tier
 
-        nov_conf = self._best_max(pr_rows, "novelty_confidence")
-        structural_counts = self._graph_structural_counts(result_id)
+        # Build v6 score kwargs from merged fingerprint data + program_results
+        tags = str(merged.get("tags") or "")
+        is_wiki_tik = "tiktoken_native" in tags and "wikitext103" in tags
+        # Best program_results row for v6 fields
+        best_pr = (
+            max(pr_rows, key=lambda r: r.get("n_train_steps") or 0) if pr_rows else {}
+        )
         composite = self.compute_composite_score(
+            wikitext_perplexity=merged.get("wikitext_perplexity"),
+            final_loss=best_pr.get("final_loss"),
+            is_wikitext_tiktoken=is_wiki_tik,
             screening_lr=merged.get("screening_loss_ratio"),
-            screening_nov=merged.get("screening_novelty"),
             inv_lr=merged.get("investigation_loss_ratio"),
-            inv_robust=merged.get("investigation_robustness"),
             val_lr=merged.get("validation_loss_ratio"),
             val_baseline=merged.get("validation_baseline_ratio"),
             val_std=merged.get("validation_multi_seed_std"),
-            novelty_confidence=nov_conf,
-            scaling_param_efficiency=merged.get("scaling_param_efficiency"),
+            inv_robust=merged.get("investigation_robustness"),
+            loss_ratio=best_pr.get("loss_ratio"),
+            screening_nov=merged.get("screening_novelty"),
+            novelty_confidence=self._best_max(pr_rows, "novelty_confidence"),
+            behavioral_novelty=best_pr.get("behavioral_novelty"),
+            structural_novelty=best_pr.get("structural_novelty"),
+            cka_reference_quality=(
+                best_pr.get("fp_cka_vs_transformer") is not None
+                and (best_pr.get("fp_cka_vs_transformer") or 0) > 0
+            ),
             is_reference=bool(merged.get("is_reference")),
-            routing_savings=merged.get("routing_savings_ratio"),
-            compression_ratio=merged.get("compression_ratio"),
-            discovery_lr=merged.get("discovery_loss_ratio"),
-            spectral_norm=merged.get("fp_jacobian_spectral_norm"),
-            robustness_noise=merged.get("robustness_noise_score"),
-            quant_retention=merged.get("quant_int8_retention"),
-            long_ctx_score=merged.get("robustness_long_ctx_score"),
-            init_std=merged.get("init_sensitivity_std"),
             loss_improvement_rate=merged.get("loss_improvement_rate"),
-            quant_quality_per_byte=merged.get("quant_quality_per_byte"),
-            ncd_score=merged.get("ncd_score"),
-            n_routing_ops=structural_counts.get("routing"),
-            n_sparse_ops=structural_counts.get("sparse"),
-            n_moe_ops=structural_counts.get("moe"),
-            recursion_savings=merged.get("recursion_savings_ratio"),
-            depth_savings=merged.get("depth_savings_ratio"),
-            activation_sparsity=merged.get("activation_sparsity_score"),
-            max_viable_seq_len=merged.get("max_viable_seq_len"),
-            long_ctx_scaling=merged.get("robustness_long_ctx_scaling_score"),
-            long_ctx_passkey=merged.get("robustness_long_ctx_passkey_score"),
-            long_ctx_multi_hop=merged.get("robustness_long_ctx_multi_hop_score"),
-            long_ctx_assoc=merged.get("robustness_long_ctx_assoc_score"),
-            routing_expert_count=merged.get("routing_expert_count"),
-            routing_confidence_mean=merged.get("routing_confidence_mean"),
-            routing_drop_rate=merged.get("routing_drop_rate"),
-            wikitext_perplexity=merged.get("wikitext_perplexity"),
+            param_count=best_pr.get("param_count"),
+            n_train_steps=best_pr.get("n_train_steps"),
+            investigation_passed=merged.get("investigation_passed"),
+            validation_passed=merged.get("validation_passed"),
+            spectral_norm=merged.get("fp_jacobian_spectral_norm"),
+            gpt2_raw_anchor=95.0,
         )
         # Monotonic safeguard: fingerprint aggregate should not score below its
         # historical best leaderboard score when incorporating additional runs.
@@ -652,7 +723,6 @@ class _ProgramsMixin:
                 params,
             )
 
-
     def backfill_fingerprint_aggregates(self) -> int:
         """Recompute fingerprint-level leaderboard aggregates for all entries."""
         rows = self.conn.execute(
@@ -671,7 +741,11 @@ class _ProgramsMixin:
                 "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
                 (rid,),
             ).fetchone()
-            fp = str(fp_row["graph_fingerprint"]) if fp_row and fp_row["graph_fingerprint"] else ""
+            fp = (
+                str(fp_row["graph_fingerprint"])
+                if fp_row and fp_row["graph_fingerprint"]
+                else ""
+            )
             if not fp or fp in seen_fp:
                 continue
             seen_fp.add(fp)
@@ -679,7 +753,6 @@ class _ProgramsMixin:
             synced += 1
         self._maybe_commit()
         return synced
-
 
     def get_leaderboard_entry(self, result_id: str) -> Optional[Dict]:
         """Fetch a single leaderboard entry by result_id."""
@@ -690,7 +763,6 @@ class _ProgramsMixin:
             (result_id,),
         ).fetchone()
         return dict(rows) if rows else None
-
 
     def get_investigated_fingerprints(self) -> set:
         """Return fingerprints that have already been investigated or beyond.
@@ -718,7 +790,6 @@ class _ProgramsMixin:
         ).fetchall()
         fps.update(r[0] for r in rows if r[0])
         return fps
-
 
     def get_tiers_for_result_ids(self, result_ids: List[str]) -> Dict[str, str]:
         """Return {result_id: tier} for given result IDs that have leaderboard entries."""

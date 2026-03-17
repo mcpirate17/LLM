@@ -12,11 +12,9 @@ import pytest
 import importlib
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.pipeline
@@ -24,6 +22,7 @@ pytestmark = pytest.mark.pipeline
 # Detect available dependencies
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -33,6 +32,7 @@ try:
 except ImportError:
     HAS_FLASK = False
 
+
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
 def _import_module(dotted_path):
@@ -41,14 +41,14 @@ def _import_module(dotted_path):
 
 
 try:
-    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    from research.scientist.notebook import LabNotebook
+
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -56,6 +56,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -63,6 +64,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -79,12 +81,14 @@ class TestRunConfig(unittest.TestCase):
     def test_default_auto_investigate_min_survivors(self):
         """Default min survivors should be 1 (lowered from 2)."""
         from research.scientist.runner import RunConfig
+
         config = RunConfig()
         self.assertEqual(config.auto_investigate_min_survivors, 1)
 
     def test_auto_investigate_enabled_by_default(self):
         """Auto-investigation should be on by default."""
         from research.scientist.runner import RunConfig
+
         config = RunConfig()
         self.assertTrue(config.auto_investigate)
         self.assertTrue(config.auto_validate)
@@ -92,6 +96,7 @@ class TestRunConfig(unittest.TestCase):
     def test_round_trip_serialization(self):
         """RunConfig → dict → RunConfig should preserve values."""
         from research.scientist.runner import RunConfig
+
         original = RunConfig(
             n_programs=100,
             model_dim=512,
@@ -107,19 +112,33 @@ class TestRunConfig(unittest.TestCase):
     def test_all_expected_fields_exist(self):
         """RunConfig should have all pipeline-related fields."""
         from research.scientist.runner import RunConfig
+
         config = RunConfig()
         fields = [
-            "auto_investigate", "auto_investigate_min_survivors",
-            "auto_investigate_top_n", "auto_validate",
-            "auto_validate_min_robustness", "auto_validate_top_n",
-            "investigation_steps", "investigation_batch_size",
-            "validation_steps", "validation_batch_size",
-            "validation_seq_len", "validation_n_seeds",
-            "model_source", "morph_ratio",
-            "morph_focus_sparse", "morph_sparse_weight_storage",
-            "use_synthesized_training", "n_training_programs",
-            "data_mode", "corpus_path", "corpus_format",
-            "corpus_text_key", "tokenizer_mode", "corpus_max_chars",
+            "auto_investigate",
+            "auto_investigate_min_survivors",
+            "auto_investigate_top_n",
+            "auto_validate",
+            "auto_validate_min_robustness",
+            "auto_validate_top_n",
+            "investigation_steps",
+            "investigation_batch_size",
+            "validation_steps",
+            "validation_batch_size",
+            "validation_seq_len",
+            "validation_n_seeds",
+            "model_source",
+            "morph_ratio",
+            "morph_focus_sparse",
+            "morph_sparse_weight_storage",
+            "use_synthesized_training",
+            "n_training_programs",
+            "data_mode",
+            "corpus_path",
+            "corpus_format",
+            "corpus_text_key",
+            "tokenizer_mode",
+            "corpus_max_chars",
         ]
         for f in fields:
             self.assertTrue(hasattr(config, f), f"Missing field: {f}")
@@ -145,7 +164,6 @@ class TestRunConfig(unittest.TestCase):
         self.assertEqual(restored.corpus_max_chars, 12345)
 
 
-
 # ── Test 7: Auto-Escalation Pipeline ──
 
 
@@ -158,6 +176,7 @@ class TestAutoEscalation(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.tmpdir, "test_escalation.db")
         from research.scientist.runner import ExperimentRunner, RunConfig
+
         self.runner = ExperimentRunner(self.db_path)
         self.config = RunConfig(
             auto_investigate=True,
@@ -184,16 +203,24 @@ class TestAutoEscalation(unittest.TestCase):
             model_source="graph_synthesis",
         )
         nb.flush_writes()  # record_program_result uses async write queue
-        nb.complete_experiment(exp_id, {
-            "total": 10, "stage1_passed": 1,
-        }, "summary", "excited")
+        nb.complete_experiment(
+            exp_id,
+            {
+                "total": 10,
+                "stage1_passed": 1,
+            },
+            "summary",
+            "excited",
+        )
 
         # Include experiment_id so _auto_escalate queries this specific
         # experiment's results rather than the global top-N (which is
         # sensitive to shared DB state and epsilon-greedy seed).
-        results = {"stage1_passed": 1, "experiment_id": exp_id, "survivors": [
-            {"novelty": 0.6, "loss_ratio": 0.3}
-        ]}
+        results = {
+            "stage1_passed": 1,
+            "experiment_id": exp_id,
+            "survivors": [{"novelty": 0.6, "loss_ratio": 0.3}],
+        }
 
         # Force deterministic exploit mode (no epsilon exploration)
         self.config.selection_epsilon = 0.0
@@ -201,8 +228,9 @@ class TestAutoEscalation(unittest.TestCase):
 
         # Should have queued investigation
         pending = getattr(self.runner, "_pending_investigation", None)
-        self.assertIsNotNone(pending,
-                             "Investigation should be queued after S1 survivor")
+        self.assertIsNotNone(
+            pending, "Investigation should be queued after S1 survivor"
+        )
         self.assertIn("result_ids", pending)
 
         nb.close()
@@ -210,6 +238,7 @@ class TestAutoEscalation(unittest.TestCase):
     def test_auto_escalate_skips_when_disabled(self):
         """No escalation when auto_investigate is False."""
         from research.scientist.runner import RunConfig
+
         nb = LabNotebook(self.db_path)
 
         config = RunConfig(auto_investigate=False)
@@ -224,6 +253,7 @@ class TestAutoEscalation(unittest.TestCase):
     def test_auto_escalate_skips_low_survivors(self):
         """No escalation when not enough survivors."""
         from research.scientist.runner import RunConfig
+
         nb = LabNotebook(self.db_path)
 
         config = RunConfig(auto_investigate=True, auto_investigate_min_survivors=5)
@@ -261,8 +291,9 @@ class TestAutoEscalation(unittest.TestCase):
         self.runner._auto_escalate(results, self.config, nb, phase="investigation")
 
         pending = getattr(self.runner, "_pending_validation", None)
-        self.assertIsNotNone(pending,
-                             "Validation should be queued after robust investigation")
+        self.assertIsNotNone(
+            pending, "Validation should be queued after robust investigation"
+        )
         self.assertEqual(len(pending["result_ids"]), 1)  # only r1 qualifies
         nb.close()
 
@@ -296,7 +327,8 @@ class TestAutoEscalation(unittest.TestCase):
                     "best_loss_ratio": 0.10,
                     "baseline_loss_ratio": 0.38,
                     "novelty_confidence": 0.8,
-                    "loss_ratio_multiplier": self.config.investigation_max_loss_ratio_multiplier + 0.1,
+                    "loss_ratio_multiplier": self.config.investigation_max_loss_ratio_multiplier
+                    + 0.1,
                     "brittle_risk": False,
                 },
             ]
@@ -362,7 +394,9 @@ class TestAutoEscalation(unittest.TestCase):
 
     def test_start_validation_persists_candidate_metadata_in_config(self):
         """Validation experiment config should include selected candidate IDs."""
-        with patch("research.scientist.runner.control_start.threading.Thread") as thread_cls:
+        with patch(
+            "research.scientist.runner.control_start.threading.Thread"
+        ) as thread_cls:
             thread_inst = MagicMock()
             thread_cls.return_value = thread_inst
 
@@ -409,15 +443,17 @@ class TestAutoEscalation(unittest.TestCase):
             model_source="graph_synthesis",
             tier="screening",
         )
-        nb.complete_experiment(exp_id, {"total": 5, "stage1_passed": 1},
-                               "done", "excited")
+        nb.complete_experiment(
+            exp_id, {"total": 5, "stage1_passed": 1}, "done", "excited"
+        )
 
         results = {"stage1_passed": 1, "survivors": [{"novelty": 0.7}]}
         self.runner._auto_escalate(results, self.config, nb, phase="screening")
 
         leaderboard = nb.get_leaderboard()
-        self.assertGreater(len(leaderboard), 0,
-                           "Leaderboard should have entries after escalation")
+        self.assertGreater(
+            len(leaderboard), 0, "Leaderboard should have entries after escalation"
+        )
         self.assertEqual(leaderboard[0]["tier"], "screening")
         nb.close()
 
@@ -426,11 +462,13 @@ class TestAutoEscalation(unittest.TestCase):
         nb = LabNotebook(self.db_path)
         try:
             self.runner._active_campaign_id = None
-            self.runner.aria.formulate_campaign = MagicMock(return_value={
-                "title": "Campaign A",
-                "objective": "Explore",
-                "success_criteria": "Increase S1 pass rate",
-            })
+            self.runner.aria.formulate_campaign = MagicMock(
+                return_value={
+                    "title": "Campaign A",
+                    "objective": "Explore",
+                    "success_criteria": "Increase S1 pass rate",
+                }
+            )
 
             campaign_id = self.runner._ensure_campaign(self.config, nb)
             self.assertIsNotNone(campaign_id)
@@ -440,7 +478,6 @@ class TestAutoEscalation(unittest.TestCase):
             self.assertIn("[POST-HOC]", campaign["success_criteria"])
         finally:
             nb.close()
-
 
 
 # ── Test 12: Inline Phase Methods & Budget Context ──
@@ -453,14 +490,20 @@ class TestInlinePhaseMethods(unittest.TestCase):
     def test_runner_has_inline_investigation(self):
         """ExperimentRunner must have _run_inline_investigation (not crash)."""
         from research.scientist.runner import ExperimentRunner
-        self.assertTrue(hasattr(ExperimentRunner, "_run_inline_investigation"),
-                        "Missing _run_inline_investigation method")
+
+        self.assertTrue(
+            hasattr(ExperimentRunner, "_run_inline_investigation"),
+            "Missing _run_inline_investigation method",
+        )
 
     def test_runner_has_inline_validation(self):
         """ExperimentRunner must have _run_inline_validation (not crash)."""
         from research.scientist.runner import ExperimentRunner
-        self.assertTrue(hasattr(ExperimentRunner, "_run_inline_validation"),
-                        "Missing _run_inline_validation method")
+
+        self.assertTrue(
+            hasattr(ExperimentRunner, "_run_inline_validation"),
+            "Missing _run_inline_validation method",
+        )
 
     def test_inline_validation_progress_sets_total_programs(self):
         """Inline validation must initialize progress denominator to avoid x/0 UI output."""
@@ -469,8 +512,11 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         # total_programs is set in the bootstrap helper after refactoring
         src = inspect.getsource(ExperimentRunner._inline_validation_bootstrap)
-        self.assertIn("total_programs=len(result_ids)", src,
-                      "_inline_validation_bootstrap LiveProgress must set total_programs")
+        self.assertIn(
+            "total_programs=len(result_ids)",
+            src,
+            "_inline_validation_bootstrap LiveProgress must set total_programs",
+        )
 
     def test_inline_validation_persists_candidate_metadata(self):
         """Inline validation should persist candidate IDs into experiment config metadata."""
@@ -488,13 +534,17 @@ class TestInlinePhaseMethods(unittest.TestCase):
         from research.scientist.runner import ExperimentRunner
 
         src = inspect.getsource(ExperimentRunner._run_inline_investigation)
-        self.assertIn("total_programs=len(result_ids)", src,
-                      "_run_inline_investigation LiveProgress must set total_programs")
+        self.assertIn(
+            "total_programs=len(result_ids)",
+            src,
+            "_run_inline_investigation LiveProgress must set total_programs",
+        )
 
     def test_continuous_phase_dispatches_to_inline(self):
         """_run_continuous_phase should dispatch to inline methods."""
         import inspect
         from research.scientist.runner import ExperimentRunner
+
         src = inspect.getsource(ExperimentRunner._run_continuous_phase)
         self.assertIn("_run_inline_investigation", src)
         self.assertIn("_run_inline_validation", src)
@@ -503,10 +553,14 @@ class TestInlinePhaseMethods(unittest.TestCase):
         """Should NOT call self._run_investigation() which doesn't exist."""
         import inspect
         from research.scientist.runner import ExperimentRunner
+
         src = inspect.getsource(ExperimentRunner._run_inline_investigation)
-        self.assertNotIn("self._run_investigation(", src,
-                         "_run_inline_investigation should not call "
-                         "non-existent _run_investigation()")
+        self.assertNotIn(
+            "self._run_investigation(",
+            src,
+            "_run_inline_investigation should not call "
+            "non-existent _run_investigation()",
+        )
 
     def test_control_experiment_interval_marks_and_skips_learned_weights(self):
         """Every Nth continuous synthesis run should be treated as control."""
@@ -582,7 +636,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         runner._ensure_math_spaces = MagicMock()
         runner._run_experiment_thread = MagicMock(return_value=None)
-        runner.aria.formulate_hypothesis = MagicMock(return_value="context-aware hypothesis")
+        runner.aria.formulate_hypothesis = MagicMock(
+            return_value="context-aware hypothesis"
+        )
 
         config = RunConfig(n_programs=1, max_cost_dollars=10.0)
         exp_id = runner.start_experiment(config=config, hypothesis=None)
@@ -606,15 +662,19 @@ class TestInlinePhaseMethods(unittest.TestCase):
         runner._build_start_experiment_hypothesis_context = MagicMock(return_value="")
 
         runner.aria._get_llm = MagicMock(return_value=object())
-        runner.aria.formulate_hypothesis = MagicMock(return_value="fallback-context hypothesis")
-        runner.aria.critique_hypothesis = MagicMock(return_value={
-            "verdict": "proceed",
-            "gate": "pass",
-            "checks": [],
-            "concerns": [],
-            "suggestions": [],
-            "confidence": 0.8,
-        })
+        runner.aria.formulate_hypothesis = MagicMock(
+            return_value="fallback-context hypothesis"
+        )
+        runner.aria.critique_hypothesis = MagicMock(
+            return_value={
+                "verdict": "proceed",
+                "gate": "pass",
+                "checks": [],
+                "concerns": [],
+                "suggestions": [],
+                "confidence": 0.8,
+            }
+        )
 
         config = RunConfig(n_programs=1)
         exp_id = runner.start_experiment(config=config, hypothesis=None)
@@ -635,30 +695,36 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         runner._ensure_math_spaces = MagicMock()
         runner._run_experiment_thread = MagicMock(return_value=None)
-        runner.aria.formulate_hypothesis = MagicMock(return_value=(
-            "metadata hypothesis",
-            {
-                "source": "llm_context",
-                "llm_used": True,
-                "fallback_used": False,
-                "used_context": True,
-                "review_status": "not_reviewed",
-                "confidence": 0.72,
-                "critique": "metric is measurable",
-            },
-        ))
+        runner.aria.formulate_hypothesis = MagicMock(
+            return_value=(
+                "metadata hypothesis",
+                {
+                    "source": "llm_context",
+                    "llm_used": True,
+                    "fallback_used": False,
+                    "used_context": True,
+                    "review_status": "not_reviewed",
+                    "confidence": 0.72,
+                    "critique": "metric is measurable",
+                },
+            )
+        )
 
         config = RunConfig(n_programs=1, max_cost_dollars=5.0)
         exp_id = runner.start_experiment(config=config, hypothesis=None)
 
         nb = LabNotebook(db_path)
         try:
-            entries = nb.get_entries(experiment_id=exp_id, entry_type="hypothesis", limit=5)
+            entries = nb.get_entries(
+                experiment_id=exp_id, entry_type="hypothesis", limit=5
+            )
             self.assertTrue(entries)
             metadata = json.loads(entries[0].get("metadata_json") or "{}")
             self.assertEqual(metadata.get("source"), "llm_context")
             self.assertTrue(metadata.get("used_context"))
-            self.assertTrue(str(metadata.get("review_status", "")).startswith("preflight_"))
+            self.assertTrue(
+                str(metadata.get("review_status", "")).startswith("preflight_")
+            )
             self.assertAlmostEqual(float(metadata.get("confidence")), 0.72, places=2)
             self.assertIn("preflight_critique", metadata)
             self.assertIn("critique_confidence", metadata)
@@ -671,7 +737,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
         from research.scientist.runner import ExperimentRunner, RunConfig
 
         tmpdir = tempfile.mkdtemp()
-        db_path = os.path.join(tmpdir, "test_start_investigation_hypothesis_metadata.db")
+        db_path = os.path.join(
+            tmpdir, "test_start_investigation_hypothesis_metadata.db"
+        )
         runner = ExperimentRunner(db_path)
 
         runner._ensure_math_spaces = MagicMock()
@@ -686,7 +754,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         nb = LabNotebook(db_path)
         try:
-            entries = nb.get_entries(experiment_id=exp_id, entry_type="hypothesis", limit=5)
+            entries = nb.get_entries(
+                experiment_id=exp_id, entry_type="hypothesis", limit=5
+            )
             self.assertTrue(entries)
             metadata = json.loads(entries[0].get("metadata_json") or "{}")
             self.assertEqual(metadata.get("source"), "user_input")
@@ -706,25 +776,29 @@ class TestInlinePhaseMethods(unittest.TestCase):
 
         runner._ensure_math_spaces = MagicMock()
         runner._run_evolution_thread = MagicMock(return_value=None)
-        runner.aria.formulate_hypothesis = MagicMock(return_value=(
-            "Auto evolution hypothesis",
-            {
-                "source": "llm_context",
-                "llm_used": True,
-                "fallback_used": False,
-                "used_context": False,
-                "review_status": "not_reviewed",
-                "confidence": 0.66,
-                "critique": None,
-            },
-        ))
+        runner.aria.formulate_hypothesis = MagicMock(
+            return_value=(
+                "Auto evolution hypothesis",
+                {
+                    "source": "llm_context",
+                    "llm_used": True,
+                    "fallback_used": False,
+                    "used_context": False,
+                    "review_status": "not_reviewed",
+                    "confidence": 0.66,
+                    "critique": None,
+                },
+            )
+        )
 
         config = RunConfig(n_programs=1)
         exp_id = runner.start_evolution(config=config, hypothesis=None)
 
         nb = LabNotebook(db_path)
         try:
-            entries = nb.get_entries(experiment_id=exp_id, entry_type="hypothesis", limit=5)
+            entries = nb.get_entries(
+                experiment_id=exp_id, entry_type="hypothesis", limit=5
+            )
             self.assertTrue(entries)
             metadata = json.loads(entries[0].get("metadata_json") or "{}")
             self.assertEqual(metadata.get("source"), "llm_context")
@@ -860,7 +934,11 @@ class TestInlinePhaseMethods(unittest.TestCase):
             seen_seeds.append(kwargs.get("seed"))
             return original_sampler(*args, **kwargs)
 
-        with patch.object(runner, "_sample_training_input_ids", side_effect=_spy_sample_training_input_ids):
+        with patch.object(
+            runner,
+            "_sample_training_input_ids",
+            side_effect=_spy_sample_training_input_ids,
+        ):
             _ = runner._train_with_program(
                 model,
                 Program(),
@@ -927,7 +1005,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
         t_start = time.time() - (10 * 60)
 
         runner.aria.get_llm_config = MagicMock(return_value={"backend": "ollama"})
-        self.assertIsNone(runner._check_continuous_limits(config, t_start, n_experiments=1))
+        self.assertIsNone(
+            runner._check_continuous_limits(config, t_start, n_experiments=1)
+        )
 
         runner.aria.get_llm_config = MagicMock(return_value={"backend": "anthropic"})
         reason = runner._check_continuous_limits(config, t_start, n_experiments=1)
@@ -938,7 +1018,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
         """Prescreen should auto-harden obviously invalid baseline fields."""
         from research.scientist.runner import ExperimentRunner, RunConfig
 
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "prescreen_basics.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "prescreen_basics.db")
+        )
         config = RunConfig(
             n_programs=0,
             stage1_steps=0,
@@ -949,7 +1031,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
             corpus_path="",
         )
 
-        hardened, report = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+        hardened, report = runner.prescreen_run_config(
+            config, mode="single", auto_harden=True
+        )
 
         self.assertEqual(hardened.n_programs, 1)
         self.assertEqual(hardened.stage1_steps, 1)
@@ -965,10 +1049,14 @@ class TestInlinePhaseMethods(unittest.TestCase):
         """Prescreen should cap high-risk evolution recursion settings."""
         from research.scientist.runner import ExperimentRunner, RunConfig
 
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "prescreen_evolve.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "prescreen_evolve.db")
+        )
         config = RunConfig(max_depth=40, max_ops=80, n_generations=0)
 
-        hardened, report = runner.prescreen_run_config(config, mode="evolve", auto_harden=True)
+        hardened, report = runner.prescreen_run_config(
+            config, mode="evolve", auto_harden=True
+        )
 
         self.assertEqual(hardened.max_depth, 8)
         self.assertEqual(hardened.max_ops, 12)
@@ -980,16 +1068,25 @@ class TestInlinePhaseMethods(unittest.TestCase):
         """Prescreen should force CPU when CUDA context preflight fails."""
         from research.scientist.runner import ExperimentRunner, RunConfig
 
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "prescreen_cuda_probe.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "prescreen_cuda_probe.db")
+        )
         config = RunConfig(device="cuda")
 
-        with patch("research.scientist.runner.screening.torch.cuda.is_available", return_value=True), \
-                patch.object(
-                    runner,
-                    "_cuda_health_probe",
-                    return_value=(False, "CUDA error: device-side assert triggered"),
-                ):
-            hardened, report = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+        with (
+            patch(
+                "research.scientist.runner.screening.torch.cuda.is_available",
+                return_value=True,
+            ),
+            patch.object(
+                runner,
+                "_cuda_health_probe",
+                return_value=(False, "CUDA error: device-side assert triggered"),
+            ),
+        ):
+            hardened, report = runner.prescreen_run_config(
+                config, mode="single", auto_harden=True
+            )
 
         self.assertEqual(hardened.device, "cpu")
         reasons = " ".join(i.get("reason", "") for i in report.get("issues", []))
@@ -1023,9 +1120,16 @@ class TestInlinePhaseMethods(unittest.TestCase):
             nb.close()
 
         config = RunConfig(device="cuda")
-        with patch("research.scientist.runner.screening.torch.cuda.is_available", return_value=True), \
-                patch.object(runner, "_cuda_health_probe", return_value=(True, None)):
-            hardened, report = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+        with (
+            patch(
+                "research.scientist.runner.screening.torch.cuda.is_available",
+                return_value=True,
+            ),
+            patch.object(runner, "_cuda_health_probe", return_value=(True, None)),
+        ):
+            hardened, report = runner.prescreen_run_config(
+                config, mode="single", auto_harden=True
+            )
 
         self.assertEqual(hardened.device, "cpu")
         reasons = " ".join(i.get("reason", "") for i in report.get("issues", []))
@@ -1075,7 +1179,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
             def to_dict(self):
                 return {"init_scheme": self.init_scheme, "n_steps": self.n_steps}
 
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "corpus_fallback.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "corpus_fallback.db")
+        )
         model = TinyModel()
         config = RunConfig(
             vocab_size=32,
@@ -1110,7 +1216,9 @@ class TestInlinePhaseMethods(unittest.TestCase):
         self.assertIn('best_seed.get("n_train_steps")', src_validation)
         self.assertIn("self._resolve_baseline_recipe", src_validation)
         self.assertIn('momentum=baseline_recipe["momentum"]', src_validation)
-        self.assertIn('optimizer_name=baseline_recipe["optimizer_name"]', src_validation)
+        self.assertIn(
+            'optimizer_name=baseline_recipe["optimizer_name"]', src_validation
+        )
         self.assertIn('weight_decay=baseline_recipe["weight_decay"]', src_validation)
 
         src_tp = inspect.getsource(ExperimentRunner._train_with_program)
@@ -1154,7 +1262,10 @@ class TestBudgetContext(unittest.TestCase):
     """Verify budget info is included in mode selection context."""
 
     def test_context_includes_budget_when_provided(self):
-        from research.scientist.llm.context_experiment import build_mode_selection_context
+        from research.scientist.llm.context_experiment import (
+            build_mode_selection_context,
+        )
+
         ctx = build_mode_selection_context(
             recent_experiments=[],
             leaderboard=[],
@@ -1167,7 +1278,10 @@ class TestBudgetContext(unittest.TestCase):
         self.assertIn("remaining", ctx.lower())
 
     def test_context_omits_budget_when_zero(self):
-        from research.scientist.llm.context_experiment import build_mode_selection_context
+        from research.scientist.llm.context_experiment import (
+            build_mode_selection_context,
+        )
+
         ctx = build_mode_selection_context(
             recent_experiments=[],
             leaderboard=[],
@@ -1177,8 +1291,9 @@ class TestBudgetContext(unittest.TestCase):
         self.assertNotIn("Budget", ctx)
 
 
-@unittest.skipUnless(HAS_TORCH and HAS_FLASK and HAS_NOTEBOOK,
-                     "requires torch, flask, and notebook")
+@unittest.skipUnless(
+    HAS_TORCH and HAS_FLASK and HAS_NOTEBOOK, "requires torch, flask, and notebook"
+)
 class TestPipelineEndToEnd(unittest.TestCase):
     """Single test that runs the AI scientist pipeline end-to-end."""
 
@@ -1252,8 +1367,13 @@ class TestPipelineEndToEnd(unittest.TestCase):
         r_report = client.get("/api/report")
         self.assertEqual(r_report.status_code, 200)
         report = r_report.get_json()
-        for k in ["summary", "recent_experiments", "op_success_rates",
-                  "structural_correlations", "learning_log"]:
+        for k in [
+            "summary",
+            "recent_experiments",
+            "op_success_rates",
+            "structural_correlations",
+            "learning_log",
+        ]:
             self.assertIn(k, report)
         self.assertGreaterEqual(len(report.get("recent_experiments", [])), 2)
 
@@ -1291,6 +1411,7 @@ class TestDiagnosticTasks(unittest.TestCase):
             DIAG_MARK_TOKEN,
             DIAGNOSTIC_TASKS,
         )
+
         cls.generate_copy_task = staticmethod(generate_copy_task)
         cls.generate_induction_task = staticmethod(generate_induction_task)
         cls.generate_periodic_task = staticmethod(generate_periodic_task)
@@ -1350,7 +1471,9 @@ class TestDiagnosticTasks(unittest.TestCase):
         rng = torch.Generator()
         rng.manual_seed(99)
         ids, mask, targets = self.generate_periodic_task(
-            batch_size=2, seq_len=32, rng=rng,
+            batch_size=2,
+            seq_len=32,
+            rng=rng,
         )
         # Verify periodicity: for each batch, tokens repeat
         for b in range(2):
@@ -1366,14 +1489,19 @@ class TestDiagnosticTasks(unittest.TestCase):
         """DiagnosticSuiteResult.to_dict() produces valid JSON-serializable dict."""
         result = self.DiagnosticSuiteResult(
             tasks=[
-                self.DiagnosticTaskResult("copy", accuracy=0.8, loss=1.2, steps_trained=100),
-                self.DiagnosticTaskResult("periodic", accuracy=0.9, loss=0.5, steps_trained=100),
+                self.DiagnosticTaskResult(
+                    "copy", accuracy=0.8, loss=1.2, steps_trained=100
+                ),
+                self.DiagnosticTaskResult(
+                    "periodic", accuracy=0.9, loss=0.5, steps_trained=100
+                ),
             ],
             diagnostic_score=0.85,
             total_time_ms=1234.0,
         )
         d = result.to_dict()
         import json
+
         serialized = json.dumps(d)
         loaded = json.loads(serialized)
         self.assertEqual(len(loaded["tasks"]), 2)
@@ -1387,10 +1515,14 @@ class TestDiagnosticTasks(unittest.TestCase):
             tmpdir = tempfile.mkdtemp()
             db_path = os.path.join(tmpdir, "test_diag_migration.db")
             from research.scientist.notebook import LabNotebook
+
             nb = LabNotebook(db_path)
-            cols = [row[1] for row in nb.conn.execute(
-                "PRAGMA table_info(program_results)"
-            ).fetchall()]
+            cols = [
+                row[1]
+                for row in nb.conn.execute(
+                    "PRAGMA table_info(program_results)"
+                ).fetchall()
+            ]
             self.assertIn("diagnostic_tasks_json", cols)
             self.assertIn("diagnostic_score", cols)
         finally:
@@ -1404,20 +1536,25 @@ class TestDiagnosticTasks(unittest.TestCase):
             tmpdir = tempfile.mkdtemp()
             db_path = os.path.join(tmpdir, "test_loss_migration.db")
             from research.scientist.notebook import LabNotebook
+
             nb = LabNotebook(db_path)
-            cols = [row[1] for row in nb.conn.execute(
-                "PRAGMA table_info(program_results)"
-            ).fetchall()]
+            cols = [
+                row[1]
+                for row in nb.conn.execute(
+                    "PRAGMA table_info(program_results)"
+                ).fetchall()
+            ]
             for col in (
-                "discovery_loss", "discovery_loss_ratio",
-                "validation_loss", "validation_loss_ratio",
+                "discovery_loss",
+                "discovery_loss_ratio",
+                "validation_loss",
+                "validation_loss_ratio",
                 "generalization_gap",
             ):
                 self.assertIn(col, cols)
         finally:
             if nb:
                 nb.close()
-
 
 
 class TestNegativeResultsLoop(unittest.TestCase):
@@ -1430,24 +1567,46 @@ class TestNegativeResultsLoop(unittest.TestCase):
         # Simulate: 3 ops with 0% S1 rate, sufficient samples, high confidence
         neg_results = {
             "failed_ops": [
-                {"op_name": "bad_op_a", "s1_rate": 0, "n_used": 10, "confidence": 0.8,
-                 "failure_stage": "learning"},
-                {"op_name": "bad_op_b", "s1_rate": 0, "n_used": 7, "confidence": 0.75,
-                 "failure_stage": "compilation"},
+                {
+                    "op_name": "bad_op_a",
+                    "s1_rate": 0,
+                    "n_used": 10,
+                    "confidence": 0.8,
+                    "failure_stage": "learning",
+                },
+                {
+                    "op_name": "bad_op_b",
+                    "s1_rate": 0,
+                    "n_used": 7,
+                    "confidence": 0.75,
+                    "failure_stage": "compilation",
+                },
                 # Should NOT be excluded: low confidence
-                {"op_name": "maybe_ok", "s1_rate": 0, "n_used": 6, "confidence": 0.5,
-                 "failure_stage": "learning"},
+                {
+                    "op_name": "maybe_ok",
+                    "s1_rate": 0,
+                    "n_used": 6,
+                    "confidence": 0.5,
+                    "failure_stage": "learning",
+                },
                 # Should NOT be excluded: too few samples
-                {"op_name": "rare_op", "s1_rate": 0, "n_used": 3, "confidence": 0.9,
-                 "failure_stage": "learning"},
+                {
+                    "op_name": "rare_op",
+                    "s1_rate": 0,
+                    "n_used": 3,
+                    "confidence": 0.9,
+                    "failure_stage": "learning",
+                },
             ],
         }
 
         excluded = set()
         for op_info in neg_results.get("failed_ops", []):
-            if (op_info.get("s1_rate", 1) == 0
-                    and op_info.get("n_used", 0) >= 5
-                    and op_info.get("confidence", 0) >= 0.7):
+            if (
+                op_info.get("s1_rate", 1) == 0
+                and op_info.get("n_used", 0) >= 5
+                and op_info.get("confidence", 0) >= 0.7
+            ):
                 excluded.add(op_info["op_name"])
 
         self.assertEqual(excluded, {"bad_op_a", "bad_op_b"})
@@ -1463,12 +1622,19 @@ class TestNegativeResultsLoop(unittest.TestCase):
         analytics_data = {
             "negative_results": {
                 "failed_ops": [
-                    {"op_name": "always_fails", "n_used": 12,
-                     "failure_stage": "learning", "confidence": 0.85},
+                    {
+                        "op_name": "always_fails",
+                        "n_used": 12,
+                        "failure_stage": "learning",
+                        "confidence": 0.85,
+                    },
                 ],
                 "anti_patterns": [
-                    {"feature": "high depth", "correlation": -0.32,
-                     "interpretation": "Higher high depth is associated with lower S1 success"},
+                    {
+                        "feature": "high depth",
+                        "correlation": -0.32,
+                        "interpretation": "Higher high depth is associated with lower S1 success",
+                    },
                 ],
                 "summary": "1 ops with 0% S1 rate (always_fails)",
             },
@@ -1490,7 +1656,5 @@ class TestNegativeResultsLoop(unittest.TestCase):
         self.assertIsInstance(ctx, str)
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

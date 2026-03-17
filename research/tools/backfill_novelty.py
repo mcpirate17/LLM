@@ -15,8 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
-import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -76,11 +74,10 @@ def backfill_novelty(
     """Compute and store novelty scores for S1 survivors that lack them."""
     import torch
 
-    from ..eval.fingerprint import BehavioralFingerprint, compute_fingerprint
+    from ..eval.fingerprint import compute_fingerprint
     from ..eval.metrics import novelty_score
     from ..scientist.notebook import LabNotebook
     from ..synthesis.compiler import compile_model
-    from ..synthesis.graph import ComputationGraph
     from ..synthesis.serializer import graph_from_json
     from ..mathspaces.registry import register_all_mathspaces
 
@@ -90,11 +87,14 @@ def backfill_novelty(
     nb = LabNotebook(db_path)
 
     candidates = _fetch_candidates(
-        nb, include_all=include_all, recalculate_top=recalculate_top, limit=limit,
+        nb,
+        include_all=include_all,
+        recalculate_top=recalculate_top,
+        limit=limit,
     )
 
     if verbose:
-        print(f"Novelty backfill")
+        print("Novelty backfill")
         print(f"  DB: {db_path}")
         print(f"  Device: {device}")
         scope = "all fingerprints" if include_all else "S1 survivors"
@@ -156,7 +156,9 @@ def backfill_novelty(
 
             except Exception as e_fp:
                 if verbose and i < 5:
-                    print(f"  [{i+1}] {fp_str}: behavioral fingerprint failed ({e_fp}), using structural only")
+                    print(
+                        f"  [{i + 1}] {fp_str}: behavioral fingerprint failed ({e_fp}), using structural only"
+                    )
 
             # 3. Compute novelty score
             nov = novelty_score(graph, fingerprint=behavioral_fp)
@@ -183,14 +185,19 @@ def backfill_novelty(
                     getattr(nov, "novelty_requires_justification", False)
                 ),
                 "cka_source": (
-                    "artifact" if behavioral_fp and getattr(behavioral_fp, "cka_source", None) == "artifact"
-                    else "heuristic" if behavioral_fp
+                    "artifact"
+                    if behavioral_fp
+                    and getattr(behavioral_fp, "cka_source", None) == "artifact"
+                    else "heuristic"
+                    if behavioral_fp
                     else "structural_only"
                 ),
             }
             if behavioral_fp is not None:
                 try:
-                    update_fields["fingerprint_json"] = json.dumps(behavioral_fp.to_dict())
+                    update_fields["fingerprint_json"] = json.dumps(
+                        behavioral_fp.to_dict()
+                    )
                     for attr, col in (
                         ("interaction_locality", "fp_interaction_locality"),
                         ("interaction_sparsity", "fp_interaction_sparsity"),
@@ -211,9 +218,15 @@ def backfill_novelty(
                         val = getattr(behavioral_fp, attr, None)
                         if val is not None:
                             update_fields[col] = float(val)
-                    update_fields["cka_artifact_version"] = behavioral_fp.cka_artifact_version
-                    update_fields["cka_probe_protocol_hash"] = behavioral_fp.cka_probe_protocol_hash
-                    update_fields["cka_reference_quality"] = behavioral_fp.cka_reference_quality
+                    update_fields["cka_artifact_version"] = (
+                        behavioral_fp.cka_artifact_version
+                    )
+                    update_fields["cka_probe_protocol_hash"] = (
+                        behavioral_fp.cka_probe_protocol_hash
+                    )
+                    update_fields["cka_reference_quality"] = (
+                        behavioral_fp.cka_reference_quality
+                    )
                 except Exception:
                     pass
 
@@ -273,7 +286,7 @@ def backfill_novelty(
             if verbose and (i < 10 or (i + 1) % 25 == 0 or i == len(candidates) - 1):
                 kind = "full" if behavioral_fp else "struct"
                 print(
-                    f"  [{i+1}/{len(candidates)}] {fp_str}: "
+                    f"  [{i + 1}/{len(candidates)}] {fp_str}: "
                     f"novelty={n_score:.3f} (s={s_nov:.3f} b={b_nov:.3f}) "
                     f"conf={confidence:.2f} [{kind}]"
                 )
@@ -285,7 +298,7 @@ def backfill_novelty(
         except Exception as e:
             results["failed"] += 1
             if verbose and (i < 10 or results["failed"] <= 5):
-                print(f"  [{i+1}/{len(candidates)}] {fp_str}: FAILED {e}")
+                print(f"  [{i + 1}/{len(candidates)}] {fp_str}: FAILED {e}")
             if dev.type == "cuda":
                 torch.cuda.empty_cache()
 
@@ -310,9 +323,7 @@ def main():
         default="research/lab_notebook.db",
         help="Path to lab_notebook.db",
     )
-    parser.add_argument(
-        "--device", default="cuda", help="Device (default: cuda)"
-    )
+    parser.add_argument("--device", default="cuda", help="Device (default: cuda)")
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -323,15 +334,19 @@ def main():
         "--dry-run", action="store_true", help="Show what would be scored"
     )
     parser.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="Backfill novelty for all fingerprints (not just S1 survivors)",
     )
     parser.add_argument(
-        "--recalculate-top", action="store_true",
+        "--recalculate-top",
+        action="store_true",
         help="Recalculate novelty for entries that already have scores (e.g. fix stale 0.990)",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Max entries to process",
     )
     args = parser.parse_args()

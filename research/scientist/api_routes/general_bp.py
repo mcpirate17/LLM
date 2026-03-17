@@ -1,54 +1,30 @@
 """Aria control and strategy route registration."""
+
 from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
-import os
-import traceback
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from flask import jsonify, request, Response, send_from_directory
-from ..json_utils import json_safe as _json_safe
+from flask import jsonify, request, Response
 from ..notebook import LabNotebook
 from ..runner import RunConfig
 from ..persona import get_aria
-from ..code_agent import _spawn_code_agent_task
 from ..evidence import build_evidence_pack
 from ._helpers import (
-    get_runner, with_native_runner_progress, get_run_trigger_snapshot,
-    deduplicate_insights, normalize_result_ids, record_run_trigger,
+    get_runner,
+    get_run_trigger_snapshot,
+    record_run_trigger,
     resolve_runner_status,
 )
-from ._strategy_preflight import (
-    build_start_mode_eligibility,
-    normalize_briefing_mode, briefing_action_from_mode,
-    briefing_action_label, augment_sparse_action_config,
-)
-from ._strategy_recommendations import (
-    annotate_qkv_usage, compute_cross_run_stability,
-    compute_breakthrough_production_readiness, compute_recommendation,
-    compute_compression_opportunities, compute_sparse_evidence,
-    sparse_coverage_summary,
-)
 from ._strategy_report import (
-    parse_report_date, report_program_matches_theme,
-    report_experiment_matches_trend, build_filtered_report_summary,
-    build_report_snapshot_key, build_report_action_eligibility,
-    normalize_entries, parse_bool_query,
+    normalize_entries,
 )
-from ._strategy_diagnostics import diagnose_research_issues
 from ._chat import (
-    chat_requests_detailed_response, chat_requests_summary_response,
-    chat_requests_brief_response, chat_requests_self_fix_now,
-    chat_requests_codebase_fix,
-    record_chat_guardrail_event, chat_guardrail_snapshot,
-    code_agent_task_snapshot, summarize_agent_task,
-    run_local_chat_agent, chat_workspace_root, query_file_index,
-    parse_action_contract_response, truncate_summary, estimate_tokens,
-    local_ollama_helper_status, get_local_ollama_settings,
+    chat_guardrail_snapshot,
+    local_ollama_helper_status,
+    get_local_ollama_settings,
 )
 from .deps import ApiRouteContext
 
@@ -71,27 +47,30 @@ def register_general_routes(app, context: ApiRouteContext):
             runner_state = resolve_runner_status(nb, runner)
             external = runner_state.get("external_snapshot")
             if external and not runner.is_running:
-                cycle.update({
-                    "aria_message": runner_state["progress"].get("aria_message", ""),
-                    "continuous_active": True,
-                    "experiment_id": external["experiment_id"],
-                    "is_running": True,
-                    "last_note": (
-                        f"External {external['mode']} experiment detected via notebook activity."
-                    ),
-                    "phase": "running",
-                    "phase_label": "Running",
-                    "progress_status": "running",
-                    "selected_mode": external["mode"],
-                    "external_process": True,
-                })
+                cycle.update(
+                    {
+                        "aria_message": runner_state["progress"].get(
+                            "aria_message", ""
+                        ),
+                        "continuous_active": True,
+                        "experiment_id": external["experiment_id"],
+                        "is_running": True,
+                        "last_note": (
+                            f"External {external['mode']} experiment detected via notebook activity."
+                        ),
+                        "phase": "running",
+                        "phase_label": "Running",
+                        "progress_status": "running",
+                        "selected_mode": external["mode"],
+                        "external_process": True,
+                    }
+                )
             return jsonify(cycle)
         except Exception as e:
             logger.error(f"Error in /api/aria/cycle-status: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/aria/cycle-history")
     def api_aria_cycle_history():
@@ -101,10 +80,16 @@ def register_general_routes(app, context: ApiRouteContext):
         status_filter = str(request.args.get("status") or "").strip().lower()
         query_text = str(request.args.get("q") or "").strip().lower()
         output_format = str(request.args.get("format") or "json").strip().lower()
-        compact = str(request.args.get("compact", "1")).strip().lower() not in {"0", "false", "no"}
+        compact = str(request.args.get("compact", "1")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+        }
         nb = LabNotebook(notebook_path)
         try:
-            entries = normalize_entries(nb.get_entries(entry_type="live_feed", limit=n * 4))
+            entries = normalize_entries(
+                nb.get_entries(entry_type="live_feed", limit=n * 4)
+            )
             history: List[Dict[str, Any]] = []
             for entry in reversed(entries):
                 metadata = entry.get("metadata") or {}
@@ -127,12 +112,14 @@ def register_general_routes(app, context: ApiRouteContext):
                 if status_filter and row_status != status_filter:
                     continue
                 if query_text:
-                    searchable = " ".join([
-                        str(row.get("mode") or ""),
-                        str(row.get("status") or ""),
-                        str(row.get("reasoning") or ""),
-                        str(row.get("error") or ""),
-                    ]).lower()
+                    searchable = " ".join(
+                        [
+                            str(row.get("mode") or ""),
+                            str(row.get("status") or ""),
+                            str(row.get("reasoning") or ""),
+                            str(row.get("error") or ""),
+                        ]
+                    ).lower()
                     if query_text not in searchable:
                         continue
 
@@ -194,7 +181,6 @@ def register_general_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/aria/cycle-control", methods=["POST"])
     def api_aria_cycle_control():
         """Control Aria cycle policy: start, pause, resume."""
@@ -215,7 +201,9 @@ def register_general_routes(app, context: ApiRouteContext):
                 return jsonify({"error": "An experiment is already running"}), 409
 
             auto_harden = bool(body.get("auto_harden", True))
-            config_payload = body.get("config") if isinstance(body.get("config"), dict) else body
+            config_payload = (
+                body.get("config") if isinstance(body.get("config"), dict) else body
+            )
             config_payload = dict(config_payload or {})
             config_payload.pop("action", None)
             config_payload.pop("auto_harden", None)
@@ -239,14 +227,16 @@ def register_general_routes(app, context: ApiRouteContext):
                         "auto_harden": auto_harden,
                     },
                 )
-                return jsonify({
-                    "ok": True,
-                    "action": "start",
-                    "experiment_id": exp_id,
-                    "config": config.to_dict(),
-                    "prescreen": prescreen,
-                    "cycle": runner.get_aria_cycle_status(),
-                })
+                return jsonify(
+                    {
+                        "ok": True,
+                        "action": "start",
+                        "experiment_id": exp_id,
+                        "config": config.to_dict(),
+                        "prescreen": prescreen,
+                        "cycle": runner.get_aria_cycle_status(),
+                    }
+                )
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
             except Exception as e:
@@ -254,7 +244,6 @@ def register_general_routes(app, context: ApiRouteContext):
                 return jsonify({"error": str(e)}), 500
 
         return jsonify({"error": "action must be one of: start, pause, resume"}), 400
-
 
     @app.route("/api/aria/recommendation")
     def api_aria_recommendation():
@@ -267,16 +256,24 @@ def register_general_routes(app, context: ApiRouteContext):
             history = nb.get_recent_experiments(10)
             past_hypotheses = runner._get_past_hypotheses(nb)
             from ..llm.context_experiment import build_rich_context
+
             context = build_rich_context(
-                results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
-                         "stage1_passed": 0, "novel_count": 0},
+                results={
+                    "total": 0,
+                    "stage0_passed": 0,
+                    "stage05_passed": 0,
+                    "stage1_passed": 0,
+                    "novel_count": 0,
+                },
                 analytics_data=analytics_data,
                 history=history,
                 past_hypotheses=past_hypotheses,
             )
             suggestion = aria.suggest_experiment(
-                context, op_success_rates=analytics_data.get("op_success_rates"),
-                compression_coverage=analytics_data.get("compression_coverage"))
+                context,
+                op_success_rates=analytics_data.get("op_success_rates"),
+                compression_coverage=analytics_data.get("compression_coverage"),
+            )
             if suggestion:
                 suggestion["evidence_pack"] = build_evidence_pack(
                     nb,
@@ -292,7 +289,6 @@ def register_general_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/aria/strategy")
     def api_aria_strategy():
         """Get Aria's research strategy recommendation."""
@@ -304,24 +300,31 @@ def register_general_routes(app, context: ApiRouteContext):
             history = nb.get_recent_experiments(10)
             past_hypotheses = runner._get_past_hypotheses(nb)
             from ..llm.context_experiment import build_rich_context
+
             context = build_rich_context(
-                results={"total": 0, "stage0_passed": 0, "stage05_passed": 0,
-                         "stage1_passed": 0, "novel_count": 0},
+                results={
+                    "total": 0,
+                    "stage0_passed": 0,
+                    "stage05_passed": 0,
+                    "stage1_passed": 0,
+                    "novel_count": 0,
+                },
                 analytics_data=analytics_data,
                 history=history,
                 past_hypotheses=past_hypotheses,
             )
             strategy = aria.plan_strategy(context)
-            return jsonify({
-                "strategy": strategy,
-                "available": strategy is not None,
-            })
+            return jsonify(
+                {
+                    "strategy": strategy,
+                    "available": strategy is not None,
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/aria/strategy: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/aria/tools")
     def api_aria_tools():
@@ -341,35 +344,49 @@ def register_general_routes(app, context: ApiRouteContext):
 
         cycle_status = runner.get_aria_cycle_status()
         ollama_helper = local_ollama_helper_status(llm)
-        return jsonify({
-            "codebase_agent": {
-                "spawn_endpoint": True,
-                "status_endpoint": True,
-                "workspace_scoped": True,
-                "allow_write_default": True,
-                "execution_first_for_fix_requests": True,
-                "small_model_swarm_enabled": True,
-                "small_model_swarm_max_workers": get_local_ollama_settings().get("max_small_workers", 3),
-                "simple_task_policy": "prefer_3b_swarm_then_7b",
-                "complex_task_policy": "prefer_7b_single",
-            },
-            "local_ollama_helper": ollama_helper,
-            "chat_actions": ["adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"],
-            "chat_guardrails": chat_guardrail_snapshot(window=200),
-            "local_context_tools": ["runner.progress", "notebook.get_recent_experiments", "workspace.search"],
-            "llm": {
-                "available": llm_available,
-                "reason": llm_reason,
-            },
-            "runner": {
-                "is_running": bool(runner.is_running),
-                "progress_status": (runner.progress.to_dict() or {}).get("status"),
-            },
-            "run_trigger": get_run_trigger_snapshot((runner.progress.to_dict() or {}).get("experiment_id")),
-            "continuous": {
-                "active": bool(cycle_status.get("continuous_active")),
-                "phase": cycle_status.get("phase"),
-            },
-        })
-
-
+        return jsonify(
+            {
+                "codebase_agent": {
+                    "spawn_endpoint": True,
+                    "status_endpoint": True,
+                    "workspace_scoped": True,
+                    "allow_write_default": True,
+                    "execution_first_for_fix_requests": True,
+                    "small_model_swarm_enabled": True,
+                    "small_model_swarm_max_workers": get_local_ollama_settings().get(
+                        "max_small_workers", 3
+                    ),
+                    "simple_task_policy": "prefer_3b_swarm_then_7b",
+                    "complex_task_policy": "prefer_7b_single",
+                },
+                "local_ollama_helper": ollama_helper,
+                "chat_actions": [
+                    "adjust_config",
+                    "adjust_grammar",
+                    "start_experiment",
+                    "edit_file",
+                    "spawn_agent",
+                ],
+                "chat_guardrails": chat_guardrail_snapshot(window=200),
+                "local_context_tools": [
+                    "runner.progress",
+                    "notebook.get_recent_experiments",
+                    "workspace.search",
+                ],
+                "llm": {
+                    "available": llm_available,
+                    "reason": llm_reason,
+                },
+                "runner": {
+                    "is_running": bool(runner.is_running),
+                    "progress_status": (runner.progress.to_dict() or {}).get("status"),
+                },
+                "run_trigger": get_run_trigger_snapshot(
+                    (runner.progress.to_dict() or {}).get("experiment_id")
+                ),
+                "continuous": {
+                    "active": bool(cycle_status.get("continuous_active")),
+                    "phase": cycle_status.get("phase"),
+                },
+            }
+        )

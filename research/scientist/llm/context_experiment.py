@@ -7,8 +7,9 @@ from typing import Dict, List, Optional
 _OP_REGISTRY_CACHE: Optional[str] = None
 
 
-def build_op_reference(op_success_rates: Optional[Dict] = None,
-                       compression_coverage: Optional[Dict] = None) -> str:
+def build_op_reference(
+    op_success_rates: Optional[Dict] = None, compression_coverage: Optional[Dict] = None
+) -> str:
     """Build a compact op reference for injection into config-producing prompts.
 
     Combines the primitive registry (valid names) with op success rates so
@@ -18,7 +19,9 @@ def build_op_reference(op_success_rates: Optional[Dict] = None,
     *compression_coverage*: output of analytics.compression_coverage(), used
     to add quality retention and compression ratio per technique.
     """
-    lines = ["VALID OP NAMES — you MUST only use these exact names in op_weights and excluded_ops:"]
+    lines = [
+        "VALID OP NAMES — you MUST only use these exact names in op_weights and excluded_ops:"
+    ]
 
     # Registry by category
     try:
@@ -28,7 +31,9 @@ def build_op_reference(op_success_rates: Optional[Dict] = None,
             from synthesis.primitives import PRIMITIVE_REGISTRY
         by_cat: Dict[str, List[str]] = {}
         for name, op in sorted(PRIMITIVE_REGISTRY.items()):
-            cat = op.category.value if hasattr(op.category, "value") else str(op.category)
+            cat = (
+                op.category.value if hasattr(op.category, "value") else str(op.category)
+            )
             by_cat.setdefault(cat, []).append(name)
         for cat in sorted(by_cat):
             lines.append(f"  {cat}: {', '.join(by_cat[cat])}")
@@ -37,27 +42,50 @@ def build_op_reference(op_success_rates: Optional[Dict] = None,
 
     # Success rates for ops with enough data
     if op_success_rates:
-        rated = sorted(op_success_rates.items(),
-                       key=lambda x: -x[1].get("s1_rate", 0))
+        rated = sorted(op_success_rates.items(), key=lambda x: -x[1].get("s1_rate", 0))
         # Routing ops
-        routing = [(n, s) for n, s in rated
-                   if any(k in n for k in ("gate", "routing", "moe", "router", "expert"))]
+        routing = [
+            (n, s)
+            for n, s in rated
+            if any(k in n for k in ("gate", "routing", "moe", "router", "expert"))
+        ]
         # Compression/efficiency ops
-        compress = [(n, s) for n, s in rated
-                    if any(k in n for k in ("sparse", "low_rank", "grouped", "shared_basis",
-                                             "semi_structured", "nm_sparse", "block_sparse",
-                                             "factorized", "bottleneck", "tied_proj"))]
+        compress = [
+            (n, s)
+            for n, s in rated
+            if any(
+                k in n
+                for k in (
+                    "sparse",
+                    "low_rank",
+                    "grouped",
+                    "shared_basis",
+                    "semi_structured",
+                    "nm_sparse",
+                    "block_sparse",
+                    "factorized",
+                    "bottleneck",
+                    "tied_proj",
+                )
+            )
+        ]
         if routing:
-            lines.append("  Routing ops (S1 rate): " + ", ".join(
-                f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in routing))
+            lines.append(
+                "  Routing ops (S1 rate): "
+                + ", ".join(f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in routing)
+            )
         if compress:
-            lines.append("  Compression ops (S1 rate): " + ", ".join(
-                f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in compress))
+            lines.append(
+                "  Compression ops (S1 rate): "
+                + ", ".join(f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in compress)
+            )
         # Top 10 overall
         top10 = [(n, s) for n, s in rated if s.get("n_used", 0) >= 20][:10]
         if top10:
-            lines.append("  Top 10 by S1 rate (n>=20): " + ", ".join(
-                f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in top10))
+            lines.append(
+                "  Top 10 by S1 rate (n>=20): "
+                + ", ".join(f"{n} ({s.get('s1_rate', 0):.0%})" for n, s in top10)
+            )
 
     # Compression technique quality retention (from analytics)
     if compression_coverage:
@@ -82,7 +110,9 @@ def build_op_reference(op_success_rates: Optional[Dict] = None,
             for tp in tech_parts:
                 lines.append(f"    {tp}")
 
-    lines.append("WARNING: Do NOT invent op names. If an op name is not in the list above, it does not exist.")
+    lines.append(
+        "WARNING: Do NOT invent op names. If an op name is not in the list above, it does not exist."
+    )
     return "\n".join(lines)
 
 
@@ -101,9 +131,13 @@ def _build_op_registry_section() -> str:
             from synthesis.primitives import PRIMITIVE_REGISTRY
         by_cat: Dict[str, List[str]] = {}
         for name, op in sorted(PRIMITIVE_REGISTRY.items()):
-            cat = op.category.value if hasattr(op.category, "value") else str(op.category)
+            cat = (
+                op.category.value if hasattr(op.category, "value") else str(op.category)
+            )
             by_cat.setdefault(cat, []).append(name)
-        lines = [f"Available Ops ({len(PRIMITIVE_REGISTRY)} total, use excluded_ops/op_weights to control):"]
+        lines = [
+            f"Available Ops ({len(PRIMITIVE_REGISTRY)} total, use excluded_ops/op_weights to control):"
+        ]
         for cat in sorted(by_cat):
             ops = by_cat[cat]
             lines.append(f"  {cat} ({len(ops)}): {', '.join(ops)}")
@@ -113,8 +147,9 @@ def _build_op_registry_section() -> str:
     return _OP_REGISTRY_CACHE
 
 
-def build_experiment_context(results: Dict, config: Optional[Dict] = None,
-                             hypothesis: Optional[str] = None) -> str:
+def build_experiment_context(
+    results: Dict, config: Optional[Dict] = None, hypothesis: Optional[str] = None
+) -> str:
     """Build context for a single experiment's results."""
     lines = []
 
@@ -122,11 +157,13 @@ def build_experiment_context(results: Dict, config: Optional[Dict] = None,
         lines.append(f"Hypothesis: {hypothesis}")
 
     if config:
-        lines.append(f"Config: {config.get('n_programs', '?')} programs, "
-                      f"dim={config.get('model_dim', '?')}, "
-                      f"depth={config.get('max_depth', '?')}, "
-                      f"ops={config.get('max_ops', '?')}, "
-                      f"math_space_weight={config.get('math_space_weight', '?')}")
+        lines.append(
+            f"Config: {config.get('n_programs', '?')} programs, "
+            f"dim={config.get('model_dim', '?')}, "
+            f"depth={config.get('max_depth', '?')}, "
+            f"ops={config.get('max_ops', '?')}, "
+            f"math_space_weight={config.get('math_space_weight', '?')}"
+        )
 
     total = results.get("total", 0)
     s0 = results.get("stage0_passed", 0)
@@ -134,27 +171,33 @@ def build_experiment_context(results: Dict, config: Optional[Dict] = None,
     s1 = results.get("stage1_passed", 0)
     novel = results.get("novel_count", 0)
 
-    lines.append(f"\nFunnel: {total} generated -> {s0} S0 ({_pct(s0, total)}) "
-                  f"-> {s05} S0.5 ({_pct(s05, total)}) "
-                  f"-> {s1} S1 ({_pct(s1, total)})")
+    lines.append(
+        f"\nFunnel: {total} generated -> {s0} S0 ({_pct(s0, total)}) "
+        f"-> {s05} S0.5 ({_pct(s05, total)}) "
+        f"-> {s1} S1 ({_pct(s1, total)})"
+    )
     lines.append(f"Novel survivors (novelty > 0.5): {novel}")
 
     best_val = results.get("best_validation_loss_ratio")
     best_disc = results.get("best_discovery_loss_ratio")
-    
+
     if best_val is not None:
         lines.append(f"Best validation loss ratio: {best_val:.4f}")
     if best_disc is not None:
         lines.append(f"Best discovery loss ratio: {best_disc:.4f}")
-    
-    if best_val is None and best_disc is None and results.get("best_loss_ratio") is not None:
+
+    if (
+        best_val is None
+        and best_disc is None
+        and results.get("best_loss_ratio") is not None
+    ):
         lines.append(f"Best loss ratio: {results['best_loss_ratio']:.4f}")
     if results.get("best_novelty_score") is not None:
         lines.append(f"Best novelty: {results['best_novelty_score']:.3f}")
 
     survivors = results.get("survivors", [])
     if survivors:
-        lines.append(f"\nTop survivors:")
+        lines.append("\nTop survivors:")
         for s in survivors[:5]:
             loss = s.get("validation_loss_ratio")
             loss_label = "val_loss_ratio"
@@ -163,9 +206,11 @@ def build_experiment_context(results: Dict, config: Optional[Dict] = None,
                 loss_label = "loss_ratio"
             ncd = s.get("ncd_score")
             ncd_str = f", ncd={ncd:.3f}" if ncd is not None else ""
-            lines.append(f"  - {s['fingerprint'][:12]}: "
-                          f"novelty={s.get('novelty', 0):.3f}, "
-                          f"{loss_label}={loss:.4f}{ncd_str}")
+            lines.append(
+                f"  - {s['fingerprint'][:12]}: "
+                f"novelty={s.get('novelty', 0):.3f}, "
+                f"{loss_label}={loss:.4f}{ncd_str}"
+            )
 
     return "\n".join(lines)
 
@@ -182,7 +227,7 @@ def build_history_context(experiments: List[Dict], limit: int = 10) -> str:
         val_loss = exp.get("best_validation_loss_ratio")
         disc_loss = exp.get("best_discovery_loss_ratio")
         legacy_loss = exp.get("best_loss_ratio")
-        
+
         mood = exp.get("aria_mood", "?")
 
         line = f"  [{status}] {total} programs, {s1} S1 pass"
@@ -194,7 +239,7 @@ def build_history_context(experiments: List[Dict], limit: int = 10) -> str:
             line += f", disc_lr={disc_loss:.4f}"
         if val_loss is None and disc_loss is None and legacy_loss is not None:
             line += f", lr={legacy_loss:.4f}"
-        
+
         line += f" (mood: {mood})"
         lines.append(line)
 
@@ -221,25 +266,27 @@ def build_program_context(program: Dict) -> str:
 
     if program.get("param_count"):
         lines.append(f"Parameters: {program['param_count']:,}")
-    
+
     # Priority: Validation > Discovery > Legacy
     val_lr = program.get("validation_loss_ratio")
     disc_lr = program.get("discovery_loss_ratio")
     legacy_lr = program.get("loss_ratio")
-    
+
     if val_lr is not None:
         lines.append(f"Validation loss ratio: {val_lr:.4f} (primary truth)")
     if disc_lr is not None:
         lines.append(f"Discovery loss ratio: {disc_lr:.4f} (random tokens)")
     if val_lr is None and disc_lr is None and legacy_lr is not None:
         lines.append(f"Loss ratio: {legacy_lr:.4f} (legacy/mixed)")
-        
+
     if program.get("generalization_gap") is not None:
         lines.append(f"Generalization gap: {program['generalization_gap']:.4f}")
     if program.get("novelty_score") is not None:
-        lines.append(f"Novelty: {program['novelty_score']:.3f} "
-                      f"(structural={program.get('structural_novelty', 0):.3f}, "
-                      f"behavioral={program.get('behavioral_novelty', 0):.3f})")
+        lines.append(
+            f"Novelty: {program['novelty_score']:.3f} "
+            f"(structural={program.get('structural_novelty', 0):.3f}, "
+            f"behavioral={program.get('behavioral_novelty', 0):.3f})"
+        )
     if program.get("most_similar_to"):
         lines.append(f"Most similar to: {program['most_similar_to']}")
 
@@ -257,14 +304,17 @@ def _build_rich_op_success_rates_section(analytics_data: Dict) -> Optional[str]:
     if best:
         lines.append("  Best:")
         for op, s in best:
-            lines.append(f"    {op}: S1={s.get('s1_rate', 0):.0%} "
-                         f"(n={s.get('n_used', 0)}, "
-                         f"novelty={s.get('avg_novelty') or 0:.3f})")
+            lines.append(
+                f"    {op}: S1={s.get('s1_rate', 0):.0%} "
+                f"(n={s.get('n_used', 0)}, "
+                f"novelty={s.get('avg_novelty') or 0:.3f})"
+            )
     if worst:
         lines.append("  Worst:")
         for op, s in worst:
-            lines.append(f"    {op}: S1={s.get('s1_rate', 0):.0%} "
-                         f"(n={s.get('n_used', 0)})")
+            lines.append(
+                f"    {op}: S1={s.get('s1_rate', 0):.0%} (n={s.get('n_used', 0)})"
+            )
     return "\n".join(lines)
 
 
@@ -285,7 +335,9 @@ def _build_rich_failure_patterns_section(analytics_data: Dict) -> Optional[str]:
     if not failures:
         return None
     lines = ["Failure Patterns (error_type x stage):"]
-    for err_type, info in sorted(failures.items(), key=lambda x: -x[1].get("total", 0))[:5]:
+    for err_type, info in sorted(failures.items(), key=lambda x: -x[1].get("total", 0))[
+        :5
+    ]:
         stages = ", ".join(f"{s}:{c}" for s, c in info.get("by_stage", {}).items())
         lines.append(f"  {err_type}: {info.get('total', 0)} total ({stages})")
     return "\n".join(lines)
@@ -298,8 +350,9 @@ def _build_rich_top_op_combinations_section(analytics_data: Dict) -> Optional[st
     lines = ["Top Op Combinations (S1 survivors):"]
     for c in combos[:5]:
         ops = " + ".join(c.get("ops", []))
-        lines.append(f"  {ops}: {c.get('count', 0)}x "
-                     f"(avg novelty {c.get('avg_novelty', 0):.3f})")
+        lines.append(
+            f"  {ops}: {c.get('count', 0)}x (avg novelty {c.get('avg_novelty', 0):.3f})"
+        )
     return "\n".join(lines)
 
 
@@ -308,13 +361,22 @@ def _build_rich_efficiency_frontier_section(analytics_data: Dict) -> Optional[st
     if not frontier:
         return None
     lines = [f"Efficiency Frontier: {len(frontier)} Pareto-optimal programs"]
-    best_loss = min((p.get("final_loss") for p in frontier if p.get("final_loss") is not None), default=None)
+    best_loss = min(
+        (p.get("final_loss") for p in frontier if p.get("final_loss") is not None),
+        default=None,
+    )
     if best_loss is not None:
         lines.append(f"  Best loss on frontier: {best_loss:.4f}")
-    most_eff = min((p for p in frontier if p.get("flops_forward")), key=lambda p: p["flops_forward"], default=None)
+    most_eff = min(
+        (p for p in frontier if p.get("flops_forward")),
+        key=lambda p: p["flops_forward"],
+        default=None,
+    )
     if most_eff:
-        lines.append(f"  Most efficient: {most_eff.get('flops_forward', 0):.0f} FLOPs, "
-                     f"loss={most_eff.get('final_loss', 0):.4f}")
+        lines.append(
+            f"  Most efficient: {most_eff.get('flops_forward', 0):.0f} FLOPs, "
+            f"loss={most_eff.get('final_loss', 0):.4f}"
+        )
     return "\n".join(lines)
 
 
@@ -340,26 +402,38 @@ def _build_rich_scaling_gate_section(analytics_data: Dict) -> str:
     ]
     if n_pass == 0:
         gap = target - best_eff
-        lines.append(f"  *** NO CANDIDATES PASS THE GATE. Best is {gap:.1f}x short of target. ***")
-        lines.append("  This means: current architectures are NOT more parameter-efficient than a standard transformer.")
-        lines.append("  Priority: find architectures that achieve the SAME loss with FEWER parameters.")
-        lines.append("  Strategies: MoE routing (only activate subset of params), "
-                     "aggressive sparsity, weight sharing, "
-                     "sublinear attention, or fundamentally different compute patterns.")
+        lines.append(
+            f"  *** NO CANDIDATES PASS THE GATE. Best is {gap:.1f}x short of target. ***"
+        )
+        lines.append(
+            "  This means: current architectures are NOT more parameter-efficient than a standard transformer."
+        )
+        lines.append(
+            "  Priority: find architectures that achieve the SAME loss with FEWER parameters."
+        )
+        lines.append(
+            "  Strategies: MoE routing (only activate subset of params), "
+            "aggressive sparsity, weight sharing, "
+            "sublinear attention, or fundamentally different compute patterns."
+        )
     best_e = scaling.get("best_entry", {})
     if best_e:
-        lines.append(f"  Current best: {best_e.get('fingerprint', '??')} "
-                     f"({best_e.get('param_efficiency', 0):.2f}x vs {best_e.get('family', 'gpt2')}, "
-                     f"loss_ratio={best_e.get('loss_ratio', '?')})")
+        lines.append(
+            f"  Current best: {best_e.get('fingerprint', '??')} "
+            f"({best_e.get('param_efficiency', 0):.2f}x vs {best_e.get('family', 'gpt2')}, "
+            f"loss_ratio={best_e.get('loss_ratio', '?')})"
+        )
     top_entries = scaling.get("entries", [])
     if len(top_entries) > 1:
         lines.append("  Top evaluated candidates:")
         for e in top_entries[:5]:
             gate_str = "PASS" if e.get("gate") else "FAIL"
-            lines.append(f"    {e.get('fingerprint', '??')}: "
-                         f"{e.get('param_eff', 0):.2f}x param, "
-                         f"{e.get('flop_eff', 0):.2f}x flop, "
-                         f"lr={e.get('loss_ratio', '?'):.4f} [{gate_str}]")
+            lines.append(
+                f"    {e.get('fingerprint', '??')}: "
+                f"{e.get('param_eff', 0):.2f}x param, "
+                f"{e.get('flop_eff', 0):.2f}x flop, "
+                f"lr={e.get('loss_ratio', '?'):.4f} [{gate_str}]"
+            )
     return "\n".join(lines)
 
 
@@ -386,7 +460,9 @@ def _build_rich_learning_log_section(analytics_data: Dict) -> Optional[str]:
         return None
     lines = [f"Recent Learning Events ({len(learning_log)} most recent):"]
     for entry in learning_log[:5]:
-        lines.append(f"  [{entry.get('event_type', '?')}] {entry.get('description', '')[:80]}")
+        lines.append(
+            f"  [{entry.get('event_type', '?')}] {entry.get('description', '')[:80]}"
+        )
     return "\n".join(lines)
 
 
@@ -400,15 +476,19 @@ def _build_rich_gate_health_section(analytics_data: Dict) -> Optional[str]:
     lines.append(f"  Violations: {gate_summary.get('causality_violations', 0)}")
     corr = gate_summary.get("discovery_validation_correlation")
     if corr is not None:
-        lines.append(f"  Discovery-Validation correlation: {corr:.3f} "
-                     f"(n={gate_summary.get('n_correlation_samples', 0)})")
+        lines.append(
+            f"  Discovery-Validation correlation: {corr:.3f} "
+            f"(n={gate_summary.get('n_correlation_samples', 0)})"
+        )
     gate_daily = gate_health.get("daily", [])
     if gate_daily:
         recent = gate_daily[-3:]
         lines.append("  Recent daily gate failure rates:")
         for d in recent:
-            lines.append(f"    {d['date']}: {d['gate_failure_rate']:.1%} "
-                         f"({d['models_screened']} screened)")
+            lines.append(
+                f"    {d['date']}: {d['gate_failure_rate']:.1%} "
+                f"({d['models_screened']} screened)"
+            )
     return "\n".join(lines)
 
 
@@ -432,22 +512,32 @@ def _build_rich_negative_results_section(analytics_data: Dict) -> Optional[str]:
     if failed_ops:
         neg_lines.append("Negative Results — Consistently Failing Patterns:")
         for op in failed_ops[:8]:
-            neg_lines.append(f"  AVOID {op['op_name']}: 0% S1 rate over {op.get('n_used', '?')} "
-                             f"uses, fails at {op.get('failure_stage', '?')} "
-                             f"(confidence={op.get('confidence', 0):.2f})")
+            neg_lines.append(
+                f"  AVOID {op['op_name']}: 0% S1 rate over {op.get('n_used', '?')} "
+                f"uses, fails at {op.get('failure_stage', '?')} "
+                f"(confidence={op.get('confidence', 0):.2f})"
+            )
         neg_lines.append("  (Use excluded_ops in CONFIG to ban these)")
     anti_patterns = neg.get("anti_patterns", [])
     if anti_patterns:
-        neg_lines.append("Negative Results — Anti-Patterns:" if not neg_lines else "  Anti-correlated features:")
+        neg_lines.append(
+            "Negative Results — Anti-Patterns:"
+            if not neg_lines
+            else "  Anti-correlated features:"
+        )
         for ap in anti_patterns[:5]:
-            neg_lines.append(f"  {ap.get('feature', '?')}: correlation={ap.get('correlation', 0):.3f} "
-                             f"— {ap.get('interpretation', '')}")
+            neg_lines.append(
+                f"  {ap.get('feature', '?')}: correlation={ap.get('correlation', 0):.3f} "
+                f"— {ap.get('interpretation', '')}"
+            )
     refuted_hyps = neg.get("refuted_hypotheses", [])
     if refuted_hyps:
         if not neg_lines:
             neg_lines.append("Negative Results — Refuted Hypotheses:")
         else:
-            neg_lines.append("  Refuted hypotheses (DO NOT re-test similar directions):")
+            neg_lines.append(
+                "  Refuted hypotheses (DO NOT re-test similar directions):"
+            )
         for rh in refuted_hyps[:5]:
             content = rh.get("content", "")[:120]
             conf = rh.get("confidence", 0)
@@ -465,11 +555,16 @@ def _build_rich_designer_telemetry_section(analytics_data: Dict) -> Optional[str
     d_lines = ["Designer Integration:"]
     gap = designer.get("bridge_gap_report", {})
     if gap:
-        d_lines.append(f"  Bridge gap: {gap.get('unsupported_components', 0)} "
-                       f"of {gap.get('total_components', 0)} components unsupported")
+        d_lines.append(
+            f"  Bridge gap: {gap.get('unsupported_components', 0)} "
+            f"of {gap.get('total_components', 0)} components unsupported"
+        )
         gaps = gap.get("gaps", [])
         if gaps:
-            d_lines.append("  Unsupported: " + ", ".join(g.get("component_id", "?") for g in gaps[:8]))
+            d_lines.append(
+                "  Unsupported: "
+                + ", ".join(g.get("component_id", "?") for g in gaps[:8])
+            )
     blocks = [b for b in designer.get("builtin_blocks", []) if b]
     if blocks:
         d_lines.append(f"  Available block templates: {', '.join(blocks)}")
@@ -506,8 +601,10 @@ def _build_past_hypotheses_section(past_hypotheses: List[Dict]) -> str:
             label = "[REFUTED INSIGHT — avoid similar directions]"
         lines.append(f"  {label} {h.get('hypothesis', '?')[:80]}")
         if h.get("s1_count") is not None:
-            lines.append(f"    S1 passes: {h['s1_count']}, "
-                         f"novelty: {h.get('best_novelty', 0):.3f}")
+            lines.append(
+                f"    S1 passes: {h['s1_count']}, "
+                f"novelty: {h.get('best_novelty', 0):.3f}"
+            )
         if source == "refuted_insight" and h.get("evidence"):
             lines.append(f"    Evidence: {h['evidence'][:100]}")
     return "\n".join(lines)
@@ -566,7 +663,9 @@ def _build_session_delta(
     rather than repeating the same analysis every cycle.
     """
     lines: List[str] = []
-    lines.append("Session Delta (focus on NEW information, avoid repeating old observations):")
+    lines.append(
+        "Session Delta (focus on NEW information, avoid repeating old observations):"
+    )
 
     # Recent experiment outcomes — summarize the last few
     if history:
@@ -624,7 +723,9 @@ def build_investigation_context(candidates: list, leaderboard: list) -> str:
     """Build context for investigation phase LLM prompts."""
     sections = []
 
-    sections.append(f"Investigation Phase: {len(candidates)} candidates selected for deep study")
+    sections.append(
+        f"Investigation Phase: {len(candidates)} candidates selected for deep study"
+    )
 
     for i, c in enumerate(candidates[:10]):
         lines = [f"\nCandidate {i + 1}:"]
@@ -652,17 +753,17 @@ def build_investigation_context(candidates: list, leaderboard: list) -> str:
             tier_counts[t] = tier_counts.get(t, 0) + 1
         for t, count in sorted(tier_counts.items()):
             lines.append(f"  {t}: {count} entries")
-        best = max(leaderboard, key=lambda x: x.get("composite_score", 0),
-                   default=None)
+        best = max(leaderboard, key=lambda x: x.get("composite_score", 0), default=None)
         if best:
-            lines.append(f"  Best composite score: {best.get('composite_score', 0):.3f}")
+            lines.append(
+                f"  Best composite score: {best.get('composite_score', 0):.3f}"
+            )
         sections.append("\n".join(lines))
 
     return "\n\n".join(sections)
 
 
-def build_validation_context(candidates: list,
-                              investigation_results: list) -> str:
+def build_validation_context(candidates: list, investigation_results: list) -> str:
     """Build context for validation phase LLM prompts."""
     sections = []
 
@@ -675,7 +776,9 @@ def build_validation_context(candidates: list,
         if c.get("architecture_desc"):
             lines.append(f"  Architecture: {c['architecture_desc']}")
         if c.get("investigation_loss_ratio") is not None:
-            lines.append(f"  Investigation loss ratio: {c['investigation_loss_ratio']:.4f}")
+            lines.append(
+                f"  Investigation loss ratio: {c['investigation_loss_ratio']:.4f}"
+            )
         if c.get("validation_loss_ratio") is not None:
             lines.append(f"  Validation loss ratio: {c['validation_loss_ratio']:.4f}")
         if c.get("investigation_robustness") is not None:
@@ -707,7 +810,9 @@ def _build_mode_recent_experiments_section(recent_experiments: list) -> str:
         for e in recent_experiments
         if e.get("best_novelty_score") is not None
     ]
-    avg_novelty = (sum(avg_novelty_scores) / len(avg_novelty_scores) if avg_novelty_scores else 0)
+    avg_novelty = (
+        sum(avg_novelty_scores) / len(avg_novelty_scores) if avg_novelty_scores else 0
+    )
     lines = [f"\nRecent experiment history ({len(recent_experiments)} experiments):"]
     lines.append(f"  Total S1 survivors: {total_s1} / {total_programs} programs")
     lines.append(f"  Average best novelty: {avg_novelty:.3f}")
@@ -745,11 +850,14 @@ def _append_mode_leaderboard_sections(sections: List[str], leaderboard: list) ->
     lines = [f"\nLeaderboard summary ({len(leaderboard)} total entries):"]
     for t in ["screening", "investigation", "validation", "breakthrough"]:
         if t in tier_counts:
-            lines.append(f"  {t}: {tier_counts[t]} entries "
-                         f"(best score: {tier_best.get(t, 0):.3f})")
+            lines.append(
+                f"  {t}: {tier_counts[t]} entries "
+                f"(best score: {tier_best.get(t, 0):.3f})"
+            )
     sections.append("\n".join(lines))
     screening_candidates = [
-        e for e in leaderboard
+        e
+        for e in leaderboard
         if e.get("tier") == "screening"
         and not str(e.get("result_id", "")).startswith("ref_")
         and e.get("screening_loss_ratio") is not None
@@ -761,7 +869,8 @@ def _append_mode_leaderboard_sections(sections: List[str], leaderboard: list) ->
             f"(screening loss_ratio < 0.5)"
         )
     investigation_candidates = [
-        e for e in leaderboard
+        e
+        for e in leaderboard
         if e.get("tier") == "investigation"
         and not str(e.get("result_id", "")).startswith("ref_")
         and e.get("investigation_robustness") is not None
@@ -779,7 +888,9 @@ def _build_mode_compression_section(compression: Dict, n_tested: int) -> str:
     n_compressed_tested = int(totals.get("n_compressed_tested") or 0)
     n_compressed_survived = int(totals.get("n_compressed_survived") or 0)
     compressed_share = n_compressed_tested / n_tested
-    compressed_survival = n_compressed_survived / n_compressed_tested if n_compressed_tested > 0 else 0.0
+    compressed_survival = (
+        n_compressed_survived / n_compressed_tested if n_compressed_tested > 0 else 0.0
+    )
     comp_lines = [
         "Compression coverage: "
         f"{n_compressed_tested}/{n_tested} tested ({compressed_share:.1%}), "
@@ -825,7 +936,9 @@ def _build_mode_sparsity_section(analytics_data: Dict, n_tested: int) -> str:
     n_sparse_tested = int(sparse_summary.get("n_sparse_tested") or 0)
     n_sparse_survived = int(sparse_summary.get("n_sparse_survived") or 0)
     sparse_share = n_sparse_tested / n_tested if n_tested > 0 else 0.0
-    sparse_survival = n_sparse_survived / n_sparse_tested if n_sparse_tested > 0 else 0.0
+    sparse_survival = (
+        n_sparse_survived / n_sparse_tested if n_sparse_tested > 0 else 0.0
+    )
     avg_density = sparse_summary.get("avg_density")
     lines = [
         f"\nSparsity coverage: "
@@ -837,7 +950,9 @@ def _build_mode_sparsity_section(analytics_data: Dict, n_tested: int) -> str:
     rigl_count = int(sparse_summary.get("n_rigl_runs") or 0)
     pruning_count = int(sparse_summary.get("n_pruning_runs") or 0)
     if rigl_count > 0 or pruning_count > 0:
-        lines.append(f"  Sparse training: {rigl_count} RigL runs, {pruning_count} pruning baselines")
+        lines.append(
+            f"  Sparse training: {rigl_count} RigL runs, {pruning_count} pruning baselines"
+        )
     return "\n".join(lines)
 
 
@@ -942,7 +1057,9 @@ def build_go_no_go_context(
     lines = ["Candidate under review:"]
     lines.append(f"  Result ID: {candidate.get('result_id', '?')[:12]}")
     if candidate.get("validation_loss_ratio") is not None:
-        lines.append(f"  Validation loss ratio: {candidate['validation_loss_ratio']:.4f}")
+        lines.append(
+            f"  Validation loss ratio: {candidate['validation_loss_ratio']:.4f}"
+        )
     elif candidate.get("loss_ratio") is not None:
         lines.append(f"  Loss ratio: {candidate['loss_ratio']:.4f}")
     if candidate.get("novelty_score") is not None:
@@ -1020,13 +1137,15 @@ def inject_digest_context(sections: list, digest) -> None:
         syn = [s for s in synergies if s.label == "synergistic"][:3]
         anti = [s for s in synergies if s.label == "anti_synergistic"][:3]
         if syn:
-            lines.append("  Synergistic pairs: " + "; ".join(
-                f"{s.op_a}+{s.op_b}({s.lift:.1f}x)" for s in syn
-            ))
+            lines.append(
+                "  Synergistic pairs: "
+                + "; ".join(f"{s.op_a}+{s.op_b}({s.lift:.1f}x)" for s in syn)
+            )
         if anti:
-            lines.append("  Anti-synergistic: " + "; ".join(
-                f"{s.op_a}+{s.op_b}({s.lift:.2f}x)" for s in anti
-            ))
+            lines.append(
+                "  Anti-synergistic: "
+                + "; ".join(f"{s.op_a}+{s.op_b}({s.lift:.2f}x)" for s in anti)
+            )
 
         # Efficiency profiles (Pareto-optimal families)
         eff_profiles = getattr(digest, "efficiency_profiles", [])
@@ -1035,7 +1154,7 @@ def inject_digest_context(sections: list, digest) -> None:
             lines.append("  Pareto-optimal families (best loss/param tradeoff):")
             for p in pareto[:3]:
                 lines.append(
-                    f"    Family {p.family_id}: {p.avg_params/1e6:.2f}M params, "
+                    f"    Family {p.family_id}: {p.avg_params / 1e6:.2f}M params, "
                     f"loss/Mparam={p.loss_per_megaparam:.3f}"
                 )
 

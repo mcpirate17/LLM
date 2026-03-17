@@ -26,6 +26,7 @@ Usage:
     # Target specific entry
     python -m research.tools.backfill_leaderboard --phase compile --entry-id abc123
 """
+
 import argparse
 import dataclasses
 import json
@@ -51,6 +52,7 @@ DB_PATH = os.environ.get(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_model(graph_json, config):
     """Deserialize graph_json and compile a model."""
@@ -99,6 +101,7 @@ def _fmt_eta(elapsed, done, total):
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
+
 
 def print_status(db):
     """Print coverage stats for leaderboard columns."""
@@ -158,6 +161,7 @@ def print_status(db):
 # ---------------------------------------------------------------------------
 # Phase 1: SQL-only fixes
 # ---------------------------------------------------------------------------
+
 
 def phase_sql(db, dry_run=False):
     """Instant SQL backfills that don't require model rebuild."""
@@ -232,6 +236,7 @@ def phase_sql(db, dry_run=False):
 # Phase 2: Compile-only evals (no training)
 # ---------------------------------------------------------------------------
 
+
 def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
     """Rebuild models and run forward-only evaluations."""
     from research.eval.efficiency_wall import evaluate_efficiency_wall
@@ -253,7 +258,7 @@ def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
         " )"
     )
     if entry_id:
-        where += f" AND l.entry_id = ?"
+        where += " AND l.entry_id = ?"
         params = [entry_id]
     else:
         params = []
@@ -297,7 +302,9 @@ def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
             # Efficiency wall
             try:
                 ew = evaluate_efficiency_wall(
-                    model, config.vocab_size, dev,
+                    model,
+                    config.vocab_size,
+                    dev,
                     seq_lens=(64, 128, 256, 512),
                     batch_size=2,
                     memory_budget_mb=2048,
@@ -315,7 +322,9 @@ def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
             try:
                 sp = evaluate_activation_sparsity(model, input_batches, dev)
                 if sp.get("activation_sparsity_score") is not None:
-                    updates["activation_sparsity_score"] = sp["activation_sparsity_score"]
+                    updates["activation_sparsity_score"] = sp[
+                        "activation_sparsity_score"
+                    ]
                 if sp.get("dead_neuron_ratio") is not None:
                     updates["dead_neuron_ratio"] = sp["dead_neuron_ratio"]
             except Exception as e:
@@ -334,7 +343,9 @@ def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
                 runner = ExperimentRunner.__new__(ExperimentRunner)
                 telemetry = runner._extract_architecture_telemetry(model)
                 if telemetry.get("routing_savings_ratio") is not None:
-                    updates["routing_savings_ratio"] = telemetry["routing_savings_ratio"]
+                    updates["routing_savings_ratio"] = telemetry[
+                        "routing_savings_ratio"
+                    ]
                 if telemetry.get("compression_ratio") is not None:
                     updates["compression_ratio"] = telemetry["compression_ratio"]
             except Exception as e:
@@ -354,7 +365,9 @@ def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
             elapsed = time.time() - t0
             eta = _fmt_eta(elapsed, i + 1, len(rows))
             if (i + 1) % 10 == 0 or (i + 1) == len(rows):
-                print(f"  Progress: {i + 1}/{len(rows)} (ok={success} fail={failed}) ETA: {eta}")
+                print(
+                    f"  Progress: {i + 1}/{len(rows)} (ok={success} fail={failed}) ETA: {eta}"
+                )
 
         except Exception as e:
             msg = str(e)
@@ -371,6 +384,7 @@ def phase_compile(db, device="cpu", limit=0, entry_id=None, dry_run=False):
 # ---------------------------------------------------------------------------
 # Phase 3: Micro-train evals
 # ---------------------------------------------------------------------------
+
 
 def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
     """Rebuild models, micro-train, then run training-dependent evals."""
@@ -446,7 +460,9 @@ def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
                     model = _build_model(graph_json, config)
                     model = model.to(dev)
                     wk = evaluate_wikitext_perplexity(
-                        model, config.vocab_size, dev,
+                        model,
+                        config.vocab_size,
+                        dev,
                         n_train_steps=n_train_steps,
                         seq_len=min(seq_len, config.max_seq_len),
                     )
@@ -464,7 +480,9 @@ def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
                     model = _build_model(graph_json, config)
                     model = model.to(dev)
                     ts = evaluate_tinystories(
-                        model, config.vocab_size, dev,
+                        model,
+                        config.vocab_size,
+                        dev,
                         n_train_steps=n_train_steps,
                         seq_len=min(seq_len, config.max_seq_len),
                     )
@@ -479,12 +497,15 @@ def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
             # Cross-task robustness (needs model factory)
             if existing_cross_task is None:
                 try:
+
                     def make_model_fn(_gj=graph_json, _cfg=config, _dev=dev):
                         m = _build_model(_gj, _parse_config(config_json))
                         return m.to(_dev)
 
                     ct = evaluate_cross_task_robustness(
-                        make_model_fn, config.vocab_size, dev,
+                        make_model_fn,
+                        config.vocab_size,
+                        dev,
                         n_train_steps=n_train_steps,
                         seq_len=min(seq_len, config.max_seq_len),
                     )
@@ -503,13 +524,16 @@ def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
                     with torch.no_grad():
                         for _ in range(2):
                             ids = torch.randint(
-                                0, config.vocab_size,
+                                0,
+                                config.vocab_size,
                                 (4, min(seq_len, config.max_seq_len)),
                                 device=dev,
                             )
                             out = model(ids)
-                            logits = out.logits if hasattr(out, "logits") else (
-                                out[0] if isinstance(out, tuple) else out
+                            logits = (
+                                out.logits
+                                if hasattr(out, "logits")
+                                else (out[0] if isinstance(out, tuple) else out)
                             )
                             shift_logits = logits[:, :-1, :].contiguous()
                             shift_labels = ids[:, 1:].contiguous()
@@ -550,7 +574,9 @@ def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
             elapsed = time.time() - t0
             eta = _fmt_eta(elapsed, i + 1, len(rows))
             if (i + 1) % 5 == 0 or (i + 1) == len(rows):
-                print(f"  Progress: {i + 1}/{len(rows)} (ok={success} fail={failed}) ETA: {eta}")
+                print(
+                    f"  Progress: {i + 1}/{len(rows)} (ok={success} fail={failed}) ETA: {eta}"
+                )
 
         except Exception as e:
             msg = str(e)
@@ -567,6 +593,7 @@ def phase_train(db, device="cpu", limit=0, entry_id=None, dry_run=False):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Backfill missing leaderboard evaluation data"
@@ -577,9 +604,15 @@ def main():
         help="Which backfill phase to run",
     )
     parser.add_argument("--status", action="store_true", help="Print coverage report")
-    parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
-    parser.add_argument("--limit", type=int, default=0, help="Max entries to process (0=all)")
-    parser.add_argument("--entry-id", type=str, default=None, help="Target a specific entry")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Preview without writing"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Max entries to process (0=all)"
+    )
+    parser.add_argument(
+        "--entry-id", type=str, default=None, help="Target a specific entry"
+    )
     parser.add_argument("--device", default="cpu", help="torch device (cpu/cuda)")
     parser.add_argument("--db", default=DB_PATH, help="Path to lab_notebook.db")
     args = parser.parse_args()
@@ -600,14 +633,20 @@ def main():
 
     if args.phase in ("compile", "all"):
         phase_compile(
-            db, device=args.device, limit=args.limit,
-            entry_id=args.entry_id, dry_run=args.dry_run,
+            db,
+            device=args.device,
+            limit=args.limit,
+            entry_id=args.entry_id,
+            dry_run=args.dry_run,
         )
 
     if args.phase in ("train", "all"):
         phase_train(
-            db, device=args.device, limit=args.limit,
-            entry_id=args.entry_id, dry_run=args.dry_run,
+            db,
+            device=args.device,
+            limit=args.limit,
+            entry_id=args.entry_id,
+            dry_run=args.dry_run,
         )
 
     elapsed = time.time() - t0

@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for fixed_point_iter."""
-import torch
+
 import torch.nn as nn
 
 

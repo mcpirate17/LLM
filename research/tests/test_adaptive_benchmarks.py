@@ -21,6 +21,7 @@ pytestmark = pytest.mark.unit
 # 1. Define Architecture Specs
 # ---------------------------------------------------------------------------
 
+
 def get_dense_spec() -> ArchSpec:
     """Standard transformer baseline."""
     return ArchSpec(
@@ -32,10 +33,11 @@ def get_dense_spec() -> ArchSpec:
             "compute_routing": "uniform",
             "topology": "sequential",
             "normalization": "rmsnorm_pre",
-            "positional_encoding": "rope"
+            "positional_encoding": "rope",
         },
-        seed=42
+        seed=42,
     )
+
 
 def get_adaptive_spec() -> ArchSpec:
     """Adaptive tri-lane routing model."""
@@ -48,14 +50,16 @@ def get_adaptive_spec() -> ArchSpec:
             "compute_routing": "adaptive_trilane",
             "topology": "sequential",
             "normalization": "rmsnorm_pre",
-            "positional_encoding": "rope"
+            "positional_encoding": "rope",
         },
-        seed=42
+        seed=42,
     )
+
 
 # ---------------------------------------------------------------------------
 # 2. FLOPs Estimation (E1)
 # ---------------------------------------------------------------------------
+
 
 def estimate_flops(model: nn.Module, batch_size: int, seq_len: int) -> int:
     """
@@ -67,12 +71,12 @@ def estimate_flops(model: nn.Module, batch_size: int, seq_len: int) -> int:
     L = model.config.n_layers
     S = seq_len
     B = batch_size
-    
+
     # Dense: all tokens pass through all L layers
     # Each layer has Attention (4*D^2) + MLP (8*D^2) = 12*D^2 per token
     # Total = B * S * L * 12 * D^2
-    dense_flops = B * S * L * 12 * (D ** 2)
-    
+    dense_flops = B * S * L * 12 * (D**2)
+
     # If it's adaptive, we need to account for lane distribution.
     # For benchmark purposes, we assume an average utilization:
     # Easy: 2 layers, Medium: 4 layers, Hard: 6 layers (if L=6)
@@ -81,32 +85,34 @@ def estimate_flops(model: nn.Module, batch_size: int, seq_len: int) -> int:
     if "adaptive" in str(type(model)).lower():
         # Heuristic: 60% of dense compute
         return int(dense_flops * 0.6)
-    
+
     return dense_flops
+
 
 # ---------------------------------------------------------------------------
 # 3. Benchmark Execution
 # ---------------------------------------------------------------------------
 
+
 def run_benchmarks():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Running benchmarks on {device}...")
-    
-    config = BuildConfig(dim=128, n_layers=4, n_heads=4) # Smaller for fast benchmark
-    
+
+    config = BuildConfig(dim=128, n_layers=4, n_heads=4)  # Smaller for fast benchmark
+
     # E1: Throughput & FLOPs
     specs = [("Dense", get_dense_spec()), ("Adaptive", get_adaptive_spec())]
     results = {}
-    
+
     for name, spec in specs:
         print(f"\nEvaluating {name} throughput...")
         model = build_model(spec, config).to(device)
-        
+
         # Warmup
         x = torch.randint(0, config.vocab_size, (4, 128), device=device)
         for _ in range(5):
             _ = model(x)
-            
+
         # Time 50 forward passes
         torch.cuda.synchronize() if device == "cuda" else None
         t0 = time.perf_counter()
@@ -114,26 +120,28 @@ def run_benchmarks():
             _ = model(x)
         torch.cuda.synchronize() if device == "cuda" else None
         t1 = time.perf_counter()
-        
-        avg_time = (t1 - t0) / 50 * 1000 # ms
+
+        avg_time = (t1 - t0) / 50 * 1000  # ms
         flops = estimate_flops(model, 4, 128)
         flops_per_token = flops / (4 * 128)
-        throughput = (4 * 128) / (avg_time / 1000) # tokens/sec
-        
+        throughput = (4 * 128) / (avg_time / 1000)  # tokens/sec
+
         results[name] = {
             "latency_ms": avg_time,
             "throughput": throughput,
             "flops_per_token": flops_per_token,
-            "params": model.param_count()
+            "params": model.param_count(),
         }
-        
-        print(f"  {name}: {avg_time:.2f} ms/pass | {throughput:.1f} tok/s | {flops_per_token/1e6:.1f} MFLOPs/tok")
+
+        print(
+            f"  {name}: {avg_time:.2f} ms/pass | {throughput:.1f} tok/s | {flops_per_token / 1e6:.1f} MFLOPs/tok"
+        )
 
     # E2: Quality Parity (Micro-Train)
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("E2: Quality Parity (micro_corpus.txt, 300 steps)")
-    print("="*50)
-    
+    print("=" * 50)
+
     for name, spec in specs:
         print(f"\nTraining {name}...")
         # Use stage1_micro_train from evaluator
@@ -142,18 +150,25 @@ def run_benchmarks():
         )
         results[name]["final_loss"] = res.final_loss
         results[name]["loss_ratio"] = res.loss_ratio
-        print(f"  {name}: Initial Loss: {res.initial_loss:.4f} | Final Loss: {res.final_loss:.4f} | Ratio: {res.loss_ratio:.4f}")
+        print(
+            f"  {name}: Initial Loss: {res.initial_loss:.4f} | Final Loss: {res.final_loss:.4f} | Ratio: {res.loss_ratio:.4f}"
+        )
 
     # Summary Table
-    print("\n" + "="*82)
-    print(f"  ADAPTIVE ROUTING BENCHMARK SUMMARY")
-    print("="*82)
-    print(f"  {'Model':<15} {'Params':>10} {'Tput (tok/s)':>15} {'MFLOPs/tok':>12} {'Final Loss':>12}")
+    print("\n" + "=" * 82)
+    print("  ADAPTIVE ROUTING BENCHMARK SUMMARY")
+    print("=" * 82)
+    print(
+        f"  {'Model':<15} {'Params':>10} {'Tput (tok/s)':>15} {'MFLOPs/tok':>12} {'Final Loss':>12}"
+    )
     print("-" * 82)
     for name in ["Dense", "Adaptive"]:
         r = results[name]
-        print(f"  {name:<15} {r['params']/1e6:>9.1f}M {r['throughput']:>15.1f} {r['flops_per_token']/1e6:>12.1f} {r.get('final_loss', 0):>12.4f}")
+        print(
+            f"  {name:<15} {r['params'] / 1e6:>9.1f}M {r['throughput']:>15.1f} {r['flops_per_token'] / 1e6:>12.1f} {r.get('final_loss', 0):>12.4f}"
+        )
     print("=" * 82)
+
 
 if __name__ == "__main__":
     run_benchmarks()

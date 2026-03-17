@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for fused_linear_gelu."""
-import torch
+
 import torch.nn as nn
 
 

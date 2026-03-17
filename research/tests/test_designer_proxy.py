@@ -14,12 +14,13 @@ import pytest
 import json
 import os
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.designer
 
 try:
     import flask
+
     HAS_FLASK = True
 except ImportError:
     HAS_FLASK = False
@@ -40,9 +41,24 @@ _SAMPLE_WORKFLOW = {
     "workflow_id": "test_wf",
     "name": "Test Workflow",
     "nodes": [
-        {"id": "n0", "component_type": "io/input", "params": {}, "ui_meta": {"position": {"x": 0, "y": 0}}},
-        {"id": "n1", "component_type": "linear_algebra/linear_proj", "params": {}, "ui_meta": {"position": {"x": 0, "y": 100}}},
-        {"id": "n2", "component_type": "io/output", "params": {}, "ui_meta": {"position": {"x": 0, "y": 200}}},
+        {
+            "id": "n0",
+            "component_type": "io/input",
+            "params": {},
+            "ui_meta": {"position": {"x": 0, "y": 0}},
+        },
+        {
+            "id": "n1",
+            "component_type": "linear_algebra/linear_proj",
+            "params": {},
+            "ui_meta": {"position": {"x": 0, "y": 100}},
+        },
+        {
+            "id": "n2",
+            "component_type": "io/output",
+            "params": {},
+            "ui_meta": {"position": {"x": 0, "y": 200}},
+        },
     ],
     "edges": [
         {"id": "e0", "source": "n0", "target": "n1"},
@@ -57,6 +73,7 @@ class TestDesignerProxyHelpers(unittest.TestCase):
 
     def setUp(self):
         import research.scientist.api as api_mod
+
         self.api_mod = api_mod
 
     def test_proxy_disabled_returns_none(self):
@@ -69,6 +86,7 @@ class TestDesignerProxyHelpers(unittest.TestCase):
     def test_proxy_connection_error_returns_none(self, mock_requests):
         """When designer backend is unreachable, returns None for fallback."""
         import requests
+
         mock_requests.ConnectionError = requests.ConnectionError
         mock_requests.Timeout = requests.Timeout
         mock_requests.request.side_effect = requests.ConnectionError("refused")
@@ -81,6 +99,7 @@ class TestDesignerProxyHelpers(unittest.TestCase):
     def test_proxy_timeout_returns_none(self, mock_requests):
         """When proxy times out, returns None for fallback."""
         import requests
+
         mock_requests.ConnectionError = requests.ConnectionError
         mock_requests.Timeout = requests.Timeout
         mock_requests.request.side_effect = requests.Timeout("timed out")
@@ -93,14 +112,18 @@ class TestDesignerProxyHelpers(unittest.TestCase):
     def test_proxy_success_returns_response(self, mock_requests):
         """On success, returns the Response object."""
         import requests
+
         mock_requests.ConnectionError = requests.ConnectionError
         mock_requests.Timeout = requests.Timeout
         mock_resp = _make_mock_response(200, {"valid": True})
         mock_requests.request.return_value = mock_resp
 
         with patch.object(self.api_mod, "_DESIGNER_PROXY_ENABLED", True):
-            result = self.api_mod._designer_proxy("POST", "/api/v1/workflows/validate",
-                                                   json_body={"workflow": _SAMPLE_WORKFLOW})
+            result = self.api_mod._designer_proxy(
+                "POST",
+                "/api/v1/workflows/validate",
+                json_body={"workflow": _SAMPLE_WORKFLOW},
+            )
             self.assertIsNotNone(result)
             self.assertEqual(result.status_code, 200)
 
@@ -113,6 +136,7 @@ class TestDesignerProxyHelpers(unittest.TestCase):
         """_proxy_or_error converts response to Flask (body, status) tuple."""
         # Need a Flask app context for jsonify
         from flask import Flask
+
         app = Flask(__name__)
         with app.app_context():
             mock_resp = _make_mock_response(200, {"valid": True, "issues": []})
@@ -124,6 +148,7 @@ class TestDesignerProxyHelpers(unittest.TestCase):
     def test_proxy_or_error_4xx(self):
         """_proxy_or_error forwards 4xx status from proxy."""
         from flask import Flask
+
         app = Flask(__name__)
         with app.app_context():
             mock_resp = _make_mock_response(404, {"detail": "Not found"})
@@ -141,10 +166,12 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def setUpClass(cls):
         """Create a Flask test client with mocked notebook."""
         import research.scientist.api as api_mod
+
         cls.api_mod = api_mod
 
         # Create app with a temp notebook
         import tempfile
+
         cls._tmpdir = tempfile.mkdtemp()
         cls._nb_path = os.path.join(cls._tmpdir, "test.db")
 
@@ -157,54 +184,82 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         return _make_mock_response(200, {"valid": True, "issues": []})
 
     def _proxy_compile_response(self):
-        return _make_mock_response(200, {
-            "compiled": True,
-            "workflow_id": "test_wf",
-            "module_class": "WorkflowModule",
-            "param_count": 1024,
-        })
+        return _make_mock_response(
+            200,
+            {
+                "compiled": True,
+                "workflow_id": "test_wf",
+                "module_class": "WorkflowModule",
+                "param_count": 1024,
+            },
+        )
 
     def _proxy_run_response(self):
-        return _make_mock_response(200, {
-            "accepted": True,
-            "run_id": "run_abc123",
-            "workflow_id": "test_wf",
-        })
+        return _make_mock_response(
+            200,
+            {
+                "accepted": True,
+                "run_id": "run_abc123",
+                "workflow_id": "test_wf",
+            },
+        )
 
     def _proxy_components_response(self):
-        return _make_mock_response(200, [
-            {"id": "linear_proj", "name": "Linear Projection", "category": "linear_algebra"},
-        ])
+        return _make_mock_response(
+            200,
+            [
+                {
+                    "id": "linear_proj",
+                    "name": "Linear Projection",
+                    "category": "linear_algebra",
+                },
+            ],
+        )
 
     def _proxy_save_response(self):
-        return _make_mock_response(200, {
-            "workflow_id": "test_wf",
-            "version": 1,
-            "saved_at": "2026-02-21T00:00:00Z",
-        })
+        return _make_mock_response(
+            200,
+            {
+                "workflow_id": "test_wf",
+                "version": 1,
+                "saved_at": "2026-02-21T00:00:00Z",
+            },
+        )
 
     def _proxy_load_response(self):
-        return _make_mock_response(200, {
-            "id": "test_wf",
-            "name": "Test Workflow",
-            "graph": _SAMPLE_WORKFLOW,
-        })
+        return _make_mock_response(
+            200,
+            {
+                "id": "test_wf",
+                "name": "Test Workflow",
+                "graph": _SAMPLE_WORKFLOW,
+            },
+        )
 
     def _proxy_list_response(self):
-        return _make_mock_response(200, [
-            {"id": "test_wf", "name": "Test Workflow"},
-        ])
+        return _make_mock_response(
+            200,
+            [
+                {"id": "test_wf", "name": "Test Workflow"},
+            ],
+        )
 
     def _proxy_survivors_response(self):
-        return _make_mock_response(200, [
-            {"result_id": "abc123", "loss_ratio": 0.95},
-        ])
+        return _make_mock_response(
+            200,
+            [
+                {"result_id": "abc123", "loss_ratio": 0.95},
+            ],
+        )
 
     def _proxy_import_response(self):
-        return _make_mock_response(200, {
-            "success": True,
-            "workflow": _SAMPLE_WORKFLOW,
-        })
+        return _make_mock_response(
+            200,
+            {
+                "success": True,
+                "workflow": _SAMPLE_WORKFLOW,
+            },
+        )
 
     # --- Proxy success tests ---
 
@@ -212,9 +267,11 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_validate_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/validate forwards to designer API."""
         mock_proxy.return_value = self._proxy_validate_response()
-        resp = self.client.post("/api/designer/validate",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/validate",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["valid"])
@@ -228,9 +285,11 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_compile_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/compile forwards to designer API."""
         mock_proxy.return_value = self._proxy_compile_response()
-        resp = self.client.post("/api/designer/compile",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/compile",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["compiled"])
@@ -242,9 +301,9 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_run_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/run forwards to designer API."""
         mock_proxy.return_value = self._proxy_run_response()
-        resp = self.client.post("/api/designer/run",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/run", json=_SAMPLE_WORKFLOW, content_type="application/json"
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["accepted"])
@@ -269,9 +328,9 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         """POST /api/designer/save forwards to designer API."""
         mock_proxy.return_value = self._proxy_save_response()
         body = {**_SAMPLE_WORKFLOW, "workflow_id": "test_wf", "name": "Test"}
-        resp = self.client.post("/api/designer/save",
-                                json=body,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/save", json=body, content_type="application/json"
+        )
         self.assertEqual(resp.status_code, 200)
         mock_proxy.assert_called_once()
         call_args = mock_proxy.call_args
@@ -312,9 +371,11 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_import_proxies_to_designer(self, mock_proxy):
         """POST /api/designer/import forwards to designer API."""
         mock_proxy.return_value = self._proxy_import_response()
-        resp = self.client.post("/api/designer/import",
-                                json={"result_id": "abc123"},
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/import",
+            json={"result_id": "abc123"},
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 200)
         mock_proxy.assert_called_once()
         call_args = mock_proxy.call_args
@@ -324,12 +385,16 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
 
     @patch("research.scientist.api_routes.misc_bp.designer_proxy", return_value=None)
     @patch("research.scientist.api_routes.misc_bp.validate_designer_graph")
-    def test_validate_falls_back_when_proxy_unavailable(self, mock_validate, mock_proxy):
+    def test_validate_falls_back_when_proxy_unavailable(
+        self, mock_validate, mock_proxy
+    ):
         """When proxy returns None, validate falls back to local."""
         mock_validate.return_value = {"valid": True, "issues": []}
-        resp = self.client.post("/api/designer/validate",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/validate",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 200)
         mock_validate.assert_called_once()
 
@@ -338,9 +403,11 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_compile_falls_back_when_proxy_unavailable(self, mock_compile, mock_proxy):
         """When proxy returns None, compile falls back to local."""
         mock_compile.return_value = {"compiled": True, "workflow_id": "test_wf"}
-        resp = self.client.post("/api/designer/compile",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/compile",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 200)
         mock_compile.assert_called_once()
 
@@ -349,9 +416,9 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_run_falls_back_when_proxy_unavailable(self, mock_run, mock_proxy):
         """When proxy returns None, run falls back to local."""
         mock_run.return_value = {"success": True}
-        resp = self.client.post("/api/designer/run",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/run", json=_SAMPLE_WORKFLOW, content_type="application/json"
+        )
         self.assertEqual(resp.status_code, 200)
         mock_run.assert_called_once()
 
@@ -378,9 +445,11 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
     def test_export_python_always_local(self, mock_gen):
         """POST /api/designer/export/python always uses local generation."""
         mock_gen.return_value = "import torch\n"
-        resp = self.client.post("/api/designer/export/python",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/export/python",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["success"])
@@ -394,9 +463,11 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         mock_proxy.return_value = _make_mock_response(
             422, {"detail": "Validation error: missing nodes"}
         )
-        resp = self.client.post("/api/designer/validate",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/validate",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 422)
         data = resp.get_json()
         self.assertIn("detail", data)
@@ -407,29 +478,32 @@ class TestDesignerEndpointProxyMode(unittest.TestCase):
         mock_proxy.return_value = _make_mock_response(
             500, {"detail": "Internal server error"}
         )
-        resp = self.client.post("/api/designer/compile",
-                                json=_SAMPLE_WORKFLOW,
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/compile",
+            json=_SAMPLE_WORKFLOW,
+            content_type="application/json",
+        )
         self.assertEqual(resp.status_code, 500)
 
     def test_missing_body_returns_400(self):
         """POST without JSON body returns 400."""
-        resp = self.client.post("/api/designer/validate",
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/validate", content_type="application/json"
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_save_missing_workflow_id_returns_400(self):
         """POST /api/designer/save without workflow_id returns 400."""
-        resp = self.client.post("/api/designer/save",
-                                json={"name": "Test"},
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/save", json={"name": "Test"}, content_type="application/json"
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_import_missing_result_id_returns_400(self):
         """POST /api/designer/import without result_id returns 400."""
-        resp = self.client.post("/api/designer/import",
-                                json={},
-                                content_type="application/json")
+        resp = self.client.post(
+            "/api/designer/import", json={}, content_type="application/json"
+        )
         self.assertEqual(resp.status_code, 400)
 
 
@@ -439,14 +513,17 @@ class TestDesignerProxyConfig(unittest.TestCase):
 
     def test_default_proxy_base(self):
         import research.scientist.api as api_mod
+
         self.assertEqual(api_mod._DESIGNER_PROXY_BASE, "http://127.0.0.1:8091")
 
     def test_default_proxy_enabled(self):
         import research.scientist.api as api_mod
+
         self.assertTrue(api_mod._DESIGNER_PROXY_ENABLED)
 
     def test_default_proxy_timeout(self):
         import research.scientist.api as api_mod
+
         self.assertEqual(api_mod._DESIGNER_PROXY_TIMEOUT, 10.0)
 
 

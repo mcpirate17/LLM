@@ -1,10 +1,13 @@
 """Tests for the runtime profiler."""
 
 import json
-import pytest
 
 from aria_designer.runtime.bridge import workflow_to_graph
-from aria_designer.runtime.profiler import profile_static, profile_static_graph, profile_runtime
+from aria_designer.runtime.profiler import (
+    profile_static,
+    profile_static_graph,
+    profile_runtime,
+)
 
 
 def _simple_mlp():
@@ -17,10 +20,34 @@ def _simple_mlp():
             {"id": "n4", "component_type": "graph_output", "params": {}},
         ],
         "edges": [
-            {"id": "e0", "source": "n0", "target": "n1", "source_port": "out", "target_port": "in"},
-            {"id": "e1", "source": "n1", "target": "n2", "source_port": "out", "target_port": "in"},
-            {"id": "e2", "source": "n2", "target": "n3", "source_port": "out", "target_port": "in"},
-            {"id": "e3", "source": "n3", "target": "n4", "source_port": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "n0",
+                "target": "n1",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "n1",
+                "target": "n2",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e2",
+                "source": "n2",
+                "target": "n3",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e3",
+                "source": "n3",
+                "target": "n4",
+                "source_port": "out",
+                "target_port": "in",
+            },
         ],
     }
 
@@ -54,6 +81,7 @@ def _attention_workflow():
 
 
 # ── Static profiling tests ───────────────────────────────────────────
+
 
 def test_static_profile_mlp():
     report = profile_static(_simple_mlp(), model_dim=256)
@@ -114,6 +142,7 @@ def test_static_json_serializable():
 
 
 # ── Runtime profiling tests ──────────────────────────────────────────
+
 
 def test_runtime_profile_mlp():
     report = profile_runtime(

@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for multi_head_mix."""
-import torch
+
 import torch.nn as nn
 
 

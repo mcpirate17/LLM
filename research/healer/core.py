@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,7 +30,9 @@ class CodeHealer:
 
     def __init__(self, notebook_path: str, config_path: Optional[str] = None):
         self.notebook_path = notebook_path
-        self.config_path = Path(config_path or (Path(__file__).parent / "healer_config.json"))
+        self.config_path = Path(
+            config_path or (Path(__file__).parent / "healer_config.json")
+        )
         self.config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
@@ -50,21 +50,28 @@ class CodeHealer:
         for ep in endpoints:
             if ep.get("default"):
                 return ep
-        return endpoints[0] if endpoints else {"name": "unknown", "kind": "local", "url": ""}
+        return (
+            endpoints[0]
+            if endpoints
+            else {"name": "unknown", "kind": "local", "url": ""}
+        )
 
     def _command_allowed(self, command: str) -> bool:
         allowed = self.config.get("allowed_commands") or []
         return any(command.strip().startswith(prefix) for prefix in allowed)
 
-    def _run_allowed_command(self, command: str, cwd: Path, timeout_seconds: int) -> Dict[str, Any]:
+    def _run_allowed_command(
+        self, command: str, cwd: Path, timeout_seconds: int
+    ) -> Dict[str, Any]:
         if not self._command_allowed(command):
             raise HealerError(f"Command blocked by healer sandbox policy: {command}")
-        
+
         # Z17: Ensure project root is in PYTHONPATH
         import os
+
         env = os.environ.copy()
         env["PYTHONPATH"] = str(cwd)
-        
+
         proc = subprocess.run(
             command,
             cwd=str(cwd),
@@ -98,10 +105,17 @@ class CodeHealer:
                 },
                 trigger_payload={
                     **spec.trigger_payload,
-                    "command_timeout_seconds": max(1, int(spec.command_timeout_seconds)),
+                    "command_timeout_seconds": max(
+                        1, int(spec.command_timeout_seconds)
+                    ),
                 },
             )
-            nb.add_healer_event(task_id, "Healing task opened.", state="open", payload={"endpoint": endpoint})
+            nb.add_healer_event(
+                task_id,
+                "Healing task opened.",
+                state="open",
+                payload={"endpoint": endpoint},
+            )
             return task_id
         finally:
             nb.close()
@@ -121,8 +135,18 @@ class CodeHealer:
             endpoint = self._select_endpoint(endpoint_name)
 
             nb.update_healer_task(task_id, state="reproducing")
-            nb.add_healer_event(task_id, "Running reproduction steps.", state="reproducing")
-            command_timeout_seconds = max(1, int(task.get("trigger_payload_json", {}).get("command_timeout_seconds", 180) or 180))
+            nb.add_healer_event(
+                task_id, "Running reproduction steps.", state="reproducing"
+            )
+            command_timeout_seconds = max(
+                1,
+                int(
+                    task.get("trigger_payload_json", {}).get(
+                        "command_timeout_seconds", 180
+                    )
+                    or 180
+                ),
+            )
             for cmd in task.get("reproduction_steps_json") or []:
                 repro = self._run_allowed_command(cmd, root, command_timeout_seconds)
                 repro_results.append(repro)
@@ -141,7 +165,9 @@ class CodeHealer:
                 patch_summary=patch_summary,
                 risk_assessment=risk_assessment,
             )
-            nb.add_healer_event(task_id, "Patch proposal stage completed.", state="patch_proposed")
+            nb.add_healer_event(
+                task_id, "Patch proposal stage completed.", state="patch_proposed"
+            )
 
             # Optionally dispatch to existing code agent infrastructure.
             dispatched_task = None
@@ -179,7 +205,11 @@ class CodeHealer:
                 res = self._run_allowed_command(cmd, root, command_timeout_seconds)
                 verify_results.append(res)
 
-            all_ok = all(r.get("returncode") == 0 for r in verify_results) if verify_results else True
+            all_ok = (
+                all(r.get("returncode") == 0 for r in verify_results)
+                if verify_results
+                else True
+            )
             final_state = "completed" if all_ok else "failed"
             nb.update_healer_task(
                 task_id,
@@ -194,7 +224,9 @@ class CodeHealer:
             )
             nb.add_healer_event(
                 task_id,
-                "Healer workflow completed." if all_ok else "Healer verification failed.",
+                "Healer workflow completed."
+                if all_ok
+                else "Healer verification failed.",
                 state=final_state,
             )
             return {"task_id": task_id, "state": final_state, "verification_ok": all_ok}

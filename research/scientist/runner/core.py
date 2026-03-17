@@ -31,9 +31,11 @@ from ..notebook import LabNotebook
 from ...healer import CodeHealer
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig, LiveProgress
+
 
 class _CoreMixin:
     """Core class definition, __init__, properties, class variables."""
@@ -106,6 +108,7 @@ class _CoreMixin:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         from ._types import LiveProgress
+
         self._progress = LiveProgress()
         self._event_queue: queue.Queue = queue.Queue(maxsize=500)
         self._lock = threading.Lock()
@@ -144,11 +147,14 @@ class _CoreMixin:
             ).fetchone()
             if row and row[0]:
                 import json as _json
+
                 meta = _json.loads(row[0])
                 overrides = meta.get("overrides") if isinstance(meta, dict) else None
                 if isinstance(overrides, dict) and overrides:
                     self._grammar_weight_overrides = overrides
-                    logger.info("Restored grammar weight overrides from DB: %s", overrides)
+                    logger.info(
+                        "Restored grammar weight overrides from DB: %s", overrides
+                    )
         except Exception:
             pass  # Non-critical: start with empty overrides
         self._last_stagnation_agent_cycle = -10
@@ -175,6 +181,7 @@ class _CoreMixin:
         if not self._math_spaces_registered:
             try:
                 from ...mathspaces.registry import register_all_mathspaces
+
                 register_all_mathspaces()
                 self._math_spaces_registered = True
             except Exception as e:
@@ -189,7 +196,10 @@ class _CoreMixin:
         """Lazily create the shared scaling-reference manager."""
         if not hasattr(self, "_scaling_ref_mgr"):
             from ...eval.scaling_reference import ScalingReferenceManager
-            cache_path = str(Path(self.notebook_path).parent / "scaling_reference_cache.db")
+
+            cache_path = str(
+                Path(self.notebook_path).parent / "scaling_reference_cache.db"
+            )
             self._scaling_ref_mgr = ScalingReferenceManager(cache_path=cache_path)
         return self._scaling_ref_mgr
 
@@ -204,6 +214,7 @@ class _CoreMixin:
             int(config.vocab_size),
             float(getattr(config, "corpus_train_fraction", 0.9) or 0.9),
             float(getattr(config, "corpus_val_fraction", 0.1) or 0.1),
+            str(getattr(config, "tiktoken_encoding", "gpt2") or "gpt2"),
         )
 
         if self._corpus_batcher is not None and self._corpus_signature == signature:
@@ -222,8 +233,13 @@ class _CoreMixin:
                 text_key=str(config.corpus_text_key or "text"),
                 tokenizer=str(config.tokenizer_mode or "byte"),
                 max_chars=int(config.corpus_max_chars),
-                train_fraction=float(getattr(config, "corpus_train_fraction", 0.9) or 0.9),
+                train_fraction=float(
+                    getattr(config, "corpus_train_fraction", 0.9) or 0.9
+                ),
                 val_fraction=float(getattr(config, "corpus_val_fraction", 0.1) or 0.1),
+                tiktoken_encoding=str(
+                    getattr(config, "tiktoken_encoding", "gpt2") or "gpt2"
+                ),
             ),
             vocab_size=int(config.vocab_size),
         )
@@ -271,13 +287,21 @@ class _CoreMixin:
                 if total >= char_budget:
                     break
             if not texts:
-                logger.warning("HuggingFace dataset %s had no text in column '%s'", ds_name, text_key)
+                logger.warning(
+                    "HuggingFace dataset %s had no text in column '%s'",
+                    ds_name,
+                    text_key,
+                )
                 return None
 
             # Write concatenated text to a temp file and wrap with CorpusBatcher
             import tempfile
+
             tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", prefix="hf_", delete=False,
+                mode="w",
+                suffix=".txt",
+                prefix="hf_",
+                delete=False,
             )
             tmp.write("\n".join(texts))
             tmp.flush()
@@ -292,20 +316,31 @@ class _CoreMixin:
                     max_chars=char_budget,
                     train_fraction=0.9,
                     val_fraction=0.1,
+                    tiktoken_encoding=str(
+                        getattr(config, "tiktoken_encoding", "gpt2") or "gpt2"
+                    ),
                 ),
                 vocab_size=int(config.vocab_size),
             )
             self._hf_batcher = batcher
             self._hf_signature = signature
-            logger.info("HuggingFace batcher ready: %s (%s), %d chars loaded",
-                        ds_name, split, total)
+            logger.info(
+                "HuggingFace batcher ready: %s (%s), %d chars loaded",
+                ds_name,
+                split,
+                total,
+            )
             return batcher
         except Exception as e:
             logger.warning("Failed to load HuggingFace dataset %s: %s", ds_name, e)
             return None
 
     def _get_hydra_batch(
-        self, config: RunConfig, batch_size: int, seq_len: int, dev: torch.device,
+        self,
+        config: RunConfig,
+        batch_size: int,
+        seq_len: int,
+        dev: torch.device,
     ) -> Optional[torch.Tensor]:
         """Get a batch from HYDRA's universal data loader.
 
@@ -316,6 +351,7 @@ class _CoreMixin:
         if self._hydra_loader is None or self._hydra_signature != sig:
             try:
                 import sys
+
                 hydra_root = config.hydra_project_root
                 if hydra_root not in sys.path:
                     sys.path.insert(0, hydra_root)
@@ -333,8 +369,11 @@ class _CoreMixin:
                 )
                 self._hydra_iter = iter(self._hydra_loader)
                 self._hydra_signature = sig
-                logger.info("HYDRA data loader initialized: dataset=%s, dir=%s",
-                            config.hydra_dataset, config.hydra_data_dir)
+                logger.info(
+                    "HYDRA data loader initialized: dataset=%s, dir=%s",
+                    config.hydra_dataset,
+                    config.hydra_data_dir,
+                )
             except Exception as e:
                 logger.warning("Failed to initialize HYDRA data loader: %s", e)
                 self._hydra_loader = None
@@ -386,7 +425,14 @@ class _CoreMixin:
             logger.debug("Failed to inspect LLM backend for limit policy: %s", e)
             return False
         backend = str((llm_config or {}).get("backend") or "").strip().lower()
-        return backend in {"ollama", "local", "lmstudio", "llama.cpp", "llamacpp", "vllm"}
+        return backend in {
+            "ollama",
+            "local",
+            "lmstudio",
+            "llama.cpp",
+            "llamacpp",
+            "vllm",
+        }
 
     def _effective_max_time_minutes(self, config: RunConfig) -> int:
         """Resolve effective continuous-session time limit.
@@ -419,7 +465,9 @@ class _CoreMixin:
             return "missing"
 
     @staticmethod
-    def _norm_map(values: Dict[str, float], higher_is_better: bool = True) -> Dict[str, float]:
+    def _norm_map(
+        values: Dict[str, float], higher_is_better: bool = True
+    ) -> Dict[str, float]:
         if not values:
             return {}
         vmin = min(values.values())

@@ -4,6 +4,7 @@ Handles multi-turn conversations where users describe goals and Aria
 proposes graph modifications iteratively. Reuses intent_parser for
 classification — never duplicates that logic.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,12 +14,10 @@ from uuid import uuid4
 
 from . import database as db
 from .component_identity import (
-    canonicalize_component_id,
     discover_concepts,
 )
 from .intent_parser import (
     _COMPONENT_GROUPS,
-    _LEAF_GROUPS,
     component_groups,
     parse_intent_constraints,
 )
@@ -46,7 +45,8 @@ class ConversationManager:
         workflow_id = (workflow_json or {}).get("workflow_id")
         db.create_conversation(session_id, workflow_id, now)
         db.add_message(
-            session_id, "system",
+            session_id,
+            "system",
             "Conversation started. I can help you design, modify, and improve your architecture.",
             now,
         )
@@ -116,7 +116,11 @@ class ConversationManager:
 
         # Generate response based on intent
         response = _generate_response(
-            intent_result, message, context, workflow_json, research_signals,
+            intent_result,
+            message,
+            context,
+            workflow_json,
+            research_signals,
         )
 
         # Store Aria's response
@@ -127,7 +131,10 @@ class ConversationManager:
             response_meta["suggestions_count"] = len(response["suggestions"])
 
         db.add_message(
-            session_id, "aria", response["content"], utc_now_iso(),
+            session_id,
+            "aria",
+            response["content"],
+            utc_now_iso(),
             metadata=response_meta if response_meta else None,
         )
 
@@ -136,20 +143,56 @@ class ConversationManager:
 
 # ── Internal helpers ──────────────────────────────────────────────────
 
-_CLARIFICATION_TRIGGERS = frozenset({
-    "help", "what", "how", "why", "explain", "confused", "don't understand",
-    "not sure", "which", "should i", "difference between",
-})
+_CLARIFICATION_TRIGGERS = frozenset(
+    {
+        "help",
+        "what",
+        "how",
+        "why",
+        "explain",
+        "confused",
+        "don't understand",
+        "not sure",
+        "which",
+        "should i",
+        "difference between",
+    }
+)
 
-_ACTION_TRIGGERS = frozenset({
-    "add", "insert", "remove", "delete", "replace", "swap", "change",
-    "use", "try", "put", "connect", "wire",
-})
+_ACTION_TRIGGERS = frozenset(
+    {
+        "add",
+        "insert",
+        "remove",
+        "delete",
+        "replace",
+        "swap",
+        "change",
+        "use",
+        "try",
+        "put",
+        "connect",
+        "wire",
+    }
+)
 
-_GOAL_TRIGGERS = frozenset({
-    "want", "need", "goal", "build", "create", "design", "make",
-    "improve", "optimize", "faster", "better", "smaller", "stable",
-})
+_GOAL_TRIGGERS = frozenset(
+    {
+        "want",
+        "need",
+        "goal",
+        "build",
+        "create",
+        "design",
+        "make",
+        "improve",
+        "optimize",
+        "faster",
+        "better",
+        "smaller",
+        "stable",
+    }
+)
 
 # ── Architectural pattern detectors ──────────────────────────────────
 # Each pattern is (keywords, description, nodes) where
@@ -167,9 +210,17 @@ _ARCH_PATTERNS: List[Dict[str, Any]] = [
         "nodes": [
             ("difficulty_scorer", "routing/difficulty_scorer", {}),
             ("lane_router", "routing/lane_router", {"num_lanes": 2}),
-            ("easy_dispatch", "structural/conditional_dispatch", {"num_lanes": 2, "lane": 0}),
+            (
+                "easy_dispatch",
+                "structural/conditional_dispatch",
+                {"num_lanes": 2, "lane": 0},
+            ),
             ("easy_path", "linear_algebra/linear_proj", {}),
-            ("hard_dispatch", "structural/conditional_dispatch", {"num_lanes": 2, "lane": 1}),
+            (
+                "hard_dispatch",
+                "structural/conditional_dispatch",
+                {"num_lanes": 2, "lane": 1},
+            ),
             ("gather", "structural/conditional_gather", {"num_lanes": 2}),
         ],
     },
@@ -178,8 +229,7 @@ _ARCH_PATTERNS: List[Dict[str, Any]] = [
         "min_match": 1,
         "name": "transformer block",
         "description": (
-            "Classic transformer: norm → attention → residual → "
-            "norm → FFN → residual"
+            "Classic transformer: norm → attention → residual → norm → FFN → residual"
         ),
         "nodes": [
             ("norm1", "linear_algebra/rmsnorm", {}),
@@ -212,9 +262,7 @@ _ARCH_PATTERNS: List[Dict[str, Any]] = [
         "keywords": {"hybrid", "parallel", "attention", "ssm"},
         "min_match": 2,
         "name": "hybrid attention+SSM",
-        "description": (
-            "Parallel attention and SSM paths with learned merge"
-        ),
+        "description": ("Parallel attention and SSM paths with learned merge"),
         "nodes": [
             ("norm", "linear_algebra/rmsnorm", {}),
             ("split", "structural/split2", {}),
@@ -282,9 +330,7 @@ def _build_context(
         edges = workflow_json.get("edges", [])
         ctx["node_count"] = len(nodes)
         ctx["edge_count"] = len(edges)
-        ctx["component_types"] = [
-            str(n.get("component_type", "")) for n in nodes
-        ]
+        ctx["component_types"] = [str(n.get("component_type", "")) for n in nodes]
         ctx["nodes"] = nodes
         ctx["edges"] = edges
     return ctx
@@ -312,7 +358,8 @@ def _match_pattern(message: str) -> Optional[Dict[str, Any]]:
 
 
 def _classify_message(
-    message: str, context: Dict[str, Any],
+    message: str,
+    context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Classify user message intent for response routing."""
     lower = message.lower()
@@ -360,19 +407,6 @@ def _classify_message(
     return result
 
 
-def _find_insertion_after(
-    nodes: List[Dict[str, Any]],
-    edges: List[Dict[str, Any]],
-    after_type: str,
-) -> Optional[Dict[str, Any]]:
-    """Find the node of given type to insert after."""
-    for n in nodes:
-        ct = str(n.get("component_type", "")).lower()
-        if after_type in ct:
-            return n
-    return None
-
-
 def _find_endpoints(
     nodes: List[Dict[str, Any]],
 ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -409,16 +443,18 @@ def _append_add_node(
     x: int,
     y: int,
 ) -> None:
-    ops.append({
-        "op": "add_node",
-        "node_id": node_id,
-        "payload": {
-            "id": node_id,
-            "component_type": component_type,
-            "params": params,
-            "ui_meta": {"x": x, "y": y},
-        },
-    })
+    ops.append(
+        {
+            "op": "add_node",
+            "node_id": node_id,
+            "payload": {
+                "id": node_id,
+                "component_type": component_type,
+                "params": params,
+                "ui_meta": {"x": x, "y": y},
+            },
+        }
+    )
 
 
 def _append_rewire(
@@ -464,19 +500,38 @@ def _build_difficulty_routed_patch(
     easy_lane_id = f"aria_fast_lane_{uuid4().hex[:4]}"
     gather_id = f"aria_gather_{uuid4().hex[:4]}"
 
-    _append_add_node(ops, difficulty_id, "routing/difficulty_scorer", {}, base_x, base_y)
-    _append_add_node(ops, router_id, "routing/lane_router", {"num_lanes": 2}, base_x + 180, base_y)
     _append_add_node(
-        ops, easy_dispatch_id, "structural/conditional_dispatch",
-        {"num_lanes": 2, "lane": 0}, base_x + 360, base_y - 90,
-    )
-    _append_add_node(ops, easy_lane_id, "linear_algebra/linear_proj", {}, base_x + 540, base_y - 90)
-    _append_add_node(
-        ops, hard_dispatch_id, "structural/conditional_dispatch",
-        {"num_lanes": 2, "lane": 1}, base_x + 360, base_y + 90,
+        ops, difficulty_id, "routing/difficulty_scorer", {}, base_x, base_y
     )
     _append_add_node(
-        ops, gather_id, "structural/conditional_gather", {"num_lanes": 2}, base_x + 720, base_y,
+        ops, router_id, "routing/lane_router", {"num_lanes": 2}, base_x + 180, base_y
+    )
+    _append_add_node(
+        ops,
+        easy_dispatch_id,
+        "structural/conditional_dispatch",
+        {"num_lanes": 2, "lane": 0},
+        base_x + 360,
+        base_y - 90,
+    )
+    _append_add_node(
+        ops, easy_lane_id, "linear_algebra/linear_proj", {}, base_x + 540, base_y - 90
+    )
+    _append_add_node(
+        ops,
+        hard_dispatch_id,
+        "structural/conditional_dispatch",
+        {"num_lanes": 2, "lane": 1},
+        base_x + 360,
+        base_y + 90,
+    )
+    _append_add_node(
+        ops,
+        gather_id,
+        "structural/conditional_gather",
+        {"num_lanes": 2},
+        base_x + 720,
+        base_y,
     )
 
     if input_node:
@@ -489,19 +544,25 @@ def _build_difficulty_routed_patch(
 
     if input_edge:
         _append_rewire(
-            ops, hard_dispatch_id, str(input_edge.get("target")),
+            ops,
+            hard_dispatch_id,
+            str(input_edge.get("target")),
             remove_edge_id=str(input_edge.get("id") or ""),
             target_port=str(input_edge.get("target_port") or "x"),
         )
     else:
         hard_lane_id = f"aria_hard_lane_{uuid4().hex[:4]}"
-        _append_add_node(ops, hard_lane_id, "mixing/softmax_attention", {}, base_x + 540, base_y + 90)
+        _append_add_node(
+            ops, hard_lane_id, "mixing/softmax_attention", {}, base_x + 540, base_y + 90
+        )
         _append_rewire(ops, hard_dispatch_id, hard_lane_id)
         _append_rewire(ops, hard_lane_id, gather_id, target_port="b")
 
     if output_edge:
         _append_rewire(
-            ops, str(output_edge.get("source")), gather_id,
+            ops,
+            str(output_edge.get("source")),
+            gather_id,
             remove_edge_id=str(output_edge.get("id") or ""),
             source_port=str(output_edge.get("source_port") or "y"),
             target_port="b",
@@ -549,26 +610,30 @@ def _build_patch_from_pattern(
 
     for i, (role, comp_type, params) in enumerate(pattern["nodes"]):
         node_id = f"aria_{role}_{uuid4().hex[:4]}"
-        ops.append({
-            "op": "add_node",
-            "node_id": node_id,
-            "payload": {
-                "id": node_id,
-                "component_type": comp_type,
-                "params": params,
-                "ui_meta": {"x": base_x + (i * 180), "y": base_y},
-            },
-        })
-        # Wire sequentially (the UI handles split/merge topology on apply)
-        if prev_id:
-            ops.append({
-                "op": "rewire",
+        ops.append(
+            {
+                "op": "add_node",
                 "node_id": node_id,
                 "payload": {
-                    "source": prev_id,
-                    "target": node_id,
+                    "id": node_id,
+                    "component_type": comp_type,
+                    "params": params,
+                    "ui_meta": {"x": base_x + (i * 180), "y": base_y},
                 },
-            })
+            }
+        )
+        # Wire sequentially (the UI handles split/merge topology on apply)
+        if prev_id:
+            ops.append(
+                {
+                    "op": "rewire",
+                    "node_id": node_id,
+                    "payload": {
+                        "source": prev_id,
+                        "target": node_id,
+                    },
+                }
+            )
         prev_id = node_id
         created_ids.append(node_id)
 
@@ -577,25 +642,29 @@ def _build_patch_from_pattern(
         # Remove existing edge to output first
         for edge in edges:
             if str(edge.get("target", "")) == output_node["id"]:
-                ops.append({
+                ops.append(
+                    {
+                        "op": "rewire",
+                        "node_id": output_node["id"],
+                        "payload": {
+                            "source": prev_id,
+                            "target": output_node["id"],
+                            "remove_edge_id": edge.get("id"),
+                        },
+                    }
+                )
+                break
+        else:
+            ops.append(
+                {
                     "op": "rewire",
                     "node_id": output_node["id"],
                     "payload": {
                         "source": prev_id,
                         "target": output_node["id"],
-                        "remove_edge_id": edge.get("id"),
                     },
-                })
-                break
-        else:
-            ops.append({
-                "op": "rewire",
-                "node_id": output_node["id"],
-                "payload": {
-                    "source": prev_id,
-                    "target": output_node["id"],
-                },
-            })
+                }
+            )
 
     return {
         "rationale": f"{pattern['name']}: {pattern['description']}",
@@ -644,29 +713,28 @@ def _respond_greeting(context: Dict[str, Any]) -> Dict[str, Any]:
         comp_types = context.get("component_types", [])
         # Summarize what's on the canvas
         type_summary = ", ".join(
-            t.split("/")[-1] for t in comp_types[:6]
+            t.split("/")[-1]
+            for t in comp_types[:6]
             if "input" not in t and "output" not in t
         )
-        content = (
-            f"I see your graph with {node_count} nodes"
-        )
+        content = f"I see your graph with {node_count} nodes"
         if type_summary:
             content += f" ({type_summary})"
         content += (
             ". I can help you:\n"
             "- Describe what you want in plain language — "
-            "e.g. \"add a difficulty gate that splits easy and hard tokens\"\n"
-            "- Modify the graph — \"replace the relu with silu\"\n"
-            "- Build patterns — \"add a transformer block after the input\""
+            'e.g. "add a difficulty gate that splits easy and hard tokens"\n'
+            '- Modify the graph — "replace the relu with silu"\n'
+            '- Build patterns — "add a transformer block after the input"'
         )
     else:
         content = (
             "Welcome! Describe what you want to build in plain language. "
             "For example:\n"
-            "- \"I want a transformer with multi-head attention\"\n"
-            "- \"Build a model that splits tokens by difficulty — "
-            "easy path gets a fast linear layer, hard path gets full attention\"\n"
-            "- \"Create an SSM-based architecture with gating\"\n\n"
+            '- "I want a transformer with multi-head attention"\n'
+            '- "Build a model that splits tokens by difficulty — '
+            'easy path gets a fast linear layer, hard path gets full attention"\n'
+            '- "Create an SSM-based architecture with gating"\n\n'
             "I'll translate your description into a graph patch you can apply."
         )
     return {"content": content, "needs_clarification": False, "suggestions": []}
@@ -685,9 +753,7 @@ def _respond_architecture(
         # Build the multi-node patch
         patch = _build_patch_from_pattern(pattern, workflow_json, message)
         node_list = pattern["nodes"]
-        node_desc = " → ".join(
-            f"**{comp}** ({role})" for role, comp, _ in node_list
-        )
+        node_desc = " → ".join(f"**{comp}** ({role})" for role, comp, _ in node_list)
 
         content = (
             f"I'll build a **{pattern['name']}** pattern:\n\n"
@@ -746,39 +812,43 @@ def _respond_resolved_concepts(
         if comp_type in ("graph_input", "graph_output"):
             continue
         node_id = f"aria_{uuid4().hex[:6]}"
-        ops.append({
-            "op": "add_node",
-            "node_id": node_id,
-            "payload": {
-                "id": node_id,
-                "component_type": comp_type,
-                "params": {},
-                "ui_meta": {"x": base_x + (i * 180), "y": base_y},
-            },
-        })
-        if prev_id:
-            ops.append({
-                "op": "rewire",
+        ops.append(
+            {
+                "op": "add_node",
                 "node_id": node_id,
-                "payload": {"source": prev_id, "target": node_id},
-            })
-        prev_id = node_id
-        descriptions.append(
-            f"**{comp_type}** (from \"{r['concept']}\")"
+                "payload": {
+                    "id": node_id,
+                    "component_type": comp_type,
+                    "params": {},
+                    "ui_meta": {"x": base_x + (i * 180), "y": base_y},
+                },
+            }
         )
+        if prev_id:
+            ops.append(
+                {
+                    "op": "rewire",
+                    "node_id": node_id,
+                    "payload": {"source": prev_id, "target": node_id},
+                }
+            )
+        prev_id = node_id
+        descriptions.append(f'**{comp_type}** (from "{r["concept"]}")')
 
     if output_node and prev_id:
-        ops.append({
-            "op": "rewire",
-            "node_id": output_node["id"],
-            "payload": {"source": prev_id, "target": output_node["id"]},
-        })
+        ops.append(
+            {
+                "op": "rewire",
+                "node_id": output_node["id"],
+                "payload": {"source": prev_id, "target": output_node["id"]},
+            }
+        )
 
     if not ops:
         return _respond_general(message, context, workflow_json)
 
     content = (
-        f"Based on your description, I'll add:\n\n"
+        "Based on your description, I'll add:\n\n"
         + "\n".join(f"- {d}" for d in descriptions)
         + f"\n\n{len(descriptions)} node(s) total. Apply this patch?"
     )
@@ -792,7 +862,9 @@ def _respond_resolved_concepts(
 
 
 def _respond_question(
-    message: str, components: List[str], context: Dict[str, Any],
+    message: str,
+    components: List[str],
+    context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Answer questions about components or architecture."""
     if components:
@@ -802,6 +874,7 @@ def _respond_question(
         content = f"**{comp}** belongs to the {cat_str} category. "
         # Add adjacency info
         from .help_content import get_component_tips
+
         tips = get_component_tips(comp)
         works_with = tips.get("works_well_with", [])[:5]
         if works_with:
@@ -812,10 +885,10 @@ def _respond_question(
     else:
         content = (
             "I can help with:\n"
-            "- Component info — \"what does linear_proj do?\"\n"
-            "- Compatibility — \"what goes well with rmsnorm?\"\n"
-            "- Architecture patterns — \"how do I build a transformer block?\"\n"
-            "- Building — \"I want a model that splits easy and hard tokens\""
+            '- Component info — "what does linear_proj do?"\n'
+            '- Compatibility — "what goes well with rmsnorm?"\n'
+            '- Architecture patterns — "how do I build a transformer block?"\n'
+            '- Building — "I want a model that splits easy and hard tokens"'
         )
         return {"content": content, "needs_clarification": True, "suggestions": []}
 
@@ -844,7 +917,9 @@ def _respond_action(
             None,
         )
         if target_node:
-            ops.append({"op": "remove_node", "node_id": target_node["id"], "payload": {}})
+            ops.append(
+                {"op": "remove_node", "node_id": target_node["id"], "payload": {}}
+            )
             content = f"I'll remove the **{comp_id}** node. Apply this change?"
         else:
             content = f"I couldn't find a **{comp_id}** node in your graph."
@@ -852,17 +927,25 @@ def _respond_action(
 
     elif is_replace:
         target_node = next(
-            (n for n in nodes
-             if any(c in str(n.get("component_type", "")).lower() for c in components[:1])),
+            (
+                n
+                for n in nodes
+                if any(
+                    c in str(n.get("component_type", "")).lower()
+                    for c in components[:1]
+                )
+            ),
             None,
         )
         replacement = components[1] if len(components) > 1 else None
         if target_node and replacement:
-            ops.append({
-                "op": "replace_node",
-                "node_id": target_node["id"],
-                "payload": {"component_type": replacement},
-            })
+            ops.append(
+                {
+                    "op": "replace_node",
+                    "node_id": target_node["id"],
+                    "payload": {"component_type": replacement},
+                }
+            )
             content = f"I'll replace **{target_node.get('component_type')}** with **{replacement}**. Apply?"
         else:
             content = "Which component should I replace it with?"
@@ -870,11 +953,13 @@ def _respond_action(
 
     else:
         new_id = f"aria_{uuid4().hex[:6]}"
-        ops.append({
-            "op": "add_node",
-            "node_id": new_id,
-            "payload": {"id": new_id, "component_type": comp_id, "params": {}},
-        })
+        ops.append(
+            {
+                "op": "add_node",
+                "node_id": new_id,
+                "payload": {"id": new_id, "component_type": comp_id, "params": {}},
+            }
+        )
         content = f"I'll add a **{comp_id}** node to your graph. Apply this change?"
 
     patch_proposal = {"rationale": message, "ops": ops} if ops else None
@@ -925,11 +1010,11 @@ def _respond_goal(
         content = (
             "Let's start building! Describe your architecture and I'll create a patch.\n\n"
             "Some ideas:\n"
-            "- \"Build a transformer with multi-head attention and residual connections\"\n"
-            "- \"I want a model that routes easy tokens through a fast linear path "
-            "and hard tokens through full attention\"\n"
-            "- \"Create an SSM model with gating\"\n"
-            "- \"Make a mixture-of-experts with 4 expert paths\""
+            '- "Build a transformer with multi-head attention and residual connections"\n'
+            '- "I want a model that routes easy tokens through a fast linear path '
+            'and hard tokens through full attention"\n'
+            '- "Create an SSM model with gating"\n'
+            '- "Make a mixture-of-experts with 4 expert paths"'
         )
         return {"content": content, "needs_clarification": True, "suggestions": []}
 
@@ -941,29 +1026,29 @@ def _respond_goal(
         if not has_norm:
             content += (
                 "For stability, I recommend adding **rmsnorm** before mixing layers. "
-                "Say \"add normalization before the attention\" and I'll create the patch."
+                'Say "add normalization before the attention" and I\'ll create the patch.'
             )
         else:
             content += (
                 "You already have normalization. Consider adding residual connections — "
-                "say \"add residual connections\" and I'll wire them up."
+                'say "add residual connections" and I\'ll wire them up.'
             )
     elif intent_key == "refine_compression":
         content += (
             "To compress, I can replace linear_proj with **bottleneck_proj** or "
-            "**low_rank_proj**. Say \"compress the projections\" for a patch."
+            '**low_rank_proj**. Say "compress the projections" for a patch.'
         )
     elif intent_key == "expand_capacity":
         content += (
             "To expand capacity, describe what you want — e.g. "
-            "\"add another attention layer\" or \"split into parallel paths\"."
+            '"add another attention layer" or "split into parallel paths".'
         )
     else:
         content += (
             "Tell me specifically what you'd like — for example:\n"
-            "- \"Add a difficulty gate that splits into easy and hard paths\"\n"
-            "- \"Put normalization before each mixing layer\"\n"
-            "- \"Replace the linear with a bottleneck for compression\""
+            '- "Add a difficulty gate that splits into easy and hard paths"\n'
+            '- "Put normalization before each mixing layer"\n'
+            '- "Replace the linear with a bottleneck for compression"'
         )
 
     return {"content": content, "needs_clarification": True, "suggestions": []}
@@ -984,18 +1069,18 @@ def _respond_general(
     if node_count > 0:
         content = (
             "I can understand natural language descriptions of architectures. Try:\n"
-            "- \"I want a difficulty gate that splits tokens into easy and hard paths\"\n"
-            "- \"Add attention after the normalization\"\n"
-            "- \"Replace linear with a low-rank projection\"\n"
-            "- \"Build a transformer block with residuals\"\n"
-            "- \"What does softmax_attention do?\""
+            '- "I want a difficulty gate that splits tokens into easy and hard paths"\n'
+            '- "Add attention after the normalization"\n'
+            '- "Replace linear with a low-rank projection"\n'
+            '- "Build a transformer block with residuals"\n'
+            '- "What does softmax_attention do?"'
         )
     else:
         content = (
             "Describe the architecture you want to build. For example:\n"
-            "- \"Build a transformer with multi-head attention\"\n"
-            "- \"I want a model with difficulty-based token routing\"\n"
-            "- \"Create a hybrid SSM + attention model\"\n\n"
+            '- "Build a transformer with multi-head attention"\n'
+            '- "I want a model with difficulty-based token routing"\n'
+            '- "Create a hybrid SSM + attention model"\n\n'
             "I'll translate your description into graph operations."
         )
     return {"content": content, "needs_clarification": True, "suggestions": []}

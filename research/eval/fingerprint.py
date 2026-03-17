@@ -35,7 +35,6 @@ _SENSITIVITY_SKIP_LAST_LOG_TS: float = 0.0
 _SENSITIVITY_SKIP_LOG_INTERVAL_S: float = 60.0
 
 
-
 def _record_sensitivity_skip(reason: str) -> None:
     """Track skipped sensitivity probes and emit a rate-limited debug summary."""
     global _SENSITIVITY_SKIP_LAST_LOG_TS
@@ -48,7 +47,9 @@ def _record_sensitivity_skip(reason: str) -> None:
 
     _SENSITIVITY_SKIP_LAST_LOG_TS = now
     total = sum(_SENSITIVITY_SKIP_COUNTS.values())
-    breakdown = ", ".join(f"{name}={count}" for name, count in sorted(_SENSITIVITY_SKIP_COUNTS.items()))
+    breakdown = ", ".join(
+        f"{name}={count}" for name, count in sorted(_SENSITIVITY_SKIP_COUNTS.items())
+    )
     logger.debug("Sensitivity probes skipped (%d total): %s", total, breakdown)
 
 
@@ -71,6 +72,7 @@ def get_sensitivity_skip_stats(reset: bool = False) -> Dict[str, object]:
 @dataclass(slots=True)
 class BehavioralFingerprint:
     """Characterizes how a model behaves, not what it computes."""
+
     # Token interaction pattern
     interaction_locality: float = 0.0  # 0=global, 1=purely local
     interaction_sparsity: float = 0.0  # 0=dense, 1=sparse attention
@@ -79,8 +81,10 @@ class BehavioralFingerprint:
 
     # Representation geometry
     intrinsic_dim: float = 0.0  # estimated intrinsic dimensionality
-    isotropy: float = 0.0      # how uniformly directions are used (0=collapsed, 1=isotropic)
-    rank_ratio: float = 0.0    # effective rank / full rank
+    isotropy: float = (
+        0.0  # how uniformly directions are used (0=collapsed, 1=isotropic)
+    )
+    rank_ratio: float = 0.0  # effective rank / full rank
 
     # Input sensitivity
     jacobian_spectral_norm: float = 0.0
@@ -88,9 +92,9 @@ class BehavioralFingerprint:
     sensitivity_uniformity: float = 0.0  # how uniformly sensitive to each input token
 
     # Routing-specific dimensions (Task 2H)
-    routing_selectivity: float = 0.0     # std of difficulty scores
-    routing_compute_ratio: float = 0.0   # slow/fast FLOP ratio
-    routing_lane_correlation: float = 0.0 # position/content correlation
+    routing_selectivity: float = 0.0  # std of difficulty scores
+    routing_compute_ratio: float = 0.0  # slow/fast FLOP ratio
+    routing_lane_correlation: float = 0.0  # position/content correlation
 
     # Similarity to known architectures (CKA)
     cka_vs_transformer: float = 0.0
@@ -99,7 +103,7 @@ class BehavioralFingerprint:
 
     # Hierarchy detection (Gromov delta-hyperbolicity)
     hierarchy_fitness: float = 0.0  # 0=flat/Euclidean, 1=very tree-like
-    gromov_delta: float = 0.0      # raw Gromov 4-point delta
+    gromov_delta: float = 0.0  # raw Gromov 4-point delta
 
     # Overall novelty estimate
     novelty_score: float = 0.0
@@ -162,7 +166,9 @@ def compute_fingerprint(
 
         if reps is not None and len(reps) > 0:
             # Token interaction pattern
-            interaction = _analyze_interactions(model, probe_ids, dev, seq_len, vocab_size)
+            interaction = _analyze_interactions(
+                model, probe_ids, dev, seq_len, vocab_size
+            )
             fp.interaction_locality = interaction["locality"]
             fp.interaction_sparsity = interaction["sparsity"]
             fp.interaction_symmetry = interaction["symmetry"]
@@ -181,6 +187,7 @@ def compute_fingerprint(
             # Hierarchy detection (Gromov delta-hyperbolicity)
             try:
                 from .hierarchy_probe import hierarchy_fitness as _hf
+
                 hf_result = _hf(reps, max_tokens=100)
                 fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
                 fp.gromov_delta = hf_result["gromov_delta"]
@@ -207,6 +214,7 @@ def compute_fingerprint(
         # CKA similarity to reference architectures
         # Try artifact-backed CKA first, fall back to heuristic
         from .cka_references import get_default_store
+
         store = get_default_store()
         ref_activations = store.get_references()
         cka_meta = store.get_metadata()
@@ -218,8 +226,25 @@ def compute_fingerprint(
         fp.cka_source = cka_meta.get("cka_source", "none")
         fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
         fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
-        fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
-        fp.similarity_path = cka_meta.get("cka_similarity_path", "_compute_reference_cka")
+        fp.similarity_path = cka_meta.get(
+            "cka_similarity_path", "_compute_reference_cka"
+        )
+        # Sanity gate: if all CKA scores are near-zero, the computation
+        # likely failed (e.g. device mismatch, degenerate reps). Mark as
+        # low-quality rather than trusting the manifest blindly.
+        all_near_zero = (
+            fp.cka_vs_transformer < 0.01
+            and fp.cka_vs_ssm < 0.01
+            and fp.cka_vs_conv < 0.01
+        )
+        if all_near_zero and cka.get("_succeeded"):
+            logger.warning(
+                "CKA sanity gate: all three scores < 0.01 — marking "
+                "cka_reference_quality as false"
+            )
+            fp.cka_reference_quality = False
+        else:
+            fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
         fp.novelty_reference_version = build_novelty_reference_version(
             fp.cka_source,
             fp.cka_artifact_version,
@@ -267,29 +292,30 @@ def compute_lightning_fingerprint(
     dev = torch.device(device)
     model = model.to(dev).eval()
     fp = BehavioralFingerprint()
-    
+
     with torch.no_grad():
         # 1. Minimal probe with fixed seed for reproducibility
         torch.manual_seed(42)
         probe_ids = torch.randint(0, 32000, (n_probes, seq_len), device=dev)
-        
+
         # 2. Forward pass (Lightning reps)
         reps = _get_representations(model, probe_ids, dev)
-        
+
         if reps is not None:
             # 3. CKA vs Reference (The critical novelty gate)
             from .cka_references import get_default_store
+
             store = get_default_store()
             ref_activations = store.get_references()
-            
+
             # Move to CPU for native aria_core.linear_cka_f32
             reps_cpu = reps.cpu()
-            
+
             cka = _compute_reference_cka(reps_cpu, ref_activations=ref_activations)
             fp.cka_vs_transformer = cka.get("transformer", 0.0)
             fp.cka_vs_ssm = cka.get("ssm", 0.0)
             fp.cka_vs_conv = cka.get("conv", 0.0)
-            
+
             fp.behavior_signature_score = _behavior_signature_score(fp)
             fp.novelty_score = _blend_behavioral_novelty(fp)
             fp.cka_source = "lightning_dry_run"
@@ -343,12 +369,14 @@ def compute_gated_fingerprint(
         model_dim=model_dim,
         device=device,
     )
-    
-    # Task 4I: If force_lightning_only is set (e.g. for poor performers), 
+
+    # Task 4I: If force_lightning_only is set (e.g. for poor performers),
     # skip the full fingerprint regardless of novelty score.
-    if force_lightning_only or float(lightning_fp.novelty_score or 0.0) < float(lightning_novelty_threshold):
+    if force_lightning_only or float(lightning_fp.novelty_score or 0.0) < float(
+        lightning_novelty_threshold
+    ):
         return lightning_fp, False
-        
+
     return (
         compute_fingerprint(
             model,
@@ -409,14 +437,14 @@ def _cka_distance_novelty(fp: BehavioralFingerprint) -> float:
 
 
 def _blend_behavioral_novelty(fp: BehavioralFingerprint) -> float:
-    return (
-        CKA_NOVELTY_WEIGHT * _cka_distance_novelty(fp)
-        + BEHAVIOR_SIGNATURE_WEIGHT * _behavior_signature_score(fp)
-    )
+    return CKA_NOVELTY_WEIGHT * _cka_distance_novelty(
+        fp
+    ) + BEHAVIOR_SIGNATURE_WEIGHT * _behavior_signature_score(fp)
 
 
-def _get_representations(model: nn.Module, input_ids: torch.Tensor,
-                         dev: torch.device) -> Optional[torch.Tensor]:
+def _get_representations(
+    model: nn.Module, input_ids: torch.Tensor, dev: torch.device
+) -> Optional[torch.Tensor]:
     """Get output representations from a model."""
     try:
         logits = model(input_ids)
@@ -427,13 +455,20 @@ def _get_representations(model: nn.Module, input_ids: torch.Tensor,
 
 
 def _analyze_interactions(
-    model: nn.Module, input_ids: torch.Tensor,
-    dev: torch.device, seq_len: int,
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    dev: torch.device,
+    seq_len: int,
     vocab_size: int = VOCAB_SIZE,
 ) -> Dict[str, float]:
     """Analyze token-to-token interaction patterns."""
-    result = {"locality": 0.5, "sparsity": 0.5, "symmetry": 0.5, "hierarchy": 0.5,
-              "_succeeded": False}
+    result = {
+        "locality": 0.5,
+        "sparsity": 0.5,
+        "symmetry": 0.5,
+        "hierarchy": 0.5,
+        "_succeeded": False,
+    }
 
     try:
         B = input_ids.shape[0]
@@ -442,7 +477,9 @@ def _analyze_interactions(
         ids = input_ids[:1]
         n_positions = min(8, seq_len)
         positions = torch.linspace(0, seq_len - 1, n_positions, device=dev).long()
-        influence_matrix = _interaction_influence_matrix(model, ids, positions, vocab_size=vocab_size)
+        influence_matrix = _interaction_influence_matrix(
+            model, ids, positions, vocab_size=vocab_size
+        )
         result.update(_interaction_metrics(influence_matrix, positions))
         result["_succeeded"] = True
 
@@ -465,7 +502,9 @@ def _interaction_influence_matrix(
     n_positions = int(positions.numel())
     perturbed_batch = ids.expand(n_positions, -1).clone()
     row_idx = torch.arange(n_positions, device=positions.device)
-    perturbed_batch[row_idx, positions] = (perturbed_batch[row_idx, positions] + 1) % vocab_size
+    perturbed_batch[row_idx, positions] = (
+        perturbed_batch[row_idx, positions] + 1
+    ) % vocab_size
     return (model(perturbed_batch) - base_out).abs().mean(dim=-1)
 
 
@@ -493,16 +532,17 @@ def _analyze_routing(
 ) -> Dict[str, float]:
     """Analyze routing-specific behavior (Task 2H)."""
     result = {"selectivity": 0.0, "compute_ratio": 0.0, "lane_correlation": 0.0}
-    
+
     # Identify if model has routing ops via its graph (if accessible)
     has_routing = False
     if hasattr(model, "graph") and model.graph is not None:
         from ..synthesis.grammar import _ROUTING_OPS
+
         for node in model.graph.nodes.values():
             if not node.is_input and node.op_name in _ROUTING_OPS:
                 has_routing = True
                 break
-    
+
     if not has_routing:
         return result
 
@@ -511,24 +551,26 @@ def _analyze_routing(
         # Most routing models in Aria expose 'routing_stats' or similar after a forward pass
         with torch.no_grad():
             model(input_ids)
-            
+
         # 1. Routing Selectivity (Std of difficulty/gate scores)
         # Higher selectivity = model is making sharp decisions about token paths
         if hasattr(model, "last_routing_scores"):
-            scores = model.last_routing_scores # Expected shape (B, S, n_lanes) or similar
+            scores = (
+                model.last_routing_scores
+            )  # Expected shape (B, S, n_lanes) or similar
             if isinstance(scores, torch.Tensor) and scores.numel() > 0:
                 result["selectivity"] = float(scores.std().item())
-        
+
         # 2. Routing Compute Ratio (slow/fast FLOP ratio)
         # Measures how much of the compute is dynamic vs static
         if hasattr(model, "get_routing_compute_stats"):
             stats = model.get_routing_compute_stats()
             # Expecting {'slow_flops': ..., 'fast_flops': ...} or similar
             slow = stats.get("slow_flops", 0)
-            fast = stats.get("fast_flops", 1) # avoid div by zero
+            fast = stats.get("fast_flops", 1)  # avoid div by zero
             result["compute_ratio"] = float(slow / max(fast, 1e-6))
         elif hasattr(model, "routing_compute_ratio"):
-             result["compute_ratio"] = float(model.routing_compute_ratio)
+            result["compute_ratio"] = float(model.routing_compute_ratio)
 
         # 3. Routing Lane Correlation (Position vs Content correlation)
         # Do tokens at same positions always take same lanes? (Structural)
@@ -540,13 +582,15 @@ def _analyze_routing(
                 # Correlation of lane choice with position S
                 B, S = decisions.shape[:2]
                 positions = torch.arange(S, device=dev).float().expand(B, S)
-                
+
                 def pearson_corr(x, y):
                     mx, my = x.mean(), y.mean()
                     vx, vy = x - mx, y - my
                     return (vx * vy).sum() / (torch.norm(vx) * torch.norm(vy) + 1e-8)
-                
-                result["lane_correlation"] = float(pearson_corr(decisions.float(), positions).item())
+
+                result["lane_correlation"] = float(
+                    pearson_corr(decisions.float(), positions).item()
+                )
 
     except Exception as e:
         logger.debug("Routing analysis failed: %s", e)
@@ -556,8 +600,12 @@ def _analyze_routing(
 
 def _analyze_geometry(reps: torch.Tensor) -> Dict[str, float]:
     """Analyze the geometry of representation space."""
-    result = {"intrinsic_dim": 0.0, "isotropy": 0.0, "rank_ratio": 0.0,
-              "_succeeded": False}
+    result = {
+        "intrinsic_dim": 0.0,
+        "isotropy": 0.0,
+        "rank_ratio": 0.0,
+        "_succeeded": False,
+    }
 
     try:
         # Flatten to (N, D)
@@ -585,7 +633,7 @@ def _analyze_geometry(reps: torch.Tensor) -> Dict[str, float]:
 
         # Intrinsic dimensionality (participation ratio)
         S_norm = S / S.sum()
-        result["intrinsic_dim"] = (1.0 / (S_norm ** 2).sum()).item()
+        result["intrinsic_dim"] = (1.0 / (S_norm**2).sum()).item()
 
         # Isotropy: how uniform are the singular values?
         # Perfect isotropy: all singular values equal
@@ -619,12 +667,18 @@ def _forward_model_from_embed(model: nn.Module, embed_in: torch.Tensor) -> torch
 
 
 def _analyze_sensitivity(
-    model: nn.Module, dev: torch.device,
-    seq_len: int, vocab_size: int,
+    model: nn.Module,
+    dev: torch.device,
+    seq_len: int,
+    vocab_size: int,
 ) -> Dict[str, float]:
     """Analyze input sensitivity via approximate Jacobian."""
-    result = {"spectral_norm": 0.0, "effective_rank": 0.0, "uniformity": 0.0,
-              "_succeeded": False}
+    result = {
+        "spectral_norm": 0.0,
+        "effective_rank": 0.0,
+        "uniformity": 0.0,
+        "_succeeded": False,
+    }
 
     try:
         model.eval()
@@ -636,7 +690,9 @@ def _analyze_sensitivity(
             # Get embedding and make it require grad
             embed = model.embed(ids).detach().requires_grad_(True)
 
-            forward_from_embed = lambda embed_in: _forward_model_from_embed(model, embed_in)
+            forward_from_embed = lambda embed_in: _forward_model_from_embed(
+                model, embed_in
+            )
             x = forward_from_embed(embed)
 
             if not x.requires_grad:
@@ -645,8 +701,12 @@ def _analyze_sensitivity(
 
             n_positions = max(1, min(4, seq_len))
             step = max(1, seq_len // n_positions)
-            positions = torch.arange(0, seq_len, step, device=dev, dtype=torch.int64)[:n_positions]
-            sens_matrix = _collect_position_sensitivities(forward_from_embed, embed, positions)
+            positions = torch.arange(0, seq_len, step, device=dev, dtype=torch.int64)[
+                :n_positions
+            ]
+            sens_matrix = _collect_position_sensitivities(
+                forward_from_embed, embed, positions
+            )
             if sens_matrix is None:
                 _record_sensitivity_skip("no_sensitivity_grads")
             if sens_matrix is not None:
@@ -679,8 +739,12 @@ def _collect_position_sensitivities(
             for i, pos in enumerate(positions.tolist()):
                 grad_outputs[i, :, pos, :] = 1.0
             batched_grads = torch.autograd.grad(
-                x, embed, grad_outputs=grad_outputs, retain_graph=False,
-                create_graph=False, is_grads_batched=True
+                x,
+                embed,
+                grad_outputs=grad_outputs,
+                retain_graph=False,
+                create_graph=False,
+                is_grads_batched=True,
             )[0]
             return batched_grads.norm(dim=-1).squeeze(1)
         except RuntimeError:
@@ -693,7 +757,9 @@ def _collect_position_sensitivities(
             out = forward_from_embed(embed_in)
             return torch.index_select(out, 1, pos_idx.reshape(1)).sum()
 
-        batched_grads = vmap(lambda pos_idx: grad(probe_loss, argnums=0)(embed, pos_idx))(positions)
+        batched_grads = vmap(
+            lambda pos_idx: grad(probe_loss, argnums=0)(embed, pos_idx)
+        )(positions)
         return batched_grads.norm(dim=-1).squeeze(1)
 
     except (ImportError, RuntimeError):
@@ -764,7 +830,7 @@ def _compute_reference_cka(
                     continue
                 # Build reference self-similarity matrix, truncating/padding
                 # to match candidate sequence length
-                ref_flat = ref_tensor.float()
+                ref_flat = ref_tensor.to(device=flat.device).float()
                 rS = ref_flat.shape[-2]
                 use_S = min(S, rS)
                 ref_norm = F.normalize(ref_flat[..., :use_S, :], dim=-1)
@@ -773,9 +839,7 @@ def _compute_reference_cka(
                     ref_norm.reshape(-1, rD), ref_norm.reshape(-1, rD).t()
                 )
                 ref_sim = ref_sim[:use_S, :use_S]
-                result[family] = _linear_cka(
-                    sim[:use_S, :use_S], ref_sim
-                )
+                result[family] = _linear_cka(sim[:use_S, :use_S], ref_sim)
         else:
             # Heuristic fallback: synthetic reference patterns
             # CAVEAT: These are synthetic approximations, not empirical.
@@ -814,7 +878,7 @@ def _linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
         hsic_xy = (X * Y).sum()
         hsic_xx = (X * X).sum()
         hsic_yy = (Y * Y).sum()
-        denom = (hsic_xx * hsic_yy).clamp(min=1e-10).sqrt()
+        denom = (hsic_xx * hsic_yy).clamp(min=1e-30).sqrt()
         return (hsic_xy / denom).clamp(0, 1).item()
     except Exception as e:
         logger.debug("CKA computation error: %s", e)

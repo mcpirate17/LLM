@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for conv1d_seq."""
-import torch
+
 import torch.nn as nn
 
 

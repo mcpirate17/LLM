@@ -10,20 +10,16 @@ Run: cd /path/to/LLM && python -m unittest research.tests.test_integration -v
 
 import pytest
 import importlib
-import json
 import os
-import sys
-import tempfile
-import time
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 pytestmark = pytest.mark.pipeline
 
 # Detect available dependencies
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -33,6 +29,7 @@ try:
 except ImportError:
     HAS_FLASK = False
 
+
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
 def _import_module(dotted_path):
@@ -41,14 +38,12 @@ def _import_module(dotted_path):
 
 
 try:
-    from research.scientist.notebook import LabNotebook, ExperimentEntry
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -56,6 +51,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -63,6 +59,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -78,7 +75,10 @@ class TestPackageWiring(unittest.TestCase):
         with open(init_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        self.assertIn("from . import clifford, compression, hyperbolic, padic, spiking, tropical", content)
+        self.assertIn(
+            "from . import clifford, compression, hyperbolic, padic, spiking, tropical",
+            content,
+        )
         self.assertIn("from .registry import register_all_mathspaces", content)
         self.assertIn('"hyperbolic"', content)
         self.assertIn('"tropical"', content)
@@ -101,7 +101,12 @@ class TestPackageWiring(unittest.TestCase):
     @unittest.skipUnless(HAS_TORCH, "requires torch")
     def test_external_op_nonfinite_sanitization_and_telemetry(self):
         from research.synthesis.compiler import _execute_op
-        from research.synthesis.primitives import PrimitiveOp, OpCategory, PRIMITIVE_REGISTRY, register_external_primitive
+        from research.synthesis.primitives import (
+            PrimitiveOp,
+            OpCategory,
+            PRIMITIVE_REGISTRY,
+            register_external_primitive,
+        )
 
         op_name = "test_nonfinite_mathspace_op"
         op = PrimitiveOp(
@@ -136,7 +141,12 @@ class TestPackageWiring(unittest.TestCase):
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
 
         register_all_mathspaces()
-        for op_name in ("hyp_tangent_nonlinear", "tropical_center", "padic_gate", "grade_mix"):
+        for op_name in (
+            "hyp_tangent_nonlinear",
+            "tropical_center",
+            "padic_gate",
+            "grade_mix",
+        ):
             self.assertIn(op_name, PRIMITIVE_REGISTRY)
             op = PRIMITIVE_REGISTRY[op_name]
             self.assertEqual(op.category.value, "math_space")
@@ -151,11 +161,18 @@ class TestPackageWiring(unittest.TestCase):
         register_all_mathspaces()
         x = torch.randn(2, 5, 16)
         module = torch.nn.Module()
-        for op_name in ("hyp_tangent_nonlinear", "tropical_center", "padic_gate", "grade_mix"):
+        for op_name in (
+            "hyp_tangent_nonlinear",
+            "tropical_center",
+            "padic_gate",
+            "grade_mix",
+        ):
             op = PRIMITIVE_REGISTRY[op_name]
             out = op.execute_fn(module, x)
             self.assertEqual(tuple(out.shape), tuple(x.shape))
-            self.assertTrue(torch.isfinite(out).all(), f"{op_name} produced non-finite values")
+            self.assertTrue(
+                torch.isfinite(out).all(), f"{op_name} produced non-finite values"
+            )
 
     def test_llm_package_exports_context_and_prompts(self):
         repo_root = os.path.dirname(os.path.dirname(__file__))
@@ -169,7 +186,6 @@ class TestPackageWiring(unittest.TestCase):
         self.assertIn('"prompts"', content)
 
 
-
 # ── Test 10: Dashboard Component Consistency ──
 
 
@@ -179,13 +195,13 @@ class TestDashboardConsistency(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import glob
+
         cls.repo_root = os.path.dirname(os.path.dirname(__file__))
         cls.component_dir = os.path.join(
-            cls.repo_root, "dashboard", "src", "components")
-        cls.component_files = glob.glob(
-            os.path.join(cls.component_dir, "*.js"))
-        cls.app_js = os.path.join(
-            cls.repo_root, "dashboard", "src", "App.js")
+            cls.repo_root, "dashboard", "src", "components"
+        )
+        cls.component_files = glob.glob(os.path.join(cls.component_dir, "*.js"))
+        cls.app_js = os.path.join(cls.repo_root, "dashboard", "src", "App.js")
         cls.api_py = os.path.join(cls.repo_root, "scientist", "api.py")
 
     def _read_file(self, path):
@@ -198,7 +214,11 @@ class TestDashboardConsistency(unittest.TestCase):
 
         # Components that are used inside other components, not App.js
         nested_only = {
-            "GraphViewer", "FailureAnalysis", "AriaAvatar", "ReportGallery", "ReportDetail",
+            "GraphViewer",
+            "FailureAnalysis",
+            "AriaAvatar",
+            "ReportGallery",
+            "ReportDetail",
             "TopPrograms",
         }
 
@@ -238,20 +258,36 @@ class TestDashboardConsistency(unittest.TestCase):
         import re
 
         known_api_patterns = {
-            "/api/dashboard", "/api/status", "/api/system/status", "/api/native-runner/capability",
+            "/api/dashboard",
+            "/api/status",
+            "/api/system/status",
+            "/api/native-runner/capability",
             "/api/native-runner/canary/refresh",
-            "/api/experiments", "/api/programs", "/api/trends",
+            "/api/experiments",
+            "/api/programs",
+            "/api/trends",
             "/api/trends/context",
-            "/api/insights", "/api/entries", "/api/live-feed", "/api/leaderboard",
-            "/api/report", "/api/events", "/api/progress",
-            "/api/config", "/api/validate",
-            "/api/aria/recommendation", "/api/aria/strategy",
+            "/api/insights",
+            "/api/entries",
+            "/api/live-feed",
+            "/api/leaderboard",
+            "/api/report",
+            "/api/events",
+            "/api/progress",
+            "/api/config",
+            "/api/validate",
+            "/api/aria/recommendation",
+            "/api/aria/strategy",
             "/api/strategy/briefing",
             "/api/llm/config",
-            "/api/analytics/op-success", "/api/analytics/failure-patterns",
-            "/api/analytics/grammar-weights", "/api/analytics/efficiency-frontier",
-            "/api/analytics/learning-log", "/api/analytics/experiment-clusters",
-            "/api/analytics/routing-health", "/api/analytics/math-family-coverage",
+            "/api/analytics/op-success",
+            "/api/analytics/failure-patterns",
+            "/api/analytics/grammar-weights",
+            "/api/analytics/efficiency-frontier",
+            "/api/analytics/learning-log",
+            "/api/analytics/experiment-clusters",
+            "/api/analytics/routing-health",
+            "/api/analytics/math-family-coverage",
             "/api/analytics/mathspace-impact",
             "/api/analytics/routing-comparison",
             "/api/analytics/gating-diagnostics",
@@ -262,9 +298,11 @@ class TestDashboardConsistency(unittest.TestCase):
             "/api/analytics/learning-trajectory",
             "/api/analytics/control-comparison",
             "/api/metrics/",
-            "/api/experiments/start", "/api/experiments/stop",
+            "/api/experiments/start",
+            "/api/experiments/stop",
             "/api/experiments/",
-            "/api/campaigns", "/api/hypotheses",
+            "/api/campaigns",
+            "/api/hypotheses",
             "/api/knowledge",
             "/api/decision-packet/",
             "/api/reproducibility-manifest/",
@@ -292,11 +330,10 @@ class TestDashboardConsistency(unittest.TestCase):
         for filepath in self.component_files:
             content = self._read_file(filepath)
             # Find all fetch/API calls
-            urls = re.findall(
-                r'[`\'"](?:\$\{[^}]*\})?(/api/[a-z/_-]+)', content)
+            urls = re.findall(r'[`\'"](?:\$\{[^}]*\})?(/api/[a-z/_-]+)', content)
             for url in urls:
                 # Normalize: remove dynamic segments
-                base_url = re.sub(r'/\$\{[^}]*\}', '/', url)
+                base_url = re.sub(r"/\$\{[^}]*\}", "/", url)
                 base_url = base_url.rstrip("/")
 
                 matched = any(
@@ -320,18 +357,24 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("Ask for Action", content)
         self.assertIn("Self-fix: .py/.js", content)
         self.assertIn("details sent to local agent", content)
-        self.assertIn("/api/aria/agent/status/${encodeURIComponent(taskId)}/summary", content)
+        self.assertIn(
+            "/api/aria/agent/status/${encodeURIComponent(taskId)}/summary", content
+        )
         self.assertIn("Open full task details", content)
         self.assertIn("Guardrails (", content)
 
     def test_event_bus_hook_contract_exposes_subscribe_for_action_queue(self):
-        hook_path = os.path.join(self.repo_root, "dashboard", "src", "hooks", "useEventBus.js")
+        hook_path = os.path.join(
+            self.repo_root, "dashboard", "src", "hooks", "useEventBus.js"
+        )
         action_queue_path = os.path.join(self.component_dir, "ActionQueue.js")
         hook_content = self._read_file(hook_path)
         action_content = self._read_file(action_queue_path)
         self.assertIn("subscribe: ctx?.subscribe", hook_content)
         self.assertIn("const eventBus = useEventBus()", action_content)
-        self.assertIn("if (typeof subscribe !== 'function') return undefined;", action_content)
+        self.assertIn(
+            "if (typeof subscribe !== 'function') return undefined;", action_content
+        )
 
     def test_dashboard_wires_auto_repair_started_event_to_chat(self):
         app_content = self._read_file(self.app_js)
@@ -342,7 +385,9 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("emitAutoRepairStarted", app_content)
         # Auto-repair UI moved into ActionQueue; state/handlers remain in App.js
         self.assertIn("autoRepairTasks", app_content)
-        self.assertIn("window.addEventListener('aria-auto-repair-started'", chat_content)
+        self.assertIn(
+            "window.addEventListener('aria-auto-repair-started'", chat_content
+        )
         self.assertIn("Auto-repair agent started", chat_content)
 
     def test_dashboard_wires_production_readiness_panel(self):
@@ -350,8 +395,9 @@ class TestDashboardConsistency(unittest.TestCase):
         # Production readiness data still consumed; UI replaced by ActionQueue
         self.assertIn("production_readiness", app_content)
         # fingerprint diagnostics fetch in useAriaData hook
-        hook_content = self._read_file(os.path.join(
-            self.repo_root, "dashboard", "src", "hooks", "useAriaData.js"))
+        hook_content = self._read_file(
+            os.path.join(self.repo_root, "dashboard", "src", "hooks", "useAriaData.js")
+        )
         self.assertIn("/api/diagnostics/fingerprint", hook_content)
         self.assertIn("handleRunProductionTemplate", app_content)
 
@@ -402,7 +448,7 @@ class TestDashboardConsistency(unittest.TestCase):
         content = self._read_file(status_path)
         self.assertIn("sanitizeHypothesisText", content)
         self.assertIn("summarizedHypothesis", content)
-        self.assertNotIn('{aria.current_hypothesis}', content)
+        self.assertNotIn("{aria.current_hypothesis}", content)
 
     def test_tab_names_match_content(self):
         """All tab names in App.js should have corresponding content blocks."""
@@ -410,6 +456,7 @@ class TestDashboardConsistency(unittest.TestCase):
 
         # Extract tab list from nav
         import re
+
         tab_match = re.search(r"\[([^\]]+)\]\.map\(tab", app_content)
         if tab_match:
             tabs_str = tab_match.group(1)
@@ -429,7 +476,7 @@ class TestDashboardConsistency(unittest.TestCase):
         # These components should pass onSelectProgram
         for comp in ["TopPrograms", "Leaderboard", "ExperimentDetail"]:
             self.assertIn(
-                f"onSelectProgram={{handleSelectProgram}}",
+                "onSelectProgram={handleSelectProgram}",
                 app_content,
                 f"{comp} should pass onSelectProgram prop",
             )
@@ -464,7 +511,9 @@ class TestDashboardConsistency(unittest.TestCase):
         content = self._read_file(livefeed_path)
         self.assertIn("RENDERABLE_EVENT_TYPES", content)
         self.assertIn("normalizeLiveFeedEvent", content)
-        self.assertIn("if (!RENDERABLE_EVENT_TYPES.has(normalizedType)) return null;", content)
+        self.assertIn(
+            "if (!RENDERABLE_EVENT_TYPES.has(normalizedType)) return null;", content
+        )
         self.assertIn("annotateGenerationHistory", content)
         self.assertIn("not in current feed history", content)
 
@@ -474,14 +523,20 @@ class TestDashboardConsistency(unittest.TestCase):
 
         api_content = self._read_file(self.api_py)
         route_re = re.compile(r"@app\.route\(\s*['\"](/api/[^'\"]+)['\"]")
-        backend_routes = [self._normalize_route(r) for r in route_re.findall(api_content)]
+        backend_routes = [
+            self._normalize_route(r) for r in route_re.findall(api_content)
+        ]
 
         for filepath in self.component_files + [self.app_js]:
             content = self._read_file(filepath)
-            found = re.findall(r"/api/[A-Za-z0-9_\-/${}]+(?:/[A-Za-z0-9_\-/${}]+)*", content)
+            found = re.findall(
+                r"/api/[A-Za-z0-9_\-/${}]+(?:/[A-Za-z0-9_\-/${}]+)*", content
+            )
             for path in found:
                 normalized = self._normalize_route(path)
-                matched = any(self._route_matches(b, normalized) for b in backend_routes)
+                matched = any(
+                    self._route_matches(b, normalized) for b in backend_routes
+                )
                 self.assertTrue(
                     matched,
                     f"Frontend route has no backend mapping: {path} in {os.path.basename(filepath)}",
@@ -502,7 +557,9 @@ class TestDashboardConsistency(unittest.TestCase):
         """ReportDetail should read stage1_survivors (with legacy fallback)."""
         detail_path = os.path.join(self.component_dir, "ReportDetail.js")
         content = self._read_file(detail_path)
-        self.assertIn("const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;", content)
+        self.assertIn(
+            "const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;", content
+        )
 
     def test_research_report_wires_scoped_query_builder_controls(self):
         detail_path = os.path.join(self.component_dir, "ReportDetail.js")
@@ -517,31 +574,51 @@ class TestDashboardConsistency(unittest.TestCase):
     def test_investigation_actions_use_eligibility_gating_hooks(self):
         """App + candidate views should wire explicit eligibility gating for investigate/queue actions."""
         app_content = self._read_file(self.app_js)
-        leaderboard_content = self._read_file(os.path.join(self.component_dir, "Leaderboard.js"))
-        top_programs_content = self._read_file(os.path.join(self.component_dir, "TopPrograms.js"))
-        program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
+        leaderboard_content = self._read_file(
+            os.path.join(self.component_dir, "Leaderboard.js")
+        )
+        top_programs_content = self._read_file(
+            os.path.join(self.component_dir, "TopPrograms.js")
+        )
+        program_detail_content = self._read_file(
+            os.path.join(self.component_dir, "ProgramDetail.js")
+        )
 
         # eligibilityByResultId is now derived from shared AriaData context
         self.assertIn("buildEligibilityByResultId(leaderboardEntries", app_content)
         self.assertIn("eligibilityByResultId", app_content)
-        self.assertIn("filter(resultId => eligibilityByResultId[resultId]?.investigationEligible)", app_content)
+        self.assertIn(
+            "filter(resultId => eligibilityByResultId[resultId]?.investigationEligible)",
+            app_content,
+        )
         self.assertIn("eligibilityByResultId={eligibilityByResultId}", app_content)
-        self.assertIn("intent: item?.intent === 'validation' ? 'validation' : 'investigation'", app_content)
-        self.assertIn("const stillEligibleForIntent = intent === 'validation'", app_content)
+        self.assertIn(
+            "intent: item?.intent === 'validation' ? 'validation' : 'investigation'",
+            app_content,
+        )
+        self.assertIn(
+            "const stillEligibleForIntent = intent === 'validation'", app_content
+        )
         self.assertIn("filter(item => item.intent === 'investigation')", app_content)
         self.assertIn("filter(item => item.intent === 'validation')", app_content)
 
         self.assertIn("function candidateEligibility(entry)", leaderboard_content)
         self.assertIn("already_investigated_unchanged", leaderboard_content)
-        self.assertIn("disabled={!isQueued && !eligibility.queueEligible}", leaderboard_content)
-        self.assertIn("const queueIntent = eligibility.validationEligible", leaderboard_content)
+        self.assertIn(
+            "disabled={!isQueued && !eligibility.queueEligible}", leaderboard_content
+        )
+        self.assertIn(
+            "const queueIntent = eligibility.validationEligible", leaderboard_content
+        )
         self.assertIn("Queue Validate", leaderboard_content)
         self.assertIn("intent: queueIntent", leaderboard_content)
 
         self.assertIn("eligibilityByResultId", top_programs_content)
         self.assertIn("queueEligible", top_programs_content)
         self.assertIn("Ineligible", top_programs_content)
-        self.assertIn("const queueIntent = eligibility?.validationEligible", top_programs_content)
+        self.assertIn(
+            "const queueIntent = eligibility?.validationEligible", top_programs_content
+        )
         self.assertIn("Queue Investigate", top_programs_content)
 
         self.assertIn("eligibilityByResultId", program_detail_content)
@@ -549,13 +626,18 @@ class TestDashboardConsistency(unittest.TestCase):
 
     def test_program_detail_refinement_intent_actions_are_wired(self):
         """ProgramDetail should expose intent-specific fingerprint refinement actions."""
-        program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
+        program_detail_content = self._read_file(
+            os.path.join(self.component_dir, "ProgramDetail.js")
+        )
         # Core refinement launch infrastructure
         self.assertIn("const handleLaunchRefinement = async", program_detail_content)
         self.assertIn("refine_intent: intent", program_detail_content)
         self.assertIn("Refinement Trace", program_detail_content)
         self.assertIn("Open Refinement Run", program_detail_content)
-        self.assertIn("/api/experiments/${latestRefineLaunch.experimentId}", program_detail_content)
+        self.assertIn(
+            "/api/experiments/${latestRefineLaunch.experimentId}",
+            program_detail_content,
+        )
         self.assertIn("setLatestRefineLaunch", program_detail_content)
         self.assertIn("setRefineLaunchHistory", program_detail_content)
         self.assertIn("Recent Refinement Launches", program_detail_content)
@@ -571,9 +653,16 @@ class TestDashboardConsistency(unittest.TestCase):
 
     def test_program_detail_refinement_rationale_panel_is_wired(self):
         """ProgramDetail should render refinement rationale from graph metadata."""
-        program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
-        self.assertIn("function RefinementRationale({ program })", program_detail_content)
-        self.assertIn("function RefinementLineage({ program, onViewInLeaderboard })", program_detail_content)
+        program_detail_content = self._read_file(
+            os.path.join(self.component_dir, "ProgramDetail.js")
+        )
+        self.assertIn(
+            "function RefinementRationale({ program })", program_detail_content
+        )
+        self.assertIn(
+            "function RefinementLineage({ program, onViewInLeaderboard })",
+            program_detail_content,
+        )
         self.assertIn("program?.graph_json_parsed?.metadata", program_detail_content)
         self.assertIn("program?.lineage_chain", program_detail_content)
         self.assertIn("refinement.intent_score", program_detail_content)
@@ -592,29 +681,53 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("source_selection_rule", content)
         self.assertIn("confounders_checklist", content)
 
-    def test_top_programs_copy_clarifies_program_vs_fingerprint_and_shows_leading_fingerprints(self):
+    def test_top_programs_copy_clarifies_program_vs_fingerprint_and_shows_leading_fingerprints(
+        self,
+    ):
         content = self._read_file(os.path.join(self.component_dir, "TopPrograms.js"))
         self.assertIn("Candidate Programs (Raw Survivors)", content)
-        self.assertIn("Program Fingerprint ID is the architecture identity for that row", content)
-        self.assertIn("Architecture identity for each program row; the same fingerprint can appear multiple times when rerun.", content)
-        self.assertIn("Fingerprint Leaderboard (Deduplicated Architecture IDs)", content)
+        self.assertIn(
+            "Program Fingerprint ID is the architecture identity for that row", content
+        )
+        self.assertIn(
+            "Architecture identity for each program row; the same fingerprint can appear multiple times when rerun.",
+            content,
+        )
+        self.assertIn(
+            "Fingerprint Leaderboard (Deduplicated Architecture IDs)", content
+        )
 
     def test_learning_trajectory_minimum_threshold_copy_uses_backend_contract(self):
         """LearningPanel should avoid hard-coded trajectory threshold copy drift."""
-        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
+        learning_panel_content = self._read_file(
+            os.path.join(self.component_dir, "LearningPanel.js")
+        )
 
-        self.assertIn("const minimumExperiments = Math.max(2, Number(trajectory?.min_experiments_required) || 5);", learning_panel_content)
-        self.assertIn("Need at least {minimumExperiments} experiments to compute a learning trajectory.", learning_panel_content)
-        self.assertNotIn("Need at least 3 experiments to compute a learning trajectory.", learning_panel_content)
+        self.assertIn(
+            "const minimumExperiments = Math.max(2, Number(trajectory?.min_experiments_required) || 5);",
+            learning_panel_content,
+        )
+        self.assertIn(
+            "Need at least {minimumExperiments} experiments to compute a learning trajectory.",
+            learning_panel_content,
+        )
+        self.assertNotIn(
+            "Need at least 3 experiments to compute a learning trajectory.",
+            learning_panel_content,
+        )
 
     def test_trend_charts_show_stabilized_s1_and_confidence_bands(self):
         """TrendCharts should consume stabilized data and wire adaptation refresh context."""
-        trend_content = self._read_file(os.path.join(self.component_dir, "TrendCharts.js"))
+        trend_content = self._read_file(
+            os.path.join(self.component_dir, "TrendCharts.js")
+        )
 
-        self.assertIn("valueKey=\"adjusted_s1_pass_rate\"", trend_content)
-        self.assertIn("bandLowerKey=\"s1_confidence_lower\"", trend_content)
-        self.assertIn("bandUpperKey=\"s1_confidence_upper\"", trend_content)
-        scoring_engine = self._read_file(os.path.join(self.component_dir, "..", "utils", "scoringEngine.js"))
+        self.assertIn('valueKey="adjusted_s1_pass_rate"', trend_content)
+        self.assertIn('bandLowerKey="s1_confidence_lower"', trend_content)
+        self.assertIn('bandUpperKey="s1_confidence_upper"', trend_content)
+        scoring_engine = self._read_file(
+            os.path.join(self.component_dir, "..", "utils", "scoringEngine.js")
+        )
         self.assertIn("reliabilityMultiplier", scoring_engine)
         self.assertIn("trend_confidence", trend_content)
         self.assertIn("/api/trends", trend_content)
@@ -623,10 +736,18 @@ class TestDashboardConsistency(unittest.TestCase):
 
     def test_research_report_mentions_deduplicated_fingerprint_rankings(self):
         """Discovery rankings should explain fingerprint dedup and repeat metadata."""
-        report_content = self._read_file(os.path.join(self.component_dir, "ResearchReport.js"))
-        detail_content = self._read_file(os.path.join(self.component_dir, "ReportDetail.js"))
-        rankings_content = self._read_file(os.path.join(self.component_dir, "report", "DiscoveryRankings.js"))
-        report_utils_content = self._read_file(os.path.join(self.component_dir, "report", "reportUtils.js"))
+        report_content = self._read_file(
+            os.path.join(self.component_dir, "ResearchReport.js")
+        )
+        detail_content = self._read_file(
+            os.path.join(self.component_dir, "ReportDetail.js")
+        )
+        rankings_content = self._read_file(
+            os.path.join(self.component_dir, "report", "DiscoveryRankings.js")
+        )
+        report_utils_content = self._read_file(
+            os.path.join(self.component_dir, "report", "reportUtils.js")
+        )
 
         self.assertIn("ReportGallery", report_content)
         self.assertIn("ReportDetail", report_content)
@@ -634,7 +755,10 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("fingerprint-deduplicated", rankings_content)
         self.assertIn("Grouped view", rankings_content)
         self.assertIn("Expanded reruns", rankings_content)
-        self.assertIn("Same architecture repeated means reruns of one fingerprint", rankings_content)
+        self.assertIn(
+            "Same architecture repeated means reruns of one fingerprint",
+            rankings_content,
+        )
         self.assertIn("expandedPrograms", rankings_content)
         self.assertIn("top_programs_expanded", detail_content)
         self.assertIn("repeat_count", rankings_content)
@@ -649,25 +773,32 @@ class TestDashboardConsistency(unittest.TestCase):
 
     def test_learning_panel_mentions_unique_vs_rerun_telemetry(self):
         """LearningPanel should show unique architecture vs rerun concentration metrics."""
-        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
+        learning_panel_content = self._read_file(
+            os.path.join(self.component_dir, "LearningPanel.js")
+        )
         self.assertIn("Unique Architectures vs Reruns", learning_panel_content)
         self.assertIn("architecture_rerun_telemetry", learning_panel_content)
         self.assertIn("Top fingerprint concentration", learning_panel_content)
 
     def test_learning_panel_wires_fingerprint_diagnostics_card(self):
         """LearningPanel should render fingerprint sensitivity skip diagnostics via shared context."""
-        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
+        learning_panel_content = self._read_file(
+            os.path.join(self.component_dir, "LearningPanel.js")
+        )
         self.assertIn("Fingerprint Diagnostics", learning_panel_content)
         self.assertIn("Sensitivity skips:", learning_panel_content)
         self.assertIn("fingerprintDiagnostics", learning_panel_content)
         # fingerprint fetch is now in useAriaData hook
-        hook_content = self._read_file(os.path.join(
-            self.repo_root, "dashboard", "src", "hooks", "useAriaData.js"))
+        hook_content = self._read_file(
+            os.path.join(self.repo_root, "dashboard", "src", "hooks", "useAriaData.js")
+        )
         self.assertIn("/api/diagnostics/fingerprint", hook_content)
         self.assertIn("sensitivity_skips", hook_content)
 
     def test_learning_panel_wires_insight_synergy_matrix(self):
-        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js"))
+        learning_panel_content = self._read_file(
+            os.path.join(self.component_dir, "LearningPanel.js")
+        )
         self.assertIn("Insight Synergy Matrix", learning_panel_content)
         self.assertIn("Positive Pairs", learning_panel_content)
         self.assertIn("Conflicting Pairs", learning_panel_content)
@@ -737,7 +868,6 @@ class TestDashboardConsistency(unittest.TestCase):
         self.assertIn("onNavigateEvidence(ds.tab)", content)
 
 
-
 class TestScaleUpFix(unittest.TestCase):
     """Test scale-up no longer passes invalid columns to record_program_result."""
 
@@ -752,11 +882,16 @@ class TestScaleUpFix(unittest.TestCase):
         metrics = runner._extract_graph_metrics(graph)
 
         # These keys must NOT appear (they caused the scale-up crash)
-        forbidden_keys = {"source_result_id", "scale_up_steps",
-                          "scale_up_batch_size", "scale_up_seq_len"}
+        forbidden_keys = {
+            "source_result_id",
+            "scale_up_steps",
+            "scale_up_batch_size",
+            "scale_up_seq_len",
+        }
         for key in forbidden_keys:
-            self.assertNotIn(key, metrics,
-                             f"Forbidden key '{key}' found in graph metrics")
+            self.assertNotIn(
+                key, metrics, f"Forbidden key '{key}' found in graph metrics"
+            )
 
 
 class TestSandboxShapeValidation(unittest.TestCase):
@@ -776,11 +911,19 @@ class TestSandboxShapeValidation(unittest.TestCase):
             def forward(self, x):
                 return self.linear(self.embed(x))
 
-        result = safe_eval(GoodModel(), batch_size=2, seq_len=16,
-                           vocab_size=1000, device="cpu",
-                           run_stability_probe=False)
-        self.assertNotEqual(result.error_type, "shape_mismatch",
-                            f"Unexpected shape_mismatch: {result.error}")
+        result = safe_eval(
+            GoodModel(),
+            batch_size=2,
+            seq_len=16,
+            vocab_size=1000,
+            device="cpu",
+            run_stability_probe=False,
+        )
+        self.assertNotEqual(
+            result.error_type,
+            "shape_mismatch",
+            f"Unexpected shape_mismatch: {result.error}",
+        )
 
     @unittest.skipUnless(HAS_TORCH, "torch required")
     def test_wrong_batch_dim_fails(self):
@@ -798,9 +941,14 @@ class TestSandboxShapeValidation(unittest.TestCase):
                 # Return only first sample — wrong batch dim
                 return out[:1]
 
-        result = safe_eval(BadBatchModel(), batch_size=2, seq_len=16,
-                           vocab_size=1000, device="cpu",
-                           run_stability_probe=False)
+        result = safe_eval(
+            BadBatchModel(),
+            batch_size=2,
+            seq_len=16,
+            vocab_size=1000,
+            device="cpu",
+            run_stability_probe=False,
+        )
         self.assertEqual(result.error_type, "shape_mismatch")
         self.assertIn("(1, 16, 1000)", result.error)
 
@@ -818,9 +966,14 @@ class TestSandboxShapeValidation(unittest.TestCase):
             def forward(self, x):
                 return self.linear(self.embed(x))
 
-        result = safe_eval(BadVocabModel(), batch_size=2, seq_len=16,
-                           vocab_size=1000, device="cpu",
-                           run_stability_probe=False)
+        result = safe_eval(
+            BadVocabModel(),
+            batch_size=2,
+            seq_len=16,
+            vocab_size=1000,
+            device="cpu",
+            run_stability_probe=False,
+        )
         self.assertEqual(result.error_type, "shape_mismatch")
         self.assertIn("vocab", result.error.lower())
 
@@ -838,11 +991,15 @@ class TestSandboxShapeValidation(unittest.TestCase):
             def forward(self, x):
                 return self.linear(self.embed(x)).reshape(-1, 1000)
 
-        result = safe_eval(FlatModel(), batch_size=2, seq_len=16,
-                           vocab_size=1000, device="cpu",
-                           run_stability_probe=False)
+        result = safe_eval(
+            FlatModel(),
+            batch_size=2,
+            seq_len=16,
+            vocab_size=1000,
+            device="cpu",
+            run_stability_probe=False,
+        )
         self.assertEqual(result.error_type, "shape_mismatch")
-
 
 
 class TestSandboxCudaDetection(unittest.TestCase):
@@ -882,12 +1039,12 @@ class TestSandboxCudaDetection(unittest.TestCase):
     def test_safe_eval_categorizes_cuda_fatal(self):
         """Mock a device-side assert to verify safe_eval returns cuda_fatal."""
         import torch.nn as nn
-        from unittest.mock import patch
         from research.eval.sandbox import safe_eval
 
         model = nn.Linear(32, 32)
         with patch.object(
-            nn.Module, "to",
+            nn.Module,
+            "to",
             side_effect=RuntimeError("CUDA error: device-side assert triggered"),
         ):
             result = safe_eval(model, device="cpu")
@@ -904,7 +1061,5 @@ class TestSandboxCudaDetection(unittest.TestCase):
         self.assertEqual(d["error_type"], "cuda_fatal")
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

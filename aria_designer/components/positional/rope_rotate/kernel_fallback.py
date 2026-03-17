@@ -1,8 +1,8 @@
 """Kernel handler for rope_rotate — dispatches to aria_core.rope_rotate_f32."""
-import torch
-import torch.nn as nn
+
 from components.base import NativeComponentHandler
 from research.defaults import ROPE_THETA_BASE
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "rope_rotate"

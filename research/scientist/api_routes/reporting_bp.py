@@ -1,54 +1,34 @@
 """Dashboard and reporting route registration."""
+
 from __future__ import annotations
 
-import csv
-import io
-import json
 import logging
-import os
 import traceback
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from flask import jsonify, request, Response, send_from_directory
-from ..json_utils import json_safe as _json_safe
+from flask import jsonify, request
 from ..notebook import LabNotebook
-from ..runner import RunConfig
 from ..persona import get_aria
-from ..code_agent import _spawn_code_agent_task
-from ..evidence import build_evidence_pack
 from ._helpers import (
-    get_runner, with_native_runner_progress, get_run_trigger_snapshot,
-    deduplicate_insights, normalize_result_ids, record_run_trigger,
+    get_runner,
+    get_run_trigger_snapshot,
+    deduplicate_insights,
     resolve_runner_status,
 )
-from ._strategy_preflight import (
-    build_start_mode_eligibility,
-    normalize_briefing_mode, briefing_action_from_mode,
-    briefing_action_label, augment_sparse_action_config,
-)
 from ._strategy_recommendations import (
-    annotate_qkv_usage, compute_cross_run_stability,
-    compute_breakthrough_production_readiness, compute_recommendation,
-    compute_compression_opportunities, compute_sparse_evidence,
-    sparse_coverage_summary,
+    annotate_qkv_usage,
+    compute_cross_run_stability,
+    compute_breakthrough_production_readiness,
 )
 from ._strategy_report import (
-    parse_report_date, report_program_matches_theme,
-    report_experiment_matches_trend, build_filtered_report_summary,
-    build_report_snapshot_key, build_report_action_eligibility,
-    normalize_entries, parse_bool_query,
-)
-from ._strategy_diagnostics import diagnose_research_issues
-from ._chat import (
-    chat_requests_detailed_response, chat_requests_summary_response,
-    chat_requests_brief_response, chat_requests_self_fix_now,
-    chat_requests_codebase_fix,
-    record_chat_guardrail_event, chat_guardrail_snapshot,
-    code_agent_task_snapshot, summarize_agent_task,
-    run_local_chat_agent, chat_workspace_root, query_file_index,
-    parse_action_contract_response, truncate_summary, estimate_tokens,
-    local_ollama_helper_status, get_local_ollama_settings,
+    parse_report_date,
+    report_program_matches_theme,
+    report_experiment_matches_trend,
+    build_filtered_report_summary,
+    build_report_snapshot_key,
+    build_report_action_eligibility,
+    normalize_entries,
+    parse_bool_query,
 )
 from .deps import ApiRouteContext
 
@@ -57,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 def register_reporting_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
+
     @app.route("/api/status")
     def api_status():
         """Get Aria's current status and dashboard summary."""
@@ -70,21 +51,22 @@ def register_reporting_routes(app, context: ApiRouteContext):
             trigger = get_run_trigger_snapshot(progress_payload.get("experiment_id"))
             progress_payload["run_trigger_source"] = trigger.get("source")
             progress_payload["run_trigger"] = trigger
-            return jsonify({
-                "aria": aria.get_status(db_summary=summary),
-                "summary": summary,
-                "is_running": runner_state["is_running"],
-                "progress": progress_payload,
-                "native_runner": progress_payload.get("native_runner"),
-                "run_trigger_source": trigger.get("source"),
-                "run_trigger": trigger,
-            })
+            return jsonify(
+                {
+                    "aria": aria.get_status(db_summary=summary),
+                    "summary": summary,
+                    "is_running": runner_state["is_running"],
+                    "progress": progress_payload,
+                    "native_runner": progress_payload.get("native_runner"),
+                    "run_trigger_source": trigger.get("source"),
+                    "run_trigger": trigger,
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/status: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/recompute-failure-signatures", methods=["POST"])
     def api_recompute_failure_signatures():
@@ -94,11 +76,12 @@ def register_reporting_routes(app, context: ApiRouteContext):
             count = nb.recompute_failure_signatures()
             return jsonify({"status": "ok", "signatures_created": count})
         except Exception as e:
-            logger.error(f"Error in /api/recompute-failure-signatures: {e}\n{traceback.format_exc()}")
+            logger.error(
+                f"Error in /api/recompute-failure-signatures: {e}\n{traceback.format_exc()}"
+            )
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/reset-op-stats", methods=["POST"])
     def api_reset_op_stats():
@@ -132,7 +115,6 @@ def register_reporting_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/healer/tasks")
     def api_healer_tasks():
         """List recent Code Healer tasks."""
@@ -146,7 +128,6 @@ def register_reporting_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/healer/tasks/<task_id>")
     def api_healer_task_detail(task_id: str):
         """Get one healer task with state history."""
@@ -155,16 +136,17 @@ def register_reporting_routes(app, context: ApiRouteContext):
             task = nb.get_healer_task(task_id)
             if task is None:
                 return jsonify({"error": "Not found"}), 404
-            return jsonify({
-                "task": task,
-                "events": nb.get_healer_events(task_id, limit=200),
-            })
+            return jsonify(
+                {
+                    "task": task,
+                    "events": nb.get_healer_events(task_id, limit=200),
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/healer/tasks/{task_id}: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
 
     @app.route("/api/entries")
     def api_entries():
@@ -184,7 +166,6 @@ def register_reporting_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/metrics/<metric_name>")
     def api_metrics(metric_name):
         """Get time-series metrics."""
@@ -198,7 +179,6 @@ def register_reporting_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/dashboard")
     @app.route("/api/dashboard/summary")
     def api_dashboard():
@@ -208,7 +188,8 @@ def register_reporting_routes(app, context: ApiRouteContext):
         aria = get_aria()
         try:
             compact = request.path.endswith("/summary") or (
-                str(request.args.get("compact", "0")).strip().lower() in {"1", "true", "yes"}
+                str(request.args.get("compact", "0")).strip().lower()
+                in {"1", "true", "yes"}
             )
             summary = nb.get_dashboard_summary()
             runner_state = resolve_runner_status(nb, runner)
@@ -230,10 +211,13 @@ def register_reporting_routes(app, context: ApiRouteContext):
 
             recent_experiments = nb.get_recent_experiments(30)
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
             top_programs = nb.get_top_programs(10)
             annotate_qkv_usage(top_programs, analytics)
-            production_readiness = compute_breakthrough_production_readiness(nb, analytics)
+            production_readiness = compute_breakthrough_production_readiness(
+                nb, analytics
+            )
             insights = deduplicate_insights(nb.get_insights(limit=50))
             recent_entries = normalize_entries(nb.get_entries(limit=20))
 
@@ -306,25 +290,32 @@ def register_reporting_routes(app, context: ApiRouteContext):
 
             # Compute deltas from latest completed experiment
             try:
-                completed = [e for e in recent_experiments
-                             if e.get("status") == "completed"]
+                completed = [
+                    e for e in recent_experiments if e.get("status") == "completed"
+                ]
                 if len(completed) >= 2:
                     latest = completed[0]
                     previous = completed[1]
                     data["deltas"] = {
                         "experiment_id": latest.get("experiment_id"),
                         "programs": (latest.get("n_programs_generated") or 0)
-                                    - (previous.get("n_programs_generated") or 0),
+                        - (previous.get("n_programs_generated") or 0),
                         "stage1": (latest.get("n_stage1_passed") or 0)
-                                  - (previous.get("n_stage1_passed") or 0),
+                        - (previous.get("n_stage1_passed") or 0),
                         "best_loss": round(
                             (latest.get("best_loss_ratio") or 1)
-                            - (previous.get("best_loss_ratio") or 1), 4
-                        ) if latest.get("best_loss_ratio") else None,
+                            - (previous.get("best_loss_ratio") or 1),
+                            4,
+                        )
+                        if latest.get("best_loss_ratio")
+                        else None,
                         "best_novelty": round(
                             (latest.get("best_novelty_score") or 0)
-                            - (previous.get("best_novelty_score") or 0), 4
-                        ) if latest.get("best_novelty_score") else None,
+                            - (previous.get("best_novelty_score") or 0),
+                            4,
+                        )
+                        if latest.get("best_novelty_score")
+                        else None,
                     }
             except Exception:
                 pass
@@ -351,7 +342,6 @@ def register_reporting_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/report")
     def api_report():
         """Consolidated research report with all data."""
@@ -359,6 +349,7 @@ def register_reporting_routes(app, context: ApiRouteContext):
         aria = get_aria()
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
 
             fast_mode = parse_bool_query(request.args.get("fast"), default=False)
@@ -377,8 +368,14 @@ def register_reporting_routes(app, context: ApiRouteContext):
 
             data = {
                 "summary": nb.get_dashboard_summary(),
-                "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(top_limit, sort_by="loss_ratio"),
-                "top_programs_expanded": nb.get_top_programs(expanded_limit, sort_by="loss_ratio") if include_heavy else [],
+                "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(
+                    top_limit, sort_by="loss_ratio"
+                ),
+                "top_programs_expanded": nb.get_top_programs(
+                    expanded_limit, sort_by="loss_ratio"
+                )
+                if include_heavy
+                else [],
                 "recent_experiments": nb.get_recent_experiments(recent_limit),
                 "op_success_rates": analytics.op_success_rates(),
                 "failure_patterns": analytics.failure_patterns(),
@@ -398,30 +395,41 @@ def register_reporting_routes(app, context: ApiRouteContext):
                 },
             }
             if include_heavy:
-                data.update({
-                    "math_family_coverage": analytics.math_family_coverage(),
-                    "mathspace_operator_impact": analytics.mathspace_operator_impact(),
-                    "routing_mode_comparison": analytics.routing_mode_comparison(),
-                    "gating_behavior_diagnostics": analytics.gating_behavior_diagnostics(),
-                    "structural_correlations": analytics.structural_correlations(),
-                    "top_op_combinations": analytics.top_op_combinations(10),
-                    "efficiency_frontier": analytics.efficiency_frontier(),
-                    "experiment_clusters": analytics.experiment_clusters(),
-                })
-            learning_diagnostics = data["grammar_weights"].get("learning_diagnostics") or {}
+                data.update(
+                    {
+                        "math_family_coverage": analytics.math_family_coverage(),
+                        "mathspace_operator_impact": analytics.mathspace_operator_impact(),
+                        "routing_mode_comparison": analytics.routing_mode_comparison(),
+                        "gating_behavior_diagnostics": analytics.gating_behavior_diagnostics(),
+                        "structural_correlations": analytics.structural_correlations(),
+                        "top_op_combinations": analytics.top_op_combinations(10),
+                        "efficiency_frontier": analytics.efficiency_frontier(),
+                        "experiment_clusters": analytics.experiment_clusters(),
+                    }
+                )
+            learning_diagnostics = (
+                data["grammar_weights"].get("learning_diagnostics") or {}
+            )
             data["architecture_rerun_telemetry"] = {
-                "unique_fingerprint_count": int(learning_diagnostics.get("unique_fingerprints") or 0),
+                "unique_fingerprint_count": int(
+                    learning_diagnostics.get("unique_fingerprints") or 0
+                ),
                 "total_result_rows": int(learning_diagnostics.get("total_rows") or 0),
                 "repeat_result_rows": int(learning_diagnostics.get("repeat_rows") or 0),
                 "rerun_ratio": float(learning_diagnostics.get("rerun_ratio") or 0.0),
-                "top_fingerprint_concentration": float(learning_diagnostics.get("top_fingerprint_concentration") or 0.0),
+                "top_fingerprint_concentration": float(
+                    learning_diagnostics.get("top_fingerprint_concentration") or 0.0
+                ),
                 "weighting_mode": str(learning_diagnostics.get("mode") or "unknown"),
             }
             data["action_eligibility"] = build_report_action_eligibility(
                 nb,
                 [
                     row.get("result_id")
-                    for row in [*(data["top_programs"] or []), *(data["top_programs_expanded"] or [])]
+                    for row in [
+                        *(data["top_programs"] or []),
+                        *(data["top_programs_expanded"] or []),
+                    ]
                     if row.get("result_id")
                 ],
             )
@@ -469,10 +477,17 @@ def register_reporting_routes(app, context: ApiRouteContext):
                 "previous_rank": None,
                 "rank_delta": None,
             }
-            for program in [*(data["top_programs"] or []), *(data["top_programs_expanded"] or [])]:
+            for program in [
+                *(data["top_programs"] or []),
+                *(data["top_programs_expanded"] or []),
+            ]:
                 by_result = stability_by_result.get(program.get("result_id"))
-                by_fingerprint = stability_by_fingerprint.get(program.get("graph_fingerprint"))
-                program["cross_run_stability"] = by_result or by_fingerprint or fallback_stability
+                by_fingerprint = stability_by_fingerprint.get(
+                    program.get("graph_fingerprint")
+                )
+                program["cross_run_stability"] = (
+                    by_result or by_fingerprint or fallback_stability
+                )
 
             # Generate narrative only when explicitly enabled
             data["narrative"] = None
@@ -491,7 +506,6 @@ def register_reporting_routes(app, context: ApiRouteContext):
         finally:
             nb.close()
 
-
     @app.route("/api/report/query")
     def api_report_query():
         """Scoped report payload for date/theme/trend report generation."""
@@ -499,9 +513,12 @@ def register_reporting_routes(app, context: ApiRouteContext):
         aria = get_aria()
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
 
-            start_ts = parse_report_date(request.args.get("start_date"), end_of_day=False)
+            start_ts = parse_report_date(
+                request.args.get("start_date"), end_of_day=False
+            )
             end_ts = parse_report_date(request.args.get("end_date"), end_of_day=True)
             theme = str(request.args.get("theme") or "all").strip().lower()
             trend = str(request.args.get("trend") or "all").strip().lower()
@@ -635,5 +652,3 @@ def register_reporting_routes(app, context: ApiRouteContext):
             return jsonify({"error": str(e)}), 500
         finally:
             nb.close()
-
-

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gc
-import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -49,10 +48,14 @@ class _ExecutionValidationPhase3Mixin:
         val_config.max_seq_len = config.validation_seq_len
 
         program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-        source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+        source_map = {
+            d.get("result_id"): d for d in program_details if d.get("result_id")
+        }
         return results, dev, dev_str, val_config, source_map
 
-    def _get_validation_best_training_json(self, nb: Any, source_result_id: str) -> Optional[str]:
+    def _get_validation_best_training_json(
+        self, nb: Any, source_result_id: str
+    ) -> Optional[str]:
         entry = nb.get_leaderboard_entry(source_result_id)
         return entry.get("investigation_best_training") if entry else None
 

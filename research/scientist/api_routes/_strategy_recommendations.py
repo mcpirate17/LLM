@@ -1,4 +1,5 @@
 """Recommendation, evidence, enrichment, and readiness helpers."""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +9,6 @@ from typing import Any, Dict, List, Optional
 from ..notebook import LabNotebook
 from ..shared_utils import safe_float
 
-_to_safe_float = safe_float
 _logger = logging.getLogger(__name__)
 
 
@@ -49,8 +49,7 @@ def _rank_label(delta: Optional[int], seen_runs: int) -> str:
 def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
     """Compute rank movement for top candidates across recent experiments."""
     experiments = [
-        exp for exp in nb.get_recent_experiments(40)
-        if exp.get("status") == "completed"
+        exp for exp in nb.get_recent_experiments(40) if exp.get("status") == "completed"
     ]
     normalized_programs: list[dict[str, Any]]
     if isinstance(top_programs, str):
@@ -77,7 +76,8 @@ def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
         programs = nb.get_program_results(experiment_id)
         ranked = sorted(
             [
-                p for p in programs
+                p
+                for p in programs
                 if p.get("stage1_passed") and p.get("loss_ratio") is not None
             ],
             key=lambda p: p.get("loss_ratio", float("inf")),
@@ -104,11 +104,13 @@ def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
             rank = fingerprint_ranks_by_experiment.get(experiment_id, {}).get(fp)
             if rank is None:
                 continue
-            history.append({
-                "experiment_id": experiment_id,
-                "timestamp": exp.get("timestamp"),
-                "rank": rank,
-            })
+            history.append(
+                {
+                    "experiment_id": experiment_id,
+                    "timestamp": exp.get("timestamp"),
+                    "rank": rank,
+                }
+            )
 
         seen_runs = len(history)
         latest_rank = history[0]["rank"] if history else None
@@ -119,16 +121,18 @@ def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
         trend = _rank_label(delta, seen_runs)
         summary[trend] = summary.get(trend, 0) + 1
 
-        candidates.append({
-            "result_id": program.get("result_id"),
-            "graph_fingerprint": fp,
-            "current_overall_rank": index,
-            "seen_runs": seen_runs,
-            "latest_rank": latest_rank,
-            "previous_rank": previous_rank,
-            "rank_delta": delta,
-            "trend": trend,
-        })
+        candidates.append(
+            {
+                "result_id": program.get("result_id"),
+                "graph_fingerprint": fp,
+                "current_overall_rank": index,
+                "seen_runs": seen_runs,
+                "latest_rank": latest_rank,
+                "previous_rank": previous_rank,
+                "rank_delta": delta,
+                "trend": trend,
+            }
+        )
 
     return {
         "summary": summary,
@@ -237,7 +241,15 @@ def promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
         else:
             margin_signal = 0.15
 
-    score = round((completeness * 0.5 + std_signal * 0.2 + repeat_signal * 0.2 + margin_signal * 0.1) * 100)
+    score = round(
+        (
+            completeness * 0.5
+            + std_signal * 0.2
+            + repeat_signal * 0.2
+            + margin_signal * 0.1
+        )
+        * 100
+    )
     missing = [name for name, ok in checks.items() if not ok]
 
     return {
@@ -256,16 +268,21 @@ def decision_gate_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     validation_multi_seed_std = safe_float(entry.get("validation_multi_seed_std"))
 
     checks = {
-        "screeningEvidence": entry.get("screening_loss_ratio") is not None and entry.get("screening_novelty") is not None,
-        "investigationEvidence": entry.get("investigation_loss_ratio") is not None and entry.get("investigation_robustness") is not None,
-        "robustnessFloor": investigation_robustness is not None and investigation_robustness >= 0.5,
+        "screeningEvidence": entry.get("screening_loss_ratio") is not None
+        and entry.get("screening_novelty") is not None,
+        "investigationEvidence": entry.get("investigation_loss_ratio") is not None
+        and entry.get("investigation_robustness") is not None,
+        "robustnessFloor": investigation_robustness is not None
+        and investigation_robustness >= 0.5,
         "validationEvidence": (
             entry.get("validation_loss_ratio") is not None
             and entry.get("validation_baseline_ratio") is not None
             and entry.get("validation_multi_seed_std") is not None
         ),
-        "baselineBeatsReference": validation_baseline_ratio is not None and validation_baseline_ratio < 1.0,
-        "consistencyBounded": validation_multi_seed_std is not None and validation_multi_seed_std <= 0.12,
+        "baselineBeatsReference": validation_baseline_ratio is not None
+        and validation_baseline_ratio < 1.0,
+        "consistencyBounded": validation_multi_seed_std is not None
+        and validation_multi_seed_std <= 0.12,
     }
     decision_ready = all(checks.values())
     missing = [name for name, ok in checks.items() if not ok]
@@ -275,7 +292,9 @@ def decision_gate_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_scale_up_templates_for_result(result_id: Optional[str]) -> List[Dict[str, Any]]:
+def build_scale_up_templates_for_result(
+    result_id: Optional[str],
+) -> List[Dict[str, Any]]:
     normalized = str(result_id or "").strip()
     if not normalized:
         return []
@@ -348,12 +367,42 @@ def build_reproducibility_workflow(
         return dict(payload) if isinstance(payload, dict) else None
 
     checks = [
-        ("result_id", "Result identifier captured", None, "Program result must be persisted before repro closure."),
-        ("graph_fingerprint", "Fingerprint captured", None, "Graph fingerprint is required for cross-run traceability."),
-        ("arch_spec", "Architecture spec recorded", "robustness_recheck", "Re-run robustness check if architecture metadata is incomplete."),
-        ("baseline_ratio", "Baseline ratio measured", "multi_seed_stress", "Run multi-seed validation to compute baseline ratio."),
-        ("multi_seed_std", "Multi-seed variance measured", "multi_seed_stress", "Run multi-seed validation to measure stability variance."),
-        ("cka_artifact", "Artifact-backed CKA recorded", "efficiency_scale_up", "After run completion, stamp CKA artifact integrity in artifact references."),
+        (
+            "result_id",
+            "Result identifier captured",
+            None,
+            "Program result must be persisted before repro closure.",
+        ),
+        (
+            "graph_fingerprint",
+            "Fingerprint captured",
+            None,
+            "Graph fingerprint is required for cross-run traceability.",
+        ),
+        (
+            "arch_spec",
+            "Architecture spec recorded",
+            "robustness_recheck",
+            "Re-run robustness check if architecture metadata is incomplete.",
+        ),
+        (
+            "baseline_ratio",
+            "Baseline ratio measured",
+            "multi_seed_stress",
+            "Run multi-seed validation to compute baseline ratio.",
+        ),
+        (
+            "multi_seed_std",
+            "Multi-seed variance measured",
+            "multi_seed_stress",
+            "Run multi-seed validation to measure stability variance.",
+        ),
+        (
+            "cka_artifact",
+            "Artifact-backed CKA recorded",
+            "efficiency_scale_up",
+            "After run completion, stamp CKA artifact integrity in artifact references.",
+        ),
     ]
 
     steps: List[Dict[str, Any]] = []
@@ -408,8 +457,12 @@ def annotate_qkv_usage(programs: list, analytics) -> None:
         qkv_usage = analytics.qkv_usage_enum(program)
         program["qkv_usage"] = qkv_usage
         program["uses_qkv"] = qkv_usage != "qkv_free"
-        program["compression_metrics"] = analytics.canonical_compression_metrics(program)
-        program["reproducibility_packet"] = analytics.reproducibility_packet_status(program)
+        program["compression_metrics"] = analytics.canonical_compression_metrics(
+            program
+        )
+        program["reproducibility_packet"] = analytics.reproducibility_packet_status(
+            program
+        )
 
 
 def _empty_breakthrough_readiness() -> Dict[str, Any]:
@@ -458,7 +511,7 @@ def _evaluate_breakthrough_entry(
     return {
         "result_id": row.get("result_id"),
         "architecture_family": row.get("architecture_family"),
-        "composite_score": _to_safe_float(row.get("composite_score"), 0.0),
+        "composite_score": safe_float(row.get("composite_score"), 0.0),
         "promotion_confidence_score": promotion["score"],
         "seen_runs": promotion["seen_runs"],
         "decision_ready": gate["decision_ready"],
@@ -489,14 +542,21 @@ def _switch_recommendation(evaluated: List[Dict[str, Any]]) -> Dict[str, str]:
     }
 
 
-def compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) -> Dict[str, Any]:
+def compute_breakthrough_production_readiness(
+    nb: LabNotebook, analytics: Any
+) -> Dict[str, Any]:
     breakthroughs = nb.get_leaderboard(
-        tier="breakthrough", limit=20, sort_by="composite_score", include_references=False
+        tier="breakthrough",
+        limit=20,
+        sort_by="composite_score",
+        include_references=False,
     )
     if not breakthroughs:
         return _empty_breakthrough_readiness()
 
-    stability = compute_cross_run_stability(nb, nb.get_top_programs(20, sort_by="loss_ratio"))
+    stability = compute_cross_run_stability(
+        nb, nb.get_top_programs(20, sort_by="loss_ratio")
+    )
     stability_by_result = {
         c.get("result_id"): c
         for c in stability.get("candidates", [])
@@ -510,9 +570,17 @@ def compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) -
 
     breakthrough_count = len(evaluated)
     decision_ready_count = sum(1 for row in evaluated if row.get("decision_ready"))
-    high_confidence_count = sum(1 for row in evaluated if int(row.get("promotion_confidence_score") or 0) >= 75)
-    full_repro_packet_count = sum(1 for row in evaluated if (row.get("repro_packet") or {}).get("status") == "ready")
-    artifact_cka_count = sum(1 for row in evaluated if row.get("cka_source") == "artifact")
+    high_confidence_count = sum(
+        1 for row in evaluated if int(row.get("promotion_confidence_score") or 0) >= 75
+    )
+    full_repro_packet_count = sum(
+        1
+        for row in evaluated
+        if (row.get("repro_packet") or {}).get("status") == "ready"
+    )
+    artifact_cka_count = sum(
+        1 for row in evaluated if row.get("cka_source") == "artifact"
+    )
     recommendation = _switch_recommendation(evaluated)
 
     top_candidates = sorted(
@@ -520,11 +588,13 @@ def compute_breakthrough_production_readiness(nb: LabNotebook, analytics: Any) -
         key=lambda row: (
             int(bool(row.get("decision_ready"))),
             int(row.get("promotion_confidence_score") or 0),
-            _to_safe_float(row.get("composite_score"), 0.0),
+            safe_float(row.get("composite_score"), 0.0),
         ),
         reverse=True,
     )[:3]
-    scale_up_templates = top_candidates[0].get("scale_up_templates", []) if top_candidates else []
+    scale_up_templates = (
+        top_candidates[0].get("scale_up_templates", []) if top_candidates else []
+    )
 
     return {
         "breakthrough_count": breakthrough_count,
@@ -557,59 +627,81 @@ def _is_reference_like(entry: Dict[str, Any]) -> bool:
     )
 
 
-def _append_breakthrough_actions(actions: List[Dict[str, Any]], nb: LabNotebook) -> None:
+def _append_breakthrough_actions(
+    actions: List[Dict[str, Any]], nb: LabNotebook
+) -> None:
     breakthroughs = nb.get_leaderboard(
-        tier="breakthrough", limit=5, sort_by="composite_score", include_references=False
+        tier="breakthrough",
+        limit=5,
+        sort_by="composite_score",
+        include_references=False,
     )
     for entry in breakthroughs:
         if _is_reference_like(entry):
             continue
         rid = entry.get("result_id", "")
-        actions.append({
-            "id": f"breakthrough_{rid[:12]}",
-            "type": "breakthrough",
-            "priority": 1,
-            "icon": "trophy",
-            "title": f"Architecture {rid[:8]} — Breakthrough",
-            "summary": f"Composite score {_to_safe_float(entry.get('composite_score'), 0.0):.3f}. Tier: breakthrough.",
-            "detail": {
-                "result_id": rid,
-                "composite_score": _to_safe_float(entry.get("composite_score"), 0.0),
-                "screening_loss_ratio": entry.get("screening_loss_ratio"),
-                "tier": "breakthrough",
-            },
-            "actions": [
-                {"label": "View Details", "action": "navigate", "payload": {"tab": "discoveries", "result_id": rid}},
-            ],
-            "dismissable": True,
-            "source": "leaderboard",
-        })
+        actions.append(
+            {
+                "id": f"breakthrough_{rid[:12]}",
+                "type": "breakthrough",
+                "priority": 1,
+                "icon": "trophy",
+                "title": f"Architecture {rid[:8]} — Breakthrough",
+                "summary": f"Composite score {safe_float(entry.get('composite_score'), 0.0):.3f}. Tier: breakthrough.",
+                "detail": {
+                    "result_id": rid,
+                    "composite_score": safe_float(entry.get("composite_score"), 0.0),
+                    "screening_loss_ratio": entry.get("screening_loss_ratio"),
+                    "tier": "breakthrough",
+                },
+                "actions": [
+                    {
+                        "label": "View Details",
+                        "action": "navigate",
+                        "payload": {"tab": "discoveries", "result_id": rid},
+                    },
+                ],
+                "dismissable": True,
+                "source": "leaderboard",
+            }
+        )
 
 
 def _append_stalled_run_warning(actions: List[Dict[str, Any]], nb: LabNotebook) -> None:
     recent = nb.get_recent_experiments(5)
     completed = [e for e in recent if e.get("status") == "completed"]
-    if len(completed) < 3 or not all((e.get("n_stage1_passed") or 0) == 0 for e in completed[:3]):
+    if len(completed) < 3 or not all(
+        (e.get("n_stage1_passed") or 0) == 0 for e in completed[:3]
+    ):
         return
-    actions.append({
-        "id": "warning_stalled_runs",
-        "type": "warning",
-        "priority": 2,
-        "icon": "warning",
-        "title": "Pipeline stalled — zero S1 survivors",
-        "summary": f"Last {len(completed[:3])} completed runs produced no Stage 1 survivors.",
-        "detail": {
-            "recent_experiments": [
-                {"id": e.get("experiment_id", "")[:12], "s1": e.get("n_stage1_passed", 0)}
-                for e in completed[:3]
+    actions.append(
+        {
+            "id": "warning_stalled_runs",
+            "type": "warning",
+            "priority": 2,
+            "icon": "warning",
+            "title": "Pipeline stalled — zero S1 survivors",
+            "summary": f"Last {len(completed[:3])} completed runs produced no Stage 1 survivors.",
+            "detail": {
+                "recent_experiments": [
+                    {
+                        "id": e.get("experiment_id", "")[:12],
+                        "s1": e.get("n_stage1_passed", 0),
+                    }
+                    for e in completed[:3]
+                ],
+            },
+            "actions": [
+                {
+                    "label": "Run Novelty Search",
+                    "action": "start",
+                    "payload": {"mode": "novelty"},
+                },
             ],
-        },
-        "actions": [
-            {"label": "Run Novelty Search", "action": "start", "payload": {"mode": "novelty"}},
-        ],
-        "dismissable": True,
-        "source": "experiments",
-    })
+            "dismissable": True,
+            "source": "experiments",
+        }
+    )
 
 
 def _append_healer_actions(actions: List[Dict[str, Any]], nb: LabNotebook) -> None:
@@ -617,56 +709,74 @@ def _append_healer_actions(actions: List[Dict[str, Any]], nb: LabNotebook) -> No
     active = [t for t in healer_tasks if t.get("state") not in ("completed", "failed")]
     for task in active[:2]:
         tid = task.get("task_id", "")
-        actions.append({
-            "id": f"healer_{tid[:12]}",
-            "type": "healer",
-            "priority": 4,
-            "icon": "wrench",
-            "title": f"Code healer: {task.get('trigger_type', 'repair')}",
-            "summary": f"Task {tid[:12]} — {task.get('state', 'active')}. {task.get('scope', '')[:80]}",
-            "detail": {
-                "task_id": tid,
-                "state": task.get("state"),
-                "trigger_type": task.get("trigger_type"),
-                "experiment_id": task.get("experiment_id"),
-            },
-            "actions": [],
-            "dismissable": True,
-            "source": "healer",
-        })
+        actions.append(
+            {
+                "id": f"healer_{tid[:12]}",
+                "type": "healer",
+                "priority": 4,
+                "icon": "wrench",
+                "title": f"Code healer: {task.get('trigger_type', 'repair')}",
+                "summary": f"Task {tid[:12]} — {task.get('state', 'active')}. {task.get('scope', '')[:80]}",
+                "detail": {
+                    "task_id": tid,
+                    "state": task.get("state"),
+                    "trigger_type": task.get("trigger_type"),
+                    "experiment_id": task.get("experiment_id"),
+                },
+                "actions": [],
+                "dismissable": True,
+                "source": "healer",
+            }
+        )
 
 
 def _log_diagnosis_placeholder(nb: LabNotebook, analytics: Any = None) -> None:
     if analytics:
-        _ = analytics.get_analytics_data() if hasattr(analytics, "get_analytics_data") else {}
+        _ = (
+            analytics.get_analytics_data()
+            if hasattr(analytics, "get_analytics_data")
+            else {}
+        )
     else:
         from ..analytics import ExperimentAnalytics
 
         analytics_obj = ExperimentAnalytics(nb)
-        _ = analytics_obj.get_analytics_data() if hasattr(analytics_obj, "get_analytics_data") else {}
+        _ = (
+            analytics_obj.get_analytics_data()
+            if hasattr(analytics_obj, "get_analytics_data")
+            else {}
+        )
     import logging as _log
 
-    _log.getLogger(__name__).debug("Diagnosis issues require blueprint-local _diagnose_research_issues")
+    _log.getLogger(__name__).debug(
+        "Diagnosis issues require blueprint-local _diagnose_research_issues"
+    )
 
 
 def _append_first_run_strategy(actions: List[Dict[str, Any]], nb: LabNotebook) -> None:
     summary = nb.get_dashboard_summary()
     if summary.get("total_experiments", 0) != 0:
         return
-    actions.append({
-        "id": "strategy_first_run",
-        "type": "strategy",
-        "priority": 5,
-        "icon": "lightbulb",
-        "title": "Get started",
-        "summary": "No experiments yet. Start your first continuous run to begin exploring architectures.",
-        "detail": {},
-        "actions": [
-            {"label": "Start Continuous", "action": "start", "payload": {"mode": "continuous"}},
-        ],
-        "dismissable": False,
-        "source": "strategy",
-    })
+    actions.append(
+        {
+            "id": "strategy_first_run",
+            "type": "strategy",
+            "priority": 5,
+            "icon": "lightbulb",
+            "title": "Get started",
+            "summary": "No experiments yet. Start your first continuous run to begin exploring architectures.",
+            "detail": {},
+            "actions": [
+                {
+                    "label": "Start Continuous",
+                    "action": "start",
+                    "payload": {"mode": "continuous"},
+                },
+            ],
+            "dismissable": False,
+            "source": "strategy",
+        }
+    )
 
 
 def compute_action_queue(nb, analytics=None) -> List[Dict[str, Any]]:
@@ -779,24 +889,36 @@ def program_lineage_chain(nb: LabNotebook, result_id: str) -> List[Dict[str, Any
         else:
             try:
                 graph_json = row["graph_json"]
-                parsed = json.loads(graph_json) if isinstance(graph_json, str) else (graph_json or {})
+                parsed = (
+                    json.loads(graph_json)
+                    if isinstance(graph_json, str)
+                    else (graph_json or {})
+                )
                 metadata = parsed.get("metadata") if isinstance(parsed, dict) else {}
-                refinement = metadata.get("refinement") if isinstance(metadata, dict) else {}
-                source = refinement.get("source_result_id") if isinstance(refinement, dict) else None
+                refinement = (
+                    metadata.get("refinement") if isinstance(metadata, dict) else {}
+                )
+                source = (
+                    refinement.get("source_result_id")
+                    if isinstance(refinement, dict)
+                    else None
+                )
                 if isinstance(source, str) and source.strip():
                     parent_result_id = source.strip()
             except Exception:
                 parent_result_id = None
 
-        chain.append({
-            "result_id": row["result_id"],
-            "experiment_id": row["experiment_id"],
-            "graph_fingerprint": row["graph_fingerprint"],
-            "parent_result_id": parent_result_id,
-            "loss_ratio": row["loss_ratio"],
-            "stage1_passed": bool(row["stage1_passed"]),
-            "timestamp": row["timestamp"],
-        })
+        chain.append(
+            {
+                "result_id": row["result_id"],
+                "experiment_id": row["experiment_id"],
+                "graph_fingerprint": row["graph_fingerprint"],
+                "parent_result_id": parent_result_id,
+                "loss_ratio": row["loss_ratio"],
+                "stage1_passed": bool(row["stage1_passed"]),
+                "timestamp": row["timestamp"],
+            }
+        )
         current_id = parent_result_id
 
     return chain
@@ -817,12 +939,14 @@ def compute_compression_opportunities(coverage: Dict[str, Any]) -> Dict[str, Any
         n_evaluated = int(stats.get("n_evaluated") or 0)
         n_survived = int(stats.get("n_survived") or 0)
         survival_rate = (n_survived / n_evaluated) if n_evaluated > 0 else 0.0
-        techniques.append({
-            "technique": name,
-            "n_evaluated": n_evaluated,
-            "n_survived": n_survived,
-            "survival_rate": round(survival_rate, 4),
-        })
+        techniques.append(
+            {
+                "technique": name,
+                "n_evaluated": n_evaluated,
+                "n_survived": n_survived,
+                "survival_rate": round(survival_rate, 4),
+            }
+        )
 
     techniques.sort(key=lambda t: (t["survival_rate"], t["n_evaluated"]), reverse=True)
 
@@ -849,8 +973,12 @@ def compute_sparse_evidence(nb: LabNotebook) -> Dict[str, Any]:
         if rows and rows["n"] > 0:
             return {
                 "n_sparse_programs": int(rows["n"]),
-                "avg_density_mean": float(rows["avg_density"]) if rows["avg_density"] is not None else None,
-                "avg_nm_compliance": float(rows["avg_nm"]) if rows["avg_nm"] is not None else None,
+                "avg_density_mean": float(rows["avg_density"])
+                if rows["avg_density"] is not None
+                else None,
+                "avg_nm_compliance": float(rows["avg_nm"])
+                if rows["avg_nm"] is not None
+                else None,
             }
     except Exception:
         pass

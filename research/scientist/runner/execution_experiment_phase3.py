@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import logging
 import math
 import os
@@ -31,7 +30,9 @@ class _ExecutionExperimentPhase3Mixin:
         results: Dict[str, Any],
         t_start: float,
     ) -> None:
-        candidates = self._generate_candidates(config, config.n_programs, "morphological_box")
+        candidates = self._generate_candidates(
+            config, config.n_programs, "morphological_box"
+        )
         results["total"] = len(candidates)
 
         dev = resolve_device(config.device)
@@ -119,6 +120,7 @@ class _ExecutionExperimentPhase3Mixin:
                 if k in s1_result:
                     program_metrics[k] = s1_result.get(k)
             from ._helpers import screening_wikitext_fields
+
             program_metrics.update(screening_wikitext_fields(s1_result))
             self._merge_s1_telemetry(program_metrics, s1_result)
 
@@ -137,6 +139,7 @@ class _ExecutionExperimentPhase3Mixin:
             )
             try:
                 from ...eval.wikitext_eval import screening_wikitext_payload
+
                 payload = screening_wikitext_payload(s1_result)
                 if payload:
                     nb.set_external_benchmarks(result_id, payload)
@@ -172,7 +175,9 @@ class _ExecutionExperimentPhase3Mixin:
             devices=devices,
             remote_workers=remote_workers,
         )
-        candidate_batch_size = max(1, min(32, int(math.sqrt(max(1, config.n_programs)))))
+        candidate_batch_size = max(
+            1, min(32, int(math.sqrt(max(1, config.n_programs))))
+        )
         results["candidate_batch_size"] = candidate_batch_size
         return dev, dev_str, orchestrator, candidate_batch_size
 
@@ -208,7 +213,10 @@ class _ExecutionExperimentPhase3Mixin:
                     novel.append(g)
                     seen_this_batch.add(fp)
             graphs = novel
-            if len(graphs) >= dedup_target or config.model_source == "fingerprint_refine":
+            if (
+                len(graphs) >= dedup_target
+                or config.model_source == "fingerprint_refine"
+            ):
                 break
             shortfall = original_count - len(graphs)
             if shortfall <= 0:

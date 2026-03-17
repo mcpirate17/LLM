@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for basis_expansion."""
-import torch
+
 import torch.nn as nn
 
 

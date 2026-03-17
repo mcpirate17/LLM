@@ -1,4 +1,5 @@
 """Chat API router for conversational Aria interactions."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -8,7 +9,6 @@ from fastapi import APIRouter, HTTPException
 from ..conversation import ConversationManager
 from ..models import (
     ChatMessageRequest,
-    utc_now_iso as _utc_now,
 )
 from ..research_signals import fetch_research_recommendation_signals
 
@@ -35,7 +35,10 @@ def send_message(req: ChatMessageRequest) -> Dict[str, Any]:
 
     signals = fetch_research_recommendation_signals(force=False)
     result = ConversationManager.process_message(
-        session_id, req.message, workflow, research_signals=signals,
+        session_id,
+        req.message,
+        workflow,
+        research_signals=signals,
     )
 
     return {

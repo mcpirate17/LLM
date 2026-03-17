@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for outer_product."""
-import torch
+
 import torch.nn as nn
 
 

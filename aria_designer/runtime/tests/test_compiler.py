@@ -1,9 +1,9 @@
 import os
 import torch
-import numpy as np
 import pytest
 
 from aria_designer.runtime.compiler import compile_workflow
+
 
 def test_compile_and_run():
     workflow_json = {
@@ -11,18 +11,8 @@ def test_compile_and_run():
         "workflow_id": "test-wf",
         "name": "Test Workflow",
         "nodes": [
-            {
-                "id": "input1",
-                "component_type": "io/input",
-                "params": {},
-                "ui_meta": {}
-            },
-            {
-                "id": "relu1",
-                "component_type": "math/relu",
-                "params": {},
-                "ui_meta": {}
-            }
+            {"id": "input1", "component_type": "io/input", "params": {}, "ui_meta": {}},
+            {"id": "relu1", "component_type": "math/relu", "params": {}, "ui_meta": {}},
         ],
         "edges": [
             {
@@ -30,12 +20,14 @@ def test_compile_and_run():
                 "source": "input1",
                 "source_port": "y",
                 "target": "relu1",
-                "target_port": "x"
+                "target_port": "x",
             }
-        ]
+        ],
     }
 
-    components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "components"))
+    components_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "components")
+    )
     model = compile_workflow(workflow_json, components_dir)
 
     assert isinstance(model, torch.nn.Module)
@@ -61,20 +53,15 @@ def test_multi_input_identity_falls_back_to_handler_forward():
                 "id": "input_a",
                 "component_type": "io/input",
                 "params": {},
-                "ui_meta": {}
+                "ui_meta": {},
             },
             {
                 "id": "input_b",
                 "component_type": "io/input",
                 "params": {},
-                "ui_meta": {}
+                "ui_meta": {},
             },
-            {
-                "id": "add1",
-                "component_type": "math/add",
-                "params": {},
-                "ui_meta": {}
-            },
+            {"id": "add1", "component_type": "math/add", "params": {}, "ui_meta": {}},
         ],
         "edges": [
             {
@@ -82,19 +69,21 @@ def test_multi_input_identity_falls_back_to_handler_forward():
                 "source": "input_a",
                 "source_port": "y",
                 "target": "add1",
-                "target_port": "a"
+                "target_port": "a",
             },
             {
                 "id": "e2",
                 "source": "input_b",
                 "source_port": "y",
                 "target": "add1",
-                "target_port": "b"
+                "target_port": "b",
             },
-        ]
+        ],
     }
 
-    components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "components"))
+    components_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "components")
+    )
     model = compile_workflow(workflow_json, components_dir)
 
     assert "add1" in model.submodules
@@ -103,7 +92,7 @@ def test_multi_input_identity_falls_back_to_handler_forward():
     b = torch.tensor([10.0, 20.0, 30.0])
 
     outputs = model({"input_a": a, "input_b": b})
-    
+
     assert "add1" in outputs
     torch.testing.assert_close(outputs["add1"], a + b)
 
@@ -118,14 +107,9 @@ def test_compile_rejects_unsupported_edge_dtype_pairing():
                 "id": "n1",
                 "component_type": "data_transform/dataset_filter",
                 "params": {},
-                "ui_meta": {}
+                "ui_meta": {},
             },
-            {
-                "id": "n2",
-                "component_type": "math/relu",
-                "params": {},
-                "ui_meta": {}
-            },
+            {"id": "n2", "component_type": "math/relu", "params": {}, "ui_meta": {}},
         ],
         "edges": [
             {
@@ -133,14 +117,17 @@ def test_compile_rejects_unsupported_edge_dtype_pairing():
                 "source": "n1",
                 "source_port": "filtered",
                 "target": "n2",
-                "target_port": "x"
+                "target_port": "x",
             }
-        ]
+        ],
     }
 
-    components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "components"))
+    components_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "components")
+    )
     with pytest.raises(ValueError, match="Unsupported edge dtype pairing"):
         compile_workflow(workflow_json, components_dir)
+
 
 if __name__ == "__main__":
     test_compile_and_run()

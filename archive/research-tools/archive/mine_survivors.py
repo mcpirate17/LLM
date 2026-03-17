@@ -8,7 +8,7 @@ import json
 import sqlite3
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 
 def _safe_graph(graph_json: str) -> Dict:
@@ -74,7 +74,8 @@ def mine_experiment(db_path: Path, experiment_id: str) -> Dict:
                         {
                             str(n.get("op_name") or "").strip()
                             for n in nodes.values()
-                            if str(n.get("op_name") or "").strip() and str(n.get("op_name") or "").strip() != "input"
+                            if str(n.get("op_name") or "").strip()
+                            and str(n.get("op_name") or "").strip() != "input"
                         }
                     ),
                 }
@@ -89,7 +90,9 @@ def mine_experiment(db_path: Path, experiment_id: str) -> Dict:
         {"a": tri[0], "b": tri[1], "c": tri[2], "count": count}
         for tri, count in trigrams.most_common(20)
     ]
-    best_seeds = sorted(seed_templates, key=lambda x: (x["loss_ratio"], -x["novelty_score"]))[:25]
+    best_seeds = sorted(
+        seed_templates, key=lambda x: (x["loss_ratio"], -x["novelty_score"])
+    )[:25]
 
     return {
         "experiment_id": experiment_id,
@@ -111,7 +114,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    report = mine_experiment(db_path=Path(args.db_path), experiment_id=str(args.experiment_id))
+    report = mine_experiment(
+        db_path=Path(args.db_path), experiment_id=str(args.experiment_id)
+    )
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")

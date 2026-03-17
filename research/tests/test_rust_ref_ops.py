@@ -10,36 +10,42 @@ rather than mathematical accuracy.
 """
 
 import json
-import struct
 import pytest
 import numpy as np
 
 try:
     import aria_scheduler  # type: ignore[import-untyped]
+
     HAS_RUST_SCHEDULER = True
 except ImportError:
     try:
         from scientist import aria_scheduler  # type: ignore[import-untyped]
+
         HAS_RUST_SCHEDULER = True
     except ImportError:
         HAS_RUST_SCHEDULER = False
 
-pytestmark = [pytest.mark.native, pytest.mark.skipif(
-    not HAS_RUST_SCHEDULER,
-    reason="aria_scheduler Rust module not available",
-)]
+pytestmark = [
+    pytest.mark.native,
+    pytest.mark.skipif(
+        not HAS_RUST_SCHEDULER,
+        reason="aria_scheduler Rust module not available",
+    ),
+]
 
 
 def _make_graph_json(nodes, edges, output_node_id):
     """Helper to build a native IR JSON string."""
-    return json.dumps({
-        "schema_version": "0.1",
-        "model_dim": 4,
-        "nodes": nodes,
-        "edges": edges,
-        "output_node_id": output_node_id,
-        "metadata": None,
-    })
+    return json.dumps(
+        {
+            "schema_version": "0.1",
+            "model_dim": 4,
+            "nodes": nodes,
+            "edges": edges,
+            "output_node_id": output_node_id,
+            "metadata": None,
+        }
+    )
 
 
 class TestRopeRotate:
@@ -50,13 +56,35 @@ class TestRopeRotate:
         x = [float(i) * 0.1 for i in range(batch * seq * dim)]
 
         nodes = [
-            {"id": 0, "op_name": "input", "input_ids": [], "config": {},
-             "is_input": True, "is_output": False},
-            {"id": 1, "op_name": "rope_rotate", "input_ids": [0],
-             "config": {"batch": batch, "seq": seq, "dim": dim, "theta_base": 10000.0},
-             "is_input": False, "is_output": False},
-            {"id": 2, "op_name": "output", "input_ids": [1], "config": {},
-             "is_input": False, "is_output": True},
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "rope_rotate",
+                "input_ids": [0],
+                "config": {
+                    "batch": batch,
+                    "seq": seq,
+                    "dim": dim,
+                    "theta_base": 10000.0,
+                },
+                "is_input": False,
+                "is_output": False,
+            },
+            {
+                "id": 2,
+                "op_name": "output",
+                "input_ids": [1],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
         ]
         edges = [
             {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -77,13 +105,30 @@ class TestCosineSimilarity:
         x = [float(i) * 0.1 + 0.1 for i in range(batch * seq * dim)]
 
         nodes = [
-            {"id": 0, "op_name": "input", "input_ids": [], "config": {},
-             "is_input": True, "is_output": False},
-            {"id": 1, "op_name": "cosine_similarity", "input_ids": [0, 0],
-             "config": {"batch": batch, "seq": seq, "dim": dim},
-             "is_input": False, "is_output": False},
-            {"id": 2, "op_name": "output", "input_ids": [1], "config": {},
-             "is_input": False, "is_output": True},
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "cosine_similarity",
+                "input_ids": [0, 0],
+                "config": {"batch": batch, "seq": seq, "dim": dim},
+                "is_input": False,
+                "is_output": False,
+            },
+            {
+                "id": 2,
+                "op_name": "output",
+                "input_ids": [1],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
         ]
         edges = [
             {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -115,13 +160,30 @@ class TestEmbeddingLookup:
             table[i] = float(i) * 0.1
 
         nodes = [
-            {"id": 0, "op_name": "input", "input_ids": [], "config": {},
-             "is_input": True, "is_output": False},
-            {"id": 1, "op_name": "embedding_lookup", "input_ids": [0, 0],
-             "config": {"batch": batch, "dim": dim, "vocab_size": vocab_size},
-             "is_input": False, "is_output": False},
-            {"id": 2, "op_name": "output", "input_ids": [1], "config": {},
-             "is_input": False, "is_output": True},
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "embedding_lookup",
+                "input_ids": [0, 0],
+                "config": {"batch": batch, "dim": dim, "vocab_size": vocab_size},
+                "is_input": False,
+                "is_output": False,
+            },
+            {
+                "id": 2,
+                "op_name": "output",
+                "input_ids": [1],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
         ]
         edges = [
             {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -147,13 +209,30 @@ class TestGatedLinear:
         x = [float(i) * 0.01 for i in range(n)]
 
         nodes = [
-            {"id": 0, "op_name": "input", "input_ids": [], "config": {},
-             "is_input": True, "is_output": False},
-            {"id": 1, "op_name": "gated_linear", "input_ids": [0, 0, 0, 0, 0],
-             "config": {"batch": batch, "dim_in": dim_in, "dim_out": dim_out},
-             "is_input": False, "is_output": False},
-            {"id": 2, "op_name": "output", "input_ids": [1], "config": {},
-             "is_input": False, "is_output": True},
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "gated_linear",
+                "input_ids": [0, 0, 0, 0, 0],
+                "config": {"batch": batch, "dim_in": dim_in, "dim_out": dim_out},
+                "is_input": False,
+                "is_output": False,
+            },
+            {
+                "id": 2,
+                "op_name": "output",
+                "input_ids": [1],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
         ]
         edges = [
             {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -175,13 +254,30 @@ class TestGatherTopk:
         x = [float(i) * 0.1 for i in range(n)]
 
         nodes = [
-            {"id": 0, "op_name": "input", "input_ids": [], "config": {},
-             "is_input": True, "is_output": False},
-            {"id": 1, "op_name": "gather_topk", "input_ids": [0, 0],
-             "config": {"batch": batch, "n_items": n_items, "dim": dim, "k": k},
-             "is_input": False, "is_output": False},
-            {"id": 2, "op_name": "output", "input_ids": [1], "config": {},
-             "is_input": False, "is_output": True},
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "gather_topk",
+                "input_ids": [0, 0],
+                "config": {"batch": batch, "n_items": n_items, "dim": dim, "k": k},
+                "is_input": False,
+                "is_output": False,
+            },
+            {
+                "id": 2,
+                "op_name": "output",
+                "input_ids": [1],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
         ]
         edges = [
             {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -203,13 +299,30 @@ class TestRwkvTimeMixing:
         x = [float(i) * 0.01 for i in range(n)]
 
         nodes = [
-            {"id": 0, "op_name": "input", "input_ids": [], "config": {},
-             "is_input": True, "is_output": False},
-            {"id": 1, "op_name": "rwkv_time_mixing", "input_ids": [0, 0, 0, 0, 0, 0],
-             "config": {"batch": batch, "seq": seq, "dim": dim},
-             "is_input": False, "is_output": False},
-            {"id": 2, "op_name": "output", "input_ids": [1], "config": {},
-             "is_input": False, "is_output": True},
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "rwkv_time_mixing",
+                "input_ids": [0, 0, 0, 0, 0, 0],
+                "config": {"batch": batch, "seq": seq, "dim": dim},
+                "is_input": False,
+                "is_output": False,
+            },
+            {
+                "id": 2,
+                "op_name": "output",
+                "input_ids": [1],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
         ]
         edges = [
             {"source": 0, "target": 1, "source_port": None, "target_port": None},

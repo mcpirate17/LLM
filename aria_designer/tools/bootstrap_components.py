@@ -8,10 +8,10 @@ box dimensions from research/morphological_box.py, then generates manifest.yaml
 Usage:
     python -m tools.bootstrap_components [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -174,17 +174,53 @@ def _config_keys_to_params(config_keys: Tuple[str, ...]) -> Dict[str, Any]:
     """Convert PrimitiveOp config_keys to manifest param definitions."""
     params = {}
     defaults = {
-        "n_splits": {"type": "integer", "default": 2, "constraints": {"min": 2, "max": 8}},
-        "n_heads": {"type": "integer", "default": 8, "constraints": {"min": 1, "max": 128}},
-        "window_size": {"type": "integer", "default": 64, "constraints": {"min": 4, "max": 4096}},
-        "out_dim": {"type": "integer", "default": None, "description": "Output dim (null=same as input)"},
-        "kernel_scale": {"type": "float", "default": 1.0, "constraints": {"min": 0.01, "max": 100.0}},
-        "n_iters": {"type": "integer", "default": 3, "constraints": {"min": 1, "max": 20}},
-        "damping": {"type": "float", "default": 0.5, "constraints": {"min": 0.0, "max": 1.0}},
+        "n_splits": {
+            "type": "integer",
+            "default": 2,
+            "constraints": {"min": 2, "max": 8},
+        },
+        "n_heads": {
+            "type": "integer",
+            "default": 8,
+            "constraints": {"min": 1, "max": 128},
+        },
+        "window_size": {
+            "type": "integer",
+            "default": 64,
+            "constraints": {"min": 4, "max": 4096},
+        },
+        "out_dim": {
+            "type": "integer",
+            "default": None,
+            "description": "Output dim (null=same as input)",
+        },
+        "kernel_scale": {
+            "type": "float",
+            "default": 1.0,
+            "constraints": {"min": 0.01, "max": 100.0},
+        },
+        "n_iters": {
+            "type": "integer",
+            "default": 3,
+            "constraints": {"min": 1, "max": 20},
+        },
+        "damping": {
+            "type": "float",
+            "default": 0.5,
+            "constraints": {"min": 0.0, "max": 1.0},
+        },
         "n": {"type": "integer", "default": 2, "constraints": {"min": 1, "max": 4}},
         "m": {"type": "integer", "default": 4, "constraints": {"min": 2, "max": 8}},
-        "block_size": {"type": "integer", "default": 32, "constraints": {"min": 8, "max": 128}},
-        "block_density": {"type": "float", "default": 0.25, "constraints": {"min": 0.05, "max": 1.0}},
+        "block_size": {
+            "type": "integer",
+            "default": 32,
+            "constraints": {"min": 8, "max": 128},
+        },
+        "block_density": {
+            "type": "float",
+            "default": 0.25,
+            "constraints": {"min": 0.05, "max": 1.0},
+        },
     }
     for key in config_keys:
         params[key] = defaults.get(key, {"type": "integer", "default": 0})
@@ -193,7 +229,9 @@ def _config_keys_to_params(config_keys: Tuple[str, ...]) -> Dict[str, Any]:
 
 def build_primitive_manifest(op) -> Dict[str, Any]:
     """Build a manifest dict from a PrimitiveOp."""
-    category = OP_CATEGORY_MAP.get(op.category.value if hasattr(op.category, "value") else str(op.category), "math")
+    category = OP_CATEGORY_MAP.get(
+        op.category.value if hasattr(op.category, "value") else str(op.category), "math"
+    )
     shape_key = op.shape_rule
     inputs, outputs = SHAPE_RULE_TO_PORTS.get(
         shape_key,
@@ -415,24 +453,28 @@ def write_component(manifest: Dict[str, Any], dry_run: bool = False) -> Path:
         f.write(f'"""Contract tests for {manifest["id"]}."""\n')
         f.write("import yaml\n")
         f.write("from pathlib import Path\n\n\n")
-        f.write(f"def test_manifest_valid():\n")
-        f.write(f'    manifest_path = Path(__file__).parent.parent / "manifest.yaml"\n')
-        f.write(f"    with open(manifest_path) as f:\n")
-        f.write(f"        manifest = yaml.safe_load(f)\n")
+        f.write("def test_manifest_valid():\n")
+        f.write('    manifest_path = Path(__file__).parent.parent / "manifest.yaml"\n')
+        f.write("    with open(manifest_path) as f:\n")
+        f.write("        manifest = yaml.safe_load(f)\n")
         f.write(f'    assert manifest["id"] == "{manifest["id"]}"\n')
-        f.write(f'    assert manifest["version"] == "1.0.0"\n')
-        f.write(f'    assert len(manifest["outputs"]) >= 1\n')
+        f.write('    assert manifest["version"] == "1.0.0"\n')
+        f.write('    assert len(manifest["outputs"]) >= 1\n')
 
     return comp_dir
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Bootstrap component manifests from research/")
-    parser.add_argument("--dry-run", action="store_true", help="Print what would be created")
+    parser = argparse.ArgumentParser(
+        description="Bootstrap component manifests from research/"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print what would be created"
+    )
     args = parser.parse_args()
 
     # Import research modules
-    from synthesis.primitives import PRIMITIVE_REGISTRY, list_primitives, OpCategory
+    from synthesis.primitives import PRIMITIVE_REGISTRY
     from morphological_box import DIMENSIONS
     from mathspaces.registry import register_all_mathspaces
 
@@ -447,7 +489,8 @@ def main():
     print(f"\n--- Primitive Operations ({len(PRIMITIVE_REGISTRY)} ops) ---")
     prim_count = 0
     for name, op in PRIMITIVE_REGISTRY.items():
-        if name == "input": continue
+        if name == "input":
+            continue
         manifest = build_primitive_manifest(op)
         path = write_component(manifest, dry_run=args.dry_run)
         prim_count += 1
@@ -482,10 +525,19 @@ def main():
             "inputs": [],
             "outputs": [{"name": "y", "dtype": "tensor", "shape": ["B", "S", "D"]}],
             "params": {
-                "dim": {"type": "integer", "default": 256, "constraints": {"min": 1, "max": 65536}},
+                "dim": {
+                    "type": "integer",
+                    "default": 256,
+                    "constraints": {"min": 1, "max": 65536},
+                },
                 "vocab_size": {"type": "integer", "default": 32000},
             },
-            "implementation": {"native": None, "rust": None, "cython": None, "python": "kernel_fallback.py"},
+            "implementation": {
+                "native": None,
+                "rust": None,
+                "cython": None,
+                "python": "kernel_fallback.py",
+            },
             "performance": {"has_params": True, "param_formula": "vocab_size * D"},
         },
         {
@@ -497,16 +549,23 @@ def main():
             "status": "approved",
             "description": "Model output projection to vocabulary",
             "inputs": [{"name": "x", "dtype": "tensor", "shape": ["B", "S", "D"]}],
-            "outputs": [{"name": "logits", "dtype": "tensor", "shape": ["B", "S", "V"]}],
+            "outputs": [
+                {"name": "logits", "dtype": "tensor", "shape": ["B", "S", "V"]}
+            ],
             "params": {
                 "vocab_size": {"type": "integer", "default": 32000},
                 "tie_weights": {"type": "boolean", "default": True},
             },
-            "implementation": {"native": None, "rust": None, "cython": None, "python": "kernel_fallback.py"},
+            "implementation": {
+                "native": None,
+                "rust": None,
+                "cython": None,
+                "python": "kernel_fallback.py",
+            },
             "performance": {"has_params": True, "param_formula": "D * vocab_size"},
         },
     ]
-    print(f"\n--- IO Components ---")
+    print("\n--- IO Components ---")
     io_count = 0
     for manifest in io_components:
         if manifest["id"] not in seen_ids:
@@ -516,7 +575,9 @@ def main():
             print(f"  [{manifest['category']:>16s}] {manifest['id']}")
 
     print(f"\n{'=' * 60}")
-    print(f"Total: {prim_count} primitives + {morph_count} morph options + {io_count} io = {prim_count + morph_count + io_count} components")
+    print(
+        f"Total: {prim_count} primitives + {morph_count} morph options + {io_count} io = {prim_count + morph_count + io_count} components"
+    )
     if args.dry_run:
         print("(DRY RUN — no files written)")
     print(f"{'=' * 60}")

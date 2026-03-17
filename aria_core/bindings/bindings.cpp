@@ -1560,7 +1560,7 @@ py::dict smoke_test_graph_py(
     return result;
 }
 
-// ═══ Module registration — 99 bindings ═══
+// ═══ Module registration — 106 bindings ═══
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "aria_core: Unified high-performance kernel library for Aria";

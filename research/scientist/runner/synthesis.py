@@ -30,11 +30,13 @@ from ..notebook import LabNotebook
 from ..refinement_scoring import oscillation_risk_score
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig
 
 from ._helpers import propose_ablation_suite
+
 
 class _SynthesisMixin:
     """Grammar config, ablation, weight management, diversity."""
@@ -60,7 +62,6 @@ class _SynthesisMixin:
           6: default with boosted math space
           7: exotic preset
         """
-        import copy
         cfg = copy.copy(config)
         cycle = n_experiments % 8
 
@@ -268,7 +269,11 @@ class _SynthesisMixin:
                 device=dev_str,
             )
             s0_passed = bool(s0.passed)
-            s05_passed = bool(s0.stability_score >= config.stage05_stability_threshold) if s0_passed else False
+            s05_passed = (
+                bool(s0.stability_score >= config.stage05_stability_threshold)
+                if s0_passed
+                else False
+            )
             if s0_passed:
                 stage0_pass += 1
             if s05_passed:
@@ -289,7 +294,9 @@ class _SynthesisMixin:
                 loss_ratio = s1.get("loss_ratio")
             if s1_passed:
                 stage1_pass += 1
-            if loss_ratio is not None and (best_ablation_lr is None or loss_ratio < best_ablation_lr):
+            if loss_ratio is not None and (
+                best_ablation_lr is None or loss_ratio < best_ablation_lr
+            ):
                 best_ablation_lr = loss_ratio
             rid = nb.record_program_result(
                 experiment_id=exp_id,
@@ -305,9 +312,15 @@ class _SynthesisMixin:
                 error_message=s1.get("error") if s1 else None,
                 param_count=s1.get("param_count") if s1 else None,
                 model_source="ablation",
-                perf_report_json=json.dumps(s1.get("perf_report", {})) if s1_passed else None,
-                kernel_timings_json=json.dumps(s1.get("kernel_timings_ms", {})) if s1_passed else None,
-                starvation_report_json=json.dumps(s1.get("starvation_report", {})) if s1_passed else None,
+                perf_report_json=json.dumps(s1.get("perf_report", {}))
+                if s1_passed
+                else None,
+                kernel_timings_json=json.dumps(s1.get("kernel_timings_ms", {}))
+                if s1_passed
+                else None,
+                starvation_report_json=json.dumps(s1.get("starvation_report", {}))
+                if s1_passed
+                else None,
             )
             result_ids.append(rid)
 
@@ -320,7 +333,9 @@ class _SynthesisMixin:
         ablation_best_lr = best_ablation_lr if best_ablation_lr is not None else None
         ablation_delta = None
         if original_loss_ratio is not None and ablation_best_lr is not None:
-            ablation_delta = ablation_best_lr - original_loss_ratio  # positive = ablated is worse
+            ablation_delta = (
+                ablation_best_lr - original_loss_ratio
+            )  # positive = ablated is worse
 
         nb.flush_writes()
         experiment_results = {
@@ -346,14 +361,17 @@ class _SynthesisMixin:
                 "ablation_delta_measured",
                 f"Ablation for '{hypothesis}': delta={ablation_delta:.4f} "
                 f"(original={original_loss_ratio:.4f}, ablated={ablation_best_lr:.4f})",
-                evidence=json.dumps({
-                    "hypothesis": hypothesis,
-                    "original_loss_ratio": original_loss_ratio,
-                    "ablation_best_loss_ratio": ablation_best_lr,
-                    "ablation_delta": ablation_delta,
-                    "ablation_s1_pass_rate": stage1_pass / max(total, 1),
-                    "total_ablation_graphs": total,
-                }, sort_keys=True),
+                evidence=json.dumps(
+                    {
+                        "hypothesis": hypothesis,
+                        "original_loss_ratio": original_loss_ratio,
+                        "ablation_best_loss_ratio": ablation_best_lr,
+                        "ablation_delta": ablation_delta,
+                        "ablation_s1_pass_rate": stage1_pass / max(total, 1),
+                        "total_ablation_graphs": total,
+                    },
+                    sort_keys=True,
+                ),
             )
 
         return ([exp_id], outcome)
@@ -406,7 +424,8 @@ class _SynthesisMixin:
                 if already_tested > 0:
                     logger.info(
                         "Skipping ablation for '%s' — already tested %d time(s)",
-                        hypothesis_text, already_tested,
+                        hypothesis_text,
+                        already_tested,
                     )
                     ablation_outcome = "skipped_already_tested"
                     strong_corr = False  # prevent triggering below
@@ -422,16 +441,22 @@ class _SynthesisMixin:
             if row and row["graph_json"]:
                 try:
                     base_graph = graph_from_json(row["graph_json"])
-                    base_loss_ratio = float(row["loss_ratio"]) if row["loss_ratio"] is not None else None
+                    base_loss_ratio = (
+                        float(row["loss_ratio"])
+                        if row["loss_ratio"] is not None
+                        else None
+                    )
                     suite = propose_ablation_suite(base_graph, hypothesis_text)
                     queued_plan = [g.fingerprint() for g in suite]
                     if suite:
-                        ablation_experiments, ablation_outcome = self._run_ablation_experiment(
-                            nb=nb,
-                            config=config,
-                            hypothesis=hypothesis_text,
-                            ablation_graphs=suite,
-                            original_loss_ratio=base_loss_ratio,
+                        ablation_experiments, ablation_outcome = (
+                            self._run_ablation_experiment(
+                                nb=nb,
+                                config=config,
+                                hypothesis=hypothesis_text,
+                                ablation_graphs=suite,
+                                original_loss_ratio=base_loss_ratio,
+                            )
                         )
                 except Exception as e:
                     logger.debug("Ablation run failed: %s", e)
@@ -439,8 +464,7 @@ class _SynthesisMixin:
             ablation_outcome = "skipped_low_quality_signal"
 
         gate_pass = bool(
-            has_ablation_support
-            or (strong_corr and bool(ablation_experiments))
+            has_ablation_support or (strong_corr and bool(ablation_experiments))
         )
         if has_ablation_support:
             outcome = "supported"
@@ -489,10 +513,7 @@ class _SynthesisMixin:
         if total <= 0:
             return {}
 
-        return {
-            op: round(count / total, 6)
-            for op, count in sorted(counts.items())
-        }
+        return {op: round(count / total, 6) for op, count in sorted(counts.items())}
 
     @staticmethod
     def _distribution_l1_distance(
@@ -537,16 +558,21 @@ class _SynthesisMixin:
             if not isinstance(previous_distribution, dict) or not previous_distribution:
                 return None
 
-            l1 = self._distribution_l1_distance(current_distribution, previous_distribution)
+            l1 = self._distribution_l1_distance(
+                current_distribution, previous_distribution
+            )
             delta_pairs = []
-            for op in set(current_distribution.keys()) | set(previous_distribution.keys()):
-                delta = current_distribution.get(op, 0.0) - previous_distribution.get(op, 0.0)
+            for op in set(current_distribution.keys()) | set(
+                previous_distribution.keys()
+            ):
+                delta = current_distribution.get(op, 0.0) - previous_distribution.get(
+                    op, 0.0
+                )
                 if abs(delta) > 1e-12:
                     delta_pairs.append((op, delta))
             delta_pairs.sort(key=lambda item: abs(item[1]), reverse=True)
             top_changes = [
-                {"op": op, "delta": round(delta, 6)}
-                for op, delta in delta_pairs[:5]
+                {"op": op, "delta": round(delta, 6)} for op, delta in delta_pairs[:5]
             ]
 
             return {
@@ -555,10 +581,14 @@ class _SynthesisMixin:
                 "top_op_deltas": top_changes,
             }
         except Exception as e:
-            logger.debug("Failed comparing generated-op distribution for %s: %s", exp_id, e)
+            logger.debug(
+                "Failed comparing generated-op distribution for %s: %s", exp_id, e
+            )
             return None
 
-    def _compute_multi_objective_fitness(self, s1_result, sandbox_result, graph, config):
+    def _compute_multi_objective_fitness(
+        self, s1_result, sandbox_result, graph, config
+    ):
         """Multi-objective fitness: quality + efficiency + speed + learning + compactness."""
         weights = {
             "quality": 0.25,
@@ -579,11 +609,16 @@ class _SynthesisMixin:
         param_count = getattr(sandbox_result, "param_count", 0) or 0
         try:
             from ..leaderboard_scoring import compute_efficiency_multiple
+
             eff_result = compute_efficiency_multiple(
                 loss_ratio=s1_result.get("loss_ratio") if s1_result else None,
                 param_count=param_count or None,
-                forward_time_ms=s1_result.get("forward_time_ms") if s1_result else (
-                    getattr(sandbox_result, "forward_time_ms", None) if sandbox_result else None
+                forward_time_ms=s1_result.get("forward_time_ms")
+                if s1_result
+                else (
+                    getattr(sandbox_result, "forward_time_ms", None)
+                    if sandbox_result
+                    else None
                 ),
                 peak_memory_mb=s1_result.get("peak_memory_mb") if s1_result else None,
                 throughput_tok_s=s1_result.get("throughput") if s1_result else None,
@@ -591,12 +626,16 @@ class _SynthesisMixin:
             if eff_result and eff_result.get("geomean", 0) > 0:
                 components["efficiency"] = min(1.0, eff_result["geomean"] / 5.0)
             elif param_count > 0 and max_params > 0:
-                components["efficiency"] = max(0.0, 1.0 - min(param_count / max_params, 1.0))
+                components["efficiency"] = max(
+                    0.0, 1.0 - min(param_count / max_params, 1.0)
+                )
             else:
                 components["efficiency"] = 0.0
         except Exception:
             if param_count > 0 and max_params > 0:
-                components["efficiency"] = max(0.0, 1.0 - min(param_count / max_params, 1.0))
+                components["efficiency"] = max(
+                    0.0, 1.0 - min(param_count / max_params, 1.0)
+                )
             else:
                 components["efficiency"] = 0.0
 
@@ -646,7 +685,9 @@ class _SynthesisMixin:
         # Exclude risky ops (but never protected ones)
         exclude_ops = hints.get("exclude_ops", [])
         if exclude_ops:
-            base_grammar.excluded_ops = base_grammar.excluded_ops | (set(exclude_ops) - PROTECTED_OPS)
+            base_grammar.excluded_ops = base_grammar.excluded_ops | (
+                set(exclude_ops) - PROTECTED_OPS
+            )
 
         # Boost ops (cap at 3.0)
         boost_ops = hints.get("boost_ops", {})
@@ -662,15 +703,20 @@ class _SynthesisMixin:
 
         return base_grammar
 
-    def _recent_synthesis_health(self, nb: LabNotebook, window: int = 5) -> Dict[str, float]:
+    def _recent_synthesis_health(
+        self, nb: LabNotebook, window: int = 5
+    ) -> Dict[str, float]:
         """Summarize recent synthesis outcomes for fallback decisions."""
         experiments = nb.get_recent_experiments(max(window * 3, window))
         rows = [
-            row for row in experiments
+            row
+            for row in experiments
             if str(row.get("experiment_type") or "") == "synthesis"
             and str(row.get("status") or "") == "completed"
         ][:window]
-        total_programs = sum(max(int(r.get("n_programs_generated") or 0), 0) for r in rows)
+        total_programs = sum(
+            max(int(r.get("n_programs_generated") or 0), 0) for r in rows
+        )
         total_s1 = sum(max(int(r.get("n_stage1_passed") or 0), 0) for r in rows)
         rate = (float(total_s1) / float(total_programs)) if total_programs > 0 else 0.0
         return {
@@ -689,12 +735,15 @@ class _SynthesisMixin:
     ) -> List:
         """Generate local mutations around selected source result IDs."""
         source_ids = [
-            rid.strip() for rid in str(config.refine_source_result_ids or "").split(",")
+            rid.strip()
+            for rid in str(config.refine_source_result_ids or "").split(",")
             if rid.strip()
         ]
         target_n = max(1, int(config.n_programs))
         if not source_ids:
-            logger.warning("Refinement mode requested without source IDs; falling back to synthesis generation")
+            logger.warning(
+                "Refinement mode requested without source IDs; falling back to synthesis generation"
+            )
             return batch_generate(target_n, grammar)
 
         source_pairs: List[Tuple[str, Any, Dict[str, Any]]] = []
@@ -724,13 +773,18 @@ class _SynthesisMixin:
         try:
             from ...search.evolution import _mutate_graph
         except Exception as e:
-            logger.warning("Mutation helper unavailable (%s); falling back to synthesis generation", e)
+            logger.warning(
+                "Mutation helper unavailable (%s); falling back to synthesis generation",
+                e,
+            )
             return batch_generate(target_n, grammar)
 
         seed = self._stable_seed("fingerprint_refine", exp_id, ",".join(source_ids))
         rng = random.Random(seed)
         per_source = max(1, int(config.refine_mutations_per_source or 1))
-        target_pool = max(target_n, target_n * max(1, int(config.refine_pool_multiplier or 1)))
+        target_pool = max(
+            target_n, target_n * max(1, int(config.refine_pool_multiplier or 1))
+        )
         candidate_pool: List[Tuple[float, Any]] = []
         seen_fingerprints: Set[str] = set()
         op_success = self._op_success_lookup(nb)
@@ -741,15 +795,30 @@ class _SynthesisMixin:
         if config.refine_analysis_json:
             try:
                 analysis_data = json.loads(config.refine_analysis_json)
-                grammar = self._apply_analysis_to_grammar(grammar, analysis_data, intent)
+                grammar = self._apply_analysis_to_grammar(
+                    grammar, analysis_data, intent
+                )
                 logger.info(
                     "Experiment %s: applied analysis-driven grammar hints (intent=%s, %d exclude, %d boost)",
-                    exp_id[:8], intent,
-                    len(analysis_data.get("recipe", {}).get("grammar_hints", {}).get("exclude_ops", [])),
-                    len(analysis_data.get("recipe", {}).get("grammar_hints", {}).get("boost_ops", {})),
+                    exp_id[:8],
+                    intent,
+                    len(
+                        analysis_data.get("recipe", {})
+                        .get("grammar_hints", {})
+                        .get("exclude_ops", [])
+                    ),
+                    len(
+                        analysis_data.get("recipe", {})
+                        .get("grammar_hints", {})
+                        .get("boost_ops", {})
+                    ),
                 )
             except (json.JSONDecodeError, TypeError, KeyError) as e:
-                logger.warning("Experiment %s: failed to parse refine_analysis_json: %s", exp_id[:8], e)
+                logger.warning(
+                    "Experiment %s: failed to parse refine_analysis_json: %s",
+                    exp_id[:8],
+                    e,
+                )
 
         recent_health = self._recent_synthesis_health(nb, window=5)
         zero_s1_regime = (
@@ -775,11 +844,11 @@ class _SynthesisMixin:
                         child = _mutate_graph(parent_graph, grammar, rng)
                     except Exception:
                         continue
-                        
-                    # Z15: Prune dead branches (unreachable nodes) before validation 
+
+                    # Z15: Prune dead branches (unreachable nodes) before validation
                     # to prevent redundant complexity from bloat mutations.
                     child.prune_dead_branches()
-                    
+
                     validation = validate_graph(
                         child,
                         max_ops=max(1, int(config.max_ops)),
@@ -795,7 +864,9 @@ class _SynthesisMixin:
                     seen_fingerprints.add(fp)
                     child.metadata.setdefault("refinement", {})
                     child.metadata["refinement"]["source_result_id"] = source_id
-                    child.metadata["refinement"]["seed_fingerprint"] = parent_graph.fingerprint()
+                    child.metadata["refinement"]["seed_fingerprint"] = (
+                        parent_graph.fingerprint()
+                    )
                     child.metadata["refinement"]["intent"] = intent
                     score, score_breakdown = self._score_refinement_candidate(
                         child,
@@ -805,12 +876,16 @@ class _SynthesisMixin:
                         include_breakdown=True,
                     )
                     child.metadata["refinement"]["intent_score"] = score
-                    child.metadata["refinement"]["intent_score_breakdown"] = score_breakdown
+                    child.metadata["refinement"]["intent_score_breakdown"] = (
+                        score_breakdown
+                    )
                     if analysis_data:
                         recipe = analysis_data.get("recipe", {})
                         child.metadata["refinement"]["analysis_driven"] = True
                         child.metadata["refinement"]["analysis_recipe"] = {
-                            "recommended_intent": recipe.get("recommended_intent", "balanced"),
+                            "recommended_intent": recipe.get(
+                                "recommended_intent", "balanced"
+                            ),
                             "primary_target": recipe.get("primary_target", ""),
                             "confidence": recipe.get("confidence", "low"),
                         }
@@ -858,7 +933,12 @@ class _SynthesisMixin:
         fp_a = str(a.get("graph_fingerprint") or "")
         fp_b = str(b.get("graph_fingerprint") or "")
         fp_term = 0.0 if fp_a[:8] == fp_b[:8] and fp_a and fp_b else 0.1
-        return abs(loss_a - loss_b) + abs(nov_a - nov_b) + (abs(ops_a - ops_b) / 16.0) + fp_term
+        return (
+            abs(loss_a - loss_b)
+            + abs(nov_a - nov_b)
+            + (abs(ops_a - ops_b) / 16.0)
+            + fp_term
+        )
 
     def _refinement_intent_spec(self, intent: str) -> Dict[str, Any]:
         """Canonical intent weighting description used in refinement hypotheses."""
@@ -941,22 +1021,40 @@ class _SynthesisMixin:
         _cfg_layers = 4  # default n_layers
         try:
             flop_est = estimate_flops(graph, seq_len=128, d_model=_cfg_dim)
-            flops_per_token = flop_est.flops_per_token if flop_est and flop_est.flops_per_token > 0 else (params * 2)
+            flops_per_token = (
+                flop_est.flops_per_token
+                if flop_est and flop_est.flops_per_token > 0
+                else (params * 2)
+            )
         except Exception:
             flops_per_token = params * 2
-        baseline_fpt = 2.0 * _cfg_dim ** 2 * _cfg_layers
+        baseline_fpt = 2.0 * _cfg_dim**2 * _cfg_layers
         flop_efficiency = min(1.0, baseline_fpt / max(flops_per_token, 1.0))
-        param_efficiency_proxy = min(1.0, (6 * _cfg_dim ** 2) / max(params, 1.0))
-        compression_proxy = 0.5 * flop_efficiency + 0.3 * param_efficiency_proxy + 0.2 / (1.0 + 0.1 * depth)
-        novelty_proxy = min(1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0))
+        param_efficiency_proxy = min(1.0, (6 * _cfg_dim**2) / max(params, 1.0))
+        compression_proxy = (
+            0.5 * flop_efficiency
+            + 0.3 * param_efficiency_proxy
+            + 0.2 / (1.0 + 0.1 * depth)
+        )
+        novelty_proxy = min(
+            1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0)
+        )
 
         sparse_hint_ops = (
-            "sparse", "gate", "topk", "mask", "threshold", "skip", "mixture"
+            "sparse",
+            "gate",
+            "topk",
+            "mask",
+            "threshold",
+            "skip",
+            "mixture",
         )
         sparse_op_bonus = 0.0
         if ops:
             sparse_op_bonus = sum(
-                1.0 for op in ops if any(token in op.lower() for token in sparse_hint_ops)
+                1.0
+                for op in ops
+                if any(token in op.lower() for token in sparse_hint_ops)
             ) / len(ops)
         sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
         oscillation_risk, stability = oscillation_risk_score(graph)
@@ -1049,7 +1147,10 @@ class _SynthesisMixin:
 
         selected: List[Dict[str, Any]] = []
         for _, row in ranked:
-            if any(self._refinement_candidate_distance(row, prev) < min_distance for prev in selected):
+            if any(
+                self._refinement_candidate_distance(row, prev) < min_distance
+                for prev in selected
+            ):
                 continue
             selected.append(row)
             if len(selected) >= top_k:
@@ -1100,19 +1201,32 @@ class _SynthesisMixin:
             candidates,
             top_k=max(1, int(config.refinement_top_k or 1)),
             min_distance=max(0.01, float(config.refinement_min_distance or 0.01)),
-            novelty_pressure=max(0.0, min(1.0, float(config.refinement_novelty_pressure or 0.0))),
+            novelty_pressure=max(
+                0.0, min(1.0, float(config.refinement_novelty_pressure or 0.0))
+            ),
         )
-        source_ids = [str(row.get("result_id") or "") for row in selected if row.get("result_id")]
+        source_ids = [
+            str(row.get("result_id") or "") for row in selected if row.get("result_id")
+        ]
         if not source_ids:
             return None
 
         radius = max(0.05, min(1.0, float(config.refinement_mutation_radius or 0.35)))
-        mutation_rate = max(0.10, min(0.95, float(config.mutation_rate) * (0.5 + radius)))
+        mutation_rate = max(
+            0.10, min(0.95, float(config.mutation_rate) * (0.5 + radius))
+        )
         generations = max(1, int(config.refinement_generations or 1))
-        budget_programs = max(int(config.n_programs), int(config.refinement_budget_programs or config.n_programs))
-        per_gen = max(4, min(int(config.n_programs), max(4, budget_programs // generations)))
+        budget_programs = max(
+            int(config.n_programs),
+            int(config.refinement_budget_programs or config.n_programs),
+        )
+        per_gen = max(
+            4, min(int(config.n_programs), max(4, budget_programs // generations))
+        )
         mutations_per_source = max(1, int(round(2 + 4 * radius)))
-        pool_multiplier = max(2, int(round(2 + 3 * float(config.refinement_novelty_pressure or 0.0))))
+        pool_multiplier = max(
+            2, int(round(2 + 3 * float(config.refinement_novelty_pressure or 0.0)))
+        )
 
         return {
             "source_result_ids": source_ids,
@@ -1131,6 +1245,8 @@ class _SynthesisMixin:
                 "refinement_budget_programs": budget_programs,
                 "refinement_plateau_patience": int(config.refinement_plateau_patience),
                 "refinement_min_distance": float(config.refinement_min_distance),
-                "refinement_novelty_pressure": float(config.refinement_novelty_pressure),
+                "refinement_novelty_pressure": float(
+                    config.refinement_novelty_pressure
+                ),
             },
         }

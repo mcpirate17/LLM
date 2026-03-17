@@ -15,10 +15,50 @@ import torch.nn.functional as F
 
 from ...eval.fingerprint import compute_gated_fingerprint
 from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
-from ._helpers import normalized_loss_ratio
+from ._helpers import (
+    normalized_loss_ratio,
+    stage1_learning_gate,
+    get_reference_losses,
+    _corpus_type_from_config,
+)
 
 import logging
+
 logger = logging.getLogger(__name__)
+
+
+def _sample_entropy_gate_output(
+    model: nn.Module, input_ids: torch.Tensor
+) -> float | None:
+    """Sample the mean entropy_score output from the model (no-grad forward pass).
+
+    Returns the mean absolute entropy_score value, or None if no entropy_score ops found.
+    """
+    values: List[float] = []
+    hooks = []
+
+    def _hook(module: nn.Module, inp: Any, out: Any) -> None:  # noqa: ARG001
+        if isinstance(out, torch.Tensor):
+            values.append(out.abs().mean().item())
+
+    for mod in model.modules():
+        op_name = getattr(mod, "_op_name", None)
+        if op_name and "entropy_score" in str(op_name):
+            hooks.append(mod.register_forward_hook(_hook))
+
+    if not hooks:
+        return None
+
+    with torch.no_grad():
+        try:
+            model(input_ids)
+        except Exception:
+            pass
+        finally:
+            for h in hooks:
+                h.remove()
+
+    return (sum(values) / len(values)) if values else None
 
 
 def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
@@ -30,6 +70,7 @@ def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
     """
     try:
         import aria_core
+
         smoke_fn = getattr(aria_core, "smoke_test_graph", None)
         if smoke_fn is None:
             return {"ok": True, "reason": "smoke_test unavailable"}
@@ -39,7 +80,9 @@ def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
     try:
         from ...synthesis.op_roles import get_role, OpRole
 
-        graph_data = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+        graph_data = (
+            json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+        )
         nodes_raw = graph_data.get("nodes", [])
         if not nodes_raw:
             return {"ok": False, "reason": "empty graph"}
@@ -51,9 +94,15 @@ def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
 
         # Role code mapping
         _ROLE_CODES = {
-            OpRole.PROJECT: 0, OpRole.NORMALIZE: 1, OpRole.ACTIVATE: 2,
-            OpRole.MIX: 3, OpRole.ROUTE: 4, OpRole.GATE: 5,
-            OpRole.POSITION: 6, OpRole.REDUCE: 7, OpRole.RESIDUAL: 8,
+            OpRole.PROJECT: 0,
+            OpRole.NORMALIZE: 1,
+            OpRole.ACTIVATE: 2,
+            OpRole.MIX: 3,
+            OpRole.ROUTE: 4,
+            OpRole.GATE: 5,
+            OpRole.POSITION: 6,
+            OpRole.REDUCE: 7,
+            OpRole.RESIDUAL: 8,
             OpRole.UNSAFE: 9,
         }
 
@@ -79,6 +128,7 @@ def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
                 role = get_role(op_name)
                 op_roles.append(_ROLE_CODES.get(role, 9))
                 from ...synthesis.primitives import PRIMITIVE_REGISTRY
+
                 prim = PRIMITIVE_REGISTRY.get(op_name)
                 has_params_flag.append(1 if (prim and prim.has_params) else 0)
                 preserves_grad.append(
@@ -88,8 +138,9 @@ def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
             if node.get("is_output"):
                 output_idx = i
 
-        result = smoke_fn(n_nodes, edges, op_roles, has_params_flag,
-                          preserves_grad, output_idx)
+        result = smoke_fn(
+            n_nodes, edges, op_roles, has_params_flag, preserves_grad, output_idx
+        )
         if not result["ok"]:
             reasons = []
             if not result["has_params"]:
@@ -106,6 +157,7 @@ def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
     except Exception as exc:
         logger.debug("Smoke test failed with exception: %s", exc)
         return {"ok": True, "reason": f"smoke_test error: {exc}"}
+
 
 from ._types import RunConfig
 from ._helpers import InflightState, check_inflight_health
@@ -131,7 +183,8 @@ def _allow_synthesized_training(owner: Any, config: RunConfig) -> bool:
 
 
 def _collect_routing_aux_loss(
-    model: nn.Module, weight: float = 0.01,
+    model: nn.Module,
+    weight: float = 0.01,
 ) -> "torch.Tensor | None":
     """Collect load-balance auxiliary loss from routing telemetry on model layers.
 
@@ -169,15 +222,25 @@ class _ExecutionTrainingMixin:
 
     # ── Scale-Up Mode ──
 
-    def _micro_train(self, model: nn.Module, config: RunConfig,
-                     dev: torch.device, seed: int = 42,
-                     graph_json: str = "") -> Dict:
+    def _micro_train(
+        self,
+        model: nn.Module,
+        config: RunConfig,
+        dev: torch.device,
+        seed: int = 42,
+        graph_json: str = "",
+    ) -> Dict:
         """Run Stage 1 micro-training with comprehensive metric capture.
 
         Uses deterministic seeding per step so all candidates see the same
         training data in the same order, enabling fair comparison (#56).
         """
-        from research.scientist.perf import PerfTracer, GPUStarvationDetector, OpKernelProfiler
+        from research.scientist.perf import (
+            PerfTracer,
+            GPUStarvationDetector,
+            OpKernelProfiler,
+        )
+
         trace_enabled = bool(getattr(config, "enable_perf_tracing", False))
         tracer = PerfTracer() if trace_enabled else None
         starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
@@ -194,6 +257,7 @@ class _ExecutionTrainingMixin:
             grad_clip_norm = 0.0
         # Adaptive clip for math-space architectures
         from ._helpers import apply_adaptive_grad_clip
+
         grad_clip_norm = apply_adaptive_grad_clip(model, grad_clip_norm)
 
         trace_totals_ms: Dict[str, float] = {
@@ -205,7 +269,11 @@ class _ExecutionTrainingMixin:
         }
 
         def _trace_ctx(name: str, use_gpu: bool = True):
-            return tracer.trace(name, use_gpu=use_gpu) if tracer is not None else nullcontext()
+            return (
+                tracer.trace(name, use_gpu=use_gpu)
+                if tracer is not None
+                else nullcontext()
+            )
 
         try:
             setup_t0 = time.perf_counter()
@@ -216,13 +284,16 @@ class _ExecutionTrainingMixin:
 
                 # Resolve phase-specific optimizer: screening_optimizer overrides optimizer_type
                 phase_opt = getattr(config, "screening_optimizer", "") or ""
-                opt_type = phase_opt or getattr(config, "optimizer_type", "adamw") or "adamw"
+                opt_type = (
+                    phase_opt or getattr(config, "optimizer_type", "adamw") or "adamw"
+                )
                 phase_lr = getattr(config, "screening_lr", 0.0) or 0.0
                 effective_lr = phase_lr if phase_lr > 0 else config.stage1_lr
 
                 # Synthesized optimizer support (screening exploration only)
                 if use_synthesized_training and opt_type == "synthesized":
                     from ...training.optimizer_synthesis import synthesize_optimizer
+
                     synth_opt = synthesize_optimizer(seed=seed)
                     optimizer = synth_opt.create(model.parameters(), lr=effective_lr)
                     result["optimizer_synthesized"] = synth_opt.name
@@ -235,8 +306,14 @@ class _ExecutionTrainingMixin:
                         lr=effective_lr,
                         weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
                         betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
-                        fused=(dev.type == "cuda" and bool(getattr(config, "optimizer_fused", True))),
-                        foreach=(dev.type == "cuda" and bool(getattr(config, "optimizer_foreach", True))),
+                        fused=(
+                            dev.type == "cuda"
+                            and bool(getattr(config, "optimizer_fused", True))
+                        ),
+                        foreach=(
+                            dev.type == "cuda"
+                            and bool(getattr(config, "optimizer_foreach", True))
+                        ),
                     )
             trace_totals_ms["model_setup"] += (time.perf_counter() - setup_t0) * 1000.0
 
@@ -264,17 +341,28 @@ class _ExecutionTrainingMixin:
             # ── RigL dynamic sparse training for sparse architectures ──
             rigl_scheduler = None
             if graph_json:
-                _SPARSE_OPS = {"nm_sparse_linear", "block_sparse_linear",
-                               "semi_structured_2_4_linear", "ternary_projection"}
+                _SPARSE_OPS = {
+                    "nm_sparse_linear",
+                    "block_sparse_linear",
+                    "semi_structured_2_4_linear",
+                    "ternary_projection",
+                }
                 try:
-                    _gj = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+                    _gj = (
+                        json.loads(graph_json)
+                        if isinstance(graph_json, str)
+                        else graph_json
+                    )
                     _nodes = _gj.get("nodes", [])
-                    _sparse_count = sum(1 for n in _nodes
-                                       if n.get("op_name", "") in _SPARSE_OPS)
+                    _sparse_count = sum(
+                        1 for n in _nodes if n.get("op_name", "") in _SPARSE_OPS
+                    )
                     if _sparse_count >= 1:
                         from ...training.sparse_training import RigLScheduler
+
                         rigl_scheduler = RigLScheduler(
-                            model, sparsity=0.8,
+                            model,
+                            sparsity=0.8,
                             update_freq=max(50, config.stage1_steps // 10),
                             total_steps=config.stage1_steps,
                         )
@@ -320,15 +408,25 @@ class _ExecutionTrainingMixin:
             if graph_json:
                 try:
                     from ...synthesis.primitives import OpCategory
-                    _gj = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+
+                    _gj = (
+                        json.loads(graph_json)
+                        if isinstance(graph_json, str)
+                        else graph_json
+                    )
                     _nodes = _gj.get("nodes", [])
-                    exotic_categories = {OpCategory.MATH_SPACE, OpCategory.SPIKING, OpCategory.FUNCTIONAL}
+                    exotic_categories = {
+                        OpCategory.MATH_SPACE,
+                        OpCategory.SPIKING,
+                        OpCategory.FUNCTIONAL,
+                    }
                     exotic_count = 0
                     for n in _nodes:
                         op_name = n.get("op_name", n.get("op"))
                         if op_name:
                             try:
                                 from ...synthesis.primitives import get_primitive
+
                                 if get_primitive(op_name).category in exotic_categories:
                                     exotic_count += 1
                             except Exception:
@@ -337,7 +435,11 @@ class _ExecutionTrainingMixin:
                         total_steps *= 2
                         result["adaptive_budget_novelty_bonus"] = True
                         result["exotic_op_count"] = exotic_count
-                        logger.debug("    Novelty bonus: granting 2x budget (%d steps) for %d exotic ops", total_steps, exotic_count)
+                        logger.debug(
+                            "    Novelty bonus: granting 2x budget (%d steps) for %d exotic ops",
+                            total_steps,
+                            exotic_count,
+                        )
                 except Exception as e_novel:
                     logger.debug("Adaptive budget novel check failed: %s", e_novel)
 
@@ -345,7 +447,9 @@ class _ExecutionTrainingMixin:
             train_steps = int(total_steps * 0.8)
             total_steps - train_steps
 
-            starvation_interval = max(1, int(getattr(config, "starvation_check_interval", 8) or 8))
+            starvation_interval = max(
+                1, int(getattr(config, "starvation_check_interval", 8) or 8)
+            )
 
             use_cuda_graph = bool(
                 dev.type == "cuda"
@@ -361,14 +465,20 @@ class _ExecutionTrainingMixin:
             if use_cuda_graph:
                 try:
                     static_input_ids = torch.empty(
-                        (config.stage1_batch_size, seq_len), dtype=torch.long, device=dev
+                        (config.stage1_batch_size, seq_len),
+                        dtype=torch.long,
+                        device=dev,
                     )
                     captured_loss = torch.zeros((), device=dev)
                     captured_grad_norm = torch.zeros((), device=dev)
-                    warmup_steps = max(1, int(getattr(config, "cuda_graph_warmup_steps", 3) or 3))
+                    warmup_steps = max(
+                        1, int(getattr(config, "cuda_graph_warmup_steps", 3) or 3)
+                    )
 
                     def _graph_step() -> Tuple[torch.Tensor, torch.Tensor]:
-                        with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=True):
+                        with torch.amp.autocast(
+                            device_type=dev.type, dtype=torch.bfloat16, enabled=True
+                        ):
                             logits = model(static_input_ids)
                             loss_t = F.cross_entropy(
                                 logits[:, :-1].reshape(-1, logits.shape[-1]),
@@ -399,17 +509,23 @@ class _ExecutionTrainingMixin:
                         )
                         loss_t, grad_norm_t = _graph_step()
                         captured_loss.copy_(loss_t.detach())
-                        captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
+                        captured_grad_norm.copy_(
+                            torch.as_tensor(grad_norm_t, device=dev).detach()
+                        )
 
                     torch.cuda.synchronize(dev)
                     graph = torch.cuda.CUDAGraph()
                     with torch.cuda.graph(graph):
                         loss_t, grad_norm_t = _graph_step()
                         captured_loss.copy_(loss_t.detach())
-                        captured_grad_norm.copy_(torch.as_tensor(grad_norm_t, device=dev).detach())
+                        captured_grad_norm.copy_(
+                            torch.as_tensor(grad_norm_t, device=dev).detach()
+                        )
 
-                    check_interval = max(1, int(getattr(config, "loss_check_interval", 8) or 8))
-                    
+                    check_interval = max(
+                        1, int(getattr(config, "loss_check_interval", 8) or 8)
+                    )
+
                     # Budget extension tracking
                     extension_check_step = 500
                     has_extended = False
@@ -437,8 +553,12 @@ class _ExecutionTrainingMixin:
                         step_time_sum_ms += step_time_ms
                         total_tokens += static_input_ids.numel()
 
-                        should_check = (step == 0) or (step == total_steps - 1) or (step % check_interval == 0)
-                        
+                        should_check = (
+                            (step == 0)
+                            or (step == total_steps - 1)
+                            or (step % check_interval == 0)
+                        )
+
                         loss_val = float(captured_loss.item())
                         grad_norm = float(captured_grad_norm.item())
 
@@ -447,12 +567,17 @@ class _ExecutionTrainingMixin:
                         if step == 500:
                             loss_at_500 = loss_val
                             # Task 2G: If still improving at step 500, extend to 1000
-                            improvement_rate = (loss_at_250 - loss_at_500) / max(loss_at_250, 1e-6)
+                            improvement_rate = (loss_at_250 - loss_at_500) / max(
+                                loss_at_250, 1e-6
+                            )
                             if improvement_rate > 0 and total_steps < 1000:
                                 total_steps = 1000
                                 has_extended = True
                                 result["adaptive_budget_extension"] = True
-                                logger.debug("    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.", improvement_rate)
+                                logger.debug(
+                                    "    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.",
+                                    improvement_rate,
+                                )
 
                         if not should_check:
                             step += 1
@@ -462,7 +587,9 @@ class _ExecutionTrainingMixin:
                             result["error"] = f"NaN/Inf loss at step {step}"
                             result["n_train_steps"] = step
                             return result
-                        if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
+                        if step == 0 and (
+                            not math.isfinite(grad_norm) or grad_norm <= 1e-10
+                        ):
                             result["error"] = "zero_grad_precheck_failed"
                             result["n_train_steps"] = 0
                             result["max_grad_norm"] = grad_norm
@@ -486,17 +613,23 @@ class _ExecutionTrainingMixin:
                             _es_no_improve_cg = 0
                         else:
                             _es_no_improve_cg += check_interval
-                        if (step >= config.early_stop_min_steps
-                                and _es_no_improve_cg >= config.early_stop_patience):
+                        if (
+                            step >= config.early_stop_min_steps
+                            and _es_no_improve_cg >= config.early_stop_patience
+                        ):
                             result["early_stopped"] = True
                             result["early_stop_step"] = step
                             step_count = step + 1
                             break
-                        
+
                         step += 1
                     ran_cuda_graph = True
                 except Exception as e:
                     result["cuda_graph_fallback_reason"] = str(e)
+
+            # Entropy gate trajectory (sampled at key steps during training)
+            _ENTROPY_GATE_SAMPLE_STEPS = frozenset({10, 25, 50, 75, 100})
+            _entropy_gate_trajectory: List[float] = []
 
             if not ran_cuda_graph:
                 # Budget extension tracking
@@ -510,7 +643,9 @@ class _ExecutionTrainingMixin:
                     if self._stop_event.is_set():
                         break
 
-                    starvation_sample = (not random_mode) and ((step % starvation_interval) == 0)
+                    starvation_sample = (not random_mode) and (
+                        (step % starvation_interval) == 0
+                    )
                     if starvation_sample:
                         starvation_detector.start_wait()
                     data_t0 = time.perf_counter()
@@ -534,7 +669,9 @@ class _ExecutionTrainingMixin:
                             )
                     if starvation_sample:
                         starvation_detector.end_wait()
-                    trace_totals_ms["data_sampling"] += (time.perf_counter() - data_t0) * 1000.0
+                    trace_totals_ms["data_sampling"] += (
+                        time.perf_counter() - data_t0
+                    ) * 1000.0
 
                     t_step = time.perf_counter()
 
@@ -543,20 +680,35 @@ class _ExecutionTrainingMixin:
                     def _run_step() -> None:
                         fwd_t0 = time.perf_counter()
                         with _trace_ctx("forward_pass"):
-                            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                                    enabled=(dev.type == "cuda")):
+                            with torch.amp.autocast(
+                                device_type=dev.type,
+                                dtype=torch.bfloat16,
+                                enabled=(dev.type == "cuda"),
+                            ):
                                 logits = model(input_ids)
-                                if use_synthesized_training and getattr(config, 'loss_type', 'cross_entropy') != 'cross_entropy':
+                                if (
+                                    use_synthesized_training
+                                    and getattr(config, "loss_type", "cross_entropy")
+                                    != "cross_entropy"
+                                ):
                                     try:
-                                        if not hasattr(self, '_synth_loss'):
-                                            from ...training.loss_synthesis import synthesize_loss
-                                            self._synth_loss = synthesize_loss(seed=seed)
+                                        if not hasattr(self, "_synth_loss"):
+                                            from ...training.loss_synthesis import (
+                                                synthesize_loss,
+                                            )
+
+                                            self._synth_loss = synthesize_loss(
+                                                seed=seed
+                                            )
                                         loss = self._synth_loss.compute(
-                                            logits[:, :-1], input_ids[:, 1:],
+                                            logits[:, :-1],
+                                            input_ids[:, 1:],
                                         )
                                     except Exception:
                                         loss = F.cross_entropy(
-                                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                                            logits[:, :-1].reshape(
+                                                -1, logits.shape[-1]
+                                            ),
                                             input_ids[:, 1:].reshape(-1),
                                         )
                                 else:
@@ -564,7 +716,9 @@ class _ExecutionTrainingMixin:
                                         logits[:, :-1].reshape(-1, logits.shape[-1]),
                                         input_ids[:, 1:].reshape(-1),
                                     )
-                        trace_totals_ms["forward_pass"] += (time.perf_counter() - fwd_t0) * 1000.0
+                        trace_totals_ms["forward_pass"] += (
+                            time.perf_counter() - fwd_t0
+                        ) * 1000.0
                         step_state["loss"] = loss
 
                         # Collect routing load-balance auxiliary loss from
@@ -580,16 +734,22 @@ class _ExecutionTrainingMixin:
                             loss.backward()
                             if grad_clip_norm > 0.0:
                                 step_state["grad_norm"] = nn.utils.clip_grad_norm_(
-                                    model.parameters(), grad_clip_norm, foreach=(dev.type == "cuda")
+                                    model.parameters(),
+                                    grad_clip_norm,
+                                    foreach=(dev.type == "cuda"),
                                 ).item()
                             else:
                                 step_state["grad_norm"] = 0.0
-                        trace_totals_ms["backward_pass"] += (time.perf_counter() - bwd_t0) * 1000.0
+                        trace_totals_ms["backward_pass"] += (
+                            time.perf_counter() - bwd_t0
+                        ) * 1000.0
 
                         opt_t0 = time.perf_counter()
                         with _trace_ctx("optimizer_step"):
                             optimizer.step()
-                        trace_totals_ms["optimizer_step"] += (time.perf_counter() - opt_t0) * 1000.0
+                        trace_totals_ms["optimizer_step"] += (
+                            time.perf_counter() - opt_t0
+                        ) * 1000.0
 
                     if step == 0 and op_profiler.enabled:
                         kernel_summary = op_profiler.profile_callable(_run_step)
@@ -628,13 +788,20 @@ class _ExecutionTrainingMixin:
                         loss_at_500 = loss_val
                         # Task 2G: If still improving at step 500, extend to 1000
                         if loss_at_250 is not None:
-                            improvement_rate = (loss_at_250 - loss_at_500) / max(loss_at_250, 1e-6)
+                            improvement_rate = (loss_at_250 - loss_at_500) / max(
+                                loss_at_250, 1e-6
+                            )
                             if improvement_rate > 0 and total_steps < 1000:
                                 total_steps = 1000
                                 result["adaptive_budget_extension"] = True
-                                logger.debug("    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.", improvement_rate)
+                                logger.debug(
+                                    "    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.",
+                                    improvement_rate,
+                                )
 
-                    if step == 0 and (not math.isfinite(grad_norm) or grad_norm <= 1e-10):
+                    if step == 0 and (
+                        not math.isfinite(grad_norm) or grad_norm <= 1e-10
+                    ):
                         result["error"] = "zero_grad_precheck_failed"
                         result["n_train_steps"] = 0
                         result["max_grad_norm"] = grad_norm
@@ -659,13 +826,21 @@ class _ExecutionTrainingMixin:
 
                     # Inflight health checks — abort hopeless runs early
                     _inflight_fail = check_inflight_health(
-                        step=step, loss_val=loss_val, grad_norm=grad_norm,
-                        min_loss=min_loss, initial_loss=initial_loss,
-                        total_steps=total_steps, state=_inflight_state,
+                        step=step,
+                        loss_val=loss_val,
+                        grad_norm=grad_norm,
+                        min_loss=min_loss,
+                        initial_loss=initial_loss,
+                        total_steps=total_steps,
+                        state=_inflight_state,
                         spike_ratio=getattr(config, "inflight_spike_ratio", 2.0),
                         spike_window=getattr(config, "inflight_spike_window", 10),
-                        grad_norm_limit=getattr(config, "inflight_grad_norm_limit", 100.0),
-                        grad_norm_strikes=getattr(config, "inflight_grad_norm_strikes", 3),
+                        grad_norm_limit=getattr(
+                            config, "inflight_grad_norm_limit", 100.0
+                        ),
+                        grad_norm_strikes=getattr(
+                            config, "inflight_grad_norm_strikes", 3
+                        ),
                     )
                     if _inflight_fail is not None:
                         result.update(_inflight_fail)
@@ -679,13 +854,18 @@ class _ExecutionTrainingMixin:
                         _es_steps_since_improve = 0
                     else:
                         _es_steps_since_improve += 1
-                    if (step >= config.early_stop_min_steps
-                            and _es_steps_since_improve >= config.early_stop_patience):
+                    if (
+                        step >= config.early_stop_min_steps
+                        and _es_steps_since_improve >= config.early_stop_patience
+                    ):
                         result["early_stopped"] = True
                         result["early_stop_step"] = step
                         logger.debug(
                             "    early stop at step %d/%d: loss=%.4f plateau for %d steps",
-                            step, total_steps, loss_val, config.early_stop_patience,
+                            step,
+                            total_steps,
+                            loss_val,
+                            config.early_stop_patience,
                         )
                         step_count += 1
                         break
@@ -699,12 +879,27 @@ class _ExecutionTrainingMixin:
 
                     # Record per-step data
                     if collect_curve:
-                        training_curve.append({
-                            "step": step,
-                            "loss": loss_val,
-                            "grad_norm": grad_norm,
-                            "step_time_ms": step_time_ms,
-                        })
+                        training_curve.append(
+                            {
+                                "step": step,
+                                "loss": loss_val,
+                                "grad_norm": grad_norm,
+                                "step_time_ms": step_time_ms,
+                            }
+                        )
+
+                    # Entropy gate trajectory: sample at key steps
+                    if step in _ENTROPY_GATE_SAMPLE_STEPS:
+                        _eg_val = _sample_entropy_gate_output(model, input_ids)
+                        if _eg_val is not None:
+                            _entropy_gate_trajectory.append(_eg_val)
+                            if _eg_val < 0.05:
+                                logger.warning(
+                                    "entropy_gate_collapse_detected at step %d: "
+                                    "value=%.4f",
+                                    step,
+                                    _eg_val,
+                                )
 
                     # Emit live training step events for dashboard
                     ctx = getattr(self, "_live_training_context", None)
@@ -729,9 +924,13 @@ class _ExecutionTrainingMixin:
                         logger.debug(
                             "    train step %d/%d: loss=%.4f, grad_norm=%.3f, "
                             "step_time=%.1fms",
-                            step + 1, total_steps, loss_val, grad_norm, step_time_ms,
+                            step + 1,
+                            total_steps,
+                            loss_val,
+                            grad_norm,
+                            step_time_ms,
                         )
-                    
+
                     step += 1
 
             if dev.type == "cuda":
@@ -792,7 +991,9 @@ class _ExecutionTrainingMixin:
                 }
 
             if initial_loss and final_loss:
-                result["loss_ratio"] = normalized_loss_ratio(final_loss, config.vocab_size)
+                result["loss_ratio"] = normalized_loss_ratio(
+                    final_loss, config.vocab_size
+                )
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
@@ -807,18 +1008,55 @@ class _ExecutionTrainingMixin:
                 if discovery_loss_ratio is not None:
                     result["discovery_loss_ratio"] = discovery_loss_ratio
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
-                result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
+
+                # Corpus-aware learning gate (replaces fixed threshold)
+                corpus_type = _corpus_type_from_config(config)
+                tokenizer = str(config.tokenizer_mode or "byte")
+                try:
+                    ref_losses = get_reference_losses(
+                        str(getattr(self, "notebook_path", "research/lab_notebook.db"))
+                    )
+                except Exception:
+                    ref_losses = {}
+                gate_passed, gate_reason = stage1_learning_gate(
+                    final_loss=final_loss,
+                    loss_ratio=result["loss_ratio"],
+                    initial_loss=initial_loss,
+                    n_steps=step_count,
+                    corpus_type=corpus_type,
+                    tokenizer=tokenizer,
+                    reference_losses=ref_losses,
+                )
+                result["passed"] = gate_passed
+                result["gate_reason"] = gate_reason
+
+                # Validation loss gate: if val loss didn't improve, fail.
+                if (
+                    result["passed"]
+                    and validation_loss_ratio is not None
+                    and validation_loss_ratio > 0.6
+                ):
+                    result["passed"] = False
+                    result["error_type"] = "insufficient_learning"
+                    result["error"] = (
+                        f"Validation loss ratio {validation_loss_ratio:.4f} > 0.60 — "
+                        f"model memorized training but failed to generalize"
+                    )
                 # Inflight checks already flagged this run — override pass
                 if result.get("error_type", "").startswith("inflight_"):
                     result["passed"] = False
                 if not result["passed"] and result.get("error_type") is None:
                     result["error_type"] = "failed_convergence"
-                    result["error"] = f"Insufficient loss reduction: {result['loss_ratio']:.4f} >= {config.stage1_loss_ratio_threshold}"
+                    result["error"] = gate_reason
                 if initial_loss > 0:
-                    result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
+                    result["loss_improvement_rate"] = (
+                        initial_loss - final_loss
+                    ) / initial_loss
 
                 # Timing stats
-                result["avg_step_time_ms"] = (step_time_sum_ms / step_count) if step_count > 0 else 0.0
+                result["avg_step_time_ms"] = (
+                    (step_time_sum_ms / step_count) if step_count > 0 else 0.0
+                )
                 result["total_train_time_ms"] = total_time_ms
 
                 # Gradient norm stats
@@ -826,8 +1064,10 @@ class _ExecutionTrainingMixin:
                     result["max_grad_norm"] = grad_norm_max
                     result["mean_grad_norm"] = grad_norm_sum / grad_norm_count
                     mean_gn = result["mean_grad_norm"]
-                    var = max((grad_norm_sq_sum / grad_norm_count) - (mean_gn * mean_gn), 0.0)
-                    result["grad_norm_std"] = var ** 0.5
+                    var = max(
+                        (grad_norm_sq_sum / grad_norm_count) - (mean_gn * mean_gn), 0.0
+                    )
+                    result["grad_norm_std"] = var**0.5
 
                 result["n_train_steps"] = step_count
                 result["final_lr"] = config.stage1_lr  # constant for now
@@ -838,6 +1078,14 @@ class _ExecutionTrainingMixin:
                 arch_telemetry = self._extract_architecture_telemetry(model)
                 result.update(arch_telemetry)
 
+                # Entropy gate trajectory (sampled during training)
+                if _entropy_gate_trajectory:
+                    result["entropy_gate_trajectory_json"] = json.dumps(
+                        _entropy_gate_trajectory
+                    )
+                    if any(v < 0.05 for v in _entropy_gate_trajectory):
+                        result["routing_collapse_score"] = 1.0
+
                 # Routing training metrics: load-balance aux loss + derived stats
                 if routing_aux_loss_count > 0:
                     result["routing_aux_loss_mean"] = (
@@ -847,7 +1095,8 @@ class _ExecutionTrainingMixin:
                 rt_processed = result.get("routing_tokens_processed", 0)
                 if rt_total > 0:
                     result["routing_fast_fraction"] = max(
-                        0.0, 1.0 - (rt_processed / rt_total),
+                        0.0,
+                        1.0 - (rt_processed / rt_total),
                     )
                     eu_json = result.get("routing_expert_utilization_json")
                     if eu_json:
@@ -859,9 +1108,12 @@ class _ExecutionTrainingMixin:
                                     fracs = [c / total_c for c in counts]
                                     uniform = 1.0 / len(fracs)
                                     # Balance = 1 - normalized MSE (1=uniform, 0=collapsed)
-                                    mse = sum((f - uniform) ** 2 for f in fracs) / len(fracs)
+                                    mse = sum((f - uniform) ** 2 for f in fracs) / len(
+                                        fracs
+                                    )
                                     result["routing_balance_score"] = max(
-                                        0.0, 1.0 - mse * len(fracs),
+                                        0.0,
+                                        1.0 - mse * len(fracs),
                                     )
                         except (json.JSONDecodeError, TypeError):
                             pass
@@ -871,11 +1123,17 @@ class _ExecutionTrainingMixin:
                     try:
                         # Task 4I: skip full fingerprint for poor performers (Investigation Gating)
                         _lr = result.get("loss_ratio", 1.0)
-                        _perf_gate = float(getattr(config, "fingerprint_perf_gate", 0.85) or 0.85)
+                        _perf_gate = float(
+                            getattr(config, "fingerprint_perf_gate", 0.85) or 0.85
+                        )
                         _force_lightning = _lr > _perf_gate
-                        
+
                         if _force_lightning:
-                            logger.debug("    Investigation gating: skipping full fingerprint for poor performer (LR=%.4f > %.2f)", _lr, _perf_gate)
+                            logger.debug(
+                                "    Investigation gating: skipping full fingerprint for poor performer (LR=%.4f > %.2f)",
+                                _lr,
+                                _perf_gate,
+                            )
 
                         _fp, full_ran = compute_gated_fingerprint(
                             model,
@@ -897,16 +1155,26 @@ class _ExecutionTrainingMixin:
                         from ...eval.wikitext_eval import screening_wikitext_eval
 
                         wt = screening_wikitext_eval(
-                            model, config.vocab_size, str(dev),
+                            model,
+                            config.vocab_size,
+                            str(dev),
                             seq_len=min(128, config.max_seq_len),
                         )
-                        result["screening_wikitext_status"] = wt.get("screening_wikitext_status")
-                        result["screening_wikitext_metric_version"] = wt.get("screening_wikitext_metric_version")
+                        result["screening_wikitext_status"] = wt.get(
+                            "screening_wikitext_status"
+                        )
+                        result["screening_wikitext_metric_version"] = wt.get(
+                            "screening_wikitext_metric_version"
+                        )
                         if wt.get("wikitext_perplexity") is not None:
                             result["wikitext_perplexity"] = wt["wikitext_perplexity"]
                             result["wikitext_score"] = wt.get("wikitext_score")
-                            result["wikitext_pre_perplexity"] = wt.get("wikitext_pre_perplexity")
-                            result["wikitext_ppl_improvement"] = wt.get("wikitext_ppl_improvement")
+                            result["wikitext_pre_perplexity"] = wt.get(
+                                "wikitext_pre_perplexity"
+                            )
+                            result["wikitext_ppl_improvement"] = wt.get(
+                                "wikitext_ppl_improvement"
+                            )
                             logger.info(
                                 "    Screening WikiText ppl=%.1f score=%.3f (%.0fms)",
                                 wt["wikitext_perplexity"],
@@ -919,11 +1187,17 @@ class _ExecutionTrainingMixin:
         except Exception as e:
             result["error"] = str(e)
 
-        if result.get("final_loss") is not None and bool(getattr(config, "one_shot_pruning_baseline", False)):
+        if result.get("final_loss") is not None and bool(
+            getattr(config, "one_shot_pruning_baseline", False)
+        ):
             try:
                 seq_len = min(128, int(config.max_seq_len))
-                eval_batches = max(1, int(getattr(config, "one_shot_pruning_eval_batches", 4)))
-                eval_batch_size = max(1, int(getattr(config, "one_shot_pruning_batch_size", 2)))
+                eval_batches = max(
+                    1, int(getattr(config, "one_shot_pruning_eval_batches", 4))
+                )
+                eval_batch_size = max(
+                    1, int(getattr(config, "one_shot_pruning_batch_size", 2))
+                )
 
                 eval_inputs = [
                     self._sample_training_input_ids(
@@ -941,14 +1215,22 @@ class _ExecutionTrainingMixin:
                 pruned_model = copy.deepcopy(model).to(dev)
                 prune_info = apply_one_shot_pruning(
                     pruned_model,
-                    target_sparsity=float(getattr(config, "one_shot_pruning_sparsity", 0.5)),
+                    target_sparsity=float(
+                        getattr(config, "one_shot_pruning_sparsity", 0.5)
+                    ),
                     method=str(getattr(config, "one_shot_pruning_method", "wanda")),
                 )
                 pruned_eval_loss = estimate_lm_ce_loss(pruned_model, eval_inputs, dev)
 
                 quality_retention = None
-                if dense_eval_loss is not None and pruned_eval_loss is not None and pruned_eval_loss > 0:
-                    quality_retention = max(0.0, min(1.5, dense_eval_loss / pruned_eval_loss))
+                if (
+                    dense_eval_loss is not None
+                    and pruned_eval_loss is not None
+                    and pruned_eval_loss > 0
+                ):
+                    quality_retention = max(
+                        0.0, min(1.5, dense_eval_loss / pruned_eval_loss)
+                    )
 
                 result["pruning_method"] = prune_info.method
                 result["pruning_target_sparsity"] = prune_info.target_sparsity
@@ -979,9 +1261,13 @@ class _ExecutionTrainingMixin:
             result["perf_report"] = result.get("perf_traces", fallback_perf)
             # Ensure throughput is included in perf_report for experiment-level aggregation
             if isinstance(result.get("throughput"), (int, float)):
-                result["perf_report"]["avg_throughput_tok_s"] = float(result["throughput"])
+                result["perf_report"]["avg_throughput_tok_s"] = float(
+                    result["throughput"]
+                )
 
-            result["starvation_report"] = result.get("gpu_starvation", starvation_detector.get_summary())
+            result["starvation_report"] = result.get(
+                "gpu_starvation", starvation_detector.get_summary()
+            )
             if "kernel_timing" in result:
                 result["kernel_timings_ms"] = result["kernel_timing"]
         except Exception as e:
@@ -994,25 +1280,38 @@ class _ExecutionTrainingMixin:
 
         return result
 
-    def _micro_train_async(self, model: nn.Module, config: RunConfig, seed: int, dev: torch.device) -> Dict:
+    def _micro_train_async(
+        self, model: nn.Module, config: RunConfig, seed: int, dev: torch.device
+    ) -> Dict:
         """Async worker entry point for training a pre-compiled model."""
         try:
             return self._micro_train(model, config, dev, seed=seed)
         except Exception as e:
             return {"error": str(e), "passed": False}
 
-    def _train_with_program(self, model: nn.Module, program,
-                            config: RunConfig,
-                            dev: torch.device,
-                            seed: int = 42) -> Dict:
+    def _train_with_program(
+        self,
+        model: nn.Module,
+        program,
+        config: RunConfig,
+        dev: torch.device,
+        seed: int = 42,
+    ) -> Dict:
         """Train a model using a synthesized TrainingProgram.
 
         Returns same metrics dict as _micro_train() plus training_program_json.
         """
-        from research.scientist.perf import PerfTracer, GPUStarvationDetector, KernelTimer
+        from research.scientist.perf import (
+            PerfTracer,
+            GPUStarvationDetector,
+            KernelTimer,
+        )
+
         tracer = PerfTracer()
         starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
-        kernel_timer = KernelTimer(model, enabled=bool(getattr(config, "enable_kernel_profiling", False)))
+        kernel_timer = KernelTimer(
+            model, enabled=bool(getattr(config, "enable_kernel_profiling", False))
+        )
 
         result: Dict[str, Any] = {"passed": False}
 
@@ -1046,6 +1345,7 @@ class _ExecutionTrainingMixin:
                     exc,
                 )
                 from ...training.optimizer_synthesis import build_optimizer
+
                 optimizer = build_optimizer(
                     model.parameters(),
                     optimizer_type="adamw",
@@ -1072,6 +1372,7 @@ class _ExecutionTrainingMixin:
             max_grad_norm_val = program.max_grad_norm
             # Adaptive clip for math-space architectures
             from ._helpers import apply_adaptive_grad_clip
+
             max_grad_norm_val = apply_adaptive_grad_clip(model, max_grad_norm_val)
 
             initial_loss = None
@@ -1089,21 +1390,34 @@ class _ExecutionTrainingMixin:
             _static_cap = 512
             if dev.type == "cuda":
                 try:
-                    free_mb = (torch.cuda.get_device_properties(dev).total_memory
-                               - torch.cuda.memory_allocated(dev)) / (1024 * 1024)
+                    free_mb = (
+                        torch.cuda.get_device_properties(dev).total_memory
+                        - torch.cuda.memory_allocated(dev)
+                    ) / (1024 * 1024)
                     # Rough heuristic: quadratic ops need ~B*S*S*D*4 bytes per layer
                     # At dim=256, batch=B, n_layers=L: budget ≈ free * 0.5 (leave headroom)
-                    _batch = int(getattr(config, 'stage1_batch_size', 4) or 4)
-                    _nlayers = int(getattr(config, 'n_layers', 4) or 4)
-                    _dim = int(getattr(config, 'model_dim', 256) or 256)
+                    _batch = int(getattr(config, "stage1_batch_size", 4) or 4)
+                    _nlayers = int(getattr(config, "n_layers", 4) or 4)
+                    _dim = int(getattr(config, "model_dim", 256) or 256)
                     # max_seq where B*S^2*D*L*12 (fwd+bwd+optim) < free*0.5
                     import math as _math
+
                     _budget = free_mb * 0.5 * 1024 * 1024  # bytes
-                    _max_s = int(_math.sqrt(_budget / (max(_batch, 1) * max(_dim, 1) * max(_nlayers, 1) * 12)))
+                    _max_s = int(
+                        _math.sqrt(
+                            _budget
+                            / (max(_batch, 1) * max(_dim, 1) * max(_nlayers, 1) * 12)
+                        )
+                    )
                     _static_cap = min(_static_cap, max(64, _max_s))
                     if _static_cap < config.max_seq_len:
-                        logger.info("VRAM-capped seq_len: %d (free=%.0fMB, B=%d, L=%d)",
-                                    _static_cap, free_mb, _batch, _nlayers)
+                        logger.info(
+                            "VRAM-capped seq_len: %d (free=%.0fMB, B=%d, L=%d)",
+                            _static_cap,
+                            free_mb,
+                            _batch,
+                            _nlayers,
+                        )
                 except Exception:
                     pass
             safe_max_seq = min(config.max_seq_len, _static_cap)
@@ -1142,8 +1456,11 @@ class _ExecutionTrainingMixin:
                 t_step = time.perf_counter()
 
                 with tracer.trace("forward_pass"):
-                    with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16,
-                                            enabled=(dev.type == "cuda")):
+                    with torch.amp.autocast(
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
                         logits = model(input_ids)
                         # Use synthesized loss if possible
                         try:
@@ -1165,9 +1482,10 @@ class _ExecutionTrainingMixin:
                 with tracer.trace("backward_pass"):
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
-                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm_val).item()
+                    grad_norm = nn.utils.clip_grad_norm_(
+                        model.parameters(), max_grad_norm_val
+                    ).item()
                     optimizer.step()
-
 
                 if dev.type == "cuda":
                     torch.cuda.synchronize(dev)
@@ -1187,9 +1505,13 @@ class _ExecutionTrainingMixin:
 
                 # Inflight health checks — abort hopeless runs early
                 _inflight_fail = check_inflight_health(
-                    step=step, loss_val=loss_val, grad_norm=grad_norm,
-                    min_loss=min_loss, initial_loss=initial_loss,
-                    total_steps=n_steps, state=_inflight_state_inv,
+                    step=step,
+                    loss_val=loss_val,
+                    grad_norm=grad_norm,
+                    min_loss=min_loss,
+                    initial_loss=initial_loss,
+                    total_steps=n_steps,
+                    state=_inflight_state_inv,
                     spike_ratio=getattr(config, "inflight_spike_ratio", 2.0),
                     spike_window=getattr(config, "inflight_spike_window", 10),
                     grad_norm_limit=getattr(config, "inflight_grad_norm_limit", 100.0),
@@ -1206,25 +1528,32 @@ class _ExecutionTrainingMixin:
                     _es_steps_since_improve = 0
                 else:
                     _es_steps_since_improve += 1
-                if (step >= config.early_stop_min_steps
-                        and _es_steps_since_improve >= config.early_stop_patience):
+                if (
+                    step >= config.early_stop_min_steps
+                    and _es_steps_since_improve >= config.early_stop_patience
+                ):
                     result["early_stopped"] = True
                     result["early_stop_step"] = step
                     logger.debug(
                         "    early stop at step %d/%d: loss=%.4f plateau for %d steps",
-                        step, n_steps, loss_val, config.early_stop_patience,
+                        step,
+                        n_steps,
+                        loss_val,
+                        config.early_stop_patience,
                     )
                     break
 
                 step_times.append(step_time_ms)
                 grad_norms.append(grad_norm)
 
-                training_curve.append({
-                    "step": step,
-                    "loss": loss_val,
-                    "grad_norm": grad_norm,
-                    "step_time_ms": step_time_ms,
-                })
+                training_curve.append(
+                    {
+                        "step": step,
+                        "loss": loss_val,
+                        "grad_norm": grad_norm,
+                        "step_time_ms": step_time_ms,
+                    }
+                )
 
                 # Emit live training step events for dashboard
                 ctx = getattr(self, "_live_training_context", None)
@@ -1244,21 +1573,40 @@ class _ExecutionTrainingMixin:
             total_time_ms = (t_end - t_start) * 1000
 
             if initial_loss and final_loss:
-                result["loss_ratio"] = normalized_loss_ratio(final_loss, config.vocab_size)
+                result["loss_ratio"] = normalized_loss_ratio(
+                    final_loss, config.vocab_size
+                )
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
-                result["passed"] = result["loss_ratio"] < config.stage1_loss_ratio_threshold
+                result["passed"] = (
+                    result["loss_ratio"] < config.stage1_loss_ratio_threshold
+                )
+                # Validation loss gate
+                _vlr = result.get("validation_loss_ratio")
+                if result["passed"] and _vlr is not None and _vlr > 0.6:
+                    result["passed"] = False
+                    result["error_type"] = "insufficient_learning"
+                    result["error"] = (
+                        f"Validation loss ratio {_vlr:.4f} > 0.60 — "
+                        f"model memorized training but failed to generalize"
+                    )
                 # Inflight checks already flagged this run — override pass
                 if result.get("error_type", "").startswith("inflight_"):
                     result["passed"] = False
                 if not result["passed"] and result.get("error_type") is None:
                     result["error_type"] = "failed_convergence"
-                    result["error"] = f"Insufficient loss reduction during investigation: {result['loss_ratio']:.4f}"
-                    result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
+                    result["error"] = (
+                        f"Insufficient loss reduction during investigation: {result['loss_ratio']:.4f}"
+                    )
+                    result["loss_improvement_rate"] = (
+                        initial_loss - final_loss
+                    ) / initial_loss
 
-                result["avg_step_time_ms"] = sum(step_times) / len(step_times) if step_times else 0
+                result["avg_step_time_ms"] = (
+                    sum(step_times) / len(step_times) if step_times else 0
+                )
                 result["total_train_time_ms"] = total_time_ms
 
                 if grad_norms:
@@ -1270,7 +1618,7 @@ class _ExecutionTrainingMixin:
                     ) ** 0.5
 
                 result["n_train_steps"] = len(step_times)
-                result["final_lr"] = getattr(optimizer, 'defaults', {}).get('lr', 3e-4)
+                result["final_lr"] = getattr(optimizer, "defaults", {}).get("lr", 3e-4)
                 result["training_curve"] = training_curve
                 result["training_program_json"] = json.dumps(program.to_dict())
 
@@ -1286,7 +1634,9 @@ class _ExecutionTrainingMixin:
             result["perf_report"] = tracer.get_report()
             # Ensure throughput is included in perf_report for experiment-level aggregation
             if isinstance(result.get("throughput"), (int, float)):
-                result["perf_report"]["avg_throughput_tok_s"] = float(result["throughput"])
+                result["perf_report"]["avg_throughput_tok_s"] = float(
+                    result["throughput"]
+                )
 
             result["starvation_report"] = starvation_detector.get_summary()
             if kernel_timer.enabled:
@@ -1386,15 +1736,25 @@ class _ExecutionTrainingMixin:
                     )
                     if batch is not None:
                         return batch
-                return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev, generator=generator)
+                return torch.randint(
+                    0,
+                    config.vocab_size,
+                    (batch_size, seq_len),
+                    device=dev,
+                    generator=generator,
+                )
 
             return data_fn, data_tag, True
         if mode == "hydra":
+
             def data_fn(batch_size, seq_len, dev):
                 batch = self._get_hydra_batch(config, batch_size, seq_len, dev)
                 if batch is not None:
                     return batch
-                return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev)
+                return torch.randint(
+                    0, config.vocab_size, (batch_size, seq_len), device=dev
+                )
+
             return data_fn, "hydra", False
         if mode == "corpus":
             path = str(config.corpus_path or "").strip()
@@ -1428,7 +1788,13 @@ class _ExecutionTrainingMixin:
                     )
                     if batch is not None:
                         return batch
-                return torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev, generator=generator)
+                return torch.randint(
+                    0,
+                    config.vocab_size,
+                    (batch_size, seq_len),
+                    device=dev,
+                    generator=generator,
+                )
 
             return data_fn, data_tag, True
         return None, "random", False

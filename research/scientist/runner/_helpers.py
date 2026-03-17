@@ -10,7 +10,7 @@ import logging
 import math
 from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,100 @@ _REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
 
 _DEFAULT_VOCAB_SIZE: int = 32_000
 _REFERENCE_INITIAL_LOSS: float = math.log(_DEFAULT_VOCAB_SIZE)  # ~10.37
+
+
+def _corpus_type_from_config(config: Any) -> str:
+    """Derive corpus type tag from RunConfig for gate calibration."""
+    path = str(getattr(config, "corpus_path", "") or "").lower()
+    if "wikitext" in path:
+        return "wikitext103"
+    if "tinystories" in path:
+        return "tinystories"
+    if "micro_corpus" in path:
+        return "micro"
+    return "unknown"
+
+
+def get_reference_losses(db_path: str) -> Dict[str, float]:
+    """Pull latest reference losses for gate calibration."""
+    import sqlite3
+
+    ref: Dict[str, float] = {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("""
+            SELECT AVG(p.final_loss) as avg_loss
+            FROM program_results p
+            JOIN leaderboard l ON p.result_id = l.result_id
+            WHERE l.reference_name = 'GPT-2'
+            AND p.final_loss IS NOT NULL
+            AND p.final_loss > 0
+            AND p.n_train_steps >= 4000
+        """).fetchone()
+        if row and row["avg_loss"]:
+            ref["gpt2_wikitext103_tiktoken"] = float(row["avg_loss"])
+        conn.close()
+    except Exception as exc:
+        logger.debug("get_reference_losses failed: %s", exc)
+    return ref
+
+
+def stage1_learning_gate(
+    final_loss: float,
+    loss_ratio: float,
+    initial_loss: Optional[float],
+    n_steps: int,
+    corpus_type: str,
+    tokenizer: str,
+    reference_losses: Dict[str, float],
+) -> Tuple[bool, str]:
+    """Corpus-aware Stage 1 pass/fail gate.
+
+    Returns (passed, reason).
+
+    Gate logic:
+    1. Hard kill: model made things worse (loss_ratio > 1.0)
+    2. Hard kill: model clearly didn't learn (ratio > 0.95 after 200+ steps)
+    3. Corpus-relative: if WikiText-103 + tiktoken, compare to GPT-2 floor
+    4. Absolute floor: final_loss must be below random baseline
+    """
+    # Gate 1: Made things worse
+    if loss_ratio > 1.0:
+        return False, f"loss_ratio={loss_ratio:.3f} > 1.0 — training diverged"
+
+    # Gate 2: Clearly didn't learn (< 5% reduction after real training)
+    if loss_ratio > 0.95 and n_steps >= 200:
+        return False, (
+            f"loss_ratio={loss_ratio:.3f} after {n_steps} steps — "
+            f"model reduced loss by only {(1 - loss_ratio) * 100:.1f}%"
+        )
+
+    # Gate 3: Corpus-relative gate (WikiText-103 + tiktoken only)
+    if corpus_type == "wikitext103" and "tiktoken" in tokenizer:
+        gpt2_floor = reference_losses.get("gpt2_wikitext103_tiktoken")
+        if gpt2_floor is not None:
+            relative_threshold = gpt2_floor * 4.0
+            if final_loss > relative_threshold:
+                return False, (
+                    f"final_loss={final_loss:.3f} > "
+                    f"4x GPT-2 floor ({relative_threshold:.3f}) — "
+                    f"not competitive on WikiText-103"
+                )
+
+    # Gate 4: Absolute random baseline
+    # tiktoken cl100k_base: ln(100277) ~ 11.52 (random model baseline)
+    # byte tokenizer 32K vocab: ln(32000) ~ 10.37
+    tok_prefix = tokenizer.split("_")[0] if tokenizer else ""
+    random_baseline = {"tiktoken": 11.52, "byte": 10.37}.get(tok_prefix, 11.52)
+
+    if final_loss > random_baseline * 0.95:
+        return False, (
+            f"final_loss={final_loss:.3f} near random baseline "
+            f"({random_baseline:.2f}) — model learned nothing meaningful"
+        )
+
+    return True, "passed"
 
 
 def normalized_loss_ratio(
@@ -53,6 +147,7 @@ def normalized_loss_ratio(
 @dataclass
 class InflightState:
     """Mutable state for inflight training checks."""
+
     __slots__ = ("recent_losses", "grad_strikes", "window")
     recent_losses: List[float]
     grad_strikes: int
@@ -105,7 +200,7 @@ def check_inflight_health(
         _mean = sum(state.recent_losses) / w
         if _mean > 0:
             _var = sum((x - _mean) ** 2 for x in state.recent_losses) / w
-            _cv = (_var ** 0.5) / _mean
+            _cv = (_var**0.5) / _mean
             if _cv > cv_threshold:
                 return {
                     "error": (
@@ -128,12 +223,16 @@ def check_inflight_health(
 
     # Check 3b: no progress at 25% mark
     quarter = total_steps // 4
-    if step == quarter and initial_loss and loss_val >= initial_loss * progress_threshold:
+    if (
+        step == quarter
+        and initial_loss
+        and loss_val >= initial_loss * progress_threshold
+    ):
         return {
             "error": (
                 f"inflight_no_progress: at step {step}/{total_steps}, "
                 f"loss={loss_val:.4f} vs initial={initial_loss:.4f} "
-                f"(ratio={loss_val/initial_loss:.3f})"
+                f"(ratio={loss_val / initial_loss:.3f})"
             ),
             "error_type": "inflight_no_progress",
         }
@@ -163,8 +262,10 @@ def clear_gpu_memory() -> None:
     gc.collect() across 13+ call sites in runner submodules.
     """
     import gc
+
     try:
         import torch as _torch
+
         if _torch.cuda.is_available():
             _torch.cuda.empty_cache()
     except Exception:
@@ -323,6 +424,7 @@ def _native_proactive_gating(graph) -> Dict[str, Any]:
 def _native_runner_progress_report() -> Dict[str, Any]:
     try:
         from ..native_runner import native_runner_capability_report
+
         return native_runner_capability_report()
     except Exception as exc:
         return {
@@ -339,7 +441,9 @@ def _native_runner_progress_report() -> Dict[str, Any]:
         }
 
 
-def _rebuild_graph_with_overrides(candidate_graph, overrides: Dict[int, Dict[str, Any]]):
+def _rebuild_graph_with_overrides(
+    candidate_graph, overrides: Dict[int, Dict[str, Any]]
+):
     """Rebuild a graph with targeted node op/config overrides."""
     rebuilt = type(candidate_graph)(candidate_graph.model_dim)
     id_map: Dict[int, int] = {}
@@ -404,8 +508,11 @@ def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
             target_nodes.append(nid)
 
     if not target_nodes:
-        non_input = [nid for nid in candidate_graph.topological_order()
-                     if not candidate_graph.nodes[nid].is_input]
+        non_input = [
+            nid
+            for nid in candidate_graph.topological_order()
+            if not candidate_graph.nodes[nid].is_input
+        ]
         target_nodes = non_input[-2:] if len(non_input) >= 2 else non_input
 
     ablations: List[Any] = []
@@ -417,7 +524,11 @@ def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
         except Exception:
             continue
         key = (prim.n_inputs, prim.shape_rule)
-        candidates = [name for name in replacement_by_signature.get(key, []) if name != node.op_name]
+        candidates = [
+            name
+            for name in replacement_by_signature.get(key, [])
+            if name != node.op_name
+        ]
         if not candidates:
             continue
 
@@ -527,7 +638,9 @@ def _evaluate_investigation_benchmarks(
         from ...eval.wikitext_eval import evaluate_wikitext_trajectory
 
         wt_result = evaluate_wikitext_trajectory(
-            model, config.vocab_size, dev,
+            model,
+            config.vocab_size,
+            dev,
             checkpoints=(200, 500),
             seq_len=eval_seq_len,
         )
@@ -546,7 +659,9 @@ def _evaluate_investigation_benchmarks(
         result["capability_tier"] = _trajectory_probe_capability_tier(
             ppl_500,
             improvement_ratio,
-            float(getattr(config, "improvement_ratio_escalation_threshold", 2.0) or 2.0),
+            float(
+                getattr(config, "improvement_ratio_escalation_threshold", 2.0) or 2.0
+            ),
         )
         result["inv_wikitext_ppl"] = wt_result.get("peak_ppl") or ppl_500 or ppl_200
         result["inv_wikitext_score"] = (
@@ -560,7 +675,9 @@ def _evaluate_investigation_benchmarks(
                 "Investigation WikiText probe ppl200=%s ppl500=%s ratio=%s tier=%s",
                 f"{ppl_200:.1f}" if isinstance(ppl_200, (int, float)) else "n/a",
                 f"{ppl_500:.1f}" if isinstance(ppl_500, (int, float)) else "n/a",
-                f"{improvement_ratio:.2f}" if isinstance(improvement_ratio, (int, float)) else "n/a",
+                f"{improvement_ratio:.2f}"
+                if isinstance(improvement_ratio, (int, float))
+                else "n/a",
                 result["capability_tier"],
             )
     except Exception as exc:
@@ -570,15 +687,19 @@ def _evaluate_investigation_benchmarks(
         from ...eval.tinystories_eval import evaluate_tinystories
 
         ts_result = evaluate_tinystories(
-            model, config.vocab_size, dev,
-            n_train_steps=200, seq_len=eval_seq_len,
+            model,
+            config.vocab_size,
+            dev,
+            n_train_steps=200,
+            seq_len=eval_seq_len,
         )
         result["inv_tinystories_ppl"] = ts_result.get("tinystories_perplexity")
         result["inv_tinystories_score"] = ts_result.get("tinystories_score")
         if result["inv_tinystories_ppl"] is not None:
             logger.info(
                 "Investigation TinyStories ppl=%.1f score=%.3f",
-                result["inv_tinystories_ppl"], result["inv_tinystories_score"] or 0,
+                result["inv_tinystories_ppl"],
+                result["inv_tinystories_score"] or 0,
             )
     except Exception as exc:
         logger.debug("Investigation TinyStories eval skipped: %s", exc)
@@ -631,6 +752,7 @@ def _submit_benchmark_eval(
         )
         # Create a thread-local notebook for DB writes
         from ..notebook import LabNotebook
+
         thread_nb = LabNotebook(db_path)
         try:
             _record_investigation_result(
@@ -655,7 +777,13 @@ def _submit_benchmark_eval(
     return _benchmark_pool.submit(_run)
 
 
-_TIER_RANK = {"screened_out": 0, "screening": 1, "investigation": 2, "validation": 3, "breakthrough": 4}
+_TIER_RANK = {
+    "screened_out": 0,
+    "screening": 1,
+    "investigation": 2,
+    "validation": 3,
+    "breakthrough": 4,
+}
 
 
 def _safe_tier(nb, result_id: str, proposed: str) -> str:
@@ -699,14 +827,16 @@ def _record_investigation_result(
     existing_inv = nb.conn.execute(
         "SELECT investigation_loss_ratio, investigation_robustness, investigation_passed, "
         "investigation_best_training FROM leaderboard WHERE result_id = ?",
-        (source_result_id,)
+        (source_result_id,),
     ).fetchone()
     if existing_inv and existing_inv["investigation_passed"]:
         existing_lr = existing_inv["investigation_loss_ratio"]
         # Never overwrite a passed investigation with a failed one or worse results
         if best_lr is None or (existing_lr is not None and existing_lr <= best_lr):
             best_lr = existing_lr
-            robustness = max(robustness, float(existing_inv["investigation_robustness"] or 0))
+            robustness = max(
+                robustness, float(existing_inv["investigation_robustness"] or 0)
+            )
             best_tp_json = existing_inv["investigation_best_training"] or best_tp_json
             investigation_passed = True
 
@@ -722,7 +852,11 @@ def _record_investigation_result(
         investigation_robustness=robustness,
         investigation_best_training=best_tp_json,
         investigation_passed=investigation_passed,
-        tier=_safe_tier(nb, source_result_id, "investigation" if investigation_passed else "screened_out"),
+        tier=_safe_tier(
+            nb,
+            source_result_id,
+            "investigation" if investigation_passed else "screened_out",
+        ),
         novelty_confidence=source.get("novelty_confidence"),
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
         wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
@@ -770,7 +904,9 @@ def _record_investigation_result(
         "wikitext_score": benchmark_result.get("inv_wikitext_score"),
         "wikitext_ppl_200": benchmark_result.get("wikitext_ppl_200"),
         "wikitext_ppl_500": benchmark_result.get("wikitext_ppl_500"),
-        "wikitext_improvement_ratio": benchmark_result.get("wikitext_improvement_ratio"),
+        "wikitext_improvement_ratio": benchmark_result.get(
+            "wikitext_improvement_ratio"
+        ),
         "wikitext_eval_steps": benchmark_result.get("wikitext_eval_steps"),
     }
     set_parts = []
@@ -789,6 +925,7 @@ def _record_investigation_result(
         nb._maybe_commit()
     try:
         from ...eval.wikitext_eval import trajectory_wikitext_payload
+
         payload = trajectory_wikitext_payload(
             benchmark_result.get("wikitext_trajectory_payload") or {}
         )

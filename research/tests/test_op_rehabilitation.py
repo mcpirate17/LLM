@@ -6,32 +6,52 @@ Covers:
 - Sparsity tests: spiking ops not falsely flagged as collapsed
 - Grammar tests: protected standalone ops get sampled
 """
+
 from __future__ import annotations
 
-import math
 import pytest
 import torch
-import torch.nn as nn
 
 pytestmark = pytest.mark.unit
 
-from research.synthesis.primitives import PROTECTED_OPS, get_primitive, list_primitives
+from research.synthesis.primitives import PROTECTED_OPS, get_primitive
 from research.synthesis.grammar import GrammarConfig
 
 # All ops that were at 0% S1 rate or soft-penalized
 REHAB_OPS = [
-    "lif_neuron", "stdp_attention", "spike_rate_code", "sparse_threshold",
-    "swiglu_mlp", "rwkv_channel", "reciprocal", "sliding_window_mask",
-    "token_merge", "rmsnorm", "div_safe", "ultrametric_attention",
-    "rotor_transform", "padic_residual", "padic_expand", "tropical_center",
-    "rwkv_time_mixing", "mod_topk",
-    "route_topk", "route_lanes", "route_recursion",
+    "lif_neuron",
+    "stdp_attention",
+    "spike_rate_code",
+    "sparse_threshold",
+    "swiglu_mlp",
+    "rwkv_channel",
+    "reciprocal",
+    "sliding_window_mask",
+    "token_merge",
+    "rmsnorm",
+    "div_safe",
+    "ultrametric_attention",
+    "rotor_transform",
+    "padic_residual",
+    "padic_expand",
+    "tropical_center",
+    "rwkv_time_mixing",
+    "mod_topk",
+    "route_topk",
+    "route_lanes",
+    "route_recursion",
 ]
 
 # Ops that need math spaces registered
 MATH_SPACE_OPS = {
-    "lif_neuron", "stdp_attention", "spike_rate_code", "sparse_threshold",
-    "ultrametric_attention", "rotor_transform", "padic_residual", "padic_expand",
+    "lif_neuron",
+    "stdp_attention",
+    "spike_rate_code",
+    "sparse_threshold",
+    "ultrametric_attention",
+    "rotor_transform",
+    "padic_residual",
+    "padic_expand",
     "tropical_center",
 }
 
@@ -41,6 +61,7 @@ def register_math_spaces():
     """Ensure math space ops are registered for the entire test module."""
     try:
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
     except Exception:
         pytest.skip("Math spaces not available")
@@ -50,6 +71,7 @@ def _compile_op(op_name: str, dim: int = 64):
     """Compile a single op into a CompiledOp module."""
     from research.synthesis.compiler import CompiledOp
     from research.synthesis.graph import ShapeInfo
+
     config = {"out_dim": dim, "mlp_ratio": 3.0, "k": 4, "n_keep": 4}
     shape = ShapeInfo(batch=2, seq=8, dim=dim)
     return CompiledOp(op_name, config, shape, shape, dim)
@@ -80,11 +102,12 @@ class TestOpSmoke:
 
         # Execute
         from research.synthesis.compiler import _OP_DISPATCH
+
         if op_name in _OP_DISPATCH:
             result = _OP_DISPATCH[op_name](module, inputs, module.config)
         else:
             # Math space ops use execute_fn
-            fn = getattr(prim, '_execute_fn', None)
+            fn = getattr(prim, "_execute_fn", None)
             if fn is None:
                 pytest.skip(f"{op_name} has no dispatch or execute_fn")
             result = fn(module, *inputs)
@@ -99,10 +122,16 @@ class TestOpSmoke:
         # Shape should have same batch dim
         assert result.shape[0] == B, f"{op_name} batch dim mismatch: {result.shape}"
 
-    @pytest.mark.parametrize("op_name", [
-        "swiglu_mlp", "rwkv_channel", "stdp_attention", "rmsnorm",
-        "reciprocal",
-    ])
+    @pytest.mark.parametrize(
+        "op_name",
+        [
+            "swiglu_mlp",
+            "rwkv_channel",
+            "stdp_attention",
+            "rmsnorm",
+            "reciprocal",
+        ],
+    )
     def test_gradient_flow(self, op_name):
         """Key parameterized ops should have gradient flow."""
         try:
@@ -118,10 +147,11 @@ class TestOpSmoke:
         inputs = (x,)
 
         from research.synthesis.compiler import _OP_DISPATCH
+
         if op_name in _OP_DISPATCH:
             result = _OP_DISPATCH[op_name](module, inputs, module.config)
         else:
-            fn = getattr(prim, '_execute_fn', None)
+            fn = getattr(prim, "_execute_fn", None)
             if fn is None:
                 pytest.skip(f"{op_name} has no dispatch")
             result = fn(module, *inputs)
@@ -151,7 +181,6 @@ class TestSparsity:
 
     def test_lif_neuron_not_collapsed(self):
         """LIF neuron with zero input is naturally all-zero — should not be flagged."""
-        from research.eval.sparsity import SparsityResult
         import numpy as np
 
         # Simulate what check_activation_sparsity would compute for LIF
@@ -166,8 +195,12 @@ class TestSparsity:
         # The fix is that in practice, LIF with non-zero input will have some spikes
         # Test with realistic partial spiking: 90% dead
         dead_realistic = int(0.90 * n_neurons)
-        is_collapsed_strict = dead_realistic > 0.95 * n_neurons  # True: 57 > 60.8 => False
-        is_collapsed_relaxed = dead_realistic > 0.99 * n_neurons  # False: 57 > 63.36 => False
+        is_collapsed_strict = (
+            dead_realistic > 0.95 * n_neurons
+        )  # True: 57 > 60.8 => False
+        is_collapsed_relaxed = (
+            dead_realistic > 0.99 * n_neurons
+        )  # False: 57 > 63.36 => False
         assert not is_collapsed_strict, "90% dead should not trigger strict collapse"
         assert not is_collapsed_relaxed, "90% dead should not trigger relaxed collapse"
 
@@ -176,7 +209,9 @@ class TestSparsity:
         is_collapsed_strict = dead_96 > 0.95 * n_neurons  # 61 > 60.8 => True
         is_collapsed_relaxed = dead_96 > 0.99 * n_neurons  # 61 > 63.36 => False
         assert is_collapsed_strict, "96% dead should trigger strict collapse"
-        assert not is_collapsed_relaxed, "96% dead should NOT trigger relaxed (spiking) collapse"
+        assert not is_collapsed_relaxed, (
+            "96% dead should NOT trigger relaxed (spiking) collapse"
+        )
 
 
 class TestGrammar:
@@ -200,8 +235,7 @@ class TestGrammar:
             pytest.skip("No standalone protected ops registered")
 
         seen_ops = set()
-        config = GrammarConfig(model_dim=64, max_ops=16, max_depth=8,
-                               risky_op_prob=0.8)
+        config = GrammarConfig(model_dim=64, max_ops=16, max_depth=8, risky_op_prob=0.8)
         for _ in range(800):
             try:
                 g = generate_layer_graph(config)
@@ -214,7 +248,9 @@ class TestGrammar:
         # We expect at least 20% of standalone protected ops to appear.
         # Many protected ops are math-space or exotic ops with low base
         # sampling probability, so coverage is inherently limited.
-        coverage = len(seen_ops) / len(standalone_protected) if standalone_protected else 1.0
+        coverage = (
+            len(seen_ops) / len(standalone_protected) if standalone_protected else 1.0
+        )
         assert coverage >= 0.2, (
             f"Only {len(seen_ops)}/{len(standalone_protected)} standalone protected ops "
             f"sampled in 800 programs ({coverage:.0%}). Missing: {standalone_protected - seen_ops}"

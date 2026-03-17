@@ -16,10 +16,10 @@ Usage examples:
     python -m research.tools.record_manual_run \
       --result-id b7a3eda6cdca769d --rescore
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import sys
@@ -39,9 +39,15 @@ def _compute_score_from_loss(loss: float, vocab_size: int) -> float:
     return round(max(0.0, min(1.0, score)), 4)
 
 
-def record_benchmark(nb: LabNotebook, result_id: str, benchmark: str,
-                     loss: float, steps: int, seq_len: int,
-                     vocab_size: int) -> dict:
+def record_benchmark(
+    nb: LabNotebook,
+    result_id: str,
+    benchmark: str,
+    loss: float,
+    steps: int,
+    seq_len: int,
+    vocab_size: int,
+) -> dict:
     """Store benchmark result in program_results and external_benchmarks_json."""
     ppl = round(math.exp(loss), 2)
     score = _compute_score_from_loss(loss, vocab_size)
@@ -74,9 +80,12 @@ def record_benchmark(nb: LabNotebook, result_id: str, benchmark: str,
     return {"perplexity": ppl, "score": score, ppl_col: ppl, score_col: score}
 
 
-def record_operational_metrics(nb: LabNotebook, result_id: str,
-                               throughput_tok_s: float | None,
-                               peak_memory_mb: float | None) -> dict:
+def record_operational_metrics(
+    nb: LabNotebook,
+    result_id: str,
+    throughput_tok_s: float | None,
+    peak_memory_mb: float | None,
+) -> dict:
     """Update operational metrics on program_results."""
     updates = {}
     if throughput_tok_s is not None:
@@ -137,23 +146,26 @@ def main():
     parser.add_argument("--db", default=DB_PATH, help="Path to lab_notebook.db")
 
     # Benchmark recording
-    parser.add_argument("--benchmark", choices=["tinystories", "wikitext"],
-                        help="Benchmark name")
+    parser.add_argument(
+        "--benchmark", choices=["tinystories", "wikitext"], help="Benchmark name"
+    )
     parser.add_argument("--loss", type=float, help="Training loss")
     parser.add_argument("--steps", type=int, help="Training steps completed")
     parser.add_argument("--seq-len", type=int, help="Sequence length used")
-    parser.add_argument("--vocab-size", type=int, default=32000,
-                        help="Vocabulary size (default: 32000)")
+    parser.add_argument(
+        "--vocab-size", type=int, default=32000, help="Vocabulary size (default: 32000)"
+    )
 
     # Operational metrics
-    parser.add_argument("--throughput-tok-s", type=float,
-                        help="Throughput in tokens/second")
-    parser.add_argument("--peak-memory-mb", type=float,
-                        help="Peak memory usage in MB")
+    parser.add_argument(
+        "--throughput-tok-s", type=float, help="Throughput in tokens/second"
+    )
+    parser.add_argument("--peak-memory-mb", type=float, help="Peak memory usage in MB")
 
     # Rescore-only
-    parser.add_argument("--rescore", action="store_true",
-                        help="Just rescore from existing data")
+    parser.add_argument(
+        "--rescore", action="store_true", help="Just rescore from existing data"
+    )
 
     args = parser.parse_args()
 
@@ -161,7 +173,9 @@ def main():
     has_benchmark = args.benchmark is not None
     has_ops = args.throughput_tok_s is not None or args.peak_memory_mb is not None
     if not has_benchmark and not has_ops and not args.rescore:
-        parser.error("Provide --benchmark, --throughput-tok-s/--peak-memory-mb, or --rescore")
+        parser.error(
+            "Provide --benchmark, --throughput-tok-s/--peak-memory-mb, or --rescore"
+        )
 
     if has_benchmark and args.loss is None:
         parser.error("--benchmark requires --loss")
@@ -182,7 +196,9 @@ def main():
     # 1. Benchmark
     if has_benchmark:
         bm = record_benchmark(
-            nb, args.result_id, args.benchmark,
+            nb,
+            args.result_id,
+            args.benchmark,
             loss=args.loss,
             steps=args.steps or 0,
             seq_len=args.seq_len or 128,
@@ -193,7 +209,8 @@ def main():
     # 2. Operational metrics
     if has_ops:
         ops = record_operational_metrics(
-            nb, args.result_id,
+            nb,
+            args.result_id,
             throughput_tok_s=args.throughput_tok_s,
             peak_memory_mb=args.peak_memory_mb,
         )

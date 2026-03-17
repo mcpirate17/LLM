@@ -13,29 +13,53 @@ Modes:
 """
 
 import argparse
+import math
 import sys
 import time
-import gc
 
 from research.defaults import (
-    MODEL_DIM, N_LAYERS, DASHBOARD_PORT, LAB_NOTEBOOK_DB,
+    MODEL_DIM,
+    N_LAYERS,
+    DASHBOARD_PORT,
+    LAB_NOTEBOOK_DB,
 )
 
 
 def main():
     parser = argparse.ArgumentParser(description="HYDRA Architecture Explorer")
-    parser.add_argument("--mode", default="explore",
-                        choices=["explore", "synthesize", "continuous", "dashboard", "evolve", "routing-benchmark", "register-references"],
-                        help="Operation mode")
-    parser.add_argument("--n", type=int, default=10, help="Number of programs/architectures")
+    parser.add_argument(
+        "--mode",
+        default="explore",
+        choices=[
+            "explore",
+            "synthesize",
+            "continuous",
+            "dashboard",
+            "evolve",
+            "routing-benchmark",
+            "register-references",
+        ],
+        help="Operation mode",
+    )
+    parser.add_argument(
+        "--n", type=int, default=10, help="Number of programs/architectures"
+    )
     parser.add_argument("--dim", type=int, default=MODEL_DIM, help="Model dimension")
-    parser.add_argument("--n_layers", type=int, default=N_LAYERS, help="Number of layers")
+    parser.add_argument(
+        "--n_layers", type=int, default=N_LAYERS, help="Number of layers"
+    )
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"])
-    parser.add_argument("--port", type=int, default=DASHBOARD_PORT, help="Dashboard port")
+    parser.add_argument(
+        "--port", type=int, default=DASHBOARD_PORT, help="Dashboard port"
+    )
     parser.add_argument("--db", type=str, default=LAB_NOTEBOOK_DB)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--math-spaces", action="store_true", default=True,
-                        help="Enable math space primitives")
+    parser.add_argument(
+        "--math-spaces",
+        action="store_true",
+        default=True,
+        help="Enable math space primitives",
+    )
 
     # Pass through to original explorer
     parser.add_argument("--fix", nargs="*", default=[])
@@ -44,13 +68,24 @@ def main():
     parser.add_argument("--leaderboard", action="store_true")
     parser.add_argument("--analyze", action="store_true")
     parser.add_argument("--describe", type=str, default=None)
-    parser.add_argument("--resume", type=str, default=None,
-                        help="Resume an interrupted experiment by ID")
-    parser.add_argument("--arch", type=str, default="all",
-                        choices=["gpt2", "mamba", "rag", "rwkv", "all"],
-                        help="Reference architecture selector for register-references mode")
-    parser.add_argument("--skip-pipeline", action="store_true",
-                        help="In register-references mode, skip investigation/validation")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume an interrupted experiment by ID",
+    )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="all",
+        choices=["gpt2", "mamba", "rag", "rwkv", "all"],
+        help="Reference architecture selector for register-references mode",
+    )
+    parser.add_argument(
+        "--skip-pipeline",
+        action="store_true",
+        help="In register-references mode, skip investigation/validation",
+    )
 
     args = parser.parse_args()
 
@@ -59,9 +94,16 @@ def main():
         _run_resume(args)
         return
 
-    if args.mode == "explore" or args.mutate or args.leaderboard or args.analyze or args.describe:
+    if (
+        args.mode == "explore"
+        or args.mutate
+        or args.leaderboard
+        or args.analyze
+        or args.describe
+    ):
         # Original morphological exploration mode
         from research.explorer import main as explorer_main
+
         explorer_main()
 
     elif args.mode == "synthesize":
@@ -122,12 +164,14 @@ def _run_continuous(args):
 def _run_dashboard(args):
     """Start the web dashboard."""
     from research.scientist.api import run_server
+
     run_server(notebook_path=args.db, port=args.port, debug=False)
 
 
 def _run_evolution(args):
     """Run evolutionary search."""
     from research.scientist.runner import ExperimentRunner, RunConfig
+
     config = RunConfig(
         model_dim=args.dim,
         n_layers=args.n_layers,
@@ -172,7 +216,11 @@ def _run_routing_benchmark(args):
         tps = point.get("tokens_per_sec")
         etc = point.get("effective_token_compute")
         stab = point.get("routing_stability")
-        vloss_str = f"{vloss:.4f}" if isinstance(vloss, (int, float)) and not math.isnan(vloss) else "n/a"
+        vloss_str = (
+            f"{vloss:.4f}"
+            if isinstance(vloss, (int, float)) and not math.isnan(vloss)
+            else "n/a"
+        )
         tps_str = f"{tps:.1f}" if isinstance(tps, (int, float)) else "n/a"
         etc_str = f"{etc:.1f}" if isinstance(etc, (int, float)) else "n/a"
         stab_str = f"{stab:.3f}" if isinstance(stab, (int, float)) else "n/a"
@@ -225,9 +273,15 @@ def _wait_for_completion(runner, poll_seconds: float = 1.0):
             gen = progress.current_generation
             gen_total = progress.total_generations
             if total > 0:
-                print(f"status={status} program={current}/{total}", end="\r", flush=True)
+                print(
+                    f"status={status} program={current}/{total}", end="\r", flush=True
+                )
             elif gen_total > 0:
-                print(f"status={status} generation={gen}/{gen_total}", end="\r", flush=True)
+                print(
+                    f"status={status} generation={gen}/{gen_total}",
+                    end="\r",
+                    flush=True,
+                )
             else:
                 print(f"status={status}", end="\r", flush=True)
             time.sleep(poll_seconds)
@@ -239,8 +293,8 @@ def _wait_for_completion(runner, poll_seconds: float = 1.0):
 
     final = runner.progress
     # Flush async writes to DB
-    nb = getattr(runner, 'notebook', None)
-    if nb and hasattr(nb, 'flush_writes'):
+    nb = getattr(runner, "notebook", None)
+    if nb and hasattr(nb, "flush_writes"):
         nb.flush_writes()
     print("\nRun finished.")
     print(f"Final status: {final.status}")

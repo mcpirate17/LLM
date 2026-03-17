@@ -27,6 +27,7 @@ def safe_json_load(raw: Any) -> Any:
         return raw
     try:
         import json
+
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
@@ -55,8 +56,12 @@ def tokenize_file(path: Path, vocab_size: int) -> List[int]:
 
 
 def make_batches(
-    tokens: List[int], batch_size: int, seq_len: int,
-    n_batches: int, device: torch.device, seed: int = 42,
+    tokens: List[int],
+    batch_size: int,
+    seq_len: int,
+    n_batches: int,
+    device: torch.device,
+    seed: int = 42,
 ) -> List[torch.Tensor]:
     """Create a list of randomized (B, S) batches from a list of tokens."""
     if len(tokens) < seq_len + 1:
@@ -72,44 +77,76 @@ def make_batches(
 
 
 def micro_train_loop(
-    model: nn.Module, batches: List[torch.Tensor],
-    vocab_size: int, n_steps: int = 200, lr: float = 3e-4,
+    model: nn.Module,
+    batches: List[torch.Tensor],
+    vocab_size: int,
+    n_steps: int = 200,
+    lr: float = 3e-4,
     clip_grad: float = 1.0,
+    warmup_steps: int = 10,
 ) -> float:
-    """Perform a short training loop on the provided batches."""
+    """Perform a short training loop on the provided batches.
+
+    Includes LR warmup to handle architectures with extreme initial logits.
+    If training diverges (NaN loss), retries once at 1/10th LR.
+    """
     model.train()
-    opt = torch.optim.AdamW(model.parameters(), lr=lr)
-    final_loss = float("inf")
-    
     if not batches:
+        return float("inf")
+
+    def _run(model: nn.Module, run_lr: float) -> float:
+        opt = torch.optim.AdamW(model.parameters(), lr=run_lr)
+        final_loss = float("inf")
+        for step in range(n_steps):
+            # LR warmup: ramp from 0 to run_lr over warmup_steps
+            if step < warmup_steps:
+                warmup_factor = (step + 1) / warmup_steps
+                for pg in opt.param_groups:
+                    pg["lr"] = run_lr * warmup_factor
+
+            batch = batches[step % len(batches)]
+            opt.zero_grad(set_to_none=True)
+            logits = model(batch)
+            sl = logits[:, :-1].contiguous()
+            if sl.shape[-1] > vocab_size:
+                sl = sl[..., :vocab_size]
+
+            loss = F.cross_entropy(
+                sl.reshape(-1, sl.shape[-1]), batch[:, 1:].reshape(-1)
+            )
+
+            if not torch.isfinite(loss):
+                logger.warning(
+                    "Micro-train loss is not finite at step %d (lr=%.1e)", step, run_lr
+                )
+                return float("inf")
+
+            loss.backward()
+            if clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            opt.step()
+            final_loss = loss.item()
         return final_loss
 
-    for step in range(n_steps):
-        batch = batches[step % len(batches)]
-        opt.zero_grad(set_to_none=True)
-        logits = model(batch)
-        sl = logits[:, :-1].contiguous()
-        if sl.shape[-1] > vocab_size:
-            sl = sl[..., :vocab_size]
-        
-        # Cross entropy over (B*(S-1), V)
-        loss = F.cross_entropy(sl.reshape(-1, sl.shape[-1]), batch[:, 1:].reshape(-1))
-        
-        if not torch.isfinite(loss):
-            logger.warning("Micro-train loss is not finite at step %d", step)
-            break
-            
-        loss.backward()
-        if clip_grad > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-        opt.step()
-        final_loss = loss.item()
-        
-    return final_loss
+    result = _run(model, lr)
+    if not math.isfinite(result):
+        # Retry with 1/10th LR for architectures with extreme init
+        logger.info("Micro-train diverged at lr=%.1e, retrying at %.1e", lr, lr * 0.1)
+        # Re-init weights for clean retry
+        for m in model.modules():
+            if hasattr(m, "reset_parameters"):
+                try:
+                    m.reset_parameters()
+                except Exception:
+                    pass
+        result = _run(model, lr * 0.1)
+    return result
 
 
 def compute_perplexity(
-    model: nn.Module, batches: List[torch.Tensor], vocab_size: int,
+    model: nn.Module,
+    batches: List[torch.Tensor],
+    vocab_size: int,
 ) -> Optional[float]:
     """Compute exponential of cross-entropy loss over batches."""
     model.eval()
@@ -122,11 +159,12 @@ def compute_perplexity(
             if sl.shape[-1] > vocab_size:
                 sl = sl[..., :vocab_size]
             loss = F.cross_entropy(
-                sl.reshape(-1, sl.shape[-1]), batch[:, 1:].reshape(-1), reduction="sum")
+                sl.reshape(-1, sl.shape[-1]), batch[:, 1:].reshape(-1), reduction="sum"
+            )
             if torch.isfinite(loss):
                 total_loss += loss.item()
                 total_tokens += batch[:, 1:].numel()
-    
+
     if total_tokens == 0:
         return None
     return math.exp(min(total_loss / total_tokens, 20.0))

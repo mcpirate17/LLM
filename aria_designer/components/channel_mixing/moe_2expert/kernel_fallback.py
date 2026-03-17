@@ -1,5 +1,5 @@
 """Kernel handler for moe_2expert — lightweight 2-expert MoE with learned gating."""
-import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 

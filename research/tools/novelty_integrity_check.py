@@ -65,18 +65,18 @@ if exp.get('behavior_vector') is None:
     # Check for required fields first
     if not experiment_data:
         return False
-    
+
     novelty_scores = experiment_data.get('novelty_scores')
     behavior_vector = experiment_data.get('behavior_vector')
-    
+
     # Require both fields to be present and non-null
     if novelty_scores is None or behavior_vector is None:
         return False
-    
+
     # Validate they are not empty
     if not novelty_scores or not behavior_vector:
         return False
-    
+
     return True
 # Investigating heal-ae09b0d28f passure
 # DEBUG: Added logging to identify failure point
@@ -90,7 +90,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from typing import Dict, List
 
 from research.eval.novelty_calibration import calibrate_baseline_transformer_novelty
@@ -101,7 +100,9 @@ def _boolish(v) -> bool:
     return bool(int(v)) if isinstance(v, (int, bool)) else bool(v)
 
 
-def run_integrity_check(nb: LabNotebook, calibrate_if_missing: bool = False, runs: int = 6) -> Dict[str, object]:
+def run_integrity_check(
+    nb: LabNotebook, calibrate_if_missing: bool = False, runs: int = 6
+) -> Dict[str, object]:
     failures: List[str] = []
     warnings: List[str] = []
 
@@ -122,7 +123,9 @@ def run_integrity_check(nb: LabNotebook, calibrate_if_missing: bool = False, run
         if not r.get("cka_source"):
             failures.append(f"{r.get('result_id')}: missing cka_source")
 
-        if r.get("cka_source") == "heuristic_fallback" and _boolish(r.get("novelty_valid_for_promotion")):
+        if r.get("cka_source") == "heuristic_fallback" and _boolish(
+            r.get("novelty_valid_for_promotion")
+        ):
             reason = str(r.get("novelty_validity_reason") or "")
             justified = _boolish(r.get("novelty_requires_justification"))
             if not (reason.startswith("override:") and justified):
@@ -134,7 +137,9 @@ def run_integrity_check(nb: LabNotebook, calibrate_if_missing: bool = False, run
         cal = nb.get_latest_novelty_calibration(reference_version=ref)
         if cal is None:
             if calibrate_if_missing:
-                calibration = calibrate_baseline_transformer_novelty(n_runs=max(2, int(runs)))
+                calibration = calibrate_baseline_transformer_novelty(
+                    n_runs=max(2, int(runs))
+                )
                 nb.record_novelty_calibration(
                     reference_version=ref,
                     cka_source=calibration.get("cka_source"),
@@ -150,7 +155,9 @@ def run_integrity_check(nb: LabNotebook, calibrate_if_missing: bool = False, run
                 )
                 warnings.append(f"Missing calibration for {ref}; generated one.")
             else:
-                failures.append(f"Missing novelty_calibration row for reference_version={ref}")
+                failures.append(
+                    f"Missing novelty_calibration row for reference_version={ref}"
+                )
 
     # Promotion integrity: higher tiers should not rely on invalid novelty entries.
     promoted = nb.conn.execute(
@@ -178,14 +185,20 @@ def run_integrity_check(nb: LabNotebook, calibrate_if_missing: bool = False, run
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Novelty scoring integrity checks")
-    parser.add_argument("--db", default="lab_notebook.db", help="Path to notebook SQLite DB")
+    parser.add_argument(
+        "--db", default="lab_notebook.db", help="Path to notebook SQLite DB"
+    )
     parser.add_argument("--calibrate-if-missing", action="store_true")
-    parser.add_argument("--runs", type=int, default=6, help="Calibration runs when generating")
+    parser.add_argument(
+        "--runs", type=int, default=6, help="Calibration runs when generating"
+    )
     args = parser.parse_args()
 
     nb = LabNotebook(args.db)
     try:
-        report = run_integrity_check(nb, calibrate_if_missing=args.calibrate_if_missing, runs=args.runs)
+        report = run_integrity_check(
+            nb, calibrate_if_missing=args.calibrate_if_missing, runs=args.runs
+        )
     finally:
         nb.close()
 

@@ -1,4 +1,5 @@
 """leaderboard API route registration."""
+
 from __future__ import annotations
 
 import logging
@@ -6,8 +7,11 @@ from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
 from ..notebook import LabNotebook
 from ._strategy_recommendations import (
-    annotate_qkv_usage, attach_long_context_breakdown,
-    compute_cross_run_stability, infer_tier_for_program, count_discovery_tiers,
+    annotate_qkv_usage,
+    attach_long_context_breakdown,
+    compute_cross_run_stability,
+    infer_tier_for_program,
+    count_discovery_tiers,
 )
 from .deps import ApiRouteContext
 
@@ -101,11 +105,18 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         limit = request.args.get("limit", 50, type=int)
         sort_by = request.args.get("sort", "composite_score")
         quality = str(request.args.get("quality") or "").strip().lower()
-        include_references = str(request.args.get("include_references", "1")).strip().lower() not in {"0", "false", "no"}
-        compact = str(request.args.get("compact", "0")).strip().lower() in {"1", "true", "yes"}
+        include_references = str(
+            request.args.get("include_references", "1")
+        ).strip().lower() not in {"0", "false", "no"}
+        compact = str(request.args.get("compact", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         nb = LabNotebook(notebook_path)
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = None if compact else ExperimentAnalytics(nb)
             base_limit = limit if quality != "promotable" else max(limit * 4, 100)
             entries = nb.get_leaderboard(
@@ -115,7 +126,9 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 include_references=include_references,
             )
             if quality == "promotable":
-                entries = [entry for entry in entries if _entry_has_promotion_path(entry)]
+                entries = [
+                    entry for entry in entries if _entry_has_promotion_path(entry)
+                ]
                 entries = entries[:limit]
             if not compact:
                 attach_long_context_breakdown(nb, entries)
@@ -130,28 +143,69 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 for entry in entries:
                     entry["cross_run_stability"] = stability_by_result.get(
                         entry.get("result_id"),
-                        {"trend": "unknown", "seen_runs": 0,
-                         "latest_rank": None, "previous_rank": None, "rank_delta": None},
+                        {
+                            "trend": "unknown",
+                            "seen_runs": 0,
+                            "latest_rank": None,
+                            "previous_rank": None,
+                            "rank_delta": None,
+                        },
                     )
                 annotate_qkv_usage(entries, analytics)
             else:
                 entries = [_compact_leaderboard_entry(entry) for entry in entries]
                 stability = {"summary": {}, "window_size": 0}
+            # Enrich entries with gap_vs_gpt2 and loss_improvement_rate
+            for entry in entries:
+                rid = entry.get("result_id")
+                if rid:
+                    pr = nb.conn.execute(
+                        "SELECT arch_spec_json, loss_improvement_rate FROM program_results WHERE result_id = ?",
+                        (rid,),
+                    ).fetchone()
+                    if pr:
+                        if pr["loss_improvement_rate"] is not None:
+                            entry["loss_improvement_rate"] = float(
+                                pr["loss_improvement_rate"]
+                            )
+                        spec_json = pr["arch_spec_json"]
+                        if spec_json:
+                            try:
+                                import json as _json
+
+                                spec = (
+                                    _json.loads(spec_json)
+                                    if isinstance(spec_json, str)
+                                    else spec_json
+                                )
+                                if spec.get("gap_nats") is not None:
+                                    entry["gap_vs_gpt2"] = float(spec["gap_nats"])
+                                if (
+                                    spec.get("improvement_rate") is not None
+                                    and entry.get("loss_improvement_rate") is None
+                                ):
+                                    entry["loss_improvement_rate"] = float(
+                                        spec["improvement_rate"]
+                                    )
+                            except (ValueError, TypeError, _json.JSONDecodeError):
+                                pass
             tiers = {}
             for entry in entries:
                 t = entry.get("tier", "screening")
                 if t not in tiers:
                     tiers[t] = []
                 tiers[t].append(entry)
-            return jsonify({
-                "entries": entries,
-                "by_tier": tiers,
-                "total": len(entries),
-                "compact": compact,
-                "quality": quality or "all",
-                "cross_run_stability_summary": stability.get("summary", {}),
-                "cross_run_stability_window": stability.get("window_size", 0),
-            })
+            return jsonify(
+                {
+                    "entries": entries,
+                    "by_tier": tiers,
+                    "total": len(entries),
+                    "compact": compact,
+                    "quality": quality or "all",
+                    "cross_run_stability_summary": stability.get("summary", {}),
+                    "cross_run_stability_window": stability.get("window_size", 0),
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/leaderboard: {e}")
             return jsonify({"error": str(e)}), 500
@@ -165,9 +219,19 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         entry_id = str(body.get("entry_id") or "").strip()
         result_id = str(body.get("result_id") or "").strip()
 
-        valid_tiers = {"screening", "screened_out", "investigation", "validation", "breakthrough"}
+        valid_tiers = {
+            "screening",
+            "screened_out",
+            "investigation",
+            "validation",
+            "breakthrough",
+        }
         if tier not in valid_tiers:
-            return jsonify({"error": "tier must be one of screening, screened_out, investigation, validation, breakthrough"}), 400
+            return jsonify(
+                {
+                    "error": "tier must be one of screening, screened_out, investigation, validation, breakthrough"
+                }
+            ), 400
         if not entry_id and not result_id:
             return jsonify({"error": "entry_id or result_id is required"}), 400
 
@@ -195,10 +259,14 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 (resolved_entry_id,),
             ).fetchone()
 
-            return jsonify({
-                "success": True,
-                "entry": dict(updated) if updated else {"entry_id": resolved_entry_id, "tier": tier},
-            })
+            return jsonify(
+                {
+                    "success": True,
+                    "entry": dict(updated)
+                    if updated
+                    else {"entry_id": resolved_entry_id, "tier": tier},
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/leaderboard/status: {e}")
             return jsonify({"error": str(e)}), 500
@@ -229,7 +297,9 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 return jsonify({"error": "Leaderboard entry not found"}), 404
 
             nb.set_leaderboard_pin(resolved_entry_id, pinned)
-            return jsonify({"success": True, "entry_id": resolved_entry_id, "pinned": pinned})
+            return jsonify(
+                {"success": True, "entry_id": resolved_entry_id, "pinned": pinned}
+            )
         except Exception as e:
             logger.error(f"Error in /api/leaderboard/pin: {e}")
             return jsonify({"error": str(e)}), 500
@@ -248,6 +318,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         nb = LabNotebook(notebook_path)
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
 
             if view == "all":
@@ -268,12 +339,14 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
 
                 tier_counts = count_discovery_tiers(nb)
 
-                return jsonify({
-                    "entries": _json_safe(programs),
-                    "total": len(programs),
-                    "tier_counts": tier_counts,
-                    "view": "all",
-                })
+                return jsonify(
+                    {
+                        "entries": _json_safe(programs),
+                        "total": len(programs),
+                        "tier_counts": tier_counts,
+                        "view": "all",
+                    }
+                )
 
             entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
             attach_long_context_breakdown(nb, entries)
@@ -288,22 +361,29 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             for entry in entries:
                 entry["cross_run_stability"] = stability_by_result.get(
                     entry.get("result_id"),
-                    {"trend": "unknown", "seen_runs": 0,
-                     "latest_rank": None, "previous_rank": None, "rank_delta": None},
+                    {
+                        "trend": "unknown",
+                        "seen_runs": 0,
+                        "latest_rank": None,
+                        "previous_rank": None,
+                        "rank_delta": None,
+                    },
                 )
             annotate_qkv_usage(entries, analytics)
             annotate_display_names(entries)
 
             tier_counts = count_discovery_tiers(nb)
 
-            return jsonify({
-                "entries": _json_safe(entries),
-                "total": len(entries),
-                "tier_counts": tier_counts,
-                "cross_run_stability_summary": stability.get("summary", {}),
-                "cross_run_stability_window": stability.get("window_size", 0),
-                "view": "ranked",
-            })
+            return jsonify(
+                {
+                    "entries": _json_safe(entries),
+                    "total": len(entries),
+                    "tier_counts": tier_counts,
+                    "cross_run_stability_summary": stability.get("summary", {}),
+                    "cross_run_stability_window": stability.get("window_size", 0),
+                    "view": "ranked",
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/discoveries: {e}")
             return jsonify({"error": str(e)}), 500

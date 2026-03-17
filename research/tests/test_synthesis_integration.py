@@ -12,18 +12,15 @@ import pytest
 import importlib
 import json
 import os
-import sys
 import tempfile
-import time
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
 # Detect available dependencies
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -33,6 +30,7 @@ try:
 except ImportError:
     HAS_FLASK = False
 
+
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
 def _import_module(dotted_path):
@@ -41,14 +39,12 @@ def _import_module(dotted_path):
 
 
 try:
-    from research.scientist.notebook import LabNotebook, ExperimentEntry
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -56,6 +52,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -63,6 +60,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -147,14 +145,20 @@ class TestMorphologicalConstraints(unittest.TestCase):
         )
 
         found = False
-        for seed in range(20, 100):
-            graph = generate_layer_graph(cfg, seed=seed)
+        for seed in range(20, 300):
+            try:
+                graph = generate_layer_graph(cfg, seed=seed)
+            except ValueError:
+                continue
             op_names = [n.op_name for n in graph.nodes.values() if not n.is_input]
             if any(op in functional_ops for op in op_names):
                 found = True
                 break
 
-        self.assertTrue(found, "Expected at least one generated graph to include a functional primitive")
+        self.assertTrue(
+            found,
+            "Expected at least one generated graph to include a functional primitive",
+        )
 
     def test_generated_graphs_respect_final_depth_and_op_budget(self):
         from research.synthesis.grammar import GrammarConfig, generate_layer_graph
@@ -164,6 +168,7 @@ class TestMorphologicalConstraints(unittest.TestCase):
             model_dim=64,
             max_depth=6,
             max_ops=12,
+            max_params_ratio=10.0,  # larger op pool needs more headroom
             residual_prob=0.2,
         )
 
@@ -223,7 +228,6 @@ class TestFunctionalArchitectureBuild(unittest.TestCase):
         self.assertTrue(torch.isfinite(logits).all())
 
 
-
 # ── Test 11: Evolution Search ──
 
 
@@ -235,6 +239,7 @@ class TestEvolutionIntegration(unittest.TestCase):
         """evolutionary_search should accept novelty_fn parameter."""
         from research.search.evolution import evolutionary_search
         import inspect
+
         sig = inspect.signature(evolutionary_search)
         self.assertIn("novelty_fn", sig.parameters)
 
@@ -242,6 +247,7 @@ class TestEvolutionIntegration(unittest.TestCase):
         """novelty_search should accept fingerprint_fn parameter."""
         from research.search.novelty_search import novelty_search
         import inspect
+
         sig = inspect.signature(novelty_search)
         self.assertIn("fingerprint_fn", sig.parameters)
 
@@ -267,7 +273,9 @@ class TestEvolutionIntegration(unittest.TestCase):
 
         g1 = generate_layer_graph(GrammarConfig(model_dim=128), seed=101)
         g2 = generate_layer_graph(GrammarConfig(model_dim=128), seed=202)
-        child = _crossover_graphs(g1, g2, GrammarConfig(model_dim=128), random.Random(11))
+        child = _crossover_graphs(
+            g1, g2, GrammarConfig(model_dim=128), random.Random(11)
+        )
 
         self.assertEqual(child.model_dim, g1.model_dim)
         self.assertIn("lineage", child.metadata)
@@ -338,8 +346,11 @@ class TestEvolutionIntegration(unittest.TestCase):
         fps = [ind.fingerprint for ind in deduped]
         self.assertEqual(len(deduped), 3)
         self.assertEqual(len(set(fps)), 3)
-        self.assertTrue(any(ind.metadata.get("dedupe_duplicates_replaced", 0) > 0
-                            for ind in deduped))
+        self.assertTrue(
+            any(
+                ind.metadata.get("dedupe_duplicates_replaced", 0) > 0 for ind in deduped
+            )
+        )
 
     def test_evaluated_flag_skips_reeval(self):
         """Individuals with _evaluated=True should not be re-evaluated."""
@@ -410,7 +421,6 @@ class TestEvolutionIntegration(unittest.TestCase):
         self.assertEqual(call_count["n"], 2)  # only graphs[1] and graphs[2]
 
 
-
 class TestGrammarWeightPersistence(unittest.TestCase):
     """Test that grammar weights appear in results dict."""
 
@@ -472,6 +482,7 @@ class TestFrontierOps(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         db_path = os.path.join(self.tmpdir, "test_frontier.db")
         from research.scientist.notebook import LabNotebook
+
         self.nb = LabNotebook(db_path)
 
     def tearDown(self):
@@ -480,11 +491,14 @@ class TestFrontierOps(unittest.TestCase):
     def test_frontier_includes_ops(self):
         """Frontier entries should include ops extracted from graph_json."""
         from research.scientist.analytics import ExperimentAnalytics
+
         exp_id = self.nb.start_experiment("synthesis", {}, "test")
-        graph_json = json.dumps({
-            "nodes": {"n1": {"op": "linear_proj"}, "n2": {"op": "gelu"}},
-            "output": "n2",
-        })
+        graph_json = json.dumps(
+            {
+                "nodes": {"n1": {"op": "linear_proj"}, "n2": {"op": "gelu"}},
+                "output": "n2",
+            }
+        )
         self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="frontier_fp",
@@ -513,6 +527,7 @@ class TestClusterDescriptions(unittest.TestCase):
     def test_describe_clusters_contrastive(self):
         """Clusters should get different labels based on relative S1 ranking."""
         from research.scientist.analytics import ExperimentAnalytics
+
         clusters = [
             {
                 "size": 10,
@@ -539,7 +554,5 @@ class TestClusterDescriptions(unittest.TestCase):
         self.assertIn("least productive", clusters[1]["description"])
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

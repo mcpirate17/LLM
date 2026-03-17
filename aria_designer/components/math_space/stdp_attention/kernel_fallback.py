@@ -1,6 +1,7 @@
 """Kernel handler for stdp_attention — dispatches to aria_core.stdp_attention_f32."""
-import torch
+
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "stdp_attention"

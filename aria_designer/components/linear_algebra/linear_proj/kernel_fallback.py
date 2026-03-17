@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for linear_proj."""
-import torch
+
 import torch.nn as nn
 
 

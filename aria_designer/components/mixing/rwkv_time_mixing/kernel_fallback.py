@@ -1,7 +1,8 @@
 """Kernel handler for rwkv_time_mixing — dispatches to aria_core.rwkv_time_mixing_f32."""
+
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler, _make_weight
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "rwkv_time_mixing"
@@ -16,8 +17,14 @@ class ComponentHandler(NativeComponentHandler):
 
     def _get_native_args(self, inputs, config):
         x = inputs["x"].detach().contiguous().float()
-        return (x, self._weights["decay"], self._weights["bonus"],
-                self._weights["wk"], self._weights["wv"], self._weights["wr"])
+        return (
+            x,
+            self._weights["decay"],
+            self._weights["bonus"],
+            self._weights["wk"],
+            self._weights["wv"],
+            self._weights["wr"],
+        )
 
     def _fallback(self, inputs, config):
         x = inputs["x"]

@@ -1,6 +1,7 @@
 """Kernel handler for padic_residual — dispatches to aria_core.padic_residual_f32."""
-import torch
+
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "padic_residual"

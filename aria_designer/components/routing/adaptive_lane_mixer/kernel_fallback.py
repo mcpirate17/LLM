@@ -1,7 +1,7 @@
 """Python fallback kernel for adaptive_lane_mixer."""
-import torch
+
 import torch.nn as nn
-import torch.nn.functional as F
+
 
 class ComponentHandler:
     """Fallback handler for adaptive_lane_mixer."""

@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for concat."""
-import torch
+
 import torch.nn as nn
 
 

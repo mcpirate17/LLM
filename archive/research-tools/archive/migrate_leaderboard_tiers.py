@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -39,7 +38,9 @@ def run_migration(db_path: str, dry_run: bool = False, verbose: bool = True):
     conn.row_factory = sqlite3.Row
 
     # Ensure new columns exist
-    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(leaderboard)").fetchall()}
+    existing_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+    }
     new_cols = {
         "normalized_baseline_ratio": "REAL",
         "param_efficiency": "REAL",
@@ -68,7 +69,9 @@ def run_migration(db_path: str, dry_run: bool = False, verbose: bool = True):
     ).fetchone()[0]
 
     # Also check program_results.baseline_loss_ratio
-    pr_cols = {r[1] for r in conn.execute("PRAGMA table_info(program_results)").fetchall()}
+    pr_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(program_results)").fetchall()
+    }
     n_pr_baseline = 0
     if "baseline_loss_ratio" in pr_cols:
         n_pr_baseline = conn.execute(
@@ -100,16 +103,26 @@ def run_migration(db_path: str, dry_run: bool = False, verbose: bool = True):
         print(f"  DB: {db_path}")
         print()
         print("Problem: baseline was trained with n_layers=4 instead of 2.")
-        print(f"  All {n_cache_entries} cached baselines have loss >= ln(32000) (random chance).")
+        print(
+            f"  All {n_cache_entries} cached baselines have loss >= ln(32000) (random chance)."
+        )
         print(f"  All {n_with_bl} leaderboard baseline_ratio values are meaningless.")
         print()
         print("Actions:")
-        print(f"  1. NULL out validation_baseline_ratio on {n_with_bl} leaderboard entries")
-        print(f"  2. NULL out normalized_baseline_ratio on {n_with_norm} leaderboard entries")
+        print(
+            f"  1. NULL out validation_baseline_ratio on {n_with_bl} leaderboard entries"
+        )
+        print(
+            f"  2. NULL out normalized_baseline_ratio on {n_with_norm} leaderboard entries"
+        )
         print(f"  3. NULL out param_efficiency on {n_with_norm} leaderboard entries")
-        print(f"  4. NULL out baseline_loss_ratio on {n_pr_baseline} program_results entries")
+        print(
+            f"  4. NULL out baseline_loss_ratio on {n_pr_baseline} program_results entries"
+        )
         print(f"  5. Demote {n_breakthrough} breakthrough entries → validation")
-        print(f"  6. Delete {n_stale_cache}/{n_cache_entries} stale baseline cache entries")
+        print(
+            f"  6. Delete {n_stale_cache}/{n_cache_entries} stale baseline cache entries"
+        )
         print()
 
     if dry_run:
@@ -165,7 +178,7 @@ def run_migration(db_path: str, dry_run: bool = False, verbose: bool = True):
         cache_conn.close()
 
     if verbose:
-        print(f"Done.")
+        print("Done.")
         print(f"  {n_with_bl} leaderboard baseline ratios nullified")
         print(f"  {n_pr_baseline} program_results baseline ratios nullified")
         print(f"  {n_breakthrough} breakthroughs demoted to validation")
@@ -173,7 +186,9 @@ def run_migration(db_path: str, dry_run: bool = False, verbose: bool = True):
         print()
         print("Next steps:")
         print("  - Run experiments normally; baseline will retrain with 2 layers")
-        print("  - Existing validation entries will get fresh baseline_ratio on re-validation")
+        print(
+            "  - Existing validation entries will get fresh baseline_ratio on re-validation"
+        )
         print("  - The sanity check in baseline.compare() now returns 1.0 if baseline")
         print("    hasn't learned (loss >= 95% of random chance)")
 
@@ -191,11 +206,13 @@ def main():
         description="Fix broken baseline ratios and re-evaluate leaderboard tiers"
     )
     parser.add_argument(
-        "--db", default="research/lab_notebook.db",
+        "--db",
+        default="research/lab_notebook.db",
         help="Path to lab_notebook.db (default: research/lab_notebook.db)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would change without modifying the database",
     )
     args = parser.parse_args()

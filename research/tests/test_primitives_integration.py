@@ -12,12 +12,8 @@ import pytest
 import importlib
 import json
 import os
-import sys
 import tempfile
-import time
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +21,7 @@ pytestmark = pytest.mark.unit
 try:
     import torch
     import torch.nn as nn
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -34,6 +31,7 @@ try:
 except ImportError:
     HAS_FLASK = False
 
+
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
 def _import_module(dotted_path):
@@ -42,14 +40,14 @@ def _import_module(dotted_path):
 
 
 try:
-    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    from research.scientist.notebook import LabNotebook
+
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -57,6 +55,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -64,6 +63,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -78,6 +78,7 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
         """hyperbolic_norm preserves shape."""
         import torch
         from research.mathspaces.hyperbolic import execute_hyperbolic_norm
+
         module = torch.nn.Module()
         x = torch.randn(2, 4, 16) * 0.1
         out = execute_hyperbolic_norm(module, x)
@@ -88,6 +89,7 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
         """tropical_gate preserves shape."""
         import torch
         from research.mathspaces.tropical import execute_tropical_gate
+
         module = torch.nn.Module()
         x = torch.randn(2, 4, 16)
         out = execute_tropical_gate(module, x)
@@ -98,6 +100,7 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
         """clifford_attention preserves shape (D must be multiple of 8)."""
         import torch
         from research.mathspaces.clifford import execute_clifford_attention
+
         module = torch.nn.Module()
         x = torch.randn(2, 4, 16)
         out = execute_clifford_attention(module, x)
@@ -108,6 +111,7 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
         """clifford_attention handles D not divisible by 8."""
         import torch
         from research.mathspaces.clifford import execute_clifford_attention
+
         module = torch.nn.Module()
         x = torch.randn(2, 4, 12)
         out = execute_clifford_attention(module, x)
@@ -117,6 +121,7 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
         """padic_residual preserves shape."""
         import torch
         from research.mathspaces.padic import execute_padic_residual
+
         module = torch.nn.Module()
         x = torch.randn(2, 4, 16)
         out = execute_padic_residual(module, x)
@@ -127,22 +132,33 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
         """All 4 compound ops appear in the registry after registration."""
         from research.mathspaces.registry import register_all_mathspaces
         from research.synthesis.primitives import list_primitives, OpCategory
+
         register_all_mathspaces()
         math_ops = {op.name for op in list_primitives(OpCategory.MATH_SPACE)}
-        for name in ["hyperbolic_norm", "tropical_gate",
-                     "clifford_attention", "padic_residual"]:
+        for name in [
+            "hyperbolic_norm",
+            "tropical_gate",
+            "clifford_attention",
+            "padic_residual",
+        ]:
             self.assertIn(name, math_ops, f"Compound op {name} not registered")
 
     def test_compound_ops_have_params(self):
         """Compound ops are registered with has_params=True."""
         from research.mathspaces.registry import register_all_mathspaces
         from research.synthesis.primitives import list_primitives, OpCategory
+
         register_all_mathspaces()
         math_ops = {op.name: op for op in list_primitives(OpCategory.MATH_SPACE)}
-        for name in ["hyperbolic_norm", "tropical_gate",
-                     "clifford_attention", "padic_residual"]:
-            self.assertTrue(math_ops[name].has_params,
-                            f"{name} should have has_params=True")
+        for name in [
+            "hyperbolic_norm",
+            "tropical_gate",
+            "clifford_attention",
+            "padic_residual",
+        ]:
+            self.assertTrue(
+                math_ops[name].has_params, f"{name} should have has_params=True"
+            )
 
 
 class TestAlternativeLearningRules(unittest.TestCase):
@@ -151,6 +167,7 @@ class TestAlternativeLearningRules(unittest.TestCase):
     def _make_simple_model(self):
         """Create a simple model for optimizer testing."""
         import torch.nn as nn
+
         model = nn.Sequential(
             nn.Linear(16, 32),
             nn.ReLU(),
@@ -203,23 +220,33 @@ class TestAlternativeLearningRules(unittest.TestCase):
 
     def test_all_recipes_instantiate(self):
         """Verify all OPTIMIZER_RECIPES can be instantiated."""
-        from research.training.optimizer_synthesis import OPTIMIZER_RECIPES, SynthesizedOptimizer
+        from research.training.optimizer_synthesis import (
+            OPTIMIZER_RECIPES,
+            SynthesizedOptimizer,
+        )
 
         model = self._make_simple_model()
         for name, components, desc in OPTIMIZER_RECIPES:
             opt = SynthesizedOptimizer(
-                name=name, components=components, lr=1e-3, weight_decay=0.01,
+                name=name,
+                components=components,
+                lr=1e-3,
+                weight_decay=0.01,
             ).create(model.parameters())
             self.assertIsNotNone(opt, f"Failed to create optimizer: {name}")
 
     def test_synthesize_optimizer_includes_new_recipes(self):
         """Verify new recipes appear in random synthesis."""
         from research.training.optimizer_synthesis import OPTIMIZER_RECIPES
-        recipe_names = [r[0] for r in OPTIMIZER_RECIPES]
-        for expected in ["hebbian", "forward_forward", "perturbation", "contrastive_local"]:
-            self.assertIn(expected, recipe_names,
-                          f"Missing recipe: {expected}")
 
+        recipe_names = [r[0] for r in OPTIMIZER_RECIPES]
+        for expected in [
+            "hebbian",
+            "forward_forward",
+            "perturbation",
+            "contrastive_local",
+        ]:
+            self.assertIn(expected, recipe_names, f"Missing recipe: {expected}")
 
 
 @unittest.skipUnless(HAS_TORCH, "torch required")
@@ -237,27 +264,32 @@ class TestSpikingPrimitives(unittest.TestCase):
     # Shape preservation
     def test_lif_shape(self):
         from research.mathspaces.spiking import execute_lif
+
         out = self._run_op(execute_lif)
         self.assertEqual(out.shape, (self.B, self.S, self.D))
 
     def test_spike_rate_code_shape(self):
         from research.mathspaces.spiking import execute_spike_rate_code
+
         out = self._run_op(execute_spike_rate_code)
         self.assertEqual(out.shape, (self.B, self.S, self.D))
 
     def test_stdp_attention_shape(self):
         from research.mathspaces.spiking import execute_stdp_attention
+
         out = self._run_op(execute_stdp_attention)
         self.assertEqual(out.shape, (self.B, self.S, self.D))
 
     def test_sparse_threshold_shape(self):
         from research.mathspaces.spiking import execute_sparse_threshold
+
         out = self._run_op(execute_sparse_threshold)
         self.assertEqual(out.shape, (self.B, self.S, self.D))
 
     # Gradient flow
     def test_lif_gradient(self):
         from research.mathspaces.spiking import execute_lif
+
         out = self._run_op(execute_lif)
         out.sum().backward()
         self.assertIsNotNone(self.x.grad)
@@ -265,6 +297,7 @@ class TestSpikingPrimitives(unittest.TestCase):
 
     def test_spike_rate_code_gradient(self):
         from research.mathspaces.spiking import execute_spike_rate_code
+
         out = self._run_op(execute_spike_rate_code)
         out.sum().backward()
         self.assertIsNotNone(self.x.grad)
@@ -272,6 +305,7 @@ class TestSpikingPrimitives(unittest.TestCase):
 
     def test_sparse_threshold_gradient(self):
         from research.mathspaces.spiking import execute_sparse_threshold
+
         out = self._run_op(execute_sparse_threshold)
         out.sum().backward()
         self.assertIsNotNone(self.x.grad)
@@ -280,6 +314,7 @@ class TestSpikingPrimitives(unittest.TestCase):
     # LIF output bounded
     def test_lif_output_bounded(self):
         from research.mathspaces.spiking import execute_lif
+
         out = self._run_op(execute_lif)
         self.assertTrue((out >= 0).all())
         self.assertTrue((out <= 1).all())
@@ -287,6 +322,7 @@ class TestSpikingPrimitives(unittest.TestCase):
     # STDP causality: changing future tokens should not affect past output
     def test_stdp_causality(self):
         from research.mathspaces.spiking import execute_stdp_attention
+
         x_base = torch.randn(1, 8, 16)
         x_mod = x_base.clone().detach()
         x_mod[:, 6:, :] = torch.randn(1, 2, 16)  # Change last 2 tokens
@@ -299,6 +335,7 @@ class TestSpikingPrimitives(unittest.TestCase):
     # Sparse threshold promotes sparsity
     def test_sparse_threshold_sparsity(self):
         from research.mathspaces.spiking import execute_sparse_threshold
+
         x = torch.randn(4, 32, 64)
         out = execute_sparse_threshold(None, x)
         # At least 20% near-zero (threshold targets ~50%)
@@ -309,18 +346,31 @@ class TestSpikingPrimitives(unittest.TestCase):
     def test_spiking_ops_registered(self):
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
-        for name in ["lif_neuron", "spike_rate_code", "stdp_attention",
-                      "sparse_threshold"]:
-            self.assertIn(name, PRIMITIVE_REGISTRY,
-                          f"Spiking op '{name}' not in PRIMITIVE_REGISTRY")
+        for name in [
+            "lif_neuron",
+            "spike_rate_code",
+            "stdp_attention",
+            "sparse_threshold",
+        ]:
+            self.assertIn(
+                name,
+                PRIMITIVE_REGISTRY,
+                f"Spiking op '{name}' not in PRIMITIVE_REGISTRY",
+            )
 
     def test_spiking_ops_identity_shape_rule(self):
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
-        for name in ["lif_neuron", "spike_rate_code", "stdp_attention",
-                      "sparse_threshold"]:
+        for name in [
+            "lif_neuron",
+            "spike_rate_code",
+            "stdp_attention",
+            "sparse_threshold",
+        ]:
             op = PRIMITIVE_REGISTRY[name]
             self.assertEqual(op.shape_rule, "identity")
         # stdp_attention has a learnable temporal decay parameter
@@ -330,6 +380,7 @@ class TestSpikingPrimitives(unittest.TestCase):
 
     def test_stdp_attention_gradient(self):
         from research.mathspaces.spiking import execute_stdp_attention
+
         out = self._run_op(execute_stdp_attention)
         out.sum().backward()
         self.assertIsNotNone(self.x.grad)
@@ -378,7 +429,6 @@ class TestMathspaceStability(unittest.TestCase):
         torch.testing.assert_close(sums, torch.ones_like(sums), atol=1e-5, rtol=1e-5)
 
 
-
 @unittest.skipUnless(HAS_TORCH, "requires torch")
 class TestCompressionPrimitives(unittest.TestCase):
     """Tests for weight compression math space primitives."""
@@ -392,6 +442,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_low_rank_proj_shape(self):
         from research.mathspaces.compression import execute_low_rank_proj
         import torch.nn as nn
+
         module = nn.Module()
         r = self.D // 4
         module.U = nn.Parameter(torch.randn(self.D, r))
@@ -402,6 +453,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_grouped_linear_shape(self):
         from research.mathspaces.compression import execute_grouped_linear
         import torch.nn as nn
+
         module = nn.Module()
         g = 4
         gd = self.D // g
@@ -413,6 +465,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_bottleneck_proj_shape(self):
         from research.mathspaces.compression import execute_bottleneck_proj
         import torch.nn as nn
+
         module = nn.Module()
         r = self.D // 4
         module.down = nn.Parameter(torch.randn(r, self.D))
@@ -423,6 +476,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_shared_basis_proj_shape(self):
         from research.mathspaces.compression import execute_shared_basis_proj
         import torch.nn as nn
+
         module = nn.Module()
         k = 8
         module.mixing = nn.Parameter(torch.randn(self.D, k))
@@ -435,6 +489,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_low_rank_proj_gradient(self):
         from research.mathspaces.compression import execute_low_rank_proj
         import torch.nn as nn
+
         x = torch.randn(self.B, self.S, self.D, requires_grad=True)
         module = nn.Module()
         r = self.D // 4
@@ -448,6 +503,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_grouped_linear_gradient(self):
         from research.mathspaces.compression import execute_grouped_linear
         import torch.nn as nn
+
         x = torch.randn(self.B, self.S, self.D, requires_grad=True)
         module = nn.Module()
         g = 4
@@ -462,6 +518,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_bottleneck_proj_gradient(self):
         from research.mathspaces.compression import execute_bottleneck_proj
         import torch.nn as nn
+
         x = torch.randn(self.B, self.S, self.D, requires_grad=True)
         module = nn.Module()
         r = self.D // 4
@@ -475,6 +532,7 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_shared_basis_proj_gradient(self):
         from research.mathspaces.compression import execute_shared_basis_proj
         import torch.nn as nn
+
         x = torch.randn(self.B, self.S, self.D, requires_grad=True)
         module = nn.Module()
         k = 8
@@ -490,11 +548,19 @@ class TestCompressionPrimitives(unittest.TestCase):
     def test_compression_ops_registered(self):
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
-        for name in ["low_rank_proj", "grouped_linear", "bottleneck_proj",
-                      "shared_basis_proj"]:
-            self.assertIn(name, PRIMITIVE_REGISTRY,
-                          f"Compression op '{name}' not in PRIMITIVE_REGISTRY")
+        for name in [
+            "low_rank_proj",
+            "grouped_linear",
+            "bottleneck_proj",
+            "shared_basis_proj",
+        ]:
+            self.assertIn(
+                name,
+                PRIMITIVE_REGISTRY,
+                f"Compression op '{name}' not in PRIMITIVE_REGISTRY",
+            )
             op = PRIMITIVE_REGISTRY[name]
             self.assertTrue(op.has_params, f"'{name}' should have has_params=True")
             self.assertEqual(op.shape_rule, "identity")
@@ -505,6 +571,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 64
         cop = CompiledOp("low_rank_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -517,6 +584,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 64
         cop = CompiledOp("grouped_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -529,6 +597,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 64
         cop = CompiledOp("bottleneck_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -541,6 +610,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 64
         cop = CompiledOp("shared_basis_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -555,6 +625,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 32
         cop = CompiledOp("low_rank_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -566,6 +637,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 32
         cop = CompiledOp("grouped_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -577,6 +649,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 32
         cop = CompiledOp("bottleneck_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -588,6 +661,7 @@ class TestCompressionPrimitives(unittest.TestCase):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
         from research.mathspaces.registry import register_all_mathspaces
+
         register_all_mathspaces()
         D = 32
         cop = CompiledOp("shared_basis_proj", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
@@ -602,7 +676,12 @@ class TestSparsePrimitives(unittest.TestCase):
 
     def test_sparse_primitives_registered(self):
         from research.synthesis.primitives import PRIMITIVE_REGISTRY
-        for name in ["nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear"]:
+
+        for name in [
+            "nm_sparse_linear",
+            "block_sparse_linear",
+            "semi_structured_2_4_linear",
+        ]:
             self.assertIn(name, PRIMITIVE_REGISTRY)
             op = PRIMITIVE_REGISTRY[name]
             self.assertTrue(op.has_params)
@@ -610,8 +689,11 @@ class TestSparsePrimitives(unittest.TestCase):
     def test_compiler_nm_sparse_linear_shape_and_grad(self):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
+
         D = 32
-        cop = CompiledOp("nm_sparse_linear", {"n": 2, "m": 4}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        cop = CompiledOp(
+            "nm_sparse_linear", {"n": 2, "m": 4}, ShapeInfo(dim=D), ShapeInfo(dim=D), D
+        )
         x = torch.randn(2, 8, D, requires_grad=True)
         out = cop(x)
         self.assertEqual(out.shape, x.shape)
@@ -622,6 +704,7 @@ class TestSparsePrimitives(unittest.TestCase):
     def test_compiler_block_sparse_linear_shape_and_grad(self):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
+
         D = 64
         cop = CompiledOp(
             "block_sparse_linear",
@@ -640,8 +723,11 @@ class TestSparsePrimitives(unittest.TestCase):
     def test_semi_structured_telemetry_records_kernel_fallback_on_cpu(self):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
+
         D = 32
-        cop = CompiledOp("semi_structured_2_4_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        cop = CompiledOp(
+            "semi_structured_2_4_linear", {}, ShapeInfo(dim=D), ShapeInfo(dim=D), D
+        )
         x = torch.randn(2, 8, D)
         out = cop(x)
         self.assertEqual(out.shape, x.shape)
@@ -653,8 +739,11 @@ class TestSparsePrimitives(unittest.TestCase):
     def test_nm_sparse_invalid_config_falls_back_dense(self):
         from research.synthesis.compiler import CompiledOp
         from research.synthesis.graph import ShapeInfo
+
         D = 32
-        cop = CompiledOp("nm_sparse_linear", {"n": 5, "m": 4}, ShapeInfo(dim=D), ShapeInfo(dim=D), D)
+        cop = CompiledOp(
+            "nm_sparse_linear", {"n": 5, "m": 4}, ShapeInfo(dim=D), ShapeInfo(dim=D), D
+        )
         x = torch.randn(2, 8, D)
         out = cop(x)
         self.assertEqual(out.shape, x.shape)
@@ -664,6 +753,7 @@ class TestSparsePrimitives(unittest.TestCase):
 
     def test_sparse_weight_storage_constraints(self):
         from research.morphological_box import ArchSpec, is_valid_spec
+
         base = {
             "token_representation": "dense_float",
             "weight_storage": "structured_sparse",
@@ -751,7 +841,9 @@ class TestSparseTelemetryPersistence(unittest.TestCase):
             try:
                 cols = {
                     row[1]
-                    for row in nb.conn.execute("PRAGMA table_info(program_results)").fetchall()
+                    for row in nb.conn.execute(
+                        "PRAGMA table_info(program_results)"
+                    ).fetchall()
                 }
                 for col in [
                     "sparse_density_mean",
@@ -917,9 +1009,13 @@ class TestQuantizationUtils(unittest.TestCase):
         from research.eval.quantization import FakeQuantResult
 
         r = FakeQuantResult(
-            bits=8, target_sparsity=0.5, actual_sparsity=0.5,
-            n_params_total=1000, n_params_quantized=1000,
-            bytes_per_param_original=4.0, bytes_per_param_effective=0.5,
+            bits=8,
+            target_sparsity=0.5,
+            actual_sparsity=0.5,
+            n_params_total=1000,
+            n_params_quantized=1000,
+            bytes_per_param_original=4.0,
+            bytes_per_param_effective=0.5,
         )
         d = r.to_dict()
         self.assertIn("bits", d)
@@ -937,7 +1033,5 @@ class TestQuantizationUtils(unittest.TestCase):
         self.assertEqual(result["programs"], [])
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

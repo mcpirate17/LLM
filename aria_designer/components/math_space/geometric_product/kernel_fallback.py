@@ -1,6 +1,7 @@
 """Kernel handler for geometric_product — dispatches to aria_core.clifford_geometric_product_cl30_f32."""
-import torch
+
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "clifford_geometric_product_cl30"

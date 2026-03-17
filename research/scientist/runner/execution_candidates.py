@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 
-import torch
-import torch.nn as nn
 
 from ...synthesis.grammar import GrammarConfig, batch_generate
 from ..native_runner import compile_model_native_first as compile_model
@@ -15,6 +13,7 @@ from ...synthesis.serializer import graph_to_json, graph_summary
 from ..shared_utils import resolve_device
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig
@@ -25,8 +24,9 @@ class _ExecutionCandidatesMixin:
 
     __slots__ = ()
 
-    def _generate_candidates(self, config: RunConfig, n: int,
-                             source: str = "graph_synthesis") -> List['ModelCandidate']:
+    def _generate_candidates(
+        self, config: RunConfig, n: int, source: str = "graph_synthesis"
+    ) -> List["ModelCandidate"]:
         """Generate candidate models from the specified source.
 
         source: "graph_synthesis", "morphological_box", or "mixed"
@@ -41,9 +41,11 @@ class _ExecutionCandidatesMixin:
             n_morph = int(n * config.morph_ratio)
             n_graph = n - n_morph
             candidates.extend(
-                self._generate_candidates(config, n_graph, "graph_synthesis"))
+                self._generate_candidates(config, n_graph, "graph_synthesis")
+            )
             candidates.extend(
-                self._generate_candidates(config, n_morph, "morphological_box"))
+                self._generate_candidates(config, n_morph, "morphological_box")
+            )
             return candidates
 
         if source == "morphological_box":
@@ -70,21 +72,31 @@ class _ExecutionCandidatesMixin:
                     try:
                         fixed_choices: Dict[str, str] = {}
                         if bool(getattr(config, "morph_focus_sparse", False)):
-                            explicit_sparse = str(getattr(config, "morph_sparse_weight_storage", "") or "").strip()
+                            explicit_sparse = str(
+                                getattr(config, "morph_sparse_weight_storage", "") or ""
+                            ).strip()
                             if explicit_sparse in sparse_weight_options:
                                 fixed_choices["weight_storage"] = explicit_sparse
                             else:
-                                fixed_choices["weight_storage"] = sparse_weight_options[i % len(sparse_weight_options)]
-                        fixed_routing = str(getattr(config, "morph_compute_routing", "") or "").strip()
+                                fixed_choices["weight_storage"] = sparse_weight_options[
+                                    i % len(sparse_weight_options)
+                                ]
+                        fixed_routing = str(
+                            getattr(config, "morph_compute_routing", "") or ""
+                        ).strip()
                         if fixed_routing:
                             fixed_choices["compute_routing"] = fixed_routing
-                        fixed_channel = str(getattr(config, "morph_channel_mixing", "") or "").strip()
+                        fixed_channel = str(
+                            getattr(config, "morph_channel_mixing", "") or ""
+                        ).strip()
                         if fixed_channel:
                             fixed_choices["channel_mixing"] = fixed_channel
 
-                        spec = roll(seed=i + int(time.time() * 1000) % 100000,
-                                    generation=0,
-                                    fixed=fixed_choices or None)
+                        spec = roll(
+                            seed=i + int(time.time() * 1000) % 100000,
+                            generation=0,
+                            fixed=fixed_choices or None,
+                        )
                         model = build_model(spec, build_cfg)
                         desc = describe_spec(spec)
 
@@ -99,14 +111,17 @@ class _ExecutionCandidatesMixin:
                         )
                         if sandbox_result.passed:
                             import json as _json
-                            candidates.append(ModelCandidate(
-                                source="morphological_box",
-                                model=model,
-                                description=desc,
-                                arch_spec=spec,
-                                arch_spec_json=_json.dumps(spec.to_dict()),
-                                fingerprint=spec.id,
-                            ))
+
+                            candidates.append(
+                                ModelCandidate(
+                                    source="morphological_box",
+                                    model=model,
+                                    description=desc,
+                                    arch_spec=spec,
+                                    arch_spec_json=_json.dumps(spec.to_dict()),
+                                    fingerprint=spec.id,
+                                )
+                            )
                         else:
                             del model
                     except Exception as e:
@@ -148,14 +163,16 @@ class _ExecutionCandidatesMixin:
                     device=dev_str,
                 )
                 if sandbox_result.passed:
-                    candidates.append(ModelCandidate(
-                        source="graph_synthesis",
-                        model=model,
-                        description=graph_summary(graph),
-                        graph=graph,
-                        graph_json=graph_to_json(graph),
-                        fingerprint=graph.fingerprint(),
-                    ))
+                    candidates.append(
+                        ModelCandidate(
+                            source="graph_synthesis",
+                            model=model,
+                            description=graph_summary(graph),
+                            graph=graph,
+                            graph_json=graph_to_json(graph),
+                            fingerprint=graph.fingerprint(),
+                        )
+                    )
                 else:
                     del model
             except Exception:
@@ -165,9 +182,12 @@ class _ExecutionCandidatesMixin:
 
     # ── Training with synthesized programs ──
 
-    def _build_grammar_config(self, config: RunConfig,
-                              excluded_ops: Optional[Set[str]] = None,
-                              op_weights: Optional[Dict[str, float]] = None) -> GrammarConfig:
+    def _build_grammar_config(
+        self,
+        config: RunConfig,
+        excluded_ops: Optional[Set[str]] = None,
+        op_weights: Optional[Dict[str, float]] = None,
+    ) -> GrammarConfig:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
         from ...synthesis.grammar import GrammarConfig
 
@@ -181,7 +201,9 @@ class _ExecutionCandidatesMixin:
             if op_weights:
                 for op_name, w in op_weights.items():
                     if w < 1.0:
-                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * w
+                        grammar.op_weights[op_name] = (
+                            grammar.op_weights.get(op_name, 1.0) * w
+                        )
                     else:
                         grammar.op_weights.setdefault(op_name, w)
             return grammar
@@ -211,14 +233,19 @@ class _ExecutionCandidatesMixin:
             if op_weights:
                 for op_name, w in op_weights.items():
                     if w < 1.0:
-                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * w
+                        grammar.op_weights[op_name] = (
+                            grammar.op_weights.get(op_name, 1.0) * w
+                        )
                     else:
                         grammar.op_weights.setdefault(op_name, w)
             return grammar
 
         # Pick up structured_sparsity_bias from mode recommendation or config
-        sparsity_bias = getattr(self, "_structured_sparsity_bias_override",
-                                getattr(config, "structured_sparsity_bias", 0.0))
+        sparsity_bias = getattr(
+            self,
+            "_structured_sparsity_bias_override",
+            getattr(config, "structured_sparsity_bias", 0.0),
+        )
 
         # Merge API-provided op_weights with learned op_weights
         merged_op_weights = dict(op_weights or {})
@@ -246,9 +273,14 @@ class _ExecutionCandidatesMixin:
         )
         # Baseline routing/difficulty op boosts (always applied unless overridden)
         _routing_defaults = {
-            "entropy_score": 2.5, "route_topk": 2.0, "route_lanes": 2.0,
-            "moe_topk": 2.0, "moe_2expert": 2.0, "token_merging": 1.5,
-            "cascade": 1.5, "adaptive_recursion": 1.5,
+            "entropy_score": 2.5,
+            "route_topk": 2.0,
+            "route_lanes": 2.0,
+            "moe_topk": 2.0,
+            "moe_2expert": 2.0,
+            "token_merging": 1.5,
+            "cascade": 1.5,
+            "adaptive_recursion": 1.5,
         }
         for op_name, default_w in _routing_defaults.items():
             grammar.op_weights.setdefault(op_name, default_w)
@@ -266,10 +298,13 @@ class _ExecutionCandidatesMixin:
         try:
             from pathlib import Path
             import json as _json
+
             priors_path = Path("research/runtime/learning/op_priors.json")
             if priors_path.exists():
                 payload = _json.loads(priors_path.read_text())
-                op_penalties = payload.get("op_penalties", {}) if isinstance(payload, dict) else {}
+                op_penalties = (
+                    payload.get("op_penalties", {}) if isinstance(payload, dict) else {}
+                )
                 if isinstance(op_penalties, dict):
                     for op_name, penalty in op_penalties.items():
                         try:
@@ -278,7 +313,9 @@ class _ExecutionCandidatesMixin:
                             continue
                         # Convert penalty (0..1) into weight multiplier (1..0.5)
                         mult = max(0.5, 1.0 - 0.5 * max(0.0, min(1.0, p)))
-                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * mult
+                        grammar.op_weights[op_name] = (
+                            grammar.op_weights.get(op_name, 1.0) * mult
+                        )
         except Exception:
             pass
 
@@ -286,11 +323,16 @@ class _ExecutionCandidatesMixin:
         try:
             from pathlib import Path
             import json as _json
+
             sugg_path = Path("research/runtime/learning/cluster_suggestions.json")
             if sugg_path.exists():
                 payload = _json.loads(sugg_path.read_text())
                 if isinstance(payload, dict):
-                    op_weight_suggestions = payload.get("op_weight_suggestions") or payload.get("op_weights") or {}
+                    op_weight_suggestions = (
+                        payload.get("op_weight_suggestions")
+                        or payload.get("op_weights")
+                        or {}
+                    )
                     op_penalties = payload.get("op_penalties") or {}
                     op_promotions = payload.get("op_promotions") or {}
                     avoid_patterns = payload.get("avoid_patterns") or []
@@ -300,7 +342,9 @@ class _ExecutionCandidatesMixin:
                         if not op_name:
                             return
                         m = max(0.2, min(3.0, float(mult)))
-                        grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * m
+                        grammar.op_weights[op_name] = (
+                            grammar.op_weights.get(op_name, 1.0) * m
+                        )
 
                     for op_name, mult in op_weight_suggestions.items():
                         try:
@@ -344,6 +388,7 @@ class _ExecutionCandidatesMixin:
         try:
             from pathlib import Path
             import json as _json
+
             feedback_path = Path("research/runtime/learning/designer_feedback.json")
             if feedback_path.exists():
                 payload = _json.loads(feedback_path.read_text())
@@ -356,7 +401,9 @@ class _ExecutionCandidatesMixin:
                             continue
                         if n >= 2:
                             boost = min(1.5, 1.0 + 0.1 * n)
-                            grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * boost
+                            grammar.op_weights[op_name] = (
+                                grammar.op_weights.get(op_name, 1.0) * boost
+                            )
                     # rejected_ops: ops the user rejected → penalize
                     for op_name, count in (payload.get("rejected_ops") or {}).items():
                         try:
@@ -365,7 +412,9 @@ class _ExecutionCandidatesMixin:
                             continue
                         if n >= 2:
                             penalty = max(0.6, 1.0 - 0.08 * n)
-                            grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * penalty
+                            grammar.op_weights[op_name] = (
+                                grammar.op_weights.get(op_name, 1.0) * penalty
+                            )
         except Exception:
             pass
 
@@ -375,6 +424,7 @@ class _ExecutionCandidatesMixin:
         # parameterized ops at d=128, so we use high thresholds.
         try:
             from research.profiling.schema import ComponentDB
+
             with ComponentDB() as cdb:
                 rows = cdb.query(
                     "SELECT op_name, grad_norm FROM op_profiles "
@@ -388,7 +438,9 @@ class _ExecutionCandidatesMixin:
                         mult = 0.3  # catastrophic (reciprocal, div_safe)
                     else:
                         mult = 0.6  # severe (log, state_space, conv_only)
-                    grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * mult
+                    grammar.op_weights[op_name] = (
+                        grammar.op_weights.get(op_name, 1.0) * mult
+                    )
         except Exception:
             pass
 

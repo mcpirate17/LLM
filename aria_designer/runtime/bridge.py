@@ -17,7 +17,6 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 from research.defaults import MODEL_DIM, VOCAB_SIZE
-from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.mathspaces.registry import register_all_mathspaces
 from research.synthesis.component_registry import registry
@@ -31,6 +30,7 @@ register_all_mathspaces()
 _IO_COMPONENTS = {"graph_input", "graph_output", "input", "output", "output_head"}
 
 # ── Backward-compatible primitive resolution ─────────────────────────
+
 
 def _normalize_component_leaf(component_type: str) -> str:
     """Normalize any category/id component token into a lowercased leaf id."""
@@ -55,44 +55,84 @@ def _resolve_primitive(component_type: str) -> Optional[str]:
         return leaf
     raise ValueError(f"Unknown component: {component_type}")
 
+
 # ── Component Mapping Helpers (Delegating to Registry) ───────────────
+
 
 def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
     """Return bridge execution capability metadata for a component type."""
     parts = str(component_type or "").split("/")
     cid = parts[-1]
     category = parts[0] if len(parts) > 1 else None
-    category_class = registry.category_execution_class.get(category or "", "primitive_candidate")
+    category_class = registry.category_execution_class.get(
+        category or "", "primitive_candidate"
+    )
 
     # Handle IO components
     if cid in _IO_COMPONENTS:
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": "io",
-            "execution_class": "io", "semantic_fidelity": "exact", "bridge_supported": True,
-            "primitive_name": None, "warnings": [], "reason": "IO passthrough node.",
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "io",
+            "execution_class": "io",
+            "semantic_fidelity": "exact",
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": [],
+            "reason": "IO passthrough node.",
         }
 
     # Delegate to centralized registry for non-primitive lowering kinds.
     if registry.is_source(component_type):
-        kind, fidelity, warn = "source", "approximate", "Source lowering to deterministic graph input."
+        kind, fidelity, warn = (
+            "source",
+            "approximate",
+            "Source lowering to deterministic graph input.",
+        )
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": kind,
-            "execution_class": category_class, "semantic_fidelity": fidelity, "bridge_supported": True,
-            "primitive_name": None, "warnings": [warn], "reason": f"Supported via {kind} lowering.",
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": kind,
+            "execution_class": category_class,
+            "semantic_fidelity": fidelity,
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": [warn],
+            "reason": f"Supported via {kind} lowering.",
         }
     elif registry.is_passthrough(component_type):
-        kind, fidelity, warn = "passthrough", "approximate", "Passthrough lowering (wire-through identity)."
+        kind, fidelity, warn = (
+            "passthrough",
+            "approximate",
+            "Passthrough lowering (wire-through identity).",
+        )
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": kind,
-            "execution_class": category_class, "semantic_fidelity": fidelity, "bridge_supported": True,
-            "primitive_name": None, "warnings": [warn], "reason": f"Supported via {kind} lowering.",
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": kind,
+            "execution_class": category_class,
+            "semantic_fidelity": fidelity,
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": [warn],
+            "reason": f"Supported via {kind} lowering.",
         }
     elif cid in registry.template_lowered_components:
-        kind, fidelity, warn = "template", "approximate", "Template lowering to primitive subgraph."
+        kind, fidelity, warn = (
+            "template",
+            "approximate",
+            "Template lowering to primitive subgraph.",
+        )
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": kind,
-            "execution_class": "composite", "semantic_fidelity": fidelity, "bridge_supported": True,
-            "primitive_name": None, "warnings": [warn], "reason": f"Supported via {kind} lowering.",
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": kind,
+            "execution_class": "composite",
+            "semantic_fidelity": fidelity,
+            "bridge_supported": True,
+            "primitive_name": None,
+            "warnings": [warn],
+            "reason": f"Supported via {kind} lowering.",
         }
 
     # Primitive/direct/alias path.
@@ -100,15 +140,24 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
         primitive = _resolve_primitive(component_type)
     except ValueError:
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": "unsupported",
-            "execution_class": category_class if category_class != "primitive_candidate" else "unsupported",
-            "semantic_fidelity": "unsupported", "bridge_supported": False,
-            "primitive_name": None, "warnings": [], "reason": "No primitive mapping registered.",
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "unsupported",
+            "execution_class": category_class
+            if category_class != "primitive_candidate"
+            else "unsupported",
+            "semantic_fidelity": "unsupported",
+            "bridge_supported": False,
+            "primitive_name": None,
+            "warnings": [],
+            "reason": "No primitive mapping registered.",
         }
 
     if primitive is not None:
         return {
-            "component_type": component_type, "component_leaf": cid, "mapping_kind": "direct",
+            "component_type": component_type,
+            "component_leaf": cid,
+            "mapping_kind": "direct",
             "execution_class": "primitive",
             "semantic_fidelity": "exact",
             "bridge_supported": True,
@@ -118,18 +167,32 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
         }
 
     return {
-        "component_type": component_type, "component_leaf": cid, "mapping_kind": "unsupported",
-        "execution_class": "unsupported", "semantic_fidelity": "unsupported", "bridge_supported": False,
-        "primitive_name": None, "warnings": [], "reason": "No primitive mapping registered.",
+        "component_type": component_type,
+        "component_leaf": cid,
+        "mapping_kind": "unsupported",
+        "execution_class": "unsupported",
+        "semantic_fidelity": "unsupported",
+        "bridge_supported": False,
+        "primitive_name": None,
+        "warnings": [],
+        "reason": "No primitive mapping registered.",
     }
+
 
 # ── Workflow → ComputationGraph conversion ───────────────────────────
 
-def workflow_to_graph(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM, return_id_map: bool = False) -> Any:
+
+def workflow_to_graph(
+    workflow_json: Dict[str, Any],
+    model_dim: int = MODEL_DIM,
+    return_id_map: bool = False,
+) -> Any:
     """Convert an aria_designer workflow JSON to a research ComputationGraph."""
     return _w2cg(workflow_json, model_dim, return_id_map)
 
+
 # ── Compression / Efficiency Analysis ─────────────────────────────────
+
 
 @dataclass(slots=True)
 class CompressionResult:
@@ -146,6 +209,7 @@ class CompressionResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
 
 def analyze_compression(
     model,
@@ -166,6 +230,7 @@ def analyze_compression(
     res.theoretical_size_fp16_mb = (res.dense_params * 2) / (1024 * 1024)
     return res
 
+
 def bridge_analyze_routing(model, graph) -> List[Dict[str, Any]]:
     """Extract per-op routing telemetry from a live model."""
     results = []
@@ -173,15 +238,22 @@ def bridge_analyze_routing(model, graph) -> List[Dict[str, Any]]:
         rt = getattr(module, "routing_telemetry", None)
         if rt:
             try:
-                node_id = int(name.split('.')[-1])
-                results.append({
-                    "node_id": node_id, "op_name": getattr(module, "op_name", "unknown"),
-                    "savings_ratio": rt.get("savings_ratio"), "heatmap": rt.get("heatmap"),
-                })
-            except (ValueError, IndexError): continue
+                node_id = int(name.split(".")[-1])
+                results.append(
+                    {
+                        "node_id": node_id,
+                        "op_name": getattr(module, "op_name", "unknown"),
+                        "savings_ratio": rt.get("savings_ratio"),
+                        "heatmap": rt.get("heatmap"),
+                    }
+                )
+            except (ValueError, IndexError):
+                continue
     return results
 
+
 # ── Main evaluation pipeline ─────────────────────────────────────────
+
 
 def evaluate_workflow(
     workflow_json: Dict[str, Any],
@@ -207,10 +279,12 @@ def evaluate_workflow(
         result.has_gradient_path = bool(graph.has_gradient_path())
 
         from research.synthesis.compiler import compile_model
+
         model = compile_model([graph], vocab_size=vocab_size)
         model.to(device)
 
         from research.eval.sandbox import safe_eval
+
         sandbox_res = safe_eval(
             model,
             batch_size=max(1, int(batch_size)),
@@ -221,11 +295,13 @@ def evaluate_workflow(
         )
         result.sandbox = sandbox_res
         if not sandbox_res.passed:
-            result.status = "failed_sandbox"; result.error = sandbox_res.error
+            result.status = "failed_sandbox"
+            result.error = sandbox_res.error
             return result
 
         if run_fingerprint:
             from research.eval.fingerprint import compute_fingerprint
+
             fp = compute_fingerprint(
                 model,
                 seq_len=min(max(1, int(seq_len)), 64),
@@ -233,11 +309,17 @@ def evaluate_workflow(
                 vocab_size=vocab_size,
                 device=device,
             )
-            result.fingerprint.cka_vs_transformer = getattr(fp, "cka_vs_transformer", 0.0)
+            result.fingerprint.cka_vs_transformer = getattr(
+                fp, "cka_vs_transformer", 0.0
+            )
             result.fingerprint.cka_vs_ssm = getattr(fp, "cka_vs_ssm", 0.0)
             result.fingerprint.cka_vs_conv = getattr(fp, "cka_vs_conv", 0.0)
-            result.fingerprint.interaction_locality = getattr(fp, "interaction_locality", 0.0)
-            result.fingerprint.interaction_sparsity = getattr(fp, "interaction_sparsity", 0.0)
+            result.fingerprint.interaction_locality = getattr(
+                fp, "interaction_locality", 0.0
+            )
+            result.fingerprint.interaction_sparsity = getattr(
+                fp, "interaction_sparsity", 0.0
+            )
             result.fingerprint.intrinsic_dim = getattr(fp, "intrinsic_dim", 0.0)
             result.fingerprint.isotropy = getattr(fp, "isotropy", 0.0)
             result.fingerprint.behavioral_novelty = getattr(fp, "novelty_score", 0.0)
@@ -256,6 +338,7 @@ def evaluate_workflow(
 
         if run_novelty:
             from research.eval.metrics import novelty_score
+
             metrics = novelty_score(graph, fingerprint=fp)
             result.fingerprint.structural_novelty = metrics.structural_novelty
             result.fingerprint.behavioral_novelty = metrics.behavioral_novelty
@@ -264,43 +347,66 @@ def evaluate_workflow(
 
         result.status = "success"
     except Exception as e:
-        result.error = str(e); result.error_stage = "pipeline"
-    
+        result.error = str(e)
+        result.error_stage = "pipeline"
+
     result.total_time_ms = (time.monotonic() - t0) * 1000
     return result
 
+
 # ── Utility functions for the API layer ──────────────────────────────
+
 
 def list_available_primitives() -> List[Dict[str, Any]]:
     """List all primitives available for use in aria_designer workflows."""
-    return [{"name": op.name, "category": str(op.category), "n_inputs": op.n_inputs, 
-             "config_keys": list(op.config_keys)} for name, op in sorted(PRIMITIVE_REGISTRY.items())]
+    return [
+        {
+            "name": op.name,
+            "category": str(op.category),
+            "n_inputs": op.n_inputs,
+            "config_keys": list(op.config_keys),
+        }
+        for name, op in sorted(PRIMITIVE_REGISTRY.items())
+    ]
 
-def validate_workflow_graph(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM) -> Dict[str, Any]:
+
+def validate_workflow_graph(
+    workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM
+) -> Dict[str, Any]:
     """Validate that a workflow can be converted to a valid ComputationGraph."""
     try:
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)
 
         # Wiring constraint check — catch misconnected signal chains
         from research.synthesis.primitives import validate_wiring
+
         wiring_errors = validate_wiring(graph)
 
         if wiring_errors:
-            return {"valid": False, "error": f"Wiring error: {wiring_errors[0]}",
-                    "wiring_errors": wiring_errors}
+            return {
+                "valid": False,
+                "error": f"Wiring error: {wiring_errors[0]}",
+                "wiring_errors": wiring_errors,
+            }
 
-        return {"valid": True, "graph_info": {
-            "fingerprint": graph.fingerprint(),
-            "n_params_estimate": int(graph.n_params_estimate()),
-            "n_ops": graph.n_ops(),
-            "depth": graph.depth(),
-            "model_dim": model_dim,
-            "has_gradient_path": bool(graph.has_gradient_path()),
-        }}
+        return {
+            "valid": True,
+            "graph_info": {
+                "fingerprint": graph.fingerprint(),
+                "n_params_estimate": int(graph.n_params_estimate()),
+                "n_ops": graph.n_ops(),
+                "depth": graph.depth(),
+                "model_dim": model_dim,
+                "has_gradient_path": bool(graph.has_gradient_path()),
+            },
+        }
     except Exception as e:
         return {"valid": False, "error": str(e)}
 
-def estimate_performance(workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM) -> Dict[str, Any]:
+
+def estimate_performance(
+    workflow_json: Dict[str, Any], model_dim: int = MODEL_DIM
+) -> Dict[str, Any]:
     """Quick performance estimate without running the model."""
     try:
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)

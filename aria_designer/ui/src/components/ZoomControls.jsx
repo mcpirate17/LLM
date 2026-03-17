@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useReactFlow, useViewport } from '@xyflow/react'
 import dagre from '@dagrejs/dagre'
 import { ZoomIn, ZoomOut, Maximize, Square, LayoutGrid, Loader } from 'lucide-react'
@@ -37,12 +37,8 @@ function dagreFallback(nodes, edges) {
 export default function ZoomControls({ nodes, edges, setNodes }) {
   const { zoomIn, zoomOut, fitView, zoomTo } = useReactFlow()
   const { zoom } = useViewport()
-  const [zoomPct, setZoomPct] = useState(100)
+  const zoomPct = Math.round(zoom * 100)
   const [layoutBusy, setLayoutBusy] = useState(false)
-
-  useEffect(() => {
-    setZoomPct(Math.round(zoom * 100))
-  }, [zoom])
 
   const handleAutoLayout = useCallback(async () => {
     if (!nodes || nodes.length === 0 || layoutBusy) return

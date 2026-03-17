@@ -7,7 +7,6 @@ api.py, evidence.py, analyzer.py, runner.py, and other modules.
 from __future__ import annotations
 
 import ast
-import json
 import math
 import struct
 from typing import Any, Dict, Optional
@@ -62,41 +61,6 @@ def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def safe_json_loads(text: Any, default: Any = None) -> Any:
-    """Parse JSON text, returning *default* on any failure."""
-    if not isinstance(text, str) or not text.strip():
-        return default
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return default
-
-
-def ensure_metadata_dict(entry: Dict[str, Any],
-                         json_key: str = "metadata_json",
-                         dict_key: str = "metadata") -> Dict[str, Any]:
-    """Ensure *entry* has a parsed metadata dict.
-
-    If ``entry[dict_key]`` is already a dict, return as-is.
-    Otherwise parse ``entry[json_key]`` and store the result in
-    ``entry[dict_key]``.
-    """
-    meta = entry.get(dict_key)
-    if isinstance(meta, dict):
-        return meta
-    raw = entry.get(json_key)
-    if isinstance(raw, str) and raw.strip():
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                entry[dict_key] = parsed
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-    entry[dict_key] = {}
-    return {}
-
-
 def coerce_dict_payload(payload: Any) -> Optional[Dict[str, Any]]:
     """Return a dict payload from either a mapping or a ``to_dict`` object."""
     if isinstance(payload, dict):
@@ -110,14 +74,6 @@ def coerce_dict_payload(payload: Any) -> Optional[Dict[str, Any]]:
         if isinstance(coerced, dict):
             return coerced
     return None
-
-
-def canonicalize_text(text: str) -> str:
-    """Collapse whitespace, lowercase, strip numbers for fuzzy comparison."""
-    import re
-    normalized = " ".join(text.split()).lower()
-    normalized = re.sub(r"\d+", "N", normalized)
-    return re.sub(r"[^a-z0-9_ ]", "", normalized).strip()
 
 
 def resolve_device(config_device: Optional[str]) -> "torch.device":

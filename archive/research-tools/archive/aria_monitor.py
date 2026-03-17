@@ -10,10 +10,10 @@ Checks:
   4. S0 pass rate collapse
   5. Stale leaderboard (investigation-ready but already investigated)
 """
+
 import sqlite3
 import json
 import time
-import sys
 import argparse
 from datetime import datetime
 
@@ -129,7 +129,9 @@ def check_s0_pass_rate(db):
         return
     rate = s0 / total
     if rate < 0.05:
-        alert(f"S0 pass rate is {rate:.1%} ({s0}/{total}) — grammar is generating broken architectures")
+        alert(
+            f"S0 pass rate is {rate:.1%} ({s0}/{total}) — grammar is generating broken architectures"
+        )
     elif rate < 0.15:
         warn(f"S0 pass rate is low: {rate:.1%} ({s0}/{total})")
     else:
@@ -166,7 +168,9 @@ def check_stale_leaderboard(db):
     ).fetchall()
 
     if stale:
-        warn(f"{len(stale)} leaderboard entries stuck in screening despite failed investigation")
+        warn(
+            f"{len(stale)} leaderboard entries stuck in screening despite failed investigation"
+        )
         for s in stale[:3]:
             info(f"  {s[1][:10]} still in screening tier")
     else:
@@ -177,18 +181,20 @@ def check_experiment_stats(db):
     """Show current experiment stats."""
     total_exp = db.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
     total_prog = db.execute("SELECT COUNT(*) FROM program_results").fetchone()[0]
-    total_s1 = db.execute(
-        "SELECT SUM(n_stage1_passed) FROM experiments"
-    ).fetchone()[0] or 0
+    total_s1 = (
+        db.execute("SELECT SUM(n_stage1_passed) FROM experiments").fetchone()[0] or 0
+    )
     lb_size = db.execute("SELECT COUNT(*) FROM leaderboard").fetchone()[0]
-    info(f"DB: {total_exp} experiments, {total_prog} programs, {total_s1} total S1 survivors, {lb_size} leaderboard")
+    info(
+        f"DB: {total_exp} experiments, {total_prog} programs, {total_s1} total S1 survivors, {lb_size} leaderboard"
+    )
 
 
 def run_checks(db):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"{BOLD}Aria Health Check — {now}{RST}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     check_experiment_stats(db)
     print()
     check_consecutive_failures(db)
@@ -201,7 +207,9 @@ def run_checks(db):
 
 def main():
     parser = argparse.ArgumentParser(description="Monitor Aria for degenerate patterns")
-    parser.add_argument("--interval", type=int, default=60, help="Check interval in seconds (0=once)")
+    parser.add_argument(
+        "--interval", type=int, default=60, help="Check interval in seconds (0=once)"
+    )
     parser.add_argument("--db", default=DB_PATH, help="Path to lab_notebook.db")
     args = parser.parse_args()
 

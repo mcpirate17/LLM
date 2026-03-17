@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for causal_mask."""
-import torch
+
 import torch.nn as nn
 
 

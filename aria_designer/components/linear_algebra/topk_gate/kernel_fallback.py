@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for topk_gate."""
-import torch
+
 import torch.nn as nn
 
 

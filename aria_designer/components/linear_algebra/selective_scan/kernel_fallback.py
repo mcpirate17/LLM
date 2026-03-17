@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for selective_scan."""
-import torch
+
 import torch.nn as nn
 
 

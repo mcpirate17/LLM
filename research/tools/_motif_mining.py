@@ -4,11 +4,11 @@
 Mines the lab notebook database to find op combinations, motifs, and patterns
 statistically associated with top-performing neural architectures.
 """
+
 from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 from collections import Counter, defaultdict
 from itertools import combinations
 from typing import Any
@@ -79,9 +79,9 @@ def main() -> dict[str, Any]:
     """).fetchone()
     total, s0, s05, s1 = row["total"], row["s0"], row["s05"], row["s1"]
     print(f"Total programs: {total}")
-    print(f"Stage 0 passed: {s0} ({100*s0/total:.1f}%)")
-    print(f"Stage 0.5 passed: {s05} ({100*s05/total:.1f}%)")
-    print(f"Stage 1 passed: {s1} ({100*s1/total:.1f}%)")
+    print(f"Stage 0 passed: {s0} ({100 * s0 / total:.1f}%)")
+    print(f"Stage 0.5 passed: {s05} ({100 * s05 / total:.1f}%)")
+    print(f"Stage 1 passed: {s1} ({100 * s1 / total:.1f}%)")
 
     # Leaderboard tiers
     tiers = conn.execute("""
@@ -99,8 +99,10 @@ def main() -> dict[str, Any]:
                COUNT(*) as n
         FROM program_results WHERE stage1_passed=1 AND loss_ratio IS NOT NULL
     """).fetchone()
-    print(f"\nLoss ratio (stage1 passers): n={lr_stats['n']}, "
-          f"min={lr_stats['mn']:.4f}, max={lr_stats['mx']:.4f}, avg={lr_stats['av']:.4f}")
+    print(
+        f"\nLoss ratio (stage1 passers): n={lr_stats['n']}, "
+        f"min={lr_stats['mn']:.4f}, max={lr_stats['mx']:.4f}, avg={lr_stats['av']:.4f}"
+    )
 
     # Stability distribution
     stab_stats = conn.execute("""
@@ -108,12 +110,17 @@ def main() -> dict[str, Any]:
                AVG(stability_score) as av
         FROM program_results WHERE stability_score IS NOT NULL
     """).fetchone()
-    print(f"Stability score: min={stab_stats['mn']:.4f}, max={stab_stats['mx']:.4f}, avg={stab_stats['av']:.4f}")
+    print(
+        f"Stability score: min={stab_stats['mn']:.4f}, max={stab_stats['mx']:.4f}, avg={stab_stats['av']:.4f}"
+    )
 
     # Loss ratio percentiles for stage1 passers
-    all_lr = [r[0] for r in conn.execute(
-        "SELECT loss_ratio FROM program_results WHERE stage1_passed=1 AND loss_ratio IS NOT NULL"
-    ).fetchall()]
+    all_lr = [
+        r[0]
+        for r in conn.execute(
+            "SELECT loss_ratio FROM program_results WHERE stage1_passed=1 AND loss_ratio IS NOT NULL"
+        ).fetchall()
+    ]
     if all_lr:
         all_lr_arr = np.array(all_lr)
         pcts = [10, 15, 25, 50, 75, 90]
@@ -130,17 +137,26 @@ def main() -> dict[str, Any]:
 
     # Top performers: investigation/validation tier OR (stage1_passed AND loss_ratio in top 15%)
     # Get investigation/validation result_ids from leaderboard
-    top_result_ids_lb = {r[0] for r in conn.execute("""
+    top_result_ids_lb = {
+        r[0]
+        for r in conn.execute("""
         SELECT result_id FROM leaderboard
         WHERE tier IN ('investigation', 'validation', 'breakthrough')
           AND result_id IS NOT NULL
-    """).fetchall()}
+    """).fetchall()
+    }
 
     # Get top 15% stage1 passers by loss_ratio
-    top_result_ids_lr = {r[0] for r in conn.execute(f"""
+    top_result_ids_lr = {
+        r[0]
+        for r in conn.execute(
+            """
         SELECT result_id FROM program_results
         WHERE stage1_passed=1 AND loss_ratio IS NOT NULL AND loss_ratio <= ?
-    """, (top15_threshold,)).fetchall()}
+    """,
+            (top15_threshold,),
+        ).fetchall()
+    }
 
     top_result_ids = top_result_ids_lb | top_result_ids_lr
     print(f"Top performers from leaderboard (inv/val): {len(top_result_ids_lb)}")
@@ -211,8 +227,10 @@ def main() -> dict[str, Any]:
     print("-" * 78)
     for op, d in sorted_ops:
         if d["gen_count"] >= 5:  # minimum support
-            print(f"{op:<35} {100*d['gen_rate']:6.1f}% {100*d['top_rate']:6.1f}% "
-                  f"{d['lift']:6.2f}x {d['gen_count']:>6} {d['top_count']:>6}")
+            print(
+                f"{op:<35} {100 * d['gen_rate']:6.1f}% {100 * d['top_rate']:6.1f}% "
+                f"{d['lift']:6.2f}x {d['gen_count']:>6} {d['top_count']:>6}"
+            )
 
     # ── 4. Op-pair (edge-based) analysis ────────────────────────────────
     print("\n" + "=" * 70)
@@ -252,8 +270,10 @@ def main() -> dict[str, Any]:
     for pair, d in sorted_pairs[:80]:
         if d["gen_count"] >= 5:  # minimum support
             label = f"{pair[0]} -> {pair[1]}"
-            print(f"{label:<50} {100*d['gen_rate']:6.1f}% {100*d['top_rate']:6.1f}% "
-                  f"{d['lift']:6.2f}x {d['top_count']:>5}")
+            print(
+                f"{label:<50} {100 * d['gen_rate']:6.1f}% {100 * d['top_rate']:6.1f}% "
+                f"{d['lift']:6.2f}x {d['top_count']:>5}"
+            )
 
     # ── 5. Op trigram analysis ──────────────────────────────────────────
     print("\n" + "=" * 70)
@@ -274,6 +294,7 @@ def main() -> dict[str, Any]:
                 children[str(inp_id)].append(nid)
 
         paths = []
+
         def dfs(nid: str, path: list[str]) -> None:
             op = nodes.get(nid, {}).get("op_name", "")
             if op == "input":
@@ -337,8 +358,10 @@ def main() -> dict[str, Any]:
     for tri, d in sorted_tris[:60]:
         if d["gen_count"] >= 3:
             label = " -> ".join(tri)
-            print(f"{label:<60} {100*d['gen_rate']:6.1f}% {100*d['top_rate']:6.1f}% "
-                  f"{d['lift']:6.2f}x {d['top_count']:>5}")
+            print(
+                f"{label:<60} {100 * d['gen_rate']:6.1f}% {100 * d['top_rate']:6.1f}% "
+                f"{d['lift']:6.2f}x {d['top_count']:>5}"
+            )
 
     # ── 6. Co-occurrence analysis in top performers ─────────────────────
     print("\n" + "=" * 70)
@@ -362,7 +385,7 @@ def main() -> dict[str, Any]:
     print(f"\n{'Op Pair':<55} {'Count':>6} {'% of Top':>8}")
     print("-" * 72)
     for (a, b), cnt in sorted_cooccur:
-        print(f"{a} + {b:<40} {cnt:>6} {100*cnt/n_top:7.1f}%")
+        print(f"{a} + {b:<40} {cnt:>6} {100 * cnt / n_top:7.1f}%")
 
     # ── 7. Cluster analysis ─────────────────────────────────────────────
     print("\n" + "=" * 70)
@@ -370,7 +393,9 @@ def main() -> dict[str, Any]:
     print("=" * 70)
 
     # Build feature vectors: op presence (binary) for top performers
-    all_unique_ops = sorted(set().union(*[set(all_ops_by_id[rid]) for rid in top_ids_with_ops]))
+    all_unique_ops = sorted(
+        set().union(*[set(all_ops_by_id[rid]) for rid in top_ids_with_ops])
+    )
     op_to_idx = {op: i for i, op in enumerate(all_unique_ops)}
     n_features = len(all_unique_ops)
 
@@ -382,7 +407,6 @@ def main() -> dict[str, Any]:
                 X[i, op_to_idx[op]] = 1.0
 
     from sklearn.cluster import KMeans
-    from sklearn.decomposition import PCA
 
     # Try k=5..10, pick by silhouette
     from sklearn.metrics import silhouette_score
@@ -409,48 +433,84 @@ def main() -> dict[str, Any]:
     for c in range(best_k):
         mask = labels == c
         cluster_size = mask.sum()
-        cluster_ids = [top_ids_list[i] for i in range(len(top_ids_list)) if labels[i] == c]
+        cluster_ids = [
+            top_ids_list[i] for i in range(len(top_ids_list)) if labels[i] == c
+        ]
 
         # Dominant ops in this cluster
         cluster_X = X[mask]
         op_presence = cluster_X.mean(axis=0)
         top_ops_in_cluster = sorted(
-            [(all_unique_ops[j], float(op_presence[j])) for j in range(n_features) if op_presence[j] > 0.3],
-            key=lambda x: x[1], reverse=True
+            [
+                (all_unique_ops[j], float(op_presence[j]))
+                for j in range(n_features)
+                if op_presence[j] > 0.3
+            ],
+            key=lambda x: x[1],
+            reverse=True,
         )
 
         # Get avg metrics for this cluster
         if cluster_ids:
             placeholders = ",".join("?" * len(cluster_ids))
-            metrics = conn.execute(f"""
+            metrics = conn.execute(
+                f"""
                 SELECT AVG(loss_ratio) as avg_lr, AVG(stability_score) as avg_stab,
                        AVG(graph_n_ops) as avg_ops, AVG(graph_depth) as avg_depth,
                        MIN(loss_ratio) as best_lr
                 FROM program_results
                 WHERE result_id IN ({placeholders})
-            """, cluster_ids).fetchone()
+            """,
+                cluster_ids,
+            ).fetchone()
         else:
             metrics = None
 
         cluster_results[c] = {
             "size": int(cluster_size),
             "top_ops": top_ops_in_cluster[:15],
-            "avg_lr": float(metrics["avg_lr"]) if metrics and metrics["avg_lr"] else None,
-            "best_lr": float(metrics["best_lr"]) if metrics and metrics["best_lr"] else None,
-            "avg_stab": float(metrics["avg_stab"]) if metrics and metrics["avg_stab"] else None,
-            "avg_ops": float(metrics["avg_ops"]) if metrics and metrics["avg_ops"] else None,
-            "avg_depth": float(metrics["avg_depth"]) if metrics and metrics["avg_depth"] else None,
+            "avg_lr": float(metrics["avg_lr"])
+            if metrics and metrics["avg_lr"]
+            else None,
+            "best_lr": float(metrics["best_lr"])
+            if metrics and metrics["best_lr"]
+            else None,
+            "avg_stab": float(metrics["avg_stab"])
+            if metrics and metrics["avg_stab"]
+            else None,
+            "avg_ops": float(metrics["avg_ops"])
+            if metrics and metrics["avg_ops"]
+            else None,
+            "avg_depth": float(metrics["avg_depth"])
+            if metrics and metrics["avg_depth"]
+            else None,
         }
 
         print(f"\n--- Cluster {c} (n={cluster_size}) ---")
         if metrics:
-            print(f"  Avg loss_ratio: {metrics['avg_lr']:.4f}" if metrics['avg_lr'] else "  Avg loss_ratio: N/A")
-            print(f"  Best loss_ratio: {metrics['best_lr']:.4f}" if metrics['best_lr'] else "  Best loss_ratio: N/A")
-            print(f"  Avg stability: {metrics['avg_stab']:.4f}" if metrics['avg_stab'] else "  Avg stability: N/A")
-            print(f"  Avg n_ops: {metrics['avg_ops']:.1f}" if metrics['avg_ops'] else "  Avg n_ops: N/A")
-        print(f"  Dominant ops (>30% presence):")
+            print(
+                f"  Avg loss_ratio: {metrics['avg_lr']:.4f}"
+                if metrics["avg_lr"]
+                else "  Avg loss_ratio: N/A"
+            )
+            print(
+                f"  Best loss_ratio: {metrics['best_lr']:.4f}"
+                if metrics["best_lr"]
+                else "  Best loss_ratio: N/A"
+            )
+            print(
+                f"  Avg stability: {metrics['avg_stab']:.4f}"
+                if metrics["avg_stab"]
+                else "  Avg stability: N/A"
+            )
+            print(
+                f"  Avg n_ops: {metrics['avg_ops']:.1f}"
+                if metrics["avg_ops"]
+                else "  Avg n_ops: N/A"
+            )
+        print("  Dominant ops (>30% presence):")
         for op, pct in top_ops_in_cluster[:15]:
-            print(f"    {op:<35} {100*pct:5.1f}%")
+            print(f"    {op:<35} {100 * pct:5.1f}%")
 
     # ── 8. Loss/stability correlation ───────────────────────────────────
     print("\n" + "=" * 70)
@@ -472,7 +532,9 @@ def main() -> dict[str, Any]:
             s1_ops[prog["result_id"]] = ops
 
     # Collect metrics per op
-    op_metrics: dict[str, dict[str, list[float]]] = defaultdict(lambda: {"lr_present": [], "stab_present": []})
+    op_metrics: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: {"lr_present": [], "stab_present": []}
+    )
     all_lrs = []
     all_stabs = []
     s1_lookup = {p["result_id"]: p for p in s1_programs}
@@ -496,7 +558,9 @@ def main() -> dict[str, Any]:
     print(f"\nGlobal avg loss_ratio (stage1): {avg_lr_global:.4f}")
     print(f"Global avg stability (stage1): {avg_stab_global:.4f}")
 
-    print(f"\n{'Op':<35} {'AvgLR':>8} {'LR_diff':>8} {'AvgStab':>8} {'Stab_diff':>9} {'N':>5}")
+    print(
+        f"\n{'Op':<35} {'AvgLR':>8} {'LR_diff':>8} {'AvgStab':>8} {'Stab_diff':>9} {'N':>5}"
+    )
     print("-" * 80)
 
     op_corr_results = []
@@ -506,14 +570,18 @@ def main() -> dict[str, Any]:
             avg_stab = np.mean(m["stab_present"]) if m["stab_present"] else 0
             lr_diff = avg_lr - avg_lr_global  # negative = better
             stab_diff = avg_stab - avg_stab_global  # positive = better
-            op_corr_results.append((op, avg_lr, lr_diff, avg_stab, stab_diff, len(m["lr_present"])))
+            op_corr_results.append(
+                (op, avg_lr, lr_diff, avg_stab, stab_diff, len(m["lr_present"]))
+            )
 
     # Sort by lr_diff (most beneficial ops first, i.e. most negative)
     op_corr_results.sort(key=lambda x: x[2])
     for op, avg_lr, lr_diff, avg_stab, stab_diff, n in op_corr_results:
         sign_lr = "+" if lr_diff >= 0 else ""
         sign_st = "+" if stab_diff >= 0 else ""
-        print(f"{op:<35} {avg_lr:7.4f} {sign_lr}{lr_diff:7.4f} {avg_stab:7.4f} {sign_st}{stab_diff:8.4f} {n:>5}")
+        print(
+            f"{op:<35} {avg_lr:7.4f} {sign_lr}{lr_diff:7.4f} {avg_stab:7.4f} {sign_st}{stab_diff:8.4f} {n:>5}"
+        )
 
     # ── 9. Op-pair conditioned loss analysis ────────────────────────────
     print("\n" + "=" * 70)
@@ -548,13 +616,16 @@ def main() -> dict[str, Any]:
     print("=" * 70)
 
     # Graph size, depth, unique ops for top vs general
-    struct_top = conn.execute(f"""
+    struct_top = conn.execute(
+        f"""
         SELECT AVG(graph_n_ops) as ops, AVG(graph_depth) as depth,
                AVG(graph_n_unique_ops) as uniq, AVG(graph_n_edges) as edges,
                AVG(param_count) as params
         FROM program_results
-        WHERE result_id IN ({','.join('?' * len(top_ids_with_ops))})
-    """, list(top_ids_with_ops)).fetchone()
+        WHERE result_id IN ({",".join("?" * len(top_ids_with_ops))})
+    """,
+        list(top_ids_with_ops),
+    ).fetchone()
 
     struct_gen = conn.execute("""
         SELECT AVG(graph_n_ops) as ops, AVG(graph_depth) as depth,
@@ -576,17 +647,19 @@ def main() -> dict[str, Any]:
     # Has residual connections (add op)?
     has_add_gen = sum(1 for rid in general_ids if "add" in set(all_ops_by_id[rid]))
     has_add_top = sum(1 for rid in top_ids_with_ops if "add" in set(all_ops_by_id[rid]))
-    print(f"\nResidual connections (add op):")
-    print(f"  General: {has_add_gen}/{n_gen} ({100*has_add_gen/n_gen:.1f}%)")
-    print(f"  Top:     {has_add_top}/{n_top} ({100*has_add_top/n_top:.1f}%)")
+    print("\nResidual connections (add op):")
+    print(f"  General: {has_add_gen}/{n_gen} ({100 * has_add_gen / n_gen:.1f}%)")
+    print(f"  Top:     {has_add_top}/{n_top} ({100 * has_add_top / n_top:.1f}%)")
 
     # Has normalization (layernorm/rmsnorm)?
     norm_ops = {"layernorm", "rmsnorm", "group_norm", "batch_norm"}
     has_norm_gen = sum(1 for rid in general_ids if norm_ops & set(all_ops_by_id[rid]))
-    has_norm_top = sum(1 for rid in top_ids_with_ops if norm_ops & set(all_ops_by_id[rid]))
-    print(f"\nNormalization ops:")
-    print(f"  General: {has_norm_gen}/{n_gen} ({100*has_norm_gen/n_gen:.1f}%)")
-    print(f"  Top:     {has_norm_top}/{n_top} ({100*has_norm_top/n_top:.1f}%)")
+    has_norm_top = sum(
+        1 for rid in top_ids_with_ops if norm_ops & set(all_ops_by_id[rid])
+    )
+    print("\nNormalization ops:")
+    print(f"  General: {has_norm_gen}/{n_gen} ({100 * has_norm_gen / n_gen:.1f}%)")
+    print(f"  Top:     {has_norm_top}/{n_top} ({100 * has_norm_top / n_top:.1f}%)")
 
     # ── 11. Reference architecture analysis ─────────────────────────────
     print("\n" + "=" * 70)

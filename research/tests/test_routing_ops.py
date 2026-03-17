@@ -3,13 +3,20 @@
 Tests both aria_core C kernel paths and PyTorch fallback paths.
 Verifies output shapes, semantics, and telemetry recording.
 """
+
 import torch
 import torch.nn as nn
 import pytest
 
 from research.synthesis.compiler import (
-    _op_route_topk, _op_route_lanes, _op_route_recursion, _op_token_merge,
-    _op_mod_topk, _op_early_exit, _op_cascade, _op_speculative,
+    _op_route_topk,
+    _op_route_lanes,
+    _op_route_recursion,
+    _op_token_merge,
+    _op_mod_topk,
+    _op_early_exit,
+    _op_cascade,
+    _op_speculative,
     _op_adaptive_recursion,
     _record_routing_telemetry,
 )
@@ -17,16 +24,17 @@ from research.synthesis.compiler import (
 pytestmark = pytest.mark.unit
 
 # Check if aria_core is available
-from research.env import aria_core, HAS_ARIA_CORE
 
 
 class DummyModule(nn.Module):
     """Minimal module to hold telemetry attributes."""
+
     def __init__(self):
         super().__init__()
 
 
 # ── route_topk ──────────────────────────────────────────────────────
+
 
 class TestRouteTopk:
     def test_output_shape_matches_input(self):
@@ -80,13 +88,14 @@ class TestRouteTopk:
 
 # ── route_lanes ─────────────────────────────────────────────────────
 
+
 def _make_lane_module(D, n_lanes):
     """Build a DummyModule with learned lane routing params."""
     module = DummyModule()
     module.lane_scorer = nn.Parameter(torch.randn(n_lanes, D) * 0.02)
-    module.lane_projs = nn.ParameterList([
-        nn.Parameter(torch.randn(D, D) * 0.02) for _ in range(n_lanes)
-    ])
+    module.lane_projs = nn.ParameterList(
+        [nn.Parameter(torch.randn(D, D) * 0.02) for _ in range(n_lanes)]
+    )
     return module
 
 
@@ -125,13 +134,14 @@ class TestRouteLanes:
 
 # ── route_recursion ─────────────────────────────────────────────────
 
+
 def _make_depth_module(D, max_depth):
     """Build a DummyModule with learned depth routing params."""
     module = DummyModule()
     module.depth_scorer = nn.Parameter(torch.randn(max_depth, D) * 0.02)
-    module.depth_projs = nn.ParameterList([
-        nn.Parameter(torch.randn(D, D) * 0.02) for _ in range(max_depth)
-    ])
+    module.depth_projs = nn.ParameterList(
+        [nn.Parameter(torch.randn(D, D) * 0.02) for _ in range(max_depth)]
+    )
     return module
 
 
@@ -162,6 +172,7 @@ class TestRouteRecursion:
 
 
 # ── token_merge ─────────────────────────────────────────────────────
+
 
 class TestTokenMerge:
     def test_output_shape_restored(self):
@@ -201,6 +212,7 @@ class TestTokenMerge:
 
 # ── Telemetry helper ────────────────────────────────────────────────
 
+
 class TestRecordRoutingTelemetry:
     def test_accumulates_across_calls(self):
         module = DummyModule()
@@ -221,6 +233,7 @@ class TestRecordRoutingTelemetry:
 
 
 # ── Control routing ops (Phase 2 bridge) ────────────────────────────
+
 
 class TestModTopk:
     def test_output_shape_preserved(self):

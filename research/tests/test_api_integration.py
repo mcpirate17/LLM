@@ -23,7 +23,10 @@ pytestmark = pytest.mark.api
 
 # Detect available dependencies — lazy import to reduce memory in parallel runs
 try:
-    import torch; HAS_TORCH = True; del torch
+    import torch
+
+    HAS_TORCH = True
+    del torch
 except ImportError:
     HAS_TORCH = False
 
@@ -31,6 +34,7 @@ try:
     HAS_FLASK = True
 except ImportError:
     HAS_FLASK = False
+
 
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
@@ -44,23 +48,25 @@ def _import_module(dotted_path):
 def _load_module_directly(name, filepath):
     """Load a module directly from file path, bypassing __init__.py."""
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(name, filepath)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
+
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from research.scientist.notebook import LabNotebook, ExperimentEntry
+
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -68,6 +74,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -75,6 +82,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -93,6 +101,7 @@ class TestAPI(unittest.TestCase):
         cls.tmpdir = tempfile.mkdtemp()
         cls.db_path = os.path.join(cls.tmpdir, "test_api.db")
         from research.scientist.api import create_app
+
         cls.app = create_app(notebook_path=cls.db_path)
         cls.client = cls.app.test_client()
 
@@ -110,9 +119,16 @@ class TestAPI(unittest.TestCase):
                 loss_ratio=0.5 - i * 0.1 if i == 0 else None,
                 novelty_score=0.3 + i * 0.2,
             )
-        nb.complete_experiment(exp_id, {
-            "total": 3, "stage0_passed": 3, "stage1_passed": 1,
-        }, "Test summary", "excited")
+        nb.complete_experiment(
+            exp_id,
+            {
+                "total": 3,
+                "stage0_passed": 3,
+                "stage1_passed": 1,
+            },
+            "Test summary",
+            "excited",
+        )
 
         campaign_id = nb.create_campaign(
             title="Schema Contract Campaign",
@@ -173,25 +189,28 @@ class TestAPI(unittest.TestCase):
         nb.record_insight("pattern", "Test insight", exp_id, 0.8)
 
         # Add entry
-        nb.add_entry(ExperimentEntry(
-            entry_type="decision", title="Test", content="Content"))
-        nb.add_entry(ExperimentEntry(
-            entry_type="live_feed",
-            experiment_id=exp_id,
-            title="Evolution generation 1/5",
-            content="Gen 1/5: best=0.981, avg=0.240, pop=50",
-            metadata={
-                "live_feed_type": "evo_gen",
-                "payload": {
-                    "experiment_id": exp_id,
-                    "generation": 1,
-                    "total_generations": 5,
-                    "best_fitness": 0.981,
-                    "avg_fitness": 0.240,
-                    "population_size": 50,
+        nb.add_entry(
+            ExperimentEntry(entry_type="decision", title="Test", content="Content")
+        )
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="live_feed",
+                experiment_id=exp_id,
+                title="Evolution generation 1/5",
+                content="Gen 1/5: best=0.981, avg=0.240, pop=50",
+                metadata={
+                    "live_feed_type": "evo_gen",
+                    "payload": {
+                        "experiment_id": exp_id,
+                        "generation": 1,
+                        "total_generations": 5,
+                        "best_fitness": 0.981,
+                        "avg_fitness": 0.240,
+                        "population_size": 50,
+                    },
                 },
-            },
-        ))
+            )
+        )
 
         nb.close()
 
@@ -245,21 +264,39 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r_get.json.get("status"), "success")
         self.assertEqual(r_get.json.get("metrics", {}).get("overall_novelty"), 0.51)
 
-        r_list = self.client.get("/api/designer/lineage?workflow_id=wf_api_lineage&limit=5")
+        r_list = self.client.get(
+            "/api/designer/lineage?workflow_id=wf_api_lineage&limit=5"
+        )
         self.assertEqual(r_list.status_code, 200)
         self.assertTrue(isinstance(r_list.json, list))
         self.assertGreaterEqual(len(r_list.json), 1)
 
     def test_api_designer_lineage_sync_requires_ids(self):
-        r = self.client.post("/api/designer/lineage/sync", json={"workflow_id": "wf_only"})
+        r = self.client.post(
+            "/api/designer/lineage/sync", json={"workflow_id": "wf_only"}
+        )
         self.assertEqual(r.status_code, 400)
         self.assertFalse(r.json.get("success", True))
 
     def test_api_designer_lifecycle_status(self):
-        with patch("research.scientist.api_routes.misc_bp.designer_service_status") as mock_status, \
-             patch("research.scientist.api_routes.misc_bp.designer_idle_state") as mock_idle:
-            mock_status.return_value = {"api_up": True, "ui_up": False, "running": False}
-            mock_idle.return_value = {"idle_for_s": 12.5, "idle_timeout_s": 900.0, "auto_stop_enabled": True}
+        with (
+            patch(
+                "research.scientist.api_routes.misc_bp.designer_service_status"
+            ) as mock_status,
+            patch(
+                "research.scientist.api_routes.misc_bp.designer_idle_state"
+            ) as mock_idle,
+        ):
+            mock_status.return_value = {
+                "api_up": True,
+                "ui_up": False,
+                "running": False,
+            }
+            mock_idle.return_value = {
+                "idle_for_s": 12.5,
+                "idle_timeout_s": 900.0,
+                "auto_stop_enabled": True,
+            }
             r = self.client.get("/api/designer/lifecycle")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json.get("api_up"), True)
@@ -268,15 +305,23 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(r.json.get("auto_stop_enabled"), True)
 
     def test_api_designer_ensure_running(self):
-        with patch("research.scientist.api_routes.misc_bp.start_designer_services") as mock_start:
-            mock_start.return_value = {"ok": True, "already_running": False, "status": {"running": True}}
+        with patch(
+            "research.scientist.api_routes.misc_bp.start_designer_services"
+        ) as mock_start:
+            mock_start.return_value = {
+                "ok": True,
+                "already_running": False,
+                "status": {"running": True},
+            }
             r = self.client.post("/api/designer/ensure-running", json={})
             self.assertEqual(r.status_code, 200)
             self.assertTrue(r.json.get("ok"))
             self.assertTrue(r.json.get("status", {}).get("running"))
 
     def test_api_designer_stop(self):
-        with patch("research.scientist.api_routes.misc_bp.stop_designer_services") as mock_stop:
+        with patch(
+            "research.scientist.api_routes.misc_bp.stop_designer_services"
+        ) as mock_stop:
             mock_stop.return_value = {
                 "ok": True,
                 "status_before": {"running": True},
@@ -288,10 +333,23 @@ class TestAPI(unittest.TestCase):
             self.assertFalse(r.json.get("status_after", {}).get("running", True))
 
     def test_api_designer_touch(self):
-        with patch("research.scientist.api_routes.misc_bp.designer_touch_activity") as mock_touch, \
-             patch("research.scientist.api_routes.misc_bp.designer_idle_state") as mock_idle:
-            mock_touch.return_value = {"activity_reason": "test-touch", "activity_at": 1000.0}
-            mock_idle.return_value = {"idle_for_s": 0.0, "idle_timeout_s": 900.0, "auto_stop_enabled": True}
+        with (
+            patch(
+                "research.scientist.api_routes.misc_bp.designer_touch_activity"
+            ) as mock_touch,
+            patch(
+                "research.scientist.api_routes.misc_bp.designer_idle_state"
+            ) as mock_idle,
+        ):
+            mock_touch.return_value = {
+                "activity_reason": "test-touch",
+                "activity_at": 1000.0,
+            }
+            mock_idle.return_value = {
+                "idle_for_s": 0.0,
+                "idle_timeout_s": 900.0,
+                "auto_stop_enabled": True,
+            }
             r = self.client.post("/api/designer/touch", json={"reason": "test-touch"})
             self.assertEqual(r.status_code, 200)
             self.assertTrue(r.json.get("ok"))
@@ -333,10 +391,15 @@ class TestAPI(unittest.TestCase):
                 first_template = top_candidate["scale_up_templates"][0]
                 self.assertIn("start_payload", first_template)
                 payload = first_template.get("start_payload") or {}
-                self.assertIn(payload.get("mode"), {"validation", "investigation", "scale_up"})
+                self.assertIn(
+                    payload.get("mode"), {"validation", "investigation", "scale_up"}
+                )
                 self.assertIsInstance(payload.get("result_ids"), list)
         recommendation = readiness["epic_switch_recommendation"]
-        self.assertIn(recommendation.get("action"), {"stay_current_epic", "switch_to_scale_up_epic"})
+        self.assertIn(
+            recommendation.get("action"),
+            {"stay_current_epic", "switch_to_scale_up_epic"},
+        )
         self.assertIsInstance(recommendation.get("reason"), str)
 
     def test_api_status(self):
@@ -380,9 +443,12 @@ class TestAPI(unittest.TestCase):
             "NATIVE_RUNNER_CANARY_SEED": "99",
         }
 
-        with patch("research.scientist.api_routes._helpers.os.environ", env), patch(
-            "research.scientist.native_runner_canary.run_selective_canary_latency_benchmark",
-            return_value=fake_result,
+        with (
+            patch("research.scientist.api_routes._helpers.os.environ", env),
+            patch(
+                "research.scientist.native_runner_canary.run_selective_canary_latency_benchmark",
+                return_value=fake_result,
+            ),
         ):
             r = self.client.get("/api/system/status")
 
@@ -433,10 +499,13 @@ class TestAPI(unittest.TestCase):
         _helpers_mod._NATIVE_CANARY_CACHE["updated_at"] = 0.0
         _helpers_mod._NATIVE_CANARY_CACHE["payload"] = None
 
-        with patch("research.scientist.api_routes._helpers.os.environ", env), patch(
-            "research.scientist.native_runner_canary.run_selective_canary_latency_benchmark",
-            side_effect=[first, second],
-        ) as mocked_canary:
+        with (
+            patch("research.scientist.api_routes._helpers.os.environ", env),
+            patch(
+                "research.scientist.native_runner_canary.run_selective_canary_latency_benchmark",
+                side_effect=[first, second],
+            ) as mocked_canary,
+        ):
             r1 = self.client.get("/api/system/status")
             r2 = self.client.get("/api/system/status?refresh_canary=1")
 
@@ -446,8 +515,12 @@ class TestAPI(unittest.TestCase):
         d2 = r2.get_json()
         c1 = d1.get("native_runner_canary") or {}
         c2 = d2.get("native_runner_canary") or {}
-        self.assertAlmostEqual(float(c1.get("probe_avg_latency_ms") or 0.0), 0.10, places=6)
-        self.assertAlmostEqual(float(c2.get("probe_avg_latency_ms") or 0.0), 0.30, places=6)
+        self.assertAlmostEqual(
+            float(c1.get("probe_avg_latency_ms") or 0.0), 0.10, places=6
+        )
+        self.assertAlmostEqual(
+            float(c2.get("probe_avg_latency_ms") or 0.0), 0.30, places=6
+        )
         self.assertEqual(mocked_canary.call_count, 2)
 
     def test_api_native_runner_canary_refresh_disabled_shape(self):
@@ -492,10 +565,13 @@ class TestAPI(unittest.TestCase):
             "NATIVE_RUNNER_CANARY_ITERATIONS": "3",
             "NATIVE_RUNNER_CANARY_SEED": "55",
         }
-        with patch("research.scientist.api_routes._helpers.os.environ", env), patch(
-            "research.scientist.native_runner_canary.run_selective_canary_latency_benchmark",
-            side_effect=[first, second],
-        ) as mocked_canary:
+        with (
+            patch("research.scientist.api_routes._helpers.os.environ", env),
+            patch(
+                "research.scientist.native_runner_canary.run_selective_canary_latency_benchmark",
+                side_effect=[first, second],
+            ) as mocked_canary,
+        ):
             r1 = self.client.post("/api/native-runner/canary/refresh")
             r2 = self.client.post("/api/native-runner/canary/refresh")
 
@@ -505,8 +581,12 @@ class TestAPI(unittest.TestCase):
         d2 = r2.get_json()
         c1 = d1.get("native_runner_canary") or {}
         c2 = d2.get("native_runner_canary") or {}
-        self.assertAlmostEqual(float(c1.get("probe_avg_latency_ms") or 0.0), 0.11, places=6)
-        self.assertAlmostEqual(float(c2.get("probe_avg_latency_ms") or 0.0), 0.31, places=6)
+        self.assertAlmostEqual(
+            float(c1.get("probe_avg_latency_ms") or 0.0), 0.11, places=6
+        )
+        self.assertAlmostEqual(
+            float(c2.get("probe_avg_latency_ms") or 0.0), 0.31, places=6
+        )
         self.assertEqual(mocked_canary.call_count, 2)
 
     def test_api_native_runner_capability(self):
@@ -762,42 +842,46 @@ class TestAPI(unittest.TestCase):
         older_exp = "exp-livefeed-older"
         newer_exp = "exp-livefeed-newer"
 
-        nb.add_entry(ExperimentEntry(
-            entry_type="live_feed",
-            experiment_id=older_exp,
-            title="Evolution generation 1/3",
-            content="Gen 1/3: best=0.900, avg=0.200, pop=50",
-            metadata={
-                "live_feed_type": "evo_gen",
-                "payload": {
-                    "experiment_id": older_exp,
-                    "generation": 1,
-                    "total_generations": 3,
-                    "best_fitness": 0.9,
-                    "avg_fitness": 0.2,
-                    "population_size": 50,
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="live_feed",
+                experiment_id=older_exp,
+                title="Evolution generation 1/3",
+                content="Gen 1/3: best=0.900, avg=0.200, pop=50",
+                metadata={
+                    "live_feed_type": "evo_gen",
+                    "payload": {
+                        "experiment_id": older_exp,
+                        "generation": 1,
+                        "total_generations": 3,
+                        "best_fitness": 0.9,
+                        "avg_fitness": 0.2,
+                        "population_size": 50,
+                    },
                 },
-            },
-        ))
+            )
+        )
 
-        nb.add_entry(ExperimentEntry(
-            entry_type="live_feed",
-            experiment_id=newer_exp,
-            title="Novelty generation 1/3",
-            content="Gen 1/3: best_fit=0.500, archive=10, novelty=0.600",
-            metadata={
-                "live_feed_type": "nov_gen",
-                "payload": {
-                    "experiment_id": newer_exp,
-                    "generation": 1,
-                    "total_generations": 3,
-                    "best_fitness": 0.5,
-                    "avg_fitness": 0.1,
-                    "archive_size": 10,
-                    "best_novelty": 0.6,
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="live_feed",
+                experiment_id=newer_exp,
+                title="Novelty generation 1/3",
+                content="Gen 1/3: best_fit=0.500, archive=10, novelty=0.600",
+                metadata={
+                    "live_feed_type": "nov_gen",
+                    "payload": {
+                        "experiment_id": newer_exp,
+                        "generation": 1,
+                        "total_generations": 3,
+                        "best_fitness": 0.5,
+                        "avg_fitness": 0.1,
+                        "archive_size": 10,
+                        "best_novelty": 0.6,
+                    },
                 },
-            },
-        ))
+            )
+        )
         nb.close()
 
         r = self.client.get("/api/live-feed?n=200")
@@ -807,9 +891,7 @@ class TestAPI(unittest.TestCase):
         self.assertGreaterEqual(len(data), 1)
 
         experiment_ids = {
-            e.get("experiment_id")
-            for e in data
-            if e.get("experiment_id")
+            e.get("experiment_id") for e in data if e.get("experiment_id")
         }
         self.assertIn(newer_exp, experiment_ids)
         self.assertNotIn(older_exp, experiment_ids)
@@ -825,21 +907,26 @@ class TestAPI(unittest.TestCase):
                 if self._emitted:
                     return []
                 self._emitted = True
-                return [{
-                    "type": "evolution_generation",
-                    "data": {
-                        "generation": 1,
-                        "tensor_metric": torch.tensor([0.1, 0.2]),
-                    },
-                }]
+                return [
+                    {
+                        "type": "evolution_generation",
+                        "data": {
+                            "generation": 1,
+                            "tensor_metric": torch.tensor([0.1, 0.2]),
+                        },
+                    }
+                ]
 
-        with patch("research.scientist.api_routes.events_bp.get_runner", return_value=_FakeRunner()):
+        with patch(
+            "research.scientist.api_routes.events_bp.get_runner",
+            return_value=_FakeRunner(),
+        ):
             response = self.client.get("/api/events", buffered=False)
             first_chunk = next(response.response).decode("utf-8")
 
         self.assertIn("event: evolution_generation", first_chunk)
-        self.assertIn("\"generation\":1", first_chunk)
-        self.assertIn("\"tensor_metric\":[", first_chunk)
+        self.assertIn('"generation":1', first_chunk)
+        self.assertIn('"tensor_metric":[', first_chunk)
 
     def test_api_events_sanitizes_non_finite_float_payloads(self):
         class _FakeRunner:
@@ -850,17 +937,22 @@ class TestAPI(unittest.TestCase):
                 if self._emitted:
                     return []
                 self._emitted = True
-                return [{
-                    "type": "evolution_generation",
-                    "data": {
-                        "generation": 1,
-                        "nan_metric": float("nan"),
-                        "inf_metric": float("inf"),
-                        "ninf_metric": float("-inf"),
-                    },
-                }]
+                return [
+                    {
+                        "type": "evolution_generation",
+                        "data": {
+                            "generation": 1,
+                            "nan_metric": float("nan"),
+                            "inf_metric": float("inf"),
+                            "ninf_metric": float("-inf"),
+                        },
+                    }
+                ]
 
-        with patch("research.scientist.api_routes.events_bp.get_runner", return_value=_FakeRunner()):
+        with patch(
+            "research.scientist.api_routes.events_bp.get_runner",
+            return_value=_FakeRunner(),
+        ):
             response = self.client.get("/api/events", buffered=False)
             first_chunk = next(response.response).decode("utf-8")
 
@@ -1048,7 +1140,8 @@ class TestAPI(unittest.TestCase):
         stats = nb.cleanup_report_snapshots(ttl_seconds=300, max_rows_per_scope=3)
         self.assertGreaterEqual(stats.get("deleted_expired", 0), 1)
         self.assertGreaterEqual(
-            (stats.get("deleted_expired", 0) or 0) + (stats.get("deleted_capped", 0) or 0),
+            (stats.get("deleted_expired", 0) or 0)
+            + (stats.get("deleted_capped", 0) or 0),
             3,
         )
 
@@ -1153,10 +1246,13 @@ class TestAPI(unittest.TestCase):
         env = {"NATIVE_RUNNER_ENABLED": "0", "NATIVE_RUNNER_STRICT": "0"}
 
         reset_native_runner_telemetry()
-        with patch("research.scientist.native_runner_adapter.os.environ", env), patch(
-            "research.scientist.native_runner.os.environ", env
-        ), patch(
-            "research.scientist.native_runner._legacy_compile_model", return_value=DummyModel()
+        with (
+            patch("research.scientist.native_runner_adapter.os.environ", env),
+            patch("research.scientist.native_runner.os.environ", env),
+            patch(
+                "research.scientist.native_runner._legacy_compile_model",
+                return_value=DummyModel(),
+            ),
         ):
             compile_model_native_first([])
             compile_model_native_first([])
@@ -1164,13 +1260,17 @@ class TestAPI(unittest.TestCase):
         r = self.client.get("/api/progress")
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
-        top_metrics = ((data.get("native_runner") or {}).get("fallback_metrics") or {})
-        nested_metrics = ((data.get("progress", {}).get("native_runner") or {}).get("fallback_metrics") or {})
+        top_metrics = (data.get("native_runner") or {}).get("fallback_metrics") or {}
+        nested_metrics = (data.get("progress", {}).get("native_runner") or {}).get(
+            "fallback_metrics"
+        ) or {}
 
         self.assertGreaterEqual(int(top_metrics.get("all_compile_calls") or 0), 2)
         self.assertGreaterEqual(int(nested_metrics.get("all_compile_calls") or 0), 2)
 
-    def test_api_progress_exposes_selective_guardrail_after_sustained_non_candidate(self):
+    def test_api_progress_exposes_selective_guardrail_after_sustained_non_candidate(
+        self,
+    ):
         from research.scientist.native_runner import (
             compile_model_native_first,
             reset_native_runner_telemetry,
@@ -1189,12 +1289,17 @@ class TestAPI(unittest.TestCase):
         }
 
         reset_native_runner_telemetry()
-        with patch("research.scientist.native_runner_adapter.os.environ", env), patch(
-            "research.scientist.native_runner.os.environ", env
-        ), patch(
-            "research.scientist.native_runner._try_load_native_lib", return_value=None
-        ), patch(
-            "research.scientist.native_runner._legacy_compile_model", return_value=DummyModel()
+        with (
+            patch("research.scientist.native_runner_adapter.os.environ", env),
+            patch("research.scientist.native_runner.os.environ", env),
+            patch(
+                "research.scientist.native_runner._try_load_native_lib",
+                return_value=None,
+            ),
+            patch(
+                "research.scientist.native_runner._legacy_compile_model",
+                return_value=DummyModel(),
+            ),
         ):
             compile_model_native_first([])
             compile_model_native_first([])
@@ -1202,11 +1307,15 @@ class TestAPI(unittest.TestCase):
         r = self.client.get("/api/progress")
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
-        guardrail = ((data.get("native_runner") or {}).get("selective_guardrail") or {})
-        nested_guardrail = ((data.get("progress", {}).get("native_runner") or {}).get("selective_guardrail") or {})
+        guardrail = (data.get("native_runner") or {}).get("selective_guardrail") or {}
+        nested_guardrail = (data.get("progress", {}).get("native_runner") or {}).get(
+            "selective_guardrail"
+        ) or {}
 
         self.assertTrue(bool(guardrail.get("triggered")))
-        self.assertGreaterEqual(int(guardrail.get("consecutive_requested_not_candidate") or 0), 2)
+        self.assertGreaterEqual(
+            int(guardrail.get("consecutive_requested_not_candidate") or 0), 2
+        )
         self.assertGreaterEqual(int(guardrail.get("threshold") or 0), 1)
         self.assertIsInstance(guardrail.get("history"), list)
         latest_event = (guardrail.get("history") or [])[-1]
@@ -1224,6 +1333,7 @@ class TestAPI(unittest.TestCase):
             pack = data.get("evidence_pack")
             self.assertIsNotNone(pack)
             from research.scientist.evidence import validate_evidence_pack
+
             validate_evidence_pack(pack)
 
     def test_api_aria_strategy(self):
@@ -1251,7 +1361,9 @@ class TestAPI(unittest.TestCase):
         from research.scientist.api_routes import _helpers as _helpers_mod
 
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"mode": "single", "n_programs": 12}, "External CLI run")
+        exp_id = nb.start_experiment(
+            "synthesis", {"mode": "single", "n_programs": 12}, "External CLI run"
+        )
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_external_001",
@@ -1327,7 +1439,9 @@ class TestAPI(unittest.TestCase):
         from research.scientist.api_routes import _helpers as _helpers_mod
 
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"mode": "single", "n_programs": 9}, "External cycle run")
+        exp_id = nb.start_experiment(
+            "synthesis", {"mode": "single", "n_programs": 9}, "External cycle run"
+        )
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_external_cycle_001",
@@ -1413,43 +1527,51 @@ class TestAPI(unittest.TestCase):
 
     def test_api_aria_cycle_history_filters_and_csv(self):
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("continuous", {"n_programs": 2}, "cycle history filter test")
-        nb.add_entry(ExperimentEntry(
-            entry_type="live_feed",
-            experiment_id=exp_id,
-            title="Aria cycle 1",
-            content="Cycle one",
-            metadata={
-                "live_feed_type": "aria_cycle",
-                "payload": {
-                    "cycle_index": 1,
-                    "mode": "synthesis",
-                    "status": "completed",
-                    "reasoning": "baseline cycle",
-                    "timestamp": time.time(),
+        exp_id = nb.start_experiment(
+            "continuous", {"n_programs": 2}, "cycle history filter test"
+        )
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="live_feed",
+                experiment_id=exp_id,
+                title="Aria cycle 1",
+                content="Cycle one",
+                metadata={
+                    "live_feed_type": "aria_cycle",
+                    "payload": {
+                        "cycle_index": 1,
+                        "mode": "synthesis",
+                        "status": "completed",
+                        "reasoning": "baseline cycle",
+                        "timestamp": time.time(),
+                    },
                 },
-            },
-        ))
-        nb.add_entry(ExperimentEntry(
-            entry_type="live_feed",
-            experiment_id=exp_id,
-            title="Aria cycle 2",
-            content="Cycle two",
-            metadata={
-                "live_feed_type": "aria_cycle",
-                "payload": {
-                    "cycle_index": 2,
-                    "mode": "evolution",
-                    "status": "failed",
-                    "reasoning": "diversity exploration",
-                    "error": "simulated",
-                    "timestamp": time.time(),
+            )
+        )
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="live_feed",
+                experiment_id=exp_id,
+                title="Aria cycle 2",
+                content="Cycle two",
+                metadata={
+                    "live_feed_type": "aria_cycle",
+                    "payload": {
+                        "cycle_index": 2,
+                        "mode": "evolution",
+                        "status": "failed",
+                        "reasoning": "diversity exploration",
+                        "error": "simulated",
+                        "timestamp": time.time(),
+                    },
                 },
-            },
-        ))
+            )
+        )
         nb.close()
 
-        filtered = self.client.get("/api/aria/cycle-history?mode=evolution&status=failed")
+        filtered = self.client.get(
+            "/api/aria/cycle-history?mode=evolution&status=failed"
+        )
         self.assertEqual(filtered.status_code, 200)
         filtered_data = filtered.get_json()
         self.assertIsInstance(filtered_data, list)
@@ -1467,12 +1589,20 @@ class TestAPI(unittest.TestCase):
         from research.scientist.api_routes import _helpers as _helpers_mod
 
         fake_runner = MagicMock()
-        fake_runner.pause_aria_cycle = MagicMock(return_value={"phase": "paused", "cycle_paused": True})
-        fake_runner.resume_aria_cycle = MagicMock(return_value={"phase": "planning", "cycle_paused": False})
+        fake_runner.pause_aria_cycle = MagicMock(
+            return_value={"phase": "paused", "cycle_paused": True}
+        )
+        fake_runner.resume_aria_cycle = MagicMock(
+            return_value={"phase": "planning", "cycle_paused": False}
+        )
 
         with patch.object(_helpers_mod, "_runner", fake_runner):
-            r_pause = self.client.post("/api/aria/cycle-control", json={"action": "pause"})
-            r_resume = self.client.post("/api/aria/cycle-control", json={"action": "resume"})
+            r_pause = self.client.post(
+                "/api/aria/cycle-control", json={"action": "pause"}
+            )
+            r_resume = self.client.post(
+                "/api/aria/cycle-control", json={"action": "resume"}
+            )
 
         self.assertEqual(r_pause.status_code, 200)
         self.assertEqual(r_resume.status_code, 200)
@@ -1501,10 +1631,15 @@ class TestAPI(unittest.TestCase):
                 },
             )
         )
-        fake_runner.get_aria_cycle_status = MagicMock(return_value={"phase": "planning", "continuous_active": True})
+        fake_runner.get_aria_cycle_status = MagicMock(
+            return_value={"phase": "planning", "continuous_active": True}
+        )
 
         with patch.object(_helpers_mod, "_runner", fake_runner):
-            r = self.client.post("/api/aria/cycle-control", json={"action": "start", "config": {"n_programs": 3}})
+            r = self.client.post(
+                "/api/aria/cycle-control",
+                json={"action": "start", "config": {"n_programs": 3}},
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -1593,7 +1728,9 @@ class TestAPI(unittest.TestCase):
         # Fallback reply should be concise
         reply = data.get("reply", "")
         self.assertTrue(len(reply) > 0)
-        self.assertTrue(len(reply) <= 260, f"Fallback reply too long: {len(reply)} chars")
+        self.assertTrue(
+            len(reply) <= 260, f"Fallback reply too long: {len(reply)} chars"
+        )
 
     def test_api_aria_chat_returns_local_hits_and_spawned_agent_summary(self):
         """Chat should return local file hits and spawned agent metadata when action block requests spawn_agent."""
@@ -1613,7 +1750,7 @@ class TestAPI(unittest.TestCase):
                 return _FakeResp(
                     "Taking action now.\n\n"
                     "```action\n"
-                    "{\"type\": \"spawn_agent\", \"goal\": \"Fix python and js self-edit rails\"}\n"
+                    '{"type": "spawn_agent", "goal": "Fix python and js self-edit rails"}\n'
                     "```"
                 )
 
@@ -1624,25 +1761,35 @@ class TestAPI(unittest.TestCase):
             def _track_cost(self, _resp):
                 return None
 
-        with patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()), \
-             patch.object(_misc_bp_mod, "run_local_chat_agent", return_value={
-                 "tools_used": ["workspace.search"],
-                 "summary": "Local agent findings: indexed workspace files",
-                 "code_hits": [
-                     {
-                         "path": "search/evolution.py",
-                         "abs_path": "/tmp/research/search/evolution.py",
-                         "line": 1,
-                         "score": 7,
-                         "snippet": "Evolutionary Search over Computation Graphs",
-                     }
-                 ],
-             }), \
-             patch.object(_misc_bp_mod, "_spawn_code_agent_task", return_value={
-                 "task_id": "task_test_spawn",
-                 "status": "queued",
-                 "allow_write": True,
-             }):
+        with (
+            patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()),
+            patch.object(
+                _misc_bp_mod,
+                "run_local_chat_agent",
+                return_value={
+                    "tools_used": ["workspace.search"],
+                    "summary": "Local agent findings: indexed workspace files",
+                    "code_hits": [
+                        {
+                            "path": "search/evolution.py",
+                            "abs_path": "/tmp/research/search/evolution.py",
+                            "line": 1,
+                            "score": 7,
+                            "snippet": "Evolutionary Search over Computation Graphs",
+                        }
+                    ],
+                },
+            ),
+            patch.object(
+                _misc_bp_mod,
+                "_spawn_code_agent_task",
+                return_value={
+                    "task_id": "task_test_spawn",
+                    "status": "queued",
+                    "allow_write": True,
+                },
+            ),
+        ):
             r = self.client.post(
                 "/api/aria/chat",
                 json={
@@ -1696,7 +1843,10 @@ class TestAPI(unittest.TestCase):
         with patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()):
             r = self.client.post(
                 "/api/aria/chat",
-                json={"message": "Please review this plan.", "session_id": "test-session-action-contract"},
+                json={
+                    "message": "Please review this plan.",
+                    "session_id": "test-session-action-contract",
+                },
             )
 
         self.assertEqual(r.status_code, 200)
@@ -1721,7 +1871,7 @@ class TestAPI(unittest.TestCase):
                 return _FakeResp(
                     "Executing now with detailed plan and rationale.\n"
                     "```action\n"
-                    "{\"type\": \"spawn_agent\", \"goal\": \"Patch scheduler queue telemetry\"}\n"
+                    '{"type": "spawn_agent", "goal": "Patch scheduler queue telemetry"}\n'
                     "```"
                 )
 
@@ -1743,11 +1893,18 @@ class TestAPI(unittest.TestCase):
             "proposed_edits": [],
             "skipped_edits": [],
         }
-        with patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()), \
-             patch.object(_misc_bp_mod, "_spawn_code_agent_task", return_value=fake_task):
+        with (
+            patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()),
+            patch.object(
+                _misc_bp_mod, "_spawn_code_agent_task", return_value=fake_task
+            ),
+        ):
             r = self.client.post(
                 "/api/aria/chat",
-                json={"message": "improve scheduler telemetry", "session_id": "test-session-summary-chat"},
+                json={
+                    "message": "improve scheduler telemetry",
+                    "session_id": "test-session-summary-chat",
+                },
             )
 
         self.assertEqual(r.status_code, 200)
@@ -1757,7 +1914,9 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data.get("actions_taken"))
         self.assertEqual(data["actions_taken"][0].get("type"), "spawn_agent")
 
-        with patch.object(_misc_bp_mod, "code_agent_task_snapshot", return_value=fake_task):
+        with patch.object(
+            _misc_bp_mod, "code_agent_task_snapshot", return_value=fake_task
+        ):
             s = self.client.get("/api/aria/agent/status/agent_summary_1/summary")
         self.assertEqual(s.status_code, 200)
         payload = s.get_json()
@@ -1781,7 +1940,7 @@ class TestAPI(unittest.TestCase):
                 if "needs action" in prompt.lower():
                     return _FakeResp(
                         "```action\n"
-                        "{\"type\": \"adjust_config\", \"changes\": {\"max_depth\": 4}}\n"
+                        '{"type": "adjust_config", "changes": {"max_depth": 4}}\n'
                         "```"
                     )
                 return _FakeResp("No action needed.")
@@ -1794,8 +1953,12 @@ class TestAPI(unittest.TestCase):
                 return None
 
         with patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()):
-            self.client.post("/api/aria/chat", json={"message": "needs action", "session_id": "g1"})
-            self.client.post("/api/aria/chat", json={"message": "status check", "session_id": "g2"})
+            self.client.post(
+                "/api/aria/chat", json={"message": "needs action", "session_id": "g1"}
+            )
+            self.client.post(
+                "/api/aria/chat", json={"message": "status check", "session_id": "g2"}
+            )
 
         r = self.client.get("/api/aria/chat/guardrails?window=50")
         self.assertEqual(r.status_code, 200)
@@ -1809,12 +1972,15 @@ class TestAPI(unittest.TestCase):
 
     def test_api_aria_chat_history(self):
         # Save a message first
-        r = self.client.post("/api/aria/chat/message", json={
-            "session_id": "test-history-session",
-            "role": "user",
-            "text": "Hello Aria",
-            "label": "You",
-        })
+        r = self.client.post(
+            "/api/aria/chat/message",
+            json={
+                "session_id": "test-history-session",
+                "role": "user",
+                "text": "Hello Aria",
+                "label": "You",
+            },
+        )
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json().get("saved"))
 
@@ -1828,47 +1994,62 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["messages"][0]["text"], "Hello Aria")
 
     def test_api_aria_chat_message(self):
-        r = self.client.post("/api/aria/chat/message", json={
-            "session_id": "test-msg-session",
-            "role": "aria",
-            "text": "This is a test response.",
-            "label": "Aria",
-        })
+        r = self.client.post(
+            "/api/aria/chat/message",
+            json={
+                "session_id": "test-msg-session",
+                "role": "aria",
+                "text": "This is a test response.",
+                "label": "Aria",
+            },
+        )
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertTrue(data.get("saved"))
         self.assertIn("message_id", data)
 
     def test_api_aria_chat_message_requires_text(self):
-        r = self.client.post("/api/aria/chat/message", json={
-            "session_id": "test-msg-session",
-            "role": "user",
-            "text": "",
-        })
+        r = self.client.post(
+            "/api/aria/chat/message",
+            json={
+                "session_id": "test-msg-session",
+                "role": "user",
+                "text": "",
+            },
+        )
         self.assertEqual(r.status_code, 400)
 
     def test_api_aria_chat_compact(self):
         # Seed enough messages to trigger compaction
         session_id = "test-compact-session"
         for i in range(15):
-            self.client.post("/api/aria/chat/message", json={
-                "session_id": session_id,
-                "role": "user" if i % 2 == 0 else "aria",
-                "text": f"Message number {i}. " * 40,  # ~600 chars each
-            })
+            self.client.post(
+                "/api/aria/chat/message",
+                json={
+                    "session_id": session_id,
+                    "role": "user" if i % 2 == 0 else "aria",
+                    "text": f"Message number {i}. " * 40,  # ~600 chars each
+                },
+            )
 
-        r = self.client.post("/api/aria/chat/compact", json={
-            "session_id": session_id,
-            "token_budget": 1000,
-        })
+        r = self.client.post(
+            "/api/aria/chat/compact",
+            json={
+                "session_id": session_id,
+                "token_budget": 1000,
+            },
+        )
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertIn("compacted", data)
 
     def test_api_aria_chat_compact_no_messages(self):
-        r = self.client.post("/api/aria/chat/compact", json={
-            "session_id": "nonexistent-session",
-        })
+        r = self.client.post(
+            "/api/aria/chat/compact",
+            json={
+                "session_id": "nonexistent-session",
+            },
+        )
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertFalse(data.get("compacted"))
@@ -1901,18 +2082,23 @@ class TestAPI(unittest.TestCase):
 
         # Clear any cached briefing from prior test calls so the mock takes effect
         from research.scientist.persona import get_aria as _get_aria_fn
+
         _aria_inst = _get_aria_fn()
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
-        with patch("research.scientist.persona.Aria.generate_briefing", return_value=ai_payload):
+        with patch(
+            "research.scientist.persona.Aria.generate_briefing", return_value=ai_payload
+        ):
             r = self.client.get("/api/strategy/briefing")
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertTrue(data.get("ai_powered"))
         self.assertIn(data.get("action"), {"evolve", "novelty_search"})
-        self.assertIn(data.get("suggested_config", {}).get("mode"), {"evolve", "novelty"})
+        self.assertIn(
+            data.get("suggested_config", {}).get("mode"), {"evolve", "novelty"}
+        )
 
     def test_api_strategy_briefing_adds_sparse_focus_knobs_when_coverage_low(self):
         ai_payload = {
@@ -1932,15 +2118,25 @@ class TestAPI(unittest.TestCase):
         }
 
         from research.scientist.persona import get_aria as _get_aria_fn
+
         _aria_inst = _get_aria_fn()
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
-        with patch("research.scientist.analytics.ExperimentAnalytics.sparse_coverage", return_value={
-            "sparse_share": 0.098,
-            "sparse_survival_rate": 0.20,
-            "n_sparse_tested": 114,
-        }), patch("research.scientist.persona.Aria.generate_briefing", return_value=ai_payload):
+        with (
+            patch(
+                "research.scientist.analytics.ExperimentAnalytics.sparse_coverage",
+                return_value={
+                    "sparse_share": 0.098,
+                    "sparse_survival_rate": 0.20,
+                    "n_sparse_tested": 114,
+                },
+            ),
+            patch(
+                "research.scientist.persona.Aria.generate_briefing",
+                return_value=ai_payload,
+            ),
+        ):
             r = self.client.get("/api/strategy/briefing")
 
         self.assertEqual(r.status_code, 200)
@@ -1950,12 +2146,18 @@ class TestAPI(unittest.TestCase):
         cfg = data.get("suggested_config", {})
         self.assertEqual(cfg.get("mode"), "novelty")
         sparse_cov = (data.get("evidence") or {}).get("sparse_coverage") or {}
-        self.assertAlmostEqual(float(sparse_cov.get("target_share") or 0.0), 0.15, places=4)
+        self.assertAlmostEqual(
+            float(sparse_cov.get("target_share") or 0.0), 0.15, places=4
+        )
         self.assertTrue(bool(sparse_cov.get("below_target")))
 
-    def test_api_strategy_briefing_downgrades_ineligible_investigation_recommendation(self):
+    def test_api_strategy_briefing_downgrades_ineligible_investigation_recommendation(
+        self,
+    ):
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "briefing eligibility downgrade")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "briefing eligibility downgrade"
+        )
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_briefing_inv_ineligible",
@@ -1989,11 +2191,14 @@ class TestAPI(unittest.TestCase):
         }
 
         from research.scientist.persona import get_aria as _get_aria_fn
+
         _aria_inst = _get_aria_fn()
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
-        with patch("research.scientist.persona.Aria.generate_briefing", return_value=ai_payload):
+        with patch(
+            "research.scientist.persona.Aria.generate_briefing", return_value=ai_payload
+        ):
             r = self.client.get("/api/strategy/briefing")
 
         self.assertEqual(r.status_code, 200)
@@ -2003,9 +2208,13 @@ class TestAPI(unittest.TestCase):
         cfg = data.get("suggested_config", {})
         self.assertIn(cfg.get("mode"), {"continuous", "investigation"})
 
-    def test_api_strategy_briefing_deterministic_skips_ineligible_screening_investigate(self):
+    def test_api_strategy_briefing_deterministic_skips_ineligible_screening_investigate(
+        self,
+    ):
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "deterministic briefing eligibility")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "deterministic briefing eligibility"
+        )
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_det_inv_ineligible",
@@ -2029,11 +2238,14 @@ class TestAPI(unittest.TestCase):
         nb.close()
 
         from research.scientist.persona import get_aria as _get_aria_fn
+
         _aria_inst = _get_aria_fn()
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
-        with patch("research.scientist.persona.Aria.generate_briefing", return_value=None):
+        with patch(
+            "research.scientist.persona.Aria.generate_briefing", return_value=None
+        ):
             r = self.client.get("/api/strategy/briefing")
 
         self.assertEqual(r.status_code, 200)
@@ -2104,19 +2316,42 @@ class TestAPI(unittest.TestCase):
                 "confidence": 0.61,
                 "checks": [
                     {"key": "testability", "label": "Testability", "status": "pass"},
-                    {"key": "measurable_metric", "label": "Measurable Metric", "status": "warn"},
-                    {"key": "confound_risk", "label": "Confound Risk", "status": "warn"},
-                    {"key": "fallback_plan", "label": "Fallback Plan", "status": "warn"},
+                    {
+                        "key": "measurable_metric",
+                        "label": "Measurable Metric",
+                        "status": "warn",
+                    },
+                    {
+                        "key": "confound_risk",
+                        "label": "Confound Risk",
+                        "status": "warn",
+                    },
+                    {
+                        "key": "fallback_plan",
+                        "label": "Fallback Plan",
+                        "status": "warn",
+                    },
                 ],
                 "concerns": ["Metric needs tighter threshold."],
                 "suggestions": ["Add a fallback baseline check."],
             },
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={"n_programs": 1, "hypothesis": "test"})
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start", json={"n_programs": 1, "hypothesis": "test"}
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2131,8 +2366,10 @@ class TestAPI(unittest.TestCase):
         self.assertIsInstance(data.get("hypothesis_missing_fields"), list)
 
     def test_api_start_requires_result_ids_for_investigation(self):
-        r = self.client.post("/api/experiments/start",
-                             json={"mode": "investigation", "preflight_override": True})
+        r = self.client.post(
+            "/api/experiments/start",
+            json={"mode": "investigation", "preflight_override": True},
+        )
         self.assertEqual(r.status_code, 400)
         self.assertIn("result_ids", r.get_json()["error"])
 
@@ -2165,9 +2402,16 @@ class TestAPI(unittest.TestCase):
             "summary": {"pass": 0, "warn": 1, "fail": 0},
         }
 
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=preflight_payload):
-            r = self.client.post("/api/experiments/start", json={"mode": "single", "n_programs": 1})
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=preflight_payload,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start", json={"mode": "single", "n_programs": 1}
+            )
 
         self.assertEqual(r.status_code, 409)
         data = r.get_json()
@@ -2204,8 +2448,13 @@ class TestAPI(unittest.TestCase):
             "summary": {"pass": 0, "warn": 1, "fail": 0},
         }
 
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=preflight_payload):
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=preflight_payload,
+            ),
+        ):
             r = self.client.post(
                 "/api/experiments/start",
                 json={"mode": "single", "n_programs": 1, "preflight_override": True},
@@ -2243,9 +2492,16 @@ class TestAPI(unittest.TestCase):
             "summary": {"pass": 0, "warn": 0, "fail": 1},
         }
 
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=preflight_payload):
-            r = self.client.post("/api/experiments/preflight", json={"mode": "single", "n_programs": 1})
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=preflight_payload,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/preflight", json={"mode": "single", "n_programs": 1}
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2255,13 +2511,17 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["preflight"]["verdict"], "fail")
 
     def test_api_start_requires_result_ids_for_validation(self):
-        r = self.client.post("/api/experiments/start",
-                             json={"mode": "validation", "preflight_override": True})
+        r = self.client.post(
+            "/api/experiments/start",
+            json={"mode": "validation", "preflight_override": True},
+        )
         self.assertEqual(r.status_code, 400)
 
     def test_api_start_investigation_rejects_already_investigated_with_payload(self):
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "investigation eligibility")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "investigation eligibility"
+        )
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_inv_reject",
@@ -2284,11 +2544,14 @@ class TestAPI(unittest.TestCase):
         )
         nb.close()
 
-        r = self.client.post("/api/experiments/start", json={
-            "mode": "investigation",
-            "result_ids": [result_id],
-            "preflight_override": True,
-        })
+        r = self.client.post(
+            "/api/experiments/start",
+            json={
+                "mode": "investigation",
+                "result_ids": [result_id],
+                "preflight_override": True,
+            },
+        )
         self.assertIn(r.status_code, (200, 409))
         data = r.get_json()
         if r.status_code == 409:
@@ -2297,7 +2560,9 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(eligibility["mode"], "investigation")
             self.assertEqual(eligibility["eligible_result_ids"], [])
             self.assertEqual(eligibility["summary"]["ineligible"], 1)
-            self.assertEqual(eligibility["ineligible"][0]["reason"], "already_investigated_unchanged")
+            self.assertEqual(
+                eligibility["ineligible"][0]["reason"], "already_investigated_unchanged"
+            )
         else:
             self.assertTrue(
                 any(k in data for k in ("action", "experiment_id", "ok")),
@@ -2306,7 +2571,9 @@ class TestAPI(unittest.TestCase):
 
     def test_api_start_validation_rejects_non_investigation_passed_with_payload(self):
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "validation eligibility reject")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "validation eligibility reject"
+        )
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_val_reject",
@@ -2330,11 +2597,14 @@ class TestAPI(unittest.TestCase):
         )
         nb.close()
 
-        r = self.client.post("/api/experiments/start", json={
-            "mode": "validation",
-            "result_ids": [result_id],
-            "preflight_override": True,
-        })
+        r = self.client.post(
+            "/api/experiments/start",
+            json={
+                "mode": "validation",
+                "result_ids": [result_id],
+                "preflight_override": True,
+            },
+        )
         self.assertEqual(r.status_code, 409)
         data = r.get_json()
         self.assertIn("eligibility", data)
@@ -2342,11 +2612,15 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(eligibility["mode"], "validation")
         self.assertEqual(eligibility["eligible_result_ids"], [])
         self.assertEqual(eligibility["summary"]["ineligible"], 1)
-        self.assertEqual(eligibility["ineligible"][0]["reason"], "not_investigation_passed")
+        self.assertEqual(
+            eligibility["ineligible"][0]["reason"], "not_investigation_passed"
+        )
 
     def test_api_start_validation_returns_eligibility_on_success(self):
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "validation eligibility success")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "validation eligibility success"
+        )
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_val_ok",
@@ -2371,6 +2645,7 @@ class TestAPI(unittest.TestCase):
         nb.close()
 
         from research.scientist.api_routes import _helpers as _helpers_mod
+
         fake_runner = MagicMock()
         fake_runner.is_running = False
         fake_runner.start_validation = MagicMock(return_value="exp-val-eligible")
@@ -2393,13 +2668,25 @@ class TestAPI(unittest.TestCase):
             hypothesis_critique=None,
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={
-                "mode": "validation",
-                "result_ids": [result_id],
-            })
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "validation",
+                    "result_ids": [result_id],
+                },
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2411,15 +2698,19 @@ class TestAPI(unittest.TestCase):
         fake_runner.start_validation.assert_called_once()
 
     def test_api_start_requires_result_ids_for_scale_up(self):
-        r = self.client.post("/api/experiments/start",
-                             json={"mode": "scale_up", "preflight_override": True})
+        r = self.client.post(
+            "/api/experiments/start",
+            json={"mode": "scale_up", "preflight_override": True},
+        )
         self.assertEqual(r.status_code, 400)
 
     def test_api_start_scale_up_accepts_graph_fingerprint_prefix(self):
         from research.scientist.api_routes import _helpers as _helpers_mod
 
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "scale-up fingerprint source")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "scale-up fingerprint source"
+        )
         fingerprint = (exp_id.replace("-", "") + "scaleupseed")[:16]
         prefix = fingerprint[:12]
         result_id = nb.record_program_result(
@@ -2460,13 +2751,25 @@ class TestAPI(unittest.TestCase):
             hypothesis_critique=None,
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={
-                "mode": "scale_up",
-                "graph_fingerprints": [prefix],
-            })
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "scale_up",
+                    "graph_fingerprints": [prefix],
+                },
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2480,18 +2783,26 @@ class TestAPI(unittest.TestCase):
         self.assertIn(result_id, resolved_ids)
 
     def test_api_start_scale_up_reports_unresolved_fingerprint(self):
-        r = self.client.post("/api/experiments/start", json={
-            "mode": "scale_up",
-            "graph_fingerprints": ["missingfp123"],
-            "preflight_override": True,
-        })
+        r = self.client.post(
+            "/api/experiments/start",
+            json={
+                "mode": "scale_up",
+                "graph_fingerprints": ["missingfp123"],
+                "preflight_override": True,
+            },
+        )
         self.assertEqual(r.status_code, 400)
         data = r.get_json()
         self.assertIn("scale_up_resolution", data)
-        self.assertIn("missingfp123", data["scale_up_resolution"]["unresolved_fingerprints"])
+        self.assertIn(
+            "missingfp123", data["scale_up_resolution"]["unresolved_fingerprints"]
+        )
 
     def test_api_start_requires_result_ids_for_refine_fingerprint(self):
-        r = self.client.post("/api/experiments/start", json={"mode": "refine_fingerprint", "preflight_override": True})
+        r = self.client.post(
+            "/api/experiments/start",
+            json={"mode": "refine_fingerprint", "preflight_override": True},
+        )
         self.assertEqual(r.status_code, 400)
         data = r.get_json()
         self.assertIn("refine_resolution", data)
@@ -2500,7 +2811,9 @@ class TestAPI(unittest.TestCase):
         from research.scientist.api_routes import _helpers as _helpers_mod
 
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "refine fingerprint source")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "refine fingerprint source"
+        )
         fingerprint = (exp_id.replace("-", "") + "refineseed")[:16]
         prefix = fingerprint[:12]
         result_id = nb.record_program_result(
@@ -2541,14 +2854,26 @@ class TestAPI(unittest.TestCase):
             hypothesis_critique=None,
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={
-                "mode": "refine_fingerprint",
-                "graph_fingerprints": [prefix],
-                "n_programs": 12,
-            })
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "refine_fingerprint",
+                    "graph_fingerprints": [prefix],
+                    "n_programs": 12,
+                },
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2565,11 +2890,15 @@ class TestAPI(unittest.TestCase):
         from research.scientist.api_routes import _helpers as _helpers_mod
 
         nb = LabNotebook(self.db_path)
-        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "recommended refine source")
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "recommended refine source"
+        )
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="recomrefinefp01",
-            graph_json=json.dumps({"nodes": {"0": {"id": 0, "op_name": "input", "input_ids": []}}}),
+            graph_json=json.dumps(
+                {"nodes": {"0": {"id": 0, "op_name": "input", "input_ids": []}}}
+            ),
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2584,7 +2913,9 @@ class TestAPI(unittest.TestCase):
 
         fake_runner = MagicMock()
         fake_runner.is_running = False
-        fake_runner.start_fingerprint_refinement = MagicMock(return_value="exp-refine-reco")
+        fake_runner.start_fingerprint_refinement = MagicMock(
+            return_value="exp-refine-reco"
+        )
         fake_runner.prescreen_run_config = MagicMock(
             side_effect=lambda config, mode="single", auto_harden=True: (
                 config,
@@ -2604,15 +2935,27 @@ class TestAPI(unittest.TestCase):
             hypothesis_critique=None,
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={
-                "mode": "refine_fingerprint",
-                "result_ids": [result_id],
-                "refine_intent": "recommended",
-                "n_programs": 8,
-            })
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "refine_fingerprint",
+                    "result_ids": [result_id],
+                    "refine_intent": "recommended",
+                    "n_programs": 8,
+                },
+            )
 
         self.assertEqual(r.status_code, 200)
         call_args, _ = fake_runner.start_fingerprint_refinement.call_args
@@ -2626,17 +2969,19 @@ class TestAPI(unittest.TestCase):
         parent_result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="lineage-parent-fp",
-            graph_json=json.dumps({
-                "nodes": {
-                    "0": {"id": 0, "op_name": "input", "input_ids": []},
-                    "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
-                },
-                "metadata": {
-                    "refinement": {
-                        "intent": "balanced",
+            graph_json=json.dumps(
+                {
+                    "nodes": {
+                        "0": {"id": 0, "op_name": "input", "input_ids": []},
+                        "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
                     },
-                },
-            }),
+                    "metadata": {
+                        "refinement": {
+                            "intent": "balanced",
+                        },
+                    },
+                }
+            ),
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2646,24 +2991,26 @@ class TestAPI(unittest.TestCase):
         child_result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="lineage-child-fp",
-            graph_json=json.dumps({
-                "nodes": {
-                    "0": {"id": 0, "op_name": "input", "input_ids": []},
-                    "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
-                    "2": {"id": 2, "op_name": "relu", "input_ids": [1]},
-                },
-                "metadata": {
-                    "refinement": {
-                        "intent": "quality",
-                        "source_result_id": parent_result_id,
-                        "seed_fingerprint": "lineage-parent-fp",
+            graph_json=json.dumps(
+                {
+                    "nodes": {
+                        "0": {"id": 0, "op_name": "input", "input_ids": []},
+                        "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
+                        "2": {"id": 2, "op_name": "relu", "input_ids": [1]},
                     },
-                    "lineage": {
-                        "type": "mutation",
-                        "parent": "lineage-parent-fp",
+                    "metadata": {
+                        "refinement": {
+                            "intent": "quality",
+                            "source_result_id": parent_result_id,
+                            "seed_fingerprint": "lineage-parent-fp",
+                        },
+                        "lineage": {
+                            "type": "mutation",
+                            "parent": "lineage-parent-fp",
+                        },
                     },
-                },
-            }),
+                }
+            ),
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2709,17 +3056,29 @@ class TestAPI(unittest.TestCase):
             hypothesis_critique=None,
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={
-                "mode": "compact_synthesis",
-                "n_layers": 8,
-                "max_depth": 10,
-                "max_ops": 16,
-                "model_source": "graph_synthesis",
-                "n_programs": 150,
-            })
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "compact_synthesis",
+                    "n_layers": 8,
+                    "max_depth": 10,
+                    "max_ops": 16,
+                    "model_source": "graph_synthesis",
+                    "n_programs": 150,
+                },
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2759,17 +3118,29 @@ class TestAPI(unittest.TestCase):
             hypothesis_critique=None,
         )
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={
-                "mode": "sparse_morph",
-                "n_layers": 8,
-                "max_depth": 10,
-                "max_ops": 16,
-                "model_source": "graph_synthesis",
-                "n_programs": 90,
-            })
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={
+                    "mode": "sparse_morph",
+                    "n_layers": 8,
+                    "max_depth": 10,
+                    "max_ops": 16,
+                    "model_source": "graph_synthesis",
+                    "n_programs": 90,
+                },
+            )
 
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
@@ -2839,7 +3210,9 @@ class TestAPI(unittest.TestCase):
             )
         )
         fake_runner.start_experiment = MagicMock(
-            side_effect=TypeError("log_learning_event() got an unexpected keyword argument 'changes'")
+            side_effect=TypeError(
+                "log_learning_event() got an unexpected keyword argument 'changes'"
+            )
         )
 
         fake_task = {
@@ -2849,17 +3222,33 @@ class TestAPI(unittest.TestCase):
             "allow_write": True,
         }
 
-        _pass_preflight = {"verdict": "pass", "checks": [{"name": "all_clear", "status": "pass", "details": None}], "sample_n": 4}
-        with patch.object(_helpers_mod, "_runner", fake_runner), \
-             patch("research.scientist.api_routes.experiments_bp._spawn_code_agent_task", return_value=fake_task) as mock_spawn, \
-             patch("research.scientist.api_routes.experiments_bp.run_launch_preflight", return_value=_pass_preflight):
-            r = self.client.post("/api/experiments/start", json={"mode": "single", "n_programs": 1})
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+        with (
+            patch.object(_helpers_mod, "_runner", fake_runner),
+            patch(
+                "research.scientist.api_routes.experiments_bp._spawn_code_agent_task",
+                return_value=fake_task,
+            ) as mock_spawn,
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+        ):
+            r = self.client.post(
+                "/api/experiments/start", json={"mode": "single", "n_programs": 1}
+            )
 
         self.assertEqual(r.status_code, 500)
         data = r.get_json()
         self.assertIn("error", data)
         self.assertTrue(data.get("auto_repair_started"))
-        self.assertEqual((data.get("auto_repair_task") or {}).get("task_id"), "task-auto-repair-1")
+        self.assertEqual(
+            (data.get("auto_repair_task") or {}).get("task_id"), "task-auto-repair-1"
+        )
         mock_spawn.assert_called_once()
 
     def test_api_validate_pipeline(self):
@@ -2878,10 +3267,14 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         summary = data["summary"]
         required_summary_keys = [
-            "total_experiments", "completed_experiments",
-            "total_programs_evaluated", "stage1_survivors",
-            "survival_rate", "avg_novelty_score",
-            "top_novelty_score", "active_insights",
+            "total_experiments",
+            "completed_experiments",
+            "total_programs_evaluated",
+            "stage1_survivors",
+            "survival_rate",
+            "avg_novelty_score",
+            "top_novelty_score",
+            "active_insights",
             "learning_events",
         ]
         for key in required_summary_keys:
@@ -2912,9 +3305,17 @@ class TestAPI(unittest.TestCase):
         self.assertGreater(data["total"], 0)
         entry = data["entries"][0]
         required_entry_keys = [
-            "entry_id", "result_id", "composite_score", "tier",
-            "screening_loss_ratio", "architecture_family", "cross_run_stability",
-            "qkv_usage", "uses_qkv", "compression_metrics", "reproducibility_packet",
+            "entry_id",
+            "result_id",
+            "composite_score",
+            "tier",
+            "screening_loss_ratio",
+            "architecture_family",
+            "cross_run_stability",
+            "qkv_usage",
+            "uses_qkv",
+            "compression_metrics",
+            "reproducibility_packet",
         ]
         for key in required_entry_keys:
             self.assertIn(key, entry, f"leaderboard entry missing key: {key}")
@@ -2961,8 +3362,11 @@ class TestAPI(unittest.TestCase):
             self.assertIn("final_loss", entry)
             self.assertIn("flops_forward", entry)
             self.assertIn("ops", entry)
-            self.assertNotIn("graph_json", entry,
-                             "graph_json should be stripped from frontier response")
+            self.assertNotIn(
+                "graph_json",
+                entry,
+                "graph_json should be stripped from frontier response",
+            )
 
     def test_api_analytics_experiment_clusters_schema(self):
         """Cluster entries must include description field."""
@@ -3010,10 +3414,16 @@ class TestAPI(unittest.TestCase):
         if data["by_mode"]:
             row = data["by_mode"][0]
             for key in (
-                "routing_mode", "n_programs", "stage1_pass_rate",
-                "avg_drop_rate", "avg_utilization_entropy",
-                "avg_confidence_mean", "sample_size_label",
-                "confidence_label", "stability_label", "efficiency_label",
+                "routing_mode",
+                "n_programs",
+                "stage1_pass_rate",
+                "avg_drop_rate",
+                "avg_utilization_entropy",
+                "avg_confidence_mean",
+                "sample_size_label",
+                "confidence_label",
+                "stability_label",
+                "efficiency_label",
             ):
                 self.assertIn(key, row)
 
@@ -3034,8 +3444,12 @@ class TestAPI(unittest.TestCase):
         if data["by_mode"]:
             row = data["by_mode"][0]
             for key in (
-                "routing_mode", "n_programs", "avg_gate_entropy",
-                "collapse_risk_label", "avg_token_retention", "token_retention_curve",
+                "routing_mode",
+                "n_programs",
+                "avg_gate_entropy",
+                "collapse_risk_label",
+                "avg_token_retention",
+                "token_retention_curve",
             ):
                 self.assertIn(key, row)
 
@@ -3050,8 +3464,13 @@ class TestAPI(unittest.TestCase):
         self.assertIsInstance(data["summary"], dict)
         if data["daily"]:
             day = data["daily"][0]
-            for key in ("date", "models_screened", "gate_pass_rate",
-                        "causality_violations", "gate_failure_rate"):
+            for key in (
+                "date",
+                "models_screened",
+                "gate_pass_rate",
+                "causality_violations",
+                "gate_failure_rate",
+            ):
                 self.assertIn(key, day, f"Missing '{key}' in daily entry")
 
     def test_api_analytics_math_family_coverage_schema(self):
@@ -3068,8 +3487,12 @@ class TestAPI(unittest.TestCase):
         if data["families"]:
             row = data["families"][0]
             for key in (
-                "family", "n_tested", "n_survived",
-                "survival_rate", "tested_share", "survivor_share",
+                "family",
+                "n_tested",
+                "n_survived",
+                "survival_rate",
+                "tested_share",
+                "survivor_share",
             ):
                 self.assertIn(key, row)
 
@@ -3088,14 +3511,25 @@ class TestAPI(unittest.TestCase):
         self.assertIsInstance(data["by_operator"], list)
         self.assertIsInstance(data["by_family"], list)
         self.assertIsInstance(data["top_trustworthy_operators"], list)
-        for key in ("n_programs_with_graph", "n_programs_with_mathspace", "n_mathspace_ops_observed"):
+        for key in (
+            "n_programs_with_graph",
+            "n_programs_with_mathspace",
+            "n_mathspace_ops_observed",
+        ):
             self.assertIn(key, data["totals"])
         if data["by_operator"]:
             row = data["by_operator"][0]
             for key in (
-                "op_name", "n_tested", "n_stage1_passed", "n_validation_passed",
-                "stage1_pass_rate", "validation_pass_rate", "baseline_win_rate",
-                "trust_score", "trust_label", "avg_novelty_score",
+                "op_name",
+                "n_tested",
+                "n_stage1_passed",
+                "n_validation_passed",
+                "stage1_pass_rate",
+                "validation_pass_rate",
+                "baseline_win_rate",
+                "trust_score",
+                "trust_label",
+                "avg_novelty_score",
             ):
                 self.assertIn(key, row)
 
@@ -3114,9 +3548,16 @@ class TestAPI(unittest.TestCase):
         if data["interactions"]:
             row = data["interactions"][0]
             for key in (
-                "insight_a", "insight_b", "n_trials", "n_supported",
-                "n_not_supported", "mean_reward", "support_rate",
-                "interaction_label", "confidence_label", "is_singleton",
+                "insight_a",
+                "insight_b",
+                "n_trials",
+                "n_supported",
+                "n_not_supported",
+                "mean_reward",
+                "support_rate",
+                "interaction_label",
+                "confidence_label",
+                "is_singleton",
             ):
                 self.assertIn(key, row)
 
@@ -3129,14 +3570,25 @@ class TestAPI(unittest.TestCase):
         self.assertIn("totals", data)
         self.assertIsInstance(data["techniques"], list)
         self.assertIsInstance(data["totals"], dict)
-        for key in ("n_tested", "n_survived", "n_compressed_tested", "n_compressed_survived"):
+        for key in (
+            "n_tested",
+            "n_survived",
+            "n_compressed_tested",
+            "n_compressed_survived",
+        ):
             self.assertIn(key, data["totals"])
         if data["techniques"]:
             row = data["techniques"][0]
             for key in (
-                "technique", "n_tested", "n_survived", "survival_rate",
-                "tested_share", "survivor_share", "avg_compression_ratio",
-                "avg_estimated_memory_mb", "avg_quality_retention",
+                "technique",
+                "n_tested",
+                "n_survived",
+                "survival_rate",
+                "tested_share",
+                "survivor_share",
+                "avg_compression_ratio",
+                "avg_estimated_memory_mb",
+                "avg_quality_retention",
             ):
                 self.assertIn(key, row)
 
@@ -3160,17 +3612,25 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
 
         required = [
-            "summary", "top_programs", "recent_experiments",
+            "summary",
+            "top_programs",
+            "recent_experiments",
             "top_programs_expanded",
             "architecture_rerun_telemetry",
             "math_family_coverage",
             "mathspace_operator_impact",
             "routing_mode_comparison",
             "gating_behavior_diagnostics",
-            "op_success_rates", "structural_correlations",
-            "failure_patterns", "top_op_combinations",
-            "efficiency_frontier", "experiment_clusters",
-            "grammar_weights", "learning_log", "insights", "narrative",
+            "op_success_rates",
+            "structural_correlations",
+            "failure_patterns",
+            "top_op_combinations",
+            "efficiency_frontier",
+            "experiment_clusters",
+            "grammar_weights",
+            "learning_log",
+            "insights",
+            "narrative",
             "cross_run_stability",
             "action_eligibility",
         ]
@@ -3206,10 +3666,14 @@ class TestAPI(unittest.TestCase):
         self.assertIn("by_family", data["mathspace_operator_impact"])
         self.assertIn("top_trustworthy_operators", data["mathspace_operator_impact"])
         self.assertIsInstance(data["mathspace_operator_impact"]["by_operator"], list)
-        self.assertIsInstance(data["mathspace_operator_impact"]["top_trustworthy_operators"], list)
+        self.assertIsInstance(
+            data["mathspace_operator_impact"]["top_trustworthy_operators"], list
+        )
         self.assertIn("available", data["gating_behavior_diagnostics"])
         self.assertIn("by_mode", data["gating_behavior_diagnostics"])
-        self.assertIn("token_retention_curve_overall", data["gating_behavior_diagnostics"])
+        self.assertIn(
+            "token_retention_curve_overall", data["gating_behavior_diagnostics"]
+        )
         self.assertIsInstance(data["gating_behavior_diagnostics"]["by_mode"], list)
         if data["top_programs"]:
             row = data["top_programs"][0]
@@ -3254,7 +3718,9 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         top = data.get("top_programs") or []
-        fingerprints = [row.get("graph_fingerprint") for row in top if row.get("graph_fingerprint")]
+        fingerprints = [
+            row.get("graph_fingerprint") for row in top if row.get("graph_fingerprint")
+        ]
         self.assertEqual(len(fingerprints), len(set(fingerprints)))
 
     def test_api_reproducibility_manifest_schema(self):
@@ -3285,18 +3751,33 @@ class TestAPI(unittest.TestCase):
 
         entry = data[0]
         required = [
-            "experiment_id", "timestamp", "n_programs_generated",
-            "n_stage0_passed", "n_stage05_passed", "n_stage1_passed",
-            "best_loss_ratio", "best_novelty_score", "duration_seconds",
+            "experiment_id",
+            "timestamp",
+            "n_programs_generated",
+            "n_stage0_passed",
+            "n_stage05_passed",
+            "n_stage1_passed",
+            "best_loss_ratio",
+            "best_novelty_score",
+            "duration_seconds",
             "s1_pass_rate",
-            "adjusted_s1_pass_rate", "s1_confidence_lower", "s1_confidence_upper",
-            "s1_confidence_halfwidth", "trend_weight", "trend_confidence", "trend_mode",
+            "adjusted_s1_pass_rate",
+            "s1_confidence_lower",
+            "s1_confidence_upper",
+            "s1_confidence_halfwidth",
+            "trend_weight",
+            "trend_confidence",
+            "trend_mode",
         ]
         for key in required:
             self.assertIn(key, entry, f"trends entry missing key: {key}")
 
-        self.assertLessEqual(entry["s1_confidence_lower"], entry["adjusted_s1_pass_rate"])
-        self.assertGreaterEqual(entry["s1_confidence_upper"], entry["adjusted_s1_pass_rate"])
+        self.assertLessEqual(
+            entry["s1_confidence_lower"], entry["adjusted_s1_pass_rate"]
+        )
+        self.assertGreaterEqual(
+            entry["s1_confidence_upper"], entry["adjusted_s1_pass_rate"]
+        )
         self.assertIn(entry["trend_confidence"], {"low", "medium", "high"})
 
     def test_api_trends_context_schema(self):
@@ -3334,8 +3815,15 @@ class TestAPI(unittest.TestCase):
 
         entry = data[0]
         required = [
-            "entry_id", "timestamp", "category", "title", "content",
-            "confidence", "times_validated", "last_validated", "status",
+            "entry_id",
+            "timestamp",
+            "category",
+            "title",
+            "content",
+            "confidence",
+            "times_validated",
+            "last_validated",
+            "status",
         ]
         for key in required:
             self.assertIn(key, entry, f"knowledge entry missing key: {key}")
@@ -3381,8 +3869,13 @@ class TestAPI(unittest.TestCase):
 
         row = data[0]
         required = [
-            "campaign_id", "title", "objective", "status",
-            "n_experiments", "n_hypotheses", "n_decisions",
+            "campaign_id",
+            "title",
+            "objective",
+            "status",
+            "n_experiments",
+            "n_hypotheses",
+            "n_decisions",
             "success_criteria",
         ]
         for key in required:
@@ -3422,7 +3915,13 @@ class TestAPI(unittest.TestCase):
         self.assertIn("success_criteria_tracker", data)
         self.assertIsInstance(data["success_criteria_tracker"], list)
         stats = data["stats"]
-        for key in ("n_experiments", "n_hypotheses", "n_confirmed", "n_refuted", "n_decisions"):
+        for key in (
+            "n_experiments",
+            "n_hypotheses",
+            "n_confirmed",
+            "n_refuted",
+            "n_decisions",
+        ):
             self.assertIn(key, stats, f"campaign report stats missing key: {key}")
 
     def test_api_404_for_unknown_endpoint(self):
@@ -3435,12 +3934,13 @@ class TestAPI(unittest.TestCase):
         with patch.dict(os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "60"}, clear=False):
             self.assertEqual(get_sse_timeout_seconds(), 60.0)
 
-        with patch.dict(os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "invalid"}, clear=False):
+        with patch.dict(
+            os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "invalid"}, clear=False
+        ):
             self.assertEqual(get_sse_timeout_seconds(), 30.0)
 
         with patch.dict(os.environ, {"ARIA_SSE_TIMEOUT_SECONDS": "0"}, clear=False):
             self.assertEqual(get_sse_timeout_seconds(), 30.0)
-
 
 
 class TestSSEEventContract(unittest.TestCase):
@@ -3450,6 +3950,7 @@ class TestSSEEventContract(unittest.TestCase):
     def _extract_events(filepath, pattern):
         """Extract string arguments from pattern matches in a file."""
         import re
+
         events = set()
         with open(filepath) as f:
             for line in f:
@@ -3460,6 +3961,7 @@ class TestSSEEventContract(unittest.TestCase):
     def test_frontend_events_are_emitted_by_backend(self):
         """Every event LiveFeed.js listens for must be emitted by the backend."""
         import pathlib
+
         root = pathlib.Path(__file__).resolve().parent.parent
 
         backend_events = set()
@@ -3477,16 +3979,22 @@ class TestSSEEventContract(unittest.TestCase):
 
         # Frontend must not listen for events the backend never sends
         missing = frontend_events - backend_events
-        known_frontend_only = {"auto_validate_queued", "auto_investigate_queued", "decision_recorded"}
+        known_frontend_only = {
+            "auto_validate_queued",
+            "auto_investigate_queued",
+            "decision_recorded",
+        }
         missing -= known_frontend_only
         self.assertEqual(
-            missing, set(),
+            missing,
+            set(),
             f"LiveFeed.js listens for events not emitted by runner.py: {sorted(missing)}",
         )
 
     def test_backend_emits_known_events_only(self):
         """Sanity: backend emits a reasonable number of distinct events."""
         import pathlib
+
         root = pathlib.Path(__file__).resolve().parent.parent
 
         backend_events = set()
@@ -3498,21 +4006,27 @@ class TestSSEEventContract(unittest.TestCase):
                 r'_emit_event\(\s*["\'](\w+)["\']',
             )
         # Should have a substantial set of events (guards against regex breakage)
-        self.assertGreaterEqual(len(backend_events), 20,
-                                f"Too few backend events found: {sorted(backend_events)}")
+        self.assertGreaterEqual(
+            len(backend_events),
+            20,
+            f"Too few backend events found: {sorted(backend_events)}",
+        )
 
     def test_frontend_listens_for_enough_events(self):
         """Sanity: frontend listens for a reasonable number of events."""
         import pathlib
+
         root = pathlib.Path(__file__).resolve().parent.parent
 
         frontend_events = self._extract_events(
             root / "dashboard" / "src" / "components" / "LiveFeed.js",
             r'(?:addEventListener|useEventBus)\(\s*["\'](\w+)["\']',
         )
-        self.assertGreaterEqual(len(frontend_events), 20,
-                                f"Too few frontend events found: {sorted(frontend_events)}")
-
+        self.assertGreaterEqual(
+            len(frontend_events),
+            20,
+            f"Too few frontend events found: {sorted(frontend_events)}",
+        )
 
 
 class TestChatActions(unittest.TestCase):
@@ -3521,8 +4035,15 @@ class TestChatActions(unittest.TestCase):
     def _parse_actions(self, text):
         """Import and call _parse_chat_actions from a mock Flask context."""
         import re
+
         pattern = re.compile(r"```action\s*\n(.*?)\n```", re.DOTALL)
-        valid_types = {"adjust_config", "adjust_grammar", "start_experiment", "edit_file", "spawn_agent"}
+        valid_types = {
+            "adjust_config",
+            "adjust_grammar",
+            "start_experiment",
+            "edit_file",
+            "spawn_agent",
+        }
         actions = []
         for m in pattern.finditer(text):
             try:
@@ -3579,6 +4100,7 @@ class TestChatActions(unittest.TestCase):
     def test_edit_file_rejects_path_traversal(self):
         """Paths containing '..' must be rejected."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
@@ -3595,6 +4117,7 @@ class TestChatActions(unittest.TestCase):
     def test_edit_file_rejects_non_project_paths(self):
         """Paths outside research/ should be rejected."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
@@ -3611,6 +4134,7 @@ class TestChatActions(unittest.TestCase):
     def test_edit_file_rejects_non_code_files(self):
         """Only .py and .js files should be editable."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
@@ -3635,8 +4159,7 @@ class TestChatActions(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             unique_token = f"local_llm_read_probe_{int(time.time() * 1000)}"
             target.write_text(
-                "def probe_read_function():\n"
-                f"    return '{unique_token}'\n",
+                f"def probe_read_function():\n    return '{unique_token}'\n",
                 encoding="utf-8",
             )
 
@@ -3686,7 +4209,9 @@ class TestChatActions(unittest.TestCase):
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
 
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(runner_mod.__file__))))
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(runner_mod.__file__)))
+        )
         probe_dir = os.path.join(project_root, "tests")
         os.makedirs(probe_dir, exist_ok=True)
         filename = f"local_llm_edit_probe_{int(time.time() * 1000)}.py"
@@ -3748,12 +4273,14 @@ class TestChatActions(unittest.TestCase):
     def test_edit_file_creates_backup(self):
         """A backup file should be created before editing."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False,
-                                          dir=tempfile.gettempdir()) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()
+        ) as f:
             f.write("old_code = 1\n")
             tmp_path = f.name
 
@@ -3766,11 +4293,21 @@ class TestChatActions(unittest.TestCase):
                 "replace": "new_code = 2",
             }
             import research.scientist.runner as runner_mod
+
             os.path.abspath
             # We need to make the path resolution work with our temp file
-            with patch.object(os.path, 'isfile', return_value=True), \
-                 patch('builtins.open', side_effect=lambda p, *a, **k: open(tmp_path, *a, **k) if 'test_dummy' in str(p) else open(p, *a, **k)), \
-                 patch('shutil.copy2') as mock_copy:
+            with (
+                patch.object(os.path, "isfile", return_value=True),
+                patch(
+                    "builtins.open",
+                    side_effect=lambda p, *a, **k: (
+                        open(tmp_path, *a, **k)
+                        if "test_dummy" in str(p)
+                        else open(p, *a, **k)
+                    ),
+                ),
+                patch("shutil.copy2") as mock_copy,
+            ):
                 # Simpler approach: just test the path validation passes and backup logic
                 pass
         finally:
@@ -3781,11 +4318,12 @@ class TestChatActions(unittest.TestCase):
             research_dir = os.path.join(tmpdir, "research")
             os.makedirs(research_dir)
             test_file = os.path.join(research_dir, "test_target.py")
-            with open(test_file, 'w') as f:
+            with open(test_file, "w") as f:
                 f.write("x = 1\n")
 
             # Monkey-patch __file__ resolution
             import research.scientist.runner as runner_mod
+
             os.path.dirname(os.path.dirname(os.path.abspath(runner_mod.__file__)))
             action = {
                 "type": "edit_file",
@@ -3794,21 +4332,29 @@ class TestChatActions(unittest.TestCase):
                 "replace": "x = 2",
                 "description": "test edit",
             }
-            with patch('os.path.dirname', side_effect=lambda p: tmpdir if p == os.path.join(tmpdir, 'scientist', 'runner.py') else os.path.dirname.__wrapped__(p)):
+            with patch(
+                "os.path.dirname",
+                side_effect=lambda p: (
+                    tmpdir
+                    if p == os.path.join(tmpdir, "scientist", "runner.py")
+                    else os.path.dirname.__wrapped__(p)
+                ),
+            ):
                 pass
             # Direct approach: call with patched project root
             original_abspath = os.path.abspath
+
             def fake_abspath(p):
-                if 'runner.py' in str(p):
-                    return os.path.join(tmpdir, 'scientist', 'runner.py')
+                if "runner.py" in str(p):
+                    return os.path.join(tmpdir, "scientist", "runner.py")
                 return original_abspath(p)
 
-            with patch('os.path.abspath', side_effect=fake_abspath):
+            with patch("os.path.abspath", side_effect=fake_abspath):
                 result = runner._execute_edit_file_action(action, nb)
 
             if result["status"] == "applied":
                 self.assertIn("backup", result)
-                with open(test_file, 'r') as f:
+                with open(test_file, "r") as f:
                     self.assertIn("x = 2", f.read())
             # If path resolution doesn't match temp dir, just verify the safety checks passed
             # (the backup test is best verified via the syntax error test below)
@@ -3816,6 +4362,7 @@ class TestChatActions(unittest.TestCase):
     def test_edit_file_rejects_syntax_errors(self):
         """Edits that break Python syntax should be rolled back."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         MagicMock()
@@ -3823,7 +4370,7 @@ class TestChatActions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a valid Python file
             test_file = os.path.join(tmpdir, "target.py")
-            with open(test_file, 'w') as f:
+            with open(test_file, "w") as f:
                 f.write("def foo():\n    return 1\n")
 
             action = {
@@ -3834,30 +4381,32 @@ class TestChatActions(unittest.TestCase):
             }
 
             # Patch to use our temp file
-            with patch('os.path.abspath') as mock_abs:
+            with patch("os.path.abspath") as mock_abs:
                 # Make the path resolution point to our file
                 def resolve(p):
-                    if 'target.py' in str(p):
+                    if "target.py" in str(p):
                         return test_file
-                    if 'runner.py' in str(p):
-                        return os.path.join(tmpdir, 'runner.py')
+                    if "runner.py" in str(p):
+                        return os.path.join(tmpdir, "runner.py")
                     return os.path.realpath(p)
+
                 mock_abs.side_effect = resolve
-                with patch('os.path.normpath', side_effect=lambda p: p):
-                    with patch('os.path.isfile', return_value=True):
+                with patch("os.path.normpath", side_effect=lambda p: p):
+                    with patch("os.path.isfile", return_value=True):
                         # Direct file operation
                         pass
 
             # Simpler approach: test py_compile directly
             import py_compile
-            with open(test_file, 'w') as f:
+
+            with open(test_file, "w") as f:
                 f.write("def foo():\n    return 1\n")
 
             # Verify original compiles
             py_compile.compile(test_file, doraise=True)
 
             # Write broken code
-            with open(test_file, 'w') as f:
+            with open(test_file, "w") as f:
                 f.write("def foo():\n    return ((\n")
 
             with self.assertRaises(py_compile.PyCompileError):
@@ -3866,6 +4415,7 @@ class TestChatActions(unittest.TestCase):
     def test_adjust_grammar_stores_overrides(self):
         """Grammar weight overrides from chat should be stored on the runner."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
@@ -3876,11 +4426,14 @@ class TestChatActions(unittest.TestCase):
         result = runner.execute_chat_action(action, nb)
         self.assertEqual(result["status"], "applied")
         self.assertAlmostEqual(runner._grammar_weight_overrides["parameterized"], 5.0)
-        self.assertAlmostEqual(runner._grammar_weight_overrides["frequency_domain"], 0.1)
+        self.assertAlmostEqual(
+            runner._grammar_weight_overrides["frequency_domain"], 0.1
+        )
 
     def test_adjust_config_applies_valid_changes(self):
         """Config changes should be applied via execute_chat_action."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         nb = MagicMock()
@@ -3895,6 +4448,7 @@ class TestChatActions(unittest.TestCase):
     def test_start_experiment_when_busy(self):
         """Starting an experiment while one is running should return busy."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         runner._thread = MagicMock()
@@ -3907,6 +4461,7 @@ class TestChatActions(unittest.TestCase):
     def test_start_sparse_morph_chat_mode_applies_sparse_profile(self):
         """Chat action sparse_morph mode should force sparse morphological synthesis."""
         from research.scientist.runner import ExperimentRunner, RunConfig
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         runner._thread = None
@@ -3946,11 +4501,11 @@ class TestChatActions(unittest.TestCase):
     def test_plateau_detector_no_trigger_early(self):
         """Plateau should not trigger before minimum cycle count."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._lock = __import__("threading").Lock()
         runner._aria_cycle_history = [
-            {"delta_stage1_survivors": 0, "mode": "synthesis"}
-            for _ in range(5)
+            {"delta_stage1_survivors": 0, "mode": "synthesis"} for _ in range(5)
         ]
         result = runner._detect_plateau(3)  # Too early
         self.assertIsNone(result)
@@ -3958,11 +4513,11 @@ class TestChatActions(unittest.TestCase):
     def test_plateau_detector_triggers_on_stagnation(self):
         """Plateau should trigger after N cycles with 0 new S1."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._lock = __import__("threading").Lock()
         runner._aria_cycle_history = [
-            {"delta_stage1_survivors": 0, "mode": "synthesis"}
-            for _ in range(10)
+            {"delta_stage1_survivors": 0, "mode": "synthesis"} for _ in range(10)
         ]
         result = runner._detect_plateau(10)
         self.assertIsNotNone(result)
@@ -3971,6 +4526,7 @@ class TestChatActions(unittest.TestCase):
     def test_plateau_detector_no_trigger_with_progress(self):
         """Plateau should NOT trigger if recent cycles produced survivors."""
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._lock = __import__("threading").Lock()
         runner._aria_cycle_history = [
@@ -3986,6 +4542,7 @@ class TestChatActions(unittest.TestCase):
     def test_session_delta_context_builder(self):
         """Session delta section should be added to rich context."""
         from research.scientist.llm.context_experiment import _build_session_delta
+
         analytics = {
             "grammar_weights": {"parameterized": 4.0, "frequency_domain": 0.2},
             "default_weights": {"parameterized": 1.0, "frequency_domain": 1.0},
@@ -4006,6 +4563,7 @@ class TestChatActions(unittest.TestCase):
     def test_mode_recommendation_cooldown(self):
         """Sparse/compression recommendations should respect cooldowns."""
         from research.scientist.persona import Aria
+
         aria = Aria()
         # Simulate: already recommended sparse at cycle 5
         aria._last_sparse_rec_cycle = 5
@@ -4018,7 +4576,9 @@ class TestChatActions(unittest.TestCase):
             "validation_ready": 0,
             "analytics_data": {
                 "sparse_coverage": {"n_sparse_tested": 3},  # same count
-                "compression_coverage": {"totals": {"n_tested": 20, "n_compressed_tested": 2}},
+                "compression_coverage": {
+                    "totals": {"n_tested": 20, "n_compressed_tested": 2}
+                },
             },
             "recent_modes": ["synthesis"] * 5,
             "recent_failure_count": 0,
@@ -4035,6 +4595,7 @@ class TestApplyRecommendation(unittest.TestCase):
 
     def _make_runner(self):
         from research.scientist.runner import ExperimentRunner
+
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
         runner._excluded_ops_overrides = set()
@@ -4049,7 +4610,14 @@ class TestApplyRecommendation(unittest.TestCase):
             "config": config,
             "evidence_pack": {
                 "hypothesis": "test",
-                "supporting_metrics": [{"name": "s1_rate", "value": 0.1, "baseline": 0.05, "delta_vs_baseline": 0.05}],
+                "supporting_metrics": [
+                    {
+                        "name": "s1_rate",
+                        "value": 0.1,
+                        "baseline": 0.05,
+                        "delta_vs_baseline": 0.05,
+                    }
+                ],
                 "uncertainty": "low",
                 "confounders": [],
                 "falsification": "s1_rate drops below 0.05",
@@ -4060,21 +4628,31 @@ class TestApplyRecommendation(unittest.TestCase):
         """category_weights dict should merge into grammar weight overrides."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "category_weights": {"functional": 3.0, "elementwise_unary": 2.5, "math_space": 1.8},
-        })
+        suggestion = self._make_suggestion(
+            {
+                "category_weights": {
+                    "functional": 3.0,
+                    "elementwise_unary": 2.5,
+                    "math_space": 1.8,
+                },
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 3.0)
-        self.assertAlmostEqual(runner._grammar_weight_overrides["elementwise_unary"], 2.5)
+        self.assertAlmostEqual(
+            runner._grammar_weight_overrides["elementwise_unary"], 2.5
+        )
         self.assertAlmostEqual(runner._grammar_weight_overrides["math_space"], 1.8)
 
     def test_excluded_ops_ignored(self):
         """excluded_ops are deliberately ignored (policy: no auto-exclusion)."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "excluded_ops": ["fake_bad_op_a", "fake_bad_op_b"],
-        })
+        suggestion = self._make_suggestion(
+            {
+                "excluded_ops": ["fake_bad_op_a", "fake_bad_op_b"],
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertEqual(runner._excluded_ops_overrides, set())
 
@@ -4082,9 +4660,11 @@ class TestApplyRecommendation(unittest.TestCase):
         """op_weights dict should populate _op_weights_overrides."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "op_weights": {"selective_scan": 2.0, "exp": 1.5},
-        })
+        suggestion = self._make_suggestion(
+            {
+                "op_weights": {"selective_scan": 2.0, "exp": 1.5},
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertAlmostEqual(runner._op_weights_overrides["selective_scan"], 2.0)
         self.assertAlmostEqual(runner._op_weights_overrides["exp"], 1.5)
@@ -4093,37 +4673,53 @@ class TestApplyRecommendation(unittest.TestCase):
         """Grammar probability keys should go into config overrides."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "grammar_split_prob": 0.3,
-            "grammar_merge_prob": 0.4,
-            "grammar_risky_op_prob": 0.15,
-            "grammar_freq_domain_prob": 0.2,
-            "structured_sparsity_bias": 0.5,
-        })
+        suggestion = self._make_suggestion(
+            {
+                "grammar_split_prob": 0.3,
+                "grammar_merge_prob": 0.4,
+                "grammar_risky_op_prob": 0.15,
+                "grammar_freq_domain_prob": 0.2,
+                "structured_sparsity_bias": 0.5,
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_split_prob"], 0.3)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_merge_prob"], 0.4)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_risky_op_prob"], 0.15)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_freq_domain_prob"], 0.2)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["structured_sparsity_bias"], 0.5)
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_split_prob"], 0.3
+        )
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_merge_prob"], 0.4
+        )
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_risky_op_prob"], 0.15
+        )
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_freq_domain_prob"], 0.2
+        )
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["structured_sparsity_bias"], 0.5
+        )
 
     def test_combined_recommendation(self):
         """A recommendation with all knob types should route each correctly."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "n_programs": 60,
-            "max_depth": 12,
-            "math_space_weight": 3.5,
-            "category_weights": {"functional": 2.5, "sequence": 1.8},
-            "excluded_ops": ["fake_excluded_op"],
-            "op_weights": {"matmul": 1.5},
-            "grammar_split_prob": 0.4,
-            "residual_prob": 0.8,
-        })
+        suggestion = self._make_suggestion(
+            {
+                "n_programs": 60,
+                "max_depth": 12,
+                "math_space_weight": 3.5,
+                "category_weights": {"functional": 2.5, "sequence": 1.8},
+                "excluded_ops": ["fake_excluded_op"],
+                "op_weights": {"matmul": 1.5},
+                "grammar_split_prob": 0.4,
+                "residual_prob": 0.8,
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         # Grammar overrides: math_space_weight + category weights
-        self.assertAlmostEqual(runner._grammar_weight_overrides["math_space_weight"], 3.5)
+        self.assertAlmostEqual(
+            runner._grammar_weight_overrides["math_space_weight"], 3.5
+        )
         self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 2.5)
         self.assertAlmostEqual(runner._grammar_weight_overrides["sequence"], 1.8)
         # Excluded ops are ignored (policy: no auto-exclusion)
@@ -4133,7 +4729,9 @@ class TestApplyRecommendation(unittest.TestCase):
         # Config overrides
         self.assertEqual(runner._last_chat_config_overrides["n_programs"], 60)
         self.assertEqual(runner._last_chat_config_overrides["max_depth"], 12)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_split_prob"], 0.4)
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_split_prob"], 0.4
+        )
         self.assertAlmostEqual(runner._last_chat_config_overrides["residual_prob"], 0.8)
 
     def test_low_confidence_rejected(self):
@@ -4165,25 +4763,35 @@ class TestApplyRecommendation(unittest.TestCase):
         """Probability values should be clamped to [0, 1]."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "grammar_split_prob": 5.0,  # Should clamp to 1.0
-            "grammar_merge_prob": -0.5,  # Should clamp to 0.0
-            "residual_prob": 1.5,  # Should clamp to 1.0
-            "structured_sparsity_bias": 99.0,  # Should clamp to 1.0
-        })
+        suggestion = self._make_suggestion(
+            {
+                "grammar_split_prob": 5.0,  # Should clamp to 1.0
+                "grammar_merge_prob": -0.5,  # Should clamp to 0.0
+                "residual_prob": 1.5,  # Should clamp to 1.0
+                "structured_sparsity_bias": 99.0,  # Should clamp to 1.0
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_split_prob"], 1.0)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["grammar_merge_prob"], 0.0)
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_split_prob"], 1.0
+        )
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["grammar_merge_prob"], 0.0
+        )
         self.assertAlmostEqual(runner._last_chat_config_overrides["residual_prob"], 1.0)
-        self.assertAlmostEqual(runner._last_chat_config_overrides["structured_sparsity_bias"], 1.0)
+        self.assertAlmostEqual(
+            runner._last_chat_config_overrides["structured_sparsity_bias"], 1.0
+        )
 
     def test_value_clamping_category_weights(self):
         """Category weights should be clamped to [0.1, 10.0]."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "category_weights": {"functional": 999.0, "math_space": -5.0},
-        })
+        suggestion = self._make_suggestion(
+            {
+                "category_weights": {"functional": 999.0, "math_space": -5.0},
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 10.0)
         self.assertAlmostEqual(runner._grammar_weight_overrides["math_space"], 0.1)
@@ -4192,9 +4800,11 @@ class TestApplyRecommendation(unittest.TestCase):
         """Op weights should be clamped to [0.01, 10.0]."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "op_weights": {"matmul": 100.0, "exp": -1.0},
-        })
+        suggestion = self._make_suggestion(
+            {
+                "op_weights": {"matmul": 100.0, "exp": -1.0},
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertAlmostEqual(runner._op_weights_overrides["matmul"], 10.0)
         self.assertAlmostEqual(runner._op_weights_overrides["exp"], 0.01)
@@ -4211,11 +4821,13 @@ class TestApplyRecommendation(unittest.TestCase):
         """Non-dict category_weights, non-list excluded_ops should be ignored."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "category_weights": "not_a_dict",
-            "excluded_ops": "not_a_list",
-            "op_weights": 42,
-        })
+        suggestion = self._make_suggestion(
+            {
+                "category_weights": "not_a_dict",
+                "excluded_ops": "not_a_list",
+                "op_weights": 42,
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertEqual(runner._grammar_weight_overrides, {})
         self.assertEqual(runner._excluded_ops_overrides, set())
@@ -4225,16 +4837,16 @@ class TestApplyRecommendation(unittest.TestCase):
         """Unknown config keys should not appear in any override dict."""
         runner = self._make_runner()
         nb = MagicMock()
-        suggestion = self._make_suggestion({
-            "totally_fake_key": 42,
-            "another_fake": "hello",
-        })
+        suggestion = self._make_suggestion(
+            {
+                "totally_fake_key": 42,
+                "another_fake": "hello",
+            }
+        )
         runner._apply_recommendation(suggestion, nb)
         self.assertEqual(runner._grammar_weight_overrides, {})
         self.assertEqual(runner._last_chat_config_overrides, {})
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -10,11 +10,12 @@ The key value proposition being tested: instead of N per-op Python->C
 roundtrips in forward AND backward, the subgraph path does 1 Rust call
 for forward + 1 Rust call for backward.
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -26,12 +27,10 @@ _root = str(Path(__file__).resolve().parents[1].parent)
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from research.synthesis.graph import ComputationGraph, OpNode, ShapeInfo
+from research.synthesis.graph import ComputationGraph
 from research.scientist.native_runner import (
     NativeSubgraphFunction,
     SubgraphDispatcher,
-    dispatch_graph_forward_native_saved,
-    dispatch_graph_backward_native,
 )
 
 
@@ -41,24 +40,30 @@ from research.scientist.native_runner import (
 
 try:
     from research.scientist.native_runner import _try_import_rust_scheduler
+
     _rust = _try_import_rust_scheduler()
     if _rust is None:
         raise ImportError("Rust scheduler not available")
     # Smoke test
     from research.scientist.native_runner import dispatch_op_native
+
     dispatch_op_native("relu", np.array([1.0], dtype=np.float32))
     _HAS_NATIVE = True
 except Exception:
     _HAS_NATIVE = False
 
-pytestmark = [pytest.mark.native, pytest.mark.skipif(
-    not _HAS_NATIVE, reason="Native Rust scheduler or Cython bridge unavailable"
-)]
+pytestmark = [
+    pytest.mark.native,
+    pytest.mark.skipif(
+        not _HAS_NATIVE, reason="Native Rust scheduler or Cython bridge unavailable"
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_relu_graph(model_dim: int = 4) -> ComputationGraph:
     """input -> relu -> output"""
@@ -102,6 +107,7 @@ def _make_diamond_graph(model_dim: int = 4) -> ComputationGraph:
 # ---------------------------------------------------------------------------
 # Test 1: Forward through subgraph matches per-op path
 # ---------------------------------------------------------------------------
+
 
 class TestForwardMatches:
     """Forward output from NativeSubgraphFunction should match per-op execution."""
@@ -151,6 +157,7 @@ class TestForwardMatches:
 # ---------------------------------------------------------------------------
 # Test 2: Backward through subgraph produces gradients
 # ---------------------------------------------------------------------------
+
 
 class TestBackwardProducesGradients:
     """NativeSubgraphFunction.backward should populate input.grad."""
@@ -210,6 +217,7 @@ class TestBackwardProducesGradients:
 # Test 3: Gradient correctness — compare against per-op autograd path
 # ---------------------------------------------------------------------------
 
+
 class TestGradientCorrectness:
     """Compare subgraph backward gradients against PyTorch reference."""
 
@@ -232,7 +240,10 @@ class TestGradientCorrectness:
         loss_ref.backward()
 
         torch.testing.assert_close(
-            x_sub.grad, x_ref.grad, atol=1e-5, rtol=1e-5,
+            x_sub.grad,
+            x_ref.grad,
+            atol=1e-5,
+            rtol=1e-5,
             msg="Relu gradient mismatch between subgraph and PyTorch",
         )
 
@@ -253,7 +264,10 @@ class TestGradientCorrectness:
         loss_ref.backward()
 
         torch.testing.assert_close(
-            x_sub.grad, x_ref.grad, atol=1e-5, rtol=1e-5,
+            x_sub.grad,
+            x_ref.grad,
+            atol=1e-5,
+            rtol=1e-5,
             msg="Add gradient mismatch between subgraph and PyTorch",
         )
 
@@ -273,7 +287,10 @@ class TestGradientCorrectness:
         loss_ref.backward()
 
         torch.testing.assert_close(
-            x_sub.grad, x_ref.grad, atol=1e-4, rtol=1e-4,
+            x_sub.grad,
+            x_ref.grad,
+            atol=1e-4,
+            rtol=1e-4,
             msg="Chain gradient mismatch between subgraph and PyTorch",
         )
 
@@ -294,7 +311,10 @@ class TestGradientCorrectness:
 
         # gelu backward has slight numerical differences between C and PyTorch
         torch.testing.assert_close(
-            x_sub.grad, x_ref.grad, atol=5e-4, rtol=5e-4,
+            x_sub.grad,
+            x_ref.grad,
+            atol=5e-4,
+            rtol=5e-4,
             msg="Diamond gradient mismatch between subgraph and PyTorch",
         )
 
@@ -302,6 +322,7 @@ class TestGradientCorrectness:
 # ---------------------------------------------------------------------------
 # Test 4: SubgraphDispatcher routes to autograd when requires_grad=True
 # ---------------------------------------------------------------------------
+
 
 class TestSubgraphDispatcherAutograd:
     """SubgraphDispatcher.try_dispatch should use NativeSubgraphFunction
@@ -361,6 +382,7 @@ class TestSubgraphDispatcherAutograd:
 # ---------------------------------------------------------------------------
 # Test 5: Multi-step training using subgraph dispatch
 # ---------------------------------------------------------------------------
+
 
 class TestMultiStepTraining:
     """Train a simple model using SubgraphDispatcher for forward/backward."""
@@ -443,8 +465,10 @@ class TestMultiStepTraining:
 
         # Gradients should be accumulated (doubled for same data)
         torch.testing.assert_close(
-            grad_after_two, grad_after_one * 2,
-            atol=1e-5, rtol=1e-4,
+            grad_after_two,
+            grad_after_one * 2,
+            atol=1e-5,
+            rtol=1e-4,
             msg="Gradients should accumulate after two backward passes",
         )
 
@@ -452,6 +476,7 @@ class TestMultiStepTraining:
 # ---------------------------------------------------------------------------
 # Test 6: NativeSubgraphFunction with pre-cached IR JSON
 # ---------------------------------------------------------------------------
+
 
 class TestIRCaching:
     """Verify NativeSubgraphFunction works with pre-serialized IR JSON."""
@@ -472,5 +497,8 @@ class TestIRCaching:
         expected = F.relu(x.data).sign()
         # relu gradient: 1 where x > 0, 0 elsewhere
         torch.testing.assert_close(
-            x.grad, (x.data > 0).float(), atol=1e-5, rtol=1e-5,
+            x.grad,
+            (x.data > 0).float(),
+            atol=1e-5,
+            rtol=1e-5,
         )

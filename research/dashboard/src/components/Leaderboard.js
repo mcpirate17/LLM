@@ -74,7 +74,7 @@ function Leaderboard({
     return typeof leaderboardPrefs?.onlyRobust === 'boolean' ? leaderboardPrefs.onlyRobust : false;
   });
   const [visibleColumns, setVisibleColumns] = useState(() => {
-    const baseline = ['_score', 'tier', 'architecture_family', '_composition', 'composite_score', 'discovery_loss_ratio', 'validation_loss_ratio', 'moe_routing_efficiency', 'arch_quality_score', 'screening_loss_ratio', 'screening_novelty', 'investigation_loss_ratio', 'validation_baseline_ratio', '_actions'];
+    const baseline = ['_score', 'tier', '_verified', '_rate', '_gap', 'architecture_family', '_composition', 'composite_score', 'screening_loss_ratio', 'screening_novelty', 'validation_loss_ratio', 'validation_baseline_ratio', '_actions'];
     const saved = Array.isArray(leaderboardPrefs?.visibleColumns) ? leaderboardPrefs.visibleColumns : baseline;
     return saved;
   });
@@ -272,7 +272,7 @@ function Leaderboard({
         </span>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Ranked candidates with tiered evidence. Click a row to open details.
+        Score {'>'} 100 = beats GPT-2 | Score = 100 = GPT-2 level | Score {'<'} 100 = below GPT-2
       </p>
 
       {/* Tier filter tabs */}

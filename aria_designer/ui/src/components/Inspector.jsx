@@ -252,15 +252,14 @@ function Inspector({ selectedNode, allComponents, nodeCount, edgeCount, onParamC
     () => Object.entries(params).some(([key, schema]) => !isAtDefaultValue(comp.paramValues?.[key], schema)),
     [params, comp?.paramValues]
   )
-  useEffect(() => {
-    setCollapsedGroups((prev) => {
-      const next = { ...prev }
-      groupedParams.forEach(([groupName]) => {
-        if (!(groupName in next)) next[groupName] = false
-      })
-      return next
+  // Initialize new groups as expanded (no useEffect needed — merge on read)
+  const effectiveCollapsed = useMemo(() => {
+    const merged = { ...collapsedGroups }
+    groupedParams.forEach(([groupName]) => {
+      if (!(groupName in merged)) merged[groupName] = false
     })
-  }, [groupedParams])
+    return merged
+  }, [collapsedGroups, groupedParams])
 
   const resetFieldToDefault = useCallback((paramKey, schema) => {
     const hasDefault = Object.prototype.hasOwnProperty.call(schema, 'default')
@@ -346,7 +345,7 @@ function Inspector({ selectedNode, allComponents, nodeCount, edgeCount, onParamC
               <button
                 key={`nav-${groupName}`}
                 type="button"
-                className={`param-nav-chip ${collapsedGroups[groupName] ? 'is-collapsed' : ''}`}
+                className={`param-nav-chip ${effectiveCollapsed[groupName] ? 'is-collapsed' : ''}`}
                 onClick={() => {
                   const target = groupRefs.current[groupName]
                   if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -367,14 +366,14 @@ function Inspector({ selectedNode, allComponents, nodeCount, edgeCount, onParamC
               <button
                 type="button"
                 className="param-group-toggle"
-                aria-expanded={!collapsedGroups[groupName]}
+                aria-expanded={!effectiveCollapsed[groupName]}
                 onClick={() => setCollapsedGroups((prev) => ({ ...prev, [groupName]: !prev[groupName] }))}
               >
-                {collapsedGroups[groupName] ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                {effectiveCollapsed[groupName] ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
                 <span className="param-group-title">{groupName}</span>
                 <span className="param-group-count">{entries.length}</span>
               </button>
-              {!collapsedGroups[groupName] && entries.map(([key, schema]) => {
+              {!effectiveCollapsed[groupName] && entries.map(([key, schema]) => {
                 const value = comp.paramValues?.[key]
                 const isRequired = schema.required === true
                 const localErrors = validateParamValue(key, schema, value)

@@ -1,7 +1,6 @@
 """Tests for the research survivor importer."""
 
 import json
-import pytest
 
 from aria_designer.runtime.importer import graph_to_workflow
 from aria_designer.runtime.bridge import workflow_to_graph, validate_workflow_graph
@@ -9,6 +8,7 @@ from research.synthesis.graph import ComputationGraph
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
+
 
 def _make_simple_graph(model_dim=256):
     """linear → gelu → linear (with residual)."""
@@ -47,6 +47,7 @@ def _make_minimal_graph(model_dim=256):
 
 
 # ── Tests: graph → workflow conversion ───────────────────────────────
+
 
 def test_simple_conversion():
     g = _make_simple_graph()
@@ -99,7 +100,9 @@ def test_params_preserved():
     l2 = g.add_op("linear_proj", [l1], {"out_dim": 256})
     g.set_output(l2)
     wf = graph_to_workflow(g)
-    linear_nodes = [n for n in wf["nodes"] if n["component_type"].endswith("/linear_proj")]
+    linear_nodes = [
+        n for n in wf["nodes"] if n["component_type"].endswith("/linear_proj")
+    ]
     assert len(linear_nodes) == 2
     # First linear should have out_dim=512
     dims = sorted([n["params"]["out_dim"] for n in linear_nodes])
@@ -107,6 +110,7 @@ def test_params_preserved():
 
 
 # ── Tests: round-trip (graph → workflow → graph) ─────────────────────
+
 
 def test_roundtrip_simple():
     g1 = _make_simple_graph()
@@ -140,6 +144,7 @@ def test_roundtrip_validates():
 
 
 # ── Tests: JSON serialization ────────────────────────────────────────
+
 
 def test_json_serializable():
     g = _make_simple_graph()

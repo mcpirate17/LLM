@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for learnable_scale."""
-import torch
+
 import torch.nn as nn
 
 

@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
-import torch
 
 from ..evidence import build_evidence_pack
 from ..llm.decision import NextExperimentDecisionPlanner
 from ..notebook import ExperimentEntry, LabNotebook
 from ..shared_utils import clamp
-from ...synthesis.primitives import PROTECTED_OPS
 from ._types import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -23,18 +21,23 @@ class _ResultsAutomationMixin:
 
     __slots__ = ()
 
-    def _auto_recommend(self, results: Dict, config: RunConfig,
-                        hypothesis: str, nb: LabNotebook):
+    def _auto_recommend(
+        self, results: Dict, config: RunConfig, hypothesis: str, nb: LabNotebook
+    ):
         """Auto-generate a recommendation after experiment completion and APPLY it."""
         try:
             context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb)
+                results, config, hypothesis, nb
+            )
             _analytics = self._gather_analytics_data(nb)
             op_rates = _analytics.get("op_success_rates")
             comp_cov = _analytics.get("compression_coverage")
-            heuristic = self.aria.suggest_experiment(
-                context, op_success_rates=op_rates,
-                compression_coverage=comp_cov) or {}
+            heuristic = (
+                self.aria.suggest_experiment(
+                    context, op_success_rates=op_rates, compression_coverage=comp_cov
+                )
+                or {}
+            )
             summary_payload = self._build_next_experiment_summary(nb, results)
             planner = NextExperimentDecisionPlanner.from_run_config(config)
             plan = planner.propose_plan(
@@ -45,7 +48,9 @@ class _ResultsAutomationMixin:
             suggestion = {
                 "mode": plan.get("mode", heuristic.get("mode", "synthesis")),
                 "reasoning": plan.get("reasoning", heuristic.get("reasoning", "")),
-                "confidence": float(plan.get("confidence", heuristic.get("confidence", 0.5)) or 0.5),
+                "confidence": float(
+                    plan.get("confidence", heuristic.get("confidence", 0.5)) or 0.5
+                ),
                 "config": plan.get("config", heuristic.get("config", {})),
                 "planner": plan.get("planner", {}),
                 "guardrails": plan.get("guardrails", {}),
@@ -61,37 +66,44 @@ class _ResultsAutomationMixin:
                 suggestion["evidence_pack"] = evidence_pack
                 with self._lock:
                     self._last_recommendation = suggestion
-                self._emit_event("aria_recommendation", {
-                    "mode": suggestion.get("mode"),
-                    "reasoning": suggestion.get("reasoning", ""),
-                    "confidence": suggestion.get("confidence", 0),
-                    "config": suggestion.get("config", {}),
-                    "planner": suggestion.get("planner", {}),
-                    "evidence_pack": evidence_pack,
-                })
-                # Store as notebook entry
-                nb.add_entry(ExperimentEntry(
-                    entry_type="decision",
-                    title="Aria's Next Experiment Recommendation",
-                    content=suggestion.get("reasoning", ""),
-                    metadata={
+                self._emit_event(
+                    "aria_recommendation",
+                    {
                         "mode": suggestion.get("mode"),
+                        "reasoning": suggestion.get("reasoning", ""),
                         "confidence": suggestion.get("confidence", 0),
-                        "suggested_config": suggestion.get("config", {}),
+                        "config": suggestion.get("config", {}),
                         "planner": suggestion.get("planner", {}),
-                        "guardrails": suggestion.get("guardrails", {}),
-                        "summary_payload": summary_payload,
                         "evidence_pack": evidence_pack,
                     },
-                ))
+                )
+                # Store as notebook entry
+                nb.add_entry(
+                    ExperimentEntry(
+                        entry_type="decision",
+                        title="Aria's Next Experiment Recommendation",
+                        content=suggestion.get("reasoning", ""),
+                        metadata={
+                            "mode": suggestion.get("mode"),
+                            "confidence": suggestion.get("confidence", 0),
+                            "suggested_config": suggestion.get("config", {}),
+                            "planner": suggestion.get("planner", {}),
+                            "guardrails": suggestion.get("guardrails", {}),
+                            "summary_payload": summary_payload,
+                            "evidence_pack": evidence_pack,
+                        },
+                    )
+                )
                 nb.record_decision(
                     campaign_id=self._active_campaign_id,
                     decision_type="next_experiment_plan",
                     subject=f"experiment:{summary_payload.get('recent_experiment_id') or 'latest'}",
                     rationale=suggestion.get("reasoning", ""),
-                    alternatives=[{
-                        "heuristic_fallback": heuristic,
-                    }],
+                    alternatives=[
+                        {
+                            "heuristic_fallback": heuristic,
+                        }
+                    ],
                     evidence_pack={
                         "mode": suggestion.get("mode"),
                         "confidence": suggestion.get("confidence", 0),
@@ -112,7 +124,9 @@ class _ResultsAutomationMixin:
         Also detects code-level issues in reasoning and spawns repair agents.
         """
         if not suggestion.get("evidence_pack"):
-            logger.warning("Skipping recommendation application: missing Evidence Pack.")
+            logger.warning(
+                "Skipping recommendation application: missing Evidence Pack."
+            )
             return
         confidence = suggestion.get("confidence", 0)
         reasoning = str(suggestion.get("reasoning") or "")
@@ -132,14 +146,24 @@ class _ResultsAutomationMixin:
         GRAMMAR_WEIGHT_KEYS = {"math_space_weight"}
         CATEGORY_WEIGHT_KEY = "category_weights"
         CONFIG_OVERRIDE_KEYS = {
-            "n_programs", "model_dim", "max_depth", "max_ops",
-            "model_source", "morph_focus_sparse",
-            "use_synthesized_training", "novelty_weight",
-            "selection_family_bonus_weight", "refinement_top_k",
-            "refinement_generations", "refinement_budget_programs",
-            "grammar_split_prob", "grammar_merge_prob",
-            "grammar_risky_op_prob", "grammar_freq_domain_prob",
-            "structured_sparsity_bias", "residual_prob",
+            "n_programs",
+            "model_dim",
+            "max_depth",
+            "max_ops",
+            "model_source",
+            "morph_focus_sparse",
+            "use_synthesized_training",
+            "novelty_weight",
+            "selection_family_bonus_weight",
+            "refinement_top_k",
+            "refinement_generations",
+            "refinement_budget_programs",
+            "grammar_split_prob",
+            "grammar_merge_prob",
+            "grammar_risky_op_prob",
+            "grammar_freq_domain_prob",
+            "structured_sparsity_bias",
+            "residual_prob",
             "optimizer_preference",
         }
 
@@ -169,7 +193,9 @@ class _ResultsAutomationMixin:
                 # Category weights dict → merge into grammar weight overrides
                 for cat_name, weight in v.items():
                     if isinstance(weight, (int, float)):
-                        grammar_overrides[cat_name] = clamp(float(weight), *GRAMMAR_WEIGHT_CLAMP)
+                        grammar_overrides[cat_name] = clamp(
+                            float(weight), *GRAMMAR_WEIGHT_CLAMP
+                        )
             elif k == "excluded_ops" and isinstance(v, list):
                 # Failure-mode-driven op exclusion is disabled.
                 # Single-op failures are usually compiler issues, not
@@ -177,11 +203,13 @@ class _ResultsAutomationMixin:
                 # grammar of components it needs for breakthroughs.
                 # Failure modes are still recorded for dashboard
                 # visibility but never acted on automatically.
-                logger.debug("Aria suggested excluding ops %s — ignored (policy: no auto-exclusion)", v)
+                logger.debug(
+                    "Aria suggested excluding ops %s — ignored (policy: no auto-exclusion)",
+                    v,
+                )
             elif k == "op_weights" and isinstance(v, dict):
                 new_op_weights = {
                     str(op): clamp(float(w), *OP_WEIGHT_CLAMP)
-
                     for op, w in v.items()
                     if isinstance(op, str) and isinstance(w, (int, float))
                 }
@@ -220,14 +248,16 @@ class _ResultsAutomationMixin:
             )
             logger.info("Aria auto-applied config overrides: %s", config_overrides)
 
-    def _maybe_auto_report(self, config: RunConfig, nb: LabNotebook,
-                            reason: str = "session_end"):
+    def _maybe_auto_report(
+        self, config: RunConfig, nb: LabNotebook, reason: str = "session_end"
+    ):
         """Auto-generate and store a research report."""
         if not config.auto_report:
             return
 
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
 
             report_data = {
@@ -246,32 +276,40 @@ class _ResultsAutomationMixin:
 
             narrative = self.aria.generate_report_narrative(report_data)
 
-            nb.add_entry(ExperimentEntry(
-                entry_type="report",
-                title=f"Research Report ({reason})",
-                content=narrative,
-                metadata={
-                    "trigger": reason,
-                    "total_experiments": report_data["summary"].get("total_experiments", 0),
-                    "stage1_survivors": report_data["summary"].get("stage1_survivors", 0),
-                },
-            ))
+            nb.add_entry(
+                ExperimentEntry(
+                    entry_type="report",
+                    title=f"Research Report ({reason})",
+                    content=narrative,
+                    metadata={
+                        "trigger": reason,
+                        "total_experiments": report_data["summary"].get(
+                            "total_experiments", 0
+                        ),
+                        "stage1_survivors": report_data["summary"].get(
+                            "stage1_survivors", 0
+                        ),
+                    },
+                )
+            )
 
             # Save as markdown file for human/LLM consumption
             nb.save_report_markdown(narrative, reason, report_data["summary"])
 
-            self._emit_event("auto_report_generated", {
-                "reason": reason,
-                "narrative_length": len(narrative),
-                "summary": report_data["summary"],
-            })
+            self._emit_event(
+                "auto_report_generated",
+                {
+                    "reason": reason,
+                    "narrative_length": len(narrative),
+                    "summary": report_data["summary"],
+                },
+            )
 
             logger.info(f"Auto-report generated ({reason}): {len(narrative)} chars")
         except Exception as e:
             logger.warning(f"Auto-report generation failed: {e}")
 
-    def _maybe_auto_scale_up(self, results: Dict, config: RunConfig,
-                              nb: LabNotebook):
+    def _maybe_auto_scale_up(self, results: Dict, config: RunConfig, nb: LabNotebook):
         """Check if we should auto-trigger scale-up after an experiment.
 
         Criteria:
@@ -296,20 +334,17 @@ class _ResultsAutomationMixin:
         if survivors:
             # Don't gate on novelty_valid_for_promotion — missing novelty
             # data is a quality flag, not a disqualifier for scale-up.
-            avg_novelty = (
-                sum(s.get("novelty", 0) for s in survivors)
-                / len(survivors)
-            )
+            avg_novelty = sum(s.get("novelty", 0) for s in survivors) / len(survivors)
             if avg_novelty < config.auto_scale_up_min_novelty:
                 return
 
         # Select top programs by loss ratio
         top_programs = nb.get_top_programs(
-            config.auto_scale_up_top_n, sort_by="loss_ratio")
-        result_ids = [
-            p["result_id"] for p in top_programs
-            if p.get("stage1_passed")
-        ][:config.auto_scale_up_top_n]
+            config.auto_scale_up_top_n, sort_by="loss_ratio"
+        )
+        result_ids = [p["result_id"] for p in top_programs if p.get("stage1_passed")][
+            : config.auto_scale_up_top_n
+        ]
 
         if not result_ids:
             return
@@ -337,22 +372,27 @@ class _ResultsAutomationMixin:
         )
         self._pending_scale_up["evidence_pack"] = evidence_pack
 
-        self._emit_event("auto_scale_up_queued", {
-            "result_ids": result_ids,
-            "n_programs": len(result_ids),
-            "reason": f"{s1_count} S1 survivors with avg novelty >= {config.auto_scale_up_min_novelty}",
-            "evidence_pack": evidence_pack,
-        })
+        self._emit_event(
+            "auto_scale_up_queued",
+            {
+                "result_ids": result_ids,
+                "n_programs": len(result_ids),
+                "reason": f"{s1_count} S1 survivors with avg novelty >= {config.auto_scale_up_min_novelty}",
+                "evidence_pack": evidence_pack,
+            },
+        )
 
-        nb.add_entry(ExperimentEntry(
-            entry_type="decision",
-            title="Auto-Scale-Up Triggered",
-            content=(
-                f"Automatically queuing scale-up validation for {len(result_ids)} "
-                f"top performers. Criteria met: {s1_count} S1 survivors."
-            ),
-            metadata={"result_ids": result_ids, "evidence_pack": evidence_pack},
-        ))
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="decision",
+                title="Auto-Scale-Up Triggered",
+                content=(
+                    f"Automatically queuing scale-up validation for {len(result_ids)} "
+                    f"top performers. Criteria met: {s1_count} S1 survivors."
+                ),
+                metadata={"result_ids": result_ids, "evidence_pack": evidence_pack},
+            )
+        )
 
     def _run_pending_scale_up(self):
         """Launch pending auto-scale-up, auto-investigation, or auto-validation."""
@@ -429,12 +469,15 @@ class _ResultsAutomationMixin:
                 findings_summary=findings,
             )
 
-            self._emit_event("campaign_completed", {
-                "campaign_id": self._active_campaign_id,
-                "title": campaign.get("title", ""),
-                "reason": reason,
-                "findings": findings,
-            })
+            self._emit_event(
+                "campaign_completed",
+                {
+                    "campaign_id": self._active_campaign_id,
+                    "title": campaign.get("title", ""),
+                    "reason": reason,
+                    "findings": findings,
+                },
+            )
             logger.info(
                 f"Campaign completed ({reason}): "
                 f"{campaign.get('title', '')} ({self._active_campaign_id})"
@@ -459,6 +502,7 @@ class _ResultsAutomationMixin:
 
             # Build context that includes pipeline state for Aria
             from ..llm.context_hypothesis import build_campaign_formulation_context
+
             context = build_campaign_formulation_context(
                 recent_experiments=recent,
                 knowledge=knowledge,
@@ -483,9 +527,7 @@ class _ResultsAutomationMixin:
                     "relaxed criteria)."
                 )
 
-            camp_data = self.aria.formulate_campaign(
-                context=context + pipeline_hint
-            )
+            camp_data = self.aria.formulate_campaign(context=context + pipeline_hint)
 
             # Rule-based fallback: evolve based on pipeline state
             if camp_data["title"] == "Architecture Discovery Campaign":
@@ -505,12 +547,15 @@ class _ResultsAutomationMixin:
             )
 
             self._active_campaign_id = successor_id
-            self._emit_event("campaign_created", {
-                "campaign_id": successor_id,
-                "title": camp_data["title"],
-                "objective": camp_data["objective"],
-                "predecessor": completed_id,
-            })
+            self._emit_event(
+                "campaign_created",
+                {
+                    "campaign_id": successor_id,
+                    "title": camp_data["title"],
+                    "objective": camp_data["objective"],
+                    "predecessor": completed_id,
+                },
+            )
             logger.info(
                 f"Successor campaign: {camp_data['title']} ({successor_id}) "
                 f"→ replacing {completed_id}"

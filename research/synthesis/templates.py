@@ -20,43 +20,75 @@ from typing import Callable, Dict, Optional, Tuple
 from .graph import ComputationGraph
 from .motifs import (
     MOTIFS_BY_CLASS,
-    MOTIF_CLASS_ATTENTION, MOTIF_CLASS_CHANNEL, MOTIF_CLASS_CONV,
-    MOTIF_CLASS_FFN, MOTIF_CLASS_GATE, MOTIF_CLASS_MOE,
-    MOTIF_CLASS_NORM, MOTIF_CLASS_SPARSE, MOTIF_CLASS_SSM,
-    Motif, resolve_step,
+    MOTIF_CLASS_ATTENTION,
+    MOTIF_CLASS_CHANNEL,
+    MOTIF_CLASS_CONV,
+    MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_FFN,
+    MOTIF_CLASS_GATE,
+    MOTIF_CLASS_GUARDED_ACT,
+    MOTIF_CLASS_MATH_SPACE,
+    MOTIF_CLASS_MOE,
+    MOTIF_CLASS_NORM,
+    MOTIF_CLASS_REDUCE,
+    MOTIF_CLASS_SPARSE,
+    MOTIF_CLASS_SSM,
+    Motif,
+    resolve_step,
 )
-from .primitives import AlgebraicType, PRIMITIVE_REGISTRY, algebraic_types_compatible
+from .primitives import (
+    AlgebraicType,
+    PRIMITIVE_REGISTRY,
+    REQUIRES_RESIDUAL_BYPASS,
+    algebraic_types_compatible,
+)
 
 # Type alias for motif weight dicts passed from judgment engine
 MotifWeights = Optional[Dict[str, float]]
 
 # Thread-safe context for excluded ops — set by apply_template, read by motif pickers
 _excluded_ops_ctx: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
-    "_excluded_ops_ctx", default=frozenset(),
+    "_excluded_ops_ctx",
+    default=frozenset(),
 )
 
 # ── Motif class groupings for slot constraints ──────────────────────
 
 # Slots that accept any sequence mixer
 _MIXER_CLASSES: Tuple[str, ...] = (
-    MOTIF_CLASS_ATTENTION, MOTIF_CLASS_SSM, MOTIF_CLASS_CONV,
+    MOTIF_CLASS_ATTENTION,
+    MOTIF_CLASS_SSM,
+    MOTIF_CLASS_CONV,
     MOTIF_CLASS_CHANNEL,
 )
 
 # Slots that accept any FFN-like transform
 _FFN_CLASSES: Tuple[str, ...] = (
-    MOTIF_CLASS_FFN, MOTIF_CLASS_GATE, MOTIF_CLASS_SPARSE,
+    MOTIF_CLASS_FFN,
+    MOTIF_CLASS_GATE,
+    MOTIF_CLASS_SPARSE,
+    MOTIF_CLASS_EFFICIENT_PROJ,
 )
 
 # All motif classes
 _ALL_CLASSES: Tuple[str, ...] = (
-    MOTIF_CLASS_FFN, MOTIF_CLASS_ATTENTION, MOTIF_CLASS_SSM,
-    MOTIF_CLASS_CONV, MOTIF_CLASS_GATE, MOTIF_CLASS_SPARSE,
-    MOTIF_CLASS_MOE, MOTIF_CLASS_CHANNEL,
+    MOTIF_CLASS_FFN,
+    MOTIF_CLASS_ATTENTION,
+    MOTIF_CLASS_SSM,
+    MOTIF_CLASS_CONV,
+    MOTIF_CLASS_GATE,
+    MOTIF_CLASS_SPARSE,
+    MOTIF_CLASS_MOE,
+    MOTIF_CLASS_CHANNEL,
+    MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_REDUCE,
+    MOTIF_CLASS_GUARDED_ACT,
+    MOTIF_CLASS_MATH_SPACE,
 )
 
 
 # ── Helper: instantiate a motif into a graph ────────────────────────
+
 
 def _instantiate_motif(
     graph: ComputationGraph,
@@ -80,10 +112,11 @@ def _instantiate_motif(
         cur_dim = graph.nodes[current].output_shape.dim
         if cur_dim == 1 and cur_dim != D:
             prim = PRIMITIVE_REGISTRY.get(op_name)
-            if prim and prim.n_params > 0:
+            if prim and prim.has_params:
                 try:
-                    current = graph.add_op("linear_proj", [current],
-                                           config={"out_dim": D})
+                    current = graph.add_op(
+                        "linear_proj", [current], config={"out_dim": D}
+                    )
                 except ValueError:
                     return node_id
                 cur_dim = D
@@ -93,8 +126,12 @@ def _instantiate_motif(
             config.setdefault("out_dim", cur_dim // 2)
         elif op_name == "linear_proj_up":
             config.setdefault("out_dim", cur_dim * 2)
-        elif op_name in ("nm_sparse_linear", "block_sparse_linear",
-                         "semi_structured_2_4_linear", "ternary_projection"):
+        elif op_name in (
+            "nm_sparse_linear",
+            "block_sparse_linear",
+            "semi_structured_2_4_linear",
+            "ternary_projection",
+        ):
             config.setdefault("out_dim", cur_dim)
             if op_name == "nm_sparse_linear":
                 config.setdefault("n", 2)
@@ -102,10 +139,25 @@ def _instantiate_motif(
             elif op_name == "block_sparse_linear":
                 config.setdefault("block_size", rng.choice([8, 16, 32]))
                 config.setdefault("block_density", rng.uniform(0.05, 0.5))
+        elif op_name in (
+            "bottleneck_proj",
+            "low_rank_proj",
+            "grouped_linear",
+            "shared_basis_proj",
+            "tied_proj",
+        ):
+            config.setdefault("out_dim", cur_dim)
+        elif op_name == "multi_head_mix":
+            config.setdefault("n_heads", rng.choice([2, 4, 8]))
         elif op_name == "local_window_attn":
             config.setdefault("window_size", rng.choice([8, 16, 32]))
-        elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk",
-                         "rwkv_time_mixing"):
+        elif op_name == "sliding_window_mask":
+            config.setdefault("window_size", rng.choice([8, 16, 32]))
+        elif op_name == "tropical_moe":
+            config.setdefault("num_experts", rng.choice([2, 4]))
+        elif op_name == "gather_topk":
+            config.setdefault("k", rng.choice([4, 8, 16]))
+        elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
             config.setdefault("mlp_ratio", rng.choice([2.0, 3.0, 4.0]))
         try:
             current = graph.add_op(op_name, [current], config=config)
@@ -136,10 +188,17 @@ def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) ->
     current_type = _node_output_type(graph, node_id)
     for step in motif.steps:
         step_op = PRIMITIVE_REGISTRY.get(step.op_name)
-        if step_op is None or not algebraic_types_compatible(current_type, step_op.algebraic_type):
+        if step_op is None or not algebraic_types_compatible(
+            current_type, step_op.algebraic_type
+        ):
             return False
         current_type = step_op.algebraic_type
     return True
+
+
+def _motif_has_bypass_op(motif: Motif) -> bool:
+    """Check if any step in motif uses an op that requires residual bypass."""
+    return any(s.op_name in REQUIRES_RESIDUAL_BYPASS for s in motif.steps)
 
 
 def _pick_compatible_motif(
@@ -151,15 +210,19 @@ def _pick_compatible_motif(
 ) -> Optional[Motif]:
     excluded = _excluded_ops_ctx.get()
     candidates = [
-        m for m in MOTIFS_BY_CLASS.get(motif_class, [])
+        m
+        for m in MOTIFS_BY_CLASS.get(motif_class, [])
         if _motif_is_compatible(graph, node_id, m)
         and not (excluded and any(s.op_name in excluded for s in m.steps))
+        and not _motif_has_bypass_op(m)
     ]
     if not candidates:
         return None
     if len(candidates) == 1:
         return candidates[0]
-    candidate_weights = [weights.get(m.name, m.lift) if weights else m.lift for m in candidates]
+    candidate_weights = [
+        weights.get(m.name, m.lift) if weights else m.lift for m in candidates
+    ]
     return rng.choices(candidates, weights=candidate_weights, k=1)[0]
 
 
@@ -175,13 +238,17 @@ def _pick_compatible_motif_from_classes(
     for cls in classes:
         pool.extend(MOTIFS_BY_CLASS.get(cls, []))
     candidates = [
-        m for m in pool
+        m
+        for m in pool
         if _motif_is_compatible(graph, node_id, m)
         and not (excluded and any(s.op_name in excluded for s in m.steps))
+        and not _motif_has_bypass_op(m)
     ]
     if not candidates:
         return None
-    candidate_weights = [weights.get(m.name, m.lift) if weights else m.lift for m in candidates]
+    candidate_weights = [
+        weights.get(m.name, m.lift) if weights else m.lift for m in candidates
+    ]
     return rng.choices(candidates, weights=candidate_weights, k=1)[0]
 
 
@@ -189,14 +256,16 @@ def _fix_dim(graph: ComputationGraph, node_id: int) -> int:
     """Add linear_proj to fix dimension back to model_dim if needed."""
     if graph.nodes[node_id].output_shape.dim != graph.model_dim:
         try:
-            return graph.add_op("linear_proj", [node_id],
-                                config={"out_dim": graph.model_dim})
+            return graph.add_op(
+                "linear_proj", [node_id], config={"out_dim": graph.model_dim}
+            )
         except ValueError:
             pass
     return node_id
 
 
 # ── Template implementations ────────────────────────────────────────
+
 
 def tpl_residual_block(
     graph: ComputationGraph,
@@ -217,7 +286,9 @@ def tpl_residual_block(
 
     # Core motif (mixer or FFN)
     core_classes = list(_MIXER_CLASSES + _FFN_CLASSES)
-    core_motif = _pick_compatible_motif_from_classes(graph, normed, rng, core_classes, weights)
+    core_motif = _pick_compatible_motif_from_classes(
+        graph, normed, rng, core_classes, weights
+    )
     if core_motif:
         processed = _instantiate_motif(graph, normed, core_motif, rng)
     else:
@@ -244,7 +315,9 @@ def tpl_sequential(
     n_motifs = rng.choice([2, 3])
     current = input_id
     for _ in range(n_motifs):
-        motif = _pick_compatible_motif_from_classes(graph, current, rng, _ALL_CLASSES, weights)
+        motif = _pick_compatible_motif_from_classes(
+            graph, current, rng, _ALL_CLASSES, weights
+        )
         if motif:
             current = _instantiate_motif(graph, current, motif, rng)
             current = _fix_dim(graph, current)
@@ -265,7 +338,9 @@ def tpl_transformer_block(
     norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
 
-    mixer = _pick_compatible_motif_from_classes(graph, normed1, rng, _MIXER_CLASSES, weights)
+    mixer = _pick_compatible_motif_from_classes(
+        graph, normed1, rng, _MIXER_CLASSES, weights
+    )
     if mixer:
         mixed = _instantiate_motif(graph, normed1, mixer, rng)
     else:
@@ -281,7 +356,9 @@ def tpl_transformer_block(
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
 
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
     if ffn:
         ffned = _instantiate_motif(graph, normed2, ffn, rng)
     else:
@@ -314,14 +391,18 @@ def tpl_parallel_split(
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Path A: mixer
-    motif_a = _pick_compatible_motif_from_classes(graph, split_id, rng, _MIXER_CLASSES, weights)
+    motif_a = _pick_compatible_motif_from_classes(
+        graph, split_id, rng, _MIXER_CLASSES, weights
+    )
     if motif_a:
         path_a = _instantiate_motif(graph, split_id, motif_a, rng)
     else:
         path_a = split_id
 
     # Path B: FFN or gate
-    motif_b = _pick_compatible_motif_from_classes(graph, split_id, rng, _FFN_CLASSES, weights)
+    motif_b = _pick_compatible_motif_from_classes(
+        graph, split_id, rng, _FFN_CLASSES, weights
+    )
     if motif_b:
         path_b = _instantiate_motif(graph, split_id, motif_b, rng)
     else:
@@ -347,8 +428,7 @@ def tpl_bottleneck(
     """
     D = graph.model_dim
     try:
-        down = graph.add_op("linear_proj_down", [input_id],
-                            config={"out_dim": D // 2})
+        down = graph.add_op("linear_proj_down", [input_id], config={"out_dim": D // 2})
     except ValueError:
         return tpl_residual_block(graph, input_id, rng, weights)
 
@@ -359,8 +439,7 @@ def tpl_bottleneck(
         processed = down
 
     try:
-        up = graph.add_op("linear_proj_up", [processed],
-                          config={"out_dim": D})
+        up = graph.add_op("linear_proj_up", [processed], config={"out_dim": D})
     except ValueError:
         return _fix_dim(graph, processed)
 
@@ -419,12 +498,14 @@ def tpl_hybrid_parallel(
 
     # Attention path
     attn = _pick_compatible_motif_from_classes(
-        graph, split_id, rng, (MOTIF_CLASS_ATTENTION,), weights)
+        graph, split_id, rng, (MOTIF_CLASS_ATTENTION,), weights
+    )
     path_attn = _instantiate_motif(graph, split_id, attn, rng) if attn else split_id
 
     # SSM/conv path
     ssm = _pick_compatible_motif_from_classes(
-        graph, split_id, rng, (MOTIF_CLASS_SSM, MOTIF_CLASS_CONV), weights)
+        graph, split_id, rng, (MOTIF_CLASS_SSM, MOTIF_CLASS_CONV), weights
+    )
     path_ssm = _instantiate_motif(graph, split_id, ssm, rng) if ssm else split_id
 
     try:
@@ -452,7 +533,9 @@ def tpl_gated_residual(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    core = _pick_compatible_motif_from_classes(graph, normed, rng, list(_MIXER_CLASSES + _FFN_CLASSES), weights)
+    core = _pick_compatible_motif_from_classes(
+        graph, normed, rng, list(_MIXER_CLASSES + _FFN_CLASSES), weights
+    )
     processed = _instantiate_motif(graph, normed, core, rng) if core else normed
     processed = _fix_dim(graph, processed)
 
@@ -485,7 +568,9 @@ def tpl_dense_cascade(
     for i in range(3):
         # Pick from output of last motif
         prev = outputs[-1]
-        motif = _pick_compatible_motif_from_classes(graph, prev, rng, _ALL_CLASSES, weights)
+        motif = _pick_compatible_motif_from_classes(
+            graph, prev, rng, _ALL_CLASSES, weights
+        )
         if motif:
             processed = _instantiate_motif(graph, prev, motif, rng)
             processed = _fix_dim(graph, processed)
@@ -578,8 +663,9 @@ def tpl_routed_bottleneck(
     """
     D = graph.model_dim
     try:
-        down = graph.add_op("linear_proj_down", [input_id],
-                            config={"out_dim": max(4, D // 4)})
+        down = graph.add_op(
+            "linear_proj_down", [input_id], config={"out_dim": max(4, D // 4)}
+        )
     except ValueError:
         return tpl_bottleneck(graph, input_id, rng, weights)
 
@@ -598,8 +684,7 @@ def tpl_routed_bottleneck(
         processed = routed
 
     try:
-        up = graph.add_op("linear_proj_up", [processed],
-                          config={"out_dim": D})
+        up = graph.add_op("linear_proj_up", [processed], config={"out_dim": D})
     except ValueError:
         return _fix_dim(graph, processed)
 
@@ -629,7 +714,9 @@ def tpl_token_merge_block(
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Mixer
-    mixer = _pick_compatible_motif_from_classes(graph, merged, rng, _MIXER_CLASSES, weights)
+    mixer = _pick_compatible_motif_from_classes(
+        graph, merged, rng, _MIXER_CLASSES, weights
+    )
     if mixer:
         mixed = _instantiate_motif(graph, merged, mixer, rng)
     else:
@@ -666,8 +753,9 @@ def tpl_conditional_compute(
     # Classify → entropy: token_type_classifier (B,S,D)→(B,S,D) logits,
     # then entropy_score (B,S,D)→(B,S,1) difficulty signal.
     try:
-        class_logits = graph.add_op("token_type_classifier", [normed],
-                                    config={"n_classes": 4})
+        class_logits = graph.add_op(
+            "token_type_classifier", [normed], config={"n_classes": 4}
+        )
         difficulty = graph.add_op("entropy_score", [class_logits])
     except (ValueError, KeyError):
         return tpl_gated_residual(graph, input_id, rng, weights)
@@ -699,12 +787,18 @@ def tpl_conditional_compute(
 # The grammar fills motif slots, but the routing skeleton is fixed.
 
 # Set of all routing-first template names for grammar filtering.
-ROUTING_TEMPLATES: frozenset = frozenset({
-    "difficulty_routed_block", "three_lane_adaptive",
-    "cascaded_early_exit", "recursive_depth_router",
-    "conditional_compute", "token_merge_block",
-    "routed_bottleneck", "sparse_moe_block",
-})
+ROUTING_TEMPLATES: frozenset = frozenset(
+    {
+        "difficulty_routed_block",
+        "three_lane_adaptive",
+        "cascaded_early_exit",
+        "recursive_depth_router",
+        "conditional_compute",
+        "token_merge_block",
+        "routed_bottleneck",
+        "sparse_moe_block",
+    }
+)
 
 
 def tpl_difficulty_routed_block(
@@ -728,22 +822,28 @@ def tpl_difficulty_routed_block(
     # Classify → entropy: token_type_classifier (B,S,D)→(B,S,D) logits,
     # then entropy_score (B,S,D)→(B,S,1) difficulty signal.
     try:
-        class_logits = graph.add_op("token_type_classifier", [normed],
-                                    config={"n_classes": 4})
+        class_logits = graph.add_op(
+            "token_type_classifier", [normed], config={"n_classes": 4}
+        )
         difficulty = graph.add_op("entropy_score", [class_logits])
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Fast path: cheap linear projection (always runs on all tokens)
     try:
-        fast_out = graph.add_op("linear_proj", [normed],
-                                config={"out_dim": graph.model_dim})
+        fast_out = graph.add_op(
+            "linear_proj", [normed], config={"out_dim": graph.model_dim}
+        )
     except ValueError:
         fast_out = normed
 
     # Slow path: expensive motif (attention/SSM/MoE + FFN)
     slow_motif = _pick_compatible_motif_from_classes(
-        graph, normed, rng, list(_MIXER_CLASSES + _FFN_CLASSES), weights,
+        graph,
+        normed,
+        rng,
+        list(_MIXER_CLASSES + _FFN_CLASSES),
+        weights,
     )
     if slow_motif:
         slow_out = _instantiate_motif(graph, normed, slow_motif, rng)
@@ -823,7 +923,9 @@ def tpl_cascaded_early_exit(
     norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
 
-    mixer1 = _pick_compatible_motif_from_classes(graph, normed1, rng, _MIXER_CLASSES, weights)
+    mixer1 = _pick_compatible_motif_from_classes(
+        graph, normed1, rng, _MIXER_CLASSES, weights
+    )
     if mixer1:
         stage1 = _instantiate_motif(graph, normed1, mixer1, rng)
     else:
@@ -831,9 +933,13 @@ def tpl_cascaded_early_exit(
     stage1 = _fix_dim(graph, stage1)
 
     # Early exit gate: easy tokens attenuated after stage 1
+    # Residual bypass required: add(stage1, early_exit(stage1)) satisfies
+    # the REQUIRES_RESIDUAL_BYPASS constraint for early_exit.
     try:
-        gated1 = graph.add_op("early_exit", [stage1],
-                              config={"threshold": rng.uniform(0.3, 0.6)})
+        exit_out = graph.add_op(
+            "early_exit", [stage1], config={"threshold": rng.uniform(0.3, 0.6)}
+        )
+        gated1 = graph.add_op("add", [stage1, exit_out])
     except (ValueError, KeyError):
         gated1 = stage1
 
@@ -841,7 +947,9 @@ def tpl_cascaded_early_exit(
     norm2 = _pick_compatible_motif(graph, gated1, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, gated1, norm2, rng) if norm2 else gated1
 
-    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, _FFN_CLASSES, weights
+    )
     if ffn:
         stage2 = _instantiate_motif(graph, normed2, ffn, rng)
     else:
@@ -849,13 +957,16 @@ def tpl_cascaded_early_exit(
     stage2 = _fix_dim(graph, stage2)
 
     # Cascade gate: medium tokens attenuated after stage 2
+    # Residual bypass required: add(stage2, cascade(stage2))
     try:
-        gated2 = graph.add_op("cascade", [stage2],
-                              config={"threshold": rng.uniform(0.4, 0.7)})
+        cascade_out = graph.add_op(
+            "cascade", [stage2], config={"threshold": rng.uniform(0.4, 0.7)}
+        )
+        gated2 = graph.add_op("add", [stage2, cascade_out])
     except (ValueError, KeyError):
         gated2 = stage2
 
-    # Residual
+    # Outer residual
     try:
         return graph.add_op("add", [input_id, gated2])
     except ValueError:
@@ -880,14 +991,19 @@ def tpl_recursive_depth_router(
     # Depth-adaptive routing
     max_depth = rng.choice([2, 3, 4])
     try:
-        depth_routed = graph.add_op("adaptive_recursion", [normed],
-                                    config={"max_depth": max_depth})
+        depth_routed = graph.add_op(
+            "adaptive_recursion", [normed], config={"max_depth": max_depth}
+        )
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Post-routing motif (operates on depth-scaled tokens)
     core = _pick_compatible_motif_from_classes(
-        graph, depth_routed, rng, list(_MIXER_CLASSES + _FFN_CLASSES), weights,
+        graph,
+        depth_routed,
+        rng,
+        list(_MIXER_CLASSES + _FFN_CLASSES),
+        weights,
     )
     if core:
         processed = _instantiate_motif(graph, depth_routed, core, rng)
@@ -988,14 +1104,19 @@ def tpl_latent_compress_rwkv(
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
-    sparse_op = rng.choice(["nm_sparse_linear", "semi_structured_2_4_linear",
-                             "block_sparse_linear"])
+    sparse_op = rng.choice(
+        ["nm_sparse_linear", "semi_structured_2_4_linear", "block_sparse_linear"]
+    )
     sparse_cfg: dict = {"out_dim": D}
     if sparse_op == "nm_sparse_linear":
         sparse_cfg.update({"n": 2, "m": 4})
     elif sparse_op == "block_sparse_linear":
-        sparse_cfg.update({"block_size": rng.choice([8, 16, 32]),
-                           "block_density": rng.uniform(0.1, 0.4)})
+        sparse_cfg.update(
+            {
+                "block_size": rng.choice([8, 16, 32]),
+                "block_density": rng.uniform(0.1, 0.4),
+            }
+        )
     try:
         sparse = graph.add_op(sparse_op, [inner_res], config=sparse_cfg)
     except (ValueError, KeyError):
@@ -1012,8 +1133,11 @@ def tpl_latent_compress_rwkv(
     post_normed = _instantiate_motif(graph, gated, norm2, rng) if norm2 else gated
 
     try:
-        mixed = graph.add_op("rwkv_channel", [post_normed],
-                             config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])})
+        mixed = graph.add_op(
+            "rwkv_channel",
+            [post_normed],
+            config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        )
     except (ValueError, KeyError):
         mixed = post_normed
 
@@ -1047,14 +1171,18 @@ def tpl_signal_routed_compression(
 
     # Produce routing signal
     try:
-        signal = graph.add_op("token_type_classifier", [normed],
-                              config={"n_classes": rng.choice([2, 3, 4])})
+        signal = graph.add_op(
+            "token_type_classifier",
+            [normed],
+            config={"n_classes": rng.choice([2, 3, 4])},
+        )
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Route through compression op (2-input: data + signal)
-    comp_op = rng.choice(["compression_mixture_experts",
-                          "routing_conditioned_compression"])
+    comp_op = rng.choice(
+        ["compression_mixture_experts", "routing_conditioned_compression"]
+    )
     try:
         compressed = graph.add_op(comp_op, [normed, signal])
     except (ValueError, KeyError):
@@ -1084,16 +1212,26 @@ def tpl_mixed_recursion(
 
     # Depth scores from classifier
     try:
-        scores = graph.add_op("token_type_classifier", [normed],
-                              config={"n_classes": rng.choice([3, 4, 5])})
-        gated = graph.add_op("mixed_recursion_gate", [normed, scores],
-                             config={"max_depth": rng.choice([2, 3, 4])})
+        scores = graph.add_op(
+            "token_type_classifier",
+            [normed],
+            config={"n_classes": rng.choice([3, 4, 5])},
+        )
+        gated = graph.add_op(
+            "mixed_recursion_gate",
+            [normed, scores],
+            config={"max_depth": rng.choice([2, 3, 4])},
+        )
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Post-routing motif
     core = _pick_compatible_motif_from_classes(
-        graph, gated, rng, list(_MIXER_CLASSES + _FFN_CLASSES), weights,
+        graph,
+        gated,
+        rng,
+        list(_MIXER_CLASSES + _FFN_CLASSES),
+        weights,
     )
     if core:
         processed = _instantiate_motif(graph, gated, core, rng)
@@ -1125,14 +1263,19 @@ def tpl_topk_retrieval(
     try:
         proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
         scores = graph.add_op("cosine_similarity", [normed, proj])
-        gathered = graph.add_op("gather_topk", [normed, scores],
-                                config={"k": rng.choice([4, 8, 16])})
+        gathered = graph.add_op(
+            "gather_topk", [normed, scores], config={"k": rng.choice([4, 8, 16])}
+        )
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Process gathered subset
     core = _pick_compatible_motif_from_classes(
-        graph, gathered, rng, list(_FFN_CLASSES), weights,
+        graph,
+        gathered,
+        rng,
+        list(_FFN_CLASSES),
+        weights,
     )
     if core:
         processed = _instantiate_motif(graph, gathered, core, rng)
@@ -1144,6 +1287,154 @@ def tpl_topk_retrieval(
         return graph.add_op("add", [input_id, processed])
     except ValueError:
         return processed
+
+
+# ── Binary-Op Safety Templates ───────────────────────────────────
+#
+# These templates make binary UNSAFE ops reachable by providing the
+# structural context that guarantees numerical safety.
+
+
+def tpl_normalized_matmul(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm_a → norm_b → matmul(a,b) → linear_proj → residual.
+
+    Both inputs normalized ⇒ bounded spectral norm for matmul.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        product = graph.add_op("matmul", [proj_a, proj_b])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    product = _fix_dim(graph, product)
+    try:
+        return graph.add_op("add", [input_id, product])
+    except ValueError:
+        return product
+
+
+def tpl_gated_product(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """feature → sigmoid(gate) → outer_product(feature, gate) → norm → residual.
+
+    One input bounded by sigmoid ⇒ product bounded.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        feature = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        gate = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        gate_sig = graph.add_op("sigmoid", [gate])
+        product = graph.add_op("outer_product", [feature, gate_sig])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    product = _fix_dim(graph, product)
+    try:
+        return graph.add_op("add", [input_id, product])
+    except ValueError:
+        return product
+
+
+def tpl_safe_division(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """numerator → softmax(denom) → div_safe(num, denom) → proj → residual.
+
+    Denominator from softmax ⇒ always > 0, sums to 1.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        numerator = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        denom_raw = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        denom = graph.add_op("softmax_last", [denom_raw])
+        divided = graph.add_op("div_safe", [numerator, denom])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    divided = _fix_dim(graph, divided)
+    try:
+        return graph.add_op("add", [input_id, divided])
+    except ValueError:
+        return divided
+
+
+def tpl_cosine_scoring(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm_a → norm_b → cosine_similarity(a,b) → linear_proj_up → residual.
+
+    Both from norm layers ⇒ non-zero vectors guaranteed.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        scores = graph.add_op("cosine_similarity", [proj_a, proj_b])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    scores = _fix_dim(graph, scores)
+    try:
+        return graph.add_op("add", [input_id, scores])
+    except ValueError:
+        return scores
+
+
+def tpl_decay_sequence(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """sigmoid → cumprod_safe → linear_proj → residual.
+
+    sigmoid ∈ (0,1) ⇒ cumprod produces monotonically decaying sequence.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        gated = graph.add_op("sigmoid", [proj])
+        decayed = graph.add_op("cumprod_safe", [gated])
+        out = graph.add_op("linear_proj", [decayed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, out])
+    except ValueError:
+        return out
 
 
 # ── Template Registry ───────────────────────────────────────────────
@@ -1180,36 +1471,48 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "signal_routed_compression": tpl_signal_routed_compression,
     "mixed_recursion": tpl_mixed_recursion,
     "topk_retrieval": tpl_topk_retrieval,
+    # Binary-op safety templates (context-aware composition)
+    "normalized_matmul": tpl_normalized_matmul,
+    "gated_product": tpl_gated_product,
+    "safe_division": tpl_safe_division,
+    "cosine_scoring": tpl_cosine_scoring,
+    "decay_sequence": tpl_decay_sequence,
 }
 
 # Default weights — uniform, can be overridden by judgment engine priors
 DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
-    "residual_block": 3.0,       # Most common, reliable
-    "transformer_block": 3.0,    # Classic, well-validated
-    "sequential": 2.0,           # Simple stacking
-    "parallel_split": 1.5,       # Width exploration
-    "bottleneck": 1.5,           # Compression
-    "moe": 2.0,                  # High lift (3x)
-    "hybrid_parallel": 1.0,      # Hybrid attention+SSM
-    "gated_residual": 1.5,       # Learned skip
-    "dense_cascade": 0.8,        # Complex, DenseNet-style
-    "sparse_ffn": 2.0,           # Sparse ops have 2x lift
+    "residual_block": 3.0,  # Most common, reliable
+    "transformer_block": 3.0,  # Classic, well-validated
+    "sequential": 2.0,  # Simple stacking
+    "parallel_split": 1.5,  # Width exploration
+    "bottleneck": 1.5,  # Compression
+    "moe": 2.0,  # High lift (3x)
+    "hybrid_parallel": 1.0,  # Hybrid attention+SSM
+    "gated_residual": 1.5,  # Learned skip
+    "dense_cascade": 0.8,  # Complex, DenseNet-style
+    "sparse_ffn": 2.0,  # Sparse ops have 2x lift
     "sparse_moe_block": 4.0,
     "routed_bottleneck": 4.0,
     "token_merge_block": 3.5,
     "conditional_compute": 3.5,
     # Routing-first templates (Phase 2)
-    "difficulty_routed_block": 5.0,    # 2-lane entropy-gated routing
-    "three_lane_adaptive": 5.0,        # 3-lane adaptive mixer
-    "cascaded_early_exit": 4.5,        # Progressive depth with exit gates
-    "recursive_depth_router": 4.5,     # Depth-adaptive recursion
+    "difficulty_routed_block": 5.0,  # 2-lane entropy-gated routing
+    "three_lane_adaptive": 5.0,  # 3-lane adaptive mixer
+    "cascaded_early_exit": 4.5,  # Progressive depth with exit gates
+    "recursive_depth_router": 4.5,  # Depth-adaptive recursion
     # Latent compression (best-ever pattern, high priority)
-    "latent_compress_block": 6.0,       # Latent attn compressor + sparse
-    "latent_compress_rwkv": 6.0,        # Full best-ever pattern with RWKV
+    "latent_compress_block": 6.0,  # Latent attn compressor + sparse
+    "latent_compress_rwkv": 6.0,  # Full best-ever pattern with RWKV
     # 2-input routing templates
-    "signal_routed_compression": 4.0,   # Classifier-driven compression MoE
-    "mixed_recursion": 4.0,             # Depth-conditional recursion gate
-    "topk_retrieval": 3.5,              # Retrieval-style gather_topk
+    "signal_routed_compression": 4.0,  # Classifier-driven compression MoE
+    "mixed_recursion": 4.0,  # Depth-conditional recursion gate
+    "topk_retrieval": 3.5,  # Retrieval-style gather_topk
+    # Binary-op safety templates
+    "normalized_matmul": 2.0,  # Normalized matmul (attention-like)
+    "gated_product": 2.0,  # Sigmoid-bounded outer product
+    "safe_division": 1.5,  # Softmax-denominator division
+    "cosine_scoring": 2.0,  # Cosine similarity scoring
+    "decay_sequence": 2.0,  # Sigmoid cumprod decay
 }
 
 
@@ -1220,8 +1523,7 @@ def pick_template(
     """Pick a template weighted by success priors."""
     names = list(TEMPLATES.keys())
     template_weights = [
-        (weights or {}).get(n, DEFAULT_TEMPLATE_WEIGHTS.get(n, 1.0))
-        for n in names
+        (weights or {}).get(n, DEFAULT_TEMPLATE_WEIGHTS.get(n, 1.0)) for n in names
     ]
     name = rng.choices(names, weights=template_weights, k=1)[0]
     return name, TEMPLATES[name]
@@ -1255,6 +1557,7 @@ def apply_template(
 # ── Legacy compatibility ────────────────────────────────────────────
 # The old grammar called apply_random_template(graph, node_id, rng, excluded_ops)
 # Keep the signature for any external callers during transition.
+
 
 def apply_random_template(
     graph: ComputationGraph,

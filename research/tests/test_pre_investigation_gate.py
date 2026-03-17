@@ -1,11 +1,10 @@
 """Tests for the pre-investigation gate (3-stage filtering before investigation)."""
+
 import os
 import sys
-import sqlite3
-import tempfile
 import time
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,6 +17,7 @@ pytestmark = pytest.mark.unit
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
 
 def _make_nb(tmp_path):
     """Create a LabNotebook with a temp DB."""
@@ -68,7 +68,9 @@ def _insert_program_result(nb, result_id=None, experiment_id=None, **kwargs):
     vals = [rid, eid] + list(defaults.values())
     placeholders = ",".join("?" for _ in cols)
     col_str = ",".join(cols)
-    nb.conn.execute(f"INSERT INTO program_results ({col_str}) VALUES ({placeholders})", vals)
+    nb.conn.execute(
+        f"INSERT INTO program_results ({col_str}) VALUES ({placeholders})", vals
+    )
     nb.conn.commit()
     return rid
 
@@ -87,15 +89,22 @@ def _insert_leaderboard(nb, result_id, tier="screening", **kwargs):
 def _insert_reference(nb, name="gpt2", loss_ratio=0.73):
     """Insert a reference architecture on the leaderboard."""
     rid = f"ref_{name}_{uuid.uuid4().hex[:6]}"
-    _insert_program_result(nb, result_id=rid, loss_ratio=loss_ratio,
-                           graph_fingerprint=f"ref_fp_{name}")
-    _insert_leaderboard(nb, rid, tier="screening",
-                        screening_loss_ratio=loss_ratio,
-                        is_reference=True, reference_name=name)
+    _insert_program_result(
+        nb, result_id=rid, loss_ratio=loss_ratio, graph_fingerprint=f"ref_fp_{name}"
+    )
+    _insert_leaderboard(
+        nb,
+        rid,
+        tier="screening",
+        screening_loss_ratio=loss_ratio,
+        is_reference=True,
+        reference_name=name,
+    )
     return rid
 
 
 # ── Stage A: Hard reject tests ──────────────────────────────────────
+
 
 class TestStageAHardReject:
     def test_reject_nan_grad(self, tmp_path):
@@ -103,8 +112,12 @@ class TestStageAHardReject:
         rid = _insert_program_result(nb, has_nan_grad=1)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
-            max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0)
+            max_lr=0.5,
+            min_stability=0.3,
+            min_spectral_norm=0.01,
+            max_spectral_norm=50.0,
+            min_improvement_rate=0.0,
+        )
         assert not any(e["result_id"] == rid for e in eligible)
 
     def test_reject_inf_output(self, tmp_path):
@@ -112,8 +125,12 @@ class TestStageAHardReject:
         rid = _insert_program_result(nb, has_inf_output=1)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
-            max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0)
+            max_lr=0.5,
+            min_stability=0.3,
+            min_spectral_norm=0.01,
+            max_spectral_norm=50.0,
+            min_improvement_rate=0.0,
+        )
         assert not any(e["result_id"] == rid for e in eligible)
 
     def test_reject_zero_grad(self, tmp_path):
@@ -121,8 +138,12 @@ class TestStageAHardReject:
         rid = _insert_program_result(nb, has_zero_grad=1)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
-            max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0)
+            max_lr=0.5,
+            min_stability=0.3,
+            min_spectral_norm=0.01,
+            max_spectral_norm=50.0,
+            min_improvement_rate=0.0,
+        )
         assert not any(e["result_id"] == rid for e in eligible)
 
     def test_reject_collapsed_spectral_norm(self, tmp_path):
@@ -130,8 +151,12 @@ class TestStageAHardReject:
         rid = _insert_program_result(nb, fp_jacobian_spectral_norm=0.001)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
-            max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0)
+            max_lr=0.5,
+            min_stability=0.3,
+            min_spectral_norm=0.01,
+            max_spectral_norm=50.0,
+            min_improvement_rate=0.0,
+        )
         assert not any(e["result_id"] == rid for e in eligible)
 
     def test_reject_exploding_spectral_norm(self, tmp_path):
@@ -139,8 +164,12 @@ class TestStageAHardReject:
         rid = _insert_program_result(nb, fp_jacobian_spectral_norm=100.0)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
-            max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0)
+            max_lr=0.5,
+            min_stability=0.3,
+            min_spectral_norm=0.01,
+            max_spectral_norm=50.0,
+            min_improvement_rate=0.0,
+        )
         assert not any(e["result_id"] == rid for e in eligible)
 
     def test_pass_healthy_candidate(self, tmp_path):
@@ -148,13 +177,18 @@ class TestStageAHardReject:
         rid = _insert_program_result(nb)
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         eligible = nb.get_investigation_eligible(
-            max_lr=0.5, min_stability=0.3, min_spectral_norm=0.01,
-            max_spectral_norm=50.0, min_improvement_rate=0.0,
-            min_composite_score=0.0)
+            max_lr=0.5,
+            min_stability=0.3,
+            min_spectral_norm=0.01,
+            max_spectral_norm=50.0,
+            min_improvement_rate=0.0,
+            min_composite_score=0.0,
+        )
         assert any(e["result_id"] == rid for e in eligible)
 
 
 # ── Stage B: Composite score tests ──────────────────────────────────
+
 
 class TestStageBCompositeScore:
     def test_score_formula_basic(self):
@@ -177,23 +211,35 @@ class TestStageBCompositeScore:
         row = {"loss_ratio": 0.8, "stability_score": 0.5}
         # best_ref_lr=0.3 → threshold 0.45, LR 0.8 > 0.45 → penalty
         score_with = LabNotebook.compute_pre_investigation_score(row, best_ref_lr=0.3)
-        score_without = LabNotebook.compute_pre_investigation_score(row, best_ref_lr=None)
+        score_without = LabNotebook.compute_pre_investigation_score(
+            row, best_ref_lr=None
+        )
         assert score_with < score_without
 
     def test_novelty_boost(self):
         base = {"loss_ratio": 0.5, "stability_score": 0.5}
-        novel = {**base, "novelty_score": 0.9, "novelty_confidence": 0.9,
-                 "structural_novelty": 0.8, "behavioral_novelty": 0.7}
+        novel = {
+            **base,
+            "novelty_score": 0.9,
+            "novelty_confidence": 0.9,
+            "structural_novelty": 0.8,
+            "behavioral_novelty": 0.7,
+        }
         score_base = LabNotebook.compute_pre_investigation_score(base)
         score_novel = LabNotebook.compute_pre_investigation_score(novel)
         assert score_novel > score_base
 
     def test_ranking_order(self):
-        good = {"loss_ratio": 0.2, "stability_score": 0.9, "novelty_score": 0.7,
-                "novelty_confidence": 0.8}
+        good = {
+            "loss_ratio": 0.2,
+            "stability_score": 0.9,
+            "novelty_score": 0.7,
+            "novelty_confidence": 0.8,
+        }
         bad = {"loss_ratio": 0.7, "stability_score": 0.3}
-        assert (LabNotebook.compute_pre_investigation_score(good)
-                > LabNotebook.compute_pre_investigation_score(bad))
+        assert LabNotebook.compute_pre_investigation_score(
+            good
+        ) > LabNotebook.compute_pre_investigation_score(bad)
 
     def test_top_n_limit(self, tmp_path):
         nb = _make_nb(tmp_path)
@@ -220,6 +266,7 @@ class TestStageBCompositeScore:
 
 # ── Stage C: Probe tests ────────────────────────────────────────────
 
+
 class TestStageCProbe:
     def test_probe_disabled_by_default(self):
         config = RunConfig()
@@ -242,12 +289,14 @@ class TestStageCProbe:
         # Probe returns 0.9 (too high)
         runner._pre_inv_probe = MagicMock(return_value=0.9)
 
-        result = ExperimentRunner._pre_investigation_gate(runner, config, nb,
-                                                           nb.get_leaderboard(limit=50))
+        result = ExperimentRunner._pre_investigation_gate(
+            runner, config, nb, nb.get_leaderboard(limit=50)
+        )
         assert rid not in result
 
 
 # ── Integration tests ────────────────────────────────────────────────
+
 
 class TestIntegration:
     def test_composite_score_gating(self, tmp_path):
@@ -270,7 +319,8 @@ class TestIntegration:
         config.pre_inv_gate_enabled = True
 
         result = ExperimentRunner._pre_investigation_gate(
-            runner, config, nb, nb.get_leaderboard(limit=50))
+            runner, config, nb, nb.get_leaderboard(limit=50)
+        )
         # With no investigation tier entries, score threshold defaults to 0.0
         # so any healthy candidate passes Stage A
         assert rid in result
@@ -289,7 +339,8 @@ class TestIntegration:
         config.pre_inv_gate_enabled = True
 
         result = ExperimentRunner._pre_investigation_gate(
-            runner, config, nb, nb.get_leaderboard(limit=50))
+            runner, config, nb, nb.get_leaderboard(limit=50)
+        )
         assert rid in result
 
     def test_legacy_fallback(self, tmp_path):
@@ -305,7 +356,8 @@ class TestIntegration:
         config.investigation_loss_ratio_threshold = 0.5
 
         result = ExperimentRunner._pre_investigation_gate(
-            runner, config, nb, nb.get_leaderboard(limit=50))
+            runner, config, nb, nb.get_leaderboard(limit=50)
+        )
         assert rid in result
 
     def test_score_persisted(self, tmp_path):
@@ -321,11 +373,12 @@ class TestIntegration:
         config.pre_inv_gate_enabled = True
 
         ExperimentRunner._pre_investigation_gate(
-            runner, config, nb, nb.get_leaderboard(limit=50))
+            runner, config, nb, nb.get_leaderboard(limit=50)
+        )
 
         row = nb.conn.execute(
-            "SELECT pre_inv_score FROM leaderboard WHERE result_id = ?",
-            (rid,)).fetchone()
+            "SELECT pre_inv_score FROM leaderboard WHERE result_id = ?", (rid,)
+        ).fetchone()
         assert row is not None
         assert row[0] is not None
         assert row[0] > 0
@@ -337,9 +390,11 @@ class TestIntegration:
         _insert_leaderboard(nb, rid, screening_loss_ratio=0.3)
         # Create an investigation experiment with the same fingerprint
         nb.conn.execute(
-            "INSERT INTO experiments (experiment_id, experiment_type, timestamp, config_json) VALUES ('inv1', 'investigation', datetime('now'), '{}')")
+            "INSERT INTO experiments (experiment_id, experiment_type, timestamp, config_json) VALUES ('inv1', 'investigation', datetime('now'), '{}')"
+        )
         nb.conn.execute(
-            "INSERT INTO program_results (result_id, experiment_id, graph_fingerprint, timestamp, graph_json) VALUES ('inv_r1', 'inv1', 'already_done', datetime('now'), '{}')")
+            "INSERT INTO program_results (result_id, experiment_id, graph_fingerprint, timestamp, graph_json) VALUES ('inv_r1', 'inv1', 'already_done', datetime('now'), '{}')"
+        )
         nb.conn.commit()
 
         runner = MagicMock(spec=ExperimentRunner)
@@ -349,14 +404,20 @@ class TestIntegration:
         config.pre_inv_gate_enabled = True
 
         result = ExperimentRunner._pre_investigation_gate(
-            runner, config, nb, nb.get_leaderboard(limit=50))
+            runner, config, nb, nb.get_leaderboard(limit=50)
+        )
         assert rid not in result
 
     def test_worth_it_uses_pre_inv_score(self):
         """When pre_inv_score is available, worthiness uses it."""
-        entry = {"tier": "screening", "pre_inv_score": 25.0,
-                 "screening_loss_ratio": 0.9, "screening_novelty": 0.0,
-                 "result_id": "test", "graph_fingerprint": "fp1"}
+        entry = {
+            "tier": "screening",
+            "pre_inv_score": 25.0,
+            "screening_loss_ratio": 0.9,
+            "screening_novelty": 0.0,
+            "result_id": "test",
+            "graph_fingerprint": "fp1",
+        }
 
         # With legacy rules, LR=0.9 and Nov=0 would NOT be worth it
         # But pre_inv_score=25 >= 20 should make it worth it
@@ -367,5 +428,5 @@ class TestIntegration:
         # Verify legacy would reject
         lr = entry.get("screening_loss_ratio", 1.0)
         nov = entry.get("screening_novelty", 0.0)
-        legacy_worth = (lr < 0.2 or (lr < 0.4 and nov > 0.4) or (lr < 0.6 and nov > 0.7))
+        legacy_worth = lr < 0.2 or (lr < 0.4 and nov > 0.4) or (lr < 0.6 and nov > 0.7)
         assert not legacy_worth  # Legacy would reject

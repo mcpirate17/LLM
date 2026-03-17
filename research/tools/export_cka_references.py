@@ -27,8 +27,6 @@ import json
 import logging
 import math
 import os
-import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,24 +38,27 @@ logger = logging.getLogger(__name__)
 
 # ── Fixed protocol parameters ──
 # These define the probe corpus and must match across all exports.
-VOCAB_SIZE = 1024       # small vocab for fast training
-MODEL_DIM = 64          # compact dimension
-SEQ_LEN = 64            # sequence length for probes and training
-N_LAYERS = 2            # layers per reference model
-N_PROBE_SEQUENCES = 8   # number of probe sequences for activation extraction
-BATCH_SIZE = 8          # training batch size
+VOCAB_SIZE = 1024  # small vocab for fast training
+MODEL_DIM = 64  # compact dimension
+SEQ_LEN = 64  # sequence length for probes and training
+N_LAYERS = 2  # layers per reference model
+N_PROBE_SEQUENCES = 64  # number of probe sequences for activation extraction
+BATCH_SIZE = 8  # training batch size
 
 
 def _probe_protocol_hash() -> str:
     """Compute deterministic hash of the probe protocol parameters."""
-    spec = json.dumps({
-        "vocab_size": VOCAB_SIZE,
-        "model_dim": MODEL_DIM,
-        "seq_len": SEQ_LEN,
-        "n_layers": N_LAYERS,
-        "n_probe_sequences": N_PROBE_SEQUENCES,
-        "batch_size": BATCH_SIZE,
-    }, sort_keys=True)
+    spec = json.dumps(
+        {
+            "vocab_size": VOCAB_SIZE,
+            "model_dim": MODEL_DIM,
+            "seq_len": SEQ_LEN,
+            "n_layers": N_LAYERS,
+            "n_probe_sequences": N_PROBE_SEQUENCES,
+            "batch_size": BATCH_SIZE,
+        },
+        sort_keys=True,
+    )
     return hashlib.sha256(spec.encode()).hexdigest()[:16]
 
 
@@ -119,9 +120,9 @@ class SSMRefLayer(nn.Module):
 
         # Project input
         proj = self.input_proj(h)
-        z = proj[..., :D]                        # (B, S, D) - input gate
-        B_mat = proj[..., D:D+self.state_dim]     # (B, S, N) - input matrix
-        C_mat = proj[..., D+self.state_dim:]       # (B, S, N) - output matrix
+        z = proj[..., :D]  # (B, S, D) - input gate
+        B_mat = proj[..., D : D + self.state_dim]  # (B, S, N) - input matrix
+        C_mat = proj[..., D + self.state_dim :]  # (B, S, N) - output matrix
 
         # Discretized state transition: A_bar = exp(log_A * softplus(delta))
         A = -torch.exp(self.log_A)  # (D, N) negative for stability
@@ -131,8 +132,9 @@ class SSMRefLayer(nn.Module):
         outputs = []
         for t in range(S):
             # state = A * state + B * z
-            state = state * torch.exp(A.unsqueeze(0)) + \
-                B_mat[:, t].unsqueeze(1) * z[:, t].unsqueeze(-1)
+            state = state * torch.exp(A.unsqueeze(0)) + B_mat[:, t].unsqueeze(1) * z[
+                :, t
+            ].unsqueeze(-1)
             # y = C * state + D * z
             y = (C_mat[:, t].unsqueeze(1) * state).sum(-1) + self.D * z[:, t]
             outputs.append(y)
@@ -149,8 +151,11 @@ class ConvRefLayer(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         # Depthwise conv: each channel independently
         self.conv = nn.Conv1d(
-            dim, dim, kernel_size,
-            padding=kernel_size // 2, groups=dim,
+            dim,
+            dim,
+            kernel_size,
+            padding=kernel_size // 2,
+            groups=dim,
         )
         self.gate = nn.Linear(dim, dim)
         self.proj = nn.Linear(dim, dim, bias=False)
@@ -196,17 +201,13 @@ class ReferenceModel(nn.Module):
 def build_reference_model(family: str, device: str = "cpu") -> ReferenceModel:
     """Build a small reference model for the given architecture family."""
     if family == "transformer":
-        layers = nn.ModuleList([
-            TransformerRefLayer(MODEL_DIM) for _ in range(N_LAYERS)
-        ])
+        layers = nn.ModuleList(
+            [TransformerRefLayer(MODEL_DIM) for _ in range(N_LAYERS)]
+        )
     elif family == "ssm":
-        layers = nn.ModuleList([
-            SSMRefLayer(MODEL_DIM) for _ in range(N_LAYERS)
-        ])
+        layers = nn.ModuleList([SSMRefLayer(MODEL_DIM) for _ in range(N_LAYERS)])
     elif family == "conv":
-        layers = nn.ModuleList([
-            ConvRefLayer(MODEL_DIM) for _ in range(N_LAYERS)
-        ])
+        layers = nn.ModuleList([ConvRefLayer(MODEL_DIM) for _ in range(N_LAYERS)])
     else:
         raise ValueError(f"Unknown family: {family}")
 
@@ -215,6 +216,7 @@ def build_reference_model(family: str, device: str = "cpu") -> ReferenceModel:
 
 
 # ── Training ──
+
 
 def train_reference(
     model: ReferenceModel,
@@ -229,9 +231,7 @@ def train_reference(
     torch.manual_seed(seed)
     dev = torch.device(device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=3e-4, weight_decay=0.01
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
     model.train()
 
     initial_loss = None
@@ -239,9 +239,7 @@ def train_reference(
     losses = []
 
     for step in range(n_steps):
-        input_ids = torch.randint(
-            0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN), device=dev
-        )
+        input_ids = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN), device=dev)
         logits = model(input_ids)
         loss = F.cross_entropy(
             logits[:, :-1].reshape(-1, VOCAB_SIZE),
@@ -263,7 +261,9 @@ def train_reference(
     loss_ratio = final_loss / max(initial_loss, 1e-10)
     logger.info(
         "  Training done: initial=%.4f final=%.4f ratio=%.4f",
-        initial_loss, final_loss, loss_ratio,
+        initial_loss,
+        final_loss,
+        loss_ratio,
     )
 
     return {
@@ -278,6 +278,7 @@ def train_reference(
 
 
 # ── Activation extraction ──
+
 
 def extract_activations(
     model: ReferenceModel,
@@ -296,7 +297,9 @@ def extract_activations(
     gen = torch.Generator(device="cpu")
     gen.manual_seed(seed)
     probe_ids = torch.randint(
-        0, VOCAB_SIZE, (N_PROBE_SEQUENCES, SEQ_LEN),
+        0,
+        VOCAB_SIZE,
+        (N_PROBE_SEQUENCES, SEQ_LEN),
         generator=gen,
     ).to(dev)
 
@@ -309,6 +312,7 @@ def extract_activations(
 
 
 # ── Export ──
+
 
 def export_artifacts(
     output_dir: str,
@@ -345,23 +349,27 @@ def export_artifacts(
         if activation_shape is None:
             activation_shape = list(activations.shape)
         else:
-            assert list(activations.shape) == activation_shape, \
+            assert list(activations.shape) == activation_shape, (
                 f"Shape mismatch: {activations.shape} vs {activation_shape}"
+            )
 
         # Save .pt file
         pt_path = out / f"{family}.pt"
-        torch.save({
-            "activations": activations,
-            "config": {
-                "family": family,
-                "model_dim": MODEL_DIM,
-                "vocab_size": VOCAB_SIZE,
-                "seq_len": SEQ_LEN,
-                "n_layers": N_LAYERS,
-                "n_params": n_params,
+        torch.save(
+            {
+                "activations": activations,
+                "config": {
+                    "family": family,
+                    "model_dim": MODEL_DIM,
+                    "vocab_size": VOCAB_SIZE,
+                    "seq_len": SEQ_LEN,
+                    "n_layers": N_LAYERS,
+                    "n_params": n_params,
+                },
+                "training_info": train_info,
             },
-            "training_info": train_info,
-        }, pt_path)
+            pt_path,
+        )
         logger.info("  Saved %s", pt_path)
 
         family_info[family] = {
@@ -402,9 +410,12 @@ def _get_code_version() -> str:
         return v
     try:
         import subprocess
+
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -414,9 +425,7 @@ def _get_code_version() -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Export CKA reference artifacts"
-    )
+    parser = argparse.ArgumentParser(description="Export CKA reference artifacts")
     parser.add_argument(
         "--output-dir",
         default=str(
@@ -427,7 +436,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-steps", type=int, default=500)
     parser.add_argument(
-        "--device", default="cpu",
+        "--device",
+        default="cpu",
         help="Device for training (cpu or cuda)",
     )
     parser.add_argument("-v", "--verbose", action="store_true")

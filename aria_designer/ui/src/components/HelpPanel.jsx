@@ -23,10 +23,12 @@ function HelpPanel({ isOpen, onClose }) {
 
   useEffect(() => {
     if (!isOpen || patterns) return;
-    fetch(`${API_BASE}/api/v1/help/patterns`)
+    const ac = new AbortController();
+    fetch(`${API_BASE}/api/v1/help/patterns`, { signal: ac.signal })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => setPatterns(data))
+      .then((data) => { if (data) setPatterns(data); })
       .catch(() => {});
+    return () => ac.abort();
   }, [isOpen, patterns]);
 
   const searchComponent = useCallback((query) => {

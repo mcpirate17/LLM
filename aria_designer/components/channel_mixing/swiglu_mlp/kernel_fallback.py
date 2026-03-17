@@ -1,6 +1,5 @@
 """Python fallback kernel for swiglu_mlp."""
 
-import torch
 import torch.nn.functional as F
 
 

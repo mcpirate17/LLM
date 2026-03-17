@@ -28,6 +28,7 @@ from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 try:
     from ..synthesis.kernels import triton_tropical_matmul
+
     _HAS_TRITON_KERNELS = True
 except ImportError:
     _HAS_TRITON_KERNELS = False
@@ -47,7 +48,9 @@ def _adaptive_temperature(base_tau: float, size: int) -> float:
     return max(base_tau * scale, 1e-4)
 
 
-def _smooth_min(x: torch.Tensor, y: torch.Tensor, tau: float = _SMOOTH_TAU) -> torch.Tensor:
+def _smooth_min(
+    x: torch.Tensor, y: torch.Tensor, tau: float = _SMOOTH_TAU
+) -> torch.Tensor:
     """Smooth element-wise minimum via log-sum-exp.
 
     softmin(x, y, τ) = -τ · logsumexp(-x/τ, -y/τ)
@@ -61,7 +64,9 @@ def _smooth_min(x: torch.Tensor, y: torch.Tensor, tau: float = _SMOOTH_TAU) -> t
     return -adaptive_tau * torch.logsumexp(stacked, dim=0)
 
 
-def _smooth_min_dim(x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU) -> torch.Tensor:
+def _smooth_min_dim(
+    x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU
+) -> torch.Tensor:
     """Smooth minimum reduction along a dimension via log-sum-exp.
 
     Replaces x.min(dim=dim).values with a differentiable version.
@@ -73,7 +78,12 @@ def _smooth_min_dim(x: torch.Tensor, dim: int, tau: float = _SMOOTH_TAU) -> torc
 
 def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Tropical addition: element-wise smooth minimum."""
-    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and y.is_contiguous()
+        and x.device.type == "cpu"
+    ):
         return aria_core.tropical_add_f32(x, y)
     return _smooth_min(x, y)
 
@@ -92,8 +102,9 @@ class _TropicalMatmulFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, a: torch.Tensor, b_val: torch.Tensor,
-                chunk_size: int, tau: float) -> torch.Tensor:
+    def forward(
+        ctx, a: torch.Tensor, b_val: torch.Tensor, chunk_size: int, tau: float
+    ) -> torch.Tensor:
         B, S1, D = a.shape
         S2 = b_val.shape[1]
 
@@ -109,7 +120,8 @@ class _TropicalMatmulFn(torch.autograd.Function):
             with torch.no_grad():
                 pairwise = a_chunk + b_expanded  # (B, c, S2, D)
                 result[:, i:end, :] = -adaptive_tau * torch.logsumexp(
-                    -pairwise * inv_tau, dim=-1)
+                    -pairwise * inv_tau, dim=-1
+                )
 
         ctx.save_for_backward(a, b_val)
         ctx.chunk_size = chunk_size
@@ -173,8 +185,15 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         except Exception:
             pass
 
-    # CPU fast path: native C kernel
-    if _HAS_ARIA_CORE and a.is_contiguous() and b.ndim == 3 and a.ndim == 3 and a.device.type == "cpu":
+    # CPU fast path: native C kernel (inference only — no autograd support)
+    if (
+        _HAS_ARIA_CORE
+        and not a.requires_grad
+        and a.is_contiguous()
+        and b.ndim == 3
+        and a.ndim == 3
+        and a.device.type == "cpu"
+    ):
         B, S, D = a.shape
         native_b = None
         if b.is_contiguous() and b.shape[1] == D:
@@ -195,24 +214,24 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return _TropicalMatmulFn.apply(a, b_val, 32, _SMOOTH_TAU)
 
 
-def tropical_softmax(x: torch.Tensor, dim: int = -1,
-                     temperature: float = 0.1) -> torch.Tensor:
-    """Smooth approximation of tropical (min) using low-temperature softmax.
+def tropical_softmax(
+    x: torch.Tensor, dim: int = -1, temperature: float = 1.0
+) -> torch.Tensor:
+    """Smooth approximation of tropical (min) using softmax.
 
-    As temperature -> 0, softmin -> argmin (tropical behavior).
-    Temperature scales adaptively with sqrt(S/128) to prevent
-    numerical underflow for long sequences.
+    Higher temperature preserves gradient flow while maintaining
+    approximate tropical (softmin) semantics. τ=1.0 is the sweet spot
+    between gradient health and tropical fidelity.
     """
-    # Adaptive: scale temperature with sqrt(S/128) to prevent
-    # numerical underflow for long sequences
     reduce_dim = dim if dim >= 0 else x.ndim + dim
     reduce_size = x.shape[reduce_dim] if x.ndim and 0 <= reduce_dim < x.ndim else 1
     adaptive_t = _adaptive_temperature(temperature, reduce_size)
     return torch.softmax(-x / adaptive_t, dim=dim)
 
 
-def tropical_attention(q: torch.Tensor, k: torch.Tensor,
-                       v: torch.Tensor) -> torch.Tensor:
+def tropical_attention(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+) -> torch.Tensor:
     """Tropical attention: shortest-path distance as attention weights.
 
     Instead of softmax(QK^T/sqrt(d))V, computes:
@@ -230,7 +249,7 @@ def tropical_attention(q: torch.Tensor, k: torch.Tensor,
     S = q.shape[1]
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=q.device), diagonal=1).bool()
-        distances.masked_fill_(mask, float('inf'))
+        distances.masked_fill_(mask, float("inf"))
 
     # Softmin: attend to closest tokens
     weights = tropical_softmax(distances, dim=-1)  # (B, S, S)
@@ -240,8 +259,10 @@ def tropical_attention(q: torch.Tensor, k: torch.Tensor,
 
 # ── Primitive execution functions ─────────────────────────────────────
 
-def execute_tropical_matmul(module: nn.Module, x: torch.Tensor,
-                            y: torch.Tensor) -> torch.Tensor:
+
+def execute_tropical_matmul(
+    module: nn.Module, x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
     """Tropical matmul then project back to D dim."""
     B, S, D = x.shape
     scores = tropical_matmul(x, y)  # (B, S, S)
@@ -250,26 +271,30 @@ def execute_tropical_matmul(module: nn.Module, x: torch.Tensor,
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
         # For tropical softmax (distance-based), we set future distances to infinity
-        scores.masked_fill_(mask, float('inf'))
+        scores.masked_fill_(mask, float("inf"))
 
     weights = tropical_softmax(scores, dim=-1)
     return torch.bmm(weights, y)  # (B, S, D)
 
 
-def execute_tropical_add(module: nn.Module, x: torch.Tensor,
-                         y: torch.Tensor) -> torch.Tensor:
+def execute_tropical_add(
+    module: nn.Module, x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
     """Element-wise tropical addition (min)."""
     return tropical_add(x, y)
 
 
 def execute_tropical_attention(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Self-attention using tropical geometry."""
-    # Simple: Q=K=V=x with learned projections
-    if hasattr(module, 'weight'):
+    """Self-attention using tropical geometry with residual.
+
+    Residual prevents the weighted-average output from collapsing
+    per-token variation, which would kill gradient flow through LayerNorm.
+    """
+    if hasattr(module, "weight"):
         q = torch.nn.functional.linear(x, module.weight)
     else:
         q = x
-    return tropical_attention(q, x, x)
+    return x + tropical_attention(q, x, x)
 
 
 def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -277,22 +302,21 @@ def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
     Uses smooth cumulative min to preserve gradient flow to all
     preceding tokens, not just the argmin position.
+    τ=1.0 keeps gradients healthy while preserving tropical semantics.
     """
     if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
         return aria_core.tropical_center_f32(x)
-    # Smooth causal min centering via log-sum-exp scan
     B, S, D = x.shape
-    inv_tau = 1.0 / _SMOOTH_TAU
-    # Compute smooth cumulative min in log-space
-    # log_acc[t] = logsumexp(-x[0..t] / τ), then smooth_cmin[t] = -τ * log_acc[t]
+    tau = 1.0  # Higher τ for gradient flow (was _SMOOTH_TAU=0.1)
+    inv_tau = 1.0 / tau
     neg_x_scaled = -x * inv_tau  # (B, S, D)
-    # cumulative logsumexp along dim=1
-    log_acc = neg_x_scaled[:, :1, :]  # (B, 1, D) — first token
+    # Cumulative logsumexp via sequential scan (causal)
+    log_acc = neg_x_scaled[:, :1, :]  # (B, 1, D)
     chunks = [log_acc]
     for t in range(1, S):
-        log_acc = torch.logaddexp(log_acc, neg_x_scaled[:, t:t+1, :])
+        log_acc = torch.logaddexp(log_acc, neg_x_scaled[:, t : t + 1, :])
         chunks.append(log_acc)
-    cmin_smooth = -_SMOOTH_TAU * torch.cat(chunks, dim=1)  # (B, S, D)
+    cmin_smooth = -tau * torch.cat(chunks, dim=1)  # (B, S, D)
     return x - cmin_smooth
 
 
@@ -310,12 +334,12 @@ def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     # Apply causal mask if S > 1
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-        distances.masked_fill_(mask, float('inf'))
+        distances.masked_fill_(mask, float("inf"))
 
     gate_scores = tropical_softmax(distances, dim=-1)  # (B, S, S)
     gated = torch.bmm(gate_scores, x)  # (B, S, D)
     # Linear projection if params available
-    if hasattr(module, 'weight'):
+    if hasattr(module, "weight"):
         gated = torch.nn.functional.linear(gated, module.weight)
     # Sigmoid gate blending with residual
     gate = torch.sigmoid(gated)

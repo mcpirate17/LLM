@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -25,13 +25,7 @@ from .digest import (
 logger = logging.getLogger(__name__)
 
 
-from ..shared_utils import safe_float as _safe_float_opt
-
-
-def _safe_float(val: Any, default: float = 0.0) -> float:
-    """Convert a DB value to float, handling bytes/blobs/None gracefully."""
-    result = _safe_float_opt(val, default)
-    return result if result is not None else default
+from ..shared_utils import safe_float
 
 
 # Input/output pseudo-ops to exclude from analysis
@@ -71,6 +65,7 @@ def _extract_ops_from_graph(graph: dict) -> set:
 # Training curve analysis
 # ---------------------------------------------------------------------------
 
+
 def analyze_training_curves(nb, limit: int = 500) -> List[ConvergenceProfile]:
     """Cluster training curves into convergence categories.
 
@@ -103,8 +98,10 @@ def analyze_training_curves(nb, limit: int = 500) -> List[ConvergenceProfile]:
         rid = r[0]
         if rid not in curves:
             curves[rid] = {
-                "steps": [], "losses": [],
-                "s1_passed": bool(r[3]), "loss_ratio": r[4],
+                "steps": [],
+                "losses": [],
+                "s1_passed": bool(r[3]),
+                "loss_ratio": r[4],
             }
         curves[rid]["steps"].append(r[1])
         curves[rid]["losses"].append(r[2])
@@ -146,27 +143,33 @@ def analyze_training_curves(nb, limit: int = 500) -> List[ConvergenceProfile]:
         else:
             category = "slow_converge"
 
-        categorized[category].append({
-            "final_loss": float(losses[-1]),
-            "convergence_speed": convergence_speed,
-            "variance": variance,
-            "monotonicity": monotonicity,
-            "s1_passed": c["s1_passed"],
-        })
+        categorized[category].append(
+            {
+                "final_loss": float(losses[-1]),
+                "convergence_speed": convergence_speed,
+                "variance": variance,
+                "monotonicity": monotonicity,
+                "s1_passed": c["s1_passed"],
+            }
+        )
 
     profiles = []
     for cat, entries in categorized.items():
         n = len(entries)
         s1_count = sum(1 for e in entries if e["s1_passed"])
-        profiles.append(ConvergenceProfile(
-            category=cat,
-            count=n,
-            avg_final_loss=float(np.mean([e["final_loss"] for e in entries])),
-            avg_convergence_speed=float(np.mean([e["convergence_speed"] for e in entries])),
-            avg_variance=float(np.mean([e["variance"] for e in entries])),
-            avg_monotonicity=float(np.mean([e["monotonicity"] for e in entries])),
-            s1_pass_rate=s1_count / n if n > 0 else 0.0,
-        ))
+        profiles.append(
+            ConvergenceProfile(
+                category=cat,
+                count=n,
+                avg_final_loss=float(np.mean([e["final_loss"] for e in entries])),
+                avg_convergence_speed=float(
+                    np.mean([e["convergence_speed"] for e in entries])
+                ),
+                avg_variance=float(np.mean([e["variance"] for e in entries])),
+                avg_monotonicity=float(np.mean([e["monotonicity"] for e in entries])),
+                s1_pass_rate=s1_count / n if n > 0 else 0.0,
+            )
+        )
 
     return profiles
 
@@ -175,7 +178,10 @@ def analyze_training_curves(nb, limit: int = 500) -> List[ConvergenceProfile]:
 # Architecture family clustering
 # ---------------------------------------------------------------------------
 
-def cluster_architecture_families(nb, min_cluster_size: int = 3) -> List[ArchitectureFamily]:
+
+def cluster_architecture_families(
+    nb, min_cluster_size: int = 3
+) -> List[ArchitectureFamily]:
     """Cluster S1-passing architectures by op-set Jaccard similarity.
 
     Uses scipy agglomerative clustering on Jaccard distance matrix.
@@ -207,13 +213,15 @@ def cluster_architecture_families(nb, min_cluster_size: int = 3) -> List[Archite
             graph = json.loads(r[1])
             ops = _extract_ops_from_graph(graph)
             if ops:
-                programs.append({
-                    "result_id": r[0],
-                    "fingerprint": str(r[2] or ""),
-                    "ops": ops,
-                    "novelty": _safe_float(r[4]),
-                    "loss_ratio": _safe_float(r[5]),
-                })
+                programs.append(
+                    {
+                        "result_id": r[0],
+                        "fingerprint": str(r[2] or ""),
+                        "ops": ops,
+                        "novelty": safe_float(r[4]),
+                        "loss_ratio": safe_float(r[5]),
+                    }
+                )
                 all_ops.update(ops)
         except (json.JSONDecodeError, TypeError):
             continue
@@ -264,15 +272,17 @@ def cluster_architecture_families(nb, min_cluster_size: int = 3) -> List[Archite
         threshold = len(members) * 0.5
         rep_ops = sorted(op for op, cnt in op_counts.items() if cnt >= threshold)
 
-        families.append(ArchitectureFamily(
-            family_id=fid,
-            representative_ops=rep_ops[:10],
-            n_members=len(members),
-            s1_rate=1.0,  # all members are S1 by query
-            avg_novelty=float(np.mean([m["novelty"] for m in members])),
-            avg_loss_ratio=float(np.mean([m["loss_ratio"] for m in members])),
-            example_fingerprints=[m["fingerprint"][:16] for m in members[:3]],
-        ))
+        families.append(
+            ArchitectureFamily(
+                family_id=fid,
+                representative_ops=rep_ops[:10],
+                n_members=len(members),
+                s1_rate=1.0,  # all members are S1 by query
+                avg_novelty=float(np.mean([m["novelty"] for m in members])),
+                avg_loss_ratio=float(np.mean([m["loss_ratio"] for m in members])),
+                example_fingerprints=[m["fingerprint"][:16] for m in members[:3]],
+            )
+        )
 
     # Sort by member count desc
     families.sort(key=lambda f: f.n_members, reverse=True)
@@ -282,6 +292,7 @@ def cluster_architecture_families(nb, min_cluster_size: int = 3) -> List[Archite
 # ---------------------------------------------------------------------------
 # Config parameter effects
 # ---------------------------------------------------------------------------
+
 
 def analyze_config_effects(nb) -> List[ConfigEffect]:
     """Spearman correlation between config parameters and experiment outcomes."""
@@ -307,8 +318,13 @@ def analyze_config_effects(nb) -> List[ConfigEffect]:
 
     # Parse configs
     params_of_interest = [
-        "max_depth", "max_ops", "model_dim", "residual_prob",
-        "math_space_weight", "n_programs", "structured_sparsity_bias",
+        "max_depth",
+        "max_ops",
+        "model_dim",
+        "residual_prob",
+        "math_space_weight",
+        "n_programs",
+        "structured_sparsity_bias",
     ]
     targets = {
         "s1_count": [],
@@ -359,14 +375,16 @@ def analyze_config_effects(nb) -> List[ConfigEffect]:
             if p_value < 0.05:
                 direction = "positive" if rho > 0 else "negative"
 
-            effects.append(ConfigEffect(
-                param_name=param,
-                target=target_name,
-                rho=float(rho),
-                p_value=float(p_value),
-                direction=direction,
-                n_samples=int(valid_mask.sum()),
-            ))
+            effects.append(
+                ConfigEffect(
+                    param_name=param,
+                    target=target_name,
+                    rho=float(rho),
+                    p_value=float(p_value),
+                    direction=direction,
+                    n_samples=int(valid_mask.sum()),
+                )
+            )
 
     # Sort by p-value
     effects.sort(key=lambda e: e.p_value)
@@ -376,6 +394,7 @@ def analyze_config_effects(nb) -> List[ConfigEffect]:
 # ---------------------------------------------------------------------------
 # Op synergies
 # ---------------------------------------------------------------------------
+
 
 def analyze_op_synergies(nb, min_co_occurrences: int = 5) -> List[OpSynergy]:
     """Op-pair co-occurrence lift in S1 survivors vs all programs."""
@@ -444,13 +463,15 @@ def analyze_op_synergies(nb, min_co_occurrences: int = 5) -> List[OpSynergy]:
         elif lift < 0.5:
             label = "anti_synergistic"
 
-        synergies.append(OpSynergy(
-            op_a=pair[0],
-            op_b=pair[1],
-            lift=float(lift),
-            co_occurrences=s1_count,
-            label=label,
-        ))
+        synergies.append(
+            OpSynergy(
+                op_a=pair[0],
+                op_b=pair[1],
+                lift=float(lift),
+                co_occurrences=s1_count,
+                label=label,
+            )
+        )
 
     # Also find anti-synergistic: pairs common overall but rare in S1
     for pair, all_count in all_pairs.items():
@@ -462,13 +483,15 @@ def analyze_op_synergies(nb, min_co_occurrences: int = 5) -> List[OpSynergy]:
         lift = s1_rate / all_rate if all_rate > 0 else 1.0
 
         if lift < 0.5 and pair not in s1_pairs:
-            synergies.append(OpSynergy(
-                op_a=pair[0],
-                op_b=pair[1],
-                lift=float(lift),
-                co_occurrences=s1_count,
-                label="anti_synergistic",
-            ))
+            synergies.append(
+                OpSynergy(
+                    op_a=pair[0],
+                    op_b=pair[1],
+                    lift=float(lift),
+                    co_occurrences=s1_count,
+                    label="anti_synergistic",
+                )
+            )
 
     # Deduplicate and sort
     seen = set()
@@ -487,6 +510,7 @@ def analyze_op_synergies(nb, min_co_occurrences: int = 5) -> List[OpSynergy]:
 # ---------------------------------------------------------------------------
 # Hypothesis closure
 # ---------------------------------------------------------------------------
+
 
 def close_hypotheses(nb) -> List[HypothesisOutcome]:
     """Match experiment hypotheses with outcomes."""
@@ -521,18 +545,24 @@ def close_hypotheses(nb) -> List[HypothesisOutcome]:
             evidence = f"{s1} S1 survivors, loss_ratio={loss:.4f}"
         elif s1 > 0:
             outcome = "inconclusive"
-            evidence = f"{s1} S1 survivors but loss_ratio={loss:.4f}" if loss else f"{s1} S1 survivors"
+            evidence = (
+                f"{s1} S1 survivors but loss_ratio={loss:.4f}"
+                if loss
+                else f"{s1} S1 survivors"
+            )
         else:
             outcome = "refuted"
             evidence = f"0/{n_prog} programs passed S1"
 
-        outcomes.append(HypothesisOutcome(
-            hypothesis=hypothesis[:200],
-            experiment_id=exp_id,
-            outcome=outcome,
-            evidence=evidence,
-            s1_count=s1,
-        ))
+        outcomes.append(
+            HypothesisOutcome(
+                hypothesis=hypothesis[:200],
+                experiment_id=exp_id,
+                outcome=outcome,
+                evidence=evidence,
+                s1_count=s1,
+            )
+        )
 
     return outcomes
 
@@ -541,7 +571,10 @@ def close_hypotheses(nb) -> List[HypothesisOutcome]:
 # Efficiency profiling
 # ---------------------------------------------------------------------------
 
-def analyze_efficiency_profiles(nb, families: List[ArchitectureFamily]) -> List[EfficiencyProfile]:
+
+def analyze_efficiency_profiles(
+    nb, families: List[ArchitectureFamily]
+) -> List[EfficiencyProfile]:
     """Compute per-family FLOP and parameter efficiency, identify Pareto-optimal.
 
     Uses S1 survivors with param_count and loss_ratio data.
@@ -576,15 +609,17 @@ def analyze_efficiency_profiles(nb, families: List[ArchitectureFamily]) -> List[
         try:
             graph = json.loads(r[1])
             ops = _extract_ops_from_graph(graph)
-            loss_ratio = _safe_float(r[2], 1.0)
-            params = _safe_float(r[3]) or _safe_float(r[4])
+            loss_ratio = safe_float(r[2], 1.0)
+            params = safe_float(r[3]) or safe_float(r[4])
             if not ops or params <= 0:
                 continue
-            program_data.append({
-                "ops": ops,
-                "loss_ratio": loss_ratio,
-                "params": params,
-            })
+            program_data.append(
+                {
+                    "ops": ops,
+                    "loss_ratio": loss_ratio,
+                    "params": params,
+                }
+            )
         except (json.JSONDecodeError, TypeError):
             continue
 
@@ -620,13 +655,15 @@ def analyze_efficiency_profiles(nb, families: List[ArchitectureFamily]) -> List[
         mega = max(1.0, avg_params / 1e6)
         loss_per_mp = (1.0 - avg_loss) / mega if avg_loss < 1.0 else 0.0
 
-        profiles.append(EfficiencyProfile(
-            family_id=fam.family_id,
-            avg_flops_per_token=avg_fpt,
-            avg_params=avg_params,
-            loss_per_megaparam=loss_per_mp,
-            pareto_optimal=False,
-        ))
+        profiles.append(
+            EfficiencyProfile(
+                family_id=fam.family_id,
+                avg_flops_per_token=avg_fpt,
+                avg_params=avg_params,
+                loss_per_megaparam=loss_per_mp,
+                pareto_optimal=False,
+            )
+        )
 
     # Identify Pareto-optimal: no other family dominates on BOTH loss and params
     for i, pi in enumerate(profiles):
@@ -637,8 +674,10 @@ def analyze_efficiency_profiles(nb, families: List[ArchitectureFamily]) -> List[
             # pj dominates pi if it has lower loss AND fewer params
             pi_loss = 1.0 - pi.loss_per_megaparam  # lower is worse
             pj_loss = 1.0 - pj.loss_per_megaparam
-            if pj.avg_params <= pi.avg_params and pj_loss <= pi_loss and (
-                pj.avg_params < pi.avg_params or pj_loss < pi_loss
+            if (
+                pj.avg_params <= pi.avg_params
+                and pj_loss <= pi_loss
+                and (pj.avg_params < pi.avg_params or pj_loss < pi_loss)
             ):
                 dominated = True
                 break
@@ -652,6 +691,7 @@ def analyze_efficiency_profiles(nb, families: List[ArchitectureFamily]) -> List[
 # ---------------------------------------------------------------------------
 # Full analysis runner
 # ---------------------------------------------------------------------------
+
 
 def run_full_analysis(nb) -> dict:
     """Run all analysis functions and return a summary dict.

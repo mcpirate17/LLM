@@ -2,12 +2,12 @@
 
 All functions are static / module-level. Candidates for future Cython port.
 """
+
 from __future__ import annotations
 
 import math
 from typing import Any, Dict, Optional, Union
 
-from .leaderboard_schema import SCORE_COLUMN_MAP
 
 # GPT-2 reference metrics (measured on d_model=256, 6-layer config)
 _GPT2_REF = {
@@ -73,47 +73,61 @@ def build_score_kwargs(
     is_reference: bool,
     **extra: Any,
 ) -> Dict[str, Any]:
-    """Build the kwargs dict for ``compute_composite_score`` from a row dict.
+    """Build kwargs for ``compute_composite_v6`` from a leaderboard row.
 
-    Centralises the column->parameter mapping so callers stay DRY.
+    Queries program_results for fields not on the leaderboard row.
     ``conn`` is a sqlite3 connection, ``notebook`` provides helper methods.
     """
     pr = conn.execute(
-        "SELECT novelty_confidence, loss_improvement_rate, graph_json "
+        "SELECT novelty_confidence, loss_improvement_rate, final_loss, "
+        "param_count, n_train_steps, behavioral_novelty, structural_novelty, "
+        "fp_cka_vs_transformer "
         "FROM program_results WHERE result_id = ?",
         (result_id,),
     ).fetchone()
-    nov_conf = d.get("novelty_confidence")
-    if nov_conf is None and pr:
-        nov_conf = pr["novelty_confidence"]
+    pr_dict = dict(pr) if pr else {}
 
-    lir = d.get("loss_improvement_rate")
-    if lir is None and pr:
-        lir = pr["loss_improvement_rate"]
-
-    structural_counts = notebook._graph_structural_counts(
-        result_id,
-        graph_json=pr["graph_json"] if pr else None,
-    )
+    tags = str(d.get("tags") or "")
+    is_wiki_tik = "tiktoken_native" in tags and "wikitext103" in tags
 
     kw: Dict[str, Any] = {
-        param: d.get(col) for col, param in SCORE_COLUMN_MAP.items()
+        # Performance anchors
+        "wikitext_perplexity": d.get("wikitext_perplexity"),
+        "final_loss": pr_dict.get("final_loss"),
+        "is_wikitext_tiktoken": is_wiki_tik,
+        # Loss ratios (for hard learning gate)
+        "screening_lr": d.get("screening_loss_ratio"),
+        "inv_lr": d.get("investigation_loss_ratio"),
+        "val_lr": d.get("validation_loss_ratio"),
+        "val_baseline": d.get("validation_baseline_ratio"),
+        "val_std": d.get("validation_multi_seed_std"),
+        "loss_ratio": pr_dict.get("loss_ratio")
+        if pr_dict
+        else d.get("screening_loss_ratio"),
+        # Robustness
+        "inv_robust": d.get("investigation_robustness"),
+        "spectral_norm": d.get("fp_jacobian_spectral_norm"),
+        "investigation_passed": d.get("investigation_passed"),
+        "validation_passed": d.get("validation_passed"),
+        # Novelty
+        "screening_nov": d.get("screening_novelty"),
+        "novelty_confidence": d.get("novelty_confidence")
+        or pr_dict.get("novelty_confidence"),
+        "behavioral_novelty": pr_dict.get("behavioral_novelty"),
+        "structural_novelty": pr_dict.get("structural_novelty"),
+        "cka_reference_quality": (
+            pr_dict.get("fp_cka_vs_transformer") is not None
+            and pr_dict.get("fp_cka_vs_transformer", 0) > 0
+        ),
+        # Convergence & efficiency
+        "loss_improvement_rate": pr_dict.get("loss_improvement_rate"),
+        "param_count": pr_dict.get("param_count"),
+        "n_train_steps": pr_dict.get("n_train_steps"),
+        # Reference
+        "is_reference": is_reference,
+        # Normalization anchor
+        "gpt2_raw_anchor": 95.0,
     }
-    # Fields not in SCORE_COLUMN_MAP (require special handling).
-    kw["novelty_confidence"] = nov_conf
-    kw["scaling_param_efficiency"] = (
-        d.get("scaling_param_efficiency") or d.get("efficiency_multiple")
-    )
-    kw["is_reference"] = is_reference
-    kw["loss_improvement_rate"] = lir
-    kw["n_routing_ops"] = structural_counts.get("routing")
-    kw["n_sparse_ops"] = structural_counts.get("sparse")
-    kw["n_moe_ops"] = structural_counts.get("moe")
-    # Routing efficiency metrics stored in program_results metadata
-    if pr:
-        _pr_row = dict(pr) if hasattr(pr, "keys") else {}
-        kw.setdefault("routing_fast_fraction", _pr_row.get("routing_fast_fraction"))
-        kw.setdefault("routing_balance_score", _pr_row.get("routing_balance_score"))
     kw.update(extra)
     return kw
 
@@ -222,9 +236,21 @@ def compute_composite_score(
     else:
         perf_lr = None
         perf_confidence = 0.0
+
+    # HARD GATE: model that didn't learn cannot score high.
+    # loss_ratio is normalized (final_loss / ln(vocab_size)), so:
+    #   0.9 = model barely improved from random (10% reduction)
+    #   0.95 = essentially no learning
+    # Prevents inflated scores from novelty/routing when model is broken.
+    _insufficient_learning_cap: Optional[float] = None
+    if perf_lr is not None and perf_lr > 0.95:
+        _insufficient_learning_cap = 10.0
+    elif perf_lr is not None and perf_lr > 0.9:
+        _insufficient_learning_cap = 20.0
+
     if perf_lr is not None:
         perf_norm = max(0.0, min(1.0, 1.0 - perf_lr))
-        score += 100.0 * (perf_norm ** 1.6) * perf_confidence
+        score += 100.0 * (perf_norm**1.6) * perf_confidence
     _track("performance", _s0)
 
     # Discovery channel (random tokens)
@@ -241,8 +267,14 @@ def compute_composite_score(
 
     # 2. Novelty Utility
     _s0 = score
-    eff_nov = 1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
-    conf = 1.0 if is_reference else (novelty_confidence if novelty_confidence is not None else 1.0)
+    eff_nov = (
+        1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
+    )
+    conf = (
+        1.0
+        if is_reference
+        else (novelty_confidence if novelty_confidence is not None else 1.0)
+    )
     novelty_gate = 1.0
     if perf_lr is not None:
         # Floor at 0.3: novel architectures that haven't converged still get
@@ -265,10 +297,14 @@ def compute_composite_score(
 
     # Compound efficiency bonus: routing + sparse + high efficiency
     _s0 = score
-    if (n_routing_ops is not None and n_routing_ops >= 1
-            and n_sparse_ops is not None and n_sparse_ops >= 1
-            and scaling_param_efficiency is not None
-            and scaling_param_efficiency >= 3.0):
+    if (
+        n_routing_ops is not None
+        and n_routing_ops >= 1
+        and n_sparse_ops is not None
+        and n_sparse_ops >= 1
+        and scaling_param_efficiency is not None
+        and scaling_param_efficiency >= 3.0
+    ):
         score += 15.0
     _track("compound_efficiency", _s0)
 
@@ -283,9 +319,13 @@ def compute_composite_score(
         # Routing overhead penalty: penalize wasteful routing that adds
         # complexity without savings AND without improving loss.
         if routing_savings < 0.05:
-            best_lr = val_baseline if val_baseline is not None else (
-                val_lr if val_lr is not None else (
-                    inv_lr if inv_lr is not None else screening_lr
+            best_lr = (
+                val_baseline
+                if val_baseline is not None
+                else (
+                    val_lr
+                    if val_lr is not None
+                    else (inv_lr if inv_lr is not None else screening_lr)
                 )
             )
             if best_lr is not None and best_lr > 0.95:
@@ -436,8 +476,7 @@ def compute_composite_score(
     if inv_failed:
         # Cap penalty for models with frontier-competitive WikiText scores
         has_frontier_evidence = (
-            wikitext_score is not None
-            and wikitext_score >= _WIKITEXT_REF_SCORE_FLOOR
+            wikitext_score is not None and wikitext_score >= _WIKITEXT_REF_SCORE_FLOOR
         )
         if inv_robust is not None and inv_robust < 0.5 and not has_frontier_evidence:
             score -= 25.0 * min(1.0, (0.5 - inv_robust) / 0.5)
@@ -470,7 +509,11 @@ def compute_composite_score(
     # Scaling gate: mild penalty for sub-baseline efficiency (non-reference).
     # Floor at 0.5 prevents crushing novel architectures that haven't been
     # profiled yet. The old floor of 0.1 could destroy 90% of a score.
-    if not is_reference and scaling_param_efficiency is not None and scaling_param_efficiency < 1.0:
+    if (
+        not is_reference
+        and scaling_param_efficiency is not None
+        and scaling_param_efficiency < 1.0
+    ):
         pre_gate = score
         gate = max(0.5, scaling_param_efficiency)
         score *= gate
@@ -479,9 +522,431 @@ def compute_composite_score(
             _bd["scaling_gate_reduction"] = score - pre_gate
 
     final = max(0.0, score)
+
+    # Apply insufficient-learning cap: prevents inflated scores from
+    # novelty/routing/scaling when the model didn't actually learn.
+    if _insufficient_learning_cap is not None:
+        final = min(final, _insufficient_learning_cap)
+        if _bd is not None:
+            _bd["insufficient_learning_cap"] = _insufficient_learning_cap
+
     if decompose:
         return {"composite_score": final, "breakdown": _bd}
     return final
+
+
+# ---------------------------------------------------------------------------
+# v5 scoring: simplified 100-point scale calibrated against GPT-2 WikiText-103
+# ---------------------------------------------------------------------------
+
+# Ground truth from 8-experiment ablation series (WikiText-103, tiktoken cl100k)
+_V5_GPT2_PARAMS = 28_000_000  # 4-layer 256d GPT-2 from ablation experiments
+_V5_GPT2_IMPROVEMENT_RATE = 0.116  # 2K→6K rate on WikiText-103 (smoothed)
+
+
+def compute_composite_v5(
+    screening_lr: Optional[float] = None,
+    screening_nov: Optional[float] = None,
+    inv_lr: Optional[float] = None,
+    inv_robust: Optional[float] = None,
+    val_lr: Optional[float] = None,
+    val_baseline: Optional[float] = None,
+    val_std: Optional[float] = None,
+    novelty_confidence: Optional[float] = None,
+    is_reference: bool = False,
+    loss_improvement_rate: Optional[float] = None,
+    param_count: Optional[float] = None,
+    wikitext_perplexity: Optional[float] = None,
+    wikitext_score: Optional[float] = None,
+    spectral_norm: Optional[float] = None,
+    cka_reference_quality: Optional[bool] = None,
+    behavioral_novelty: Optional[float] = None,
+    structural_novelty: Optional[float] = None,
+    investigation_passed: Optional[bool] = None,
+    validation_passed: Optional[bool] = None,
+    is_verified: bool = False,
+    gap_vs_gpt2: Optional[float] = None,
+    decompose: bool = False,
+    **kwargs: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite score v5 — 100-point scale calibrated against GPT-2.
+
+    Invariant: no architecture scores above GPT-2 unless it is verified
+    (tiktoken_native + wikitext103 corpus) with a negative gap.
+
+    Budget:
+      Primary performance:  55 pts
+      Convergence quality:  20 pts
+      Novelty:              10 pts (capped at 8)
+      Efficiency:           10 pts
+      Robustness:            5 pts
+    """
+    _bd: Optional[Dict[str, float]] = {} if decompose else None
+
+    # Determine best available loss_ratio for learning gate
+    _best_lr: Optional[float] = None
+    for _lr_candidate in (val_baseline, val_lr, inv_lr, screening_lr):
+        if _lr_candidate is not None:
+            _best_lr = _lr_candidate
+            break
+
+    # HARD GATE: model that didn't learn cannot score high.
+    # Thresholds match v4 — see comment there for normalized loss_ratio semantics.
+    _insufficient_learning_cap_v5: Optional[float] = None
+    if _best_lr is not None and _best_lr > 0.95:
+        _insufficient_learning_cap_v5 = 10.0
+    elif _best_lr is not None and _best_lr > 0.9:
+        _insufficient_learning_cap_v5 = 20.0
+
+    # --- 1. Primary performance (55%) ---
+    # For verified entries with gap_vs_gpt2: use gap directly.
+    # gap < 0 = beats GPT-2; map to score where gap=-0.15 → 1.0, gap=+0.5 → 0.0
+    if is_verified and gap_vs_gpt2 is not None:
+        # Normalized: -0.15 or better → 1.0, +0.50 → 0.0
+        perf_norm = max(0.0, min(1.0, (0.50 - gap_vs_gpt2) / 0.65))
+        loss_score = perf_norm * 1.0  # Full confidence for verified
+    else:
+        # Fallback: use loss_ratio from pipeline evaluation
+        if val_baseline is not None:
+            perf_lr = val_baseline
+            perf_confidence = 1.0
+        elif val_lr is not None:
+            perf_lr = val_lr
+            perf_confidence = 1.0
+        elif inv_lr is not None:
+            perf_lr = inv_lr
+            perf_confidence = 0.85
+        elif screening_lr is not None:
+            perf_lr = screening_lr
+            perf_confidence = 0.65
+        else:
+            perf_lr = None
+            perf_confidence = 0.0
+
+        loss_score = 0.0
+        if perf_lr is not None:
+            # Normalize: 0.0 loss_ratio = perfect, 1.0 = random
+            perf_norm = max(0.0, min(1.0, 1.0 - perf_lr))
+            loss_score = perf_norm**1.3 * perf_confidence
+
+        # Verification discount
+        if wikitext_perplexity is not None:
+            loss_score *= 0.80  # tiktoken but maybe wrong corpus
+        else:
+            loss_score *= 0.60  # byte-era
+
+    primary = loss_score * 55.0
+    if _bd is not None:
+        _bd["primary"] = primary
+
+    # --- 2. Convergence quality (20%) ---
+    if loss_improvement_rate is not None and loss_improvement_rate > 0:
+        rate_score = min(1.0, loss_improvement_rate / _V5_GPT2_IMPROVEMENT_RATE)
+    else:
+        rate_score = 0.5  # Unknown — neutral
+    convergence = rate_score * 20.0
+    if _bd is not None:
+        _bd["convergence"] = convergence
+
+    # --- 3. Novelty (10%, capped at 8 points) ---
+    if cka_reference_quality and behavioral_novelty is not None:
+        nov = behavioral_novelty
+    elif structural_novelty is not None:
+        nov = structural_novelty * 0.5  # Structural only, half weight
+    elif screening_nov is not None:
+        conf = novelty_confidence if novelty_confidence is not None else 0.5
+        nov = screening_nov * conf
+    else:
+        nov = 0.0
+    novelty = min(8.0, nov * 10.0)
+    if _bd is not None:
+        _bd["novelty"] = novelty
+
+    # --- 4. Efficiency (10%) ---
+    if param_count is not None and param_count > 0:
+        param_eff = min(1.2, _V5_GPT2_PARAMS / param_count)
+    else:
+        param_eff = 1.0  # Unknown — neutral
+    efficiency = param_eff * 10.0
+    if _bd is not None:
+        _bd["efficiency"] = efficiency
+
+    # --- 5. Robustness (5%) ---
+    robustness = 0.0
+    if validation_passed and inv_robust is not None:
+        robustness = inv_robust * 5.0
+    if _bd is not None:
+        _bd["robustness"] = robustness
+
+    # --- Penalties ---
+    penalty = 0.0
+    if val_std is not None and val_std > 0.1:
+        penalty += min(10.0, 25.0 * val_std)
+    if spectral_norm is not None and spectral_norm < 0.01:
+        penalty += 10.0
+    if _bd is not None:
+        _bd["penalty"] = -penalty
+
+    raw = primary + convergence + novelty + efficiency + robustness - penalty
+
+    # --- GPT-2 invariant ---
+    # gpt2_cap is passed in by the rescorer (the actual GPT-2 reference score).
+    # If not provided, use a conservative estimate.
+    gpt2_cap: Optional[float] = kwargs.get("gpt2_cap")
+    if gpt2_cap is None:
+        gpt2_cap = 75.0  # Conservative fallback
+
+    if not is_verified and not is_reference:
+        raw = min(raw, gpt2_cap - 1.0)
+    elif is_verified and gap_vs_gpt2 is not None and gap_vs_gpt2 > 0.0:
+        raw = min(raw, gpt2_cap - 1.0)
+    # Verified with negative gap: no cap — earned it
+
+    final = max(0.0, raw)
+
+    # Apply insufficient-learning cap (same invariant as v4).
+    if _insufficient_learning_cap_v5 is not None:
+        final = min(final, _insufficient_learning_cap_v5)
+        if _bd is not None:
+            _bd["insufficient_learning_cap"] = _insufficient_learning_cap_v5
+
+    if _bd is not None:
+        _bd["gpt2_reference_score"] = gpt2_cap
+        _bd["capped"] = final < raw
+        return {"composite_score": final, "breakdown": _bd}
+    return final
+
+
+# ── v6: Open-ended competitive scoring, GPT-2 = 100 anchor ──
+
+# Two performance anchors — never mix them in the same comparison.
+# Anchor 1: rapid WikiText PPL (screening eval, 200 steps)
+_V6_GPT2_WIKITEXT_PPL = 18.64  # GPT-2 leaderboard.wikitext_perplexity
+# Anchor 2: full training on wikitext103+tiktoken (investigation/validation)
+_V6_GPT2_WIKI_TRAIN_LOSS = 6.8  # GPT-2 final_loss on wikitext103+tiktoken ~10K steps
+_V6_GPT2_PARAMS = 28_821_248  # GPT-2 4-layer 256d with tiktoken (100277 vocab)
+_V6_GPT2_IMPROVEMENT_RATE = (
+    0.974  # (initial - final) / initial on wikitext103+tiktoken 7K steps
+)
+_V6_NO_ANCHOR_CAP = 60.0  # cap when neither anchor applies
+
+# Step gates: screening runs cannot compete with validated architectures.
+# validation_loss from screening is measured on the training corpus val split
+# (micro_corpus.txt), NOT on WikiText-103 — not comparable to GPT-2's loss.
+_V6_MIN_STEPS_FOR_COMPETITIVE = 2000
+_V6_SCREENING_HARD_CAP = 40.0
+_V6_MIN_STEPS_FOR_VALIDATION = 4000
+_V6_INVESTIGATION_CEILING = 85.0
+
+
+def compute_composite_v6(
+    wikitext_perplexity: Optional[float] = None,
+    gpt2_wikitext_ppl: Optional[float] = None,
+    final_loss: Optional[float] = None,
+    is_wikitext_tiktoken: bool = False,
+    loss_ratio: Optional[float] = None,
+    screening_lr: Optional[float] = None,
+    inv_lr: Optional[float] = None,
+    val_lr: Optional[float] = None,
+    val_baseline: Optional[float] = None,
+    val_std: Optional[float] = None,
+    inv_robust: Optional[float] = None,
+    screening_nov: Optional[float] = None,
+    novelty_confidence: Optional[float] = None,
+    is_reference: bool = False,
+    loss_improvement_rate: Optional[float] = None,
+    param_count: Optional[float] = None,
+    behavioral_novelty: Optional[float] = None,
+    structural_novelty: Optional[float] = None,
+    cka_reference_quality: Optional[bool] = None,
+    investigation_passed: Optional[bool] = None,
+    validation_passed: Optional[bool] = None,
+    spectral_norm: Optional[float] = None,
+    n_train_steps: Optional[int] = None,
+    decompose: bool = False,
+    **kwargs: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite score v6 — open-ended scale, GPT-2 = 100.0 anchor.
+
+    Three performance anchors (never mixed):
+      Anchor 1: wikitext_perplexity available →
+                gpt2_wikitext_ppl / model_wikitext_ppl
+      Anchor 2: wikitext103+tiktoken trained, n_steps >= 2000 →
+                6.8 / model_final_loss
+      Anchor 3: neither → score capped at 60
+
+    Steps gate: n_train_steps < 2000 → capped at 40.
+
+    Budget:
+      Performance (60%): anchor-dependent ratio
+      Convergence (20%): improvement rate vs GPT-2
+      Efficiency  (10%): param/compute efficiency vs GPT-2
+      Novelty      (5%): behavioral novelty bonus
+      Robustness   (5%): validation + multi-seed
+    """
+    _bd: Optional[Dict[str, float]] = {} if decompose else None
+
+    gpt2_ppl = gpt2_wikitext_ppl or _V6_GPT2_WIKITEXT_PPL
+
+    # HARD GATE: model that didn't learn
+    # Use the LOWEST (best) loss_ratio across all tiers.
+    # val_baseline can be high even for good models (e.g. Var H = 0.98) if
+    # it was measured on a different corpus than investigation_loss_ratio.
+    _best_lr = None
+    for _lr_candidate in (val_baseline, val_lr, inv_lr, screening_lr, loss_ratio):
+        if _lr_candidate is not None:
+            if _best_lr is None or _lr_candidate < _best_lr:
+                _best_lr = _lr_candidate
+
+    _insufficient_learning_cap: Optional[float] = None
+    if _best_lr is not None and _best_lr > 0.95:
+        _insufficient_learning_cap = 10.0
+    elif _best_lr is not None and _best_lr > 0.9:
+        _insufficient_learning_cap = 20.0
+
+    # --- 1. Performance (60%) — three anchors, never mixed ---
+    n_steps = n_train_steps or 0
+    _has_ppl = wikitext_perplexity is not None and wikitext_perplexity > 0
+    _has_wiki_train = (
+        is_wikitext_tiktoken
+        and final_loss is not None
+        and final_loss > 0
+        and n_steps >= 2000
+    )
+
+    if _has_ppl:
+        # Anchor 1: rapid WikiText PPL (screening eval)
+        performance_ratio = gpt2_ppl / wikitext_perplexity
+        _anchor_used = "wikitext_ppl"
+    elif _has_wiki_train:
+        # Anchor 2: full training on wikitext103+tiktoken, >=2000 steps
+        performance_ratio = _V6_GPT2_WIKI_TRAIN_LOSS / final_loss
+        _anchor_used = "wiki_train_loss"
+    else:
+        # Anchor 3: no comparable metric
+        performance_ratio = 0.5
+        _anchor_used = "none"
+
+    performance_score = performance_ratio * 60.0
+    if _bd is not None:
+        _bd["performance"] = performance_score
+        _bd["performance_ratio"] = performance_ratio
+        _bd["anchor_used"] = _anchor_used  # type: ignore[assignment]
+        if _has_ppl:
+            _bd["gpt2_wikitext_ppl"] = gpt2_ppl
+            _bd["model_wikitext_ppl"] = wikitext_perplexity  # type: ignore[assignment]
+        elif _has_wiki_train:
+            _bd["gpt2_wiki_train_loss"] = _V6_GPT2_WIKI_TRAIN_LOSS
+            _bd["model_final_loss"] = final_loss  # type: ignore[assignment]
+
+    # --- 2. Convergence rate (20%) ---
+    # Neutral: DB loss_improvement_rate is inconsistent across entries
+    # (some store 2K→6K rate, others store (init-final)/init).
+    # Until the metric is standardized, give all entries the baseline 20pts.
+    # Performance (60%) is the real differentiator.
+    convergence_score = 20.0
+    if _bd is not None:
+        _bd["convergence"] = convergence_score
+
+    # --- 3. Efficiency (10%) ---
+    if param_count is not None and param_count > 0:
+        param_ratio = _V6_GPT2_PARAMS / param_count  # >1.0 = more efficient
+        param_ratio = min(param_ratio, 2.0)  # cap at 2x
+    else:
+        param_ratio = 1.0  # unknown — neutral
+    efficiency_score = param_ratio * 10.0
+    if _bd is not None:
+        _bd["efficiency"] = efficiency_score
+
+    # --- 4. Novelty (5%, additive bonus only) ---
+    # References get 0 novelty — they ARE the known baselines.
+    # Novelty rewards discovering something NEW.
+    if is_reference:
+        nov = 0.0
+    elif cka_reference_quality and behavioral_novelty is not None:
+        nov = behavioral_novelty
+    elif structural_novelty is not None:
+        nov = structural_novelty * 0.5
+    elif screening_nov is not None:
+        conf = novelty_confidence if novelty_confidence is not None else 0.5
+        nov = screening_nov * conf
+    else:
+        nov = 0.0
+    novelty_score = min(1.0, nov) * 5.0
+    if _bd is not None:
+        _bd["novelty"] = novelty_score
+
+    # --- 5. Robustness (5%) ---
+    robustness_score = 0.0
+    if validation_passed:
+        robustness_score += 2.5
+    if inv_robust is not None and inv_robust > 0:
+        robustness_score += min(2.5, inv_robust * 2.5)
+    if _bd is not None:
+        _bd["robustness"] = robustness_score
+
+    # --- Penalties ---
+    penalty = 0.0
+    if val_std is not None and val_std > 0.1:
+        penalty += min(10.0, 25.0 * val_std)
+    if spectral_norm is not None and spectral_norm < 0.01:
+        penalty += 5.0
+    if _bd is not None:
+        _bd["penalty"] = -penalty
+
+    raw = (
+        performance_score
+        + convergence_score
+        + efficiency_score
+        + novelty_score
+        + robustness_score
+        - penalty
+    )
+
+    # --- Normalize so GPT-2 = 100.0 ---
+    # gpt2_raw_anchor is GPT-2's own raw score, computed by the rescorer
+    # from GPT-2's actual metrics. Default 95 is a conservative estimate.
+    gpt2_baseline_raw: float = kwargs.get("gpt2_raw_anchor") or 95.0
+    composite = raw * (100.0 / gpt2_baseline_raw)
+
+    # Apply insufficient-learning cap
+    if _insufficient_learning_cap is not None:
+        composite = min(composite, _insufficient_learning_cap)
+        if _bd is not None:
+            _bd["insufficient_learning_cap"] = _insufficient_learning_cap
+
+    composite = max(0.0, composite)
+
+    # Step gate: screening runs with insufficient training cannot compete.
+    # A 500-step run on the training corpus val split is not comparable to
+    # GPT-2 trained on WikiText-103 for 10K+ steps.
+    n_steps = n_train_steps or 0
+    if not is_reference and n_steps > 0:
+        if n_steps < _V6_MIN_STEPS_FOR_COMPETITIVE:
+            step_fraction = n_steps / _V6_MIN_STEPS_FOR_COMPETITIVE
+            composite = min(composite * step_fraction, _V6_SCREENING_HARD_CAP)
+            if _bd is not None:
+                _bd["step_gate"] = True
+                _bd["step_fraction"] = step_fraction
+                _bd["step_hard_cap"] = _V6_SCREENING_HARD_CAP
+        elif validation_passed and n_steps < _V6_MIN_STEPS_FOR_VALIDATION:
+            composite = min(composite, _V6_INVESTIGATION_CEILING)
+            if _bd is not None:
+                _bd["validation_step_gate"] = True
+                _bd["investigation_ceiling"] = _V6_INVESTIGATION_CEILING
+
+    # No anchor → cap at 60
+    if _anchor_used == "none" and not is_reference:
+        composite = min(composite, _V6_NO_ANCHOR_CAP)
+        if _bd is not None:
+            _bd["no_anchor_cap"] = _V6_NO_ANCHOR_CAP
+
+    if _bd is not None:
+        _bd["gpt2_wikitext_ppl_anchor"] = gpt2_ppl
+        _bd["gpt2_baseline_raw"] = gpt2_baseline_raw
+        _bd["n_train_steps"] = float(n_steps)
+        return {"composite_score": composite, "breakdown": _bd}
+    return composite
 
 
 def reference_novelty_for_display(novelty: Optional[float]) -> Optional[float]:

@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for semi_structured_2_4_linear."""
-import torch
+
 import torch.nn as nn
 
 

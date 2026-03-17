@@ -10,8 +10,10 @@ from scipy.spatial.distance import cdist
 
 logger = logging.getLogger(__name__)
 
+
 class _ExperimentsMixin:
     """Experiment clustering, correlations, insights, and math coverage."""
+
     __slots__ = ()
 
     def reproducibility_packet_status(self, program: Dict) -> Dict:
@@ -55,7 +57,7 @@ class _ExperimentsMixin:
             op = row["op_name"]
             n_used = row["n_used"] or 1
             n_s0 = row.get("n_stage0_passed") or 0
-            
+
             # S1 success rate should be relative to things that actually
             # passed compilation. If it didn't compile, it's a code issue,
             # not a failure of the architecture's scientific utility.
@@ -75,8 +77,8 @@ class _ExperimentsMixin:
 
     def gate_performance_summary(self) -> Dict:
         """Analyze Stage 0.5 (Causality Gate) vs Stage 1 (Micro-Corpus) efficiency.
-        
-        Tracks how many 'cheaters' (random-token hackers) are caught by the 
+
+        Tracks how many 'cheaters' (random-token hackers) are caught by the
         causality gate and how well discovery loss predicts validation loss.
         """
         rows = self.nb.conn.execute("""
@@ -92,21 +94,27 @@ class _ExperimentsMixin:
         total = len(rows)
         s05_passed = sum(1 for r in rows if r["stage05_passed"])
         s05_failed = total - s05_passed
-        
-        causality_violations = sum(1 for r in rows if r["error_type"] == "causality_violation")
-        
+
+        causality_violations = sum(
+            1 for r in rows if r["error_type"] == "causality_violation"
+        )
+
         # Correlation between discovery and validation
         discovery = []
         validation = []
         for r in rows:
-            if r["discovery_loss_ratio"] is not None and r["validation_loss_ratio"] is not None:
+            if (
+                r["discovery_loss_ratio"] is not None
+                and r["validation_loss_ratio"] is not None
+            ):
                 discovery.append(r["discovery_loss_ratio"])
                 validation.append(r["validation_loss_ratio"])
-        
+
         correlation = None
         if len(discovery) > 5:
             try:
                 import numpy as np
+
                 correlation = float(np.corrcoef(discovery, validation)[0, 1])
             except Exception:
                 pass
@@ -115,8 +123,10 @@ class _ExperimentsMixin:
             "total_screened": total,
             "stage05_pass_rate": round(s05_passed / total, 4) if total > 0 else 0.0,
             "causality_violations": causality_violations,
-            "discovery_validation_correlation": round(correlation, 4) if correlation is not None else None,
-            "n_correlation_samples": len(discovery)
+            "discovery_validation_correlation": round(correlation, 4)
+            if correlation is not None
+            else None,
+            "n_correlation_samples": len(discovery),
         }
 
     def gate_health_daily(self, n_days: int = 14) -> Dict:
@@ -126,15 +136,19 @@ class _ExperimentsMixin:
         violations, and discovery-vs-validation correlation.
         """
         import time as _time
+
         cutoff = _time.time() - (n_days * 86400)
-        rows = self.nb.conn.execute("""
+        rows = self.nb.conn.execute(
+            """
             SELECT result_id, stage05_passed, stage1_passed,
                    discovery_loss_ratio, validation_loss_ratio,
                    error_type, timestamp
             FROM program_results
             WHERE stage0_passed = 1 AND timestamp > ?
             ORDER BY timestamp
-        """, (cutoff,)).fetchall()
+        """,
+            (cutoff,),
+        ).fetchall()
 
         if not rows:
             return {"daily": [], "summary": self.gate_performance_summary()}
@@ -152,11 +166,16 @@ class _ExperimentsMixin:
             day_rows = buckets[day]
             n = len(day_rows)
             passed = sum(1 for r in day_rows if r["stage05_passed"])
-            violations = sum(1 for r in day_rows if r["error_type"] == "causality_violation")
+            violations = sum(
+                1 for r in day_rows if r["error_type"] == "causality_violation"
+            )
 
             disc, val = [], []
             for r in day_rows:
-                if r["discovery_loss_ratio"] is not None and r["validation_loss_ratio"] is not None:
+                if (
+                    r["discovery_loss_ratio"] is not None
+                    and r["validation_loss_ratio"] is not None
+                ):
                     disc.append(r["discovery_loss_ratio"])
                     val.append(r["validation_loss_ratio"])
 
@@ -164,19 +183,22 @@ class _ExperimentsMixin:
             if len(disc) > 3:
                 try:
                     import numpy as np
+
                     corr = round(float(np.corrcoef(disc, val)[0, 1]), 4)
                 except Exception:
                     pass
 
-            daily.append({
-                "date": day,
-                "models_screened": n,
-                "gate_pass_rate": round(passed / n, 4) if n else 0.0,
-                "causality_violations": violations,
-                "gate_failure_rate": round((n - passed) / n, 4) if n else 0.0,
-                "discovery_validation_correlation": corr,
-                "n_correlation_samples": len(disc),
-            })
+            daily.append(
+                {
+                    "date": day,
+                    "models_screened": n,
+                    "gate_pass_rate": round(passed / n, 4) if n else 0.0,
+                    "causality_violations": violations,
+                    "gate_failure_rate": round((n - passed) / n, 4) if n else 0.0,
+                    "discovery_validation_correlation": corr,
+                    "n_correlation_samples": len(disc),
+                }
+            )
 
         return {"daily": daily, "summary": self.gate_performance_summary()}
 
@@ -198,11 +220,19 @@ class _ExperimentsMixin:
         if len(rows) < 10:
             return {}
 
-        metrics = ["graph_n_ops", "graph_depth", "graph_n_params_estimate",
-                    "graph_n_unique_ops", "graph_uses_math_spaces",
-                    "graph_uses_frequency_domain", "graph_has_gradient_path"]
+        metrics = [
+            "graph_n_ops",
+            "graph_depth",
+            "graph_n_params_estimate",
+            "graph_n_unique_ops",
+            "graph_uses_math_spaces",
+            "graph_uses_frequency_domain",
+            "graph_has_gradient_path",
+        ]
 
-        data = np.array([[float(r[m] or 0) for m in metrics] for r in rows], dtype=np.float32)
+        data = np.array(
+            [[float(r[m] or 0) for m in metrics] for r in rows], dtype=np.float32
+        )
         passed = np.array([bool(r["stage1_passed"]) for r in rows], dtype=bool)
 
         if not np.any(passed) or np.all(passed):
@@ -238,130 +268,239 @@ class _ExperimentsMixin:
             WHERE status = 'completed' AND n_programs_generated > 0
         """).fetchall()
 
-        if len(rows) < 3: return None
+        if len(rows) < 3:
+            return None
 
         experiments = []
         for row in rows:
             total = row["n_programs_generated"] or 0
-            if total <= 0: continue
-            experiments.append({
-                "experiment_id": row["experiment_id"],
-                "s1_rate": (row["n_stage1_passed"] or 0) / total,
-                "best_novelty": float(row["best_novelty_score"] or 0.0),
-                "best_loss_ratio": float(row["best_loss_ratio"] or 1.0),
-                "duration_seconds": float(row["duration_seconds"] or 0.0),
-            })
+            if total <= 0:
+                continue
+            experiments.append(
+                {
+                    "experiment_id": row["experiment_id"],
+                    "s1_rate": (row["n_stage1_passed"] or 0) / total,
+                    "best_novelty": float(row["best_novelty_score"] or 0.0),
+                    "best_loss_ratio": float(row["best_loss_ratio"] or 1.0),
+                    "duration_seconds": float(row["duration_seconds"] or 0.0),
+                }
+            )
 
-        if len(experiments) < 3: return None
+        if len(experiments) < 3:
+            return None
 
         exp_ids = [e["experiment_id"] for e in experiments]
         placeholders = ",".join("?" * len(exp_ids))
-        
+
         # Load failures and errors
-        failure_rows = self.nb.conn.execute(f"""
+        failure_rows = self.nb.conn.execute(
+            f"""
             SELECT experiment_id, COUNT(*) as n_total,
                    SUM(CASE WHEN COALESCE(stage0_passed, 0) = 0 THEN 1 ELSE 0 END) as n_compile_fail,
                    SUM(CASE WHEN COALESCE(stage0_passed, 0) = 1 AND COALESCE(stage05_passed, 0) = 0 THEN 1 ELSE 0 END) as n_train_fail,
                    SUM(CASE WHEN COALESCE(stage05_passed, 0) = 1 AND COALESCE(stage1_passed, 0) = 0 THEN 1 ELSE 0 END) as n_stage1_fail
             FROM program_results WHERE experiment_id IN ({placeholders}) GROUP BY experiment_id
-        """, tuple(exp_ids)).fetchall()
-        
+        """,
+            tuple(exp_ids),
+        ).fetchall()
+
         fail_map = {r["experiment_id"]: r for r in failure_rows}
-        
-        error_rows = self.nb.conn.execute(f"""
+
+        error_rows = self.nb.conn.execute(
+            f"""
             SELECT experiment_id, error_type, COUNT(*) as n
             FROM program_results WHERE experiment_id IN ({placeholders})
             AND error_type IS NOT NULL AND TRIM(error_type) != '' GROUP BY experiment_id, error_type
-        """, tuple(exp_ids)).fetchall()
-        
+        """,
+            tuple(exp_ids),
+        ).fetchall()
+
         error_map = defaultdict(dict)
-        for r in error_rows: error_map[r["experiment_id"]][r["error_type"]] = int(r["n"] or 0)
+        for r in error_rows:
+            error_map[r["experiment_id"]][r["error_type"]] = int(r["n"] or 0)
 
         for e in experiments:
-            f = fail_map.get(e["experiment_id"], {"n_total": 1, "n_compile_fail": 0, "n_train_fail": 0, "n_stage1_fail": 0})
+            f = fail_map.get(
+                e["experiment_id"],
+                {
+                    "n_total": 1,
+                    "n_compile_fail": 0,
+                    "n_train_fail": 0,
+                    "n_stage1_fail": 0,
+                },
+            )
             n = float(f["n_total"] or 1)
-            e.update({
-                "compile_fail_rate": f["n_compile_fail"] / n,
-                "train_fail_rate": f["n_train_fail"] / n,
-                "stage1_fail_rate": f["n_stage1_fail"] / n,
-                "error_diversity": 0.0
-            })
+            e.update(
+                {
+                    "compile_fail_rate": f["n_compile_fail"] / n,
+                    "train_fail_rate": f["n_train_fail"] / n,
+                    "stage1_fail_rate": f["n_stage1_fail"] / n,
+                    "error_diversity": 0.0,
+                }
+            )
             errs = error_map.get(e["experiment_id"], {})
             total_err = float(sum(errs.values()))
             if total_err > 0 and len(errs) > 1:
                 probs = np.array(list(errs.values())) / total_err
-                e["error_diversity"] = -np.sum(probs * np.log(probs)) / np.log(len(errs))
+                e["error_diversity"] = -np.sum(probs * np.log(probs)) / np.log(
+                    len(errs)
+                )
 
         # Load trajectories
-        seq_rows = self.nb.conn.execute(f"""
+        seq_rows = self.nb.conn.execute(
+            f"""
             SELECT experiment_id, stage1_passed, loss_ratio, novelty_score
             FROM program_results WHERE experiment_id IN ({placeholders})
             ORDER BY experiment_id ASC, timestamp ASC
-        """, tuple(exp_ids)).fetchall()
-        
+        """,
+            tuple(exp_ids),
+        ).fetchall()
+
         per_exp_seq = defaultdict(list)
         for r in seq_rows:
-            per_exp_seq[r["experiment_id"]].append((float(r["stage1_passed"] or 0), float(r["novelty_score"] or 0), float(r["loss_ratio"] or 1.0)))
+            per_exp_seq[r["experiment_id"]].append(
+                (
+                    float(r["stage1_passed"] or 0),
+                    float(r["novelty_score"] or 0),
+                    float(r["loss_ratio"] or 1.0),
+                )
+            )
 
         for e in experiments:
             seq = np.array(per_exp_seq.get(e["experiment_id"], []), dtype=np.float32)
             if len(seq) < 2:
-                e.update({k: 0.0 for k in ["stage1_momentum", "novelty_momentum", "loss_improvement_momentum", "outcome_volatility", "outcome_peak_timing", "recovery_lag", "stage1_transition_timing", "primary_change_point_timing", "stage1_transition_density", "change_point_confidence", "windowed_change_dispersion", "window_change_localization", "transition_gap_entropy"]})
+                e.update(
+                    {
+                        k: 0.0
+                        for k in [
+                            "stage1_momentum",
+                            "novelty_momentum",
+                            "loss_improvement_momentum",
+                            "outcome_volatility",
+                            "outcome_peak_timing",
+                            "recovery_lag",
+                            "stage1_transition_timing",
+                            "primary_change_point_timing",
+                            "stage1_transition_density",
+                            "change_point_confidence",
+                            "windowed_change_dispersion",
+                            "window_change_localization",
+                            "transition_gap_entropy",
+                        ]
+                    }
+                )
                 continue
-            
+
             # Vectorized momentum and statistics
             window = max(1, len(seq) // 3)
             e["stage1_momentum"] = np.mean(seq[-window:, 0]) - np.mean(seq[:window, 0])
             e["novelty_momentum"] = np.mean(seq[-window:, 1]) - np.mean(seq[:window, 1])
-            e["loss_improvement_momentum"] = np.mean(seq[:window, 2]) - np.mean(seq[-window:, 2])
-            
-            proxy = 0.5 * seq[:, 0] + 0.3 * seq[:, 1] + 0.2 * (1.0 / (1.0 + np.maximum(seq[:, 2], 1e-9)))
+            e["loss_improvement_momentum"] = np.mean(seq[:window, 2]) - np.mean(
+                seq[-window:, 2]
+            )
+
+            proxy = (
+                0.5 * seq[:, 0]
+                + 0.3 * seq[:, 1]
+                + 0.2 * (1.0 / (1.0 + np.maximum(seq[:, 2], 1e-9)))
+            )
             e["outcome_volatility"] = np.std(proxy)
             e["outcome_peak_timing"] = np.argmax(proxy) / max(len(seq) - 1, 1)
-            
+
             # Transitions
             transitions = np.where(seq[1:, 0] != seq[:-1, 0])[0] + 1
-            e["stage1_transition_timing"] = transitions[0] / (len(seq) - 1) if len(transitions) > 0 else 0.0
+            e["stage1_transition_timing"] = (
+                transitions[0] / (len(seq) - 1) if len(transitions) > 0 else 0.0
+            )
             e["stage1_transition_density"] = len(transitions) / max(len(seq) - 1, 1)
             if len(transitions) >= 2:
                 gaps = np.diff(transitions).astype(np.float32)
                 p = gaps / gaps.sum()
-                e["transition_gap_entropy"] = -np.sum(p * np.log(p + 1e-10)) / np.log(len(transitions))
+                e["transition_gap_entropy"] = -np.sum(p * np.log(p + 1e-10)) / np.log(
+                    len(transitions)
+                )
             else:
                 e["transition_gap_entropy"] = 0.0
 
             deltas = np.abs(np.diff(proxy))
             if len(deltas) > 0:
-                e["primary_change_point_timing"] = (np.argmax(deltas) + 1) / max(len(seq) - 1, 1)
+                e["primary_change_point_timing"] = (np.argmax(deltas) + 1) / max(
+                    len(seq) - 1, 1
+                )
                 e["change_point_confidence"] = np.max(deltas) / (np.sum(deltas) + 1e-10)
-                
+
                 # Windowed change dispersion and localization
                 n_deltas = len(deltas)
                 seg = max(1, n_deltas // 3)
-                window_means = [np.mean(deltas[i*seg : (i+1)*seg]) if i*seg < n_deltas else 0.0 for i in range(3)]
+                window_means = [
+                    np.mean(deltas[i * seg : (i + 1) * seg])
+                    if i * seg < n_deltas
+                    else 0.0
+                    for i in range(3)
+                ]
                 e["windowed_change_dispersion"] = np.std(window_means)
                 total_window_change = np.sum(window_means)
-                e["window_change_localization"] = np.max(window_means) / total_window_change if total_window_change > 1e-9 else 0.0
+                e["window_change_localization"] = (
+                    np.max(window_means) / total_window_change
+                    if total_window_change > 1e-9
+                    else 0.0
+                )
             else:
-                e.update({"primary_change_point_timing": 0.0, "change_point_confidence": 0.0, 
-                          "windowed_change_dispersion": 0.0, "window_change_localization": 0.0})
+                e.update(
+                    {
+                        "primary_change_point_timing": 0.0,
+                        "change_point_confidence": 0.0,
+                        "windowed_change_dispersion": 0.0,
+                        "window_change_localization": 0.0,
+                    }
+                )
 
             # Recovery lag
             early_baseline = np.mean(proxy[:window])
             trough_idx = np.argmin(proxy)
-            recovery_idx = np.where(proxy[trough_idx+1:] >= early_baseline)[0]
-            e["recovery_lag"] = (recovery_idx[0] + 1) / (len(seq) - 1) if len(recovery_idx) > 0 else (1.0 if len(seq) > 1 else 0.0)
+            recovery_idx = np.where(proxy[trough_idx + 1 :] >= early_baseline)[0]
+            e["recovery_lag"] = (
+                (recovery_idx[0] + 1) / (len(seq) - 1)
+                if len(recovery_idx) > 0
+                else (1.0 if len(seq) > 1 else 0.0)
+            )
 
         # Prepare for Vectorized K-Means
-        feature_keys = ["s1_rate", "best_novelty", "best_loss_ratio", "duration_seconds", "compile_fail_rate", "train_fail_rate", "stage1_fail_rate", "error_diversity", "stage1_momentum", "novelty_momentum", "loss_improvement_momentum", "outcome_volatility", "outcome_peak_timing", "recovery_lag", "stage1_transition_timing", "primary_change_point_timing", "stage1_transition_density", "change_point_confidence", "windowed_change_dispersion", "window_change_localization", "transition_gap_entropy"]
-        X = np.array([[e[k] for k in feature_keys] for e in experiments], dtype=np.float32)
+        feature_keys = [
+            "s1_rate",
+            "best_novelty",
+            "best_loss_ratio",
+            "duration_seconds",
+            "compile_fail_rate",
+            "train_fail_rate",
+            "stage1_fail_rate",
+            "error_diversity",
+            "stage1_momentum",
+            "novelty_momentum",
+            "loss_improvement_momentum",
+            "outcome_volatility",
+            "outcome_peak_timing",
+            "recovery_lag",
+            "stage1_transition_timing",
+            "primary_change_point_timing",
+            "stage1_transition_density",
+            "change_point_confidence",
+            "windowed_change_dispersion",
+            "window_change_localization",
+            "transition_gap_entropy",
+        ]
+        X = np.array(
+            [[e[k] for k in feature_keys] for e in experiments], dtype=np.float32
+        )
         # Normalize and invert loss_ratio
         X_min, X_max = X.min(axis=0), X.max(axis=0)
         X_range = X_max - X_min
         X_norm = np.zeros_like(X)
         mask = X_range > 1e-9
         X_norm[:, mask] = (X[:, mask] - X_min[mask]) / X_range[mask]
-        X_norm[:, feature_keys.index("best_loss_ratio")] = 1.0 - X_norm[:, feature_keys.index("best_loss_ratio")]
+        X_norm[:, feature_keys.index("best_loss_ratio")] = (
+            1.0 - X_norm[:, feature_keys.index("best_loss_ratio")]
+        )
 
         def _vectorized_kmeans(k, salt):
             # Exact match of original deterministic init
@@ -369,7 +508,7 @@ class _ExperimentsMixin:
             first_idx = int(seed_hex[:8], 16) % len(X_norm)
             centroids = [X_norm[first_idx]]
             chosen_idxs = {first_idx}
-            
+
             for _ in range(1, k):
                 # Farthest point initialization (K-Means++)
                 dists = np.min(cdist(X_norm, np.array(centroids)), axis=1)
@@ -378,37 +517,49 @@ class _ExperimentsMixin:
                 centroids.append(X_norm[next_idx])
                 chosen_idxs.add(next_idx)
             centroids = np.array(centroids)
-            
+
             for _ in range(30):
                 dists = cdist(X_norm, centroids)
                 assignments = np.argmin(dists, axis=1)
-                new_centroids = np.array([X_norm[assignments == i].mean(axis=0) if np.any(assignments == i) else centroids[i] for i in range(k)])
-                if np.allclose(centroids, new_centroids): break
+                new_centroids = np.array(
+                    [
+                        X_norm[assignments == i].mean(axis=0)
+                        if np.any(assignments == i)
+                        else centroids[i]
+                        for i in range(k)
+                    ]
+                )
+                if np.allclose(centroids, new_centroids):
+                    break
                 centroids = new_centroids
-            
-            inertia = np.sum(np.min(cdist(X_norm, centroids), axis=1)**2)
+
+            inertia = np.sum(np.min(cdist(X_norm, centroids), axis=1) ** 2)
             return assignments, centroids, inertia
 
         def _vectorized_silhouette(assignments, dist_matrix):
             unique = np.unique(assignments)
-            if len(unique) < 2: return 0.0
+            if len(unique) < 2:
+                return 0.0
             sil = []
             for i in range(len(X_norm)):
                 c_i = assignments[i]
-                mask_same = (assignments == c_i)
+                mask_same = assignments == c_i
                 mask_same[i] = False
                 if not np.any(mask_same):
                     sil.append(0.0)
                     continue
                 a_i = dist_matrix[i, mask_same].mean()
-                b_i = min(dist_matrix[i, assignments == c].mean() for c in unique if c != c_i)
+                b_i = min(
+                    dist_matrix[i, assignments == c].mean() for c in unique if c != c_i
+                )
                 sil.append((b_i - a_i) / max(a_i, b_i, 1e-9))
             return np.mean(sil)
 
         dataset_signature = "|".join(sorted(exp_ids))
         dist_matrix = cdist(X_norm, X_norm)
         max_k = min(max(2, n_clusters), len(X_norm) - 1)
-        if max_k < 2: return None
+        if max_k < 2:
+            return None
 
         candidates = []
         for k_val in range(2, max_k + 1):
@@ -417,11 +568,23 @@ class _ExperimentsMixin:
                 assign, cents, inertia = _vectorized_kmeans(k_val, salt)
                 sil = _vectorized_silhouette(assign, dist_matrix)
                 counts = np.bincount(assign, minlength=k_val)
-                imbalance = np.sum(np.abs(counts - len(X_norm)/k_val)) / (2.0 * len(X_norm))
-                runs.append({"assignments": assign, "centroids": cents, "inertia": inertia, "silhouette": sil, "quality": sil - 0.15 * imbalance})
-            
+                imbalance = np.sum(np.abs(counts - len(X_norm) / k_val)) / (
+                    2.0 * len(X_norm)
+                )
+                runs.append(
+                    {
+                        "assignments": assign,
+                        "centroids": cents,
+                        "inertia": inertia,
+                        "silhouette": sil,
+                        "quality": sil - 0.15 * imbalance,
+                    }
+                )
+
             best = max(runs, key=lambda r: (r["quality"], -r["inertia"]))
-            candidates.append({"k": k_val, "best": best, "runs": runs, "score": best["quality"]})
+            candidates.append(
+                {"k": k_val, "best": best, "runs": runs, "score": best["quality"]}
+            )
 
         selected = max(candidates, key=lambda c: (c["score"], -c["k"]))
         k, best_run = selected["k"], selected["best"]
@@ -429,30 +592,60 @@ class _ExperimentsMixin:
 
         # Consensus and Stability
         def _agreement(a1, a2):
-            m1 = (a1[:, None] == a1[None, :])
-            m2 = (a2[:, None] == a2[None, :])
+            m1 = a1[:, None] == a1[None, :]
+            m2 = a2[:, None] == a2[None, :]
             return np.mean(m1 == m2)
 
-        cons_scores = [_agreement(r1["assignments"], r2["assignments"]) for i, r1 in enumerate(selected["runs"]) for r2 in selected["runs"][i+1:]]
+        cons_scores = [
+            _agreement(r1["assignments"], r2["assignments"])
+            for i, r1 in enumerate(selected["runs"])
+            for r2 in selected["runs"][i + 1 :]
+        ]
         consensus = np.mean(cons_scores) if cons_scores else 1.0
-        
-        intra = np.mean([np.mean(dist_matrix[i, assign == assign[i]]) for i in range(len(X_norm))])
-        inter = np.min(cdist(cents, cents) + np.eye(k)*1e9)
+
+        intra = np.mean(
+            [np.mean(dist_matrix[i, assign == assign[i]]) for i in range(len(X_norm))]
+        )
+        inter = np.min(cdist(cents, cents) + np.eye(k) * 1e9)
         stability = 0.6 * (inter / (inter + intra + 1e-9)) + 0.4 * consensus
 
         # Summary and Description
         clusters = []
         for ci in range(k):
-            members = [experiments[i] for i in range(len(experiments)) if assign[i] == ci]
-            if not members: continue
-            summary = {k: round(float(np.mean([m[k] for m in members])), 4) for k in feature_keys if k != "duration_seconds"}
-            summary["avg_duration_seconds"] = round(float(np.mean([m["duration_seconds"] for m in members])), 2)
-            summary.update({"cluster_id": ci, "size": len(members), "experiment_ids": [m["experiment_id"] for m in members[:10]]})
+            members = [
+                experiments[i] for i in range(len(experiments)) if assign[i] == ci
+            ]
+            if not members:
+                continue
+            summary = {
+                k: round(float(np.mean([m[k] for m in members])), 4)
+                for k in feature_keys
+                if k != "duration_seconds"
+            }
+            summary["avg_duration_seconds"] = round(
+                float(np.mean([m["duration_seconds"] for m in members])), 2
+            )
+            summary.update(
+                {
+                    "cluster_id": ci,
+                    "size": len(members),
+                    "experiment_ids": [m["experiment_id"] for m in members[:10]],
+                }
+            )
             # Map avg_s1_rate, etc back to required keys
             for fk in ["s1_rate", "best_novelty", "best_loss_ratio"]:
                 summary[f"avg_{fk}"] = summary.pop(fk)
             for fk in feature_keys:
-                if fk not in ["s1_rate", "best_novelty", "best_loss_ratio", "duration_seconds"] and fk in summary:
+                if (
+                    fk
+                    not in [
+                        "s1_rate",
+                        "best_novelty",
+                        "best_loss_ratio",
+                        "duration_seconds",
+                    ]
+                    and fk in summary
+                ):
                     summary[f"avg_{fk}"] = summary.pop(fk)
             clusters.append(summary)
 
@@ -460,12 +653,26 @@ class _ExperimentsMixin:
         self._describe_clusters(clusters)
 
         return {
-            "n_experiments": len(experiments), "n_clusters": len(clusters),
-            "feature_keys": feature_keys, "stability_score": round(float(np.clip(stability, 0, 1)), 4),
-            "model_selection": {"candidate_ks": [c["k"] for c in candidates], "selected_k": k, 
-                                "silhouette": round(float(best_run["silhouette"]), 4), "consensus": round(float(consensus), 4),
-                                "selection_margin": round(float(sorted(candidates, key=lambda c: -c["score"])[0]["score"] - sorted(candidates, key=lambda c: -c["score"])[1]["score"]), 4) if len(candidates) > 1 else 0.0},
-            "clusters": clusters
+            "n_experiments": len(experiments),
+            "n_clusters": len(clusters),
+            "feature_keys": feature_keys,
+            "stability_score": round(float(np.clip(stability, 0, 1)), 4),
+            "model_selection": {
+                "candidate_ks": [c["k"] for c in candidates],
+                "selected_k": k,
+                "silhouette": round(float(best_run["silhouette"]), 4),
+                "consensus": round(float(consensus), 4),
+                "selection_margin": round(
+                    float(
+                        sorted(candidates, key=lambda c: -c["score"])[0]["score"]
+                        - sorted(candidates, key=lambda c: -c["score"])[1]["score"]
+                    ),
+                    4,
+                )
+                if len(candidates) > 1
+                else 0.0,
+            },
+            "clusters": clusters,
         }
 
     @staticmethod
@@ -481,7 +688,7 @@ class _ExperimentsMixin:
         # Rank by S1 rate descending to assign relative labels
         ranked = sorted(
             enumerate(clusters),
-            key=lambda ic: (ic[1].get("avg_s1_rate", 0) or 0),
+            key=lambda ic: ic[1].get("avg_s1_rate", 0) or 0,
             reverse=True,
         )
 
@@ -574,11 +781,14 @@ class _ExperimentsMixin:
 
         def _s1_for_exp(exp_id: str) -> tuple[int, int]:
             """Return (total_programs, s1_passed) for one experiment."""
-            r = self.nb.conn.execute("""
+            r = self.nb.conn.execute(
+                """
                 SELECT COUNT(*) as total,
                        SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1
                 FROM program_results WHERE experiment_id = ?
-            """, (exp_id,)).fetchone()
+            """,
+                (exp_id,),
+            ).fetchone()
             return (r["total"] or 0, r["s1"] or 0)
 
         def _s1_stats(exp_ids: list[str]) -> dict:
@@ -587,8 +797,12 @@ class _ExperimentsMixin:
                 t, s = _s1_for_exp(eid)
                 total += t
                 s1 += s
-            return {"experiments": len(exp_ids), "programs": total,
-                    "s1_passed": s1, "s1_rate": s1 / max(total, 1)}
+            return {
+                "experiments": len(exp_ids),
+                "programs": total,
+                "s1_passed": s1,
+                "s1_rate": s1 / max(total, 1),
+            }
 
         # Time-matched comparison: for each control, find nearest learned
         # experiments (one before, one after) and compare within that window
@@ -605,7 +819,7 @@ class _ExperimentsMixin:
             if before:
                 neighbors.append(before[-1][0])  # latest before
             if after:
-                neighbors.append(after[0][0])     # earliest after
+                neighbors.append(after[0][0])  # earliest after
             if not neighbors:
                 continue
 
@@ -638,7 +852,10 @@ class _ExperimentsMixin:
             matched_diff = sum(pair_diffs) / len(pair_diffs)
             # Paired z-test (approximate)
             if len(pair_diffs) > 1:
-                diff_std = (sum((d - matched_diff) ** 2 for d in pair_diffs) / (len(pair_diffs) - 1)) ** 0.5
+                diff_std = (
+                    sum((d - matched_diff) ** 2 for d in pair_diffs)
+                    / (len(pair_diffs) - 1)
+                ) ** 0.5
                 matched_se = diff_std / len(pair_diffs) ** 0.5 if diff_std > 0 else 0.0
                 matched_z = matched_diff / matched_se if matched_se > 0 else 0.0
             else:
@@ -731,11 +948,13 @@ class _ExperimentsMixin:
         results = []
         for (op_a, op_b), count in top_pairs:
             novelties = pair_novelty.get((op_a, op_b), [])
-            results.append({
-                "ops": [op_a, op_b],
-                "count": count,
-                "avg_novelty": sum(novelties) / len(novelties) if novelties else 0,
-            })
+            results.append(
+                {
+                    "ops": [op_a, op_b],
+                    "count": count,
+                    "avg_novelty": sum(novelties) / len(novelties) if novelties else 0,
+                }
+            )
 
         return results
 
@@ -764,13 +983,15 @@ class _ExperimentsMixin:
             n_s1 = exp.get("n_stage1_passed") or 0
             if n_gen == 0:
                 continue
-            points.append({
-                "experiment_id": exp.get("experiment_id", ""),
-                "timestamp": exp.get("timestamp", 0),
-                "s1_rate": n_s1 / n_gen,
-                "n_stage1_passed": n_s1,
-                "n_programs": n_gen,
-            })
+            points.append(
+                {
+                    "experiment_id": exp.get("experiment_id", ""),
+                    "timestamp": exp.get("timestamp", 0),
+                    "s1_rate": n_s1 / n_gen,
+                    "n_stage1_passed": n_s1,
+                    "n_programs": n_gen,
+                }
+            )
 
         if not points:
             return {
@@ -829,8 +1050,12 @@ class _ExperimentsMixin:
 
         recent = rates[-5:] if len(rates) >= 5 else rates
         recent_rate = sum(recent) / len(recent)
-        avg_trend_weight = sum(p.get("trend_weight", 0.0) for p in points) / max(len(points), 1)
-        avg_conf_halfwidth = sum(p.get("s1_confidence_halfwidth", 0.0) for p in points) / max(len(points), 1)
+        avg_trend_weight = sum(p.get("trend_weight", 0.0) for p in points) / max(
+            len(points), 1
+        )
+        avg_conf_halfwidth = sum(
+            p.get("s1_confidence_halfwidth", 0.0) for p in points
+        ) / max(len(points), 1)
 
         if avg_trend_weight >= 0.75:
             trend_confidence = "high"
@@ -843,7 +1068,8 @@ class _ExperimentsMixin:
         try:
             log = self.nb.get_learning_log(limit=200)
             weight_adjustments = sum(
-                1 for entry in log
+                1
+                for entry in log
                 if entry.get("event_type") == "grammar_weights_applied"
             )
         except Exception:
@@ -870,25 +1096,56 @@ class _ExperimentsMixin:
             WHERE graph_json IS NOT NULL OR arch_spec_json IS NOT NULL
         """).fetchall()
 
-        family_order = ["euclidean", "hyperbolic", "tropical", "p-adic", "clifford", "functional"]
+        family_order = [
+            "euclidean",
+            "hyperbolic",
+            "tropical",
+            "p-adic",
+            "clifford",
+            "functional",
+        ]
         stats = {
-            fam: {"family": fam, "n_tested": 0, "n_survived": 0}
-            for fam in family_order
+            fam: {"family": fam, "n_tested": 0, "n_survived": 0} for fam in family_order
         }
 
-        hyperbolic_ops = {"poincare_add", "exp_map", "log_map", "hyp_linear", "hyp_distance", "hyp_tangent_nonlinear"}
-        tropical_ops = {"tropical_matmul", "tropical_add", "tropical_attention", "tropical_center"}
+        hyperbolic_ops = {
+            "poincare_add",
+            "exp_map",
+            "log_map",
+            "hyp_linear",
+            "hyp_distance",
+            "hyp_tangent_nonlinear",
+        }
+        tropical_ops = {
+            "tropical_matmul",
+            "tropical_add",
+            "tropical_attention",
+            "tropical_center",
+        }
         padic_ops = {"padic_expand", "ultrametric_attention", "padic_gate"}
-        clifford_ops = {"geometric_product", "rotor_transform", "grade_select", "grade_mix"}
+        clifford_ops = {
+            "geometric_product",
+            "rotor_transform",
+            "grade_select",
+            "grade_mix",
+        }
         functional_ops = {"basis_expansion", "integral_kernel", "fixed_point_iter"}
 
-        def _family_from_row(graph_json: Optional[str], arch_spec_json: Optional[str]) -> str:
+        def _family_from_row(
+            graph_json: Optional[str], arch_spec_json: Optional[str]
+        ) -> str:
             op_names: set[str] = set()
             if graph_json:
                 try:
                     graph = json.loads(graph_json)
                     nodes = graph.get("nodes", {}) if isinstance(graph, dict) else {}
-                    node_iter = nodes.values() if isinstance(nodes, dict) else nodes if isinstance(nodes, list) else []
+                    node_iter = (
+                        nodes.values()
+                        if isinstance(nodes, dict)
+                        else nodes
+                        if isinstance(nodes, list)
+                        else []
+                    )
                     for node in node_iter:
                         if isinstance(node, dict):
                             op_name = node.get("op_name") or node.get("op")
@@ -909,9 +1166,11 @@ class _ExperimentsMixin:
                 except (json.JSONDecodeError, TypeError, AttributeError):
                     pass
 
-            if (op_names & functional_ops) or token_mixing == "integral_kernel_mixing" or channel_mixing in {
-                "basis_expansion_layer", "implicit_fixed_point"
-            }:
+            if (
+                (op_names & functional_ops)
+                or token_mixing == "integral_kernel_mixing"
+                or channel_mixing in {"basis_expansion_layer", "implicit_fixed_point"}
+            ):
                 return "functional"
             if op_names & hyperbolic_ops:
                 return "hyperbolic"
@@ -940,14 +1199,22 @@ class _ExperimentsMixin:
             entry = stats[fam]
             n_tested = entry["n_tested"]
             n_survived = entry["n_survived"]
-            families.append({
-                "family": fam,
-                "n_tested": n_tested,
-                "n_survived": n_survived,
-                "survival_rate": round(n_survived / n_tested, 4) if n_tested > 0 else 0.0,
-                "tested_share": round(n_tested / total_tested, 4) if total_tested > 0 else 0.0,
-                "survivor_share": round(n_survived / total_survived, 4) if total_survived > 0 else 0.0,
-            })
+            families.append(
+                {
+                    "family": fam,
+                    "n_tested": n_tested,
+                    "n_survived": n_survived,
+                    "survival_rate": round(n_survived / n_tested, 4)
+                    if n_tested > 0
+                    else 0.0,
+                    "tested_share": round(n_tested / total_tested, 4)
+                    if total_tested > 0
+                    else 0.0,
+                    "survivor_share": round(n_survived / total_survived, 4)
+                    if total_survived > 0
+                    else 0.0,
+                }
+            )
 
         return {
             "families": families,
@@ -965,11 +1232,21 @@ class _ExperimentsMixin:
         """
         columns = {
             row["name"]
-            for row in self.nb.conn.execute("PRAGMA table_info(program_results)").fetchall()
+            for row in self.nb.conn.execute(
+                "PRAGMA table_info(program_results)"
+            ).fetchall()
             if row and row["name"]
         }
-        validation_col = "validation_passed" if "validation_passed" in columns else "NULL AS validation_passed"
-        baseline_col = "validation_baseline_ratio" if "validation_baseline_ratio" in columns else "NULL AS validation_baseline_ratio"
+        validation_col = (
+            "validation_passed"
+            if "validation_passed" in columns
+            else "NULL AS validation_passed"
+        )
+        baseline_col = (
+            "validation_baseline_ratio"
+            if "validation_baseline_ratio" in columns
+            else "NULL AS validation_baseline_ratio"
+        )
 
         rows = self.nb.conn.execute(f"""
             SELECT graph_json, stage1_passed, {validation_col}, novelty_score, {baseline_col}
@@ -1015,7 +1292,9 @@ class _ExperimentsMixin:
         by_family: Dict[str, Dict[str, float]] = {}
         programs_with_mathspace = 0
 
-        def _ensure_bucket(store: Dict[str, Dict[str, float]], key: str) -> Dict[str, float]:
+        def _ensure_bucket(
+            store: Dict[str, Dict[str, float]], key: str
+        ) -> Dict[str, float]:
             if key not in store:
                 store[key] = {
                     "n_tested": 0,
@@ -1076,7 +1355,9 @@ class _ExperimentsMixin:
                     bucket["novelty_sum"] += novelty
                     bucket["novelty_count"] += 1
 
-        def _finalize(rows_by_key: Dict[str, Dict[str, float]], label_key: str) -> List[Dict[str, float]]:
+        def _finalize(
+            rows_by_key: Dict[str, Dict[str, float]], label_key: str
+        ) -> List[Dict[str, float]]:
             finalized: List[Dict[str, float]] = []
             for key, bucket in rows_by_key.items():
                 n_tested = int(bucket["n_tested"])
@@ -1087,36 +1368,45 @@ class _ExperimentsMixin:
                 validation_rate = float(bucket["n_validation_passed"]) / n_tested
                 baseline_win_rate = float(bucket["n_baseline_wins"]) / n_tested
                 sample_weight = min(1.0, n_tested / 25.0)
-                trust_score = (0.5 * stage1_rate + 0.3 * validation_rate + 0.2 * baseline_win_rate) * sample_weight
+                trust_score = (
+                    0.5 * stage1_rate + 0.3 * validation_rate + 0.2 * baseline_win_rate
+                ) * sample_weight
                 if trust_score >= 0.6 and n_tested >= 20:
                     trust_label = "high"
                 elif trust_score >= 0.35 and n_tested >= 8:
                     trust_label = "medium"
                 else:
                     trust_label = "low"
-                finalized.append({
-                    label_key: key,
-                    "n_tested": n_tested,
-                    "n_stage1_passed": int(bucket["n_stage1_passed"]),
-                    "n_validation_passed": int(bucket["n_validation_passed"]),
-                    "n_baseline_wins": int(bucket["n_baseline_wins"]),
-                    "stage1_pass_rate": round(stage1_rate, 4),
-                    "validation_pass_rate": round(validation_rate, 4),
-                    "baseline_win_rate": round(baseline_win_rate, 4),
-                    "trust_score": round(trust_score, 4),
-                    "trust_label": trust_label,
-                    "avg_novelty_score": (
-                        round(float(bucket["novelty_sum"]) / novelty_count, 4)
-                        if novelty_count > 0 else None
-                    ),
-                })
+                finalized.append(
+                    {
+                        label_key: key,
+                        "n_tested": n_tested,
+                        "n_stage1_passed": int(bucket["n_stage1_passed"]),
+                        "n_validation_passed": int(bucket["n_validation_passed"]),
+                        "n_baseline_wins": int(bucket["n_baseline_wins"]),
+                        "stage1_pass_rate": round(stage1_rate, 4),
+                        "validation_pass_rate": round(validation_rate, 4),
+                        "baseline_win_rate": round(baseline_win_rate, 4),
+                        "trust_score": round(trust_score, 4),
+                        "trust_label": trust_label,
+                        "avg_novelty_score": (
+                            round(float(bucket["novelty_sum"]) / novelty_count, 4)
+                            if novelty_count > 0
+                            else None
+                        ),
+                    }
+                )
             return sorted(finalized, key=lambda row: (-row["n_tested"], row[label_key]))
 
         by_operator_rows = _finalize(by_operator, "op_name")
         by_family_rows = _finalize(by_family, "family")
         top_trustworthy_ops = sorted(
             by_operator_rows,
-            key=lambda row: (-(row.get("trust_score") or 0.0), -(row.get("n_tested") or 0), row.get("op_name") or ""),
+            key=lambda row: (
+                -(row.get("trust_score") or 0.0),
+                -(row.get("n_tested") or 0),
+                row.get("op_name") or "",
+            ),
         )[:3]
 
         top_op = by_operator_rows[0]["op_name"] if by_operator_rows else None
@@ -1141,11 +1431,21 @@ class _ExperimentsMixin:
         }
 
     # ── Code failure error types — always display_only ──
-    _CODE_FAILURE_TYPES = frozenset({
-        "RuntimeError", "TypeError", "AttributeError", "CompilationError",
-        "ImportError", "ModuleNotFoundError", "SyntaxError", "NameError",
-        "KeyError", "IndexError", "ValueError",
-    })
+    _CODE_FAILURE_TYPES = frozenset(
+        {
+            "RuntimeError",
+            "TypeError",
+            "AttributeError",
+            "CompilationError",
+            "ImportError",
+            "ModuleNotFoundError",
+            "SyntaxError",
+            "NameError",
+            "KeyError",
+            "IndexError",
+            "ValueError",
+        }
+    )
 
     def compute_insights(self) -> List[Dict]:
         """Generate data-driven insights with statistical evidence.
@@ -1157,7 +1457,6 @@ class _ExperimentsMixin:
 
         Returns ``[{"content": str, "category": str, ...}, ...]``
         """
-        from scipy.stats import fisher_exact, chi2_contingency, binom_test
 
         insights: List[Dict] = []
 
@@ -1178,7 +1477,9 @@ class _ExperimentsMixin:
         # ── 3. Structural correlation insights (chi-squared) ──
         correlations = self.structural_correlations()
         if correlations:
-            self._compute_structural_correlation_insights(correlations, size_rows, insights)
+            self._compute_structural_correlation_insights(
+                correlations, size_rows, insights
+            )
 
         # ── 4. Failure pattern insights (always display_only) ──
         failures = self.failure_patterns()
@@ -1196,27 +1497,29 @@ class _ExperimentsMixin:
         survivors = summary.get("stage1_survivors", 0)
         if total >= 20:
             rate = survivors / total
-            insights.append({
-                "content": (
-                    f"Overall survival rate: {rate:.1%} "
-                    f"({survivors}/{total} programs). "
-                    f"{'Grammar is productive.' if rate > 0.03 else 'Grammar needs tuning.'}"
-                ),
-                "category": "pattern",
-                "insight_type": "overall_survival_rate",
-                "subject_key": "global",
-                "semantic_key": "overall_survival_rate:global",
-                "alpha": float(survivors + 1),
-                "beta_": float(total - survivors + 1),
-                "display_only": False,
-                "insight_level": "structural",
-                "evidence_json": {
-                    "test": "binomial_proportion",
-                    "n": total,
-                    "successes": survivors,
-                    "rate": round(rate, 4),
-                },
-            })
+            insights.append(
+                {
+                    "content": (
+                        f"Overall survival rate: {rate:.1%} "
+                        f"({survivors}/{total} programs). "
+                        f"{'Grammar is productive.' if rate > 0.03 else 'Grammar needs tuning.'}"
+                    ),
+                    "category": "pattern",
+                    "insight_type": "overall_survival_rate",
+                    "subject_key": "global",
+                    "semantic_key": "overall_survival_rate:global",
+                    "alpha": float(survivors + 1),
+                    "beta_": float(total - survivors + 1),
+                    "display_only": False,
+                    "insight_level": "structural",
+                    "evidence_json": {
+                        "test": "binomial_proportion",
+                        "n": total,
+                        "successes": survivors,
+                        "rate": round(rate, 4),
+                    },
+                }
+            )
 
         return insights
 
@@ -1229,7 +1532,10 @@ class _ExperimentsMixin:
         from scipy.stats import chi2_contingency
 
         buckets: Dict[str, List[int]] = {
-            "1-6": [0, 0], "7-9": [0, 0], "10-12": [0, 0], "13+": [0, 0],
+            "1-6": [0, 0],
+            "7-9": [0, 0],
+            "10-12": [0, 0],
+            "13+": [0, 0],
         }
         for r in size_rows:
             n_ops = int(r["graph_n_ops"] or 0)
@@ -1272,54 +1578,66 @@ class _ExperimentsMixin:
         best_rate = rates[best_bucket]
         n_total = sum(p + f for p, f in buckets.values())
 
-        insights.append({
-            "content": (
-                f"Graph size {best_bucket} ops is optimal "
-                f"({best_rate:.1%} S1 rate, n={best_pass + best_fail})."
-            ),
-            "category": "structural_preference",
-            "insight_type": "graph_size_optimal",
-            "subject_key": "graph_size_optimal",
-            "semantic_key": "structural:graph_size_optimal",
-            "alpha": float(best_pass + 1),
-            "beta_": float(best_fail + 1),
-            "display_only": False,
-            "insight_level": "structural",
-            "evidence_json": {
-                "test": "chi2_contingency",
-                "chi2": round(float(chi2), 2),
-                "p_value": float(p_value),
-                "n": n_total,
-                "bucket_rates": {k: round(v, 4) for k, v in rates.items()},
-                "best_bucket": best_bucket,
-            },
-        })
-
-        # Check if 13+ ops collapses
-        if "13+" in rates and rates["13+"] < 0.05 and buckets["13+"][0] + buckets["13+"][1] >= 20:
-            big_pass = buckets["13+"][0]
-            big_fail = buckets["13+"][1]
-            insights.append({
+        insights.append(
+            {
                 "content": (
-                    f"13+ ops collapses to {rates['13+']:.1%} S1 "
-                    f"(n={big_pass + big_fail}). Hard cap recommended."
+                    f"Graph size {best_bucket} ops is optimal "
+                    f"({best_rate:.1%} S1 rate, n={best_pass + best_fail})."
                 ),
                 "category": "structural_preference",
-                "insight_type": "graph_size_cap",
-                "subject_key": "graph_size_cap",
-                "semantic_key": "structural:graph_size_cap",
-                "alpha": float(big_fail + 1),  # correct = predicted fail, actually failed
-                "beta_": float(big_pass + 1),  # wrong = predicted fail, actually passed
+                "insight_type": "graph_size_optimal",
+                "subject_key": "graph_size_optimal",
+                "semantic_key": "structural:graph_size_optimal",
+                "alpha": float(best_pass + 1),
+                "beta_": float(best_fail + 1),
                 "display_only": False,
                 "insight_level": "structural",
                 "evidence_json": {
-                    "test": "binomial_vs_baseline",
+                    "test": "chi2_contingency",
+                    "chi2": round(float(chi2), 2),
                     "p_value": float(p_value),
-                    "n": big_pass + big_fail,
-                    "rate": round(rates["13+"], 4),
-                    "recommended_max": 12,
+                    "n": n_total,
+                    "bucket_rates": {k: round(v, 4) for k, v in rates.items()},
+                    "best_bucket": best_bucket,
                 },
-            })
+            }
+        )
+
+        # Check if 13+ ops collapses
+        if (
+            "13+" in rates
+            and rates["13+"] < 0.05
+            and buckets["13+"][0] + buckets["13+"][1] >= 20
+        ):
+            big_pass = buckets["13+"][0]
+            big_fail = buckets["13+"][1]
+            insights.append(
+                {
+                    "content": (
+                        f"13+ ops collapses to {rates['13+']:.1%} S1 "
+                        f"(n={big_pass + big_fail}). Hard cap recommended."
+                    ),
+                    "category": "structural_preference",
+                    "insight_type": "graph_size_cap",
+                    "subject_key": "graph_size_cap",
+                    "semantic_key": "structural:graph_size_cap",
+                    "alpha": float(
+                        big_fail + 1
+                    ),  # correct = predicted fail, actually failed
+                    "beta_": float(
+                        big_pass + 1
+                    ),  # wrong = predicted fail, actually passed
+                    "display_only": False,
+                    "insight_level": "structural",
+                    "evidence_json": {
+                        "test": "binomial_vs_baseline",
+                        "p_value": float(p_value),
+                        "n": big_pass + big_fail,
+                        "rate": round(rates["13+"], 4),
+                        "recommended_max": 12,
+                    },
+                }
+            )
 
     def _compute_op_insights(
         self,
@@ -1345,52 +1663,56 @@ class _ExperimentsMixin:
             if rate <= overall_rate or n_used < 10:
                 continue
             n_failed = n_used - n_passed
-            insights.append({
-                "content": (
-                    f"Op '{op}' has {rate:.1%} S1 rate "
-                    f"(n={n_used}, baseline={overall_rate:.1%})."
-                ),
-                "category": "success_factor",
-                "insight_type": "top_op",
-                "subject_key": op,
-                "semantic_key": f"top_op:{op}",
-                "alpha": float(n_passed + 1),
-                "beta_": float(n_failed + 1),
-                "display_only": False,
-                "insight_level": "composition",
-                "evidence_json": {
-                    "test": "proportion_vs_baseline",
-                    "n": n_used,
-                    "rate": round(rate, 4),
-                    "baseline_rate": round(overall_rate, 4),
-                    "effect_size": round(rate - overall_rate, 4),
-                },
-            })
+            insights.append(
+                {
+                    "content": (
+                        f"Op '{op}' has {rate:.1%} S1 rate "
+                        f"(n={n_used}, baseline={overall_rate:.1%})."
+                    ),
+                    "category": "success_factor",
+                    "insight_type": "top_op",
+                    "subject_key": op,
+                    "semantic_key": f"top_op:{op}",
+                    "alpha": float(n_passed + 1),
+                    "beta_": float(n_failed + 1),
+                    "display_only": False,
+                    "insight_level": "composition",
+                    "evidence_json": {
+                        "test": "proportion_vs_baseline",
+                        "n": n_used,
+                        "rate": round(rate, 4),
+                        "baseline_rate": round(overall_rate, 4),
+                        "effect_size": round(rate - overall_rate, 4),
+                    },
+                }
+            )
 
         # Worst ops: 0% S1 with significant sample
         for op, rate, n_used, n_passed in reversed(rated_ops):
             if rate > 0.005 or n_used < 15:
                 continue
-            insights.append({
-                "content": (
-                    f"Op '{op}' has {rate:.1%} S1 rate "
-                    f"(n={n_used}). Consistently failing."
-                ),
-                "category": "failure_mode",
-                "insight_type": "failing_op",
-                "subject_key": op,
-                "semantic_key": f"failing_op:{op}",
-                "alpha": float(n_passed + 1),
-                "beta_": float(n_used - n_passed + 1),
-                "display_only": True,
-                "insight_level": "op",
-                "evidence_json": {
-                    "test": "proportion_vs_baseline",
-                    "n": n_used,
-                    "rate": round(rate, 4),
-                    "baseline_rate": round(overall_rate, 4),
-                },
-            })
+            insights.append(
+                {
+                    "content": (
+                        f"Op '{op}' has {rate:.1%} S1 rate "
+                        f"(n={n_used}). Consistently failing."
+                    ),
+                    "category": "failure_mode",
+                    "insight_type": "failing_op",
+                    "subject_key": op,
+                    "semantic_key": f"failing_op:{op}",
+                    "alpha": float(n_passed + 1),
+                    "beta_": float(n_used - n_passed + 1),
+                    "display_only": True,
+                    "insight_level": "op",
+                    "evidence_json": {
+                        "test": "proportion_vs_baseline",
+                        "n": n_used,
+                        "rate": round(rate, 4),
+                        "baseline_rate": round(overall_rate, 4),
+                    },
+                }
+            )
 
     def _compute_structural_correlation_insights(
         self,
@@ -1409,26 +1731,28 @@ class _ExperimentsMixin:
             # Map |effect| ∈ [0.3, 2.0] to confidence ∈ [0.55, 0.85]
             pseudo_correct = max(1, int(abs(effect) * 20))
             pseudo_wrong = max(1, int((2.0 - min(abs(effect), 2.0)) * 10))
-            insights.append({
-                "content": (
-                    f"Graph {name} is {direction} correlated with "
-                    f"Stage 1 success (effect={effect:.2f}, n={n})."
-                ),
-                "category": "hypothesis",
-                "insight_type": "graph_correlation",
-                "subject_key": metric,
-                "semantic_key": f"graph_correlation:{metric}",
-                "alpha": float(pseudo_correct),
-                "beta_": float(pseudo_wrong),
-                "display_only": False,
-                "insight_level": "structural",
-                "evidence_json": {
-                    "test": "standardized_mean_difference",
-                    "effect_size": round(float(effect), 4),
-                    "n": n,
-                    "metric": metric,
-                },
-            })
+            insights.append(
+                {
+                    "content": (
+                        f"Graph {name} is {direction} correlated with "
+                        f"Stage 1 success (effect={effect:.2f}, n={n})."
+                    ),
+                    "category": "hypothesis",
+                    "insight_type": "graph_correlation",
+                    "subject_key": metric,
+                    "semantic_key": f"graph_correlation:{metric}",
+                    "alpha": float(pseudo_correct),
+                    "beta_": float(pseudo_wrong),
+                    "display_only": False,
+                    "insight_level": "structural",
+                    "evidence_json": {
+                        "test": "standardized_mean_difference",
+                        "effect_size": round(float(effect), 4),
+                        "n": n,
+                        "metric": metric,
+                    },
+                }
+            )
             break  # strongest only
 
     def _compute_failure_insights(
@@ -1441,34 +1765,38 @@ class _ExperimentsMixin:
         Code failures (RuntimeError, TypeError, etc.) are explicitly separated
         from training failures (nan_loss, diverged, etc.).
         """
-        for error_type, data in sorted(
-            failures.items(), key=lambda x: -x[1]["total"]
-        )[:5]:
+        for error_type, data in sorted(failures.items(), key=lambda x: -x[1]["total"])[
+            :5
+        ]:
             total = data["total"]
             if total < 10:
                 continue
             is_code_failure = error_type in self._CODE_FAILURE_TYPES
-            insights.append({
-                "content": (
-                    f"{'Code' if is_code_failure else 'Training'} failure: "
-                    f"{error_type} ({total} occurrences). "
-                    f"Stages: {data['by_stage']}"
-                ),
-                "category": "failure_mode",
-                "insight_type": "code_failure" if is_code_failure else "training_failure",
-                "subject_key": str(error_type),
-                "semantic_key": f"common_failure:{error_type}",
-                "alpha": 1.0,
-                "beta_": float(total),
-                "display_only": True,  # Always display-only for failures
-                "insight_level": "op",
-                "evidence_json": {
-                    "test": "frequency_count",
-                    "n": total,
-                    "is_code_failure": is_code_failure,
-                    "by_stage": data["by_stage"],
-                },
-            })
+            insights.append(
+                {
+                    "content": (
+                        f"{'Code' if is_code_failure else 'Training'} failure: "
+                        f"{error_type} ({total} occurrences). "
+                        f"Stages: {data['by_stage']}"
+                    ),
+                    "category": "failure_mode",
+                    "insight_type": "code_failure"
+                    if is_code_failure
+                    else "training_failure",
+                    "subject_key": str(error_type),
+                    "semantic_key": f"common_failure:{error_type}",
+                    "alpha": 1.0,
+                    "beta_": float(total),
+                    "display_only": True,  # Always display-only for failures
+                    "insight_level": "op",
+                    "evidence_json": {
+                        "test": "frequency_count",
+                        "n": total,
+                        "is_code_failure": is_code_failure,
+                        "by_stage": data["by_stage"],
+                    },
+                }
+            )
 
     def _compute_combo_insights(
         self,
@@ -1482,23 +1810,26 @@ class _ExperimentsMixin:
                 continue
             ops = top["ops"]
             avg_novelty = top.get("avg_novelty", 0)
-            insights.append({
-                "content": (
-                    f"Winning combination: {' + '.join(ops)} "
-                    f"appears in {count} survivors "
-                    f"(avg novelty {avg_novelty:.3f})."
-                ),
-                "category": "success_factor",
-                "insight_type": "winning_combo",
-                "subject_key": "+".join(sorted(str(op) for op in ops)),
-                "semantic_key": "winning_combo:" + "+".join(sorted(str(op) for op in ops)),
-                "alpha": float(count + 1),
-                "beta_": 1.0,  # We only see survivors; beta starts weak
-                "display_only": False,
-                "insight_level": "composition",
-                "evidence_json": {
-                    "test": "co_occurrence_count",
-                    "n_survivors": count,
-                    "avg_novelty": round(avg_novelty, 4),
-                },
-            })
+            insights.append(
+                {
+                    "content": (
+                        f"Winning combination: {' + '.join(ops)} "
+                        f"appears in {count} survivors "
+                        f"(avg novelty {avg_novelty:.3f})."
+                    ),
+                    "category": "success_factor",
+                    "insight_type": "winning_combo",
+                    "subject_key": "+".join(sorted(str(op) for op in ops)),
+                    "semantic_key": "winning_combo:"
+                    + "+".join(sorted(str(op) for op in ops)),
+                    "alpha": float(count + 1),
+                    "beta_": 1.0,  # We only see survivors; beta starts weak
+                    "display_only": False,
+                    "insight_level": "composition",
+                    "evidence_json": {
+                        "test": "co_occurrence_count",
+                        "n_survivors": count,
+                        "avg_novelty": round(avg_novelty, 4),
+                    },
+                }
+            )

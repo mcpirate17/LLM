@@ -52,34 +52,43 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
 
 
-def _canonicalize_request_workflow(workflow: WorkflowGraphModel) -> tuple[WorkflowGraphModel, dict, set[str]]:
+def _canonicalize_request_workflow(
+    workflow: WorkflowGraphModel,
+) -> tuple[WorkflowGraphModel, dict, set[str]]:
     registry_ids = db.list_component_types(status="approved")
     payload = workflow.model_dump()
     canonicalize_workflow_ids(payload, registry_ids)
     return WorkflowGraphModel.model_validate(payload), payload, registry_ids
 
 
-def _unresolved_component_issues(workflow_payload: dict, registry_ids: set[str]) -> List[ValidationIssue]:
+def _unresolved_component_issues(
+    workflow_payload: dict, registry_ids: set[str]
+) -> List[ValidationIssue]:
     unresolved: List[ValidationIssue] = []
     for node in workflow_payload.get("nodes", []):
         component_type = str(node.get("component_type") or "").strip().lower()
         if component_type and component_type not in registry_ids:
-            unresolved.append(ValidationIssue(
-                severity="error",
-                code="unknown_component",
-                node_id=node.get("id"),
-                message=(
-                    f"Node {node.get('id')}: unresolved component type "
-                    f"'{node.get('component_type')}'."
-                ),
-            ))
+            unresolved.append(
+                ValidationIssue(
+                    severity="error",
+                    code="unknown_component",
+                    node_id=node.get("id"),
+                    message=(
+                        f"Node {node.get('id')}: unresolved component type "
+                        f"'{node.get('component_type')}'."
+                    ),
+                )
+            )
     return unresolved
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
+
 def _validate_fallback_cycles(
-    node_ids: set, workflow: Any, issues: List[ValidationIssue],
+    node_ids: set,
+    workflow: Any,
+    issues: List[ValidationIssue],
 ) -> None:
     """Cycle detection via DFS (fallback when native validator unavailable)."""
     adj: Dict[str, List[str]] = {nid: [] for nid in node_ids}
@@ -102,16 +111,20 @@ def _validate_fallback_cycles(
 
     for nid in node_ids:
         if nid not in visited and has_cycle(nid):
-            issues.append(ValidationIssue(
-                severity="error", code="cycle_detected",
-                message="Workflow contains a cycle.",
-            ))
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="cycle_detected",
+                    message="Workflow contains a cycle.",
+                )
+            )
             break
 
 
-
 def _check_dead_branches(
-    workflow: Any, node_ids: set, issues: List[ValidationIssue],
+    workflow: Any,
+    node_ids: set,
+    issues: List[ValidationIssue],
 ) -> None:
     """Detect nodes that do not connect to any output node."""
     output_types = {"output", "output_head", "graph_output"}
@@ -141,16 +154,20 @@ def _check_dead_branches(
 
     for node in workflow.nodes:
         if node.id not in reachable:
-            issues.append(ValidationIssue(
-                node_id=node.id,
-                severity="error",
-                code="dead_branch",
-                message="Dead branch detected. Node does not connect to the final output.",
-            ))
+            issues.append(
+                ValidationIssue(
+                    node_id=node.id,
+                    severity="error",
+                    code="dead_branch",
+                    message="Dead branch detected. Node does not connect to the final output.",
+                )
+            )
 
 
 def _check_dtype_compatibility(
-    workflow: Any, workflow_payload: dict, comp_cache: dict,
+    workflow: Any,
+    workflow_payload: dict,
+    comp_cache: dict,
     issues: List[ValidationIssue],
 ) -> None:
     """Validate manifest-port dtype compatibility for all edges."""
@@ -160,12 +177,14 @@ def _check_dtype_compatibility(
             lambda component_type: db.get_component(component_type),
         )
         for issue in dtype_issues:
-            issues.append(ValidationIssue(
-                severity="error",
-                code="unsupported_edge_dtype_pairing",
-                message=issue["message"],
-                edge_id=issue.get("edge_id") or None,
-            ))
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="unsupported_edge_dtype_pairing",
+                    message=issue["message"],
+                    edge_id=issue.get("edge_id") or None,
+                )
+            )
     else:
         for edge in workflow.edges:
             src_comp = comp_cache.get(edge.source)
@@ -173,46 +192,74 @@ def _check_dtype_compatibility(
             if not src_comp or not tgt_comp:
                 continue
 
-            src_port = next((p for p in src_comp.get("outputs", []) if p["name"] == edge.source_port), None)
-            tgt_port = next((p for p in tgt_comp.get("inputs", []) if p["name"] == edge.target_port), None)
+            src_port = next(
+                (
+                    p
+                    for p in src_comp.get("outputs", [])
+                    if p["name"] == edge.source_port
+                ),
+                None,
+            )
+            tgt_port = next(
+                (
+                    p
+                    for p in tgt_comp.get("inputs", [])
+                    if p["name"] == edge.target_port
+                ),
+                None,
+            )
             if src_port and tgt_port and src_port["dtype"] != tgt_port["dtype"]:
                 pair = (src_port["dtype"], tgt_port["dtype"])
                 # Allow implicit complex_tensor <-> tensor conversion
-                if pair not in (("complex_tensor", "tensor"), ("tensor", "complex_tensor")):
-                    issues.append(ValidationIssue(
-                        severity="error",
-                        code="unsupported_edge_dtype_pairing",
-                        message=(
-                            f"Unsupported edge dtype pairing on edge {edge.id}: "
-                            f"{edge.source}.{edge.source_port} ({src_port['dtype']}) -> "
-                            f"{edge.target}.{edge.target_port} ({tgt_port['dtype']}). "
-                            "Supported pairings currently require matching source/target dtypes."
-                        ),
-                        edge_id=edge.id,
-                    ))
+                if pair not in (
+                    ("complex_tensor", "tensor"),
+                    ("tensor", "complex_tensor"),
+                ):
+                    issues.append(
+                        ValidationIssue(
+                            severity="error",
+                            code="unsupported_edge_dtype_pairing",
+                            message=(
+                                f"Unsupported edge dtype pairing on edge {edge.id}: "
+                                f"{edge.source}.{edge.source_port} ({src_port['dtype']}) -> "
+                                f"{edge.target}.{edge.target_port} ({tgt_port['dtype']}). "
+                                "Supported pairings currently require matching source/target dtypes."
+                            ),
+                            edge_id=edge.id,
+                        )
+                    )
 
 
 # ── Workflows ─────────────────────────────────────────────────────────
 
+
 @router.post("/workflows/validate", response_model=ValidateWorkflowResponse)
 def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
     """Validate a workflow graph (structure, types, constraints)."""
-    workflow, workflow_payload, registry_ids = _canonicalize_request_workflow(req.workflow)
+    workflow, workflow_payload, registry_ids = _canonicalize_request_workflow(
+        req.workflow
+    )
     issues: List[ValidationIssue] = []
 
     node_ids = {node.id for node in workflow.nodes}
     if len(node_ids) != len(workflow.nodes):
-        issues.append(ValidationIssue(
-            severity="error", code="duplicate_node_id",
-            message="Workflow contains duplicate node ids.",
-        ))
+        issues.append(
+            ValidationIssue(
+                severity="error",
+                code="duplicate_node_id",
+                message="Workflow contains duplicate node ids.",
+            )
+        )
 
     for edge in workflow.edges:
         if edge.source not in node_ids or edge.target not in node_ids:
-            issues.append(ValidationIssue(
-                severity="error", code="dangling_edge",
-                message=f"Edge {edge.id} references missing source/target node.",
-            ))
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="dangling_edge",
+                    message=f"Edge {edge.id} references missing source/target node.",
+                )
+            )
 
     issues.extend(_unresolved_component_issues(workflow_payload, registry_ids))
 
@@ -240,15 +287,24 @@ def validate_workflow(req: ValidateWorkflowRequest) -> ValidateWorkflowResponse:
             c_edges = []
             for edge in workflow.edges:
                 if edge.source in node_to_idx and edge.target in node_to_idx:
-                    c_edges.append((node_to_idx[edge.source], node_to_idx[edge.target], 0, 0))
+                    c_edges.append(
+                        (node_to_idx[edge.source], node_to_idx[edge.target], 0, 0)
+                    )
 
             res = dispatcher.validate_graph(node_ids_list, c_edges)
-            if not res['valid']:
-                code = "cycle_detected" if res.get('code') in [-3, -7] else "native_validator_error"
-                issues.append(ValidationIssue(
-                    severity="error", code=code,
-                    message=f"Native validation failed: {res['error']}",
-                ))
+            if not res["valid"]:
+                code = (
+                    "cycle_detected"
+                    if res.get("code") in [-3, -7]
+                    else "native_validator_error"
+                )
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code=code,
+                        message=f"Native validation failed: {res['error']}",
+                    )
+                )
         except Exception as e:
             logger.error("Native validator failed, falling back: %s", e)
             _validate_fallback_cycles(node_ids, workflow, issues)
@@ -274,7 +330,9 @@ def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
         }
 
     try:
-        components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "components"))
+        components_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
+        )
         model = runtime_compile(req.workflow.model_dump(), components_dir)
 
         return {
@@ -305,13 +363,20 @@ def preview_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
         return {"error": "Runtime not available"}
 
     try:
-        components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "components"))
+        components_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
+        )
         model = runtime_compile(req.workflow.model_dump(), components_dir)
 
         # Generate dummy inputs
         inputs = {}
-        sources = [n.id for n in req.workflow.nodes if not any(e.target == n.id for e in req.workflow.edges)]
+        sources = [
+            n.id
+            for n in req.workflow.nodes
+            if not any(e.target == n.id for e in req.workflow.edges)
+        ]
         import torch
+
         for nid in sources:
             inputs[nid] = torch.randn(1, 16, 64)  # Default dummy
 
@@ -338,14 +403,10 @@ def preview_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
 
 @router.post("/workflows/run")
 def run_workflow(req: RunWorkflowRequest) -> Dict[str, Any]:
-    run_id = f"run_{uuid4().hex[:10]}"
-    return {
-        "accepted": True,
-        "run_id": run_id,
-        "workflow_id": req.workflow.workflow_id,
-        "budget": req.budget,
-        "notes": "Scaffold run path; executor integration pending.",
-    }
+    raise HTTPException(
+        status_code=501,
+        detail="AUDIT: not implemented: workflow run (executor integration pending)",
+    )
 
 
 @router.put("/workflows/{workflow_id}")
@@ -371,7 +432,11 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
             existing_graph = json.loads(existing["graph_json"])
             old_fingerprint = dig(existing_graph, "metadata", "graph_fingerprint")
     except Exception:
-        logger.warning("Failed to load existing workflow fingerprint for %s", workflow_id, exc_info=True)
+        logger.warning(
+            "Failed to load existing workflow fingerprint for %s",
+            workflow_id,
+            exc_info=True,
+        )
         old_fingerprint = None
 
     # Calculate fingerprint if bridge is available
@@ -379,6 +444,7 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
     if HAS_BRIDGE:
         try:
             from runtime.bridge import workflow_to_graph as _w2g
+
             model_dim = wf_dict.get("metadata", {}).get("model_dim", 256)
             graph, _ = _w2g(wf_dict, model_dim, return_id_map=True)
             fingerprint = graph.fingerprint()
@@ -422,7 +488,9 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
 
     # Auto-promote fingerprints into research discoveries
     promoted = None
-    fingerprint_changed = bool(fingerprint and old_fingerprint and fingerprint != old_fingerprint)
+    fingerprint_changed = bool(
+        fingerprint and old_fingerprint and fingerprint != old_fingerprint
+    )
     should_promote = bool(fingerprint)
     if should_promote:
         promoted = _auto_promote_workflow_to_research(wf_dict)
@@ -452,16 +520,23 @@ def list_workflows() -> List[Dict[str, Any]]:
 
 
 @router.post("/workflows/diff")
-def post_diff_workflows(wf_a: WorkflowGraphModel, wf_b: WorkflowGraphModel) -> List[PatchOpModel]:
+def post_diff_workflows(
+    wf_a: WorkflowGraphModel, wf_b: WorkflowGraphModel
+) -> List[PatchOpModel]:
     return diff_graphs(wf_a.model_dump(), wf_b.model_dump())
 
 
 # ── Perf / Benchmarks / Profile / Estimate ────────────────────────────
 
+
 @router.get("/perf/summary")
 def get_perf_summary(limit: int = Query(20, ge=1, le=100)) -> Dict[str, Any]:
     """Return recent designer perf artifacts and aggregate summary."""
-    from research.perf_contract import list_recent_perf_artifacts, summarize_perf_artifacts
+    from research.perf_contract import (
+        list_recent_perf_artifacts,
+        summarize_perf_artifacts,
+    )
+
     artifacts = list_recent_perf_artifacts(component="aria_designer", limit=limit)
     return {
         "summary": summarize_perf_artifacts(artifacts, component="aria_designer"),
@@ -471,7 +546,9 @@ def get_perf_summary(limit: int = Query(20, ge=1, le=100)) -> Dict[str, Any]:
 
 @router.get("/benchmarks/targets")
 def get_benchmark_targets(
-    run_id: Optional[str] = Query(None, description="Optional run_id for live target comparison"),
+    run_id: Optional[str] = Query(
+        None, description="Optional run_id for live target comparison"
+    ),
 ) -> Dict[str, Any]:
     """Return benchmark target catalog and optional run-specific comparison."""
     payload: Dict[str, Any] = benchmark_target_catalog()
@@ -563,10 +640,19 @@ def estimate_workflow(req: ValidateWorkflowRequest) -> Dict[str, Any]:
         if comp and comp.get("performance", {}).get("has_params"):
             formula = comp["performance"].get("param_formula", "0")
             try:
-                val = eval(formula, {"__builtins__": {}}, {"D": 256, "D_in": 256, "D_out": 256, "vocab_size": 32000})
+                val = eval(
+                    formula,
+                    {"__builtins__": {}},
+                    {"D": 256, "D_in": 256, "D_out": 256, "vocab_size": 32000},
+                )
                 total_params += int(val)
             except Exception:
-                logger.warning("Failed to evaluate param_formula for component %s: %s", node.component_type, formula, exc_info=True)
+                logger.warning(
+                    "Failed to evaluate param_formula for component %s: %s",
+                    node.component_type,
+                    formula,
+                    exc_info=True,
+                )
 
     return {
         "workflow_id": req.workflow.workflow_id,

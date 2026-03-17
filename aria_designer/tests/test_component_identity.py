@@ -1,5 +1,4 @@
 from __future__ import annotations
-import pytest
 from aria_designer.api.app.component_identity import (
     canonicalize_component_id,
     canonicalize_workflow,
@@ -7,6 +6,7 @@ from aria_designer.api.app.component_identity import (
     collect_unresolved_component_ids,
     discover_concepts,
 )
+
 
 def test_canonicalize_component_id():
     # Leaf names → canonical
@@ -25,13 +25,14 @@ def test_canonicalize_component_id():
     assert canonicalize_component_id("unknown/id") == "unknown/id"
     assert canonicalize_component_id("completely_new_op") == "completely_new_op"
 
+
 def test_canonicalize_workflow():
     wf = {
         "nodes": [
             {"id": "n1", "component_type": "input"},
             {"id": "n2", "component_type": "difficulty_scorer"},
             {"id": "n3", "component_type": "linear_proj"},
-            {"id": "n4", "component_type": "output_head"}
+            {"id": "n4", "component_type": "output_head"},
         ]
     }
     canonicalize_workflow(wf)
@@ -40,6 +41,7 @@ def test_canonicalize_workflow():
     assert wf["nodes"][1]["component_type"] == "routing/difficulty_scorer"
     assert wf["nodes"][2]["component_type"] == "linear_algebra/linear_proj"
     assert wf["nodes"][3]["component_type"] == "io/output_head"
+
 
 def test_discover_concepts():
     message = "I want a model with softmax_attention and a difficulty_scorer"
@@ -66,6 +68,7 @@ def test_canonicalize_idempotent():
         ],
     }
     import copy
+
     original = copy.deepcopy(wf)
     canonicalize_workflow(wf)
     assert wf["nodes"] == original["nodes"]
@@ -85,7 +88,9 @@ def test_canonicalize_mixed_ids():
     }
     canonicalize_workflow(wf)
     for node in wf["nodes"]:
-        assert "/" in node["component_type"], f"Bare leaf ID not resolved: {node['component_type']}"
+        assert "/" in node["component_type"], (
+            f"Bare leaf ID not resolved: {node['component_type']}"
+        )
 
 
 def test_collect_unresolved():
@@ -121,7 +126,13 @@ def test_canonicalize_workflow_ids_preserves_raw():
 
 def test_round_trip_bare_to_canonical():
     """Bare IDs → canonical → re-canonicalize is stable."""
-    bare_ids = ["relu", "softmax_attention", "linear_proj", "difficulty_scorer", "concat"]
+    bare_ids = [
+        "relu",
+        "softmax_attention",
+        "linear_proj",
+        "difficulty_scorer",
+        "concat",
+    ]
     for bare in bare_ids:
         first = canonicalize_component_id(bare)
         second = canonicalize_component_id(first)

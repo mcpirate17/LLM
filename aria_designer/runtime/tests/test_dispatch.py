@@ -1,7 +1,7 @@
 import numpy as np
-import pytest
 
 from aria_designer.runtime.dispatch import KernelDispatcher
+
 
 def test_dispatch_validator():
     dispatcher = KernelDispatcher()
@@ -13,6 +13,7 @@ def test_dispatch_validator():
     assert res["valid"] is True
     assert res["topo_order"] == [0, 1, 2]
 
+
 def test_dispatch_cycle():
     dispatcher = KernelDispatcher()
     # 0 -> 1 -> 0
@@ -23,12 +24,14 @@ def test_dispatch_cycle():
     assert res["valid"] is False
     assert "no source" in res["error"].lower() or "cycle" in res["error"].lower()
 
+
 def test_dispatch_relu():
     dispatcher = KernelDispatcher()
     x = np.array([-1, 0, 1, 2], dtype=np.float32)
     y = dispatcher.relu(x)
     expected = np.array([0, 0, 1, 2], dtype=np.float32)
     np.testing.assert_allclose(y, expected)
+
 
 def test_dispatch_matmul():
     dispatcher = KernelDispatcher()
@@ -37,6 +40,7 @@ def test_dispatch_matmul():
     c = dispatcher.matmul(a, b)
     expected = a @ b
     np.testing.assert_allclose(c, expected, atol=1e-5)
+
 
 def test_dispatch_relu_fallback():
     # Disable native and see if it still works using torch
@@ -52,7 +56,9 @@ def test_dispatch_file_loader_csv_native_or_fallback(tmp_path):
     csv_path = tmp_path / "sample.csv"
     csv_path.write_text("a,b,c\n1,2,3\n4,5,6\n", encoding="utf-8")
 
-    arr = dispatcher.file_loader_csv(str(csv_path), max_rows=8, max_cols=3, delimiter=",", has_header=True)
+    arr = dispatcher.file_loader_csv(
+        str(csv_path), max_rows=8, max_cols=3, delimiter=",", has_header=True
+    )
     assert arr.shape[0] == 2
     np.testing.assert_allclose(arr[0], np.array([1.0, 2.0, 3.0], dtype=np.float32))
 
@@ -76,6 +82,7 @@ def test_dispatch_file_writer_txt_native_or_fallback(tmp_path):
     assert written == 3
     lines = out_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
+
 
 if __name__ == "__main__":
     # Run tests manually if pytest is not used

@@ -13,9 +13,9 @@ Requirements:
 - aria_scheduler.so must be built (Rust PyO3 module)
 - libaria_native_runtime.so must be built (C kernel library)
 """
+
 from __future__ import annotations
 
-import json
 import math
 import time
 
@@ -41,6 +41,7 @@ pytestmark = pytest.mark.e2e
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_relu_graph(dim: int = 4) -> ComputationGraph:
     """input(dim) -> relu -> output"""
@@ -143,6 +144,7 @@ def _make_double_residual_graph(dim: int = 4) -> ComputationGraph:
 # Test 1: Rust scheduler parses IR from ComputationGraph
 # ---------------------------------------------------------------------------
 
+
 class TestParseConvertedIR:
     def test_rust_scheduler_parses_converted_ir(self):
         """ComputationGraph -> native_ir.v1 JSON -> parse_graph_ir succeeds."""
@@ -181,6 +183,7 @@ class TestParseConvertedIR:
 # Test 2: Topological order matches Python graph
 # ---------------------------------------------------------------------------
 
+
 class TestTopologicalOrder:
     def test_rust_scheduler_topological_order(self):
         """Rust topo order matches Python ComputationGraph.topological_order()."""
@@ -212,6 +215,7 @@ class TestTopologicalOrder:
 # ---------------------------------------------------------------------------
 # Test 3: Execute graph — relu
 # ---------------------------------------------------------------------------
+
 
 class TestExecuteRelu:
     def test_rust_execute_graph_relu(self):
@@ -246,6 +250,7 @@ class TestExecuteRelu:
 # Test 4: Execute graph — relu -> exp chain
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteChain:
     def test_rust_execute_graph_chain(self):
         """input -> relu -> exp: exp(relu(x))."""
@@ -277,6 +282,7 @@ class TestExecuteChain:
 # Test 5: Execute graph — additional unary ops (sigmoid, tanh)
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteUnaryOps:
     def test_sigmoid(self):
         """input -> sigmoid."""
@@ -305,6 +311,7 @@ class TestExecuteUnaryOps:
 # Test 6: dispatch_graph_native (full Python -> Rust -> C pipeline)
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchGraphNative:
     def test_dispatch_graph_native_function(self):
         """dispatch_graph_native: Python entry point through full pipeline."""
@@ -327,15 +334,14 @@ class TestDispatchGraphNative:
 
         result = dispatch_graph_native(graph, x)
 
-        expected = np.array(
-            [1.0, 1.0, math.exp(1.0), math.exp(2.0)], dtype=np.float32
-        )
+        expected = np.array([1.0, 1.0, math.exp(1.0), math.exp(2.0)], dtype=np.float32)
         np.testing.assert_allclose(result, expected, rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------
 # Test 7: Throughput benchmark (sanity, not a strict gate)
 # ---------------------------------------------------------------------------
+
 
 class TestBenchmark:
     def test_e2e_benchmark_relu_throughput(self):
@@ -362,7 +368,7 @@ class TestBenchmark:
                 assert result[i] == pytest.approx(x[i], rel=1e-5)
 
         # Just log the latency — no strict threshold
-        print(f"\n  relu({dim}) via Rust scheduler: {dt*1000:.2f} ms")
+        print(f"\n  relu({dim}) via Rust scheduler: {dt * 1000:.2f} ms")
 
     def test_chain_throughput(self):
         """relu -> exp on 8192 elements."""
@@ -378,12 +384,13 @@ class TestBenchmark:
         dt = time.perf_counter() - t0
 
         assert len(result) == dim
-        print(f"\n  relu->exp({dim}) via Rust scheduler: {dt*1000:.2f} ms")
+        print(f"\n  relu->exp({dim}) via Rust scheduler: {dt * 1000:.2f} ms")
 
 
 # ---------------------------------------------------------------------------
 # Test 8: Multi-node graphs with binary ops
 # ---------------------------------------------------------------------------
+
 
 class TestMultiNodeBinaryOps:
     def test_add_residual(self):
@@ -406,10 +413,7 @@ class TestMultiNodeBinaryOps:
         x = [-1.0, 0.0, 1.0, 2.0]
         result = aria_scheduler.execute_graph(ir_json, x)
 
-        expected = [
-            (1.0 / (1.0 + math.exp(-v))) * math.tanh(v)
-            for v in x
-        ]
+        expected = [(1.0 / (1.0 + math.exp(-v))) * math.tanh(v) for v in x]
         assert result == pytest.approx(expected, rel=1e-5)
 
     def test_sub_binary(self):
@@ -433,6 +437,7 @@ class TestMultiNodeBinaryOps:
 # Test 9: Diamond and branching topologies
 # ---------------------------------------------------------------------------
 
+
 class TestDiamondTopology:
     def test_diamond_add(self):
         """input -> relu -> sigmoid; input -> tanh; add(sigmoid, tanh)."""
@@ -442,10 +447,7 @@ class TestDiamondTopology:
         x = [-1.0, 0.0, 1.0, 2.0]
         result = aria_scheduler.execute_graph(ir_json, x)
 
-        expected = [
-            (1.0 / (1.0 + math.exp(-max(0, v)))) + math.tanh(v)
-            for v in x
-        ]
+        expected = [(1.0 / (1.0 + math.exp(-max(0, v)))) + math.tanh(v) for v in x]
         assert result == pytest.approx(expected, rel=1e-5)
 
     def test_diamond_topological_order(self):
@@ -473,6 +475,7 @@ class TestDiamondTopology:
 # Test 10: Long chains (4+ ops)
 # ---------------------------------------------------------------------------
 
+
 class TestLongChain:
     def test_four_op_chain(self):
         """input -> relu -> sigmoid -> tanh -> exp: 4-op sequential chain."""
@@ -482,10 +485,7 @@ class TestLongChain:
         x = [0.5, 1.0, -0.5, 2.0]
         result = aria_scheduler.execute_graph(ir_json, x)
 
-        expected = [
-            math.exp(math.tanh(1.0 / (1.0 + math.exp(-max(0, v)))))
-            for v in x
-        ]
+        expected = [math.exp(math.tanh(1.0 / (1.0 + math.exp(-max(0, v))))) for v in x]
         assert result == pytest.approx(expected, rel=1e-5)
 
     def test_four_op_chain_topological_order(self):
@@ -516,6 +516,7 @@ class TestLongChain:
 # ---------------------------------------------------------------------------
 # Test 11: Double residual (sequential binary ops)
 # ---------------------------------------------------------------------------
+
 
 class TestDoubleResidual:
     def test_double_residual(self):
@@ -557,6 +558,7 @@ class TestDoubleResidual:
 # Test 12: dispatch_graph_native with multi-node graphs
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchGraphNativeMultiNode:
     def test_dispatch_residual(self):
         """dispatch_graph_native with residual add pattern."""
@@ -579,10 +581,10 @@ class TestDispatchGraphNativeMultiNode:
 
         result = dispatch_graph_native(graph, x)
 
-        expected = np.array([
-            (1.0 / (1.0 + math.exp(-max(0, v)))) + math.tanh(v)
-            for v in x
-        ], dtype=np.float32)
+        expected = np.array(
+            [(1.0 / (1.0 + math.exp(-max(0, v)))) + math.tanh(v) for v in x],
+            dtype=np.float32,
+        )
         np.testing.assert_allclose(result, expected, rtol=1e-5)
 
     def test_dispatch_long_chain(self):
@@ -594,10 +596,10 @@ class TestDispatchGraphNativeMultiNode:
 
         result = dispatch_graph_native(graph, x)
 
-        expected = np.array([
-            math.exp(math.tanh(1.0 / (1.0 + math.exp(-max(0, v)))))
-            for v in x
-        ], dtype=np.float32)
+        expected = np.array(
+            [math.exp(math.tanh(1.0 / (1.0 + math.exp(-max(0, v))))) for v in x],
+            dtype=np.float32,
+        )
         np.testing.assert_allclose(result, expected, rtol=1e-5)
 
     def test_dispatch_double_residual(self):
@@ -616,12 +618,15 @@ class TestDispatchGraphNativeMultiNode:
             sig = 1.0 / (1.0 + math.exp(-add1))
             add2 = add1 + sig
             expected.append(add2)
-        np.testing.assert_allclose(result, np.array(expected, dtype=np.float32), rtol=1e-5)
+        np.testing.assert_allclose(
+            result, np.array(expected, dtype=np.float32), rtol=1e-5
+        )
 
 
 # ---------------------------------------------------------------------------
 # Test 13: Multi-node throughput benchmark
 # ---------------------------------------------------------------------------
+
 
 class TestMultiNodeBenchmark:
     def test_diamond_throughput(self):
@@ -637,7 +642,7 @@ class TestMultiNodeBenchmark:
         dt = time.perf_counter() - t0
 
         assert len(result) == dim
-        print(f"\n  diamond({dim}) via Rust scheduler: {dt*1000:.2f} ms")
+        print(f"\n  diamond({dim}) via Rust scheduler: {dt * 1000:.2f} ms")
 
     def test_double_residual_throughput(self):
         """Double residual on 16384 elements."""
@@ -652,4 +657,4 @@ class TestMultiNodeBenchmark:
         dt = time.perf_counter() - t0
 
         assert len(result) == dim
-        print(f"\n  double_residual({dim}) via Rust scheduler: {dt*1000:.2f} ms")
+        print(f"\n  double_residual({dim}) via Rust scheduler: {dt * 1000:.2f} ms")

@@ -9,20 +9,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from research.scientist.json_utils import json_safe
+from research.scientist.shared_utils import safe_float
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_ARTIFACT_ROOT = _PROJECT_ROOT / "research" / "perf_artifacts"
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    from research.scientist.shared_utils import safe_float
-    result = safe_float(value, default)
-    return result if result is not None else default
-
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
 
 
 def build_duplicate_work_report(
@@ -47,7 +43,7 @@ def build_duplicate_work_report(
         "repeated_keys": repeated,
         "avoided_count": int(sum(avoided.values())),
         "avoided_keys": avoided,
-        "estimated_wasted_ms": round(max(0.0, _safe_float(wasted_ms)), 4),
+        "estimated_wasted_ms": round(max(0.0, safe_float(wasted_ms)), 4),
         "hints": [str(h) for h in (hints or []) if str(h).strip()],
     }
 
@@ -78,7 +74,9 @@ def build_perf_contract(
         },
         "metrics": payload_metrics,
         "budget_profile": budget_profile,
-        "budget_verdict": json_safe(budget_verdict) if budget_verdict is not None else None,
+        "budget_verdict": json_safe(budget_verdict)
+        if budget_verdict is not None
+        else None,
         "duplicate_work": json_safe(duplicate_work or build_duplicate_work_report()),
         "warnings": [str(w) for w in (warnings or []) if str(w).strip()],
         "artifact_path": artifact_path,
@@ -96,8 +94,13 @@ def emit_perf_artifact(
     component = str(contract.get("component") or "unknown")
     workload = str(contract.get("workload") or "run")
     ts = int(time.time() * 1000)
-    safe_slug = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (slug or f"{component}_{workload}_{ts}"))
-    dated_dir = artifact_root / component / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    safe_slug = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_"
+        for ch in (slug or f"{component}_{workload}_{ts}")
+    )
+    dated_dir = (
+        artifact_root / component / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    )
     dated_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = dated_dir / f"{safe_slug}.json"
     payload = dict(contract)
@@ -126,7 +129,9 @@ def list_recent_perf_artifacts(
     search_root = artifact_root / component if component else artifact_root
     if not search_root.exists():
         return []
-    items: List[Path] = sorted(search_root.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    items: List[Path] = sorted(
+        search_root.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
     results: List[Dict[str, Any]] = []
     for path in items[: max(1, int(limit))]:
         try:
@@ -144,7 +149,7 @@ def list_recent_perf_artifacts(
                 "budget_profile": payload.get("budget_profile"),
                 "budget_verdict": payload.get("budget_verdict"),
                 "duplicate_work": payload.get("duplicate_work"),
-                "total_time_ms": _safe_float(metrics.get("total_time_ms"), 0.0),
+                "total_time_ms": safe_float(metrics.get("total_time_ms"), 0.0),
             }
         )
     return results
@@ -155,7 +160,11 @@ def summarize_perf_artifacts(
     *,
     component: Optional[str] = None,
 ) -> Dict[str, Any]:
-    filtered = [item for item in artifacts if not component or item.get("component") == component]
+    filtered = [
+        item
+        for item in artifacts
+        if not component or item.get("component") == component
+    ]
     failures = 0
     warnings = 0
     total_duplicate = 0
@@ -167,10 +176,12 @@ def summarize_perf_artifacts(
         if verdict.get("passed") is False:
             failures += 1
         checks = verdict.get("checks") or []
-        warnings += sum(1 for check in checks if check.get("reason") == "missing_metric")
+        warnings += sum(
+            1 for check in checks if check.get("reason") == "missing_metric"
+        )
         dup = item.get("duplicate_work") or {}
         total_duplicate += int(dup.get("detected_count", 0) or 0)
-        total_time_ms = _safe_float(item.get("total_time_ms"), -1.0)
+        total_time_ms = safe_float(item.get("total_time_ms"), -1.0)
         if total_time_ms >= 0.0:
             total_time += total_time_ms
             total_time_count += 1
@@ -181,5 +192,7 @@ def summarize_perf_artifacts(
         "failed_budget_runs": failures,
         "missing_metric_warnings": warnings,
         "duplicate_work_events": total_duplicate,
-        "avg_total_time_ms": round(total_time / total_time_count, 4) if total_time_count else None,
+        "avg_total_time_ms": round(total_time / total_time_count, 4)
+        if total_time_count
+        else None,
     }

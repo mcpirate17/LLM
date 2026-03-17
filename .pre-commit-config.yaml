@@ -1,0 +1,25 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.6
+    hooks:
+      - id: ruff
+        args: [--fix]           # catches unused imports, dead assignments
+      - id: ruff-format
+
+  - repo: https://github.com/jendrikseipp/vulture
+    rev: v2.14
+    hooks:
+      - id: vulture
+        args: [
+          research/, aria_core/, aria_designer/, vulture_whitelist.py,
+          --min-confidence, "80",
+          --exclude, "*/.venv/*,*/node_modules/*,*/__pycache__/*,*/.run/*,*/tests/*,*/migrations/*"
+        ]
+
+  - repo: local
+    hooks:
+      - id: no-file-over-1250
+        name: Reject god files
+        language: system
+        entry: bash -c 'find . -name "*.py" | xargs wc -l | awk "$$1 > 1250 {print; found=1} END {exit found}"'
+        pass_filenames: false

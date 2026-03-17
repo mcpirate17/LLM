@@ -1,24 +1,29 @@
-
 import json
 import requests
 import logging
-from typing import List, Dict, Any
+from typing import Dict, Any
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("linter")
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "gemma2:2b"
 
+
 class ArchitectureLinter:
     def query_ollama(self, prompt: str) -> str:
         try:
-            response = requests.post(OLLAMA_URL, json={
-                "model": MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.0}
-            })
+            response = requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.0},
+                },
+            )
             return response.json().get("response", "").strip()
         except Exception as e:
             logger.error(f"Ollama error: {e}")
@@ -28,7 +33,7 @@ class ArchitectureLinter:
         """Use Gemma to identify structural 'smells' in a computation graph."""
         graph = json.loads(graph_json)
         nodes = graph.get("nodes", {})
-        
+
         # Build a readable representation for Gemma
         ops = []
         for nid, node in nodes.items():
@@ -61,10 +66,11 @@ Output a JSON object:
                 res_text = res_text.split("```json")[1].split("```")[0]
             elif "```" in res_text:
                 res_text = res_text.split("```")[1].split("```")[0]
-            
+
             return json.loads(res_text.strip())
-        except Exception as e:
+        except Exception:
             return {"pass": True, "smells": [], "error": "Linter failed to parse"}
+
 
 if __name__ == "__main__":
     # Test with a known "weird" graph from today's search

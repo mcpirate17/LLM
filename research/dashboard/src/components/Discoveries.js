@@ -12,7 +12,7 @@ import {
 } from './discoveries/DiscoveryUiBits';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
-const QUALITY_FLOOR_BEST_LOSS_MAX = 0.8;
+const QUALITY_FLOOR_THRESHOLD = 0.8;
 
 function discoveryLossDisplay(entry) {
   if (entry?.discovery_loss_ratio != null) return Number(entry.discovery_loss_ratio);
@@ -372,8 +372,8 @@ function Discoveries({
     if (!qualityFloorEnabled) return failedFiltered;
     return failedFiltered.filter((e) => {
       if (e?.is_reference) return true;
-      const best = bestLoss(e);
-      return best != null && Number(best) <= QUALITY_FLOOR_BEST_LOSS_MAX;
+      const score = e?.composite_score;
+      return score != null && (Number(score) / 100.0) >= QUALITY_FLOOR_THRESHOLD;
     });
   }, [failedFiltered, qualityFloorEnabled]);
 
@@ -490,9 +490,9 @@ function Discoveries({
             border: `1px solid ${qualityFloorEnabled ? 'var(--accent-green)' : 'var(--border)'}`,
             borderRadius: 4, color: qualityFloorEnabled ? 'var(--accent-green)' : 'var(--text-secondary)',
           }}
-          title={`Hide low-quality entries where best loss > ${QUALITY_FLOOR_BEST_LOSS_MAX.toFixed(1)}`}
+          title={`Hide entries with composite score < ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}`}
         >
-          {qualityFloorEnabled ? `Quality floor ≤ ${QUALITY_FLOOR_BEST_LOSS_MAX.toFixed(1)}` : 'Show all quality'}
+          {qualityFloorEnabled ? `Quality floor ≥ ${(QUALITY_FLOOR_THRESHOLD * 100).toFixed(0)}` : 'Show all quality'}
         </button>
         <button
           onClick={() => setShowColumnPicker(!showColumnPicker)}

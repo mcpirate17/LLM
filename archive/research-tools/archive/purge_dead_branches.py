@@ -14,10 +14,11 @@ from tqdm import tqdm
 from research.synthesis.graph import ComputationGraph
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 LOGGER = logging.getLogger(__name__)
 
 DB_PATH = "research/lab_notebook.db"
+
 
 def main():
     if not os.path.exists(DB_PATH):
@@ -42,12 +43,13 @@ def main():
     LOGGER.info(f"Found {len(rows)} results to analyze.")
 
     purge_ids = []
-    
+
     # 2. Analyze each model
     for row in tqdm(rows, desc="Analyzing models"):
         rid = row["result_id"]
         is_ref = bool(row["is_reference"])
-        if is_ref: continue
+        if is_ref:
+            continue
 
         # Criteria 1: Dead Branches
         try:
@@ -57,7 +59,7 @@ def main():
             if len(reachable) < len(graph.nodes):
                 purge_ids.append(rid)
                 continue
-        except Exception as e:
+        except Exception:
             pass
 
         # Criteria 2: Numerical Collapse
@@ -80,10 +82,14 @@ def main():
         if base_ratio is not None and base_ratio >= 1.0:
             purge_ids.append(rid)
             continue
-            
+
         # Criteria 5: Suspiciously low loss with NO spectral norm (Phase 1 artifacts)
         # If loss < 0.05 and spec_norm is NULL, it's likely an old zombie.
-        if row["loss_ratio"] is not None and row["loss_ratio"] < 0.05 and spec_norm is None:
+        if (
+            row["loss_ratio"] is not None
+            and row["loss_ratio"] < 0.05
+            and spec_norm is None
+        ):
             purge_ids.append(rid)
             continue
 
@@ -96,11 +102,19 @@ def main():
         LOGGER.info("Starting deletion...")
         batch_size = 500
         for i in range(0, len(purge_ids), batch_size):
-            batch = purge_ids[i:i+batch_size]
-            placeholders = ', '.join(['?'] * len(batch))
-            cursor.execute(f"DELETE FROM leaderboard WHERE result_id IN ({placeholders})", batch)
-            cursor.execute(f"DELETE FROM training_curves WHERE result_id IN ({placeholders})", batch)
-            cursor.execute(f"DELETE FROM program_results WHERE result_id IN ({placeholders})", batch)
+            batch = purge_ids[i : i + batch_size]
+            placeholders = ", ".join(["?"] * len(batch))
+            cursor.execute(
+                f"DELETE FROM leaderboard WHERE result_id IN ({placeholders})", batch
+            )
+            cursor.execute(
+                f"DELETE FROM training_curves WHERE result_id IN ({placeholders})",
+                batch,
+            )
+            cursor.execute(
+                f"DELETE FROM program_results WHERE result_id IN ({placeholders})",
+                batch,
+            )
         conn.commit()
         LOGGER.info("Purge complete!")
 
@@ -109,20 +123,29 @@ def main():
     cursor.execute("SELECT experiment_id FROM experiments")
     experiments = [r["experiment_id"] for r in cursor.fetchall()]
     for eid in tqdm(experiments, desc="Syncing experiments"):
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT COUNT(*) as n_s1, MIN(loss_ratio) as best_loss, MAX(novelty_score) as best_nov
             FROM program_results WHERE experiment_id = ? AND stage1_passed = 1
-        """, (eid,))
+        """,
+            (eid,),
+        )
         agg = cursor.fetchone()
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE experiments SET n_stage1_passed = ?, best_loss_ratio = ?, best_novelty_score = ?
             WHERE experiment_id = ?
-        """, (agg["n_s1"] or 0, agg["best_loss"], agg["best_nov"], eid))
-    
-    cursor.execute("DELETE FROM experiments WHERE n_stage1_passed = 0 AND n_programs_generated > 0")
+        """,
+            (agg["n_s1"] or 0, agg["best_loss"], agg["best_nov"], eid),
+        )
+
+    cursor.execute(
+        "DELETE FROM experiments WHERE n_stage1_passed = 0 AND n_programs_generated > 0"
+    )
     LOGGER.info(f"Deleted {cursor.rowcount} orphaned experiments.")
     conn.commit()
     conn.close()
+
 
 if __name__ == "__main__":
     main()

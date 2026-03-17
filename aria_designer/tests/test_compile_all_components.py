@@ -4,9 +4,9 @@ Tests the full pipeline: manifest → kernel_fallback.py → compile_workflow() 
 WorkflowModule.forward() for all ~200 components. This catches import errors,
 missing symbols, and runtime failures that unit-level handler tests miss.
 """
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -80,56 +80,70 @@ def _build_workflow(
         dtype = inp.get("dtype", "tensor")
         src_id = f"src_{port_name}"
 
-        nodes.append({
-            "id": src_id,
-            "component_type": "graph_input",
-            "params": {},
-        })
-        edges.append({
-            "id": f"e{edge_id}",
-            "source": src_id,
-            "target": "op",
-            "source_port": "out",
-            "target_port": port_name,
-        })
+        nodes.append(
+            {
+                "id": src_id,
+                "component_type": "graph_input",
+                "params": {},
+            }
+        )
+        edges.append(
+            {
+                "id": f"e{edge_id}",
+                "source": src_id,
+                "target": "op",
+                "source_port": "out",
+                "target_port": port_name,
+            }
+        )
         edge_id += 1
 
     # If no inputs defined, create a default source
     if not inputs:
-        nodes.append({
-            "id": "src_x",
-            "component_type": "graph_input",
-            "params": {},
-        })
-        edges.append({
-            "id": f"e{edge_id}",
-            "source": "src_x",
-            "target": "op",
-            "source_port": "out",
-            "target_port": "x",
-        })
+        nodes.append(
+            {
+                "id": "src_x",
+                "component_type": "graph_input",
+                "params": {},
+            }
+        )
+        edges.append(
+            {
+                "id": f"e{edge_id}",
+                "source": "src_x",
+                "target": "op",
+                "source_port": "out",
+                "target_port": "x",
+            }
+        )
         edge_id += 1
 
     # The component under test
-    nodes.append({
-        "id": "op",
-        "component_type": component_type,
-        "params": config,
-    })
+    nodes.append(
+        {
+            "id": "op",
+            "component_type": component_type,
+            "params": config,
+        }
+    )
 
     # Output node
-    nodes.append({
-        "id": "sink",
-        "component_type": "graph_output",
-        "params": {},
-    })
-    edges.append({
-        "id": f"e{edge_id}",
-        "source": "op",
-        "target": "sink",
-        "source_port": primary_out,
-        "target_port": "in",
-    })
+    nodes.append(
+        {
+            "id": "sink",
+            "component_type": "graph_output",
+            "params": {},
+        }
+    )
+    edges.append(
+        {
+            "id": f"e{edge_id}",
+            "source": "op",
+            "target": "sink",
+            "source_port": primary_out,
+            "target_port": "in",
+        }
+    )
 
     return {
         "schema_version": "workflow_graph.v1",
@@ -140,7 +154,9 @@ def _build_workflow(
     }
 
 
-def _make_input_tensor(dtype: str, shape: Tuple[int, ...] = (1, 16, 256)) -> torch.Tensor:
+def _make_input_tensor(
+    dtype: str, shape: Tuple[int, ...] = (1, 16, 256)
+) -> torch.Tensor:
     """Create a dummy input tensor appropriate for the given dtype."""
     if dtype == "index":
         return torch.randint(0, min(shape[-1], 16), shape[:2])

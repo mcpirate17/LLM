@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for token_merging."""
-import torch
+
 import torch.nn as nn
 
 

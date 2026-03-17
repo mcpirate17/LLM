@@ -1,5 +1,5 @@
 """Python fallback kernel for token_type_classifier."""
-import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 

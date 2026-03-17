@@ -3,12 +3,10 @@
 Covers: schema migration, Bayesian updates, display_only enforcement,
 seed idempotency, grammar integration, and confidence filtering.
 """
+
 from __future__ import annotations
 
-import json
 import pytest
-import tempfile
-from pathlib import Path
 
 from research.scientist.notebook import LabNotebook
 
@@ -105,7 +103,9 @@ class TestSeedIdempotency:
                 evidence_json={"test": "chi2", "n": 2464},
             )
         active = nb.get_insights(status="active", limit=100)
-        matching = [i for i in active if i["semantic_key"] == "structural:graph_size_optimal"]
+        matching = [
+            i for i in active if i["semantic_key"] == "structural:graph_size_optimal"
+        ]
         assert len(matching) == 1, f"Expected 1 active, got {len(matching)}"
 
 
@@ -129,7 +129,9 @@ class TestGrammarIntegration:
     def test_structural_insight_reduces_max_ops(self, nb):
         """High-confidence structural insight reduces max_ops."""
         from research.synthesis.grammar import GrammarConfig
-        from research.scientist.runner.execution_screening import _apply_insight_adjustments
+        from research.scientist.runner.execution_screening import (
+            _apply_insight_adjustments,
+        )
 
         nb.record_insight(
             category="structural_preference",
@@ -150,7 +152,9 @@ class TestGrammarIntegration:
     def test_low_confidence_insight_ignored(self, nb):
         """Insight with confidence < 0.6 doesn't affect grammar."""
         from research.synthesis.grammar import GrammarConfig
-        from research.scientist.runner.execution_screening import _apply_insight_adjustments
+        from research.scientist.runner.execution_screening import (
+            _apply_insight_adjustments,
+        )
 
         nb.record_insight(
             category="structural_preference",
@@ -166,7 +170,7 @@ class TestGrammarIntegration:
         tw = dict(grammar.template_weights)
         mw = dict(grammar.motif_weights)
         _apply_insight_adjustments(nb, grammar, tw, mw)
-        assert grammar.max_ops == 16, f"Low-confidence insight should not change max_ops"
+        assert grammar.max_ops == 16, "Low-confidence insight should not change max_ops"
 
 
 class TestConfidenceFiltering:
@@ -183,8 +187,13 @@ class TestConfidenceFiltering:
         )
         insights = nb.get_insights(limit=100, exclude_display_only=True)
         filtered = [
-            i for i in insights
-            if (float(i.get("alpha") or 1) / (float(i.get("alpha") or 1) + float(i.get("beta_") or 1))) > 0.55
+            i
+            for i in insights
+            if (
+                float(i.get("alpha") or 1)
+                / (float(i.get("alpha") or 1) + float(i.get("beta_") or 1))
+            )
+            > 0.55
         ]
         assert len(filtered) == 0
 
@@ -211,13 +220,17 @@ class TestInsightLevelFiltering:
     def test_filter_by_level(self, nb):
         """get_insights(insight_level=...) filters correctly."""
         nb.record_insight(
-            category="pattern", content="structural",
-            semantic_key="test:s1", insight_level="structural",
+            category="pattern",
+            content="structural",
+            semantic_key="test:s1",
+            insight_level="structural",
             evidence_json={"test": "x"},
         )
         nb.record_insight(
-            category="pattern", content="composition",
-            semantic_key="test:c1", insight_level="composition",
+            category="pattern",
+            content="composition",
+            semantic_key="test:c1",
+            insight_level="composition",
             evidence_json={"test": "x"},
         )
         structural = nb.get_insights(insight_level="structural", limit=100)

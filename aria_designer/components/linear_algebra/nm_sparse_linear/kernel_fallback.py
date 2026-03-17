@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for nm_sparse_linear."""
-import torch
+
 import torch.nn as nn
 
 

@@ -11,9 +11,12 @@ These serve as a regression gate in CI.
 """
 
 import time
-import pytest
 
-from aria_designer.runtime.bridge import validate_workflow_graph, evaluate_workflow, estimate_performance
+from aria_designer.runtime.bridge import (
+    validate_workflow_graph,
+    evaluate_workflow,
+    estimate_performance,
+)
 from aria_designer.runtime.profiler import profile_static, profile_runtime
 
 
@@ -100,6 +103,7 @@ RES_EXPECTED_OPS = 4
 
 # ── Param count regression ───────────────────────────────────────────
 
+
 def test_mlp_param_count():
     result = validate_workflow_graph(REFERENCE_MLP, model_dim=256)
     assert result["valid"]
@@ -121,6 +125,7 @@ def test_residual_param_count():
 
 # ── Op count regression ──────────────────────────────────────────────
 
+
 def test_mlp_op_count():
     result = validate_workflow_graph(REFERENCE_MLP, model_dim=256)
     assert result["graph_info"]["n_ops"] == MLP_EXPECTED_OPS
@@ -138,6 +143,7 @@ def test_residual_op_count():
 
 # ── Depth regression ─────────────────────────────────────────────────
 
+
 def test_mlp_depth():
     result = validate_workflow_graph(REFERENCE_MLP, model_dim=256)
     assert result["graph_info"]["depth"] == MLP_EXPECTED_DEPTH
@@ -149,6 +155,7 @@ def test_attention_depth():
 
 
 # ── FLOPs estimation regression ──────────────────────────────────────
+
 
 def test_mlp_flops_estimate():
     report = profile_static(REFERENCE_MLP, model_dim=256)
@@ -173,6 +180,7 @@ def test_flops_monotonic():
 
 # ── Native coverage regression ───────────────────────────────────────
 
+
 def test_mlp_native_coverage():
     report = profile_static(REFERENCE_MLP, model_dim=256)
     # All ops in MLP should have native kernels
@@ -186,6 +194,7 @@ def test_attention_native_coverage():
 
 
 # ── Runtime latency bounds ───────────────────────────────────────────
+
 
 def test_mlp_forward_latency():
     """Forward pass should complete in reasonable time on CPU."""
@@ -219,6 +228,7 @@ def test_mlp_backward_latency():
 
 
 # ── End-to-end evaluation regression ────────────────────────────────
+
 
 def test_mlp_evaluation_succeeds():
     """Full evaluation pipeline should succeed for reference MLP."""
@@ -254,6 +264,7 @@ def test_evaluation_latency_bound():
 
 
 # ── Profiler consistency ─────────────────────────────────────────────
+
 
 def test_profiler_idempotent():
     """Same workflow should produce same static profile."""

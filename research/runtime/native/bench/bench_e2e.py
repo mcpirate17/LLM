@@ -15,19 +15,21 @@ Usage:
     python runtime/native/bench/bench_e2e.py
     python runtime/native/bench/bench_e2e.py --quick   # fewer iterations for CI
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
 # ---------------------------------------------------------------------------
 # Timing utility
 # ---------------------------------------------------------------------------
+
 
 def bench_fn(fn: Callable, *, warmup: int = 5, iterations: int = 100) -> float:
     """Benchmark a callable; return median time in microseconds."""
@@ -46,6 +48,7 @@ def bench_fn(fn: Callable, *, warmup: int = 5, iterations: int = 100) -> float:
 # ---------------------------------------------------------------------------
 # Graph builder helper
 # ---------------------------------------------------------------------------
+
 
 def _make_relu_graph(model_dim: int = 64):
     """Create a minimal computation graph: input -> relu -> output."""
@@ -88,8 +91,14 @@ def _make_multi_op_graph(model_dim: int = 64):
 # Benchmark functions
 # ---------------------------------------------------------------------------
 
+
 def bench_pytorch_forward(
-    graph, *, vocab_size: int, max_seq_len: int, batch: int, seq_len: int,
+    graph,
+    *,
+    vocab_size: int,
+    max_seq_len: int,
+    batch: int,
+    seq_len: int,
     iterations: int,
 ) -> Optional[float]:
     """Benchmark 1: PyTorch compiled model forward pass."""
@@ -108,7 +117,12 @@ def bench_pytorch_forward(
 
 
 def bench_pytorch_layer_forward(
-    graph, *, batch: int, seq_len: int, model_dim: int, iterations: int,
+    graph,
+    *,
+    batch: int,
+    seq_len: int,
+    model_dim: int,
+    iterations: int,
 ) -> Optional[float]:
     """Benchmark PyTorch compiled layer (no embed/lm_head overhead)."""
     try:
@@ -126,7 +140,10 @@ def bench_pytorch_layer_forward(
 
 
 def bench_native_per_op(
-    *, op_name: str = "relu", n: int = 512, iterations: int = 100,
+    *,
+    op_name: str = "relu",
+    n: int = 512,
+    iterations: int = 100,
 ) -> Optional[float]:
     """Benchmark 2: Per-op native dispatch via NativeForwardWrapper path."""
     try:
@@ -144,11 +161,17 @@ def bench_native_per_op(
 
 
 def bench_cython_bridge_direct(
-    *, op_name: str = "relu", n: int = 65536, iterations: int = 100,
+    *,
+    op_name: str = "relu",
+    n: int = 65536,
+    iterations: int = 100,
 ) -> Optional[float]:
     """Benchmark 3: Raw Cython bridge kernel call."""
     cython_dir = os.path.join(
-        os.path.dirname(__file__), "..", "cython", "build",
+        os.path.dirname(__file__),
+        "..",
+        "cython",
+        "build",
         "lib.linux-x86_64-cpython-312",
     )
     if cython_dir not in sys.path:
@@ -170,12 +193,18 @@ def bench_cython_bridge_direct(
         return None
 
     return bench_fn(
-        lambda: aria_bridge.dispatch_unary(op_name, x), iterations=iterations,
+        lambda: aria_bridge.dispatch_unary(op_name, x),
+        iterations=iterations,
     )
 
 
 def bench_rust_scheduler(
-    graph, *, batch: int, seq_len: int, model_dim: int, iterations: int,
+    graph,
+    *,
+    batch: int,
+    seq_len: int,
+    model_dim: int,
+    iterations: int,
 ) -> Optional[float]:
     """Benchmark 4: Rust scheduler full graph execution."""
     try:
@@ -190,7 +219,8 @@ def bench_rust_scheduler(
         return None
 
     return bench_fn(
-        lambda: dispatch_graph_native(graph, x), iterations=iterations,
+        lambda: dispatch_graph_native(graph, x),
+        iterations=iterations,
     )
 
 
@@ -198,13 +228,17 @@ def bench_rust_scheduler(
 # Op-level comparison
 # ---------------------------------------------------------------------------
 
+
 def bench_op_comparison(*, n: int = 65536, iterations: int = 100) -> List[Dict]:
     """Compare individual ops across native, numpy, and pytorch."""
     results: List[Dict] = []
 
     # Import backends
     cython_dir = os.path.join(
-        os.path.dirname(__file__), "..", "cython", "build",
+        os.path.dirname(__file__),
+        "..",
+        "cython",
+        "build",
         "lib.linux-x86_64-cpython-312",
     )
     if cython_dir not in sys.path:
@@ -215,12 +249,14 @@ def bench_op_comparison(*, n: int = 65536, iterations: int = 100) -> List[Dict]:
 
     try:
         import aria_bridge  # type: ignore
+
         has_bridge = True
     except ImportError:
         has_bridge = False
 
     try:
         import torch
+
         has_torch = True
     except ImportError:
         has_torch = False
@@ -228,7 +264,12 @@ def bench_op_comparison(*, n: int = 65536, iterations: int = 100) -> List[Dict]:
     # -- Unary ops --
     unary_ops = [
         ("relu", lambda x: np.maximum(x, 0)),
-        ("gelu", lambda x: 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))),
+        (
+            "gelu",
+            lambda x: (
+                0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
+            ),
+        ),
     ]
     for op_name, np_fn in unary_ops:
         x_np = np.random.randn(n).astype(np.float32)
@@ -253,10 +294,13 @@ def bench_op_comparison(*, n: int = 65536, iterations: int = 100) -> List[Dict]:
         if has_torch:
             xt = torch.from_numpy(x_np)
             if op_name == "relu":
-                row["torch_us"] = bench_fn(lambda: torch.relu(xt), iterations=iterations)
+                row["torch_us"] = bench_fn(
+                    lambda: torch.relu(xt), iterations=iterations
+                )
             elif op_name == "gelu":
                 row["torch_us"] = bench_fn(
-                    lambda: torch.nn.functional.gelu(xt), iterations=iterations,
+                    lambda: torch.nn.functional.gelu(xt),
+                    iterations=iterations,
                 )
             else:
                 row["torch_us"] = None
@@ -276,7 +320,8 @@ def bench_op_comparison(*, n: int = 65536, iterations: int = 100) -> List[Dict]:
     if has_bridge:
         try:
             row_mm["native_us"] = bench_fn(
-                lambda: aria_bridge.dispatch_matmul(A_np, B_np), iterations=iterations,
+                lambda: aria_bridge.dispatch_matmul(A_np, B_np),
+                iterations=iterations,
             )
         except Exception:
             row_mm["native_us"] = None
@@ -298,6 +343,7 @@ def bench_op_comparison(*, n: int = 65536, iterations: int = 100) -> List[Dict]:
 # ---------------------------------------------------------------------------
 # Report printers
 # ---------------------------------------------------------------------------
+
 
 def _fmt(val: Optional[float], width: int = 10) -> str:
     if val is None:
@@ -337,7 +383,11 @@ def print_path_report(
     ]
     for label, val in rows:
         med = _fmt(val, 11)
-        ratio = _ratio(baseline, val) if val is not None and baseline is not None else "n/a".center(11)
+        ratio = (
+            _ratio(baseline, val)
+            if val is not None and baseline is not None
+            else "n/a".center(11)
+        )
         if val is not None and baseline is not None and val > 0:
             ratio = f"{baseline / val:.2f}x".rjust(11)
         else:
@@ -348,13 +398,23 @@ def print_path_report(
 
 
 def print_op_report(op_results: List[Dict]) -> None:
-    print(f"\nOp-level comparison (elementwise n=65536, matmul 128x128):")
+    print("\nOp-level comparison (elementwise n=65536, matmul 128x128):")
     print("-" * 78)
     print(
         f"{'Op':<16} | {'Native (us)':>11} | {'NumPy (us)':>11} | "
         f"{'PyTorch (us)':>12} | {'Native/PT':>10}"
     )
-    print("-" * 16 + "-+-" + "-" * 11 + "-+-" + "-" * 11 + "-+-" + "-" * 12 + "-+-" + "-" * 10)
+    print(
+        "-" * 16
+        + "-+-"
+        + "-" * 11
+        + "-+-"
+        + "-" * 11
+        + "-+-"
+        + "-" * 12
+        + "-+-"
+        + "-" * 10
+    )
 
     for r in op_results:
         native_s = _fmt(r.get("native_us"), 11)
@@ -373,6 +433,7 @@ def print_op_report(op_results: List[Dict]) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="E2E native execution benchmark")
@@ -405,35 +466,54 @@ def main() -> int:
 
     print("Benchmarking PyTorch full model forward...")
     pt_full = bench_pytorch_forward(
-        graph, vocab_size=vocab_size, max_seq_len=seq_len * 2,
-        batch=batch, seq_len=seq_len, iterations=iters,
+        graph,
+        vocab_size=vocab_size,
+        max_seq_len=seq_len * 2,
+        batch=batch,
+        seq_len=seq_len,
+        iterations=iters,
     )
 
     print("Benchmarking PyTorch layer forward...")
     pt_layer = bench_pytorch_layer_forward(
-        graph, batch=batch, seq_len=seq_len, model_dim=model_dim,
+        graph,
+        batch=batch,
+        seq_len=seq_len,
+        model_dim=model_dim,
         iterations=iters,
     )
 
     print("Benchmarking native per-op dispatch...")
     native_perop = bench_native_per_op(
-        op_name="relu", n=model_dim * seq_len, iterations=iters,
+        op_name="relu",
+        n=model_dim * seq_len,
+        iterations=iters,
     )
 
     print("Benchmarking Cython bridge direct...")
     cython_direct = bench_cython_bridge_direct(
-        op_name="relu", n=model_dim * seq_len, iterations=iters,
+        op_name="relu",
+        n=model_dim * seq_len,
+        iterations=iters,
     )
 
     print("Benchmarking Rust scheduler...")
     rust_sched = bench_rust_scheduler(
-        graph, batch=batch, seq_len=seq_len, model_dim=model_dim,
+        graph,
+        batch=batch,
+        seq_len=seq_len,
+        model_dim=model_dim,
         iterations=iters,
     )
 
     print_path_report(
-        pt_full, pt_layer, native_perop, cython_direct, rust_sched,
-        model_dim=model_dim, seq_len=seq_len,
+        pt_full,
+        pt_layer,
+        native_perop,
+        cython_direct,
+        rust_sched,
+        model_dim=model_dim,
+        seq_len=seq_len,
     )
 
     # ── Op-level comparison ────────────────────────────────────────

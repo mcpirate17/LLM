@@ -1,4 +1,5 @@
 """events API route registration."""
+
 from __future__ import annotations
 
 import logging
@@ -79,7 +80,7 @@ def register_events_routes(app, context: ApiRouteContext):
                 for event in runner.get_events(timeout=sse_timeout):
                     data = _json_dumps(event.get("data", {}), safe=True)
                     yield f"event: {event['type']}\ndata: {data}\n\n"
-                yield f"event: keepalive\ndata: {{}}\n\n"
+                yield "event: keepalive\ndata: {}\n\n"
 
         return Response(
             event_stream(),

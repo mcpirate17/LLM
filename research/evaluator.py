@@ -22,15 +22,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .morphological_box import ArchSpec
-from .arch_builder import BuildConfig, ExplorerModel, build_model
+from .arch_builder import BuildConfig, build_model
 from .scientist.runner._helpers import normalized_loss_ratio
 
 
 # ── Result Types ───────────────────────────────────────────────────────
 
+
 @dataclass
 class Stage0Result:
     """Result from Stage 0 smoke test."""
+
     spec_id: str
     passed: bool = False
     error: Optional[str] = None
@@ -53,6 +55,7 @@ class Stage0Result:
 @dataclass
 class Stage1Result:
     """Result from Stage 1 micro-training."""
+
     spec_id: str
     passed: bool = False
     error: Optional[str] = None
@@ -62,7 +65,7 @@ class Stage1Result:
     final_loss: float = float("inf")
     best_loss: float = float("inf")
     loss_ratio: float = float("inf")  # final/initial — <1 means learning
-    
+
     # Dual-metrics (Discovery vs Validation)
     discovery_loss: float = float("inf")
     discovery_loss_ratio: float = float("inf")
@@ -88,6 +91,7 @@ class Stage1Result:
 
 
 # ── Stage 0: Smoke Test ────────────────────────────────────────────────
+
 
 def stage0_smoke_test(
     spec: ArchSpec,
@@ -128,13 +132,17 @@ def stage0_smoke_test(
         result.param_count = model.param_count()
 
         # 2. Forward pass
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=dev)
+        input_ids = torch.randint(
+            0, config.vocab_size, (batch_size, seq_len), device=dev
+        )
 
         if dev.type == "cuda":
             torch.cuda.synchronize(dev)
         t0 = time.perf_counter()
 
-        with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+        with torch.amp.autocast(
+            device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")
+        ):
             logits = model(input_ids)
 
         if dev.type == "cuda":
@@ -146,7 +154,9 @@ def stage0_smoke_test(
         expected_shape = (batch_size, seq_len, config.vocab_size)
         result.output_shape = str(tuple(logits.shape))
         if logits.shape != expected_shape:
-            result.error = f"Bad output shape: got {logits.shape}, expected {expected_shape}"
+            result.error = (
+                f"Bad output shape: got {logits.shape}, expected {expected_shape}"
+            )
             result.error_type = "shape_mismatch"
             return result
 
@@ -179,13 +189,13 @@ def stage0_smoke_test(
             if p.grad is not None:
                 n_params_with_grad += 1
                 pnorm = p.grad.data.norm(2).item()
-                total_norm += pnorm ** 2
+                total_norm += pnorm**2
                 if torch.isnan(p.grad).any():
                     has_nan = True
                 if pnorm > 1e-10:
                     has_zero = False
 
-        result.grad_norm = total_norm ** 0.5
+        result.grad_norm = total_norm**0.5
         result.has_nan_grad = has_nan
         result.has_zero_grad = has_zero and n_params_with_grad > 0
 
@@ -201,14 +211,16 @@ def stage0_smoke_test(
 
         # Memory safety gate
         if dev.type == "cuda":
-            result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
+            result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024**2)
 
         param_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         if param_bytes > 0:
             result.memory_ratio = (result.peak_memory_mb * 1024 * 1024) / param_bytes
         if result.memory_ratio > 10.0:
-            result.error = (f"Memory ratio {result.memory_ratio:.1f}x exceeds 10x limit "
-                            f"(peak={result.peak_memory_mb:.0f}MB, params={param_bytes/1e6:.1f}MB)")
+            result.error = (
+                f"Memory ratio {result.memory_ratio:.1f}x exceeds 10x limit "
+                f"(peak={result.peak_memory_mb:.0f}MB, params={param_bytes / 1e6:.1f}MB)"
+            )
             result.error_type = "memory_budget_exceeded"
             return result
 
@@ -234,6 +246,7 @@ def stage0_smoke_test(
 
 # ── Stage 1: Micro-Train ──────────────────────────────────────────────
 
+
 def stage1_micro_train(
     spec: ArchSpec,
     config: Optional[BuildConfig] = None,
@@ -244,7 +257,9 @@ def stage1_micro_train(
     lr: float = 3e-4,
     log_every: int = 10,
     max_grad_norm: float = 1.0,
-    data_fn: Optional[Callable] = None, # Function that returns (train_loader, val_loader)
+    data_fn: Optional[
+        Callable
+    ] = None,  # Function that returns (train_loader, val_loader)
 ) -> Stage1Result:
     """
     Stage 1: Does the model actually learn anything?
@@ -273,44 +288,56 @@ def stage1_micro_train(
         model = build_model(spec, config).to(dev)
         # Adaptive clip for math-space architectures
         from .scientist.runner._helpers import apply_adaptive_grad_clip
+
         max_grad_norm = apply_adaptive_grad_clip(model, max_grad_norm)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
         # --- Part 1: Discovery (Random Tokens) ---
         # Quick check for baseline ability to compress random noise
         discovery_steps = min(50, n_steps // 10)
-        discovery_data = torch.randint(0, config.vocab_size, (discovery_steps, batch_size, seq_len), device=dev)
-        
+        discovery_data = torch.randint(
+            0, config.vocab_size, (discovery_steps, batch_size, seq_len), device=dev
+        )
+
         model.train()
         discovery_losses = []
         for step in range(discovery_steps):
             input_ids = discovery_data[step]
-            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+            with torch.amp.autocast(
+                device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")
+            ):
                 logits = model(input_ids)
-                loss = F.cross_entropy(logits[:, :-1].reshape(-1, config.vocab_size), input_ids[:, 1:].reshape(-1))
-            
+                loss = F.cross_entropy(
+                    logits[:, :-1].reshape(-1, config.vocab_size),
+                    input_ids[:, 1:].reshape(-1),
+                )
+
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             discovery_losses.append(loss.item())
-        
+
         if discovery_losses:
             result.discovery_loss = discovery_losses[-1]
-            result.discovery_loss_ratio = discovery_losses[-1] / max(discovery_losses[0], 1e-6)
+            result.discovery_loss_ratio = discovery_losses[-1] / max(
+                discovery_losses[0], 1e-6
+            )
 
         # --- Part 2: Validation (Corpus Data) ---
         # Real training with train/val split
         train_data = None
         val_data = None
-        
+
         if data_fn:
             train_loader, val_loader = data_fn(batch_size, seq_len)
             train_data = iter(train_loader)
-            val_data = list(val_loader) # Keep small validation set in memory
+            val_data = list(val_loader)  # Keep small validation set in memory
         else:
             # Fallback to random data if no corpus provided
             # Split n_steps into 80% train, 20% val
-            full_data = torch.randint(0, config.vocab_size, (n_steps, batch_size, seq_len), device=dev)
+            full_data = torch.randint(
+                0, config.vocab_size, (n_steps, batch_size, seq_len), device=dev
+            )
             split = int(n_steps * 0.8)
             train_data = iter(full_data[:split])
             val_data = full_data[split:]
@@ -325,15 +352,17 @@ def stage1_micro_train(
                 input_ids = next(train_data)
             except StopIteration:
                 break
-                
+
             if isinstance(input_ids, (list, tuple)):
-                input_ids = input_ids[0] # Handle (input, target) pairs
+                input_ids = input_ids[0]  # Handle (input, target) pairs
             input_ids = input_ids.to(dev)
             targets = input_ids
 
             t0 = time.perf_counter()
 
-            with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+            with torch.amp.autocast(
+                device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")
+            ):
                 logits = model(input_ids)
                 loss = F.cross_entropy(
                     logits[:, :-1].reshape(-1, config.vocab_size),
@@ -377,30 +406,47 @@ def stage1_micro_train(
                 if isinstance(val_batch, (list, tuple)):
                     val_batch = val_batch[0]
                 val_batch = val_batch.to(dev)
-                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+                with torch.amp.autocast(
+                    device_type=dev.type,
+                    dtype=torch.bfloat16,
+                    enabled=(dev.type == "cuda"),
+                ):
                     logits = model(val_batch)
-                    v_loss = F.cross_entropy(logits[:, :-1].reshape(-1, config.vocab_size), val_batch[:, 1:].reshape(-1))
+                    v_loss = F.cross_entropy(
+                        logits[:, :-1].reshape(-1, config.vocab_size),
+                        val_batch[:, 1:].reshape(-1),
+                    )
                 val_losses.append(v_loss.item())
-        
+
         if val_losses:
             result.validation_loss = sum(val_losses) / len(val_losses)
-            result.validation_loss_ratio = normalized_loss_ratio(result.validation_loss, config.vocab_size)
+            result.validation_loss_ratio = normalized_loss_ratio(
+                result.validation_loss, config.vocab_size
+            )
             result.generalization_gap = result.validation_loss - result.final_loss
 
         # Summary stats
         result.avg_step_time_ms = sum(step_times) / len(step_times) if step_times else 0
-        result.throughput_tok_s = total_tokens / (sum(step_times) / 1000) if step_times else 0
+        result.throughput_tok_s = (
+            total_tokens / (sum(step_times) / 1000) if step_times else 0
+        )
 
         if dev.type == "cuda":
-            result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024 ** 2)
+            result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024**2)
 
         # Convergence analysis
         result.loss_ratio = normalized_loss_ratio(result.final_loss, config.vocab_size)
-        result.loss_stable = not any(math.isnan(l) or math.isinf(l) for l in result.loss_curve)
-        result.loss_decreasing = len(result.loss_curve) >= 2 and result.loss_curve[-1] < result.loss_curve[0]
-        
+        result.loss_stable = not any(
+            math.isnan(l) or math.isinf(l) for l in result.loss_curve
+        )
+        result.loss_decreasing = (
+            len(result.loss_curve) >= 2 and result.loss_curve[-1] < result.loss_curve[0]
+        )
+
         # Stricter convergence: must pass validation as well
-        result.converges = result.loss_ratio < 0.8 and result.validation_loss_ratio < 0.85
+        result.converges = (
+            result.loss_ratio < 0.8 and result.validation_loss_ratio < 0.85
+        )
 
         result.passed = result.loss_stable and result.converges
 

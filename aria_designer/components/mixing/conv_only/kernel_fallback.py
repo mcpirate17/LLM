@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for conv_only."""
-import torch
+
 import torch.nn as nn
 
 

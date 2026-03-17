@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 from research.defaults import MODEL_DIM
 from .graph import ComputationGraph, OpNode, ShapeInfo
 from .primitives import (
-    PRIMITIVE_REGISTRY, PrimitiveOp, REQUIRES_RESIDUAL_BYPASS,
-    algebraic_types_compatible, default_algebraic_type_for_space,
+    PRIMITIVE_REGISTRY,
+    PrimitiveOp,
+    REQUIRES_RESIDUAL_BYPASS,
+    algebraic_types_compatible,
+    default_algebraic_type_for_space,
     validate_wiring,
 )
 from .templates import (
@@ -39,6 +42,7 @@ from .validator import validate_graph
 
 
 # ── Algebraic Space Compatibility ────────────────────────────────────
+
 
 def _compatible_space(current_space: str, op_space: str) -> bool:
     """Check if an op's algebraic space is compatible with the current context.
@@ -91,42 +95,60 @@ Node = OpNode
 @dataclass
 class GrammarConfig:
     """Configuration for the graph generator."""
+
     model_dim: int = MODEL_DIM
     min_depth: int = 3
     max_depth: int = 10
-    max_width: int = 4          # max parallel paths (2 or 3 way splits)
-    max_ops: int = 16           # max total operations
+    max_width: int = 4  # max parallel paths (2 or 3 way splits)
+    max_ops: int = 16  # max total operations
     max_params_ratio: float = 8.0  # max params relative to D^2
     residual_prob: float = 0.7  # probability of residual connection
-    split_prob: float = 0.3     # probability of branching into parallel paths
-    min_splits: int = 0         # minimum number of split-merge blocks to force
+    split_prob: float = 0.3  # probability of branching into parallel paths
+    min_splits: int = 0  # minimum number of split-merge blocks to force
     three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)
-    branch_depth: int = 1       # depth of subgraph processing on each branch
+    branch_depth: int = 1  # depth of subgraph processing on each branch
     max_recursion_depth: int = 4  # iteration cap for recursive ops
     stability_check: bool = True  # validate architectures before compilation
-    merge_prob: float = 0.4     # probability of merging paths
+    merge_prob: float = 0.4  # probability of merging paths
     risky_op_prob: float = 0.5  # probability of using numerically risky ops
     freq_domain_prob: float = 0.15  # probability of FFT detour
     # Category weights (higher = more likely to be chosen)
-    category_weights: Dict[str, float] = field(default_factory=lambda: {
-        "elementwise_unary": 2.0,
-        "elementwise_binary": 1.5,
-        "reduction": 0.8,
-        "linear_algebra": 1.0,
-        "structural": 1.0,
-        "parameterized": 2.0,
-        "mixing": 1.5,
-        "sequence": 1.2,
-        "frequency": 1.0,
-        "math_space": 1.5,
-        "functional": 3.0,  # Routing/gating/branching ops
-    })
-    # Excluded op names
-    excluded_ops: Set[str] = field(default_factory=lambda: {
-        "softmax_seq", "mean_seq", "sum_seq",
-        "sort_seq", "argsort_seq",
-        "rfft_seq", "irfft_seq",
-    })
+    category_weights: Dict[str, float] = field(
+        default_factory=lambda: {
+            "elementwise_unary": 2.0,
+            "elementwise_binary": 1.5,
+            "reduction": 0.8,
+            "linear_algebra": 1.0,
+            "structural": 1.0,
+            "parameterized": 2.0,
+            "mixing": 1.5,
+            "sequence": 1.2,
+            "frequency": 1.0,
+            "math_space": 1.5,
+            "functional": 3.0,  # Routing/gating/branching ops
+        }
+    )
+    # Excluded op names (quarantined: broken gradient flow or compilation failures)
+    excluded_ops: Set[str] = field(
+        default_factory=lambda: {
+            "softmax_seq",
+            "mean_seq",
+            "sum_seq",
+            "sort_seq",
+            "argsort_seq",
+            "rfft_seq",
+            "irfft_seq",
+        }
+    )
+    # Quarantined ops: known-broken or misleading, excluded from all generation.
+    # These are separate from excluded_ops to allow per-config overrides.
+    quarantined_ops: Set[str] = field(
+        default_factory=lambda: {
+            # dense op with sparsity-themed name — no actual hardware sparse benefit.
+            # Misleads search into thinking it generates HW-efficient architectures.
+            "semi_structured_2_4_linear",
+        }
+    )
     # Per-op weight multipliers
     op_weights: Dict[str, float] = field(default_factory=dict)
 
@@ -152,8 +174,8 @@ class GrammarConfig:
     composition_depth: int = 2  # Minimum template blocks per graph
 
     # ── Routing-First Config (Phase 2) ────────────────────────────────
-    routing_mandatory: bool = False   # Force routing structure in every graph
-    routing_min_lanes: int = 2        # Minimum routing lanes (2 or 3)
+    routing_mandatory: bool = False  # Force routing structure in every graph
+    routing_min_lanes: int = 2  # Minimum routing lanes (2 or 3)
     difficulty_scorer_type: str = "entropy"  # "entropy" or "learned"
 
     # ── Byte-Safety Config ────────────────────────────────────────────
@@ -161,8 +183,9 @@ class GrammarConfig:
 
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
-        self.structured_sparsity_bias = max(0.0, min(1.0,
-                                            self.structured_sparsity_bias + delta))
+        self.structured_sparsity_bias = max(
+            0.0, min(1.0, self.structured_sparsity_bias + delta)
+        )
 
     @classmethod
     def efficient(cls, model_dim: int = 256) -> "GrammarConfig":
@@ -267,11 +290,16 @@ class GrammarConfig:
                 "sequential": 1.0,
             },
             op_weights={
-                "route_topk": 3.0, "route_lanes": 3.0,
-                "route_recursion": 2.5, "mod_topk": 3.0,
-                "early_exit": 2.0, "adaptive_recursion": 3.0,
-                "token_merge": 2.0, "cascade": 2.0,
-                "speculative": 2.0, "moe_topk": 3.0,
+                "route_topk": 3.0,
+                "route_lanes": 3.0,
+                "route_recursion": 2.5,
+                "mod_topk": 3.0,
+                "early_exit": 2.0,
+                "adaptive_recursion": 3.0,
+                "token_merge": 2.0,
+                "cascade": 2.0,
+                "speculative": 2.0,
+                "moe_topk": 3.0,
                 "adaptive_lane_mixer": 3.0,
                 "mixed_recursion_gate": 2.5,
                 "relu_gate_routing": 2.5,
@@ -292,16 +320,28 @@ class GrammarConfig:
         will have a difficulty scorer and differential compute paths.
         """
         from .templates import ROUTING_TEMPLATES
+
         # Zero-out non-routing templates, boost routing ones
         tpl_weights = {
             name: (5.0 if name in ROUTING_TEMPLATES else 0.0)
             for name in (
-                "residual_block", "sequential", "transformer_block",
-                "parallel_split", "bottleneck", "moe", "hybrid_parallel",
-                "gated_residual", "dense_cascade", "sparse_ffn",
-                "sparse_moe_block", "routed_bottleneck", "token_merge_block",
-                "conditional_compute", "difficulty_routed_block",
-                "three_lane_adaptive", "cascaded_early_exit",
+                "residual_block",
+                "sequential",
+                "transformer_block",
+                "parallel_split",
+                "bottleneck",
+                "moe",
+                "hybrid_parallel",
+                "gated_residual",
+                "dense_cascade",
+                "sparse_ffn",
+                "sparse_moe_block",
+                "routed_bottleneck",
+                "token_merge_block",
+                "conditional_compute",
+                "difficulty_routed_block",
+                "three_lane_adaptive",
+                "cascaded_early_exit",
                 "recursive_depth_router",
             )
         }
@@ -349,16 +389,22 @@ class GrammarConfig:
 
 class EfficiencyPrior:
     """Uses historical Pareto frontier data to bias synthesis."""
+
     __slots__ = ("op_biases",)
 
     def __init__(self, frontier_data: List[Dict]):
         self.op_biases: Dict[str, float] = {}
-        for p in (frontier_data or []):
+        for p in frontier_data or []:
             graph_json = p.get("graph_json", "")
             if not graph_json:
                 continue
-            for motif in ["selective_scan", "tropical", "clifford",
-                          "low_rank", "sparse"]:
+            for motif in [
+                "selective_scan",
+                "tropical",
+                "clifford",
+                "low_rank",
+                "sparse",
+            ]:
                 if motif in graph_json:
                     mult = 1.12 if motif == "tropical" else 1.05
                     self.op_biases[motif] = self.op_biases.get(motif, 1.0) * mult
@@ -386,9 +432,15 @@ def generate_layer_graph(
     if config is None:
         config = GrammarConfig()
 
+    # Merge quarantined ops into excluded set
+    if config.quarantined_ops:
+        config = copy.copy(config)
+        config.excluded_ops = set(config.excluded_ops) | set(config.quarantined_ops)
+
     # Byte-mode: pre-exclude byte-unsafe ops so generation avoids them
     if config.byte_mode:
         from .primitives import _BYTE_UNSAFE_OPS
+
         config = copy.copy(config)
         config.excluded_ops = set(config.excluded_ops) | set(_BYTE_UNSAFE_OPS.keys())
 
@@ -411,7 +463,8 @@ def generate_layer_graph(
     # This fixes the dead-code path where API-supplied op_weights were ignored
     # because the motif-based grammar only looked at motif_weights.
     if config.op_weights:
-        from .motifs import MOTIFS_BY_CLASS, ALL_MOTIFS
+        from .motifs import ALL_MOTIFS
+
         for motif in ALL_MOTIFS:
             motif_ops = {step.op_name for step in motif.steps}
             boost = max(
@@ -426,8 +479,12 @@ def generate_layer_graph(
 
     # High sparsity bias → force first template from efficiency pool
     _EFFICIENCY_TEMPLATES = {
-        "sparse_moe_block", "routed_bottleneck", "token_merge_block",
-        "conditional_compute", "sparse_ffn", "moe",
+        "sparse_moe_block",
+        "routed_bottleneck",
+        "token_merge_block",
+        "conditional_compute",
+        "sparse_ffn",
+        "moe",
     }
     if config.structured_sparsity_bias > 0.5 and tpl_weights:
         _first_tpl_weights = {
@@ -446,10 +503,16 @@ def generate_layer_graph(
 
     current = input_id
     for t_idx in range(n_templates):
-        _iter_weights = _first_tpl_weights if (t_idx == 0 and _use_efficiency_first) else tpl_weights
+        _iter_weights = (
+            _first_tpl_weights
+            if (t_idx == 0 and _use_efficiency_first)
+            else tpl_weights
+        )
         trial_graph = graph.copy()
         trial_current = apply_template(
-            trial_graph, current, rng,
+            trial_graph,
+            current,
+            rng,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
             excluded_ops=frozenset(config.excluded_ops),
@@ -463,19 +526,19 @@ def generate_layer_graph(
     # Ensure output shape is (B, S, D)
     result_shape = graph.nodes[current].output_shape
     if result_shape.dim != config.model_dim:
-        current = graph.add_op("linear_proj", [current],
-                               config={"out_dim": config.model_dim})
+        current = graph.add_op(
+            "linear_proj", [current], config={"out_dim": config.model_dim}
+        )
 
-    if result_shape.is_freq_domain and "irfft_seq" in PRIMITIVE_REGISTRY:  # pragma: no cover — irfft_seq removed in audit
+    if (
+        result_shape.is_freq_domain and "irfft_seq" in PRIMITIVE_REGISTRY
+    ):  # pragma: no cover — irfft_seq removed in audit
         current = graph.add_op("irfft_seq", [current])
 
     # Optional outer residual connection (if not already added by template)
     # Check if the last op is already an add with input_id
     last_node = graph.nodes[current]
-    has_outer_residual = (
-        last_node.op_name == "add"
-        and input_id in last_node.input_ids
-    )
+    has_outer_residual = last_node.op_name == "add" and input_id in last_node.input_ids
     if (
         not has_outer_residual
         and graph.n_ops() < config.max_ops
@@ -497,13 +560,27 @@ def generate_layer_graph(
     return graph
 
 
-_ROUTING_OPS: frozenset = frozenset({
-    "entropy_score", "token_type_classifier", "route_topk", "route_lanes",
-    "route_recursion", "adaptive_lane_mixer", "mixed_recursion_gate",
-    "early_exit", "cascade", "speculative", "adaptive_recursion",
-    "mod_topk", "token_merge", "relu_gate_routing",
-    "moe_topk", "moe_2expert", "routing_conditioned_compression",
-})
+_ROUTING_OPS: frozenset = frozenset(
+    {
+        "entropy_score",
+        "token_type_classifier",
+        "route_topk",
+        "route_lanes",
+        "route_recursion",
+        "adaptive_lane_mixer",
+        "mixed_recursion_gate",
+        "early_exit",
+        "cascade",
+        "speculative",
+        "adaptive_recursion",
+        "mod_topk",
+        "token_merge",
+        "relu_gate_routing",
+        "moe_topk",
+        "moe_2expert",
+        "routing_conditioned_compression",
+    }
+)
 
 
 def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
@@ -516,8 +593,9 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
         min_splits=config.min_splits,
     )
     if not result.valid:
-        raise ValueError(result.errors[0] if result.errors else
-                         "Graph validation failed")
+        raise ValueError(
+            result.errors[0] if result.errors else "Graph validation failed"
+        )
 
     # Algebraic space consistency check — reject graphs that mix
     # incompatible mathematical spaces (e.g., tropical after poincaré).
@@ -529,9 +607,7 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     if config.routing_mandatory:
         op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
         if not op_names & _ROUTING_OPS:
-            raise ValueError(
-                "routing_mandatory=True but graph has no routing ops"
-            )
+            raise ValueError("routing_mandatory=True but graph has no routing ops")
 
     # Byte-safety check: reject byte-unsafe ops when byte_mode is enabled
     if config.byte_mode:
@@ -541,8 +617,7 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
             op = PRIMITIVE_REGISTRY.get(node.op_name)
             if op is not None and not op.byte_safe:
                 raise ValueError(
-                    f"byte_mode=True but graph contains byte-unsafe op: "
-                    f"{node.op_name}"
+                    f"byte_mode=True but graph contains byte-unsafe op: {node.op_name}"
                 )
 
     # Depth constraint check: reject ops placed before their min_layer_depth.
@@ -565,7 +640,9 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
                 # Auto-correct: replace too-shallow op with identity pass-through
                 logger.debug(
                     "depth_autocorrect: %s at depth %d < min %d → identity",
-                    node.op_name, depth, op.min_layer_depth,
+                    node.op_name,
+                    depth,
+                    op.min_layer_depth,
                 )
                 object.__setattr__(node, "op_name", "identity")
 
@@ -589,8 +666,7 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
                 break
         if not has_bypass:
             raise ValueError(
-                f"{node.op_name} (id={nid}) requires residual bypass "
-                f"but none found"
+                f"{node.op_name} (id={nid}) requires residual bypass but none found"
             )
 
     # Op wiring constraint check: validate signal producer/consumer chains
@@ -644,17 +720,17 @@ def batch_generate(
 # AdaptiveGenerator is still referenced by some test files and the
 # use_adaptive_synthesis path. Keep it functional.
 
+
 class AdaptiveGenerator:
     """Adaptive generator — delegates to motif-based generation."""
+
     __slots__ = ("config", "prior", "model_dim", "max_params", "max_flops")
 
-    def __init__(self, config: GrammarConfig,
-                 prior: Optional[EfficiencyPrior] = None):
+    def __init__(self, config: GrammarConfig, prior: Optional[EfficiencyPrior] = None):
         self.config = config
         self.prior = prior
         self.model_dim = config.model_dim
-        self.max_params = int(config.max_params_ratio
-                              * self.model_dim * self.model_dim)
+        self.max_params = int(config.max_params_ratio * self.model_dim * self.model_dim)
         self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)
 
     def generate(self, seed: Optional[int] = None) -> ComputationGraph:
@@ -663,8 +739,11 @@ class AdaptiveGenerator:
 
 # ── Shape compatibility check (used by external code) ───────────────
 
+
 def _check_shape_compat(
-    op: PrimitiveOp, input_shapes: List[ShapeInfo], model_dim: int,
+    op: PrimitiveOp,
+    input_shapes: List[ShapeInfo],
+    model_dim: int,
     current_space: str = "euclidean",
 ) -> bool:
     """Quick check if an op is compatible with given input shapes and space."""
@@ -694,26 +773,47 @@ def _check_shape_compat(
     if op.shape_rule == "irfft" and not s0.is_freq_domain:
         return False
 
-    if op.name in ("local_window_attn", "sliding_window_mask",
-                    "token_pool_restore", "selective_scan", "conv1d_seq",
-                    "basis_expansion", "integral_kernel", "fixed_point_iter"):
+    if op.name in (
+        "local_window_attn",
+        "sliding_window_mask",
+        "token_pool_restore",
+        "selective_scan",
+        "conv1d_seq",
+        "basis_expansion",
+        "integral_kernel",
+        "fixed_point_iter",
+    ):
         if not s0.is_standard:
             return False
 
     _MIN_DIM_OPS = {
-        "softmax_attention": 16, "linear_attention": 16,
-        "graph_attention": 16, "multi_head_mix": 4,
-        "selective_scan": 8, "state_space": 8,
-        "rwkv_time_mixing": 8, "rwkv_channel": 8,
-        "conv1d_seq": 4, "moe_topk": 8, "moe_2expert": 8,
-        "swiglu_mlp": 4, "topk_gate": 4,
-        "block_sparse_linear": 16, "nm_sparse_linear": 8,
-        "low_rank_proj": 8, "bottleneck_proj": 8,
-        "grouped_linear": 8, "shared_basis_proj": 8,
+        "softmax_attention": 16,
+        "linear_attention": 16,
+        "graph_attention": 16,
+        "multi_head_mix": 4,
+        "selective_scan": 8,
+        "state_space": 8,
+        "rwkv_time_mixing": 8,
+        "rwkv_channel": 8,
+        "conv1d_seq": 4,
+        "moe_topk": 8,
+        "moe_2expert": 8,
+        "swiglu_mlp": 4,
+        "topk_gate": 4,
+        "block_sparse_linear": 16,
+        "nm_sparse_linear": 8,
+        "low_rank_proj": 8,
+        "bottleneck_proj": 8,
+        "grouped_linear": 8,
+        "shared_basis_proj": 8,
         # Parameterized ops that fail with degenerate dims from reduce_last
-        "gated_linear": 8, "ternary_projection": 8,
-        "linear_proj": 4, "linear_proj_down": 4, "linear_proj_up": 4,
-        "fused_linear_gelu": 4, "adaptive_lane_mixer": 8,
+        "gated_linear": 8,
+        "ternary_projection": 8,
+        "linear_proj": 4,
+        "linear_proj_down": 4,
+        "linear_proj_up": 4,
+        "fused_linear_gelu": 4,
+        "adaptive_lane_mixer": 8,
         "relu_gate_routing": 8,
     }
     min_dim = _MIN_DIM_OPS.get(op.name)

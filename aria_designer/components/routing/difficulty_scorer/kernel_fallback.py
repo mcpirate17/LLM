@@ -1,7 +1,6 @@
 """Kernel handler for difficulty_scorer — 2-layer MLP scoring per-token difficulty."""
-import torch
+
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class ComponentHandler:

@@ -8,10 +8,11 @@ Validates:
 - Telemetry reset works cleanly
 - API endpoint returns expected shape
 """
+
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import pytest
 
 from research.scientist.native_runner import (
@@ -20,7 +21,6 @@ from research.scientist.native_runner import (
     native_runner_capability_report,
     _FALLBACK_METRICS,
     _maybe_fail_on_fallback_rate,
-    _check_native_op_support,
     _reset_native_lib_cache,
 )
 
@@ -56,6 +56,7 @@ def _compile_with_mocks(env, n_compiles=1):
     Phase D: when native is enabled, ABI model-only is always active and legacy
     compile is unreachable. Mock the ABI session path for native-enabled tests.
     """
+
     class DummyModel:
         pass
 
@@ -71,21 +72,44 @@ def _compile_with_mocks(env, n_compiles=1):
     extra_patches = []
     if native_enabled:
         extra_patches.append(
-            patch("research.scientist.native_runner._maybe_prepare_runner_abi_session",
-                  return_value=fake_abi_report))
+            patch(
+                "research.scientist.native_runner._maybe_prepare_runner_abi_session",
+                return_value=fake_abi_report,
+            )
+        )
         extra_patches.append(
-            patch("research.scientist.native.compiler._build_native_abi_only_model",
-                  return_value=DummyModel()))
+            patch(
+                "research.scientist.native.compiler._build_native_abi_only_model",
+                return_value=DummyModel(),
+            )
+        )
 
-    with patch("research.scientist.native_runner_adapter.os.environ", env), \
-         patch("research.scientist.native_runner.os.environ", env), \
-         patch("research.scientist.native_runner_adapter.Path.exists", return_value=True), \
-         patch("research.scientist.native.compiler.try_designer_runtime_probe",
-               return_value={"attempted": True, "succeeded": True, "parity_ok": True, "reason": "ok"}), \
-         patch("research.scientist.native_runner._try_load_native_lib", return_value=None), \
-         patch("research.scientist.native_runner._legacy_compile_model", return_value=DummyModel()):
+    with (
+        patch("research.scientist.native_runner_adapter.os.environ", env),
+        patch("research.scientist.native_runner.os.environ", env),
+        patch(
+            "research.scientist.native_runner_adapter.Path.exists", return_value=True
+        ),
+        patch(
+            "research.scientist.native.compiler.try_designer_runtime_probe",
+            return_value={
+                "attempted": True,
+                "succeeded": True,
+                "parity_ok": True,
+                "reason": "ok",
+            },
+        ),
+        patch(
+            "research.scientist.native_runner._try_load_native_lib", return_value=None
+        ),
+        patch(
+            "research.scientist.native_runner._legacy_compile_model",
+            return_value=DummyModel(),
+        ),
+    ):
         # Stack any extra patches for native-enabled mode
         from contextlib import ExitStack
+
         with ExitStack() as stack:
             for p in extra_patches:
                 stack.enter_context(p)
@@ -144,14 +168,20 @@ class TestHardThresholdGate:
     def test_no_error_when_under_threshold(self):
         _FALLBACK_METRICS["native_enabled_compiles"] = 10
         _FALLBACK_METRICS["fallback_compiles"] = 2
-        env = {"NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5", "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "1"}
+        env = {
+            "NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5",
+            "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "1",
+        }
         with patch.dict(os.environ, env):
             _maybe_fail_on_fallback_rate()  # Should not raise
 
     def test_error_when_over_threshold(self):
         _FALLBACK_METRICS["native_enabled_compiles"] = 10
         _FALLBACK_METRICS["fallback_compiles"] = 8
-        env = {"NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5", "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "1"}
+        env = {
+            "NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5",
+            "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "1",
+        }
         with patch.dict(os.environ, env):
             with pytest.raises(RuntimeError, match="fallback rate exceeded"):
                 _maybe_fail_on_fallback_rate()
@@ -159,14 +189,20 @@ class TestHardThresholdGate:
     def test_respects_min_samples(self):
         _FALLBACK_METRICS["native_enabled_compiles"] = 2
         _FALLBACK_METRICS["fallback_compiles"] = 2
-        env = {"NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5", "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "10"}
+        env = {
+            "NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5",
+            "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "10",
+        }
         with patch.dict(os.environ, env):
             _maybe_fail_on_fallback_rate()  # Should not raise (below min samples)
 
     def test_exact_threshold_does_not_trigger(self):
         _FALLBACK_METRICS["native_enabled_compiles"] = 10
         _FALLBACK_METRICS["fallback_compiles"] = 5
-        env = {"NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5", "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "1"}
+        env = {
+            "NATIVE_RUNNER_MAX_FALLBACK_RATE": "0.5",
+            "NATIVE_RUNNER_FALLBACK_MIN_SAMPLES": "1",
+        }
         with patch.dict(os.environ, env):
             _maybe_fail_on_fallback_rate()  # Exactly 0.5 = threshold, should not trigger (> not >=)
 

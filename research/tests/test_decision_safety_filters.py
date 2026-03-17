@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import time
 
 from research.scientist.notebook import LabNotebook
-from research.scientist.runner import ExperimentRunner
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +23,10 @@ def test_get_top_programs_returns_stage1_survivors(tmp_path):
             loss_ratio=0.4,
             novelty_score=0.6,
         )
-        nb.complete_experiment(exp_good, {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1})
+        nb.complete_experiment(
+            exp_good,
+            {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1},
+        )
         nb.flush_writes()
 
         exp_bad = nb.start_experiment("synthesis", {"n_programs": 1}, "bad")
@@ -39,9 +40,15 @@ def test_get_top_programs_returns_stage1_survivors(tmp_path):
             loss_ratio=0.2,
             novelty_score=0.9,
         )
-        nb.complete_experiment(exp_bad, {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1})
+        nb.complete_experiment(
+            exp_bad,
+            {"total": 1, "stage0_passed": 1, "stage05_passed": 1, "stage1_passed": 1},
+        )
         nb.flush_writes()
-        nb.conn.execute("UPDATE experiments SET status = 'invalid' WHERE experiment_id = ?", (exp_bad,))
+        nb.conn.execute(
+            "UPDATE experiments SET status = 'invalid' WHERE experiment_id = ?",
+            (exp_bad,),
+        )
         nb.conn.commit()
 
         top = nb.get_top_programs(20, sort_by="loss_ratio")

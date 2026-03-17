@@ -1,8 +1,7 @@
 """Integration tests for Aria Designer API."""
+
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -20,6 +19,7 @@ def client():
         db.init_db(Path(tmpdir) / "test.db")
         # Load components
         from aria_designer.api.app.loader import scan_and_load
+
         count = scan_and_load()
         assert count > 0, "No components loaded"
 
@@ -76,7 +76,9 @@ def test_get_component_execution_capability(client):
     assert data["has_semantic_warnings"] is False
 
 
-@pytest.mark.skip(reason="sequential and u_net component dirs were removed in prior cleanup")
+@pytest.mark.skip(
+    reason="sequential and u_net component dirs were removed in prior cleanup"
+)
 def test_get_component_execution_capability_unmapped(client):
     r = client.get("/api/v1/components/sequential/execution-capability")
     assert r.status_code == 200
@@ -153,14 +155,42 @@ def test_compile_workflow_reports_semantic_warnings(client):
             "name": "Passthrough Compile Warning",
             "nodes": [
                 {"id": "n_in", "component_type": "input", "params": {}, "ui_meta": {}},
-                {"id": "n_seq", "component_type": "blocks/sequential", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n_seq",
+                    "component_type": "blocks/sequential",
+                    "params": {},
+                    "ui_meta": {},
+                },
                 {"id": "n_relu", "component_type": "relu", "params": {}, "ui_meta": {}},
-                {"id": "n_out", "component_type": "output_head", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n_out",
+                    "component_type": "output_head",
+                    "params": {},
+                    "ui_meta": {},
+                },
             ],
             "edges": [
-                {"id": "e1", "source": "n_in", "source_port": "y", "target": "n_seq", "target_port": "x"},
-                {"id": "e2", "source": "n_seq", "source_port": "y", "target": "n_relu", "target_port": "x"},
-                {"id": "e3", "source": "n_relu", "source_port": "y", "target": "n_out", "target_port": "x"},
+                {
+                    "id": "e1",
+                    "source": "n_in",
+                    "source_port": "y",
+                    "target": "n_seq",
+                    "target_port": "x",
+                },
+                {
+                    "id": "e2",
+                    "source": "n_seq",
+                    "source_port": "y",
+                    "target": "n_relu",
+                    "target_port": "x",
+                },
+                {
+                    "id": "e3",
+                    "source": "n_relu",
+                    "source_port": "y",
+                    "target": "n_out",
+                    "target_port": "x",
+                },
             ],
         }
     }
@@ -201,7 +231,9 @@ def test_validate_config_split_train_val_test(client):
             "expected_feature_dim": 4,
         }
     }
-    r_bad = client.post("/api/v1/components/split_train_val_test/validate-config", json=invalid)
+    r_bad = client.post(
+        "/api/v1/components/split_train_val_test/validate-config", json=invalid
+    )
     assert r_bad.status_code == 200
     bad_data = r_bad.json()
     assert bad_data["valid"] is False
@@ -218,7 +250,9 @@ def test_validate_config_split_train_val_test(client):
             "seed": 123,
         }
     }
-    r_ok = client.post("/api/v1/components/split_train_val_test/validate-config", json=valid)
+    r_ok = client.post(
+        "/api/v1/components/split_train_val_test/validate-config", json=valid
+    )
     assert r_ok.status_code == 200
     ok_data = r_ok.json()
     assert ok_data["valid"] is True
@@ -232,7 +266,9 @@ def test_validate_config_select_columns(client):
             "schema_validation": "strict",
         }
     }
-    r_bad = client.post("/api/v1/components/select_columns/validate-config", json=invalid)
+    r_bad = client.post(
+        "/api/v1/components/select_columns/validate-config", json=invalid
+    )
     assert r_bad.status_code == 200
     bad_data = r_bad.json()
     assert bad_data["valid"] is False
@@ -334,7 +370,13 @@ def test_validate_workflow_valid(client):
                 {"id": "n2", "component_type": "gelu", "params": {}, "ui_meta": {}},
             ],
             "edges": [
-                {"id": "e1", "source": "n1", "source_port": "y", "target": "n2", "target_port": "x"}
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "source_port": "y",
+                    "target": "n2",
+                    "target_port": "x",
+                }
             ],
         }
     }
@@ -353,11 +395,28 @@ def test_validate_workflow_normalizes_legacy_component_ids(client):
             "nodes": [
                 {"id": "n_in", "component_type": "input", "params": {}, "ui_meta": {}},
                 {"id": "n_mid", "component_type": "relu", "params": {}, "ui_meta": {}},
-                {"id": "n_out", "component_type": "output_head", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n_out",
+                    "component_type": "output_head",
+                    "params": {},
+                    "ui_meta": {},
+                },
             ],
             "edges": [
-                {"id": "e1", "source": "n_in", "source_port": "y", "target": "n_mid", "target_port": "x"},
-                {"id": "e2", "source": "n_mid", "source_port": "y", "target": "n_out", "target_port": "x"},
+                {
+                    "id": "e1",
+                    "source": "n_in",
+                    "source_port": "y",
+                    "target": "n_mid",
+                    "target_port": "x",
+                },
+                {
+                    "id": "e2",
+                    "source": "n_mid",
+                    "source_port": "y",
+                    "target": "n_out",
+                    "target_port": "x",
+                },
             ],
         }
     }
@@ -365,7 +424,9 @@ def test_validate_workflow_normalizes_legacy_component_ids(client):
     assert r.status_code == 200
     data = r.json()
     assert data["valid"] is True
-    assert not [issue for issue in data["issues"] if issue["code"] == "unknown_component"]
+    assert not [
+        issue for issue in data["issues"] if issue["code"] == "unknown_component"
+    ]
 
 
 def test_validate_workflow_rejects_unresolved_component_ids(client):
@@ -375,7 +436,12 @@ def test_validate_workflow_rejects_unresolved_component_ids(client):
             "workflow_id": "wf_unknown_component",
             "name": "Unknown Component Workflow",
             "nodes": [
-                {"id": "n1", "component_type": "math_space/not_real_component", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n1",
+                    "component_type": "math_space/not_real_component",
+                    "params": {},
+                    "ui_meta": {},
+                },
             ],
             "edges": [],
         }
@@ -400,8 +466,20 @@ def test_validate_workflow_cycle(client):
                 {"id": "n2", "component_type": "gelu", "params": {}, "ui_meta": {}},
             ],
             "edges": [
-                {"id": "e1", "source": "n1", "source_port": "y", "target": "n2", "target_port": "x"},
-                {"id": "e2", "source": "n2", "source_port": "y", "target": "n1", "target_port": "x"},
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "source_port": "y",
+                    "target": "n2",
+                    "target_port": "x",
+                },
+                {
+                    "id": "e2",
+                    "source": "n2",
+                    "source_port": "y",
+                    "target": "n1",
+                    "target_port": "x",
+                },
             ],
         }
     }
@@ -422,7 +500,13 @@ def test_validate_workflow_dangling_edge(client):
                 {"id": "n1", "component_type": "relu", "params": {}, "ui_meta": {}},
             ],
             "edges": [
-                {"id": "e1", "source": "n1", "source_port": "y", "target": "n999", "target_port": "x"}
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "source_port": "y",
+                    "target": "n999",
+                    "target_port": "x",
+                }
             ],
         }
     }
@@ -439,11 +523,22 @@ def test_validate_workflow_unsupported_edge_dtype_pairing(client):
             "workflow_id": "wf_dtype_pairing",
             "name": "Dtype Pairing Test",
             "nodes": [
-                {"id": "n1", "component_type": "dataset_filter", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n1",
+                    "component_type": "dataset_filter",
+                    "params": {},
+                    "ui_meta": {},
+                },
                 {"id": "n2", "component_type": "relu", "params": {}, "ui_meta": {}},
             ],
             "edges": [
-                {"id": "e1", "source": "n1", "source_port": "filtered", "target": "n2", "target_port": "x"}
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "source_port": "filtered",
+                    "target": "n2",
+                    "target_port": "x",
+                }
             ],
         }
     }
@@ -451,7 +546,9 @@ def test_validate_workflow_unsupported_edge_dtype_pairing(client):
     assert r.status_code == 200
     data = r.json()
     assert data["valid"] is False
-    mismatch_issues = [i for i in data["issues"] if i.get("code") == "unsupported_edge_dtype_pairing"]
+    mismatch_issues = [
+        i for i in data["issues"] if i.get("code") == "unsupported_edge_dtype_pairing"
+    ]
     assert mismatch_issues
     assert "Unsupported edge dtype pairing" in mismatch_issues[0]["message"]
 
@@ -464,11 +561,22 @@ def test_validate_workflow_dead_branch_detected(client):
             "name": "Dead Branch Test",
             "nodes": [
                 {"id": "n1", "component_type": "relu", "params": {}, "ui_meta": {}},
-                {"id": "n2", "component_type": "io/output", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n2",
+                    "component_type": "io/output",
+                    "params": {},
+                    "ui_meta": {},
+                },
                 {"id": "n3", "component_type": "gelu", "params": {}, "ui_meta": {}},
             ],
             "edges": [
-                {"id": "e1", "source": "n1", "source_port": "y", "target": "n2", "target_port": "x"}
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "source_port": "y",
+                    "target": "n2",
+                    "target_port": "x",
+                }
             ],
         }
     }
@@ -489,7 +597,12 @@ def test_aria_suggest_components_data_control_prompt(client):
             "workflow_id": "wf_data_control_suggest",
             "name": "Data Control Suggest",
             "nodes": [
-                {"id": "src", "component_type": "io/input", "params": {}, "ui_meta": {}},
+                {
+                    "id": "src",
+                    "component_type": "io/input",
+                    "params": {},
+                    "ui_meta": {},
+                },
             ],
             "edges": [],
         },
@@ -503,11 +616,17 @@ def test_aria_suggest_components_data_control_prompt(client):
     assert len(data) > 0
 
     reasons = [str(item.get("reason", "")).lower() for item in data]
-    assert any("schema" in reason or "join" in reason or "filter" in reason for reason in reasons)
+    assert any(
+        "schema" in reason or "join" in reason or "filter" in reason
+        for reason in reasons
+    )
 
 
 def test_router_suggest_components_forwards_research_signals(monkeypatch):
-    from aria_designer.api.app.models import SuggestComponentsRequest, WorkflowGraphModel
+    from aria_designer.api.app.models import (
+        SuggestComponentsRequest,
+        WorkflowGraphModel,
+    )
     from aria_designer.api.app.routers import aria as aria_router
 
     captured = {}
@@ -566,7 +685,9 @@ def test_save_and_get_workflow(client):
     assert r.json()["graph"]["nodes"][0]["component_type"] == "math/relu"
 
     # Update should increment version
-    r = client.put("/api/v1/workflows/wf_save_test", json={**workflow, "name": "Updated"})
+    r = client.put(
+        "/api/v1/workflows/wf_save_test", json={**workflow, "name": "Updated"}
+    )
     assert r.json()["version"] == 2
 
 
@@ -576,7 +697,12 @@ def test_save_workflow_rejects_unresolved_component_ids(client):
         "workflow_id": "wf_save_invalid_component",
         "name": "Invalid Save",
         "nodes": [
-            {"id": "n1", "component_type": "math/not_a_real_kernel", "params": {}, "ui_meta": {}},
+            {
+                "id": "n1",
+                "component_type": "math/not_a_real_kernel",
+                "params": {},
+                "ui_meta": {},
+            },
         ],
         "edges": [],
     }
@@ -594,12 +720,34 @@ def test_propose_and_apply_patch(client):
         "name": "Patch Test",
         "nodes": [
             {"id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {}},
-            {"id": "n1", "component_type": "linear_proj", "params": {"out_dim": 256}, "ui_meta": {}},
-            {"id": "out", "component_type": "graph_output", "params": {}, "ui_meta": {}},
+            {
+                "id": "n1",
+                "component_type": "linear_proj",
+                "params": {"out_dim": 256},
+                "ui_meta": {},
+            },
+            {
+                "id": "out",
+                "component_type": "graph_output",
+                "params": {},
+                "ui_meta": {},
+            },
         ],
         "edges": [
-            {"id": "e0", "source": "in", "source_port": "out", "target": "n1", "target_port": "in"},
-            {"id": "e1", "source": "n1", "source_port": "out", "target": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "in",
+                "source_port": "out",
+                "target": "n1",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "n1",
+                "source_port": "out",
+                "target": "out",
+                "target_port": "in",
+            },
         ],
     }
     r_save = client.put("/api/v1/workflows/wf_patch_test", json=workflow)
@@ -611,7 +759,11 @@ def test_propose_and_apply_patch(client):
         "author": "aria",
         "rationale": "Test proposal",
         "ops": [
-            {"op": "mutate_param", "node_id": "n1", "payload": {"param_name": "out_dim", "new_value": 512}}
+            {
+                "op": "mutate_param",
+                "node_id": "n1",
+                "payload": {"param_name": "out_dim", "new_value": 512},
+            }
         ],
     }
     r = client.post("/api/v1/aria/propose-patch", json=patch)
@@ -619,10 +771,13 @@ def test_propose_and_apply_patch(client):
     proposal_id = r.json()["proposal_id"]
 
     # Apply
-    r = client.post("/api/v1/aria/apply-patch", json={
-        "proposal_id": proposal_id,
-        "approved_by": "test_user",
-    })
+    r = client.post(
+        "/api/v1/aria/apply-patch",
+        json={
+            "proposal_id": proposal_id,
+            "approved_by": "test_user",
+        },
+    )
     assert r.status_code == 200, f"apply-patch failed: {r.json()}"
     assert r.json()["applied"] is True
 
@@ -634,12 +789,34 @@ def test_apply_patch_repairs_partial_add_node_wiring(client):
         "name": "Partial Insert Fix",
         "nodes": [
             {"id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {}},
-            {"id": "n1", "component_type": "linear_proj", "params": {"out_dim": 256}, "ui_meta": {}},
-            {"id": "out", "component_type": "graph_output", "params": {}, "ui_meta": {}},
+            {
+                "id": "n1",
+                "component_type": "linear_proj",
+                "params": {"out_dim": 256},
+                "ui_meta": {},
+            },
+            {
+                "id": "out",
+                "component_type": "graph_output",
+                "params": {},
+                "ui_meta": {},
+            },
         ],
         "edges": [
-            {"id": "e0", "source": "in", "source_port": "out", "target": "n1", "target_port": "in"},
-            {"id": "e1", "source": "n1", "source_port": "out", "target": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "in",
+                "source_port": "out",
+                "target": "n1",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "n1",
+                "source_port": "out",
+                "target": "out",
+                "target_port": "in",
+            },
         ],
     }
     r_save = client.put("/api/v1/workflows/wf_partial_insert_fix", json=workflow)
@@ -674,16 +851,24 @@ def test_apply_patch_repairs_partial_add_node_wiring(client):
     assert r_prop.status_code == 200, f"propose failed: {r_prop.json()}"
     proposal_id = r_prop.json()["proposal_id"]
 
-    r_apply = client.post("/api/v1/aria/apply-patch", json={
-        "proposal_id": proposal_id,
-        "approved_by": "test_user",
-    })
+    r_apply = client.post(
+        "/api/v1/aria/apply-patch",
+        json={
+            "proposal_id": proposal_id,
+            "approved_by": "test_user",
+        },
+    )
     assert r_apply.status_code == 200, f"apply failed: {r_apply.json()}"
     patched = r_apply.json()["patched_workflow"]
     edges = patched.get("edges", [])
 
-    assert any(e.get("source") == "n1" and e.get("target") == "aria_norm_insert" for e in edges)
-    assert any(e.get("source") == "aria_norm_insert" and e.get("target") == "out" for e in edges)
+    assert any(
+        e.get("source") == "n1" and e.get("target") == "aria_norm_insert" for e in edges
+    )
+    assert any(
+        e.get("source") == "aria_norm_insert" and e.get("target") == "out"
+        for e in edges
+    )
     assert not any(e.get("source") == "n1" and e.get("target") == "out" for e in edges)
 
 
@@ -706,15 +891,53 @@ def test_preview_workflow_multi_input_ports(client):
             "workflow_id": "wf_preview_multi_input",
             "name": "Preview Multi Input",
             "nodes": [
-                {"id": "input_a", "component_type": "io/input", "params": {}, "ui_meta": {}},
-                {"id": "input_b", "component_type": "io/input", "params": {}, "ui_meta": {}},
-                {"id": "add1", "component_type": "math/add", "params": {}, "ui_meta": {}},
-                {"id": "out", "component_type": "io/output_head", "params": {}, "ui_meta": {}},
+                {
+                    "id": "input_a",
+                    "component_type": "io/input",
+                    "params": {},
+                    "ui_meta": {},
+                },
+                {
+                    "id": "input_b",
+                    "component_type": "io/input",
+                    "params": {},
+                    "ui_meta": {},
+                },
+                {
+                    "id": "add1",
+                    "component_type": "math/add",
+                    "params": {},
+                    "ui_meta": {},
+                },
+                {
+                    "id": "out",
+                    "component_type": "io/output_head",
+                    "params": {},
+                    "ui_meta": {},
+                },
             ],
             "edges": [
-                {"id": "e1", "source": "input_a", "source_port": "y", "target": "add1", "target_port": "a"},
-                {"id": "e2", "source": "input_b", "source_port": "y", "target": "add1", "target_port": "b"},
-                {"id": "e3", "source": "add1", "source_port": "y", "target": "out", "target_port": "x"},
+                {
+                    "id": "e1",
+                    "source": "input_a",
+                    "source_port": "y",
+                    "target": "add1",
+                    "target_port": "a",
+                },
+                {
+                    "id": "e2",
+                    "source": "input_b",
+                    "source_port": "y",
+                    "target": "add1",
+                    "target_port": "b",
+                },
+                {
+                    "id": "e3",
+                    "source": "add1",
+                    "source_port": "y",
+                    "target": "out",
+                    "target_port": "x",
+                },
             ],
         },
         "target": "auto",
@@ -736,12 +959,34 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
         "metadata": {"model_dim": 128},
         "nodes": [
             {"id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {}},
-            {"id": "proj", "component_type": "linear_proj", "params": {"out_dim": 128}, "ui_meta": {}},
-            {"id": "out", "component_type": "graph_output", "params": {}, "ui_meta": {}},
+            {
+                "id": "proj",
+                "component_type": "linear_proj",
+                "params": {"out_dim": 128},
+                "ui_meta": {},
+            },
+            {
+                "id": "out",
+                "component_type": "graph_output",
+                "params": {},
+                "ui_meta": {},
+            },
         ],
         "edges": [
-            {"id": "e0", "source": "in", "source_port": "out", "target": "proj", "target_port": "in"},
-            {"id": "e1", "source": "proj", "source_port": "out", "target": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "in",
+                "source_port": "out",
+                "target": "proj",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "proj",
+                "source_port": "out",
+                "target": "out",
+                "target_port": "in",
+            },
         ],
     }
 
@@ -751,7 +996,11 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
 
     r_patch = client.post(
         "/api/v1/aria/generate-patch",
-        json={"workflow": workflow, "prompt": "add relu after projection", "base_version": 1},
+        json={
+            "workflow": workflow,
+            "prompt": "add relu after projection",
+            "base_version": 1,
+        },
     )
     assert r_patch.status_code == 200
     proposal_id = r_patch.json()["proposal_id"]
@@ -787,7 +1036,9 @@ def test_ai_design_refine_evaluate_records_lineage(client, monkeypatch):
     from aria_designer.api.app import shared_api as shared_mod
 
     monkeypatch.setattr(eval_mod, "HAS_BRIDGE", True)
-    monkeypatch.setattr(eval_mod, "bridge_evaluate", lambda *args, **kwargs: _FakeBridgeResult())
+    monkeypatch.setattr(
+        eval_mod, "bridge_evaluate", lambda *args, **kwargs: _FakeBridgeResult()
+    )
     monkeypatch.setattr(shared_mod, "HAS_BRIDGE", True)
     monkeypatch.setattr(shared_mod.settings, "LINEAGE_SYNC_ENABLED", True)
 

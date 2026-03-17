@@ -60,6 +60,7 @@ class TiktokenAdapter:
 
     def __init__(self, encoding_name: str = "gpt2"):
         import tiktoken
+
         self._enc = tiktoken.get_encoding(encoding_name)
         self.native_vocab_size = self._enc.n_vocab
 
@@ -75,10 +76,11 @@ class CorpusConfig:
     path: str
     fmt: str = "auto"  # auto|txt|jsonl
     text_key: str = "text"
-    tokenizer: str = "byte"  # byte|whitespace
+    tokenizer: str = "byte"  # byte|whitespace|tiktoken
     max_chars: int = 200_000
     train_fraction: float = 0.9
     val_fraction: float = 0.1
+    tiktoken_encoding: str = "gpt2"  # gpt2|cl100k_base
 
 
 class CorpusTokenBatcher:
@@ -88,7 +90,9 @@ class CorpusTokenBatcher:
         self.config = config
         self.vocab_size = int(vocab_size)
         self.path = Path(config.path)
-        self._tokenizer = self._build_tokenizer(config.tokenizer)
+        self._tokenizer = self._build_tokenizer(
+            config.tokenizer, config.tiktoken_encoding
+        )
         self._tokens = self._load_tokens()
         self._train_tokens, self._val_tokens = self._split_tokens(self._tokens)
 
@@ -120,12 +124,14 @@ class CorpusTokenBatcher:
         val_tokens = tokens[split_idx:] if val_frac > 0 else []
         return train_tokens, val_tokens
 
-    def _build_tokenizer(self, name: str) -> TokenizerAdapter:
+    def _build_tokenizer(
+        self, name: str, encoding_name: str = "gpt2"
+    ) -> TokenizerAdapter:
         lowered = (name or "byte").strip().lower()
         if lowered == "whitespace":
             return WhitespaceHashTokenizer()
-        if lowered in ("tiktoken", "bpe", "gpt2"):
-            return TiktokenAdapter()
+        if lowered in ("tiktoken", "bpe", "gpt2", "cl100k", "cl100k_base"):
+            return TiktokenAdapter(encoding_name=encoding_name or "gpt2")
         return ByteTokenizer()
 
     def _detect_format(self) -> str:
@@ -141,6 +147,14 @@ class CorpusTokenBatcher:
         if not self.path.exists() or not self.path.is_file():
             logger.warning("Corpus path not found: %s", self.path)
             return []
+
+        # Pretokenized .npy: load directly, skip text encoding
+        if self.path.suffix == ".npy":
+            import numpy as np
+
+            tokens = np.load(str(self.path)).tolist()
+            # Modulo vocab_size for safety
+            return [int(t) % self.vocab_size for t in tokens]
 
         fmt = self._detect_format()
         text_chunks: List[str] = []
@@ -220,7 +234,7 @@ class CorpusTokenBatcher:
         rows: List[List[int]] = []
         for value in starts:
             start = int(value.item())
-            rows.append(tokens[start: start + seq_len])
+            rows.append(tokens[start : start + seq_len])
 
         if not rows:
             return None

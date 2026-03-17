@@ -17,7 +17,13 @@ from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Set
 
 import numpy as np
-from .primitives import PrimitiveOp, get_primitive, PRIMITIVE_REGISTRY, estimate_op_params, OPCODE_MAP
+from .primitives import (
+    PrimitiveOp,
+    get_primitive,
+    PRIMITIVE_REGISTRY,
+    estimate_op_params,
+    OPCODE_MAP,
+)
 
 
 @dataclass
@@ -28,9 +34,10 @@ class ShapeInfo:
     Some ops change dimensions — e.g., split halves D, linear changes D.
     We track the actual numeric D through the graph.
     """
-    batch: str = "B"   # always "B"
-    seq: str = "S"     # "S" or "S//2+1" (for FFT)
-    dim: int = 0       # concrete feature dimension
+
+    batch: str = "B"  # always "B"
+    seq: str = "S"  # "S" or "S//2+1" (for FFT)
+    dim: int = 0  # concrete feature dimension
 
     @property
     def is_standard(self) -> bool:
@@ -44,7 +51,11 @@ class ShapeInfo:
     def __eq__(self, other):
         if not isinstance(other, ShapeInfo):
             return False
-        return self.batch == other.batch and self.seq == other.seq and self.dim == other.dim
+        return (
+            self.batch == other.batch
+            and self.seq == other.seq
+            and self.dim == other.dim
+        )
 
     def __hash__(self):
         return hash((self.batch, self.seq, self.dim))
@@ -60,6 +71,7 @@ class ShapeInfo:
 @dataclass
 class OpNode:
     """A single node in the computation graph."""
+
     id: int
     op_name: str
     input_ids: List[int]  # IDs of input nodes (empty for graph inputs)
@@ -103,6 +115,7 @@ class ComputationGraphIR:
     """Memory-contiguous representation of a computation graph.
     Designed for fast structural analysis and JIT-compiled execution.
     """
+
     model_dim: int
     op_codes: np.ndarray  # int32, shape (N,)
     # input_indices[i, j] is the index of the j-th input to node i
@@ -136,7 +149,11 @@ class ComputationGraphIR:
         for _ in range(n):
             # Expand reachability one step backwards
             # new_visited = visited | {j | exists i s.t. visited[i] and i->j}
-            new_visited = visited | np.any(adj_back[visited, :], axis=0) if np.any(visited) else visited
+            new_visited = (
+                visited | np.any(adj_back[visited, :], axis=0)
+                if np.any(visited)
+                else visited
+            )
             if np.array_equal(new_visited, visited):
                 break
             visited = new_visited
@@ -156,7 +173,9 @@ class ComputationGraphIR:
         return np.array(results, dtype=bool)
 
     @staticmethod
-    def batch_op_distribution(ir_list: List[ComputationGraphIR], n_opcodes: int) -> np.ndarray:
+    def batch_op_distribution(
+        ir_list: List[ComputationGraphIR], n_opcodes: int
+    ) -> np.ndarray:
         """Compute opcode counts for a batch of IRs.
         Returns array of shape (batch_size, n_opcodes).
         """
@@ -175,6 +194,7 @@ class ComputationGraphIR:
         D = self.model_dim
         # We need REVERSE_OPCODE_MAP to get op names
         from .primitives import REVERSE_OPCODE_MAP
+
         for i in range(self.n_nodes()):
             opcode = self.op_codes[i]
             if opcode == 0:  # input
@@ -252,8 +272,9 @@ class ComputationGraph:
         self._cache.clear()
         return node_id
 
-    def add_op(self, op_name: str, input_ids: List[int],
-               config: Optional[Dict] = None) -> int:
+    def add_op(
+        self, op_name: str, input_ids: List[int], config: Optional[Dict] = None
+    ) -> int:
         """Add an operation node. Returns node ID.
 
         Raises ValueError if shapes don't compose.
@@ -304,8 +325,9 @@ class ComputationGraph:
         self._output_node_id = node_id
         self._cache.clear()
 
-    def _compute_shape(self, op: PrimitiveOp, input_shapes: List[ShapeInfo],
-                       config: Dict) -> ShapeInfo:
+    def _compute_shape(
+        self, op: PrimitiveOp, input_shapes: List[ShapeInfo], config: Dict
+    ) -> ShapeInfo:
         """Compute output shape given an op and input shapes."""
         rule = op.shape_rule
 
@@ -319,7 +341,9 @@ class ComputationGraph:
 
         elif rule == "binary_broadcast":
             if len(input_shapes) != 2:
-                raise ValueError(f"Binary op requires 2 inputs, got {len(input_shapes)}")
+                raise ValueError(
+                    f"Binary op requires 2 inputs, got {len(input_shapes)}"
+                )
             s1 = input_shapes[1]
             # Dims must match or one must be 1
             if s0.dim != s1.dim and s0.dim != 1 and s1.dim != 1:
@@ -366,11 +390,15 @@ class ComputationGraph:
 
         elif rule == "split":
             # Determine split divisor from op name or config
-            if op.name == "split2": n = 2
-            elif op.name == "split3": n = 3
-            elif op.name == "split4": n = 4
-            else: n = int(config.get("n_splits", 2))
-            
+            if op.name == "split2":
+                n = 2
+            elif op.name == "split3":
+                n = 3
+            elif op.name == "split4":
+                n = 4
+            else:
+                n = int(config.get("n_splits", 2))
+
             if s0.dim % n != 0:
                 # Fallback: if not perfectly divisible, last split gets remainder
                 # but for simplicity in research, we often just want floor
@@ -396,7 +424,15 @@ class ComputationGraph:
         elif rule == "irfft":
             return ShapeInfo(dim=s0.dim, seq="S")
 
-        elif rule in ("cumulative", "softmax", "causal_mask", "scale", "bias", "sort", "unsort"):
+        elif rule in (
+            "cumulative",
+            "softmax",
+            "causal_mask",
+            "scale",
+            "bias",
+            "sort",
+            "unsort",
+        ):
             return ShapeInfo(dim=s0.dim, seq=s0.seq)
 
         else:
@@ -404,9 +440,9 @@ class ComputationGraph:
 
     def topological_order(self) -> List[int]:
         """Return node IDs in a canonical topological order (inputs first). Cached.
-        
-        Uses a stable sort (Kahn's algorithm) with tie-breakers to ensure that 
-        structurally identical graphs always produce the same order regardless 
+
+        Uses a stable sort (Kahn's algorithm) with tie-breakers to ensure that
+        structurally identical graphs always produce the same order regardless
         of original node ID assignments.
         """
         if "topo" in self._cache:
@@ -415,6 +451,7 @@ class ComputationGraph:
         # 0. Try fast C++ implementation via aria_core
         try:
             import aria_core
+
             if hasattr(aria_core, "canonical_topo_sort"):
                 n_nodes = self._next_id
                 # Only pass existing nodes (up to max id)
@@ -422,16 +459,18 @@ class ComputationGraph:
                 config_strs = [""] * n_nodes
                 node_inputs = [[] for _ in range(n_nodes)]
                 edges = []
-                
+
                 for nid, node in self.nodes.items():
                     op_names[nid] = node.op_name
                     if node.config:
-                        config_items = sorted(f"{k}={v}" for k, v in node.config.items())
+                        config_items = sorted(
+                            f"{k}={v}" for k, v in node.config.items()
+                        )
                         config_strs[nid] = f"[{','.join(config_items)}]"
                     node_inputs[nid] = node.input_ids
                     for iid in node.input_ids:
                         edges.append((iid, nid))
-                
+
                 order = aria_core.canonical_topo_sort(
                     n_nodes, edges, op_names, config_strs, node_inputs
                 )
@@ -439,22 +478,22 @@ class ComputationGraph:
                 order = [int(nid) for nid in order if nid in self.nodes]
                 self._cache["topo"] = order
                 return order
-        except Exception as e:
+        except Exception:
             # Fallback to Python if C++ fails or is missing
             pass
 
         # 1. Compute in-degrees
         in_degree = {nid: len(node.input_ids) for nid, node in self.nodes.items()}
-        
+
         # 2. Track adjacency (children)
         children = {nid: [] for nid in self.nodes}
         for nid, node in self.nodes.items():
             for iid in node.input_ids:
                 children[iid].append(nid)
-        
+
         # 3. Initialize queue with nodes having 0 in-degree
         import heapq
-        
+
         # Precompute static sort keys
         static_keys = {}
         for nid, node in self.nodes.items():
@@ -465,7 +504,7 @@ class ComputationGraph:
             static_keys[nid] = (node.op_name, config_str, nid)
 
         order = []
-        canonical_id_map = {} # nid -> position in canonical order
+        canonical_id_map = {}  # nid -> position in canonical order
 
         ready = []
         for nid, deg in in_degree.items():
@@ -477,20 +516,24 @@ class ComputationGraph:
 
         while ready:
             op_name, input_keys, config_str, u = heapq.heappop(ready)
-            
+
             canonical_id_map[u] = len(order)
             order.append(u)
-            
+
             for v in children[u]:
                 in_degree[v] -= 1
                 if in_degree[v] == 0:
                     node = self.nodes[v]
-                    v_input_keys = tuple(canonical_id_map[iid] for iid in node.input_ids)
+                    v_input_keys = tuple(
+                        canonical_id_map[iid] for iid in node.input_ids
+                    )
                     v_op_name, v_config_str, v_orig_id = static_keys[v]
-                    heapq.heappush(ready, (v_op_name, v_input_keys, v_config_str, v_orig_id))
+                    heapq.heappush(
+                        ready, (v_op_name, v_input_keys, v_config_str, v_orig_id)
+                    )
 
         if len(order) < len(self.nodes):
-            # This should not happen in a valid DAG, but if it does, 
+            # This should not happen in a valid DAG, but if it does,
             # fall back to a simple visit to avoid breaking completely.
             return sorted(self.nodes.keys())
 
@@ -580,7 +623,7 @@ class ComputationGraph:
         """
         if "grad_path" in self._cache:
             return self._cache["grad_path"]
-        
+
         ir = self.lower_to_ir()
         result = ir.has_gradient_path()
         self._cache["grad_path"] = result
@@ -588,19 +631,19 @@ class ComputationGraph:
 
     def fingerprint(self) -> str:
         """Structural fingerprint (hash of the graph topology + ops). Cached.
-        
-        Canonical representation: abstracts away specific node IDs to ensure 
-        identical architectures always produce the same hash regardless of 
+
+        Canonical representation: abstracts away specific node IDs to ensure
+        identical architectures always produce the same hash regardless of
         generation order or ID assignment.
         """
         if "fingerprint" in self._cache:
             return self._cache["fingerprint"]
-        
+
         # Use a stable topological order (Kahn's or similar)
         # and replace node IDs with their rank in that order.
         order = self.topological_order()
         id_to_rank = {nid: i for i, nid in enumerate(order)}
-        
+
         desc = []
         for nid in order:
             node = self.nodes[nid]
@@ -611,7 +654,7 @@ class ComputationGraph:
             else:
                 config_str = ""
             desc.append(f"{node.op_name}{config_str}({','.join(ranks)})")
-        
+
         # Include model_dim in fingerprint
         # Z13: Include routing/compression policy in fingerprint
         rc_str = ""
@@ -649,16 +692,16 @@ class ComputationGraph:
 
     def get_reachable_node_ids(self) -> Set[int]:
         """Find all node IDs that contribute to the output via backward traversal.
-        
+
         Returns a set of node IDs reachable from the designated output node.
         If no output node is set, returns an empty set.
         """
         if self._output_node_id is None:
             return set()
-            
+
         reachable = {self._output_node_id}
         queue = deque([self._output_node_id])
-        
+
         while queue:
             curr_id = queue.popleft()
             node = self.nodes[curr_id]
@@ -670,25 +713,25 @@ class ComputationGraph:
 
     def prune_dead_branches(self) -> int:
         """Remove all nodes that are not reachable from the output.
-        
+
         Returns the number of nodes removed.
         """
         if self._output_node_id is None:
             return 0
-            
+
         reachable = self.get_reachable_node_ids()
         all_ids = set(self.nodes.keys())
         dead_ids = all_ids - reachable
-        
+
         for nid in dead_ids:
             del self.nodes[nid]
-            
+
         if dead_ids:
             self._cache.clear()
             # If input was pruned, reset it
             if self._input_node_id in dead_ids:
                 self._input_node_id = None
-                
+
         return len(dead_ids)
 
     def lower_to_ir(self) -> ComputationGraphIR:
@@ -719,7 +762,9 @@ class ComputationGraph:
                     input_indices[idx, j] = id_to_idx[iid]
             configs.append(node.config)
 
-        output_idx = id_to_idx[self._output_node_id] if self._output_node_id is not None else -1
+        output_idx = (
+            id_to_idx[self._output_node_id] if self._output_node_id is not None else -1
+        )
 
         ir = ComputationGraphIR(
             model_dim=self.model_dim,
@@ -733,8 +778,10 @@ class ComputationGraph:
 
     def describe(self) -> str:
         """Human-readable description of the graph."""
-        lines = [f"ComputationGraph(dim={self.model_dim}, ops={self.n_ops()}, "
-                 f"depth={self.depth()}, params~{self.n_params_estimate()})"]
+        lines = [
+            f"ComputationGraph(dim={self.model_dim}, ops={self.n_ops()}, "
+            f"depth={self.depth()}, params~{self.n_params_estimate()})"
+        ]
         for nid in self.topological_order():
             node = self.nodes[nid]
             inputs = ", ".join(f"n{i}" for i in node.input_ids)
@@ -751,13 +798,13 @@ class ComputationGraph:
         """Detect if there is a direct residual (add) path from input to output. Cached."""
         if "has_residual" in self._cache:
             return self._cache["has_residual"]
-            
+
         input_ids = [nid for nid, node in self.nodes.items() if node.is_input]
         if not input_ids or self._output_node_id is None:
             return False
-        
+
         main_input = input_ids[0]
-        
+
         # Heuristic: is the input ID a direct input to ANY 'add' node?
         # Most residuals in this project use 'add' nodes for the skip connection.
         res = False
@@ -765,6 +812,6 @@ class ComputationGraph:
             if node.op_name == "add" and main_input in node.input_ids:
                 res = True
                 break
-                
+
         self._cache["has_residual"] = res
         return res

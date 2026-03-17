@@ -9,7 +9,6 @@ Verifies that:
 """
 
 import json
-import os
 import pytest
 
 pytestmark = pytest.mark.native
@@ -17,26 +16,45 @@ pytestmark = pytest.mark.native
 # Skip entire module if the Rust scheduler is not available.
 try:
     from scientist import native_runner
+
     rust = native_runner._try_import_rust_scheduler()
     if rust is None:
-        pytest.skip("Rust scheduler (aria_scheduler) not available", allow_module_level=True)
+        pytest.skip(
+            "Rust scheduler (aria_scheduler) not available", allow_module_level=True
+        )
 except Exception:
     pytest.skip("native_runner import failed", allow_module_level=True)
 
 
-SIMPLE_GRAPH_JSON = json.dumps({
-    "schema_version": "0.1",
-    "model_dim": 4,
-    "output_node_id": 1,
-    "nodes": [
-        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": True, "is_output": False},
-        {"id": 1, "op_name": "relu", "input_ids": [0], "config": {}, "is_input": False, "is_output": True},
-    ],
-    "edges": [
-        {"source": 0, "target": 1},
-    ],
-    "metadata": None,
-})
+SIMPLE_GRAPH_JSON = json.dumps(
+    {
+        "schema_version": "0.1",
+        "model_dim": 4,
+        "output_node_id": 1,
+        "nodes": [
+            {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            {
+                "id": 1,
+                "op_name": "relu",
+                "input_ids": [0],
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
+        ],
+        "edges": [
+            {"source": 0, "target": 1},
+        ],
+        "metadata": None,
+    }
+)
 
 
 class TestProfilerControl:
@@ -59,7 +77,9 @@ class TestProfiledExecution:
 
     def test_no_profiles_when_disabled(self):
         rust.profiler_enable(False)
-        result = rust.execute_graph_with_stats(SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0])
+        result = rust.execute_graph_with_stats(
+            SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0]
+        )
         assert "output" in result
         # node_profiles should be absent or empty when profiling is off
         profiles = result.get("node_profiles")
@@ -68,7 +88,9 @@ class TestProfiledExecution:
     def test_profiles_present_when_enabled(self):
         rust.profiler_enable(True)
         try:
-            result = rust.execute_graph_with_stats(SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0])
+            result = rust.execute_graph_with_stats(
+                SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0]
+            )
         finally:
             rust.profiler_enable(False)
 
@@ -91,7 +113,9 @@ class TestProfiledExecution:
         """The graph has a relu node (id=1); it should appear in profiles."""
         rust.profiler_enable(True)
         try:
-            result = rust.execute_graph_with_stats(SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0])
+            result = rust.execute_graph_with_stats(
+                SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0]
+            )
         finally:
             rust.profiler_enable(False)
 
@@ -120,7 +144,9 @@ class TestProfiledExecution:
         """When profiling is on, peak_memory_bytes should be in result."""
         rust.profiler_enable(True)
         try:
-            result = rust.execute_graph_with_stats(SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0])
+            result = rust.execute_graph_with_stats(
+                SIMPLE_GRAPH_JSON, [1.0, -1.0, 2.0, -2.0]
+            )
         finally:
             rust.profiler_enable(False)
 

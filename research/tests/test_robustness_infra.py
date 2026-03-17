@@ -1,10 +1,7 @@
-
 import pytest
-import os
 import sys
 import unittest
 import tempfile
-import time
 from pathlib import Path
 
 # Add project root to sys.path
@@ -13,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from research.scientist.notebook import LabNotebook
 
 pytestmark = pytest.mark.unit
+
 
 class TestRobustnessInfrastructure(unittest.TestCase):
     def setUp(self):
@@ -47,36 +45,34 @@ class TestRobustnessInfrastructure(unittest.TestCase):
             model_source="graph_synthesis",
             screening_loss_ratio=0.5,
             screening_novelty=0.8,
-            tier="screening"
+            tier="screening",
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
         self.assertEqual(entry["screening_loss_ratio"], 0.5)
         self.assertEqual(entry["screening_novelty"], 0.8)
         self.assertEqual(entry["tier"], "screening")
-        
+
         # 2. Update with investigation data
         self.nb.upsert_leaderboard(
             result_id=result_id,
             model_source="graph_synthesis",
             investigation_loss_ratio=0.3,
             investigation_robustness=0.7,
-            tier="investigation"
+            tier="investigation",
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
-        self.assertEqual(entry["screening_loss_ratio"], 0.5) # Should be preserved
+        self.assertEqual(entry["screening_loss_ratio"], 0.5)  # Should be preserved
         self.assertEqual(entry["investigation_loss_ratio"], 0.3)
         self.assertEqual(entry["tier"], "investigation")
-        
+
         # 3. Call upsert with only tier change (e.g. from some other automated path)
         # In the old code, this would set screening_loss_ratio and investigation_loss_ratio to NULL
         self.nb.upsert_leaderboard(
-            result_id=result_id,
-            model_source="graph_synthesis",
-            tier="validation"
+            result_id=result_id, model_source="graph_synthesis", tier="validation"
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
         self.assertEqual(entry["tier"], "validation")
         self.assertEqual(entry["screening_loss_ratio"], 0.5)
@@ -91,30 +87,28 @@ class TestRobustnessInfrastructure(unittest.TestCase):
             result_id=result_id,
             model_source="graph_synthesis",
             screening_loss_ratio=0.5,
-            tier="screening"
+            tier="screening",
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
         entry_id = entry["entry_id"]
-        
+
         # Set robustness metrics
         self.nb.promote_to_tier(
             entry_id=entry_id,
             tier="validation",
             quant_int8_retention=0.85,
-            robustness_long_ctx_score=0.9
+            robustness_long_ctx_score=0.9,
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
         self.assertEqual(entry["quant_int8_retention"], 0.85)
-        
+
         # Re-promote without those metrics (e.g. updating notes or something)
         self.nb.promote_to_tier(
-            entry_id=entry_id,
-            tier="validation",
-            notes="Updated notes"
+            entry_id=entry_id, tier="validation", notes="Updated notes"
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
         self.assertEqual(entry["quant_int8_retention"], 0.85)
         self.assertEqual(entry["notes"], "Updated notes")
@@ -132,9 +126,9 @@ class TestRobustnessInfrastructure(unittest.TestCase):
             init_sensitivity_std=0.03,
             fp_jacobian_spectral_norm=1.2,
             scaling_param_efficiency=3.5,
-            scaling_gate_passed=1
+            scaling_gate_passed=1,
         )
-        
+
         entry = self.nb.get_leaderboard_entry(result_id)
         self.assertEqual(entry["quant_int8_retention"], 0.88)
         self.assertEqual(entry["robustness_noise_score"], 0.12)
@@ -143,6 +137,7 @@ class TestRobustnessInfrastructure(unittest.TestCase):
         self.assertEqual(entry["fp_jacobian_spectral_norm"], 1.2)
         self.assertEqual(entry["scaling_param_efficiency"], 3.5)
         self.assertEqual(entry["scaling_gate_passed"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

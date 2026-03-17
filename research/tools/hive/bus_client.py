@@ -6,8 +6,8 @@ Hive Bus Client: Easy interface for agents to connect to the Hive Signal Bus.
 import socket
 import json
 import threading
-import os
 import time
+
 
 class HiveBusClient:
     def __init__(self, socket_path="/tmp/llm_hive.sock", name="agent"):
@@ -28,12 +28,12 @@ class HiveBusClient:
     def send(self, msg_type, content):
         if not self.sock:
             return
-        
+
         payload = {
             "source": self.name,
             "type": msg_type,
             "content": content,
-            "timestamp": time.time()
+            "timestamp": time.time(),
         }
         try:
             self.sock.sendall(json.dumps(payload).encode() + b"\n")
@@ -45,7 +45,8 @@ class HiveBusClient:
         while self.sock:
             try:
                 data = self.sock.recv(4096)
-                if not data: break
+                if not data:
+                    break
                 buffer += data
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
@@ -53,15 +54,16 @@ class HiveBusClient:
                         try:
                             msg = json.loads(line)
                             self.on_message_cb(msg)
-                        except:
+                        except Exception:
                             pass
-            except:
+            except Exception:
                 break
 
     def start_listening(self, callback):
         self.on_message_cb = callback
         self.listener_thread = threading.Thread(target=self._listen, daemon=True)
         self.listener_thread.start()
+
 
 if __name__ == "__main__":
     # Test Client

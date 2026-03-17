@@ -27,7 +27,6 @@ try:
     from research.scientist.native_autograd import (
         NativeRelu,
         NativeMatmul,
-        NativeAdd,
         NativeSigmoid,
         native_autograd_dispatch,
     )
@@ -39,14 +38,17 @@ try:
 except Exception:
     _HAS_NATIVE = False
 
-pytestmark = [pytest.mark.native, pytest.mark.slow, pytest.mark.skipif(
-    not _HAS_NATIVE, reason="Native Cython bridge unavailable"
-)]
+pytestmark = [
+    pytest.mark.native,
+    pytest.mark.slow,
+    pytest.mark.skipif(not _HAS_NATIVE, reason="Native Cython bridge unavailable"),
+]
 
 
 # ---------------------------------------------------------------------------
 # Test 1: Simple parameter optimization
 # ---------------------------------------------------------------------------
+
 
 class TestSimpleParameterOptimization:
     """Run a parameter through native relu + native matmul, compute MSE loss,
@@ -60,13 +62,13 @@ class TestSimpleParameterOptimization:
         W_init = W.clone().detach()
 
         # Input and target
-        x = torch.randn(4, 4)   # (4, 4)
+        x = torch.randn(4, 4)  # (4, 4)
         target = torch.randn(4, 8)
 
         # Forward: x -> matmul(W) -> relu -> output
         # NativeMatmul expects (M, K) @ (K, N) -> (M, N)
-        h = NativeMatmul.apply(x, W)          # (4, 8)
-        out = NativeRelu.apply(h)              # (4, 8)
+        h = NativeMatmul.apply(x, W)  # (4, 8)
+        out = NativeRelu.apply(h)  # (4, 8)
 
         # MSE loss
         loss = F.mse_loss(out, target)
@@ -76,7 +78,9 @@ class TestSimpleParameterOptimization:
 
         # Verify gradient exists and has correct shape
         assert W.grad is not None, "W.grad should not be None after backward"
-        assert W.grad.shape == W.shape, f"Grad shape {W.grad.shape} != param shape {W.shape}"
+        assert W.grad.shape == W.shape, (
+            f"Grad shape {W.grad.shape} != param shape {W.shape}"
+        )
         assert torch.isfinite(W.grad).all(), "Gradients should be finite"
         assert W.grad.abs().sum() > 0, "Gradients should be non-zero"
 
@@ -85,12 +89,15 @@ class TestSimpleParameterOptimization:
         optimizer.step()
 
         # Parameter should have changed
-        assert not torch.allclose(W.data, W_init), "Parameter should change after optimizer step"
+        assert not torch.allclose(W.data, W_init), (
+            "Parameter should change after optimizer step"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Test 2: Multi-step training convergence
 # ---------------------------------------------------------------------------
+
 
 class TestMultiStepTrainingConvergence:
     """Build a 2-layer network using native ops: x -> matmul(W1) -> relu ->
@@ -116,9 +123,9 @@ class TestMultiStepTrainingConvergence:
             optimizer.zero_grad()
 
             # Forward: x -> matmul(W1) -> relu -> matmul(W2)
-            h = NativeMatmul.apply(x, W1)       # (8, hidden_dim)
-            h = NativeRelu.apply(h)              # (8, hidden_dim)
-            out = NativeMatmul.apply(h, W2)      # (8, out_dim)
+            h = NativeMatmul.apply(x, W1)  # (8, hidden_dim)
+            h = NativeRelu.apply(h)  # (8, hidden_dim)
+            out = NativeMatmul.apply(h, W2)  # (8, out_dim)
 
             loss = F.mse_loss(out, target)
             loss.backward()
@@ -139,6 +146,7 @@ class TestMultiStepTrainingConvergence:
 # ---------------------------------------------------------------------------
 # Test 3: Gradient accumulation
 # ---------------------------------------------------------------------------
+
 
 class TestGradientAccumulation:
     """Run forward/backward twice without zeroing grads, verify gradients
@@ -167,8 +175,10 @@ class TestGradientAccumulation:
 
         # Gradients should have accumulated (doubled, since same data)
         torch.testing.assert_close(
-            grad_after_two, grad_after_one * 2,
-            atol=1e-5, rtol=1e-4,
+            grad_after_two,
+            grad_after_one * 2,
+            atol=1e-5,
+            rtol=1e-4,
             msg="Gradients should accumulate (double) after two backward passes",
         )
 
@@ -176,6 +186,7 @@ class TestGradientAccumulation:
 # ---------------------------------------------------------------------------
 # Test 4: Mixed native/PyTorch ops
 # ---------------------------------------------------------------------------
+
 
 class TestMixedNativePyTorchOps:
     """Chain a native relu with a PyTorch nn.Linear, verify gradients flow
@@ -248,6 +259,7 @@ class TestMixedNativePyTorchOps:
 # Test 5: Training matches PyTorch reference
 # ---------------------------------------------------------------------------
 
+
 class TestTrainingMatchesPyTorchReference:
     """Same network architecture, same init, same data. Run 10 steps with
     native ops vs PyTorch ops. Verify final losses are close."""
@@ -305,11 +317,17 @@ class TestTrainingMatchesPyTorchReference:
 
         # Final parameters should be close
         torch.testing.assert_close(
-            W1_native.data, W1_ref.data, atol=1e-3, rtol=1e-3,
+            W1_native.data,
+            W1_ref.data,
+            atol=1e-3,
+            rtol=1e-3,
             msg="W1 parameters diverged between native and PyTorch",
         )
         torch.testing.assert_close(
-            W2_native.data, W2_ref.data, atol=1e-3, rtol=1e-3,
+            W2_native.data,
+            W2_ref.data,
+            atol=1e-3,
+            rtol=1e-3,
             msg="W2 parameters diverged between native and PyTorch",
         )
 

@@ -1,5 +1,5 @@
 """Python fallback kernel for silu."""
-import torch
+
 import torch.nn.functional as F
 from components.base import make_unary_handler
 

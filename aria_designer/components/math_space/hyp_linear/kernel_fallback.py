@@ -1,7 +1,8 @@
 """Kernel handler for hyp_linear — dispatches to aria_core.hyp_linear_f32."""
+
 import torch
-import torch.nn as nn
 from components.base import NativeComponentHandler, _make_weight
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "hyp_linear"

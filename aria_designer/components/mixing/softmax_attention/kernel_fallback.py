@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for softmax_attention."""
-import torch
+
 import torch.nn as nn
 
 

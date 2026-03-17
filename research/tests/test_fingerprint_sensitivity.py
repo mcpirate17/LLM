@@ -1,7 +1,6 @@
 import pytest
 import torch
 
-from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
 
 from research.eval.fingerprint import (
     _interaction_metrics,

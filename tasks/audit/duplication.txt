@@ -1,0 +1,3679 @@
+************* Module aria_designer.runtime.registry
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_novelty:[707:1049]
+==research.tests.test_reference_architectures:[120:440]
+class TestCkaReferenceArtifacts(unittest.TestCase):
+    """Tests for CKA reference artifact loader/validator/cache (#28/#43 Phase A)."""
+
+    def _make_artifact_dir(self, tmpdir, manifest_override=None, families=None):
+        """Helper: create a valid artifact directory with manifest and .pt files."""
+        import json, torch
+        art_dir = os.path.join(tmpdir, "cka_references", "v1")
+        os.makedirs(art_dir, exist_ok=True)
+
+        manifest = {
+            "artifact_version": "v1",
+            "schema_version": "1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "code_version": "test",
+            "reference_families": ["transformer", "ssm", "conv"],
+            "probe_protocol_hash": "abc123",
+            "activation_shape": [16, 32],
+            "quality_flags": {"overall": "good"},
+        }
+        if manifest_override:
+            manifest.update(manifest_override)
+
+        with open(os.path.join(art_dir, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+        # Create .pt files
+        shape = manifest["activation_shape"]
+        for family in (families or ["transformer", "ssm", "conv"]):
+            data = {
+                "activations": torch.randn(shape[0], shape[1]),
+                "config": {"family": family},
+                "training_info": {},
+            }
+            torch.save(data, os.path.join(art_dir, f"{family}.pt"))
+
+        return art_dir
+
+    def test_load_manifest_valid(self):
+        """Valid manifest loads without error."""
+        from research.eval.cka_references import load_manifest
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            m = load_manifest(Path(art_dir))
+            self.assertEqual(m.artifact_version, "v1")
+            self.assertEqual(m.schema_version, "1")
+            self.assertEqual(set(m.reference_families), {"transformer", "ssm", "conv"})
+            self.assertEqual(m.activation_shape, [16, 32])
+
+    def test_load_manifest_missing_file(self):
+        """Missing manifest.json raises ValueError."""
+        from research.eval.cka_references import load_manifest
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError, msg="No manifest.json"):
+                load_manifest(Path(d))
+
+    def test_load_manifest_malformed_json(self):
+        """Malformed JSON raises ValueError."""
+        from research.eval.cka_references import load_manifest
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "manifest.json")
+            with open(p, "w") as f:
+                f.write("{bad json")
+            with self.assertRaises(ValueError):
+                load_manifest(Path(d))
+
+    def test_load_manifest_missing_fields(self):
+        """Manifest missing required fields raises ValueError."""
+        from research.eval.cka_references import load_manifest
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "manifest.json")
+            with open(p, "w") as f:
+                json.dump({"artifact_version": "v1"}, f)
+            with self.assertRaises(ValueError, msg="missing required fields"):
+                load_manifest(Path(d))
+
+    def test_load_manifest_unsupported_schema(self):
+        """Unsupported schema version raises ValueError."""
+        from research.eval.cka_references import load_manifest
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d, {"schema_version": "99"})
+            with self.assertRaises(ValueError, msg="Unsupported schema"):
+                load_manifest(Path(art_dir))
+
+    def test_load_manifest_missing_family(self):
+        """Manifest with incomplete families raises ValueError."""
+        from research.eval.cka_references import load_manifest
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(
+                d, {"reference_families": ["transformer"]}
+            )
+            with self.assertRaises(ValueError, msg="missing reference families"):
+                load_manifest(Path(art_dir))
+
+    def test_load_manifest_bad_activation_shape(self):
+        """Invalid activation_shape raises ValueError."""
+        from research.eval.cka_references import load_manifest
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d, {"activation_shape": [0, 32]})
+            with self.assertRaises(ValueError):
+                load_manifest(Path(art_dir))
+
+    def test_load_reference_activations_valid(self):
+        """Valid .pt files load as tensors with correct shape."""
+        from research.eval.cka_references import load_manifest, load_reference_activations
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            m = load_manifest(Path(art_dir))
+            refs = load_reference_activations(Path(art_dir), m)
+            self.assertEqual(set(refs.keys()), {"transformer", "ssm", "conv"})
+            for t in refs.values():
+                self.assertEqual(tuple(t.shape[-2:]), (16, 32))
+
+    def test_load_reference_activations_missing_file(self):
+        """Missing .pt file raises ValueError."""
+        from research.eval.cka_references import load_manifest, load_reference_activations
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            os.remove(os.path.join(art_dir, "ssm.pt"))
+            m = load_manifest(Path(art_dir))
+            with self.assertRaises(ValueError, msg="Missing artifact file"):
+                load_reference_activations(Path(art_dir), m)
+
+    def test_load_reference_activations_shape_mismatch(self):
+        """Tensor with wrong shape raises ValueError."""
+        from research.eval.cka_references import load_manifest, load_reference_activations
+        import tempfile, torch
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            # Overwrite one file with wrong shape
+            torch.save(
+                {"activations": torch.randn(8, 32)},
+                os.path.join(art_dir, "conv.pt"),
+            )
+            m = load_manifest(Path(art_dir))
+            with self.assertRaises(ValueError, msg="shape mismatch"):
+                load_reference_activations(Path(art_dir), m)
+
+    def test_store_no_artifacts_returns_none(self):
+        """ReferenceCkaStore with no artifacts returns None references."""
+        from research.eval.cka_references import ReferenceCkaStore
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            store = ReferenceCkaStore(artifact_dir=os.path.join(d, "nonexistent"))
+            self.assertIsNone(store.get_references())
+            self.assertFalse(store.is_artifact_backed)
+            meta = store.get_metadata()
+            self.assertEqual(meta["cka_source"], "heuristic_fallback")
+
+    def test_store_with_valid_artifacts(self):
+        """ReferenceCkaStore loads valid artifacts successfully."""
+        from research.eval.cka_references import ReferenceCkaStore
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            store = ReferenceCkaStore(artifact_dir=art_dir)
+            refs = store.get_references()
+            self.assertIsNotNone(refs)
+            self.assertEqual(set(refs.keys()), {"transformer", "ssm", "conv"})
+            self.assertTrue(store.is_artifact_backed)
+            meta = store.get_metadata()
+            self.assertEqual(meta["cka_source"], "artifact")
+            self.assertEqual(meta["cka_artifact_version"], "v1")
+
+    def test_store_reset_clears_cache(self):
+        """reset() clears loaded state so next access reloads."""
+        from research.eval.cka_references import ReferenceCkaStore
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            store = ReferenceCkaStore(artifact_dir=art_dir)
+            self.assertTrue(store.is_artifact_backed)
+            store.reset()
+            # Point to nonexistent dir after reset
+            store._artifact_dir = os.path.join(d, "gone")
+            self.assertFalse(store.is_artifact_backed)
+
+    def test_store_metadata_provenance_fields(self):
+        """Metadata includes all expected provenance fields."""
+        from research.eval.cka_references import ReferenceCkaStore
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            store = ReferenceCkaStore(artifact_dir=art_dir)
+            meta = store.get_metadata()
+            self.assertIn("cka_source", meta)
+            self.assertIn("cka_artifact_version", meta)
+            self.assertIn("cka_probe_protocol_hash", meta)
+            self.assertIn("cka_reference_quality", meta)
+            self.assertEqual(meta["cka_reference_quality"], "good")
+
+    # ── Phase C: Runtime CKA switchover tests ──
+
+    def test_compute_reference_cka_with_artifacts(self):
+        """_compute_reference_cka uses artifact activations when provided."""
+        import torch
+        from research.eval.fingerprint import _compute_reference_cka
+
+        # Create fake candidate reps and reference activations
+        S, D = 16, 32
+        reps = torch.randn(1, S, D)
+        ref_activations = {
+            "transformer": torch.randn(S, D),
+            "ssm": torch.randn(S, D),
+            "conv": torch.randn(S, D),
+        }
+        result = _compute_reference_cka(reps, ref_activations=ref_activations)
+        self.assertTrue(result["_succeeded"])
+        for family in ("transformer", "ssm", "conv"):
+            self.assertGreaterEqual(result[family], 0.0)
+            self.assertLessEqual(result[family], 1.0)
+
+    def test_compute_reference_cka_heuristic_fallback(self):
+        """_compute_reference_cka falls back to heuristic when no artifacts."""
+        import torch
+        from research.eval.fingerprint import _compute_reference_cka
+
+        reps = torch.randn(1, 16, 32)
+        result = _compute_reference_cka(reps, ref_activations=None)
+        self.assertTrue(result["_succeeded"])
+        # Heuristic should still produce valid CKA values
+        for family in ("transformer", "ssm", "conv"):
+            self.assertGreaterEqual(result[family], 0.0)
+            self.assertLessEqual(result[family], 1.0)
+
+    def test_compute_reference_cka_seq_len_mismatch(self):
+        """Artifact CKA handles different seq lengths between candidate and reference."""
+        import torch
+        from research.eval.fingerprint import _compute_reference_cka
+
+        reps = torch.randn(1, 16, 32)  # seq_len=16
+        ref_activations = {
+            "transformer": torch.randn(24, 32),  # seq_len=24 (longer)
+            "ssm": torch.randn(8, 32),           # seq_len=8 (shorter)
+            "conv": torch.randn(16, 32),          # seq_len=16 (same)
+        }
+        result = _compute_reference_cka(reps, ref_activations=ref_activations)
+        self.assertTrue(result["_succeeded"])
+
+    def test_fingerprint_records_cka_source(self):
+        """Fingerprint records cka_source provenance."""
+        from research.eval.cka_references import reset_default_store
+        reset_default_store()  # ensure clean state
+
+        fp = self._make_fingerprint()
+        # Should be one of the valid sources
+        self.assertIn(fp.cka_source, ("artifact", "heuristic_fallback", "none"))
+
+    def test_fingerprint_heuristic_fallback_when_no_artifacts(self):
+        """Fingerprint falls back to heuristic when artifact dir is missing."""
+        from unittest.mock import patch
+        from research.eval import cka_references
+        from research.eval.cka_references import ReferenceCkaStore, reset_default_store
+
+        reset_default_store()
+        # Force a store pointing to nonexistent dir
+        fake_store = ReferenceCkaStore(artifact_dir="/nonexistent/path")
+        with patch.object(cka_references, '_default_store', fake_store):
+            with patch.object(cka_references, '_default_lock', cka_references.threading.Lock()):
+                # Override get_default_store to return our fake store
+                with patch('research.eval.cka_references.get_default_store', return_value=fake_store):
+                    fp = self._make_fingerprint()
+        self.assertIn(fp.cka_source, ("heuristic_fallback",))
+        reset_default_store()
+
+    def _make_fingerprint(self):
+        """Helper: compute fingerprint on a tiny model."""
+        import torch.nn as nn
+        from research.eval.fingerprint import compute_fingerprint
+
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(100, 32)
+                self.linear = nn.Linear(32, 100)
+            def forward(self, x):
+                return self.linear(self.embed(x))
+
+        model = TinyModel()
+        return compute_fingerprint(model, seq_len=8, model_dim=32,
+                                   vocab_size=100, device="cpu", n_probes=4)
+
+    def test_fingerprint_cka_provenance_fields_exist(self):
+        """BehavioralFingerprint has cka_source and cka_artifact_version fields."""
+        from research.eval.fingerprint import BehavioralFingerprint
+
+        fp = BehavioralFingerprint()
+        self.assertEqual(fp.cka_source, "none")
+        self.assertIsNone(fp.cka_artifact_version)
+        d = fp.to_dict()
+        self.assertIn("cka_source", d)
+        self.assertIn("cka_artifact_version", d)
+
+    def test_export_produces_loadable_artifacts(self):
+        """Export tool produces artifacts that ReferenceCkaStore can load."""
+        from research.tools.export_cka_references import export_artifacts
+        from research.eval.cka_references import ReferenceCkaStore
+
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = str(Path(d) / "refs" / "v1")
+            export_artifacts(
+                output_dir=art_dir, seed=123, n_steps=10, device="cpu",
+            )
+            store = ReferenceCkaStore(artifact_dir=art_dir)
+            refs = store.get_references()
+            self.assertIsNotNone(refs)
+            self.assertEqual(set(refs.keys()), {"transformer", "ssm", "conv"})
+            self.assertTrue(store.is_artifact_backed)
+            meta = store.get_metadata()
+            self.assertEqual(meta["cka_source"], "artifact")
+            self.assertEqual(meta["cka_artifact_version"], "v1")
+
+    def test_export_deterministic(self):
+        """Same seed produces same probe_protocol_hash."""
+        from research.tools.export_cka_references import export_artifacts
+
+        with tempfile.TemporaryDirectory() as d:
+            d1 = str(Path(d) / "run1")
+            d2 = str(Path(d) / "run2")
+            export_artifacts(output_dir=d1, seed=99, n_steps=5, device="cpu")
+            export_artifacts(output_dir=d2, seed=99, n_steps=5, device="cpu")
+
+            with open(Path(d1) / "manifest.json") as f:
+                m1 = json.load(f)
+            with open(Path(d2) / "manifest.json") as f:
+                m2 = json.load(f)
+            self.assertEqual(
+                m1["probe_protocol_hash"], m2["probe_protocol_hash"]
+            )
+            self.assertEqual(m1["activation_shape"], m2["activation_shape"])
+
+
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1232:1397]
+==research.synthesis.compiler_ops_attention:[131:277]
+    freqs = 1.0 / (ROPE_THETA_BASE ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D))
+    angles = pos * freqs.unsqueeze(0)
+    cos_a = torch.cos(angles).unsqueeze(0)
+    sin_a = torch.sin(angles).unsqueeze(0)
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    out = torch.zeros_like(x)
+    out[..., 0::2] = x1 * cos_a - x2 * sin_a
+    out[..., 1::2] = x1 * sin_a + x2 * cos_a
+    return out
+
+@register_op("cosine_similarity")
+def _op_cosine_similarity(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if (
+        _c(a)
+        and _c(b)
+        and a.dim() == 3
+        and b.dim() == 3
+        and a.shape == b.shape
+        and hasattr(aria_core, "cosine_similarity_f32")
+    ):
+        native_sim = aria_core.cosine_similarity_f32(a, b)
+        if isinstance(native_sim, torch.Tensor):
+            if native_sim.dim() == 2 and native_sim.shape == a.shape[:2]:
+                return native_sim.unsqueeze(-1)
+            if native_sim.dim() == 3 and native_sim.shape[-1] == 1 and native_sim.shape[:2] == a.shape[:2]:
+                return native_sim
+    sim = F.cosine_similarity(a, b, dim=-1)
+    return sim.unsqueeze(-1)
+
+@register_op("gather_topk")
+def _op_gather_topk(_, inputs, config):
+    x, scores = inputs[0], inputs[1]
+    k = min(int(config.get("k", 4)), x.shape[1])
+    if scores.dim() == 3:
+        # Reduce to (B, S) — mean over last dim handles any D, not just D=1
+        scores = scores.mean(dim=-1)
+    if _c(x) and _c(scores) and scores.dim() == 2 and x.dim() == 3:
+        gathered, _ = aria_core.gather_topk_f32(scores, x, k)
+        if gathered.shape[1] < x.shape[1]:
+            pad = x[:, :x.shape[1] - gathered.shape[1]]
+            gathered = torch.cat([gathered, pad], dim=1)
+        return gathered
+    _, indices = torch.topk(scores, k, dim=-1)
+    indices = indices.clamp(0, x.shape[1] - 1)
+    gathered = torch.gather(x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+    if gathered.shape[1] < x.shape[1]:
+        pad = x[:, :x.shape[1] - gathered.shape[1]]
+        gathered = torch.cat([gathered, pad], dim=1)
+    return gathered
+
+@register_op("softmax_last")
+def _op_softmax_last(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.softmax_f32(x)
+    return F.softmax(x, dim=-1)
+
+@register_op("softmax_seq")
+def _op_softmax_seq(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.softmax_seq_f32(x)
+    return F.softmax(x, dim=1)
+
+@register_op("causal_mask")
+def _op_causal_mask(_, inputs, __):
+    """Causal integration: every token becomes the average of itself and all previous tokens.
+    This is a strictly causal 'mixing' operation that prevents future lookahead.
+    """
+    x = inputs[0]  # (B, S, D)
+    if _c(x) and hasattr(aria_core, "causal_mask_f32"):
+        return aria_core.causal_mask_f32(x)
+    # Using cumulative sum / counts is O(S) and strictly causal
+    return torch.cumsum(x, dim=1) / torch.arange(1, x.shape[1] + 1, device=x.device).view(1, -1, 1)
+
+@register_op("sort_seq")
+def _op_sort_seq(_, inputs, __):
+    x = inputs[0]
+    if _c(x) and hasattr(aria_core, "sort_seq_f32"):
+        native_sorted = aria_core.sort_seq_f32(x)
+        if isinstance(native_sorted, tuple):
+            native_sorted = native_sorted[0]
+        if isinstance(native_sorted, torch.Tensor) and native_sorted.shape == x.shape:
+            return native_sorted
+    indices = x.mean(dim=-1).argsort(dim=-1)
+    indices = indices.clamp(0, x.shape[1] - 1)
+    return x.gather(1, indices.unsqueeze(-1).expand_as(x))
+
+@register_op("argsort_seq")
+def _op_argsort_seq(_, inputs, __):
+    x = inputs[0]
+    if _c(x) and hasattr(aria_core, "argsort_seq_f32"):
+        native_indices = aria_core.argsort_seq_f32(x)
+        if isinstance(native_indices, tuple):
+            native_indices = native_indices[0]
+        if isinstance(native_indices, torch.Tensor):
+            if native_indices.dim() == 2:
+                return native_indices.unsqueeze(-1).expand_as(x).float()
+            if native_indices.shape == x.shape:
+                return native_indices.float()
+    return x.mean(dim=-1).argsort(dim=-1).unsqueeze(-1).expand_as(x).float()
+
+@register_op("local_window_attn")
+def _op_local_window_attn(_, inputs, config):
+    x = inputs[0]
+    B, S, D = x.shape
+    W = min(config.get("window_size", 32), S)
+    if HAS_KERNELS and x.is_cuda:
+        try:
+            return kernels.triton_local_attn(x, W)
+        except Exception:
+            pass
+    scores = torch.bmm(x, x.transpose(-2, -1)) / math.sqrt(D)
+    row_idx = torch.arange(S, device=x.device).unsqueeze(1)
+    col_idx = torch.arange(S, device=x.device).unsqueeze(0)
+    mask = (col_idx > row_idx) | (row_idx - col_idx >= W)
+    scores = scores.masked_fill(mask.unsqueeze(0), float('-inf'))
+    return torch.bmm(F.softmax(scores, dim=-1), x)
+
+@register_op("sliding_window_mask")
+def _op_sliding_window_mask(_, inputs, config):
+    x = inputs[0]
+    B, S, D = x.shape
+    W = int(config.get("window_size", 32))
+
+    if _c(x):
+        return aria_core.sliding_window_mask_f32(x, W)
+
+    # Python Fallback: O(S^2) masking
+    W_safe = min(W, S)
+    row_idx = torch.arange(S, device=x.device).unsqueeze(1)
+    col_idx = torch.arange(S, device=x.device).unsqueeze(0)
+    dist = (row_idx - col_idx)
+
+    # Causal sliding window: col <= row AND dist < W
+    mask = (dist >= 0) & (dist < W_safe)
+    decay = torch.exp(-dist.float().clamp(min=0) / max(W_safe / 4, 1.0))
+
+    # Normalize per-position to maintain signal scale
+    final_mask = (mask.float() * decay)
+    final_mask = final_mask / final_mask.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+
+    return torch.bmm(final_mask.unsqueeze(0).expand(B, -1, -1), x)
+
+@register_op("token_pool_restore")
+def _op_token_pool_restore(_, inputs, __):
+    x = inputs[0]
+    if _c(x):
+        return aria_core.token_pool_restore_f32(x)
+    if x.shape[1] < 2: return x
+    S_half = x.shape[1] // 2
+    restored = ((x[:, 0::2, :][:, :S_half] + x[:, 1::2, :][:, :S_half]) / 2.0).repeat_interleave(2, dim=1)
+    if restored.shape[1] < x.shape[1]:
+        restored = torch.cat([restored, x[:, -1:, :]], dim=1)
+    return restored
+
+# ── Routing Ops (Phase 1/2) ──────────────────────────────────────────
+
+@register_op("route_topk")
+def _op_route_topk(module, inputs, config):
+    """Top-k routing: zero out all but top-k positions along last dim.
+
+    Input:  (B, S, D)
+    Output: (B, S, D) with only the top-k values per (B, S) slice kept.
+    Uses STE with density scaling to keep gradient magnitude stable.
+    """ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[900:990]
+==research.scientist.runner.execution_validation:[409:502]
+                            traj_layers,
+                            vocab_size=config.vocab_size,
+                            max_seq_len=128,
+                        )
+                        traj_model = traj_model.to(dev)
+                        traj_result = evaluate_wikitext_trajectory(
+                            traj_model, config.vocab_size, dev_str,
+                            checkpoints=(200, 500, 1000, 2000, 4000),
+                            seq_len=128,
+                        )
+                        del traj_model
+                        if dev.type == "cuda":
+                            torch.cuda.empty_cache()
+
+                        traj_peak_ppl = traj_result.get("peak_ppl")
+                        traj_steps_div = traj_result.get("steps_to_divergence")
+                        traj_ppl_500 = None
+                        traj_ckpts = traj_result.get("checkpoints", {})
+                        if 500 in traj_ckpts:
+                            traj_ppl_500 = traj_ckpts[500].get("ppl")
+
+                        entry = nb.get_leaderboard_entry(source_result_id)
+                        if entry:
+                            traj_update = {}
+                            if traj_peak_ppl is not None:
+                                traj_update["peak_ppl"] = traj_peak_ppl
+                                import math as _math
+                                _vocab = config.vocab_size or 32000
+                                _ws = max(0.0, _math.log(_vocab / traj_peak_ppl) / _math.log(_vocab))
+                                traj_update["wikitext_score"] = round(_ws, 4)
+                            if traj_result.get("peak_step") is not None:
+                                traj_update["peak_step"] = traj_result["peak_step"]
+                            if traj_steps_div is not None:
+                                traj_update["steps_to_divergence"] = traj_steps_div
+                            if traj_ppl_500 is not None:
+                                traj_update["ppl_500"] = traj_ppl_500
+                            if traj_update:
+                                nb.promote_to_tier(
+                                    entry_id=entry["entry_id"],
+                                    tier=tier,
+                                    **traj_update,
+                                )
+                                updated = nb.conn.execute(
+                                    "SELECT composite_score FROM leaderboard WHERE entry_id = ?",
+                                    (entry["entry_id"],),
+                                ).fetchone()
+                                if updated:
+                                    trajectory_composite = updated["composite_score"]
+                        logger.info(
+                            "Trajectory probe %s: peak_ppl=%.1f steps_to_div=%s ppl_500=%s composite=%.1f",
+                            source_result_id[:8],
+                            traj_peak_ppl or 0,
+                            traj_steps_div,
+                            traj_ppl_500,
+                            trajectory_composite or 0,
+                        )
+                except Exception as e:
+                    logger.warning("Trajectory probe failed for %s: %s", source_result_id[:8], e)
+
+                # Trajectory-aware breakthrough
+                if not is_breakthrough and trajectory_composite is not None:
+                    if trajectory_composite > 300.0:
+                        is_breakthrough = True
+                        logger.info(
+                            "Trajectory-aware breakthrough: %s composite=%.1f",
+                            source_result_id[:8], trajectory_composite,
+                        )
+
+                # Breakthrough detection
+                if is_breakthrough:
+                    ctx = build_validation_context(
+                        [source], [validation_entry])
+                    announcement = self.aria.announce_breakthrough(ctx)
+                    nb.add_entry(ExperimentEntry(
+                        entry_type="insight",
+                        title="BREAKTHROUGH DETECTED",
+                        content=announcement,
+                        experiment_id=exp_id,
+                        tags=["breakthrough"],
+                    ))
+                    self._emit_event("breakthrough_detected", {
+                        "experiment_id": exp_id,
+                        "result_id": source_result_id,
+                        "val_loss_ratio": val_loss_ratio,
+                        "val_baseline_ratio": val_baseline_ratio,
+                        "multi_seed_std": multi_seed_std,
+                        "announcement": announcement,
+                    })
+
+            # Complete experiment with LLM analysis (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[190:297]
+==research.tests.test_sandbox_integration:[364:474]
+        self.assertNotIn("Run: cd aria_designer/ui && npm run dev", content)
+
+    def test_architecture_drawer_embedded_bridge_handshake(self):
+        drawer_path = os.path.join(self.component_dir, "ArchitectureDrawer.js")
+        content = self._read_file(drawer_path)
+        # Embedded iframe should signal readiness, then receive load-result.
+        self.assertIn("embedded-ready", content)
+        self.assertIn("load-result", content)
+        # Parent should listen for graph load success/error signals.
+        self.assertIn("graph-loaded", content)
+        self.assertIn("graph-load-error", content)
+
+    def test_dashboard_wires_code_healer_panel(self):
+        app_content = self._read_file(self.app_js)
+        # Healer state still in App.js; UI moved into ActionQueue
+        self.assertIn("healerTasks", app_content)
+
+    def test_strategy_advisor_marks_actionability_and_sanitizes_pseudo_code(self):
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("Actionable", content)
+        self.assertIn("Advice only", content)
+        self.assertIn("sanitizeBriefingText", content)
+        self.assertIn("details sent to local agent", content)
+
+    def test_strategy_advisor_preserves_full_suggested_config_passthrough(self):
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("const fullConfig = { ...suggestedConfig };", content)
+        self.assertIn("delete fullConfig.hypothesis;", content)
+        self.assertIn("delete fullConfig.result_ids;", content)
+        self.assertIn("...fullConfig,", content)
+        self.assertIn("sparseCoverage", content)
+        self.assertIn("Sparse coverage:", content)
+
+    def test_aria_status_sanitizes_hypothesis_summary(self):
+        status_path = os.path.join(self.component_dir, "AriaStatus.js")
+        content = self._read_file(status_path)
+        self.assertIn("sanitizeHypothesisText", content)
+        self.assertIn("summarizedHypothesis", content)
+        self.assertNotIn('{aria.current_hypothesis}', content)
+
+    def test_tab_names_match_content(self):
+        """All tab names in App.js should have corresponding content blocks."""
+        app_content = self._read_file(self.app_js)
+
+        # Extract tab list from nav
+        tab_match = re.search(r"\[([^\]]+)\]\.map\(tab", app_content)
+        if tab_match:
+            tabs_str = tab_match.group(1)
+            tabs = re.findall(r"'(\w[\w-]*)'", tabs_str)
+
+            for tab in tabs:
+                # Each tab should have activeTab === 'tabname'
+                self.assertIn(
+                    f"activeTab === '{tab}'",
+                    app_content,
+                    f"Tab '{tab}' has no content block in App.js",
+                )
+
+    def test_onSelectProgram_wired(self):
+        """Components with onSelectProgram should receive it as prop."""
+        app_content = self._read_file(self.app_js)
+        # These components should pass onSelectProgram
+        for comp in ["TopPrograms", "Leaderboard", "ExperimentDetail"]:
+            self.assertIn(
+                f"onSelectProgram={{handleSelectProgram}}",
+                app_content,
+                f"{comp} should pass onSelectProgram prop",
+            )
+
+    def test_sse_event_types_handled(self):
+        """All SSE event types emitted by runner should be handled in LiveFeed."""
+        livefeed_path = os.path.join(self.component_dir, "LiveFeed.js")
+        content = self._read_file(livefeed_path)
+
+        expected_events = [
+            "program_evaluated",
+            "experiment_started",
+            "experiment_completed",
+            "experiment_failed",
+            "investigation_started",
+            "investigation_completed",
+            "validation_started",
+            "validation_completed",
+            "breakthrough_detected",
+            "mode_selected",
+        ]
+
+        for event in expected_events:
+            self.assertIn(
+                f"'{event}'",
+                content,
+                f"LiveFeed.js missing handler for SSE event: {event}",
+            )
+
+    def test_live_feed_filters_non_renderable_events_to_avoid_blank_rows(self):
+        livefeed_path = os.path.join(self.component_dir, "LiveFeed.js")
+        content = self._read_file(livefeed_path)
+        self.assertIn("RENDERABLE_EVENT_TYPES", content)
+        self.assertIn("normalizeLiveFeedEvent", content)
+        self.assertIn("if (!RENDERABLE_EVENT_TYPES.has(normalizedType)) return null;", content)
+        self.assertIn("annotateGenerationHistory", content)
+        self.assertIn("not in current feed history", content)
+
+    def test_frontend_api_routes_exist_in_backend(self):
+        """All frontend /api paths should map to a backend Flask route.""" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_package_wiring:[23:125]
+==research.tests.test_sandbox_integration:[71:175]
+class TestPackageWiring(unittest.TestCase):
+    """Ensure explicitly connected package modules remain importable."""
+
+    def test_mathspaces_exports_modules(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        init_path = os.path.join(repo_root, "mathspaces", "__init__.py")
+        with open(init_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("from . import clifford, compression, hyperbolic, padic, spiking, tropical", content)
+        self.assertIn("from .registry import register_all_mathspaces", content)
+        self.assertIn('"hyperbolic"', content)
+        self.assertIn('"tropical"', content)
+        self.assertIn('"padic"', content)
+        self.assertIn('"clifford"', content)
+        self.assertIn('"spiking"', content)
+
+    @unittest.skipUnless(HAS_TORCH, "requires torch")
+    def test_mathspace_registry_includes_hyp_distance(self):
+        from research.mathspaces.registry import register_all_mathspaces
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+
+        register_all_mathspaces()
+        self.assertIn("hyp_distance", PRIMITIVE_REGISTRY)
+        op = PRIMITIVE_REGISTRY["hyp_distance"]
+        self.assertEqual(op.category.value, "math_space")
+        self.assertEqual(op.n_inputs, 2)
+        self.assertTrue(hasattr(op, "execute_fn"))
+
+    @unittest.skipUnless(HAS_TORCH, "requires torch")
+    def test_external_op_nonfinite_sanitization_and_telemetry(self):
+        from research.synthesis.compiler import _execute_op
+        from research.synthesis.primitives import PrimitiveOp, OpCategory, PRIMITIVE_REGISTRY, register_external_primitive
+
+        op_name = "test_nonfinite_mathspace_op"
+        op = PrimitiveOp(
+            name=op_name,
+            category=OpCategory.MATH_SPACE,
+            n_inputs=1,
+            shape_rule="identity",
+            description="test external op",
+        )
+
+        def _execute_fn(module, x):
+            return x / 0.0
+
+        object.__setattr__(op, "execute_fn", _execute_fn)
+        register_external_primitive(op)
+        module = torch.nn.Module()
+        x = torch.ones(2, 3, 4)
+        try:
+            out = _execute_op(module, op_name, (x,), {})
+            self.assertTrue(torch.isfinite(out).all())
+            telemetry = getattr(module, "mathspace_telemetry", {})
+            self.assertIn(op_name, telemetry)
+            self.assertGreaterEqual(telemetry[op_name]["calls"], 1)
+            self.assertGreater(telemetry[op_name]["nonfinite_elements"], 0)
+            self.assertGreaterEqual(telemetry[op_name]["sanitized_calls"], 1)
+        finally:
+            PRIMITIVE_REGISTRY.pop(op_name, None)
+
+    @unittest.skipUnless(HAS_TORCH, "requires torch")
+    def test_mathspace_phase2_ops_registered(self):
+        from research.mathspaces.registry import register_all_mathspaces
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+
+        register_all_mathspaces()
+        for op_name in ("hyp_tangent_nonlinear", "tropical_center", "padic_gate", "grade_mix"):
+            self.assertIn(op_name, PRIMITIVE_REGISTRY)
+            op = PRIMITIVE_REGISTRY[op_name]
+            self.assertEqual(op.category.value, "math_space")
+            self.assertEqual(op.n_inputs, 1)
+            self.assertTrue(hasattr(op, "execute_fn"))
+
+    @unittest.skipUnless(HAS_TORCH, "requires torch")
+    def test_mathspace_phase2_ops_execute_shape_and_finite(self):
+        from research.mathspaces.registry import register_all_mathspaces
+        from research.synthesis.primitives import PRIMITIVE_REGISTRY
+
+        register_all_mathspaces()
+        x = torch.randn(2, 5, 16)
+        module = torch.nn.Module()
+        for op_name in ("hyp_tangent_nonlinear", "tropical_center", "padic_gate", "grade_mix"):
+            op = PRIMITIVE_REGISTRY[op_name]
+            out = op.execute_fn(module, x)
+            self.assertEqual(tuple(out.shape), tuple(x.shape))
+            self.assertTrue(torch.isfinite(out).all(), f"{op_name} produced non-finite values")
+
+    def test_llm_package_exports_context_and_prompts(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        init_path = os.path.join(repo_root, "scientist", "llm", "__init__.py")
+        with open(init_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("from . import context, prompts", content)
+        self.assertIn("from .backend import", content)
+        self.assertIn('"context"', content)
+        self.assertIn('"prompts"', content)
+
+
+
+# ── Test 10: Dashboard Component Consistency ──
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[176:282]
+==research.synthesis.compiler_op_utils:[86:178]
+        telemetry["count"] += 1
+
+    if getattr(module, "_capture_heatmap", False) and telemetry["heatmap"] is None:
+        telemetry["heatmap"] = selected_experts[0].detach().cpu().numpy().tolist()
+
+    setattr(module, "routing_telemetry", telemetry)
+
+def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
+    if n <= 0 or m <= 0 or n > m:
+        return torch.ones_like(weight)
+
+    if HAS_CPU_OPS and weight.device.type == "cpu" and weight.dtype == torch.float32:
+        return cpu_ops.build_nm_mask_cpu(weight, n, m)
+
+    rows, cols = weight.shape
+    n_chunks = cols // m
+    if n_chunks <= 0:
+        return torch.ones_like(weight)
+
+    usable = n_chunks * m
+    core = weight[:, :usable].abs().reshape(rows, n_chunks, m)
+    keep_idx = core.topk(k=n, dim=-1).indices
+    mask_core = torch.zeros_like(core)
+    mask_core.scatter_(-1, keep_idx, 1.0)
+    mask = torch.ones_like(weight)
+    mask[:, :usable] = mask_core.reshape(rows, usable)
+    return mask
+
+def _flatten_for_kernel(x: torch.Tensor):
+    """Flatten >=3D tensor to 2D for C kernels that expect (batch, dim).
+
+    Returns (x_2d, orig_shape) so the caller can reshape back via
+    out.reshape(*orig_shape[:-1], -1).
+    """
+    if not isinstance(x, torch.Tensor):
+        raise RuntimeError(f"_flatten_for_kernel expected Tensor, got {type(x).__name__}")
+    if x.dim() < 1:
+        raise RuntimeError(f"_flatten_for_kernel expected >=1D tensor, got {x.dim()}D")
+    orig_shape = x.shape
+    if x.dim() > 2:
+        x = x.contiguous().reshape(-1, orig_shape[-1])
+    elif not x.is_contiguous():
+        x = x.contiguous()
+    return x, orig_shape
+
+def _unflatten_from_kernel(out: torch.Tensor, orig_shape):
+    """Reshape 2D kernel output back to match the original input shape."""
+    if len(orig_shape) > 2:
+        return out.reshape(*orig_shape[:-1], -1)
+    return out
+
+def _build_block_sparse_mask(weight: torch.Tensor, block_size: int,
+                             block_density: float) -> torch.Tensor:
+    block_size = max(1, int(block_size))
+    block_density = float(max(0.05, min(1.0, block_density)))
+
+    rows, cols = weight.shape
+    row_blocks = rows // block_size
+    col_blocks = cols // block_size
+    if row_blocks <= 0 or col_blocks <= 0:
+        return torch.ones_like(weight)
+
+    usable_rows = row_blocks * block_size
+    usable_cols = col_blocks * block_size
+    core = weight[:usable_rows, :usable_cols]
+    blocks = core.view(row_blocks, block_size, col_blocks, block_size).permute(0, 2, 1, 3)
+    scores = blocks.abs().mean(dim=(2, 3))
+
+    keep_per_row = max(1, int(round(col_blocks * block_density)))
+    keep_idx = scores.topk(k=keep_per_row, dim=1).indices
+
+    block_mask = torch.zeros_like(scores)
+    block_mask.scatter_(1, keep_idx, 1.0)
+    block_mask = block_mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, block_size, block_size)
+    block_mask = block_mask.permute(0, 2, 1, 3).reshape(usable_rows, usable_cols)
+
+    mask = torch.ones_like(weight)
+    mask[:usable_rows, :usable_cols] = block_mask
+    return mask
+
+
+# ── Op Implementations ──────────────────────────────────────────────
+
+def _c(x):
+    """Check if tensor is eligible for aria_core C kernels.
+
+    C kernels don't support autograd, so skip them when gradients are needed.
+    Requires at least 2D tensor with reasonable dimensions.
+    """
+    return (HAS_ARIA_CORE and x.device.type == "cpu"
+            and x.dtype == torch.float32 and not x.requires_grad
+            and x.dim() >= 1 and x.numel() > 0) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1521:1600]
+==research.synthesis.compiler_ops_routing:[370:452]
+    return x * gate.unsqueeze(-1)
+
+def _op_early_exit(module, inputs, config):
+    """Learned early-exit: tokens with low confidence are attenuated."""
+    x = inputs[0]
+    threshold = float(config.get("threshold", 0.5))
+    if hasattr(module, 'confidence_proj'):
+        scores = F.linear(x, module.confidence_proj.to(x.dtype)).squeeze(-1)  # (B, S)
+    else:
+        scores = _routing_scores_from_x(x)
+    gate = torch.sigmoid(scores)
+    keep = (gate > threshold).float()
+    # STE: hard gate forward, soft gate backward
+    gate_ste = keep - gate.detach() + gate
+    _record_routing_telemetry(module, 2, keep.long(), logits=gate)
+    return x * gate_ste.unsqueeze(-1)
+
+def _op_cascade(module, inputs, config):
+    """Learned progressive cascade: soft gate scales tokens by learned difficulty."""
+    x = inputs[0]
+    threshold = float(config.get("threshold", 0.5))
+    if hasattr(module, 'cascade_proj'):
+        scores = F.linear(x, module.cascade_proj.to(x.dtype)).squeeze(-1)  # (B, S)
+    else:
+        scores = _routing_scores_from_x(x)
+    gate = torch.sigmoid(scores)
+    _record_routing_telemetry(module, 2, (gate > threshold).long(), logits=gate)
+    return x * gate.unsqueeze(-1)
+
+def _op_speculative(module, inputs, config):
+    """Speculative execution: cheap path always runs, learned gate blends full path."""
+    x = inputs[0]
+    if not hasattr(module, 'cheap_proj'):
+        return x
+    dt = x.dtype
+    # Cheap path: lightweight linear projection (always runs)
+    cheap_out = F.linear(x, module.cheap_proj.to(dt))
+    # Learned verification gate: decides how much of the full input to blend
+    gate = torch.sigmoid(F.linear(x, module.verify_gate.to(dt)).squeeze(-1))
+    _record_routing_telemetry(module, 2, (gate > 0.5).long(), logits=gate)
+    # Blend: cheap_out + gate * (x - cheap_out) = lerp(cheap_out, x, gate)
+    return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
+
+def _op_adaptive_recursion(module, inputs, config):
+    """Learned adaptive recursion: per-token depth from learned scorer, per-step transforms."""
+    x = inputs[0]
+    max_depth = int(config.get("max_depth", 3))
+    max_depth = max(1, min(6, max_depth))
+
+    if hasattr(module, 'depth_scorer'):
+        # Learned depth scoring: (B, S, D) → (B, S, max_depth)
+        dt = x.dtype
+        depth_logits = F.linear(x, module.depth_scorer.to(dt))
+        depth_weights = F.softmax(depth_logits, dim=-1)  # (B, S, max_depth)
+        _record_routing_telemetry(module, max_depth,
+                                  depth_weights.argmax(dim=-1), logits=depth_logits)
+        # Apply per-step transforms weighted by depth probability
+        out = torch.zeros_like(x)
+        for i in range(max_depth):
+            if hasattr(module, 'step_projs') and i < len(module.step_projs):
+                step_out = F.linear(x, module.step_projs[i].to(dt))
+            else:
+                step_out = x
+            out = out + depth_weights[..., i:i+1] * step_out
+        return out
+    # Fallback for legacy models without learned params
+    scores = _routing_scores_from_x(x)
+    depth_scores = torch.stack([scores + (i * 0.1) for i in range(max_depth)], dim=-1)
+    depth = depth_scores.argmax(dim=-1) + 1
+    scale = 1.0 + 0.05 * depth.float()
+    return x * scale.unsqueeze(-1)
+
+# ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
+
+def _op_adaptive_lane_mixer(module, inputs, config):
+    """Routes tokens to 'fast' vs 'deep' lanes based on learned difficulty."""
+    x = inputs[0]
+    B, S, D = x.shape
+
+    if not hasattr(module, 'gate_proj'): return x
+
+    # Compute 3-way gate: [Fast, Medium, Hard] (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[515:569]
+==research.scientist.runner.execution_validation:[158:212]
+                if loss_ratios:
+                    best_seed = min(
+                        (r for r in seed_results if r.get("final_loss") is not None),
+                        key=lambda r: r["final_loss"],
+                        default=None,
+                    )
+                    if best_seed is not None:
+                        try:
+                            baseline = self._get_baseline()
+                            baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
+                            baseline_recipe = self._resolve_baseline_recipe(
+                                best_seed, default_lr=config.stage1_lr)
+                            bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
+                            val_baseline_ratio = baseline.compare(
+                                best_seed["final_loss"],
+                                d_model=config.model_dim,
+                                seq_len=min(128, config.validation_seq_len),
+                                n_steps=max(1, baseline_steps),
+                                vocab_size=config.vocab_size,
+                                batch_size=config.validation_batch_size,
+                                lr=baseline_recipe["lr"],
+                                device=dev_str,
+                                n_layers=config.n_layers,
+                                optimizer_name=baseline_recipe["optimizer_name"],
+                                weight_decay=baseline_recipe["weight_decay"],
+                                momentum=baseline_recipe["momentum"],
+                                betas=baseline_recipe["betas"],
+                                data_fn=bl_data_fn,
+                                data_tag=bl_data_tag,
+                                cache_data_fn=bl_cache,
+                            )
+                            # Optional: Validation baseline comparison (using val split)
+                            v_loss = best_seed.get("validation_loss")
+                            if v_loss is not None:
+                                try:
+                                    v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(config, split="val")
+                                    v_baseline_ratio = baseline.compare(
+                                        v_loss,
+                                        d_model=config.model_dim,
+                                        seq_len=min(128, int(getattr(config, "validation_seq_len", 128))),
+                                        n_steps=max(1, baseline_steps),
+                                        vocab_size=config.vocab_size,
+                                        batch_size=int(getattr(config, "validation_batch_size", 4)),
+                                        lr=baseline_recipe["lr"],
+                                        device=dev_str,
+                                        n_layers=config.n_layers,
+                                        optimizer_name=baseline_recipe["optimizer_name"],
+                                        weight_decay=baseline_recipe["weight_decay"],
+                                        momentum=baseline_recipe["momentum"],
+                                        betas=baseline_recipe["betas"],
+                                        data_fn=v_data_fn,
+                                        data_tag=v_data_tag,
+                                        cache_data_fn=v_cache,
+                                    ) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[491:554]
+==research.scientist.runner.execution_investigation:[270:331]
+                }
+                results["investigation_results"].append(investigation_entry)
+
+                if best_lr and (results["best_loss_ratio"] is None
+                                or best_lr < results["best_loss_ratio"]):
+                    results["best_loss_ratio"] = best_lr
+                source_novelty = source.get("novelty_score")
+                if source_novelty is not None and (
+                    results["best_novelty_score"] is None
+                    or source_novelty > results["best_novelty_score"]
+                ):
+                    results["best_novelty_score"] = source_novelty
+
+                # Update leaderboard
+                best_tp_json = None
+                if best_tp and best_tp.get("training_program"):
+                    for tp in training_programs:
+                        if tp.name == best_tp["training_program"]:
+                            best_tp_json = json.dumps(tp.to_dict())
+                            break
+
+                # Brittle risk override: if the investigation LR is good on
+                # its own merits (< 0.3), don't let the screening→investigation
+                investigation_passed = investigation_passed_early
+
+                # Submit benchmark evals to background thread so the
+                # investigation loop can proceed to the next candidate.
+                if n_passed > 0:
+                    _submit_benchmark_eval(
+                        nb=nb,
+                        exp_id=exp_id,
+                        source_result_id=source_result_id,
+                        source=source,
+                        model_source=model_source,
+                        graph_json_str=graph_json_str,
+                        arch_spec_json_str=arch_spec_json_str,
+                        n_passed=n_passed,
+                        best_lr=best_lr,
+                        best_tp_json=best_tp_json,
+                        robustness=robustness,
+                        investigation_passed=investigation_passed,
+                        config=config,
+                        dev=dev,
+                        cached_json_load=self._cached_json_load,
+                    )
+                else:
+                    _record_investigation_result(
+                        nb=nb,
+                        exp_id=exp_id,
+                        source_result_id=source_result_id,
+                        source=source,
+                        model_source=model_source,
+                        graph_json_str=graph_json_str,
+                        arch_spec_json_str=arch_spec_json_str,
+                        n_passed=n_passed,
+                        best_lr=best_lr,
+                        best_tp_json=best_tp_json,
+                        robustness=robustness,
+                        investigation_passed=investigation_passed,
+                        benchmark_result={},
+                    )
+
+            # Complete experiment with LLM analysis (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[282:381]
+==research.synthesis.compiler_ops_math:[22:105]
+    x = inputs[0]
+    if _c(x): return aria_core.neg_f32(x)
+    return -x
+
+@register_op("abs")
+def _op_abs(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.abs_f32(x)
+    return torch.abs(x)
+
+@register_op("exp")
+def _op_exp(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.exp_f32(torch.clamp(x, -20, 20))
+    return torch.exp(torch.clamp(x, -20, 20))
+
+@register_op("log")
+def _op_log(_, inputs, __):
+    x = inputs[0]
+    # softplus(x) = log(1+exp(x)) is always positive with bounded gradient
+    # log(softplus(x)) gives log-like behavior without near-zero input issues
+    soft = F.softplus(x, beta=1.0, threshold=20)
+    if _c(x): return aria_core.log_f32(soft.detach())
+    return torch.log(soft)
+
+@register_op("sin")
+def _op_sin(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.sin_f32(x)
+    return torch.sin(x)
+
+@register_op("cos")
+def _op_cos(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.cos_f32(x)
+    return torch.cos(x)
+
+@register_op("tanh")
+def _op_tanh(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.tanh_f32(x)
+    return torch.tanh(x)
+
+@register_op("sigmoid")
+def _op_sigmoid(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.sigmoid_f32(x)
+    return torch.sigmoid(x)
+
+@register_op("relu")
+def _op_relu(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.relu_f32(x)
+    return F.relu(x)
+
+@register_op("gelu")
+def _op_gelu(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.gelu_f32(x)
+    return F.gelu(x)
+
+@register_op("silu")
+def _op_silu(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.silu_f32(x)
+    return F.silu(x)
+
+@register_op("sqrt")
+def _op_sqrt(_, inputs, __):
+    x = inputs[0]
+    clamped = torch.clamp(x.abs(), min=1e-8)
+    if _c(x): return aria_core.sqrt_f32(clamped)
+    return torch.sqrt(clamped)
+
+@register_op("square")
+def _op_square(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.square_f32(x)
+    return x * x
+
+@register_op("sign_ste")
+def _op_sign_ste(_, inputs, __):
+    x = inputs[0]
+    if _c(x):
+        signs = aria_core.sign_ste_f32(x)
+        return x + (signs - x).detach()
+    signs = torch.sign(x)
+    return x + (signs - x).detach()
+
+@register_op("reciprocal")
+def _op_reciprocal(_, inputs, __):
+    x = inputs[0]
+    if _c(x): return aria_core.reciprocal_f32(x)
+    # Sigmoid-based: 1/(1+sigmoid(x)), range [0.5, 1.0], bounded gradient
+    return 1.0 / (1.0 + torch.sigmoid(x))
+
+@register_op("add")
+def _op_add(_, inputs, __):
+    a, b = inputs[0], inputs[1] (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.leaderboard_scoring:[512:586]
+==research.scientist.notebook.notebook_misc:[655:742]
+        score = 0.0
+
+        # ── Performance (40 pts) ──
+        lr = row.get("loss_ratio")
+        if lr is not None and lr > 0:
+            # Lower LR is better; LR=0.1 → 40pts, LR=0.8 → ~8pts
+            score += max(0, min(40, 40 * (1.0 - float(lr))))
+
+        dlr = row.get("discovery_loss_ratio")
+        if dlr is not None and dlr > 0:
+            # Bonus: up to 5pts from discovery loss (replaces top of performance)
+            score += max(0, min(5, 5 * (1.0 - float(dlr))))
+
+        lir = row.get("loss_improvement_rate")
+        if lir is not None and float(lir) > 0:
+            # Up to 5pts for improvement rate
+            score += min(5, float(lir) * 10)
+
+        # Cap performance at 40
+        score = min(40, score)
+
+        # ── Stability (20 pts) ──
+        stab = row.get("stability_score")
+        if stab is not None:
+            score += min(10, float(stab) * 10)
+
+        sn = row.get("fp_jacobian_spectral_norm")
+        if sn is not None and float(sn) > 0:
+            # Gaussian centered on 1.0: score = 6 * exp(-(log(sn))^2 / 2)
+            log_sn = math.log(float(sn))
+            score += max(0, min(6, 6 * math.exp(-log_sn * log_sn / 2.0)))
+
+        gns = row.get("grad_norm_std")
+        if gns is not None:
+            # Lower grad_norm_std is better; up to 4pts
+            score += max(0, min(4, 4 * max(0, 1.0 - float(gns))))
+
+        # ── Novelty (20 pts) ──
+        ns = row.get("novelty_score")
+        nc = row.get("novelty_confidence")
+        if ns is not None:
+            conf = float(nc) if nc is not None else 0.5
+            score += min(10, float(ns) * conf * 10)
+
+        sn_nov = row.get("structural_novelty")
+        if sn_nov is not None:
+            score += min(5, float(sn_nov) * 5)
+
+        bn = row.get("behavioral_novelty")
+        if bn is not None:
+            score += min(5, float(bn) * 5)
+
+        # ── Fingerprint quality (10 pts) ──
+        fid = row.get("fp_intrinsic_dim")
+        if fid is not None and float(fid) > 0:
+            # Higher intrinsic dim → better; up to 4pts, cap at dim=20
+            score += min(4, float(fid) / 5.0)
+
+        fiso = row.get("fp_isotropy")
+        if fiso is not None:
+            score += min(3, float(fiso) * 3)
+
+        frr = row.get("fp_rank_ratio")
+        if frr is not None:
+            score += min(3, float(frr) * 3)
+
+        # ── Efficiency (10 pts) ──
+        tp = row.get("throughput_tok_s")
+        if tp is not None and float(tp) > 0:
+            # Higher throughput → better; up to 5pts, 10k tok/s → 5pts
+            score += min(5, float(tp) / 2000.0)
+
+        mem = row.get("peak_memory_mb")
+        if mem is not None and float(mem) > 0:
+            # Lower memory → better; up to 5pts, 100MB → 5pts, 500MB → 1pt
+            score += max(0, min(5, 5 * (1.0 - float(mem) / 600.0)))
+
+        # ── Reference penalty (-20 pts) ──
+        if best_ref_lr is not None and lr is not None:
+            if float(lr) > 1.5 * float(best_ref_lr):
+                score -= 20
+
+        return max(0, min(100, round(score, 2)))
+
+
+    def get_references(self) -> List[Dict]:
+        """Get all pinned reference architectures.""" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[749:811]
+==research.synthesis.compiler_ops_attention:[19:72]
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    q = module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    k = module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
+    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    attn.masked_fill_(mask, float("-inf"))
+    attn = F.softmax(attn, dim=-1)
+    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    return module.o_proj(out)
+
+@register_op("linear_attention")
+def _op_linear_attention(module, inputs, _):
+    """Linear attention with ELU kernel (O(S) complexity)."""
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    q = F.elu(module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
+    k = F.elu(module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
+    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    # Causal linear attention via cumulative sum
+    kv = torch.einsum("bhsd,bhse->bhsde", k, v)
+    kv_cumsum = kv.cumsum(dim=2)
+    k_cumsum = k.cumsum(dim=2)
+    out = torch.einsum("bhsd,bhsde->bhse", q, kv_cumsum)
+    denom = torch.einsum("bhsd,bhsd->bhs", q, k_cumsum).unsqueeze(-1).clamp(min=1e-6)
+    out = out / denom
+    return module.o_proj(out.transpose(1, 2).reshape(B, S, -1))
+
+@register_op("graph_attention")
+def _op_graph_attention(module, inputs, _):
+    """Graph attention with learned edge features + causal softmax attention."""
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim
+    x_e = x + module.edge_proj(x)
+    q = module.q_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    k = module.k_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    v = module.v_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
+    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    attn.masked_fill_(mask, float("-inf"))
+    attn = F.softmax(attn, dim=-1)
+    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    return module.o_proj(out)
+
+@register_op("diff_attention")
+def _op_diff_attention(module, inputs, _):
+    """Differential attention: two softmax maps subtracted to cancel noise.
+
+    Q/K are split into two groups. Two separate softmax attention maps
+    are computed and subtracted, cancelling common-mode noise and
+    amplifying relevant signal. (Microsoft, ICLR 2025)
+    """ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[784:829]
+==research.scientist.runner.execution_validation:[314:359]
+                    "seeds_passed": len(passed_seeds),
+                    "total_seeds": config.validation_n_seeds,
+                    "is_breakthrough": is_breakthrough,
+                    "flop_gated": flop_gated,
+                    "quant_int8_retention": quant_int8_retention,
+                    "quant_quality_per_byte": quant_quality_per_byte,
+                    "long_context_score": long_context_score,
+                    "noise_sensitivity_score": noise_score,
+                    "init_sensitivity_std": init_sensitivity_std,
+                    "novelty_confidence": nov_conf,
+                    "ood_robustness": ood_result,
+                    "sensitivity": sensitivity_result,
+                    "activation_sparsity_score": activation_sparsity_score,
+                    "dead_neuron_ratio": dead_neuron_ratio,
+                    "routing_collapse_score": routing_collapse_score,
+                    "wikitext_perplexity": wikitext_perplexity,
+                    "wikitext_score": wikitext_score,
+                    "tinystories_perplexity": tinystories_perplexity,
+                    "tinystories_score": tinystories_score,
+                    "cross_task_score": cross_task_score,
+                    "efficiency_wall_score": efficiency_wall_score,
+                    "max_viable_seq_len": max_viable_seq_len,
+                    "scaling_regime": scaling_regime,
+                }
+                results["validation_results"].append(validation_entry)
+
+                if val_loss_ratio and (results["best_loss_ratio"] is None
+                                       or val_loss_ratio < results["best_loss_ratio"]):
+                    results["best_loss_ratio"] = val_loss_ratio
+                source_novelty = source.get("novelty_score")
+                if source_novelty is not None and (
+                    results["best_novelty_score"] is None
+                    or source_novelty > results["best_novelty_score"]
+                ):
+                    results["best_novelty_score"] = source_novelty
+
+                # Update leaderboard — direct lookup by result_id
+                entry = nb.get_leaderboard_entry(source_result_id)
+                if entry:
+                    nb.promote_to_tier(
+                        entry_id=entry["entry_id"],
+                        tier=tier,
+                        validation_loss_ratio=val_loss_ratio,
+                        validation_baseline_ratio=val_baseline_ratio,
+                        validation_multi_seed_std=multi_seed_std, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_modes:[518:567]
+==research.scientist.runner.execution_search:[292:340]
+                        batch_size=2,
+                        seq_len=min(128, config.max_seq_len),
+                        vocab_size=config.vocab_size,
+                        device=dev_str,
+                    )
+                    if not sandbox_result.passed:
+                        del model
+                        fitness = 0.0
+                        fitness_cache[gfp] = fitness
+                        on_evaluate(graph, fitness, sandbox_result, s1_result)
+                        return fitness
+
+                    # Compute behavioral fingerprint while model is in memory
+                    try:
+                        bfp = compute_fingerprint(
+                            model,
+                            seq_len=min(64, config.max_seq_len),
+                            model_dim=config.model_dim,
+                            vocab_size=config.vocab_size,
+                            device=dev_str,
+                        )
+                        fingerprint_cache[gfp] = bfp
+                    except Exception as e:
+                        logger.debug("Fingerprint computation failed: %s", e)
+
+                    s1_result = self._micro_train(
+                        model,
+                        config,
+                        dev,
+                        seed=self._stable_seed("fitness", gfp),
+                    )
+                    del model
+                    if dev.type == "cuda":
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                    if s1_result.get("passed"):
+                        fitness, _components = self._compute_multi_objective_fitness(
+                            s1_result, sandbox_result, graph, config)
+                    else:
+                        fitness = 0.1
+                except Exception:
+                    fitness = 0.0
+
+                fitness_cache[gfp] = fitness
+                on_evaluate(graph, fitness, sandbox_result, s1_result)
+                return fitness
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[511:575]
+==research.tests.test_sandbox_integration:[673:740]
+        self.assertIn("/api/analytics/insight-interactions", learning_panel_content)
+
+    @staticmethod
+    def _normalize_route(path: str) -> str:
+        import re
+
+        p = path.split("?", 1)[0]
+        p = re.sub(r"<[^>]+>", "*", p)
+        p = re.sub(r"\$\{[^}]+\}", "*", p)
+        p = re.sub(r"//+", "/", p)
+        return p.rstrip("/") or "/"
+
+    @staticmethod
+    def _route_matches(backend: str, frontend: str) -> bool:
+        if backend == frontend:
+            return True
+
+        b_parts = [p for p in backend.strip("/").split("/") if p]
+        f_parts = [p for p in frontend.strip("/").split("/") if p]
+        if len(b_parts) != len(f_parts):
+            return False
+
+        for b, f in zip(b_parts, f_parts):
+            if b == "*" or f == "*":
+                continue
+            if b != f:
+                return False
+        return True
+
+    def test_strategy_advisor_compute_strategy_includes_data_sources(self):
+        """Every computeStrategy() return path must include a non-empty dataSources array."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        # All 10 return paths in computeStrategy should have dataSources
+        self.assertIn("dataSources: [", content)
+        # Check that key rules include specific metric names
+        self.assertIn("metric: 'Total Experiments'", content)
+        self.assertIn("metric: 'Breakthrough Candidates'", content)
+        self.assertIn("metric: 'S1 Pass Rate'", content)
+        self.assertIn("metric: 'Under-tested Math Families'", content)
+        self.assertIn("metric: 'Consecutive Zero-Survivor Runs'", content)
+        self.assertIn("metric: 'Pipeline Status'", content)
+
+    def test_strategy_advisor_briefing_data_source_extraction(self):
+        """extractBriefingDataSources should convert evidence fields into dataSources format."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("function extractBriefingDataSources(evidence)", content)
+        self.assertIn("metric: 'Learning Trend'", content)
+        self.assertIn("metric: 'Recent Avg S1 Rate'", content)
+        self.assertIn("metric: 'Sparsity Coverage'", content)
+        self.assertIn("metric: 'Pipeline Distribution'", content)
+
+    def test_strategy_advisor_data_source_badge_renders_tooltip(self):
+        """DataSourceBadge must render tooltip with data source details on hover."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+        self.assertIn("function DataSourceBadge(", content)
+        self.assertIn("Recommended Action", content)
+        self.assertIn("Data Sources", content)
+        self.assertIn("mergedDataSources", content)
+        # Tooltip should show comparison text and navigable tab links
+        self.assertIn("formatComparison(ds)", content)
+        self.assertIn("onNavigateEvidence(ds.tab)", content)
+
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1792:1853]
+==research.synthesis.compiler_ops_mathspaces:[18:75]
+    if not hasattr(module, 'weight'): return inputs[0]
+    x = inputs[0]
+    if (
+        _c(x)
+        and hasattr(aria_core, "basis_expansion_f32")
+        and isinstance(module.weight, torch.Tensor)
+    ):
+        freqs = module.weight
+        n_bases = int(freqs.shape[0]) if freqs.dim() > 0 else 1
+        try:
+            native_out = aria_core.basis_expansion_f32(x, freqs, n_bases)
+            if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
+                return native_out
+        except Exception:
+            pass
+    w = module.weight
+    expanded = torch.sin(inputs[0] * w[0]) + torch.cos(inputs[0] * w[1]) + \
+               torch.sin(inputs[0] * w[2]) + torch.cos(inputs[0] * w[3])
+    return expanded * 0.25
+
+@register_op("integral_kernel")
+def _op_integral_kernel(module, inputs, config):
+    if not hasattr(module, 'weight'): return inputs[0]
+    B, S, D = inputs[0].shape
+    pos = torch.arange(S, device=inputs[0].device, dtype=inputs[0].dtype).unsqueeze(1)
+    kernel = torch.exp(-float(config.get("kernel_scale", 0.25)) * (pos - pos.t()).abs().float())
+    causal_mask = (pos >= pos.t()).float()  # lower-triangular: position i attends only to j <= i
+    kernel = kernel * causal_mask
+    kernel = kernel / kernel.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    return F.linear(torch.bmm(kernel.unsqueeze(0).expand(B, -1, -1), inputs[0]), module.weight)
+
+@register_op("fixed_point_iter")
+def _op_fixed_point_iter(module, inputs, config):
+    """
+    Fixed-point iteration vectorized over the sequence and batch dimensions.
+    """
+    if not hasattr(module, 'weight'): return inputs[0]
+    B, S, D = inputs[0].shape
+    W = module.weight[:D, :]
+    b = module.weight[D, :] if module.weight.shape[0] > D else torch.zeros(D, device=inputs[0].device)
+    z = inputs[0]
+    n_iters = max(1, int(config.get("n_iters", 3)))
+    damping = max(0.0, min(1.0, float(config.get("damping", 0.5))))
+    for _ in range(n_iters):
+        z = (1.0 - damping) * z + damping * torch.tanh(F.linear(z, W) + b)
+    return z
+
+@register_op("rfft_seq")
+def _op_rfft_seq(_, inputs, __): return torch.fft.rfft(inputs[0], dim=1).real
+
+@register_op("irfft_seq")
+def _op_irfft_seq(_, inputs, __):
+    B, S_freq, D = inputs[0].shape
+    # Ensure real-valued output for downstream ops by making imaginary part zero
+    # and ensuring n is correctly set to reconstruct full sequence length
+    comp = torch.complex(inputs[0], torch.zeros_like(inputs[0]))
+    return torch.fft.irfft(comp, n=(S_freq - 1) * 2, dim=1)
+
+@register_op("tropical_center")
+def _op_tropical_center(_, inputs, __):
+    """Causal min centering: subtract cumulative minimum to preserve causality.""" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[308:363]
+==research.tests.test_sandbox_integration:[478:533]
+        for filepath in self.component_files + [self.app_js]:
+            content = self._read_file(filepath)
+            found = re.findall(r"/api/[A-Za-z0-9_\-/${}]+(?:/[A-Za-z0-9_\-/${}]+)*", content)
+            for path in found:
+                normalized = self._normalize_route(path)
+                matched = any(self._route_matches(b, normalized) for b in backend_routes)
+                self.assertTrue(
+                    matched,
+                    f"Frontend route has no backend mapping: {path} in {os.path.basename(filepath)}",
+                )
+
+    def test_strategy_advisor_breakthrough_count_uses_tier(self):
+        """StrategyAdvisor should derive tier counts from tier + use canonical summary keys."""
+        strategy_path = os.path.join(self.component_dir, "StrategyAdvisor.js")
+        content = self._read_file(strategy_path)
+
+        self.assertIn("const tier = normalizeTier(entry);", content)
+        self.assertIn("const effectiveTier = tier || 'screening';", content)
+        self.assertIn("tierSummary[effectiveTier] += 1;", content)
+        self.assertIn("if (effectiveTier === 'breakthrough')", content)
+        self.assertIn("total_programs_evaluated", content)
+
+    def test_research_report_uses_stage1_survivors_summary_key(self):
+        """ReportDetail should read stage1_survivors (with legacy fallback)."""
+        detail_path = os.path.join(self.component_dir, "ReportDetail.js")
+        content = self._read_file(detail_path)
+        self.assertIn("const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;", content)
+
+    def test_research_report_wires_scoped_query_builder_controls(self):
+        detail_path = os.path.join(self.component_dir, "ReportDetail.js")
+        content = self._read_file(detail_path)
+        self.assertIn("/api/report/query", content)
+        self.assertIn("Generate Scoped Report", content)
+        self.assertIn("Load Full Details", content)
+        self.assertIn("theme", content)
+        self.assertIn("trend", content)
+        self.assertIn("fast: fast ? '1' : '0'", content)
+
+    def test_investigation_actions_use_eligibility_gating_hooks(self):
+        """App + candidate views should wire explicit eligibility gating for investigate/queue actions."""
+        app_content = self._read_file(self.app_js)
+        leaderboard_content = self._read_file(os.path.join(self.component_dir, "Leaderboard.js"))
+        top_programs_content = self._read_file(os.path.join(self.component_dir, "TopPrograms.js"))
+        program_detail_content = self._read_file(os.path.join(self.component_dir, "ProgramDetail.js"))
+
+        # eligibilityByResultId is now derived from shared AriaData context
+        self.assertIn("buildEligibilityByResultId(leaderboardEntries", app_content)
+        self.assertIn("eligibilityByResultId", app_content)
+        self.assertIn("filter(resultId => eligibilityByResultId[resultId]?.investigationEligible)", app_content)
+        self.assertIn("eligibilityByResultId={eligibilityByResultId}", app_content)
+        self.assertIn("intent: item?.intent === 'validation' ? 'validation' : 'investigation'", app_content)
+        self.assertIn("const stillEligibleForIntent = intent === 'validation'", app_content)
+        self.assertIn("filter(item => item.intent === 'investigation')", app_content)
+        self.assertIn("filter(item => item.intent === 'validation')", app_content)
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==aria_core.aria_core.__init__:[4:50]
+==aria_core:[4:50]
+_C_AVAILABLE = False
+_C_IMPORT_ERROR = None
+try:
+    from ._C import *  # noqa: F401,F403
+    _C_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as exc:
+    _C_IMPORT_ERROR = exc
+    warnings.warn(
+        "aria_core native extension unavailable; import succeeded in fallback mode. "
+        "Build/install aria_core._C for native kernels.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
+def __getattr__(name: str):
+    if not _C_AVAILABLE:
+        if name == "relu_f32":
+            return lambda x: torch.relu(x)
+        if name == "gelu_f32":
+            return lambda x: torch.nn.functional.gelu(x)
+        if name == "add_f32":
+            return lambda a, b: a + b
+        if name == "sub_f32":
+            return lambda a, b: a - b
+        if name == "mul_f32":
+            return lambda a, b: a * b
+        if name == "matmul_f32":
+            return lambda a, b: a @ b
+        if name == "linear_f32":
+            return lambda x, w, b=None: torch.nn.functional.linear(x, w, b)
+        if name == "softmax_f32":
+            return lambda x: torch.nn.functional.softmax(x, dim=-1)
+        if name == "rmsnorm_f32":
+            def _rmsnorm_f32(x, w, eps=1e-5):
+                rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps)
+                return (x / rms) * w
+
+            return _rmsnorm_f32
+        raise ModuleNotFoundError(
+            "aria_core._C is not available; native kernels are not loaded. "
+            "Install/build aria_core extension before using kernel symbols."
+        ) from _C_IMPORT_ERROR
+    raise AttributeError(name)
+
+__version__ = "0.1.0" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[389:474]
+==research.synthesis.compiler_ops_math:[111:182]
+    return a * b
+
+def _op_sub(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a): return aria_core.sub_f32(a, b)
+    return a - b
+
+def _op_div_safe(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a): return aria_core.div_safe_f32(a, b)
+    # Sigmoid denominator: range [1, 2], always positive, bounded gradient
+    return a / (1.0 + torch.sigmoid(b))
+
+def _op_maximum(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a): return aria_core.maximum_f32(a, b)
+    return torch.maximum(a, b)
+
+def _op_minimum(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a): return aria_core.minimum_f32(a, b)
+    return torch.minimum(a, b)
+
+def _op_sum_last(_, inputs, __): return inputs[0].sum(dim=-1, keepdim=True)
+
+def _op_mean_last(_, inputs, __): return inputs[0].mean(dim=-1, keepdim=True)
+
+def _op_max_last(_, inputs, __): return inputs[0].max(dim=-1, keepdim=True).values
+
+def _op_norm_last(_, inputs, __): return inputs[0].norm(dim=-1, keepdim=True)
+
+def _op_sum_seq(_, inputs, __): return inputs[0].sum(dim=1, keepdim=True)
+
+def _op_mean_seq(_, inputs, __): return inputs[0].mean(dim=1, keepdim=True)
+
+def _op_cumsum(_, inputs, __): return torch.cumsum(inputs[0], dim=1)
+
+def _op_cumprod_safe(_, inputs, __): return torch.cumprod(torch.clamp(inputs[0], -2, 2), dim=1)
+
+def _op_matmul(_, inputs, __):
+    a, b = inputs
+    if a.dim() != 3 or b.dim() != 3:
+        return a # Fallback for safety
+
+    # CASE 1: Standard Attention Pattern [B, S, D] @ [B, S, D]
+    if a.shape[-1] == b.shape[-1]:
+        scale = math.sqrt(float(a.shape[-1]))
+        # (B, S, D) @ (B, D, S) -> (B, S, S)
+        scores = torch.bmm(a, b.transpose(-2, -1)) / scale
+        S = a.shape[1]
+        if S > 1:
+            mask = torch.triu(torch.ones(S, S, device=a.device, dtype=torch.bool), diagonal=1)
+            scores.masked_fill_(mask, float('-inf'))
+        # (B, S, S) @ (B, S, D) -> (B, S, D)
+        return torch.bmm(F.softmax(scores, dim=-1), b)
+
+    # CASE 2: Linear Algebra Pattern [B, S, D] @ [B, D, K]
+    if a.shape[2] == b.shape[1]:
+        if _c(a): return aria_core.matmul_f32(a, b)
+        return torch.bmm(a, b)
+
+    # CASE 3: Incompatible fallback
+    return a
+
+def _op_outer_product(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a): return aria_core.mul_f32(a, b)
+    return a * b
+
+def _op_transpose_sd(_, inputs, __):
+    # Swap sequence (dim=1) and feature (dim=2) dimensions (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[73:112]
+==research.tests.test_sandbox_integration:[245:284]
+            "/api/report", "/api/events", "/api/progress",
+            "/api/config", "/api/validate",
+            "/api/aria/recommendation", "/api/aria/strategy",
+            "/api/strategy/briefing",
+            "/api/llm/config",
+            "/api/analytics/op-success", "/api/analytics/failure-patterns",
+            "/api/analytics/grammar-weights", "/api/analytics/efficiency-frontier",
+            "/api/analytics/learning-log", "/api/analytics/experiment-clusters",
+            "/api/analytics/routing-health", "/api/analytics/math-family-coverage",
+            "/api/analytics/mathspace-impact",
+            "/api/analytics/routing-comparison",
+            "/api/analytics/gating-diagnostics",
+            "/api/analytics/gate-health",
+            "/api/analytics/compression-coverage",
+            "/api/analytics/learning-summary",
+            "/api/analytics/insight-interactions",
+            "/api/analytics/learning-trajectory",
+            "/api/analytics/control-comparison",
+            "/api/metrics/",
+            "/api/experiments/start", "/api/experiments/stop",
+            "/api/experiments/",
+            "/api/campaigns", "/api/hypotheses",
+            "/api/knowledge",
+            "/api/decision-packet/",
+            "/api/reproducibility-manifest/",
+            "/api/analytics/negative-results",
+            "/api/aria/chat",
+            "/api/aria/chat/history",
+            "/api/aria/chat/message",
+            "/api/aria/chat/compact",
+            "/api/aria/cycle-status",
+            "/api/aria/cycle-control",
+            "/api/aria/cycle-history",
+            "/api/aria/agent/status/",
+            "/api/aria/agent/spawn",
+            "/api/aria/tools",
+            "/api/aria/diagnose",
+            "/api/designer/lineage",
+            "/api/designer/ensure-running", (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[829:868]
+==research.scientist.runner.execution_validation:[361:402]
+                            validation_passed=len(passed_seeds) > 0,
+                            normalized_baseline_ratio=val_normalized_ratio,
+                            param_efficiency=val_param_efficiency,
+                            quant_int8_retention=quant_int8_retention,
+                            quant_quality_per_byte=quant_quality_per_byte,
+                            robustness_long_ctx_score=long_context_score,
+                            robustness_noise_score=noise_score,
+                            init_sensitivity_std=init_sensitivity_std,
+                            fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+                            scaling_param_efficiency=scaling_param_efficiency,
+                            scaling_d512_param_efficiency=scaling_d512_param_efficiency,
+                            scaling_flop_efficiency=scaling_flop_efficiency,
+                            scaling_gate_passed=scaling_gate_passed_val,
+                            scaling_best_family=scaling_best_family,
+                            scaling_confidence=scaling_confidence,
+                            activation_sparsity_score=activation_sparsity_score,
+                            dead_neuron_ratio=dead_neuron_ratio,
+                            routing_collapse_score=routing_collapse_score,
+                            wikitext_perplexity=wikitext_perplexity,
+                            wikitext_score=wikitext_score,
+                            tinystories_perplexity=tinystories_perplexity,
+                            tinystories_score=tinystories_score,
+                            cross_task_score=cross_task_score,
+                            efficiency_wall_score=efficiency_wall_score,
+                            max_viable_seq_len=max_viable_seq_len,
+                            scaling_regime=scaling_regime,
+                        )
+                    # Store detailed benchmark payload
+                    external_benchmarks_payload = {}
+                    scaling_payload = coerce_dict_payload(scaling_result)
+                    if scaling_payload is not None:
+                        external_benchmarks_payload.update(scaling_payload)
+                        external_benchmarks_payload["scaling_comparison"] = scaling_payload
+                    if long_context_details is not None:
+                        external_benchmarks_payload["long_context"] = long_context_details
+                    if external_benchmarks_payload:
+                        nb.set_external_benchmarks(source_result_id, external_benchmarks_payload)
+
+                # Trajectory probe — run after leaderboard update to get
+                # peak_ppl / steps_to_divergence / ppl_500 for breakthrough
+                # detection and composite scoring. (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[508:571]
+==research.synthesis.compiler_ops_math:[211:257]
+def _op_roll_seq(_, inputs, __): return torch.roll(inputs[0], shifts=1, dims=1)
+
+def _op_roll_neg(_, inputs, __): return torch.roll(inputs[0], shifts=-1, dims=1)
+
+def _op_multi_head_mix(_, inputs, config):
+    x = inputs[0]
+    B, S, D = x.shape
+    H = config.get("n_heads", 4)
+    if D % H != 0: H = 1
+    return F.normalize(x.view(B, S, H, -1), p=2, dim=-1).view(B, S, D)
+
+def _op_linear_common(module, inputs, _):
+    if not hasattr(module, 'weight'): return inputs[0]
+    x = inputs[0]
+    if _c(x):
+        xf, orig_shape = _flatten_for_kernel(x)
+        bias = getattr(module, 'bias', None)
+        out = aria_core.linear_f32(xf, module.weight, bias)
+        return _unflatten_from_kernel(out, orig_shape)
+    return F.linear(x, module.weight, getattr(module, 'bias', None))
+
+def _op_fused_linear_gelu(module, inputs, _):
+    if not hasattr(module, 'weight'): return inputs[0]
+    x = inputs[0]
+    if _c(x):
+        xf, orig_shape = _flatten_for_kernel(x)
+        bias = getattr(module, 'bias', None)
+        if bias is None:
+            bias = torch.zeros(module.weight.shape[0], device=x.device, dtype=x.dtype)
+        out = aria_core.fused_linear_gelu_f32(xf, module.weight, bias)
+        return _unflatten_from_kernel(out, orig_shape)
+    if HAS_KERNELS and x.is_cuda:
+        bias = getattr(module, 'bias', None)
+        return kernels.fused_linear_gelu(x, module.weight, bias)
+    out = F.linear(x, module.weight)
+    if hasattr(module, 'bias'): out = out + module.bias
+    return F.gelu(out)
+
+def _op_learnable_scale(module, inputs, _):
+    if not hasattr(module, 'scale'): return inputs[0]
+    return inputs[0] * module.scale
+
+def _op_learnable_bias(module, inputs, _):
+    if not hasattr(module, 'bias'): return inputs[0]
+    return inputs[0] + module.bias
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_notebook:[21:74]
+==research.tests.test_primitives_integration:[21:72]
+pytestmark = pytest.mark.unit
+
+# Detect available dependencies
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+try:
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
+
+# Import modules that don't require torch directly
+# (bypass scientist/__init__.py which eagerly imports runner)
+def _import_module(dotted_path):
+    """Import a submodule without triggering parent __init__.py."""
+    return importlib.import_module(dotted_path)
+
+
+try:
+    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    HAS_NOTEBOOK = True
+except Exception as e:
+    HAS_NOTEBOOK = False
+    print(f"Notebook import failed: {e}")
+
+try:
+    from research.scientist.persona import Aria
+    HAS_PERSONA = True
+except Exception as e:
+    HAS_PERSONA = False
+    print(f"Persona import failed: {e}")
+
+try:
+    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+    HAS_PROMPTS = True
+except Exception as e:
+    HAS_PROMPTS = False
+    print(f"Prompts import failed: {e}")
+
+try:
+    import research.scientist.llm.context as _context_mod  # noqa: F401
+    HAS_CONTEXT = True
+except Exception as e:
+    HAS_CONTEXT = False
+    print(f"Context import failed: {e}")
+
+
+# ── Test 1: Notebook & Leaderboard ──
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_pipeline_integration:[21:74]
+==research.tests.test_sandbox_integration:[21:71]
+pytestmark = pytest.mark.pipeline
+
+# Detect available dependencies
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+try:
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
+
+# Import modules that don't require torch directly
+# (bypass scientist/__init__.py which eagerly imports runner)
+def _import_module(dotted_path):
+    """Import a submodule without triggering parent __init__.py."""
+    return importlib.import_module(dotted_path)
+
+
+try:
+    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    HAS_NOTEBOOK = True
+except Exception as e:
+    HAS_NOTEBOOK = False
+    print(f"Notebook import failed: {e}")
+
+try:
+    from research.scientist.persona import Aria
+    HAS_PERSONA = True
+except Exception as e:
+    HAS_PERSONA = False
+    print(f"Persona import failed: {e}")
+
+try:
+    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+    HAS_PROMPTS = True
+except Exception as e:
+    HAS_PROMPTS = False
+    print(f"Prompts import failed: {e}")
+
+try:
+    import research.scientist.llm.context as _context_mod  # noqa: F401
+    HAS_CONTEXT = True
+except Exception as e:
+    HAS_CONTEXT = False
+    print(f"Context import failed: {e}")
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_persona_integration:[21:77]
+==research.tests.test_synthesis_integration:[21:71]
+pytestmark = pytest.mark.unit
+
+# Detect available dependencies
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+try:
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
+
+# Import modules that don't require torch directly
+# (bypass scientist/__init__.py which eagerly imports runner)
+def _import_module(dotted_path):
+    """Import a submodule without triggering parent __init__.py."""
+    return importlib.import_module(dotted_path)
+
+
+try:
+    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    HAS_NOTEBOOK = True
+except Exception as e:
+    HAS_NOTEBOOK = False
+    print(f"Notebook import failed: {e}")
+
+try:
+    from research.scientist.persona import Aria
+    HAS_PERSONA = True
+except Exception as e:
+    HAS_PERSONA = False
+    print(f"Persona import failed: {e}")
+
+try:
+    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+    HAS_PROMPTS = True
+except Exception as e:
+    HAS_PROMPTS = False
+    print(f"Prompts import failed: {e}")
+
+try:
+    import research.scientist.llm.context as _context_mod  # noqa: F401
+    HAS_CONTEXT = True
+except Exception as e:
+    HAS_CONTEXT = False
+    print(f"Context import failed: {e}")
+
+
+# TestAriaModeSelecion lives in test_runner_mode_selection.py
+
+
+# ── Test 5: Context Builders ──
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[569:616]
+==research.scientist.runner.execution_validation:[213:260]
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        # Parameter-normalized baseline comparison
+        val_normalized_ratio = None
+        val_param_efficiency = None
+        source_params = (source.get("param_count")
+                         or source.get("graph_n_params_estimate")
+                         or 0) if source else 0
+        if loss_ratios and best_seed is not None and source_params > 0:
+            try:
+                baseline = self._get_baseline()
+                baseline_steps = int(best_seed.get("n_train_steps") or config.validation_steps)
+                baseline_recipe = self._resolve_baseline_recipe(
+                    best_seed, default_lr=config.stage1_lr)
+                bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(config)
+                norm_result = baseline.compare_normalized(
+                    best_seed["final_loss"],
+                    program_params=int(source_params),
+                    d_model=config.model_dim,
+                    seq_len=min(128, config.validation_seq_len),
+                    n_steps=max(1, baseline_steps),
+                    vocab_size=config.vocab_size,
+                    batch_size=config.validation_batch_size,
+                    lr=baseline_recipe["lr"],
+                    device=dev_str,
+                    n_layers=config.n_layers,
+                    optimizer_name=baseline_recipe["optimizer_name"],
+                    weight_decay=baseline_recipe["weight_decay"],
+                    momentum=baseline_recipe["momentum"],
+                    betas=baseline_recipe["betas"],
+                    data_fn=bl_data_fn,
+                    data_tag=bl_data_tag,
+                    cache_data_fn=bl_cache,
+                )
+                val_normalized_ratio = norm_result.get("normalized_ratio")
+                val_param_efficiency = norm_result.get("param_efficiency")
+            except Exception:
+                pass
+
+        if len(passed_seeds) > 0:
+            results["stage1_passed"] += 1
+        results["stage0_passed"] += 1
+        results["stage05_passed"] += 1
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_primitives_integration:[24:72]
+==research.tests.test_sandbox_integration:[24:71]
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+try:
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
+
+# Import modules that don't require torch directly
+# (bypass scientist/__init__.py which eagerly imports runner)
+def _import_module(dotted_path):
+    """Import a submodule without triggering parent __init__.py."""
+    return importlib.import_module(dotted_path)
+
+
+try:
+    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    HAS_NOTEBOOK = True
+except Exception as e:
+    HAS_NOTEBOOK = False
+    print(f"Notebook import failed: {e}")
+
+try:
+    from research.scientist.persona import Aria
+    HAS_PERSONA = True
+except Exception as e:
+    HAS_PERSONA = False
+    print(f"Persona import failed: {e}")
+
+try:
+    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+    HAS_PROMPTS = True
+except Exception as e:
+    HAS_PROMPTS = False
+    print(f"Prompts import failed: {e}")
+
+try:
+    import research.scientist.llm.context as _context_mod  # noqa: F401
+    HAS_CONTEXT = True
+except Exception as e:
+    HAS_CONTEXT = False
+    print(f"Context import failed: {e}")
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_notebook:[24:74]
+==research.tests.test_pipeline_integration:[24:74]
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+try:
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
+
+# Import modules that don't require torch directly
+# (bypass scientist/__init__.py which eagerly imports runner)
+def _import_module(dotted_path):
+    """Import a submodule without triggering parent __init__.py."""
+    return importlib.import_module(dotted_path)
+
+
+try:
+    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    HAS_NOTEBOOK = True
+except Exception as e:
+    HAS_NOTEBOOK = False
+    print(f"Notebook import failed: {e}")
+
+try:
+    from research.scientist.persona import Aria
+    HAS_PERSONA = True
+except Exception as e:
+    HAS_PERSONA = False
+    print(f"Persona import failed: {e}")
+
+try:
+    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+    HAS_PROMPTS = True
+except Exception as e:
+    HAS_PROMPTS = False
+    print(f"Prompts import failed: {e}")
+
+try:
+    import research.scientist.llm.context as _context_mod  # noqa: F401
+    HAS_CONTEXT = True
+except Exception as e:
+    HAS_CONTEXT = False
+    print(f"Context import failed: {e}")
+
+
+# ── Test 3: RunConfig & Mode Selection ──
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[444:478]
+==research.scientist.runner.execution_investigation:[220:254]
+                        f"model failed to reconstruct for all {len(training_programs)} programs"
+                    )
+                    continue
+
+                # Compute robustness
+                n_passed = sum(1 for r in tp_results if r.get("passed"))
+                robustness = n_passed / max(len(tp_results), 1)
+                best_tp = min(
+                    (r for r in tp_results if r.get("loss_ratio") is not None),
+                    key=lambda r: r["loss_ratio"],
+                    default=None,
+                )
+                best_lr = best_tp["loss_ratio"] if best_tp else None
+                screening_lr = source.get("loss_ratio")
+                lr_multiplier = self._investigation_loss_multiplier(screening_lr, best_lr)
+                brittle_risk = (
+                    lr_multiplier is not None
+                    and lr_multiplier > float(config.investigation_max_loss_ratio_multiplier)
+                )
+
+                if n_passed > 0:
+                    results["stage1_passed"] += 1
+                results["stage0_passed"] += 1
+                results["stage05_passed"] += 1
+
+                # Gate: pass investigation if loss quality is good enough.
+                investigation_passed_early = (
+                    (best_lr or 1.0) < 0.5
+                    and (not brittle_risk
+                         or (best_lr is not None and best_lr < 0.3))
+                )
+
+                investigation_entry = {
+                    "result_id": source_result_id, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[146:185]
+==research.tests.test_sandbox_integration:[321:360]
+        self.assertIn("details sent to local agent", content)
+        self.assertIn("/api/aria/agent/status/${encodeURIComponent(taskId)}/summary", content)
+        self.assertIn("Open full task details", content)
+        self.assertIn("Guardrails (", content)
+
+    def test_event_bus_hook_contract_exposes_subscribe_for_action_queue(self):
+        hook_path = os.path.join(self.repo_root, "dashboard", "src", "hooks", "useEventBus.js")
+        action_queue_path = os.path.join(self.component_dir, "ActionQueue.js")
+        hook_content = self._read_file(hook_path)
+        action_content = self._read_file(action_queue_path)
+        self.assertIn("subscribe: ctx?.subscribe", hook_content)
+        self.assertIn("const eventBus = useEventBus()", action_content)
+        self.assertIn("if (typeof subscribe !== 'function') return undefined;", action_content)
+
+    def test_dashboard_wires_auto_repair_started_event_to_chat(self):
+        app_content = self._read_file(self.app_js)
+        chat_panel_path = os.path.join(self.component_dir, "AriaChatPanel.js")
+        chat_content = self._read_file(chat_panel_path)
+
+        self.assertIn("aria-auto-repair-started", app_content)
+        self.assertIn("emitAutoRepairStarted", app_content)
+        # Auto-repair UI moved into ActionQueue; state/handlers remain in App.js
+        self.assertIn("autoRepairTasks", app_content)
+        self.assertIn("window.addEventListener('aria-auto-repair-started'", chat_content)
+        self.assertIn("Auto-repair agent started", chat_content)
+
+    def test_dashboard_wires_production_readiness_panel(self):
+        app_content = self._read_file(self.app_js)
+        # Production readiness data still consumed; UI replaced by ActionQueue
+        self.assertIn("production_readiness", app_content)
+        # fingerprint diagnostics fetch in useAriaData hook
+        hook_content = self._read_file(os.path.join(
+            self.repo_root, "dashboard", "src", "hooks", "useAriaData.js"))
+        self.assertIn("/api/diagnostics/fingerprint", hook_content)
+        self.assertIn("handleRunProductionTemplate", app_content)
+
+    def test_architecture_drawer_auto_starts_designer(self):
+        drawer_path = os.path.join(self.component_dir, "ArchitectureDrawer.js")
+        content = self._read_file(drawer_path) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[113:145]
+==research.tests.test_sandbox_integration:[284:316]
+            "/api/designer/touch",
+            "/api/actions",
+            "/api/discoveries",
+            "/api/aria/autonomy",
+            "/api/aria/activity",
+        }
+
+        for filepath in self.component_files:
+            content = self._read_file(filepath)
+            # Find all fetch/API calls
+            urls = re.findall(
+                r'[`\'"](?:\$\{[^}]*\})?(/api/[a-z/_-]+)', content)
+            for url in urls:
+                # Normalize: remove dynamic segments
+                base_url = re.sub(r'/\$\{[^}]*\}', '/', url)
+                base_url = base_url.rstrip("/")
+
+                matched = any(
+                    base_url.startswith(pattern.rstrip("/"))
+                    for pattern in known_api_patterns
+                )
+                self.assertTrue(
+                    matched,
+                    f"Orphaned API URL in {os.path.basename(filepath)}: {url}",
+                )
+
+    def test_aria_chat_panel_auto_analysis_uses_single_briefing_endpoint(self):
+        chat_panel_path = os.path.join(self.component_dir, "AriaChatPanel.js")
+        content = self._read_file(chat_panel_path)
+        self.assertIn("/api/strategy/briefing", content)
+        self.assertNotIn("/api/aria/strategy", content)
+        self.assertNotIn("/api/aria/recommendation", content) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_modes:[396:423]
+==research.scientist.runner.execution_search:[144:175]
+        )
+
+        results = {
+            "total": eval_counters["total"],
+            "stage0_passed": eval_counters["s0"],
+            "stage05_passed": eval_counters["s0"],
+            "stage1_passed": eval_counters["s1"],
+            "novel_count": sum(1 for ind in population if ind.novelty > 0.5),
+            "best_loss_ratio": 1.0 - max((ind.fitness for ind in population), default=0),
+            "best_novelty_score": max((ind.novelty for ind in population), default=0),
+            "survivors": [],
+        }
+
+        for ind in population[:20]:
+            if ind.fitness > 0.2:
+                results["survivors"].append({
+                    "fingerprint": ind.fingerprint,
+                    "novelty": ind.novelty,
+                    "loss_ratio": 1.0 - ind.fitness,
+                })
+
+        nb.update_op_success_rates(exp_id)
+        nb.update_failure_signatures(exp_id)
+        context = self._build_rich_context_for_experiment(
+            results, config, hypothesis, nb)
+        summary = self.aria.experiment_summary(results, context=context)
+        llm_analysis = self.aria.analyze_results(results, context=context) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1863:1986]
+==research.synthesis.compiler_ops_mathspaces:[81:181]
+    return execute_ultrametric_attn(module, inputs[0])
+
+# ── Clifford algebra ops ──
+
+@register_op("clifford_attention")
+def _op_clifford_attention(module, inputs, config):
+    from ..mathspaces.clifford import execute_clifford_attention
+    return execute_clifford_attention(module, inputs[0])
+
+@register_op("geometric_product")
+def _op_geometric_product(module, inputs, config):
+    from ..mathspaces.clifford import execute_geometric_product
+    return execute_geometric_product(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("rotor_transform")
+def _op_rotor_transform(module, inputs, config):
+    from ..mathspaces.clifford import execute_rotor_transform
+    return execute_rotor_transform(module, inputs[0])
+
+@register_op("grade_select")
+def _op_grade_select(module, inputs, config):
+    from ..mathspaces.clifford import execute_grade_select
+    return execute_grade_select(module, inputs[0])
+
+@register_op("grade_mix")
+def _op_grade_mix(module, inputs, config):
+    from ..mathspaces.clifford import execute_grade_mix
+    return execute_grade_mix(module, inputs[0])
+
+# ── Hyperbolic ops ──
+
+@register_op("poincare_add")
+def _op_poincare_add(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_poincare_add
+    return execute_poincare_add(module, inputs[0])
+
+@register_op("exp_map")
+def _op_exp_map(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_exp_map
+    return execute_exp_map(module, inputs[0])
+
+@register_op("log_map")
+def _op_log_map(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_log_map
+    return execute_log_map(module, inputs[0])
+
+@register_op("hyp_distance")
+def _op_hyp_distance(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyp_distance
+    return execute_hyp_distance(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("hyp_linear")
+def _op_hyp_linear(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyp_linear
+    return execute_hyp_linear(module, inputs[0])
+
+@register_op("hyp_tangent_nonlinear")
+def _op_hyp_tangent_nonlinear(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyp_tangent_nonlinear
+    return execute_hyp_tangent_nonlinear(module, inputs[0])
+
+@register_op("hyperbolic_norm")
+def _op_hyperbolic_norm(module, inputs, config):
+    from ..mathspaces.hyperbolic import execute_hyperbolic_norm
+    return execute_hyperbolic_norm(module, inputs[0])
+
+# ── Tropical ops ──
+
+@register_op("tropical_add")
+def _op_tropical_add(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_add
+    return execute_tropical_add(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("tropical_matmul")
+def _op_tropical_matmul(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_matmul
+    return execute_tropical_matmul(module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0])
+
+@register_op("tropical_attention")
+def _op_tropical_attention(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_attention
+    return execute_tropical_attention(module, inputs[0])
+
+@register_op("tropical_gate")
+def _op_tropical_gate(module, inputs, config):
+    from ..mathspaces.tropical import execute_tropical_gate
+    return execute_tropical_gate(module, inputs[0])
+
+# ── p-adic ops ──
+
+@register_op("padic_expand")
+def _op_padic_expand(module, inputs, config):
+    from ..mathspaces.padic import execute_padic_expand
+    return execute_padic_expand(module, inputs[0])
+
+@register_op("padic_gate")
+def _op_padic_gate(module, inputs, config):
+    from ..mathspaces.padic import execute_padic_gate
+    return execute_padic_gate(module, inputs[0])
+
+# ── Spiking ops ──
+
+@register_op("lif_neuron")
+def _op_lif_neuron(module, inputs, config):
+    from ..mathspaces.spiking import execute_lif
+    return execute_lif(module, inputs[0])
+
+@register_op("spike_rate_code")
+def _op_spike_rate_code(module, inputs, config):
+    from ..mathspaces.spiking import execute_spike_rate_code
+    return execute_spike_rate_code(module, inputs[0])
+
+@register_op("stdp_attention")
+def _op_stdp_attention(module, inputs, config):
+    from ..mathspaces.spiking import execute_stdp_attention
+    return execute_stdp_attention(module, inputs[0])
+
+@register_op("sparse_threshold")
+def _op_sparse_threshold(module, inputs, config):
+    from ..mathspaces.spiking import execute_sparse_threshold
+    return execute_sparse_threshold(module, inputs[0])
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1055:1084]
+==research.synthesis.compiler_ops_attention:[72:99]
+    if not hasattr(module, 'weight'): return inputs[0]
+    x = inputs[0]
+    if _c(x): return aria_core.rmsnorm_f32(x, module.weight, 1e-6)
+    if HAS_KERNELS and x.is_cuda:
+        try:
+            return kernels.triton_rmsnorm(x, module.weight)
+        except Exception:
+            pass
+    eps = 1e-6
+    rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + eps)
+    return (x / rms) * module.weight
+
+@register_op("layernorm")
+def _op_layernorm(module, inputs, _):
+    if not hasattr(module, 'weight'): return inputs[0]
+    x = inputs[0]
+    if _c(x): return aria_core.layernorm_f32(x, module.weight, module.bias, 1e-5)
+    return F.layer_norm(x, [x.shape[-1]], module.weight, module.bias)
+
+@register_op("gated_linear")
+def _op_gated_linear(module, inputs, _):
+    if not hasattr(module, 'linear_weight'): return inputs[0]
+    x = inputs[0]
+    if _c(x) and x.ndim == 3:
+        out = aria_core.gated_linear_f32(
+            x, module.linear_weight, module.linear_bias,
+            module.gate_weight, module.gate_bias)
+        if out.ndim == x.ndim:
+            return out (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.leaderboard_scoring:[40:80]
+==research.scientist.notebook.notebook_misc:[492:535]
+    ratios: Dict[str, float] = {}
+
+    if loss_ratio is not None and loss_ratio > 0:
+        ratios["x_quality"] = ref["loss_ratio"] / loss_ratio
+    if param_count is not None and param_count > 0:
+        ratios["x_params"] = ref["param_count"] / param_count
+    if flops_forward is not None and flops_forward > 0:
+        ratios["x_flops"] = ref["flops_forward"] / flops_forward
+    if throughput_tok_s is not None and throughput_tok_s > 0:
+        ratios["x_throughput"] = throughput_tok_s / ref["throughput_tok_s"]
+    if peak_memory_mb is not None and peak_memory_mb > 0:
+        ratios["x_memory"] = ref["peak_memory_mb"] / peak_memory_mb
+    if forward_time_ms is not None and forward_time_ms > 0:
+        ratios["x_latency"] = ref["forward_time_ms"] / forward_time_ms
+
+    if len(ratios) < 3:
+        return None
+
+    geomean = 1.0
+    for v in ratios.values():
+        geomean *= v
+    geomean = geomean ** (1.0 / len(ratios))
+    ratios["geomean"] = geomean
+    ratios["n_dimensions"] = float(len(ratios) - 1)
+    return ratios
+
+
+def build_score_kwargs(
+    conn: Any,
+    notebook: Any,
+    result_id: str,
+    d: Dict[str, Any],
+    is_reference: bool,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Build the kwargs dict for ``compute_composite_score`` from a row dict.
+
+    Centralises the column->parameter mapping so callers stay DRY.
+    ``conn`` is a sqlite3 connection, ``notebook`` provides helper methods.
+    """ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[726:751]
+==research.scientist.runner.execution_validation:[255:279]
+                if len(passed_seeds) > 0:
+                    results["stage1_passed"] += 1
+                results["stage0_passed"] += 1
+                results["stage05_passed"] += 1
+
+                # Extrapolate and Evals
+                ev_res = self._run_external_evals(
+                    config=config, dev=dev, dev_str=dev_str,
+                    best_seed=best_seed, model_source=model_source,
+                    arch_spec_json_str=arch_spec_json_str,
+                    graph_json_str=graph_json_str, source=source,
+                    source_result_id=source_result_id, exp_id=exp_id,
+                    val_loss_ratio=val_loss_ratio,
+                    val_baseline_ratio=val_baseline_ratio,
+                    val_normalized_ratio=val_normalized_ratio,
+                    multi_seed_std=multi_seed_std,
+                    passed_seeds=passed_seeds,
+                    source_params=source_params,
+                )
+
+                is_breakthrough = ev_res["is_breakthrough"]
+                flop_gated = ev_res["flop_gated"]
+                quant_int8_retention = ev_res["quant_int8_retention"]
+                quant_quality_per_byte = ev_res["quant_quality_per_byte"]
+                long_context_score = ev_res["long_context_score"] (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[458:485]
+==research.tests.test_sandbox_integration:[625:652]
+        report_content = self._read_file(os.path.join(self.component_dir, "ResearchReport.js"))
+        detail_content = self._read_file(os.path.join(self.component_dir, "ReportDetail.js"))
+        rankings_content = self._read_file(os.path.join(self.component_dir, "report", "DiscoveryRankings.js"))
+        report_utils_content = self._read_file(os.path.join(self.component_dir, "report", "reportUtils.js"))
+
+        self.assertIn("ReportGallery", report_content)
+        self.assertIn("ReportDetail", report_content)
+
+        self.assertIn("fingerprint-deduplicated", rankings_content)
+        self.assertIn("Grouped view", rankings_content)
+        self.assertIn("Expanded reruns", rankings_content)
+        self.assertIn("Same architecture repeated means reruns of one fingerprint", rankings_content)
+        self.assertIn("expandedPrograms", rankings_content)
+        self.assertIn("top_programs_expanded", detail_content)
+        self.assertIn("repeat_count", rankings_content)
+        self.assertIn("repeat_experiment_span", rankings_content)
+        self.assertIn("eligibilityByResultId", rankings_content)
+        self.assertIn("Queue Validate", rankings_content)
+        self.assertIn("Ineligible", rankings_content)
+        self.assertIn("reportQueueReasonLabel", rankings_content)
+        self.assertIn("reportQueueReasonLabel", report_utils_content)
+        self.assertIn("Unique Architectures vs Reruns", detail_content)
+        self.assertIn("architecture_rerun_telemetry", detail_content)
+
+    def test_learning_panel_mentions_unique_vs_rerun_telemetry(self):
+        """LearningPanel should show unique architecture vs rerun concentration metrics."""
+        learning_panel_content = self._read_file(os.path.join(self.component_dir, "LearningPanel.js")) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[121:150]
+==research.synthesis.compiler_op_utils:[30:55]
+    telemetry = getattr(module, "sparse_telemetry", {})
+    stats = telemetry.get(op_name, {
+        "calls": 0,
+        "fallback_calls": 0,
+        "density_sum": 0.0,
+        "last_density": 1.0,
+        "last_fallback_reason": None,
+    })
+    stats["calls"] += 1
+    stats["density_sum"] += float(density)
+    stats["last_density"] = float(density)
+    if fallback_reason is not None:
+        stats["fallback_calls"] += 1
+        stats["last_fallback_reason"] = fallback_reason
+    telemetry[op_name] = stats
+    setattr(module, "sparse_telemetry", telemetry)
+
+
+def _record_routing_telemetry(module: nn.Module, n_experts: int, selected_experts: torch.Tensor,
+                              logits: Optional[torch.Tensor] = None) -> None:
+    """Record MoE routing statistics: entropy, expert utilization, drop rate.
+
+    Samples every 8th call to reduce overhead while maintaining statistical accuracy.
+    """
+    telemetry = getattr(module, "routing_telemetry", {
+        "tokens_total": 0,
+        "tokens_processed": 0,
+        "expert_counts": torch.zeros(n_experts, device=selected_experts.device),
+        "entropy_sum": 0.0, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[751:772]
+==research.scientist.runner.execution_validation:[280:301]
+                noise_score = ev_res["noise_score"]
+                ood_result = ev_res["ood_result"]
+                sensitivity_result = ev_res.get("sensitivity_result")
+                activation_sparsity_score = ev_res["activation_sparsity_score"]
+                dead_neuron_ratio = ev_res["dead_neuron_ratio"]
+                routing_collapse_score = ev_res["routing_collapse_score"]
+                wikitext_perplexity = ev_res["wikitext_perplexity"]
+                wikitext_score = ev_res["wikitext_score"]
+                tinystories_perplexity = ev_res["tinystories_perplexity"]
+                tinystories_score = ev_res["tinystories_score"]
+                cross_task_score = ev_res["cross_task_score"]
+                efficiency_wall_score = ev_res["efficiency_wall_score"]
+                max_viable_seq_len = ev_res["max_viable_seq_len"]
+                scaling_regime = ev_res["scaling_regime"]
+                scaling_param_efficiency = ev_res["scaling_param_efficiency"]
+                scaling_flop_efficiency = ev_res["scaling_flop_efficiency"]
+                scaling_gate_passed_val = ev_res["scaling_gate_passed_val"]
+                scaling_best_family = ev_res["scaling_best_family"]
+                scaling_confidence = ev_res["scaling_confidence"]
+                scaling_d512_param_efficiency = ev_res.get("scaling_d512_param_efficiency")
+                scaling_result = ev_res.get("scaling_result") (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[868:891]
+==research.scientist.runner.execution_validation:[502:525]
+                nb.record_program_result(
+                    experiment_id=exp_id,
+                    graph_fingerprint=source.get("graph_fingerprint",
+                                                 source_result_id),
+                    graph_json=graph_json_str or "{}",
+                    stage0_passed=True,
+                    stage05_passed=True,
+                    stage1_passed=len(passed_seeds) > 0,
+                    loss_ratio=val_loss_ratio,
+                    baseline_loss_ratio=val_baseline_ratio,
+                    novelty_score=source.get("novelty_score"),
+                    novelty_confidence=source.get("novelty_confidence"),
+                    novelty_raw_score=source.get("novelty_raw_score"),
+                    novelty_z_score=source.get("novelty_z_score"),
+                    novelty_reference_version=source.get("novelty_reference_version"),
+                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_validity_reason=source.get("novelty_validity_reason"),
+                    novelty_requires_justification=source.get("novelty_requires_justification"),
+                    model_source=model_source,
+                    arch_spec_json=arch_spec_json_str,
+                )
+
+                # Save checkpoint after each candidate completes (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_inline_validation_phase7:[101:121]
+==research.scientist.runner.execution_validation_phase3:[30:55]
+        results = {
+            "total": len(result_ids),
+            "stage0_passed": 0,
+            "stage05_passed": 0,
+            "stage1_passed": 0,
+            "novel_count": 0,
+            "best_loss_ratio": None,
+            "best_novelty_score": None,
+            "survivors": [],
+            "validation_results": [],
+        }
+
+        dev = resolve_device(config.device)
+        dev_str = str(dev)
+
+        val_config = RunConfig.from_dict(config.to_dict())
+        val_config.stage1_steps = config.validation_steps
+        val_config.stage1_batch_size = config.validation_batch_size
+        val_config.max_seq_len = config.validation_seq_len
+
+        program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+        source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+        return results, dev, dev_str, val_config, source_map
+
+    def _get_validation_best_training_json(self, nb: Any, source_result_id: str) -> Optional[str]: (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_api_integration:[54:86]
+==research.tests.test_primitives_integration:[43:72]
+try:
+    from research.scientist.notebook import LabNotebook, ExperimentEntry
+    HAS_NOTEBOOK = True
+except Exception as e:
+    HAS_NOTEBOOK = False
+    print(f"Notebook import failed: {e}")
+
+try:
+    from research.scientist.persona import Aria
+    HAS_PERSONA = True
+except Exception as e:
+    HAS_PERSONA = False
+    print(f"Persona import failed: {e}")
+
+try:
+    import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+    HAS_PROMPTS = True
+except Exception as e:
+    HAS_PROMPTS = False
+    print(f"Prompts import failed: {e}")
+
+try:
+    import research.scientist.llm.context as _context_mod  # noqa: F401
+    HAS_CONTEXT = True
+except Exception as e:
+    HAS_CONTEXT = False
+    print(f"Context import failed: {e}")
+
+
+# ── Test 6: API Endpoints ──
+
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[150:176]
+==research.synthesis.compiler_op_utils:[58:82]
+        "count": 0,
+        "heatmap": None,
+        "_call_count": -1,
+    })
+
+    telemetry["_call_count"] += 1
+    B, S = selected_experts.shape[:2]
+    total_tokens = B * S
+    telemetry["tokens_total"] += total_tokens
+    telemetry["tokens_processed"] += total_tokens
+
+    # Sample every 8th call for expensive histogram + entropy (first call always records)
+    if telemetry["_call_count"] & 7 != 0:
+        telemetry["count"] += 1
+        setattr(module, "routing_telemetry", telemetry)
+        return
+
+    # Expert utilization
+    counts = torch.histc(selected_experts.float(), bins=n_experts, min=0, max=n_experts-1)
+    telemetry["expert_counts"] += counts
+
+    # Entropy if logits provided
+    if logits is not None:
+        probs = F.softmax(logits, dim=-1)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
+        telemetry["entropy_sum"] += entropy (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.dashboard:[945:964]
+==research.scientist.runner.execution_validation:[862:881]
+                n_score = nov.overall_novelty
+                novelty_valid, novelty_valid_reason, novelty_requires_justification = (
+                    self._resolve_novelty_promotion_validity(
+                        config,
+                        nov.novelty_valid_for_promotion,
+                        nov.novelty_validity_reason,
+                    )
+                )
+                program_metrics["novelty_raw_score"] = nov.raw_novelty
+                program_metrics["novelty_z_score"] = nov.novelty_z_score
+                program_metrics["novelty_reference_version"] = (
+                    nov.novelty_reference_version
+                    or (fp.novelty_reference_version if fp is not None else None)
+                )
+                program_metrics["novelty_valid_for_promotion"] = int(novelty_valid)
+                program_metrics["novelty_validity_reason"] = novelty_valid_reason
+                program_metrics["novelty_requires_justification"] = int(
+                    novelty_requires_justification
+                ) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_rust_backward:[12:44]
+==research.tests.test_rust_ref_ops:[16:44]
+try:
+    import aria_scheduler  # type: ignore[import-untyped]
+    HAS_RUST_SCHEDULER = True
+except ImportError:
+    try:
+        from scientist import aria_scheduler  # type: ignore[import-untyped]
+        HAS_RUST_SCHEDULER = True
+    except ImportError:
+        HAS_RUST_SCHEDULER = False
+
+pytestmark = [pytest.mark.native, pytest.mark.skipif(
+    not HAS_RUST_SCHEDULER,
+    reason="aria_scheduler Rust module not available",
+)]
+
+
+def _make_graph_json(nodes, edges, output_node_id):
+    """Helper to build a native IR JSON string."""
+    return json.dumps({
+        "schema_version": "0.1",
+        "model_dim": 4,
+        "nodes": nodes,
+        "edges": edges,
+        "output_node_id": output_node_id,
+        "metadata": None,
+    })
+
+
+# ── Graph builders ──────────────────────────────────────────────────
+
+def _relu_chain_graph():
+    """input(0) -> relu(1) -> output(2)""" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[406:426]
+==research.scientist.runner.execution_investigation:[180:201]
+                            continue
+                    except Exception as e:
+                        logger.debug(f"Model reconstruction failed: {e}")
+                        continue
+
+                    self._emit_event("investigation_progress", {
+                        "experiment_id": exp_id,
+                        "current": prog_idx + 1,
+                        "total": len(result_ids),
+                        "source_result_id": source_result_id,
+                        "training_program": tp_i + 1,
+                        "total_programs": len(training_programs),
+                        "status": f"training with {tp.name}",
+                    })
+
+                    # Train with this program
+                    tp_result = self._train_with_program(
+                        model,
+                        tp,
+                        inv_config,
+                        dev, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[618:635]
+==research.synthesis.compiler_ops_routing:[53:70]
+    if not hasattr(module, 'gate_proj'): return inputs[0]
+    x = inputs[0]
+    B, S, D = x.shape
+    if (
+        _c(x)
+        and hasattr(aria_core, "topk_gate_f32")
+        and isinstance(module.gate_proj, torch.Tensor)
+        and module.gate_proj.dim() == 2
+        and module.gate_proj.shape[0] >= 2
+        and module.gate_proj.shape[1] == D
+    ):
+        try:
+            native_out = aria_core.topk_gate_f32(x, module.gate_proj, 2)
+            if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
+                return native_out
+        except Exception:
+            pass (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1397:1421]
+==research.synthesis.compiler_ops_routing:[172:203]
+    x = inputs[0]
+    D = x.shape[-1]
+    k = min(int(config.get("k", max(1, D // 8))), D)
+    topk_vals, topk_idx = x.topk(k, dim=-1)  # (B, S, k)
+    _record_routing_telemetry(module, D, topk_idx, logits=x)
+    # Build sparse mask and scatter top-k values back
+    mask = torch.zeros_like(x)
+    mask.scatter_(-1, topk_idx, 1.0)
+    # STE: forward uses hard mask, backward passes through
+    # Sqrt scaling compensates for sparsity without amplifying gradients excessively
+    scale = (D / k) ** 0.5
+    return x * (mask.detach() - x.detach() + x) * scale
+
+@register_op("route_lanes")
+def _op_route_lanes(module, inputs, config):
+    """Learned lane routing: difficulty scorer → lane assignment → per-lane transforms."""
+    x = inputs[0]
+    B, S, D = x.shape
+    n_lanes = int(config.get("n_lanes", 3))
+    if not hasattr(module, 'lane_scorer'):
+        return x
+    dt = x.dtype
+    lane_logits = F.linear(x, module.lane_scorer.to(dt))
+    lane_weights = F.softmax(lane_logits, dim=-1) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1422:1443]
+==research.synthesis.compiler_ops_routing:[207:236]
+    out = torch.zeros_like(x)
+    for i in range(n_lanes):
+        if hasattr(module, 'lane_projs') and i < len(module.lane_projs):
+            lane_out = F.linear(x, module.lane_projs[i].to(dt))
+        else:
+            lane_out = x
+        out = out + lane_weights[..., i:i+1] * lane_out
+    return out
+
+@register_op("route_recursion")
+def _op_route_recursion(module, inputs, config):
+    """Learned depth routing: difficulty scorer → depth assignment → per-depth transforms."""
+    x = inputs[0]
+    B, S, D = x.shape
+    max_depth = int(config.get("max_depth", 3))
+    max_depth = max(1, min(6, max_depth))
+    if not hasattr(module, 'depth_scorer'):
+        return x
+    dt = x.dtype
+    depth_logits = F.linear(x, module.depth_scorer.to(dt))
+    depth_weights = F.softmax(depth_logits, dim=-1) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1176:1194]
+==research.synthesis.compiler_ops_attention:[106:125]
+    if not hasattr(module, 'embed_table'):
+        return inputs[0]
+    x = inputs[0]
+    if (
+        HAS_ARIA_CORE
+        and hasattr(aria_core, "embedding_lookup_f32")
+        and isinstance(x, torch.Tensor)
+        and x.device.type == "cpu"
+        and x.dtype in (torch.int32, torch.int64)
+    ):
+        try:
+            native_out = aria_core.embedding_lookup_f32(module.embed_table, x)
+            if isinstance(native_out, torch.Tensor):
+                return native_out
+        except Exception:
+            pass
+    return x
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[51:72]
+==research.tests.test_sandbox_integration:[221:244]
+        for filepath in self.component_files:
+            basename = os.path.basename(filepath)
+            # Skip test files and utility/preset files that aren't React components
+            if basename.endswith(".test.js") or basename[0].islower():
+                continue
+            content = self._read_file(filepath)
+            name = basename.replace(".js", "")
+            has_named_default = f"export default {name}" in content
+            has_default_function = f"export default function {name}" in content
+            self.assertTrue(
+                has_named_default or has_default_function,
+                f"{name}.js missing default export for {name}",
+            )
+
+    def test_no_orphaned_api_fetch_urls(self):
+        """All fetch URLs in components should match real API endpoints."""
+        known_api_patterns = {
+            "/api/dashboard", "/api/status", "/api/system/status", "/api/native-runner/capability",
+            "/api/native-runner/canary/refresh",
+            "/api/experiments", "/api/programs", "/api/trends",
+            "/api/trends/context", (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[704:728]
+==research.synthesis.compiler_ops_routing:[146:173]
+    output = weights[..., 0:1] * e0 + weights[..., 1:2] * e1
+    return output
+
+def _op_swiglu_mlp(module, inputs, _):
+    """SwiGLU MLP channel mixer."""
+    x = inputs[0]
+    if not hasattr(module, 'gate_proj'):
+        return x
+    if _c(x) and x.dim() >= 2:
+        x2, orig = _flatten_for_kernel(x)
+        y = aria_core.swiglu_f32(
+            x2, module.gate_proj.weight, module.up_proj.weight, module.down_proj.weight,
+            getattr(module.gate_proj, 'bias', None),
+            getattr(module.up_proj, 'bias', None),
+            getattr(module.down_proj, 'bias', None),
+        )
+        return _unflatten_from_kernel(y, orig)
+    return module.down_proj(F.silu(module.gate_proj(x)) * module.up_proj(x))
+
+def _op_route_topk(module, inputs, config):
+    """Top-k routing: zero out all but top-k positions along last dim.
+
+    Input:  (B, S, D)
+    Output: (B, S, D) with only the top-k values per (B, S) slice kept.
+    Uses STE with density scaling to keep gradient magnitude stable.
+    """
+    x = inputs[0] (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1611:1648]
+==research.synthesis.compiler_ops_routing:[464:499]
+        out = out + mid * weights[..., 1:2]
+
+    # Hard lane: MLP
+    if hasattr(module, 'heavy_mlp'):
+        hard = module.heavy_mlp(x)
+        out = out + hard * weights[..., 2:3]
+
+    return out
+
+@register_op("mixed_recursion_gate")
+def _op_mixed_recursion_gate(module, inputs, config):
+    """Tokens re-enter block with different parameters each recursion.
+    Depth is conditional on input difficulty score (inputs[1]).
+    """
+    x, scores = inputs[0], inputs[1]
+    max_depth = int(config.get("max_depth", 3))
+
+    if not hasattr(module, 'step_projs'): return x
+
+    # Determine depth per token from scores
+    depths = scores.argmax(dim=-1) # [B, S] in range [0, max_depth-1]
+
+    out = x
+    # Sequential application up to max_depth with residual per step.
+    # Tokens whose depth >= current step get the update; others are unchanged.
+    for i in range(max_depth):
+        mask = (depths >= i).float().unsqueeze(-1)
+        step_out = F.linear(out, module.step_projs[i].to(out.dtype))
+        # Residual per step: out + step instead of replace, prevents vanishing gradients
+        out = out + mask * (step_out - out) * 0.5
+
+    _record_routing_telemetry(module, max_depth, depths, logits=scores)
+    return out
+
+@register_op("latent_attention_compressor")
+def _op_latent_attention_compressor(module, inputs, config):
+    """MLA-style: compress KV to latent dim, then decompress.""" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[530:547]
+==research.scientist.runner.execution_validation:[234:250]
+                        d_model=config.model_dim,
+                        seq_len=min(128, config.validation_seq_len),
+                        n_steps=max(1, baseline_steps),
+                        vocab_size=config.vocab_size,
+                        batch_size=config.validation_batch_size,
+                        lr=baseline_recipe["lr"],
+                        device=dev_str,
+                        n_layers=config.n_layers,
+                        optimizer_name=baseline_recipe["optimizer_name"],
+                        weight_decay=baseline_recipe["weight_decay"],
+                        momentum=baseline_recipe["momentum"],
+                        betas=baseline_recipe["betas"],
+                        data_fn=bl_data_fn,
+                        data_tag=bl_data_tag,
+                        cache_data_fn=bl_cache,
+                    )
+                    # Optional: Validation baseline comparison (using val split) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[590:606]
+==research.scientist.runner.execution_validation:[173:190]
+                    d_model=config.model_dim,
+                    seq_len=min(128, config.validation_seq_len),
+                    n_steps=max(1, baseline_steps),
+                    vocab_size=config.vocab_size,
+                    batch_size=config.validation_batch_size,
+                    lr=baseline_recipe["lr"],
+                    device=dev_str,
+                    n_layers=config.n_layers,
+                    optimizer_name=baseline_recipe["optimizer_name"],
+                    weight_decay=baseline_recipe["weight_decay"],
+                    momentum=baseline_recipe["momentum"],
+                    betas=baseline_recipe["betas"],
+                    data_fn=bl_data_fn,
+                    data_tag=bl_data_tag,
+                    cache_data_fn=bl_cache,
+                ) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[323:344]
+==research.scientist.runner.execution_investigation:[62:82]
+        try:
+            # ── Inline investigation logic (from _run_investigation_thread) ──
+            results = {
+                "total": len(result_ids), "stage0_passed": 0, "stage05_passed": 0,
+                "stage1_passed": 0, "novel_count": 0,
+                "best_loss_ratio": None, "best_novelty_score": None,
+                "survivors": [], "investigation_results": [],
+            }
+
+            dev = resolve_device(config.device)
+            dev_str = str(dev)
+
+            inv_config = RunConfig.from_dict(config.to_dict())
+            inv_config.stage1_steps = config.investigation_steps
+            inv_config.stage1_batch_size = config.investigation_batch_size
+
+            # Fetch all sources at once to avoid N+1 queries
+            program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+            source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+
+            for prog_idx, source_result_id in enumerate(result_ids): (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[383:399]
+==research.tests.test_sandbox_integration:[553:569]
+        self.assertIn("const handleLaunchRefinement = async", program_detail_content)
+        self.assertIn("refine_intent: intent", program_detail_content)
+        self.assertIn("Refinement Trace", program_detail_content)
+        self.assertIn("Open Refinement Run", program_detail_content)
+        self.assertIn("/api/experiments/${latestRefineLaunch.experimentId}", program_detail_content)
+        self.assertIn("setLatestRefineLaunch", program_detail_content)
+        self.assertIn("setRefineLaunchHistory", program_detail_content)
+        self.assertIn("Recent Refinement Launches", program_detail_content)
+        self.assertIn("Open Fingerprint", program_detail_content)
+        self.assertIn("View Top Refined Result", program_detail_content)
+        self.assertIn("lastRefinedCandidate", program_detail_content)
+        self.assertIn("newCandidates", program_detail_content)
+        self.assertIn("New Fingerprints", program_detail_content)
+        # Data-driven refinement via RefinementAdvisor
+        self.assertIn("RefinementAdvisor", program_detail_content)
+        self.assertIn("onLaunchRefinement", program_detail_content) (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[636:660]
+==research.synthesis.compiler_ops_routing:[71:94]
+    gate_weights = F.softmax(logits, dim=-1)
+
+    # Record routing telemetry
+    _record_routing_telemetry(module, 2, gate_weights.argmax(dim=-1), logits=logits)
+
+    half = D // 2
+    out = torch.cat([x[..., :half] * gate_weights[..., 0:1],
+                     x[..., half:2*half] * gate_weights[..., 1:2]], dim=-1)
+    if D > 2 * half:
+        out = torch.cat([out, x[..., 2*half:]], dim=-1)
+    return out
+
+def _op_moe_topk(module, inputs, config):
+    """Sparse Mixture-of-Experts channel mixer."""
+    x = inputs[0]
+    B, S, D = x.shape
+
+    n_experts = int(config.get("num_experts", 4))
+    top_k = int(config.get("top_k", 2))
+
+    if not hasattr(module, 'gate_weight'):
+        return x
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[499:515]
+==research.scientist.runner.execution_validation:[141:157]
+        init_sensitivity_std = None
+        default_losses = [
+            r["loss_ratio"] for r in seed_results
+            if r.get("init_scheme") == "default" and r.get("loss_ratio") is not None
+        ]
+        xavier_losses = [
+            r["loss_ratio"] for r in seed_results
+            if r.get("init_scheme") == "xavier_uniform" and r.get("loss_ratio") is not None
+        ]
+        if default_losses and xavier_losses:
+            default_mean = sum(default_losses) / len(default_losses)
+            xavier_mean = sum(xavier_losses) / len(xavier_losses)
+            init_sensitivity_std = abs(default_mean - xavier_mean)
+
+        # Baseline comparison at validation scale
+        val_baseline_ratio = None (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[457:471]
+==research.scientist.runner.execution_validation_phase3:[185:199]
+                "seed": seed,
+                "init_scheme": init_scheme,
+                "passed": s1_result.get("passed", False),
+                "loss_ratio": s1_result.get("loss_ratio"),
+                "final_loss": s1_result.get("final_loss"),
+                "n_train_steps": s1_result.get("n_train_steps"),
+                "final_lr": s1_result.get("final_lr"),
+                "training_program_json": s1_result.get("training_program_json"),
+                "optimizer_class": s1_result.get("optimizer_class"),
+                "optimizer_lr": s1_result.get("optimizer_lr"),
+                "optimizer_weight_decay": s1_result.get("optimizer_weight_decay"),
+                "optimizer_momentum": s1_result.get("optimizer_momentum"),
+                "optimizer_beta1": s1_result.get("optimizer_beta1"),
+                "optimizer_beta2": s1_result.get("optimizer_beta2"), (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_modes:[501:517]
+==research.scientist.runner.execution_search:[276:291]
+            gfp = graph.fingerprint()
+
+            if gfp in fitness_cache:
+                return fitness_cache[gfp]
+
+            sandbox_result = None
+            s1_result = None
+            try:
+                layer_graphs = [graph] * config.n_layers
+                model = compile_model(
+                    layer_graphs,
+                    vocab_size=config.vocab_size,
+                    max_seq_len=config.max_seq_len,
+                )
+                sandbox_result = self._safe_eval_for_stage(
+                    model, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_modes:[573:589]
+==research.scientist.runner.execution_search:[411:427]
+                stop_check=self._stop_event.is_set,
+            )
+
+            results = {
+                "total": eval_counters["total"],
+                "stage0_passed": eval_counters["s0"],
+                "stage05_passed": eval_counters["s0"],
+                "stage1_passed": eval_counters["s1"],
+                "novel_count": sum(1 for ind in ns_result.best_individuals if ind.novelty > 0.5),
+                "best_loss_ratio": None,
+                "best_novelty_score": None,
+                "survivors": [],
+                "archive_size": ns_result.archive_size,
+            }
+
+            for ind in ns_result.best_individuals[:20]: (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.database:[127:144]
+==research.scientist.notebook.notebook_core:[110:125]
+                    writer_conn.execute(sql, params)
+                batch.append(item)
+
+                if len(batch) >= 50 or (time.time() - last_commit > 1.0 and batch):
+                    writer_conn.commit()
+                    batch = []
+                    last_commit = time.time()
+
+            except queue.Empty:
+                if batch:
+                    writer_conn.commit()
+                    batch = []
+                    last_commit = time.time()
+                continue
+            except Exception as e: (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.api_routes._strategy_report:[214:228]
+==research.scientist.api_routes.reporting_bp:[373:387]
+            top_limit = 20 if not fast_mode else 12
+            expanded_limit = 80 if include_heavy else 0
+            recent_limit = 100 if include_heavy else 30
+
+            data = {
+                "summary": nb.get_dashboard_summary(),
+                "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(top_limit, sort_by="loss_ratio"),
+                "top_programs_expanded": nb.get_top_programs(expanded_limit, sort_by="loss_ratio") if include_heavy else [],
+                "recent_experiments": nb.get_recent_experiments(recent_limit),
+                "op_success_rates": analytics.op_success_rates(),
+                "failure_patterns": analytics.failure_patterns(),
+                "grammar_weights": {
+                    "learned": analytics.compute_grammar_weights(),
+                    "default": analytics.get_current_grammar_weights(), (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[675:693]
+==research.scientist.runner.execution_validation:[73:90]
+                self._emit_event("validation_progress", {
+                    "experiment_id": exp_id,
+                    "current": prog_idx + 1,
+                    "total": len(result_ids),
+                    "source_result_id": source_result_id,
+                    "status": "starting",
+                })
+
+                # Fetch source and leaderboard entry
+                source = source_map.get(source_result_id)
+                if source is None:
+                    continue
+
+                graph_json_str = source.get("graph_json")
+                arch_spec_json_str = source.get("arch_spec_json")
+                model_source = source.get("model_source") or "graph_synthesis"
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[554:569]
+==research.scientist.runner.continuous_validation:[990:1006]
+            results["perf_report"] = self._build_experiment_perf_report(results)
+            results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
+            context = self._build_rich_context_for_experiment(
+                results, config, hypothesis, nb)
+            summary = self.aria.experiment_summary(results, context=context)
+            llm_analysis = self.aria.analyze_results(results, context=context)
+
+            nb.complete_experiment(
+                experiment_id=exp_id, results=results,
+                aria_summary=summary,
+                aria_mood=self.aria.state.mood,
+                insights=self._analyze_results(results, exp_id, nb, context=context),
+                llm_analysis=llm_analysis,
+            )
+
+            # Knowledge extraction after validation (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[426:439]
+==research.scientist.runner.execution_validation_phase3:[138:151]
+            if best_tp_json:
+                try:
+                    tp_data = self._cached_json_load(best_tp_json)
+                    tp = synthesize_training_program(
+                        n_steps=config.validation_steps,
+                        max_seq_len=config.validation_seq_len,
+                        seed=tp_data.get("seed", seed),
+                    )
+                    s1_result = self._train_with_program(
+                        model,
+                        tp,
+                        val_config,
+                        dev, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.execution_investigation:[404:417]
+==research.scientist.runner.execution_validation:[594:613]
+            )
+            nb.fail_experiment(exp_id, str(e))
+            with self._lock:
+                self._progress.status = "failed"
+                self._progress.error = str(e)
+                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._emit_event("experiment_failed", {
+                "experiment_id": exp_id,
+                "error": str(e),
+            })
+        finally:
+            self._live_training_context = None
+            nb.close() (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[478:491]
+==research.scientist.runner.execution_investigation:[256:269]
+                    "robustness": robustness,
+                    "best_loss_ratio": best_lr,
+                    "screening_loss_ratio": screening_lr,
+                    "baseline_loss_ratio": source.get("baseline_loss_ratio"),
+                    "novelty_confidence": source.get("novelty_confidence"),
+                    "loss_ratio_multiplier": lr_multiplier,
+                    "brittle_risk": brittle_risk,
+                    "investigation_passed": investigation_passed_early,
+                    "n_programs_passed": n_passed,
+                    "n_programs_tested": len(tp_results),
+                    "best_training_program": best_tp.get("training_program") if best_tp else None,
+                    "training_program_scheduling_avg_ms": tp_sched.get("scheduling_avg_ms"),
+                    "training_program_scheduling_max_ms": tp_sched.get("scheduling_max_ms"), (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.execution_screening:[631:650]
+==research.scientist.runner.execution_search:[226:243]
+            )
+            nb.fail_experiment(exp_id, str(e))
+            with self._lock:
+                self._progress.status = "failed"
+                self._progress.error = str(e)
+                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._emit_event("experiment_failed", {
+                "experiment_id": exp_id,
+                "error": str(e),
+            })
+        finally:
+            nb.close()
+            self._run_pending_scale_up()
+
+    def _run_novelty_thread(self, exp_id: str, config: RunConfig,
+                             hypothesis: str):
+        """Execute novelty search in background.""" (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_modes:[277:291]
+==research.scientist.runner.execution_screening:[542:556]
+            try:
+                validation = self.aria.validate_hypothesis(hypothesis, results, context)
+                if validation:
+                    nb.add_entry(ExperimentEntry(
+                        entry_type="analysis",
+                        title="Hypothesis Validation",
+                        content=validation.get("explanation", ""),
+                        experiment_id=exp_id,
+                        metadata={"validated": validation.get("validated", False)},
+                    ))
+            except Exception as e:
+                logger.warning("Hypothesis validation logging failed: %s", e)
+
+            nb.complete_experiment( (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tools.seed_insights:[185:198]
+==research.tools.seed_profiling_insights:[882:895]
+        insight_id = nb.record_insight(
+            category=ins["category"],
+            content=ins["content"],
+            insight_type=ins["insight_type"],
+            subject_key=ins["subject_key"],
+            semantic_key=ins["semantic_key"],
+            alpha=ins["alpha"],
+            beta_=ins["beta_"],
+            display_only=ins["display_only"],
+            insight_level=ins["insight_level"],
+            evidence_json=ins["evidence_json"],
+        )
+        count += 1 (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_validation:[676:693]
+==research.scientist.runner.execution_investigation:[98:117]
+                    "experiment_id": exp_id,
+                    "current": prog_idx + 1,
+                    "total": len(result_ids),
+                    "source_result_id": source_result_id,
+                    "status": "starting",
+                })
+
+                # Fetch source and leaderboard entry
+                source = source_map.get(source_result_id)
+                if source is None:
+                    continue
+
+                graph_json_str = source.get("graph_json")
+                arch_spec_json_str = source.get("arch_spec_json")
+                model_source = source.get("model_source") or "graph_synthesis"
+
+                # Get best training program from investigation (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.execution_investigation:[357:371]
+==research.scientist.runner.execution_validation:[551:566]
+            context = self._build_rich_context_for_experiment(
+                results, config, hypothesis, nb)
+            summary = self.aria.experiment_summary(results, context=context)
+            llm_analysis = self.aria.analyze_results(results, context=context)
+
+            nb.complete_experiment(
+                experiment_id=exp_id,
+                results=results,
+                aria_summary=summary,
+                aria_mood=self.aria.state.mood,
+                insights=self._analyze_results(results, exp_id, nb, context=context),
+                llm_analysis=llm_analysis,
+            )
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[520:532]
+==research.scientist.runner.execution_investigation:[315:327]
+                        nb=nb,
+                        exp_id=exp_id,
+                        source_result_id=source_result_id,
+                        source=source,
+                        model_source=model_source,
+                        graph_json_str=graph_json_str,
+                        arch_spec_json_str=arch_spec_json_str,
+                        n_passed=n_passed,
+                        best_lr=best_lr,
+                        best_tp_json=best_tp_json,
+                        robustness=robustness,
+                        investigation_passed=investigation_passed, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_investigation:[538:550]
+==research.scientist.runner.execution_investigation:[297:309]
+                        nb=nb,
+                        exp_id=exp_id,
+                        source_result_id=source_result_id,
+                        source=source,
+                        model_source=model_source,
+                        graph_json_str=graph_json_str,
+                        arch_spec_json_str=arch_spec_json_str,
+                        n_passed=n_passed,
+                        best_lr=best_lr,
+                        best_tp_json=best_tp_json,
+                        robustness=robustness,
+                        investigation_passed=investigation_passed, (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.continuous_modes:[596:609]
+==research.scientist.runner.execution_search:[158:175]
+                if ind.fitness > 0.2:
+                    results["survivors"].append({
+                        "fingerprint": ind.fingerprint,
+                        "novelty": ind.novelty,
+                        "loss_ratio": 1.0 - ind.fitness,
+                    })
+
+            nb.update_op_success_rates(exp_id)
+            nb.update_failure_signatures(exp_id)
+
+            # Rich context for Aria
+            context = self._build_rich_context_for_experiment(
+                results, config, hypothesis, nb)
+            summary = self.aria.experiment_summary(results, context=context)
+            llm_analysis = self.aria.analyze_results(results, context=context)
+
+            # Validate hypothesis (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.execution_screening:[539:553]
+==research.scientist.runner.execution_search:[172:186]
+            llm_analysis = self.aria.analyze_results(results, context=context)
+
+            # Validate hypothesis
+            try:
+                validation = self.aria.validate_hypothesis(hypothesis, results, context)
+                if validation:
+                    nb.add_entry(ExperimentEntry(
+                        entry_type="analysis",
+                        title="Hypothesis Validation",
+                        content=validation.get("explanation", ""),
+                        experiment_id=exp_id,
+                        metadata={"validated": validation.get("validated", False)},
+                    ))
+            except Exception as e: (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner.dashboard:[665:679]
+==research.scientist.runner.execution_search:[322:336]
+                )
+                del model
+                if dev.type == "cuda":
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+                if s1_result.get("passed"):
+                    fitness, _components = self._compute_multi_objective_fitness(
+                        s1_result, sandbox_result, graph, config)
+                else:
+                    fitness = 0.1  # compiled and stable but didn't learn
+            except Exception:
+                fitness = 0.0
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.eval.baseline:[254:270]
+==research.scientist.runner.selection:[702:718]
+                        input_ids[:, 1:].reshape(-1),
+                    )
+
+                if torch.isnan(loss) or torch.isinf(loss):
+                    break
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+
+                loss_val = loss.item()
+                if step == 0:
+                    initial_loss = loss_val
+                final_loss = loss_val
+ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.tests.test_dashboard_schema:[17:39]
+==research.tests.test_sandbox_integration:[175:199]
+class TestDashboardConsistency(unittest.TestCase):
+    """Verify dashboard components and API endpoints are properly wired."""
+
+    @classmethod
+    def setUpClass(cls):
+        import glob
+        cls.repo_root = os.path.dirname(os.path.dirname(__file__))
+        cls.component_dir = os.path.join(
+            cls.repo_root, "dashboard", "src", "components")
+        cls.component_files = glob.glob(
+            os.path.join(cls.component_dir, "*.js"))
+        cls.app_js = os.path.join(
+            cls.repo_root, "dashboard", "src", "App.js")
+        cls.api_py = os.path.join(cls.repo_root, "scientist", "api.py")
+
+    def _read_file(self, path):
+        with open(path, "r") as f:
+            return f.read()
+
+    def test_all_components_imported_in_app(self):
+        """Every component should be imported in App.js."""
+        app_content = self._read_file(self.app_js)
+
+        # Components that are used inside other components, not App.js (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[1756:1775]
+==research.synthesis.compiler_ops_routing:[517:533]
+    gate_sum = gate_scores.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    gate_weights = gate_scores / gate_sum
+
+    _record_routing_telemetry(module, n_experts, gate_scores.argmax(dim=-1), logits=gate_scores)
+
+    if hasattr(module, 'expert_weights'):
+        output = torch.zeros_like(x)
+        for i in range(n_experts):
+            w = gate_weights[..., i:i+1]
+            expert_out = F.linear(x, module.expert_weights[i].to(dt))
+            output = output + w * expert_out
+        return output
+    return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x
+
+@register_op("ternary_projection")
+def _op_ternary_projection(module, inputs, config):
+    """1.58-bit Ternary Weights Simulation (BitNet).
+    Weights are restricted to {-1, 0, 1} with a learned scale.
+    """ (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.synthesis.compiler:[796:817]
+==research.synthesis.compiler_ops_attention:[27:41]
+    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
+    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    attn.masked_fill_(mask, float("-inf"))
+    attn = F.softmax(attn, dim=-1)
+    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    return module.o_proj(out)
+
+def _op_linear_attention(module, inputs, _):
+    """Linear attention with ELU kernel (O(S) complexity)."""
+    x = inputs[0]
+    if not hasattr(module, 'q_proj'):
+        return x
+    B, S, _ = x.shape
+    nh, hd = module.n_heads, module.head_dim (duplicate-code)
+aria_designer/runtime/registry.py:1:0: R0801: Similar lines in 2 files
+==research.scientist.runner._helpers:[637:648]
+==research.scientist.runner.continuous_investigation:[521:532]
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed, (duplicate-code)
+
+-----------------------------------
+Your code has been rated at 9.99/10
+

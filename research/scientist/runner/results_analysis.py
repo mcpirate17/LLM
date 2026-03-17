@@ -20,9 +20,18 @@ class _ResultsAnalysisMixin:
 
     __slots__ = ()
 
-    def _on_program_evaluated(self, graph, fitness, sandbox_result, s1_result,
-                              eval_counters, nb, exp_id, model_source="evolution",
-                              behavioral_fingerprint=None):
+    def _on_program_evaluated(
+        self,
+        graph,
+        fitness,
+        sandbox_result,
+        s1_result,
+        eval_counters,
+        nb,
+        exp_id,
+        model_source="evolution",
+        behavioral_fingerprint=None,
+    ):
         """Unified callback for recording results and updating counters during search."""
         eval_counters["total"] += 1
         if fitness > 0:
@@ -40,11 +49,21 @@ class _ResultsAnalysisMixin:
             # Extract S1 and architecture telemetry if available
             if s1_result:
                 # Basic training metrics
-                for k in ("initial_loss", "final_loss", "min_loss", "throughput",
-                          "avg_step_time_ms", "total_train_time_ms",
-                          "validation_loss", "validation_loss_ratio", "generalization_gap",
-                          "discovery_loss", "discovery_loss_ratio"):
-                    if k in s1_result: graph_metrics[k] = s1_result[k]
+                for k in (
+                    "initial_loss",
+                    "final_loss",
+                    "min_loss",
+                    "throughput",
+                    "avg_step_time_ms",
+                    "total_train_time_ms",
+                    "validation_loss",
+                    "validation_loss_ratio",
+                    "generalization_gap",
+                    "discovery_loss",
+                    "discovery_loss_ratio",
+                ):
+                    if k in s1_result:
+                        graph_metrics[k] = s1_result[k]
                 self._merge_s1_telemetry(graph_metrics, s1_result)
 
             # Extract behavioral fingerprint metrics if available
@@ -56,6 +75,7 @@ class _ResultsAnalysisMixin:
                 # not just fp.novelty_score which is distance-from-references
                 try:
                     from ...eval.metrics import novelty_score as compute_novelty
+
                     nov = compute_novelty(graph, fingerprint=fp)
                     fp_novelty = float(nov.overall_novelty)
                     fp_confidence = float(nov.novelty_confidence)
@@ -104,22 +124,32 @@ class _ResultsAnalysisMixin:
             )
             if fitness > 0.2 and rid:
                 from ._helpers import _upsert_screening_entry
-                _upsert_screening_entry(nb, {
-                    "result_id": rid,
-                    "model_source": model_source,
-                    "graph_fingerprint": graph.fingerprint(),
-                    "loss_ratio": 1.0 - fitness if fitness > 0 else None,
-                    **{k: graph_metrics.get(k) for k in (
-                        "fp_jacobian_spectral_norm", "routing_savings_ratio",
-                        "activation_sparsity_score", "depth_savings_ratio",
-                        "compression_ratio",
-                    )},
-                })
+
+                _upsert_screening_entry(
+                    nb,
+                    {
+                        "result_id": rid,
+                        "model_source": model_source,
+                        "graph_fingerprint": graph.fingerprint(),
+                        "loss_ratio": 1.0 - fitness if fitness > 0 else None,
+                        **{
+                            k: graph_metrics.get(k)
+                            for k in (
+                                "fp_jacobian_spectral_norm",
+                                "routing_savings_ratio",
+                                "activation_sparsity_score",
+                                "depth_savings_ratio",
+                                "compression_ratio",
+                            )
+                        },
+                    },
+                )
         except Exception as e:
             logger.debug("Failed to record program result: %s", e)
 
-    def _analyze_results(self, results: Dict, exp_id: str,
-                         nb: LabNotebook, context: str = "") -> List[str]:
+    def _analyze_results(
+        self, results: Dict, exp_id: str, nb: LabNotebook, context: str = ""
+    ) -> List[str]:
         """Analyze experiment results and record insights for dashboard display.
 
         Insights are recorded to the DB for dashboard visibility but are NOT
@@ -132,17 +162,28 @@ class _ResultsAnalysisMixin:
         # Try data-driven analytics first
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
             structured = analytics.compute_insights()
 
             recorded = []
             for ins in structured:
                 content = ins if isinstance(ins, str) else ins.get("content", "")
-                category = ins.get("category", "pattern") if isinstance(ins, dict) else "pattern"
-                confidence = ins.get("confidence", 0.7) if isinstance(ins, dict) else 0.7
-                insight_type = ins.get("insight_type") if isinstance(ins, dict) else None
+                category = (
+                    ins.get("category", "pattern")
+                    if isinstance(ins, dict)
+                    else "pattern"
+                )
+                confidence = (
+                    ins.get("confidence", 0.7) if isinstance(ins, dict) else 0.7
+                )
+                insight_type = (
+                    ins.get("insight_type") if isinstance(ins, dict) else None
+                )
                 subject_key = ins.get("subject_key") if isinstance(ins, dict) else None
-                semantic_key = ins.get("semantic_key") if isinstance(ins, dict) else None
+                semantic_key = (
+                    ins.get("semantic_key") if isinstance(ins, dict) else None
+                )
 
                 nb.record_insight(
                     category,
@@ -185,6 +226,7 @@ class _ResultsAnalysisMixin:
             ops_used.add(node.op_name)
             try:
                 from ...synthesis.primitives import get_primitive
+
                 op = get_primitive(node.op_name)
                 cat = op.category.value
                 cat_counts[cat] = cat_counts.get(cat, 0) + 1
@@ -201,12 +243,23 @@ class _ResultsAnalysisMixin:
         metrics["graph_uses_frequency_domain"] = uses_freq
 
         # Z7: Sparsity Ledger
-        sparse_ops = {"block_sparse_linear", "nm_sparse_linear", "semi_structured_2_4_linear"}
-        dense_ops = {"linear_proj", "linear_proj_down", "linear_proj_up", "fused_linear_gelu"}
+        sparse_ops = {
+            "block_sparse_linear",
+            "nm_sparse_linear",
+            "semi_structured_2_4_linear",
+        }
+        dense_ops = {
+            "linear_proj",
+            "linear_proj_down",
+            "linear_proj_up",
+            "fused_linear_gelu",
+        }
         n_sparse = sum(1 for node in graph.nodes.values() if node.op_name in sparse_ops)
         n_dense = sum(1 for node in graph.nodes.values() if node.op_name in dense_ops)
         total_param_ops = n_sparse + n_dense
-        metrics["sparsity_ratio"] = n_sparse / total_param_ops if total_param_ops > 0 else 0.0
+        metrics["sparsity_ratio"] = (
+            n_sparse / total_param_ops if total_param_ops > 0 else 0.0
+        )
 
         return metrics
 
@@ -323,8 +376,10 @@ class _ResultsAnalysisMixin:
                     rt_count += rt.get("count", 0)
                     ec = rt.get("expert_counts")
                     if isinstance(ec, torch.Tensor):
-                        if rt_expert_counts is None: rt_expert_counts = ec.clone()
-                        else: rt_expert_counts += ec
+                        if rt_expert_counts is None:
+                            rt_expert_counts = ec.clone()
+                        else:
+                            rt_expert_counts += ec
 
                 # Adaptive (MoD/MoR)
                 at = getattr(routing, "adaptive_telemetry", None)
@@ -336,7 +391,9 @@ class _ResultsAnalysisMixin:
                         recursion_savings_sum += at.get("savings_sum", 0.0)
                         recursion_depth_sum += at.get("depth_sum", 0.0)
                         recursion_count += at.get("count", 0)
-                        recursion_max_depth_sum += float(getattr(routing, "max_depth", 0)) * at.get("count", 0)
+                        recursion_max_depth_sum += float(
+                            getattr(routing, "max_depth", 0)
+                        ) * at.get("count", 0)
 
             # Check for op-level telemetry (compiler style)
             ops = getattr(layer, "ops", None)
@@ -356,7 +413,9 @@ class _ResultsAnalysisMixin:
                 sparse_telemetry = getattr(compiled_op, "sparse_telemetry", None)
                 if sparse_telemetry:
                     has_weight = hasattr(compiled_op, "weight")
-                    weight_params = float(compiled_op.weight.numel()) if has_weight else 0.0
+                    weight_params = (
+                        float(compiled_op.weight.numel()) if has_weight else 0.0
+                    )
                     for op_name, stats in sparse_telemetry.items():
                         calls = int(stats.get("calls", 0) or 0)
                         total_calls += calls
@@ -365,14 +424,32 @@ class _ResultsAnalysisMixin:
                         last_density = float(stats.get("last_density", 1.0) or 1.0)
                         density_last_values.append(last_density)
                         if stats.get("last_fallback_reason") == "kernel_unavailable":
-                            kernel_fallback_calls += int(stats.get("fallback_calls", 0) or 0)
-                        if op_name in ("nm_sparse_linear", "semi_structured_2_4_linear"):
+                            kernel_fallback_calls += int(
+                                stats.get("fallback_calls", 0) or 0
+                            )
+                        if op_name in (
+                            "nm_sparse_linear",
+                            "semi_structured_2_4_linear",
+                        ):
                             nm_total += 1
-                            if last_density <= 0.51: nm_compliant += 1
+                            if last_density <= 0.51:
+                                nm_compliant += 1
                         if weight_params > 0.0:
-                            density_for_params = (float(stats.get("density_sum", 0.0)) / calls) if calls > 0 else last_density
-                            sparse_active_params_estimate += weight_params * density_for_params
-                        telemetry_rows.append({"op_name": op_name, "calls": calls, "last_density": last_density})
+                            density_for_params = (
+                                (float(stats.get("density_sum", 0.0)) / calls)
+                                if calls > 0
+                                else last_density
+                            )
+                            sparse_active_params_estimate += (
+                                weight_params * density_for_params
+                            )
+                        telemetry_rows.append(
+                            {
+                                "op_name": op_name,
+                                "calls": calls,
+                                "last_density": last_density,
+                            }
+                        )
 
                 # Routing (MoE)
                 rt = getattr(compiled_op, "routing_telemetry", None)
@@ -386,8 +463,10 @@ class _ResultsAnalysisMixin:
                     rt_count += rt.get("count", 0)
                     ec = rt.get("expert_counts")
                     if isinstance(ec, torch.Tensor):
-                        if rt_expert_counts is None: rt_expert_counts = ec.clone()
-                        else: rt_expert_counts += ec
+                        if rt_expert_counts is None:
+                            rt_expert_counts = ec.clone()
+                        else:
+                            rt_expert_counts += ec
 
                 # Adaptive
                 at = getattr(compiled_op, "adaptive_telemetry", None)
@@ -399,12 +478,17 @@ class _ResultsAnalysisMixin:
         # Finalize Sparse
         if total_calls > 0:
             metrics["sparse_density_mean"] = density_sum / max(total_calls, 1)
-            metrics["sparse_density_last"] = sum(density_last_values) / max(len(density_last_values), 1)
+            metrics["sparse_density_last"] = sum(density_last_values) / max(
+                len(density_last_values), 1
+            )
             metrics["sparse_fallback_calls"] = total_fallback_calls
             metrics["sparse_kernel_fallback_calls"] = kernel_fallback_calls
-            metrics["sparse_active_params_estimate"] = int(max(0.0, sparse_active_params_estimate))
+            metrics["sparse_active_params_estimate"] = int(
+                max(0.0, sparse_active_params_estimate)
+            )
             metrics["sparse_telemetry_json"] = json.dumps(telemetry_rows)
-            if nm_total > 0: metrics["sparse_nm_compliance"] = nm_compliant / nm_total
+            if nm_total > 0:
+                metrics["sparse_nm_compliance"] = nm_compliant / nm_total
             # Compression ratio = effective params / dense params
             if sparse_active_params_estimate > 0:
                 total_weight_params = 0.0
@@ -421,9 +505,13 @@ class _ResultsAnalysisMixin:
                             continue
                     for op in op_values:
                         if hasattr(op, "weight"):
-                            total_weight_params += float(getattr(op, "weight", torch.empty(0)).numel())
+                            total_weight_params += float(
+                                getattr(op, "weight", torch.empty(0)).numel()
+                            )
                 if total_weight_params > 0:
-                    metrics["compression_ratio"] = sparse_active_params_estimate / total_weight_params
+                    metrics["compression_ratio"] = (
+                        sparse_active_params_estimate / total_weight_params
+                    )
 
         # Infer routing_mode from compiled ops if not already set
         if not routing_mode and rt_count > 0:
@@ -451,9 +539,16 @@ class _ResultsAnalysisMixin:
                         routing_mode = "topk_gate"
                         break
                     elif op_name in {
-                        "mod_topk", "early_exit", "adaptive_recursion",
-                        "token_merging", "token_merge", "cascade",
-                        "speculative", "route_topk", "route_lanes", "route_recursion",
+                        "mod_topk",
+                        "early_exit",
+                        "adaptive_recursion",
+                        "token_merging",
+                        "token_merge",
+                        "cascade",
+                        "speculative",
+                        "route_topk",
+                        "route_lanes",
+                        "route_recursion",
                     }:
                         routing_mode = op_name
                         break
@@ -469,36 +564,86 @@ class _ResultsAnalysisMixin:
         if rt_count > 0:
             metrics["routing_tokens_total"] = rt_tokens_total
             metrics["routing_tokens_processed"] = rt_tokens_processed
-            metrics["routing_tokens_skipped"] = max(0, rt_tokens_total - rt_tokens_processed)
+            metrics["routing_tokens_skipped"] = max(
+                0, rt_tokens_total - rt_tokens_processed
+            )
             metrics["routing_utilization_entropy"] = rt_entropy_sum / rt_count
             if rt_tokens_total > 0:
-                metrics["routing_drop_rate"] = max(0.0, 1.0 - (rt_tokens_processed / rt_tokens_total))
-                metrics["routing_savings_ratio"] = max(0.0, 1.0 - (rt_tokens_processed / rt_tokens_total))
+                metrics["routing_drop_rate"] = max(
+                    0.0, 1.0 - (rt_tokens_processed / rt_tokens_total)
+                )
+                metrics["routing_savings_ratio"] = max(
+                    0.0, 1.0 - (rt_tokens_processed / rt_tokens_total)
+                )
             if rt_confidence_count > 0:
                 conf_mean = rt_confidence_sum / rt_confidence_count
                 metrics["routing_confidence_mean"] = conf_mean
-                conf_var = max(0.0, (rt_confidence_sq_sum / rt_confidence_count) - conf_mean * conf_mean)
-                metrics["routing_confidence_std"] = conf_var ** 0.5
+                conf_var = max(
+                    0.0,
+                    (rt_confidence_sq_sum / rt_confidence_count)
+                    - conf_mean * conf_mean,
+                )
+                metrics["routing_confidence_std"] = conf_var**0.5
             if rt_expert_counts is not None:
                 metrics["routing_expert_count"] = int(len(rt_expert_counts))
-                metrics["routing_expert_utilization_json"] = json.dumps(rt_expert_counts.cpu().tolist())
+                metrics["routing_expert_utilization_json"] = json.dumps(
+                    rt_expert_counts.cpu().tolist()
+                )
+
+        # Detect entropy_score ops and flag NULL routing_utilization_entropy
+        has_entropy_gate = False
+        for layer in layers:
+            ops = getattr(layer, "ops", None)
+            if ops is None:
+                continue
+            if isinstance(ops, dict):
+                op_values = list(ops.values())
+            else:
+                try:
+                    op_values = list(ops)
+                except Exception:
+                    continue
+            for compiled_op in op_values:
+                op_obj = getattr(compiled_op, "op", None)
+                op_name = getattr(op_obj, "name", "") if op_obj else ""
+                if op_name == "entropy_score":
+                    has_entropy_gate = True
+                    break
+            if has_entropy_gate:
+                break
+        if has_entropy_gate:
+            metrics["has_entropy_gate"] = True
+            # If routing_utilization_entropy is still missing for entropy-gated
+            # architectures, flag it explicitly so dashboards show the gap.
+            if "routing_utilization_entropy" not in metrics:
+                metrics["routing_utilization_entropy"] = None
 
         # Finalize Adaptive
         if at_count > 0:
             metrics["depth_savings_ratio"] = at_savings_sum / at_count
             if at_depth_sum > 0:
-                metrics["effective_depth_ratio"] = at_depth_sum / (at_count * len(layers)) if len(layers) > 0 else 1.0
+                metrics["effective_depth_ratio"] = (
+                    at_depth_sum / (at_count * len(layers)) if len(layers) > 0 else 1.0
+                )
         if recursion_count > 0:
             metrics["recursion_savings_ratio"] = recursion_savings_sum / recursion_count
             if recursion_depth_sum > 0:
-                avg_max_depth = recursion_max_depth_sum / recursion_count if recursion_max_depth_sum > 0 else None
+                avg_max_depth = (
+                    recursion_max_depth_sum / recursion_count
+                    if recursion_max_depth_sum > 0
+                    else None
+                )
                 if avg_max_depth and avg_max_depth > 0:
-                    metrics["recursion_depth_ratio"] = recursion_depth_sum / (recursion_count * avg_max_depth)
+                    metrics["recursion_depth_ratio"] = recursion_depth_sum / (
+                        recursion_count * avg_max_depth
+                    )
 
         return metrics
 
     @staticmethod
-    def _merge_s1_telemetry(program_metrics: Dict[str, Any], s1_result: Dict[str, Any]) -> None:
+    def _merge_s1_telemetry(
+        program_metrics: Dict[str, Any], s1_result: Dict[str, Any]
+    ) -> None:
         telemetry_keys = (
             "routing_mode",
             "routing_tokens_total",
@@ -517,6 +662,9 @@ class _ResultsAnalysisMixin:
             "effective_depth_ratio",
             "recursion_savings_ratio",
             "recursion_depth_ratio",
+            "has_entropy_gate",
+            "entropy_gate_trajectory_json",
+            "routing_collapse_score",
         )
         for key in telemetry_keys:
             if key in s1_result and s1_result.get(key) is not None:

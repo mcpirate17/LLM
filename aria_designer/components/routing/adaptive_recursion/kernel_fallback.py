@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for adaptive_recursion."""
-import torch
+
 import torch.nn as nn
 
 

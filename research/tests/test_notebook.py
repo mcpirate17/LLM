@@ -12,18 +12,16 @@ import pytest
 import importlib
 import json
 import os
-import sys
 import tempfile
-import time
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
 # Detect available dependencies
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -32,6 +30,7 @@ try:
     HAS_FLASK = True
 except ImportError:
     HAS_FLASK = False
+
 
 # Import modules that don't require torch directly
 # (bypass scientist/__init__.py which eagerly imports runner)
@@ -42,13 +41,13 @@ def _import_module(dotted_path):
 
 try:
     from research.scientist.notebook import LabNotebook, ExperimentEntry
+
     HAS_NOTEBOOK = True
 except Exception as e:
     HAS_NOTEBOOK = False
     print(f"Notebook import failed: {e}")
 
 try:
-    from research.scientist.persona import Aria
     HAS_PERSONA = True
 except Exception as e:
     HAS_PERSONA = False
@@ -56,6 +55,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.prompts as _prompts_mod  # noqa: F401
+
     HAS_PROMPTS = True
 except Exception as e:
     HAS_PROMPTS = False
@@ -63,6 +63,7 @@ except Exception as e:
 
 try:
     import research.scientist.llm.context as _context_mod  # noqa: F401
+
     HAS_CONTEXT = True
 except Exception as e:
     HAS_CONTEXT = False
@@ -86,20 +87,31 @@ class TestNotebook(unittest.TestCase):
 
     def test_schema_all_tables_exist(self):
         """Verify all 9+ tables are created."""
-        tables = [row[0] for row in self.nb.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()]
+        tables = [
+            row[0]
+            for row in self.nb.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
         expected = [
-            "experiments", "entries", "program_results", "metrics_log",
-            "insights", "training_curves", "op_success_rates",
-            "learning_log", "leaderboard",
+            "experiments",
+            "entries",
+            "program_results",
+            "metrics_log",
+            "insights",
+            "training_curves",
+            "op_success_rates",
+            "learning_log",
+            "leaderboard",
         ]
         for t in expected:
             self.assertIn(t, tables, f"Missing table: {t}")
 
     def test_program_results_experiment_index_exists(self):
         """program_results(experiment_id) should be indexed for large-query performance."""
-        indexes = self.nb.conn.execute("PRAGMA index_list('program_results')").fetchall()
+        indexes = self.nb.conn.execute(
+            "PRAGMA index_list('program_results')"
+        ).fetchall()
         has_experiment_index = False
         for idx in indexes:
             idx_name = idx[1]
@@ -108,17 +120,33 @@ class TestNotebook(unittest.TestCase):
             if col_names == ["experiment_id"]:
                 has_experiment_index = True
                 break
-        self.assertTrue(has_experiment_index, "Missing index on program_results(experiment_id)")
+        self.assertTrue(
+            has_experiment_index, "Missing index on program_results(experiment_id)"
+        )
 
     def test_phase4_indexes_exist(self):
         """Hot query paths should have the new Phase 4 indexes."""
         program_indexes = {
-            row[1]: [c[2] for c in self.nb.conn.execute(f"PRAGMA index_info('{row[1]}')").fetchall()]
-            for row in self.nb.conn.execute("PRAGMA index_list('program_results')").fetchall()
+            row[1]: [
+                c[2]
+                for c in self.nb.conn.execute(
+                    f"PRAGMA index_info('{row[1]}')"
+                ).fetchall()
+            ]
+            for row in self.nb.conn.execute(
+                "PRAGMA index_list('program_results')"
+            ).fetchall()
         }
         leaderboard_indexes = {
-            row[1]: [c[2] for c in self.nb.conn.execute(f"PRAGMA index_info('{row[1]}')").fetchall()]
-            for row in self.nb.conn.execute("PRAGMA index_list('leaderboard')").fetchall()
+            row[1]: [
+                c[2]
+                for c in self.nb.conn.execute(
+                    f"PRAGMA index_info('{row[1]}')"
+                ).fetchall()
+            ]
+            for row in self.nb.conn.execute(
+                "PRAGMA index_list('leaderboard')"
+            ).fetchall()
         }
 
         self.assertIn(["stage1_passed"], program_indexes.values())
@@ -197,13 +225,23 @@ class TestNotebook(unittest.TestCase):
         tiny_exp = self.nb.start_experiment("synthesis", {}, "tiny")
         self.nb.complete_experiment(
             experiment_id=tiny_exp,
-            results={"total": 1, "stage1_passed": 1, "stage0_passed": 1, "stage05_passed": 1},
+            results={
+                "total": 1,
+                "stage1_passed": 1,
+                "stage0_passed": 1,
+                "stage05_passed": 1,
+            },
         )
 
         stable_exp = self.nb.start_experiment("synthesis", {}, "stable")
         self.nb.complete_experiment(
             experiment_id=stable_exp,
-            results={"total": 80, "stage1_passed": 8, "stage0_passed": 80, "stage05_passed": 40},
+            results={
+                "total": 80,
+                "stage1_passed": 8,
+                "stage0_passed": 80,
+                "stage05_passed": 40,
+            },
         )
 
         trends = self.nb.get_experiment_trends(limit=10)
@@ -227,7 +265,9 @@ class TestNotebook(unittest.TestCase):
 
     def test_start_experiment_records_code_version(self):
         """Experiment config should always include code_version metadata."""
-        with patch.dict(os.environ, {"RESEARCH_CODE_VERSION": "test-version"}, clear=False):
+        with patch.dict(
+            os.environ, {"RESEARCH_CODE_VERSION": "test-version"}, clear=False
+        ):
             LabNotebook._cached_code_version = None
             exp_id = self.nb.start_experiment(
                 experiment_type="synthesis",
@@ -361,16 +401,21 @@ class TestNotebook(unittest.TestCase):
     def test_composite_score_increases_with_phases(self):
         """Composite score should increase as candidates pass more phases with good results."""
         score_screening = self.nb.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.7)
+            screening_lr=0.5, screening_nov=0.7
+        )
         score_investigation = self.nb.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.7,
-            inv_lr=0.4, inv_robust=0.6)
+            screening_lr=0.5, screening_nov=0.7, inv_lr=0.4, inv_robust=0.6
+        )
         # Validation values represent a strong candidate: 30% of baseline
         # loss with low variance (std=0.1)
         score_validation = self.nb.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.7,
-            inv_lr=0.4, inv_robust=0.6,
-            val_baseline=0.3, val_std=0.1)
+            screening_lr=0.5,
+            screening_nov=0.7,
+            inv_lr=0.4,
+            inv_robust=0.6,
+            val_baseline=0.3,
+            val_std=0.1,
+        )
 
         self.assertGreater(score_investigation, score_screening)
         self.assertGreater(score_validation, score_investigation)
@@ -425,7 +470,9 @@ class TestNotebook(unittest.TestCase):
         )
 
         rows = {row["entry_id"]: row for row in self.nb.get_leaderboard(limit=10)}
-        self.assertGreater(rows[e_strong]["composite_score"], rows[e_weak]["composite_score"])
+        self.assertGreater(
+            rows[e_strong]["composite_score"], rows[e_weak]["composite_score"]
+        )
 
     def test_upsert_leaderboard_uses_shared_score_kwargs_builder(self):
         """Live leaderboard scoring should match the shared scoring-kwargs path."""
@@ -511,14 +558,18 @@ class TestNotebook(unittest.TestCase):
         lb = self.nb.get_leaderboard(limit=5)[0]
 
         self.assertEqual(pr["screening_wikitext_status"], "ok")
-        self.assertEqual(pr["screening_wikitext_metric_version"], "screening_wikitext_v1")
+        self.assertEqual(
+            pr["screening_wikitext_metric_version"], "screening_wikitext_v1"
+        )
         self.assertEqual(pr["screening_wikitext_variant"], "wikitext-2-raw-v1")
         self.assertAlmostEqual(pr["wikitext_pre_perplexity"], 210.0)
         self.assertAlmostEqual(pr["wikitext_ppl_improvement"], 0.231)
         self.assertAlmostEqual(pr["screening_wikitext_elapsed_ms"], 2345.6)
         self.assertEqual(pr["screening_wikitext_budget_json"], '{"n_train_steps":50}')
         self.assertEqual(lb["screening_wikitext_status"], "ok")
-        self.assertEqual(lb["screening_wikitext_metric_version"], "screening_wikitext_v1")
+        self.assertEqual(
+            lb["screening_wikitext_metric_version"], "screening_wikitext_v1"
+        )
 
     def test_external_benchmarks_merge_screening_payload(self):
         """Screening payload should merge into external_benchmarks_json cleanly."""
@@ -566,11 +617,13 @@ class TestNotebook(unittest.TestCase):
 
     def test_entries_crud(self):
         """Add and query notebook entries."""
-        entry_id = self.nb.add_entry(ExperimentEntry(
-            entry_type="decision",
-            title="Test Decision",
-            content="We decided to test things.",
-        ))
+        entry_id = self.nb.add_entry(
+            ExperimentEntry(
+                entry_type="decision",
+                title="Test Decision",
+                content="We decided to test things.",
+            )
+        )
         self.assertIsNotNone(entry_id)
 
         entries = self.nb.get_entries()
@@ -580,8 +633,10 @@ class TestNotebook(unittest.TestCase):
         """Dashboard summary returns expected keys."""
         summary = self.nb.get_dashboard_summary()
         expected_keys = [
-            "total_experiments", "total_programs_evaluated",
-            "stage1_survivors", "survival_rate",
+            "total_experiments",
+            "total_programs_evaluated",
+            "stage1_survivors",
+            "survival_rate",
         ]
         for k in expected_keys:
             self.assertIn(k, summary)
@@ -598,19 +653,23 @@ class TestNotebook(unittest.TestCase):
         )
         self.nb.flush_writes()
         after = self.nb.get_dashboard_summary()
-        self.assertEqual(after["total_programs_evaluated"], before["total_programs_evaluated"] + 1)
+        self.assertEqual(
+            after["total_programs_evaluated"], before["total_programs_evaluated"] + 1
+        )
         self.assertEqual(after["stage1_survivors"], before["stage1_survivors"] + 1)
 
     def test_graph_structural_counts_supports_dict_nodes(self):
         """Structural op counting should handle dict-based graph JSON without refetching repeatedly."""
         exp_id = self.nb.start_experiment("synthesis", {}, "counts")
-        graph_json = json.dumps({
-            "nodes": {
-                "a": {"op_name": "route_topk"},
-                "b": {"op_name": "block_sparse_linear"},
-                "c": {"op_name": "moe_topk"},
+        graph_json = json.dumps(
+            {
+                "nodes": {
+                    "a": {"op_name": "route_topk"},
+                    "b": {"op_name": "block_sparse_linear"},
+                    "c": {"op_name": "moe_topk"},
+                }
             }
-        })
+        )
         result_id = self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_counts",
@@ -636,9 +695,14 @@ class TestNotebook(unittest.TestCase):
             novelty_score=0.6,
         )
 
-        for sort_by in ["novelty_score", "loss_ratio",
-                        "structural_novelty", "behavioral_novelty",
-                        "validation_loss_ratio", "discovery_loss_ratio"]:
+        for sort_by in [
+            "novelty_score",
+            "loss_ratio",
+            "structural_novelty",
+            "behavioral_novelty",
+            "validation_loss_ratio",
+            "discovery_loss_ratio",
+        ]:
             programs = self.nb.get_top_programs(5, sort_by=sort_by)
             self.assertIsInstance(programs, list)
 
@@ -666,9 +730,12 @@ class TestNotebook(unittest.TestCase):
 
     def test_training_curve_ignored_without_persisted_survivor(self):
         """Curve writes should be skipped when the parent result does not exist."""
-        self.nb.store_training_curve("missing_result", [
-            {"step": 0, "loss": 1.0, "grad_norm": 0.5},
-        ])
+        self.nb.store_training_curve(
+            "missing_result",
+            [
+                {"step": 0, "loss": 1.0, "grad_norm": 0.5},
+            ],
+        )
         retrieved = self.nb.get_training_curve("missing_result")
         self.assertEqual(retrieved, [])
 
@@ -704,13 +771,15 @@ class TestNotebook(unittest.TestCase):
         from research.scientist.analytics import ExperimentAnalytics
 
         exp_id = self.nb.start_experiment("synthesis", {}, "combo-test")
-        valid_graph = json.dumps({
-            "nodes": {
-                "a": {"op_name": "relu"},
-                "b": {"op_name": "gelu"},
-                "c": {"op_name": "input"},
+        valid_graph = json.dumps(
+            {
+                "nodes": {
+                    "a": {"op_name": "relu"},
+                    "b": {"op_name": "gelu"},
+                    "c": {"op_name": "input"},
+                }
             }
-        })
+        )
         self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_combo_1",
@@ -759,7 +828,9 @@ class TestNotebook(unittest.TestCase):
         ]
 
         for i, spec in enumerate(cluster_a + cluster_b):
-            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 100}, f"cluster-{i}")
+            exp_id = self.nb.start_experiment(
+                "synthesis", {"n_programs": 100}, f"cluster-{i}"
+            )
             self.nb.complete_experiment(
                 exp_id,
                 {
@@ -801,7 +872,9 @@ class TestNotebook(unittest.TestCase):
         from research.scientist.analytics import ExperimentAnalytics
 
         for i in range(3):
-            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 10}, f"compile-heavy-{i}")
+            exp_id = self.nb.start_experiment(
+                "synthesis", {"n_programs": 10}, f"compile-heavy-{i}"
+            )
             for j in range(10):
                 is_success = j >= 5
                 self.nb.record_program_result(
@@ -832,7 +905,9 @@ class TestNotebook(unittest.TestCase):
 
         stage1_errors = ["nan_output", "overflow", "timeout", "nan_output", "overflow"]
         for i in range(3):
-            exp_id = self.nb.start_experiment("synthesis", {"n_programs": 10}, f"stage1-heavy-{i}")
+            exp_id = self.nb.start_experiment(
+                "synthesis", {"n_programs": 10}, f"stage1-heavy-{i}"
+            )
             for j in range(10):
                 is_success = j >= 5
                 self.nb.record_program_result(
@@ -874,7 +949,9 @@ class TestNotebook(unittest.TestCase):
 
         compile_rates = sorted(c["avg_compile_fail_rate"] for c in clusters["clusters"])
         stage1_rates = sorted(c["avg_stage1_fail_rate"] for c in clusters["clusters"])
-        error_diversities = sorted(c["avg_error_diversity"] for c in clusters["clusters"])
+        error_diversities = sorted(
+            c["avg_error_diversity"] for c in clusters["clusters"]
+        )
 
         self.assertLess(compile_rates[0], 0.1)
         self.assertGreater(compile_rates[-1], 0.4)
@@ -889,7 +966,9 @@ class TestNotebook(unittest.TestCase):
 
         pending_updates = []
 
-        def _record_experiment_with_trajectory(prefix: str, improving: bool, offset: float):
+        def _record_experiment_with_trajectory(
+            prefix: str, improving: bool, offset: float
+        ):
             exp_id = self.nb.start_experiment("synthesis", {"n_programs": 10}, prefix)
             base_ts = 1000.0 + offset
 
@@ -934,8 +1013,12 @@ class TestNotebook(unittest.TestCase):
             )
 
         for i in range(3):
-            _record_experiment_with_trajectory(f"traj_up_{i}", improving=True, offset=i * 20)
-            _record_experiment_with_trajectory(f"traj_down_{i}", improving=False, offset=200 + (i * 20))
+            _record_experiment_with_trajectory(
+                f"traj_up_{i}", improving=True, offset=i * 20
+            )
+            _record_experiment_with_trajectory(
+                f"traj_down_{i}", improving=False, offset=200 + (i * 20)
+            )
 
         self.nb.flush_writes()
         for ts, rid in pending_updates:
@@ -967,17 +1050,35 @@ class TestNotebook(unittest.TestCase):
         self.assertIn(clusters["model_selection"]["selected_k"], (2, 3))
 
         stage1_momentum = sorted(c["avg_stage1_momentum"] for c in clusters["clusters"])
-        novelty_momentum = sorted(c["avg_novelty_momentum"] for c in clusters["clusters"])
-        loss_momentum = sorted(c["avg_loss_improvement_momentum"] for c in clusters["clusters"])
+        novelty_momentum = sorted(
+            c["avg_novelty_momentum"] for c in clusters["clusters"]
+        )
+        loss_momentum = sorted(
+            c["avg_loss_improvement_momentum"] for c in clusters["clusters"]
+        )
         peak_timing = sorted(c["avg_outcome_peak_timing"] for c in clusters["clusters"])
         recovery_lag = sorted(c["avg_recovery_lag"] for c in clusters["clusters"])
-        transition_timing = [c["avg_stage1_transition_timing"] for c in clusters["clusters"]]
-        change_point_timing = [c["avg_primary_change_point_timing"] for c in clusters["clusters"]]
-        transition_density = [c["avg_stage1_transition_density"] for c in clusters["clusters"]]
-        change_point_conf = [c["avg_change_point_confidence"] for c in clusters["clusters"]]
-        change_dispersion = [c["avg_windowed_change_dispersion"] for c in clusters["clusters"]]
-        change_localization = [c["avg_window_change_localization"] for c in clusters["clusters"]]
-        transition_gap_entropy = [c["avg_transition_gap_entropy"] for c in clusters["clusters"]]
+        transition_timing = [
+            c["avg_stage1_transition_timing"] for c in clusters["clusters"]
+        ]
+        change_point_timing = [
+            c["avg_primary_change_point_timing"] for c in clusters["clusters"]
+        ]
+        transition_density = [
+            c["avg_stage1_transition_density"] for c in clusters["clusters"]
+        ]
+        change_point_conf = [
+            c["avg_change_point_confidence"] for c in clusters["clusters"]
+        ]
+        change_dispersion = [
+            c["avg_windowed_change_dispersion"] for c in clusters["clusters"]
+        ]
+        change_localization = [
+            c["avg_window_change_localization"] for c in clusters["clusters"]
+        ]
+        transition_gap_entropy = [
+            c["avg_transition_gap_entropy"] for c in clusters["clusters"]
+        ]
 
         self.assertLess(stage1_momentum[0], -0.6)
         self.assertGreater(stage1_momentum[-1], 0.6)
@@ -998,7 +1099,6 @@ class TestNotebook(unittest.TestCase):
         self.assertTrue(all(0.0 <= t <= 1.0 for t in transition_gap_entropy))
 
 
-
 class TestStaleExperimentCleanup(unittest.TestCase):
     """Test cleanup_stale_experiments marks zombies as failed."""
 
@@ -1006,6 +1106,7 @@ class TestStaleExperimentCleanup(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         db_path = os.path.join(self.tmpdir, "test_cleanup.db")
         from research.scientist.notebook.__init__ import LabNotebook
+
         self.nb = LabNotebook(db_path)
 
     def tearDown(self):
@@ -1014,6 +1115,7 @@ class TestStaleExperimentCleanup(unittest.TestCase):
     def test_cleanup_marks_stale_as_failed(self):
         """Experiments running longer than timeout should be marked failed."""
         import time as _time
+
         exp_id = self.nb.start_experiment("synthesis", {}, "stale test")
         # Backdate started_at to 2 hours ago
         two_hours_ago = _time.time() - 7200
@@ -1058,12 +1160,18 @@ class TestStaleExperimentCleanup(unittest.TestCase):
     def test_cleanup_ignores_completed(self):
         """Completed experiments should not be affected by cleanup."""
         exp_id = self.nb.start_experiment("synthesis", {}, "done test")
-        self.nb.complete_experiment(exp_id, {
-            "total": 1, "stage0_passed": 1, "stage1_passed": 0,
-        })
+        self.nb.complete_experiment(
+            exp_id,
+            {
+                "total": 1,
+                "stage0_passed": 1,
+                "stage1_passed": 0,
+            },
+        )
 
         # Backdate to look stale
         import time as _time
+
         self.nb.conn.execute(
             "UPDATE experiments SET started_at = ? WHERE experiment_id = ?",
             (_time.time() - 7200, exp_id),
@@ -1143,7 +1251,6 @@ class TestStaleExperimentCleanup(unittest.TestCase):
         self.assertEqual(cleaned, 0)
 
 
-
 class TestLeaderboardDedup(unittest.TestCase):
     """Test leaderboard fingerprint deduplication."""
 
@@ -1151,6 +1258,7 @@ class TestLeaderboardDedup(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         db_path = os.path.join(self.tmpdir, "test_dedup.db")
         from research.scientist.notebook.__init__ import LabNotebook
+
         self.nb = LabNotebook(db_path)
 
     def tearDown(self):
@@ -1190,19 +1298,28 @@ class TestLeaderboardDedup(unittest.TestCase):
         self.nb.flush_writes()
 
         self.nb.upsert_leaderboard(
-            result_id=r1, model_source="test",
-            screening_loss_ratio=0.5, screening_novelty=0.6,
-            screening_passed=True, tier="screening",
+            result_id=r1,
+            model_source="test",
+            screening_loss_ratio=0.5,
+            screening_novelty=0.6,
+            screening_passed=True,
+            tier="screening",
         )
         self.nb.upsert_leaderboard(
-            result_id=r2, model_source="test",
-            screening_loss_ratio=0.3, screening_novelty=0.9,
-            screening_passed=True, tier="screening",
+            result_id=r2,
+            model_source="test",
+            screening_loss_ratio=0.3,
+            screening_novelty=0.9,
+            screening_passed=True,
+            tier="screening",
         )
         self.nb.upsert_leaderboard(
-            result_id=r3, model_source="test",
-            screening_loss_ratio=0.4, screening_novelty=0.7,
-            screening_passed=True, tier="screening",
+            result_id=r3,
+            model_source="test",
+            screening_loss_ratio=0.4,
+            screening_novelty=0.7,
+            screening_passed=True,
+            tier="screening",
         )
 
         entries = self.nb.get_leaderboard()
@@ -1219,15 +1336,17 @@ class TestLeaderboardDedup(unittest.TestCase):
             rid = self.nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=fp,
-                graph_json='{}',
+                graph_json="{}",
                 stage1_passed=True,
                 loss_ratio=0.4 + i * 0.1,
             )
             self.nb.flush_writes()
             self.nb.upsert_leaderboard(
-                result_id=rid, model_source="test",
+                result_id=rid,
+                model_source="test",
                 screening_loss_ratio=0.4 + i * 0.1,
-                screening_passed=True, tier="screening",
+                screening_passed=True,
+                tier="screening",
             )
 
         entries = self.nb.get_leaderboard()
@@ -1239,33 +1358,49 @@ class TestLeaderboardDedup(unittest.TestCase):
 
         # Create screening entry (should NOT appear)
         rid1 = self.nb.record_program_result(
-            experiment_id=exp_id, graph_fingerprint="fp_screening",
-            graph_json='{}', stage1_passed=True, loss_ratio=0.4,
+            experiment_id=exp_id,
+            graph_fingerprint="fp_screening",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.4,
         )
         self.nb.upsert_leaderboard(
-            result_id=rid1, model_source="test",
-            screening_loss_ratio=0.4, screening_passed=True, tier="screening",
+            result_id=rid1,
+            model_source="test",
+            screening_loss_ratio=0.4,
+            screening_passed=True,
+            tier="screening",
         )
 
         # Create investigation entry (SHOULD appear)
         rid2 = self.nb.record_program_result(
-            experiment_id=exp_id, graph_fingerprint="fp_investigated",
-            graph_json='{}', stage1_passed=True, loss_ratio=0.3,
+            experiment_id=exp_id,
+            graph_fingerprint="fp_investigated",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.3,
         )
         self.nb.upsert_leaderboard(
-            result_id=rid2, model_source="test",
-            screening_loss_ratio=0.3, screening_passed=True,
+            result_id=rid2,
+            model_source="test",
+            screening_loss_ratio=0.3,
+            screening_passed=True,
             tier="investigation",
         )
 
         # Create validation entry (SHOULD appear)
         rid3 = self.nb.record_program_result(
-            experiment_id=exp_id, graph_fingerprint="fp_validated",
-            graph_json='{}', stage1_passed=True, loss_ratio=0.2,
+            experiment_id=exp_id,
+            graph_fingerprint="fp_validated",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.2,
         )
         self.nb.upsert_leaderboard(
-            result_id=rid3, model_source="test",
-            screening_loss_ratio=0.2, screening_passed=True,
+            result_id=rid3,
+            model_source="test",
+            screening_loss_ratio=0.2,
+            screening_passed=True,
             tier="validation",
         )
 
@@ -1277,7 +1412,5 @@ class TestLeaderboardDedup(unittest.TestCase):
         self.assertEqual(len(fps), 2)
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 
 const INTENT_PRESETS = [
   {
@@ -64,21 +64,19 @@ function AskAriaModal({
 }) {
   const [prompt, setPrompt] = useState('')
   const [selectedPreset, setSelectedPreset] = useState('')
-  const [showSuggestions, setShowSuggestions] = useState(false)
-  const sortedSuggestions = [...(suggestions || [])]
-    .sort((a, b) => (b?.score || 0) - (a?.score || 0))
+  const [suggestionsRequested, setSuggestionsRequested] = useState(false)
+  const sortedSuggestions = useMemo(
+    () => [...(suggestions || [])].sort((a, b) => (b?.score || 0) - (a?.score || 0)),
+    [suggestions]
+  )
+  const showSuggestions = suggestionsRequested || sortedSuggestions.length > 0
   const hasPrompt = Boolean(prompt.trim())
-
-  // Show suggestions section when suggestions arrive
-  useEffect(() => {
-    if (sortedSuggestions.length > 0) setShowSuggestions(true)
-  }, [sortedSuggestions.length])
 
   useEffect(() => {
     if (!open) {
       setSelectedPreset('')
       setPrompt('')
-      setShowSuggestions(false)
+      setSuggestionsRequested(false)
     }
   }, [open])
 
@@ -134,7 +132,7 @@ function AskAriaModal({
           <button
             type="button"
             onClick={() => {
-              setShowSuggestions(true)
+              setSuggestionsRequested(true)
               onSuggest(prompt)
             }}
             disabled={loading || !hasPrompt}

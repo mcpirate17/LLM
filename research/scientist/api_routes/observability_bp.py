@@ -1,11 +1,10 @@
 """Observability API routes — component health, alerts, training SSE stream."""
+
 from __future__ import annotations
 
-import json
 import logging
 import time
-import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from flask import Response, jsonify, request
 from ..notebook import LabNotebook
 from ..json_utils import fast_dumps as _json_dumps
@@ -97,7 +96,9 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
     # of "documents" (graphs).
     max_n_used = max((r.get("n_used") or 0 for r in op_rates), default=0)
 
-    def _compute_blame(op_name: str, n_used: int, n_s0: int) -> Tuple[float, float, float]:
+    def _compute_blame(
+        op_name: str, n_used: int, n_s0: int
+    ) -> Tuple[float, float, float]:
         """Return (blame_score, tf, idf) for an op.
 
         Uses op_success_rates data (includes failure accumulation) for TF,
@@ -117,6 +118,7 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
     grad_health: Dict[str, Dict] = {}
     try:
         from research.profiling.schema import ComponentDB
+
         with ComponentDB() as cdb:
             rows = cdb.query(
                 "SELECT op_name, grad_norm, grad_exploding, grad_vanishing, "
@@ -125,14 +127,30 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
             )
             for r in rows:
                 grad_health[r["op_name"]] = {
-                    "grad_norm": float(r["grad_norm"]) if r["grad_norm"] is not None else None,
-                    "grad_exploding": bool(r["grad_exploding"]) if r["grad_exploding"] is not None else False,
-                    "grad_vanishing": bool(r["grad_vanishing"]) if r["grad_vanishing"] is not None else False,
-                    "has_nan": bool(r["output_has_nan"]) if r["output_has_nan"] is not None else False,
-                    "has_inf": bool(r["output_has_inf"]) if r["output_has_inf"] is not None else False,
-                    "fwd_us": float(r["forward_time_us"]) if r["forward_time_us"] is not None else None,
-                    "bwd_us": float(r["backward_time_us"]) if r["backward_time_us"] is not None else None,
-                    "lipschitz": float(r["lipschitz_estimate"]) if r["lipschitz_estimate"] is not None else None,
+                    "grad_norm": float(r["grad_norm"])
+                    if r["grad_norm"] is not None
+                    else None,
+                    "grad_exploding": bool(r["grad_exploding"])
+                    if r["grad_exploding"] is not None
+                    else False,
+                    "grad_vanishing": bool(r["grad_vanishing"])
+                    if r["grad_vanishing"] is not None
+                    else False,
+                    "has_nan": bool(r["output_has_nan"])
+                    if r["output_has_nan"] is not None
+                    else False,
+                    "has_inf": bool(r["output_has_inf"])
+                    if r["output_has_inf"] is not None
+                    else False,
+                    "fwd_us": float(r["forward_time_us"])
+                    if r["forward_time_us"] is not None
+                    else None,
+                    "bwd_us": float(r["backward_time_us"])
+                    if r["backward_time_us"] is not None
+                    else None,
+                    "lipschitz": float(r["lipschitz_estimate"])
+                    if r["lipschitz_estimate"] is not None
+                    else None,
                     "profile_error": r["error"],
                 }
     except Exception:
@@ -229,22 +247,24 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         else:
             total_broken += 1
 
-        components.append({
-            "op": op,
-            "status": status,
-            "reasons": reasons,
-            "n_used": n_used,
-            "s0_rate": round(s0_rate, 3),
-            "s1_rate": round(s1_rate, 3),
-            "blame": round(blame, 3),
-            "fail_rate": round(tf, 3),
-            "rarity": round(idf, 3),
-            "lipschitz": round(lipschitz, 2) if lipschitz else None,
-            "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,
-            "has_nan": has_nan,
-            "fwd_us": prof.get("fwd_us"),
-            "bwd_us": prof.get("bwd_us"),
-        })
+        components.append(
+            {
+                "op": op,
+                "status": status,
+                "reasons": reasons,
+                "n_used": n_used,
+                "s0_rate": round(s0_rate, 3),
+                "s1_rate": round(s1_rate, 3),
+                "blame": round(blame, 3),
+                "fail_rate": round(tf, 3),
+                "rarity": round(idf, 3),
+                "lipschitz": round(lipschitz, 2) if lipschitz else None,
+                "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,
+                "has_nan": has_nan,
+                "fwd_us": prof.get("fwd_us"),
+                "bwd_us": prof.get("bwd_us"),
+            }
+        )
 
     # Add profiled-only ops (not in op_success_rates yet)
     rated_ops = {row["op_name"] for row in op_rates}
@@ -268,24 +288,30 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
             total_degraded += 1
         else:
             total_broken += 1
-        components.append({
-            "op": op_name,
-            "status": status,
-            "reasons": reasons,
-            "n_used": 0,
-            "s0_rate": None,
-            "s1_rate": None,
-            "grad_norm": round(prof["grad_norm"], 1) if prof.get("grad_norm") is not None else None,
-            "grad_exploding": prof.get("grad_exploding", False),
-            "has_nan": prof.get("has_nan", False),
-            "fwd_us": prof.get("fwd_us"),
-            "bwd_us": prof.get("bwd_us"),
-        })
+        components.append(
+            {
+                "op": op_name,
+                "status": status,
+                "reasons": reasons,
+                "n_used": 0,
+                "s0_rate": None,
+                "s1_rate": None,
+                "grad_norm": round(prof["grad_norm"], 1)
+                if prof.get("grad_norm") is not None
+                else None,
+                "grad_exploding": prof.get("grad_exploding", False),
+                "has_nan": prof.get("has_nan", False),
+                "fwd_us": prof.get("fwd_us"),
+                "bwd_us": prof.get("bwd_us"),
+            }
+        )
 
-    components.sort(key=lambda c: (
-        {"broken": 0, "degraded": 1, "healthy": 2}[c["status"]],
-        -(c["n_used"] or 0),
-    ))
+    components.sort(
+        key=lambda c: (
+            {"broken": 0, "degraded": 1, "healthy": 2}[c["status"]],
+            -(c["n_used"] or 0),
+        )
+    )
 
     result = {
         "components": components,
@@ -300,7 +326,9 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
     return result
 
 
-def _evaluate_alerts(notebook_path: str, thresholds: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _evaluate_alerts(
+    notebook_path: str, thresholds: Dict[str, Any]
+) -> List[Dict[str, Any]]:
     """Evaluate alert conditions against current state."""
     alerts: List[Dict[str, Any]] = []
     now = time.time()
@@ -322,15 +350,17 @@ def _evaluate_alerts(notebook_path: str, thresholds: Dict[str, Any]) -> List[Dic
         if row and row["total"] >= 10:
             rate = row["passed"] / row["total"]
             if rate < thresholds.get("s0_pass_rate_min", 0.30):
-                alerts.append({
-                    "id": "low_s0_rate",
-                    "severity": "critical",
-                    "title": "Low S0 pass rate",
-                    "message": f"S0 pass rate is {rate:.0%} in the last hour ({row['passed']}/{row['total']})",
-                    "value": round(rate, 3),
-                    "threshold": thresholds["s0_pass_rate_min"],
-                    "timestamp": now,
-                })
+                alerts.append(
+                    {
+                        "id": "low_s0_rate",
+                        "severity": "critical",
+                        "title": "Low S0 pass rate",
+                        "message": f"S0 pass rate is {rate:.0%} in the last hour ({row['passed']}/{row['total']})",
+                        "value": round(rate, 3),
+                        "threshold": thresholds["s0_pass_rate_min"],
+                        "timestamp": now,
+                    }
+                )
     except Exception:
         pass
 
@@ -345,15 +375,17 @@ def _evaluate_alerts(notebook_path: str, thresholds: Dict[str, Any]) -> List[Dic
         if row and row["total"] >= 20:
             rate = row["passed"] / row["total"]
             if rate < thresholds.get("s1_pass_rate_min", 0.05):
-                alerts.append({
-                    "id": "low_s1_rate",
-                    "severity": "critical",
-                    "title": "Low S1 pass rate",
-                    "message": f"S1 pass rate is {rate:.0%} in the last 2 hours ({row['passed']}/{row['total']})",
-                    "value": round(rate, 3),
-                    "threshold": thresholds["s1_pass_rate_min"],
-                    "timestamp": now,
-                })
+                alerts.append(
+                    {
+                        "id": "low_s1_rate",
+                        "severity": "critical",
+                        "title": "Low S1 pass rate",
+                        "message": f"S1 pass rate is {rate:.0%} in the last 2 hours ({row['passed']}/{row['total']})",
+                        "value": round(rate, 3),
+                        "threshold": thresholds["s1_pass_rate_min"],
+                        "timestamp": now,
+                    }
+                )
     except Exception:
         pass
 
@@ -369,31 +401,38 @@ def _evaluate_alerts(notebook_path: str, thresholds: Dict[str, Any]) -> List[Dic
             score = float(row["avg_collapse"])
             threshold = thresholds.get("routing_collapse_score_min", 0.3)
             if score < threshold:
-                alerts.append({
-                    "id": "routing_collapse",
-                    "severity": "warning",
-                    "title": "Routing collapse detected",
-                    "message": f"Average routing health score is {score:.2f} (threshold: {threshold})",
-                    "value": round(score, 3),
-                    "threshold": threshold,
-                    "timestamp": now,
-                })
+                alerts.append(
+                    {
+                        "id": "routing_collapse",
+                        "severity": "warning",
+                        "title": "Routing collapse detected",
+                        "message": f"Average routing health score is {score:.2f} (threshold: {threshold})",
+                        "value": round(score, 3),
+                        "threshold": threshold,
+                        "timestamp": now,
+                    }
+                )
     except Exception:
         pass
 
     # Alert 4: Broken components
     health = _get_component_health(notebook_path)
     if health["broken"] > 0:
-        broken_ops = [c["op"] for c in health["components"] if c["status"] == "broken"][:5]
-        alerts.append({
-            "id": "broken_components",
-            "severity": "warning" if health["broken"] <= 3 else "critical",
-            "title": f"{health['broken']} broken component(s)",
-            "message": f"Broken ops: {', '.join(broken_ops)}" + (" ..." if health["broken"] > 5 else ""),
-            "value": health["broken"],
-            "threshold": 0,
-            "timestamp": now,
-        })
+        broken_ops = [c["op"] for c in health["components"] if c["status"] == "broken"][
+            :5
+        ]
+        alerts.append(
+            {
+                "id": "broken_components",
+                "severity": "warning" if health["broken"] <= 3 else "critical",
+                "title": f"{health['broken']} broken component(s)",
+                "message": f"Broken ops: {', '.join(broken_ops)}"
+                + (" ..." if health["broken"] > 5 else ""),
+                "value": health["broken"],
+                "threshold": 0,
+                "timestamp": now,
+            }
+        )
 
     # Alert 5: Stale experiment (no results in N hours)
     try:
@@ -404,15 +443,17 @@ def _evaluate_alerts(notebook_path: str, thresholds: Dict[str, Any]) -> List[Dic
             hours_since = (now - row["last_ts"]) / 3600
             threshold_hours = thresholds.get("stale_experiment_hours", 6)
             if hours_since > threshold_hours:
-                alerts.append({
-                    "id": "stale_pipeline",
-                    "severity": "info",
-                    "title": "Pipeline idle",
-                    "message": f"No new results in {hours_since:.1f} hours",
-                    "value": round(hours_since, 1),
-                    "threshold": threshold_hours,
-                    "timestamp": now,
-                })
+                alerts.append(
+                    {
+                        "id": "stale_pipeline",
+                        "severity": "info",
+                        "title": "Pipeline idle",
+                        "message": f"No new results in {hours_since:.1f} hours",
+                        "value": round(hours_since, 1),
+                        "threshold": threshold_hours,
+                        "timestamp": now,
+                    }
+                )
     except Exception:
         pass
 
@@ -480,7 +521,9 @@ def register_observability_routes(app, context: ApiRouteContext):
                         yield "event: keepalive\ndata: {}\n\n"
                         continue
 
-                    prog_dict = progress.to_dict() if hasattr(progress, "to_dict") else {}
+                    prog_dict = (
+                        progress.to_dict() if hasattr(progress, "to_dict") else {}
+                    )
                     current_step = prog_dict.get("current_program", 0)
 
                     if current_step != last_step:
@@ -620,10 +663,18 @@ def register_observability_routes(app, context: ApiRouteContext):
             if row and row["routing_mode"]:
                 result["routing"] = {
                     "mode": row["routing_mode"],
-                    "confidence": round(float(row["routing_confidence_mean"]), 3) if row["routing_confidence_mean"] else None,
-                    "drop_rate": round(float(row["routing_drop_rate"]), 3) if row["routing_drop_rate"] else None,
-                    "entropy": round(float(row["routing_utilization_entropy"]), 3) if row["routing_utilization_entropy"] else None,
-                    "aux_loss": round(float(row["routing_aux_loss_mean"]), 4) if row["routing_aux_loss_mean"] else None,
+                    "confidence": round(float(row["routing_confidence_mean"]), 3)
+                    if row["routing_confidence_mean"]
+                    else None,
+                    "drop_rate": round(float(row["routing_drop_rate"]), 3)
+                    if row["routing_drop_rate"]
+                    else None,
+                    "entropy": round(float(row["routing_utilization_entropy"]), 3)
+                    if row["routing_utilization_entropy"]
+                    else None,
+                    "aux_loss": round(float(row["routing_aux_loss_mean"]), 4)
+                    if row["routing_aux_loss_mean"]
+                    else None,
                 }
         except Exception:
             pass
@@ -635,10 +686,14 @@ def register_observability_routes(app, context: ApiRouteContext):
         if fmt == "text":
             lines = []
             r = result.get("run", {})
-            lines.append(f"status={r.get('status','?')}  prog={r.get('program','?')}  s0={r.get('s0',0)}  s1={r.get('s1',0)}  best_lr={r.get('best_lr','?')}  elapsed={r.get('elapsed_m',0)}m")
+            lines.append(
+                f"status={r.get('status', '?')}  prog={r.get('program', '?')}  s0={r.get('s0', 0)}  s1={r.get('s1', 0)}  best_lr={r.get('best_lr', '?')}  elapsed={r.get('elapsed_m', 0)}m"
+            )
             t = result.get("train", {})
             if t:
-                parts = [f"step={t.get('step','?')}/{t.get('total_steps','?')}  loss={t.get('loss','?')}"]
+                parts = [
+                    f"step={t.get('step', '?')}/{t.get('total_steps', '?')}  loss={t.get('loss', '?')}"
+                ]
                 if t.get("routing_aux_loss") is not None:
                     parts.append(f"raux={t['routing_aux_loss']}")
                 if t.get("grad_norm") is not None:
@@ -646,10 +701,12 @@ def register_observability_routes(app, context: ApiRouteContext):
                 lines.append("  ".join(parts))
             c = result.get("components", {})
             if c:
-                lines.append(f"components: {c.get('ok',0)} ok / {c.get('warn',0)} warn / {c.get('fail',0)} fail")
+                lines.append(
+                    f"components: {c.get('ok', 0)} ok / {c.get('warn', 0)} warn / {c.get('fail', 0)} fail"
+                )
             rt = result.get("routing", {})
             if rt:
-                parts = [f"routing={rt.get('mode','?')}"]
+                parts = [f"routing={rt.get('mode', '?')}"]
                 if rt.get("confidence") is not None:
                     parts.append(f"conf={rt['confidence']}")
                 if rt.get("drop_rate") is not None:

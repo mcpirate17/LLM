@@ -18,13 +18,6 @@ from flask_cors import CORS
 
 from research.defaults import LAB_NOTEBOOK_DB
 from .api_routes import _designer as _designer_mod
-from .designer_utils import (
-    validate_designer_graph,
-    compile_designer_graph,
-    run_designer_graph,
-    get_designer_components,
-    generate_python_module,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +27,9 @@ _DESIGNER_PROXY_BASE = _designer_mod._DESIGNER_PROXY_BASE
 _DESIGNER_PROXY_TIMEOUT = _designer_mod._DESIGNER_PROXY_TIMEOUT
 
 
-def _designer_proxy(method: str, path: str, *, json_body=None, params=None, timeout=None):
+def _designer_proxy(
+    method: str, path: str, *, json_body=None, params=None, timeout=None
+):
     _designer_mod._requests = _requests
     _designer_mod._DESIGNER_PROXY_ENABLED = _DESIGNER_PROXY_ENABLED
     return _designer_mod.designer_proxy(
@@ -75,7 +70,14 @@ def create_app(
                 return None
             # numpy scalar types
             type_name = type(o).__name__
-            if type_name in ("bool_", "int64", "int32", "float64", "float32", "float16"):
+            if type_name in (
+                "bool_",
+                "int64",
+                "int32",
+                "float64",
+                "float32",
+                "float16",
+            ):
                 return o.item()
             return super().default(o)
 
@@ -84,7 +86,11 @@ def create_app(
     CORS(app)
 
     # Start designer idle watchdog
-    from .api_routes._designer import ensure_designer_idle_watchdog, designer_touch_activity
+    from .api_routes._designer import (
+        ensure_designer_idle_watchdog,
+        designer_touch_activity,
+    )
+
     ensure_designer_idle_watchdog()
 
     def _dashboard_index_path() -> Optional[Path]:
@@ -94,7 +100,9 @@ def create_app(
         return candidate if candidate.is_file() else None
 
     def _dashboard_missing_response():
-        expected = str((Path(__file__).parent.parent / "dashboard" / "build" / "index.html"))
+        expected = str(
+            (Path(__file__).parent.parent / "dashboard" / "build" / "index.html")
+        )
         body = (
             "<html><body><h2>Dashboard frontend build is missing.</h2>"
             f"<p>Expected index file at: {expected}</p>"
@@ -109,6 +117,7 @@ def create_app(
 
     # Auto-load persisted LLM config
     from .api_routes._helpers import load_persisted_llm_config
+
     load_persisted_llm_config(notebook_path)
 
     # ── Global error handlers ──
@@ -131,8 +140,10 @@ def create_app(
 
     @app.errorhandler(Exception)
     def unhandled_exception(e):
-        logger.error(f"Unhandled exception on {request.method} {request.path}: "
-                     f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
+        logger.error(
+            f"Unhandled exception on {request.method} {request.path}: "
+            f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+        )
         return jsonify({"error": f"{type(e).__name__}: {str(e)}"}), 500
 
     @app.after_request
@@ -268,8 +279,10 @@ def _setup_logging(log_dir: Optional[str] = None):
     log_path = Path(log_dir) / "aria_dashboard.log"
     try:
         from logging.handlers import RotatingFileHandler
+
         file_handler = RotatingFileHandler(
-            log_path, maxBytes=2 * 1024 * 1024,  # 2MB
+            log_path,
+            maxBytes=2 * 1024 * 1024,  # 2MB
             backupCount=1,
         )
         file_handler.setLevel(logging.INFO)

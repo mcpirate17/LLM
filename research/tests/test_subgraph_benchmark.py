@@ -16,9 +16,9 @@ We benchmark three paths:
 The pre-converted IR path shows the "steady-state" benefit when IR is cached,
 while the end-to-end path shows the current realistic cost.
 """
+
 from __future__ import annotations
 
-import json
 import statistics
 import time
 
@@ -45,6 +45,7 @@ pytestmark = pytest.mark.native
 # ---------------------------------------------------------------------------
 # Graph builders
 # ---------------------------------------------------------------------------
+
 
 def _make_small_chain(dim: int = 256) -> ComputationGraph:
     """input -> relu -> sigmoid -> output  (2 non-input ops)"""
@@ -84,8 +85,18 @@ def _make_large_chain(dim: int = 256) -> ComputationGraph:
     """10 chained unary ops: relu -> sigmoid -> tanh -> ... -> exp -> output"""
     g = ComputationGraph(model_dim=dim)
     inp = g.add_input()
-    ops_seq = ["relu", "sigmoid", "tanh", "relu", "sigmoid",
-               "tanh", "relu", "sigmoid", "tanh", "exp"]
+    ops_seq = [
+        "relu",
+        "sigmoid",
+        "tanh",
+        "relu",
+        "sigmoid",
+        "tanh",
+        "relu",
+        "sigmoid",
+        "tanh",
+        "exp",
+    ]
     prev = inp
     for op_name in ops_seq:
         prev = g.add_op(op_name, [prev])
@@ -96,6 +107,7 @@ def _make_large_chain(dim: int = 256) -> ComputationGraph:
 # ---------------------------------------------------------------------------
 # Execution paths
 # ---------------------------------------------------------------------------
+
 
 def _execute_per_op(graph: ComputationGraph, x: np.ndarray) -> np.ndarray:
     """Per-op dispatch: one Python->C call per op node (N roundtrips)."""
@@ -128,6 +140,7 @@ def _execute_subgraph_preconverted(ir_json: str, x_list: list) -> list:
 # Benchmark harness
 # ---------------------------------------------------------------------------
 
+
 def _benchmark(fn, *, warmup: int = 20, iterations: int = 200):
     """Run fn() for warmup+iterations rounds, return (mean_ms, std_ms, times_ms)."""
     for _ in range(warmup):
@@ -154,12 +167,20 @@ WARMUP = 30
 # Tests: Correctness
 # ---------------------------------------------------------------------------
 
+
 class TestCorrectness:
     """Verify all three paths produce identical results."""
 
-    @pytest.mark.parametrize("builder", [
-        _make_small_chain, _make_medium_chain, _make_diamond, _make_large_chain,
-    ], ids=["small", "medium", "diamond", "large"])
+    @pytest.mark.parametrize(
+        "builder",
+        [
+            _make_small_chain,
+            _make_medium_chain,
+            _make_diamond,
+            _make_large_chain,
+        ],
+        ids=["small", "medium", "diamond", "large"],
+    )
     def test_paths_agree(self, builder):
         g = builder(DIM)
         x = np.clip(np.random.randn(DIM), -2.0, 2.0).astype(np.float32)
@@ -181,6 +202,7 @@ class TestCorrectness:
 # Tests: Benchmarks
 # ---------------------------------------------------------------------------
 
+
 class TestSmallChainBenchmark:
     """input -> relu -> sigmoid (2 non-input ops)."""
 
@@ -198,7 +220,8 @@ class TestSmallChainBenchmark:
         )
         sub_pre_mean, sub_pre_std, _ = _benchmark(
             lambda: _execute_subgraph_preconverted(ir_json, x_list),
-            warmup=WARMUP, iterations=ITERATIONS
+            warmup=WARMUP,
+            iterations=ITERATIONS,
         )
 
         print(
@@ -232,7 +255,8 @@ class TestMediumChainBenchmark:
         )
         sub_pre_mean, sub_pre_std, _ = _benchmark(
             lambda: _execute_subgraph_preconverted(ir_json, x_list),
-            warmup=WARMUP, iterations=ITERATIONS
+            warmup=WARMUP,
+            iterations=ITERATIONS,
         )
 
         print(
@@ -264,7 +288,8 @@ class TestDiamondBenchmark:
         )
         sub_pre_mean, sub_pre_std, _ = _benchmark(
             lambda: _execute_subgraph_preconverted(ir_json, x_list),
-            warmup=WARMUP, iterations=ITERATIONS
+            warmup=WARMUP,
+            iterations=ITERATIONS,
         )
 
         print(
@@ -296,7 +321,8 @@ class TestLargeChainBenchmark:
         )
         sub_pre_mean, sub_pre_std, _ = _benchmark(
             lambda: _execute_subgraph_preconverted(ir_json, x_list),
-            warmup=WARMUP, iterations=ITERATIONS
+            warmup=WARMUP,
+            iterations=ITERATIONS,
         )
 
         print(
@@ -314,6 +340,7 @@ class TestLargeChainBenchmark:
 # ---------------------------------------------------------------------------
 # Tests: SubgraphDispatcher class
 # ---------------------------------------------------------------------------
+
 
 class TestSubgraphDispatcherClass:
     """Test the SubgraphDispatcher class itself."""
@@ -357,6 +384,7 @@ class TestSubgraphDispatcherClass:
 # Summary table
 # ---------------------------------------------------------------------------
 
+
 class TestScalingSummary:
     """Summary benchmark showing overhead profile across graph sizes."""
 
@@ -369,7 +397,9 @@ class TestScalingSummary:
         ]
 
         print("\n" + "=" * 82)
-        print(f"  Subgraph vs Per-Op Dispatch Benchmark (dim={DIM}, {ITERATIONS} iters)")
+        print(
+            f"  Subgraph vs Per-Op Dispatch Benchmark (dim={DIM}, {ITERATIONS} iters)"
+        )
         print("=" * 82)
         print(
             f"  {'Graph':<22} {'Per-Op':>10} {'Sub E2E':>10} {'Sub Pre':>10}"
@@ -386,15 +416,18 @@ class TestScalingSummary:
 
             per_op_mean, _, _ = _benchmark(
                 lambda g=g, x=x: _execute_per_op(g, x),
-                warmup=WARMUP, iterations=ITERATIONS,
+                warmup=WARMUP,
+                iterations=ITERATIONS,
             )
             sub_e2e_mean, _, _ = _benchmark(
                 lambda g=g, x=x: _execute_subgraph_e2e(g, x),
-                warmup=WARMUP, iterations=ITERATIONS,
+                warmup=WARMUP,
+                iterations=ITERATIONS,
             )
             sub_pre_mean, _, _ = _benchmark(
                 lambda ir=ir_json, xl=x_list: _execute_subgraph_preconverted(ir, xl),
-                warmup=WARMUP, iterations=ITERATIONS,
+                warmup=WARMUP,
+                iterations=ITERATIONS,
             )
 
             ir_cost = sub_e2e_mean - sub_pre_mean

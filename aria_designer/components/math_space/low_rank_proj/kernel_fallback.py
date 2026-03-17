@@ -3,7 +3,7 @@
 Current behavior is an identity pass-through placeholder so workflows remain
 executable in preview/eval when a native implementation is unavailable.
 """
-import torch
+
 import torch.nn as nn
 
 

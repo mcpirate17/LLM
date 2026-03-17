@@ -1,6 +1,7 @@
 """Kernel handler for ultrametric_attention — dispatches to aria_core.ultrametric_attention_f32."""
-import torch
+
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "ultrametric_attention"

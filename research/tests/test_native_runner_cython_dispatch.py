@@ -1,7 +1,7 @@
 """Tests for Cython bridge integration in native_runner.py."""
+
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -23,15 +23,44 @@ pytestmark = pytest.mark.native
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_fake_bridge():
     """Create a mock that mimics the aria_bridge module API."""
     bridge = MagicMock()
-    bridge.is_native = MagicMock(side_effect=lambda op: op in {
-        "relu", "gelu", "silu", "square", "abs", "neg", "reciprocal", "log", "sqrt", "sin", "cos", "sigmoid", "tanh", "exp",
-        "add", "mul", "sub",
-        "matmul", "linear", "rmsnorm", "layernorm", "softmax",
-        "transpose2d", "sum", "mean", "concat", "split",
-    })
+    bridge.is_native = MagicMock(
+        side_effect=lambda op: (
+            op
+            in {
+                "relu",
+                "gelu",
+                "silu",
+                "square",
+                "abs",
+                "neg",
+                "reciprocal",
+                "log",
+                "sqrt",
+                "sin",
+                "cos",
+                "sigmoid",
+                "tanh",
+                "exp",
+                "add",
+                "mul",
+                "sub",
+                "matmul",
+                "linear",
+                "rmsnorm",
+                "layernorm",
+                "softmax",
+                "transpose2d",
+                "sum",
+                "mean",
+                "concat",
+                "split",
+            }
+        )
+    )
     bridge.dispatch_unary = MagicMock(
         side_effect=lambda op, x: (
             np.maximum(x, 0) if op == "relu" else (x * x if op == "square" else x)
@@ -40,18 +69,16 @@ def _make_fake_bridge():
     bridge.dispatch_binary = MagicMock(
         side_effect=lambda op, a, b: a + b if op == "add" else a * b
     )
-    bridge.dispatch_matmul = MagicMock(
-        side_effect=lambda A, B: A @ B
-    )
+    bridge.dispatch_matmul = MagicMock(side_effect=lambda A, B: A @ B)
     bridge.dispatch_softmax = MagicMock(
         side_effect=lambda x: x  # stub
     )
-    bridge.dispatch_transpose2d = MagicMock(
-        side_effect=lambda x: x.T
-    )
+    bridge.dispatch_transpose2d = MagicMock(side_effect=lambda x: x.T)
     bridge.dispatch_linear = MagicMock(return_value=np.zeros((2, 4), dtype=np.float32))
     bridge.dispatch_rmsnorm = MagicMock(return_value=np.zeros((2, 4), dtype=np.float32))
-    bridge.dispatch_layernorm = MagicMock(return_value=np.zeros((2, 4), dtype=np.float32))
+    bridge.dispatch_layernorm = MagicMock(
+        return_value=np.zeros((2, 4), dtype=np.float32)
+    )
     return bridge
 
 
@@ -111,7 +138,9 @@ class TestOpSupportUsesCython:
         fake_bridge = _make_fake_bridge()
         _reset_cython_bridge_cache()
 
-        graphs = [make_fake_graph(["linear_proj", "softmax_last", "square", "custom_op"])]
+        graphs = [
+            make_fake_graph(["linear_proj", "softmax_last", "square", "custom_op"])
+        ]
 
         with patch(
             "research.scientist.native.dispatch._try_import_cython_bridge",
@@ -158,7 +187,9 @@ class TestDispatchOpNative:
         ):
             result = dispatch_op_native("relu", x)
 
-        np.testing.assert_array_equal(result, np.array([0.0, 0.0, 2.0, 3.5], dtype=np.float32))
+        np.testing.assert_array_equal(
+            result, np.array([0.0, 0.0, 2.0, 3.5], dtype=np.float32)
+        )
         fake_bridge.dispatch_unary.assert_called_once_with("relu", x)
 
     def test_dispatch_op_native_sin(self):
@@ -351,12 +382,15 @@ class TestSelectiveActivationUsesCython:
         fake_bridge = _make_fake_bridge()
         _reset_cython_bridge_cache()
 
-        with patch(
-            "research.scientist.native.dispatch._try_import_cython_bridge",
-            return_value=fake_bridge,
-        ), patch(
-            "research.scientist.native.dispatch._try_import_rust_scheduler",
-            return_value=None,
+        with (
+            patch(
+                "research.scientist.native.dispatch._try_import_cython_bridge",
+                return_value=fake_bridge,
+            ),
+            patch(
+                "research.scientist.native.dispatch._try_import_rust_scheduler",
+                return_value=None,
+            ),
         ):
             result = _activate_selective_native_dispatch(native_lib=None)
 

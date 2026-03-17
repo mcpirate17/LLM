@@ -3,10 +3,12 @@ import json
 import re
 from typing import Dict, List, Optional
 
+from ...synthesis.primitives import PROTECTED_OPS
 
 
 class _CampaignsMixin:
     """Campaign criteria tracking, negative results synthesis, decision analysis."""
+
     __slots__ = ()
 
     @staticmethod
@@ -63,10 +65,14 @@ class _CampaignsMixin:
         return "unknown"
 
     @staticmethod
-    def _normalize_threshold(criterion_type: str, threshold: Optional[Dict]) -> Optional[Dict]:
+    def _normalize_threshold(
+        criterion_type: str, threshold: Optional[Dict]
+    ) -> Optional[Dict]:
         if not threshold or criterion_type == "decision":
             return threshold
-        should_normalize_as_ratio = bool(threshold.get("is_percent")) or float(threshold.get("value", 0)) > 1
+        should_normalize_as_ratio = (
+            bool(threshold.get("is_percent")) or float(threshold.get("value", 0)) > 1
+        )
         if not should_normalize_as_ratio:
             return threshold
         value = float(threshold.get("value", 0))
@@ -75,7 +81,9 @@ class _CampaignsMixin:
         return normalized
 
     @staticmethod
-    def _compare_threshold(observed: Optional[float], threshold: Optional[Dict]) -> Optional[bool]:
+    def _compare_threshold(
+        observed: Optional[float], threshold: Optional[Dict]
+    ) -> Optional[bool]:
         if observed is None or not threshold:
             return None
         op = threshold.get("op")
@@ -111,7 +119,9 @@ class _CampaignsMixin:
         hypotheses: List[Dict],
         decisions: List[Dict],
     ) -> List[Dict]:
-        criteria = self._parse_criteria_text((campaign or {}).get("success_criteria", ""))
+        criteria = self._parse_criteria_text(
+            (campaign or {}).get("success_criteria", "")
+        )
         if not criteria:
             return []
 
@@ -143,7 +153,9 @@ class _CampaignsMixin:
         for index, criterion in enumerate(criteria):
             text = criterion.lower()
             criterion_type = self._infer_criterion_type(text)
-            threshold = self._normalize_threshold(criterion_type, self._parse_threshold(text))
+            threshold = self._normalize_threshold(
+                criterion_type, self._parse_threshold(text)
+            )
             item = {
                 "id": f"{index}-{criterion}",
                 "criterion": criterion,
@@ -154,11 +166,19 @@ class _CampaignsMixin:
 
             if criterion_type == "baseline":
                 observed = best_baseline_ratio
-                passed = self._compare_threshold(observed, threshold) if threshold else (
-                    observed < 1.0 if observed is not None else None
+                passed = (
+                    self._compare_threshold(observed, threshold)
+                    if threshold
+                    else (observed < 1.0 if observed is not None else None)
                 )
                 item["status"] = (
-                    "not_yet" if passed is None else "pass" if passed else "at_risk" if experiment_count > 0 else "not_yet"
+                    "not_yet"
+                    if passed is None
+                    else "pass"
+                    if passed
+                    else "at_risk"
+                    if experiment_count > 0
+                    else "not_yet"
                 )
                 if observed is not None:
                     item["observed_text"] = (
@@ -169,11 +189,19 @@ class _CampaignsMixin:
 
             elif criterion_type == "novelty":
                 observed = best_novelty
-                passed = self._compare_threshold(observed, threshold) if threshold else (
-                    observed >= 0.7 if observed is not None else None
+                passed = (
+                    self._compare_threshold(observed, threshold)
+                    if threshold
+                    else (observed >= 0.7 if observed is not None else None)
                 )
                 item["status"] = (
-                    "not_yet" if passed is None else "pass" if passed else "at_risk" if experiment_count > 0 else "not_yet"
+                    "not_yet"
+                    if passed is None
+                    else "pass"
+                    if passed
+                    else "at_risk"
+                    if experiment_count > 0
+                    else "not_yet"
                 )
                 if observed is not None:
                     item["observed_text"] = (
@@ -184,11 +212,19 @@ class _CampaignsMixin:
 
             elif criterion_type == "stage1":
                 observed = best_stage1_rate
-                passed = self._compare_threshold(observed, threshold) if threshold else (
-                    observed >= 0.05 if observed is not None else None
+                passed = (
+                    self._compare_threshold(observed, threshold)
+                    if threshold
+                    else (observed >= 0.05 if observed is not None else None)
                 )
                 item["status"] = (
-                    "not_yet" if passed is None else "pass" if passed else "at_risk" if experiment_count > 0 else "not_yet"
+                    "not_yet"
+                    if passed is None
+                    else "pass"
+                    if passed
+                    else "at_risk"
+                    if experiment_count > 0
+                    else "not_yet"
                 )
                 if observed is not None:
                     item["observed_text"] = (
@@ -199,8 +235,18 @@ class _CampaignsMixin:
 
             elif criterion_type == "decision":
                 observed = float(decision_count)
-                passed = self._compare_threshold(observed, threshold) if threshold else observed > 0
-                item["status"] = "pass" if passed else "at_risk" if hypothesis_count > 0 else "not_yet"
+                passed = (
+                    self._compare_threshold(observed, threshold)
+                    if threshold
+                    else observed > 0
+                )
+                item["status"] = (
+                    "pass"
+                    if passed
+                    else "at_risk"
+                    if hypothesis_count > 0
+                    else "not_yet"
+                )
                 item["observed_text"] = (
                     f"{decision_count} decision{'s' if decision_count != 1 else ''} logged"
                     f"{self._threshold_label(criterion_type, threshold)}"
@@ -236,11 +282,11 @@ class _CampaignsMixin:
             n_s0 = stats.get("n_s0", 0)
             s1_rate = stats.get("s1_rate", 0)
             s0_rate = stats.get("s0_rate", 0)
-            
+
             # CRITICAL FIX: Only label as 'failed' if it ACTUALLY compiled (S0)
-            # but failed to learn (S1). We need at least some successful 
+            # but failed to learn (S1). We need at least some successful
             # compilations to make a scientific judgment on utility.
-            # If s0_rate is low, it's a code/integration bug to fix, 
+            # If s0_rate is low, it's a code/integration bug to fix,
             # not a scientific reason to stop pursuing the component.
             if n_s0 >= 3 and s1_rate == 0 and s0_rate >= 0.8:
                 entry = {
@@ -263,8 +309,11 @@ class _CampaignsMixin:
         # 1b. Weak ops: nonzero but poor S1 rate (soft penalty candidates).
         # These shouldn't be hard-excluded but should be selected less often.
         mean_s1 = 0.0
-        s1_vals = [s.get("s1_rate", 0) for s in op_rates.values()
-                   if s.get("n_used", 0) >= min_usage]
+        s1_vals = [
+            s.get("s1_rate", 0)
+            for s in op_rates.values()
+            if s.get("n_used", 0) >= min_usage
+        ]
         if s1_vals:
             mean_s1 = sum(s1_vals) / len(s1_vals)
         weak_threshold = max(mean_s1 * 0.5, 0.20)
@@ -276,49 +325,53 @@ class _CampaignsMixin:
             if n_used >= min_usage and 0 < s1_rate <= weak_threshold:
                 # Soft penalty: linearly scale from 0.2 (at s1=0) to 1.0 (at threshold)
                 penalty = round(max(0.2, s1_rate / weak_threshold), 2)
-                result["weak_ops"].append({
-                    "op_name": op_name,
-                    "n_used": n_used,
-                    "s1_rate": round(s1_rate, 3),
-                    "penalty_weight": penalty,
-                    "threshold": round(weak_threshold, 3),
-                })
+                result["weak_ops"].append(
+                    {
+                        "op_name": op_name,
+                        "n_used": n_used,
+                        "s1_rate": round(s1_rate, 3),
+                        "penalty_weight": penalty,
+                        "threshold": round(weak_threshold, 3),
+                    }
+                )
 
         # 2. Dominant error types (top 10 by count)
         failures = self.failure_patterns()
         total_failures = sum(v["total"] for v in failures.values())
-        for error_type, info in sorted(
-            failures.items(), key=lambda x: -x[1]["total"]
-        )[:10]:
+        for error_type, info in sorted(failures.items(), key=lambda x: -x[1]["total"])[
+            :10
+        ]:
             pct = info["total"] / total_failures if total_failures > 0 else 0
             top_stage = max(
                 info.get("by_stage", {}).items(),
                 key=lambda x: x[1],
                 default=("unknown", 0),
             )
-            result["dominant_errors"].append({
-                "error_type": error_type,
-                "count": info["total"],
-                "percentage": round(pct * 100, 1),
-                "primary_stage": top_stage[0],
-                "by_stage": info.get("by_stage", {}),
-            })
+            result["dominant_errors"].append(
+                {
+                    "error_type": error_type,
+                    "count": info["total"],
+                    "percentage": round(pct * 100, 1),
+                    "primary_stage": top_stage[0],
+                    "by_stage": info.get("by_stage", {}),
+                }
+            )
 
         # 3. Anti-correlated structural features (negative correlations)
         correlations = self.structural_correlations()
-        for metric, effect in sorted(
-            correlations.items(), key=lambda x: x[1]
-        ):
+        for metric, effect in sorted(correlations.items(), key=lambda x: x[1]):
             if effect < -0.15:
                 name = metric.replace("graph_", "").replace("_", " ")
-                result["anti_patterns"].append({
-                    "feature": name,
-                    "metric": metric,
-                    "correlation": round(effect, 3),
-                    "interpretation": (
-                        f"Higher {name} is associated with lower S1 success"
-                    ),
-                })
+                result["anti_patterns"].append(
+                    {
+                        "feature": name,
+                        "metric": metric,
+                        "correlation": round(effect, 3),
+                        "interpretation": (
+                            f"Higher {name} is associated with lower S1 success"
+                        ),
+                    }
+                )
 
         # 4. Refuted hypotheses from insights table
         try:
@@ -330,12 +383,14 @@ class _CampaignsMixin:
                 LIMIT 20
             """).fetchall()
             for r in rows:
-                result["refuted_hypotheses"].append({
-                    "content": r["content"],
-                    "confidence": r["confidence"],
-                    "evidence": r["supporting_evidence"],
-                    "timestamp": r["timestamp"],
-                })
+                result["refuted_hypotheses"].append(
+                    {
+                        "content": r["content"],
+                        "confidence": r["confidence"],
+                        "evidence": r["supporting_evidence"],
+                        "timestamp": r["timestamp"],
+                    }
+                )
         except Exception:
             pass
 
@@ -354,14 +409,16 @@ class _CampaignsMixin:
                 except Exception:
                     pass
 
-                result["toxic_bigrams"].append({
-                    "pattern": sig,
-                    "op1": op1,
-                    "op2": op2,
-                    "cat1": cat1,
-                    "cat2": cat2,
-                    "penalty": penalty,
-                })
+                result["toxic_bigrams"].append(
+                    {
+                        "pattern": sig,
+                        "op1": op1,
+                        "op2": op2,
+                        "cat1": cat1,
+                        "cat2": cat2,
+                        "penalty": penalty,
+                    }
+                )
         except Exception:
             pass
 
@@ -391,7 +448,9 @@ class _CampaignsMixin:
             parts.append(f"{n_toxic} toxic op-pair patterns ({top_toxic})")
         if n_ref:
             parts.append(f"{n_ref} refuted hypotheses")
-        result["summary"] = "; ".join(parts) if parts else "No negative results to report yet."
+        result["summary"] = (
+            "; ".join(parts) if parts else "No negative results to report yet."
+        )
 
         return result
 
@@ -434,12 +493,20 @@ class _CampaignsMixin:
             if not chosen_json:
                 continue
             try:
-                chosen = json.loads(chosen_json) if isinstance(chosen_json, str) else chosen_json
+                chosen = (
+                    json.loads(chosen_json)
+                    if isinstance(chosen_json, str)
+                    else chosen_json
+                )
             except (json.JSONDecodeError, TypeError):
                 continue
             if not chosen:
                 continue
-            mode = chosen[0].get("mode", "synthesis") if isinstance(chosen[0], dict) else "synthesis"
+            mode = (
+                chosen[0].get("mode", "synthesis")
+                if isinstance(chosen[0], dict)
+                else "synthesis"
+            )
             decision_ts = row["timestamp"]
 
             # Find the next completed experiment after this decision
@@ -457,8 +524,12 @@ class _CampaignsMixin:
                 continue
 
             if mode not in mode_outcomes:
-                mode_outcomes[mode] = {"total": 0, "s1_any": 0, "s1_total": 0,
-                                       "programs_total": 0}
+                mode_outcomes[mode] = {
+                    "total": 0,
+                    "s1_any": 0,
+                    "s1_total": 0,
+                    "programs_total": 0,
+                }
             stats = mode_outcomes[mode]
             stats["total"] += 1
             s1 = exp_row["n_stage1_passed"] or 0
@@ -479,8 +550,11 @@ class _CampaignsMixin:
         for mode, stats in mode_outcomes.items():
             n = stats["total"]
             success_rate = stats["s1_any"] / n if n > 0 else 0
-            s1_per_program = (stats["s1_total"] / stats["programs_total"]
-                              if stats["programs_total"] > 0 else 0)
+            s1_per_program = (
+                stats["s1_total"] / stats["programs_total"]
+                if stats["programs_total"] > 0
+                else 0
+            )
             result["mode_stats"][mode] = {
                 "n_decisions": n,
                 "success_rate": round(success_rate, 3),
@@ -527,4 +601,3 @@ class _CampaignsMixin:
             result["mode_penalties"][mode] = penalty
 
         return result
-

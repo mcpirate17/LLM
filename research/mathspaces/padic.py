@@ -42,8 +42,9 @@ def padic_valuation(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
     return -(torch.log(smooth_abs.clamp_min(PADIC_EPS)) / log_p)
 
 
-def padic_distance(x: torch.Tensor, y: torch.Tensor,
-                   p: int = DEFAULT_P) -> torch.Tensor:
+def padic_distance(
+    x: torch.Tensor, y: torch.Tensor, p: int = DEFAULT_P
+) -> torch.Tensor:
     """Ultrametric distance inspired by p-adic metric.
 
     d(x, y) = p^(-v_p(x-y)) where v_p is the p-adic valuation.
@@ -54,8 +55,9 @@ def padic_distance(x: torch.Tensor, y: torch.Tensor,
     return torch.exp((-val) * math.log(p))
 
 
-def padic_expansion(x: torch.Tensor, p: int = DEFAULT_P,
-                    n_digits: int = 4) -> torch.Tensor:
+def padic_expansion(
+    x: torch.Tensor, p: int = DEFAULT_P, n_digits: int = 4
+) -> torch.Tensor:
     """Multi-scale decomposition inspired by p-adic expansion.
 
     Decomposes x into components at different "scales" (powers of p),
@@ -66,7 +68,7 @@ def padic_expansion(x: torch.Tensor, p: int = DEFAULT_P,
     components = []
     residual = x
     for i in range(n_digits):
-        scale = p ** i
+        scale = p**i
         # Extract component at this scale
         component = torch.remainder(residual * scale, float(p)) / float(p)
         components.append(component)
@@ -84,8 +86,7 @@ def padic_norm(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
     return p ** (-val)
 
 
-def _padic_dist_chunk(x_q: torch.Tensor, x_j: torch.Tensor,
-                      p: int) -> torch.Tensor:
+def _padic_dist_chunk(x_q: torch.Tensor, x_j: torch.Tensor, p: int) -> torch.Tensor:
     """Compute p-adic distance between query chunk and all keys, reduced over D.
 
     x_q: (B, chunk, 1, D), x_j: (B, 1, S, D)
@@ -125,7 +126,7 @@ class _UltrametricAttentionFn(torch.autograd.Function):
                 if S > 1:
                     row_ids = torch.arange(q_start, q_end, device=x.device).unsqueeze(1)
                     col_ids = torch.arange(S, device=x.device).unsqueeze(0)
-                    dist_chunk.masked_fill_(col_ids > row_ids, float('inf'))
+                    dist_chunk.masked_fill_(col_ids > row_ids, float("inf"))
                 weights = torch.softmax(-dist_chunk, dim=-1)  # (B, c, S)
 
             out[:, q_start:q_end, :] = torch.bmm(weights, x)
@@ -159,7 +160,7 @@ class _UltrametricAttentionFn(torch.autograd.Function):
             if S > 1:
                 row_ids = torch.arange(q_start, q_end, device=x.device).unsqueeze(1)
                 col_ids = torch.arange(S, device=x.device).unsqueeze(0)
-                dist = dist.masked_fill((col_ids > row_ids).unsqueeze(0), float('inf'))
+                dist = dist.masked_fill((col_ids > row_ids).unsqueeze(0), float("inf"))
 
             weights = torch.softmax(-dist, dim=-1)  # (B, c, S)
             g_out = grad_output[:, q_start:q_end, :]  # (B, c, D)
@@ -169,7 +170,9 @@ class _UltrametricAttentionFn(torch.autograd.Function):
 
             # Gradient through weights -> softmax -> dist -> x
             g_weights = torch.bmm(g_out, x.transpose(1, 2))  # (B, c, S)
-            g_softmax = weights * (g_weights - (g_weights * weights).sum(dim=-1, keepdim=True))
+            g_softmax = weights * (
+                g_weights - (g_weights * weights).sum(dim=-1, keepdim=True)
+            )
             g_dist = -g_softmax  # (B, c, S)
 
             # dist = smooth_abs.mean(dim=-1)
@@ -206,7 +209,7 @@ def ultrametric_attention(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
         dist = padic_distance(x_i, x_j, p).mean(dim=-1)  # (B, S, S)
         if S > 1:
             mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-            dist.masked_fill_(mask, float('inf'))
+            dist.masked_fill_(mask, float("inf"))
         weights = torch.softmax(-dist, dim=-1)
         return torch.bmm(weights, x)
 
@@ -216,19 +219,21 @@ def ultrametric_attention(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
 
 # ── Primitive execution functions ─────────────────────────────────────
 
-def execute_padic_distance(module: nn.Module, x: torch.Tensor,
-                           y: torch.Tensor) -> torch.Tensor:
+
+def execute_padic_distance(
+    module: nn.Module, x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
     """p-adic distance between two tensors."""
     return padic_distance(x, y)
 
 
 def execute_padic_expand(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Multi-scale p-adic expansion."""
+    """Multi-scale p-adic expansion with residual for gradient health."""
     B, S, D = x.shape
     expanded = padic_expansion(x, n_digits=2)  # (B, S, D*2)
-    # Project back to D
-    if hasattr(module, 'weight'):
-        return torch.nn.functional.linear(expanded, module.weight)
+    # Project back to D with residual to stabilize gradient flow
+    if hasattr(module, "weight"):
+        return x + torch.nn.functional.linear(expanded, module.weight) * 0.1
     return expanded[..., :D]
 
 
@@ -260,11 +265,8 @@ def execute_padic_residual(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """
     B, S, D = x.shape
     expanded = padic_expansion(x, n_digits=2)  # (B, S, D*2)
-    if hasattr(module, 'weight'):
-        # Weight projects expanded (D*2) back to D
-        transformed = torch.nn.functional.linear(expanded, module.weight)
+    if hasattr(module, "weight"):
+        transformed = torch.nn.functional.linear(expanded, module.weight) * 0.1
     else:
-        # Average the two scales as fallback
         transformed = (expanded[..., :D] + expanded[..., D:]) * 0.5
-    # Residual connection
     return x + transformed

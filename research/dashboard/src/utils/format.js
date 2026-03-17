@@ -16,17 +16,18 @@ export function formatDuration(seconds) {
 }
 
 /**
- * Map a 0-100 score to a color.
- * Used consistently across all scored tables.
- *   70+ = green (strong)
- *   40-69 = yellow (moderate)
- *   20-39 = orange (weak)
- *   <20 = red (poor)
+ * Map a v6 score to a color (GPT-2 = 100 anchor, open-ended).
+ *   105+ = gold  (clearly beats GPT-2)
+ *   100-105 = green (beats or matches GPT-2)
+ *   90-99 = white  (competitive, below GPT-2)
+ *   <90 = grey   (below competitive threshold)
+ *   <20 = red    (didn't learn)
  */
 export function scoreColor(score) {
-  if (score >= 70) return 'var(--accent-green)';
-  if (score >= 40) return 'var(--accent-yellow)';
-  if (score >= 20) return 'var(--accent-orange, #f0883e)';
+  if (score >= 105) return 'var(--accent-yellow, #d29922)';
+  if (score >= 100) return 'var(--accent-green)';
+  if (score >= 90) return 'var(--text-primary)';
+  if (score >= 20) return 'var(--text-muted)';
   return 'var(--accent-red)';
 }
 

@@ -3,12 +3,9 @@
 
 PYTHON ?= python
 
-.PHONY: all setup aria_core test clean help guardrails-dry guardrails-dry-report perf-summary
+.PHONY: all aria_core test test-aria_core test-designer test-research clean help guardrails-dry guardrails-dry-report perf-summary
 
 all: aria_core  ## Build everything
-
-setup: aria_core  ## Install workspace packages (editable)
-	uv pip install -e .
 
 # ── aria_core: Unified C++/CUDA kernel library ──────────────────────
 aria_core:  ## Build aria_core C++ extension
@@ -16,17 +13,28 @@ aria_core:  ## Build aria_core C++ extension
 	cd aria_core && $(PYTHON) setup.py build_ext --inplace
 
 # ── Tests ────────────────────────────────────────────────────────────
-test: aria_core  ## Run all tests
+test: aria_core  ## Run all tests (aria_core + aria_designer + research)
 	@echo "=== aria_core equivalence tests ==="
 	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
 	@echo "=== aria_designer tests ==="
 	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
+	@echo "=== research tests (unit+api) ==="
+	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
 
 test-aria_core: aria_core  ## Run only aria_core tests
 	cd aria_core && $(PYTHON) -m pytest tests/ -x -q
 
 test-designer:  ## Run only aria_designer tests
 	cd aria_designer && $(PYTHON) -m pytest tests/ --ignore=tests/test_aria_features.py -x -q
+
+test-research:  ## Run only research tests (unit+api)
+	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+
+test-research-all:  ## Run all research test markers
+	cd research && $(PYTHON) -m pytest tests/ -m "unit or api" -x --tb=short
+	cd research && $(PYTHON) -m pytest tests/ -m pipeline --tb=short
+	cd research && $(PYTHON) -m pytest tests/ -m native --tb=short
+	cd research && $(PYTHON) -m pytest tests/ -m designer --tb=short
 
 guardrails-dry:  ## Enforce DRY/language guardrails against baseline
 	$(PYTHON) -m research.tools.dry_language_guardrails --strict
@@ -36,6 +44,21 @@ guardrails-dry-report:  ## Print DRY/language guardrail metrics
 
 perf-summary:  ## Print recent shared performance artifacts
 	$(PYTHON) -m research.tools.perf_summary --limit 10
+
+dead: ## Standing dead-code detector
+	@mkdir -p tasks/audit
+	vulture research/ aria_core/ aria_designer/ vulture_whitelist.py \
+	  --min-confidence 80 \
+	  --exclude "*/.venv/*,*/node_modules/*,*/__pycache__/*,*/.run/*,tests/,migrations/" \
+	  | tee tasks/audit/dead_code.txt
+	@echo "Dead code candidates: $$(wc -l < tasks/audit/dead_code.txt)"
+
+dupes: ## Duplicate code detector
+	@mkdir -p tasks/audit
+	pylint research/ aria_core/ aria_designer/ \
+	  --disable=all \
+	  --enable=duplicate-code \
+	  --min-similarity-lines=10 2>&1 | tee tasks/audit/duplication.txt
 
 # ── Clean ────────────────────────────────────────────────────────────
 clean:  ## Clean all build artifacts

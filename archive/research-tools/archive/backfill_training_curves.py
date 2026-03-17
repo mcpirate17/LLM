@@ -7,11 +7,11 @@ Usage:
   # Rerun curves
   python -m research.tools.backfill_training_curves --min-steps 200 --steps 1000 --device cuda
 """
+
 import argparse
 import dataclasses
 import json
 import os
-import time
 
 import torch
 
@@ -35,12 +35,20 @@ def _load_config(config_json: str | None) -> RunConfig:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill training curves for survivors")
-    parser.add_argument("--min-steps", type=int, default=200, help="Min curve length to keep")
-    parser.add_argument("--steps", type=int, default=1000, help="Steps to use when rerunning")
+    parser = argparse.ArgumentParser(
+        description="Backfill training curves for survivors"
+    )
+    parser.add_argument(
+        "--min-steps", type=int, default=200, help="Min curve length to keep"
+    )
+    parser.add_argument(
+        "--steps", type=int, default=1000, help="Steps to use when rerunning"
+    )
     parser.add_argument("--batch-size", type=int, default=50, help="Max rows per batch")
     parser.add_argument("--device", default="cuda", help="torch device")
-    parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Preview without writing"
+    )
     parser.add_argument("--db", default=DB_PATH, help="Path to lab_notebook.db")
     args = parser.parse_args()
 
@@ -48,9 +56,12 @@ def main():
     c = db.conn
 
     # Build map of existing curve lengths
-    curve_counts = {r[0]: r[1] for r in c.execute(
-        "SELECT result_id, COUNT(*) FROM training_curves GROUP BY result_id"
-    ).fetchall()}
+    curve_counts = {
+        r[0]: r[1]
+        for r in c.execute(
+            "SELECT result_id, COUNT(*) FROM training_curves GROUP BY result_id"
+        ).fetchall()
+    }
 
     rows = c.execute(
         "SELECT p.result_id, p.graph_json, e.config_json"
@@ -73,7 +84,9 @@ def main():
         print("No rows need training curve backfill.")
         return
 
-    print(f"Found {len(targets)} rows needing training curve backfill (min_steps={args.min_steps}).")
+    print(
+        f"Found {len(targets)} rows needing training curve backfill (min_steps={args.min_steps})."
+    )
     if args.dry_run:
         for rid, _, _, existing in targets[:10]:
             print(f"  {rid}: existing_steps={existing}")

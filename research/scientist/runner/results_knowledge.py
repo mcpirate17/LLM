@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..native_runner import reset_native_runner_telemetry
-from ..notebook import ExperimentEntry, LabNotebook
+from ..notebook import LabNotebook
 from ..preregistration import (
     HypothesisPreregistration,
     PreregistrationError,
@@ -27,12 +27,16 @@ class _ResultsKnowledgeMixin:
 
     __slots__ = ()
 
-    def _maybe_extract_knowledge(self, config: RunConfig, nb: LabNotebook,
-                                  n_experiments: int) -> None:
+    def _maybe_extract_knowledge(
+        self, config: RunConfig, nb: LabNotebook, n_experiments: int
+    ) -> None:
         """Extract knowledge every N experiments."""
         if not config.enable_campaigns:
             return
-        if n_experiments <= 0 or n_experiments % config.knowledge_extraction_interval != 0:
+        if (
+            n_experiments <= 0
+            or n_experiments % config.knowledge_extraction_interval != 0
+        ):
             return
 
         try:
@@ -45,7 +49,9 @@ class _ResultsKnowledgeMixin:
             }
 
             def _normalize_category(raw: str) -> str:
-                value = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+                value = (
+                    str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+                )
                 aliases = {
                     "anti_pattern": "anti_pattern",
                     "anti_patterns": "anti_pattern",
@@ -68,21 +74,68 @@ class _ResultsKnowledgeMixin:
                 return re.sub(r"\s+", " ", text).strip()
 
             stopwords = {
-                "the", "and", "for", "that", "with", "this", "from", "into", "when", "then", "than", "were",
-                "been", "have", "has", "had", "are", "was", "show", "shows", "showed", "over", "under",
-                "across", "between", "using", "use", "used", "high", "low", "very", "more", "less", "near",
-                "around", "recent", "experiments", "experiment", "result", "results", "indicate", "indicates",
-                "suggest", "suggests", "mode", "patterns", "pattern", "architecture", "architectures",
+                "the",
+                "and",
+                "for",
+                "that",
+                "with",
+                "this",
+                "from",
+                "into",
+                "when",
+                "then",
+                "than",
+                "were",
+                "been",
+                "have",
+                "has",
+                "had",
+                "are",
+                "was",
+                "show",
+                "shows",
+                "showed",
+                "over",
+                "under",
+                "across",
+                "between",
+                "using",
+                "use",
+                "used",
+                "high",
+                "low",
+                "very",
+                "more",
+                "less",
+                "near",
+                "around",
+                "recent",
+                "experiments",
+                "experiment",
+                "result",
+                "results",
+                "indicate",
+                "indicates",
+                "suggest",
+                "suggests",
+                "mode",
+                "patterns",
+                "pattern",
+                "architecture",
+                "architectures",
             }
 
             def _tokenize_semantic(raw: str) -> Set[str]:
                 canonical = _canonical_text(raw)
                 return {
-                    tok for tok in canonical.split()
+                    tok
+                    for tok in canonical.split()
                     if len(tok) > 3 and tok not in stopwords
                 }
 
-            def _is_semantic_duplicate(tokens: Set[str], existing_tokens: Set[str]) -> bool:
+            def _is_semantic_duplicate(
+                tokens: Set[str], existing_tokens: Set[str]
+            ) -> bool:
                 if not tokens or not existing_tokens:
                     return False
                 inter = len(tokens & existing_tokens)
@@ -103,7 +156,9 @@ class _ResultsKnowledgeMixin:
                     return True
                 if "1-2 sentences" in content_l or "i will now synthesize" in content_l:
                     return True
-                if title_l.startswith("recent experiments show ") or title_l.startswith("all recent experiments show "):
+                if title_l.startswith("recent experiments show ") or title_l.startswith(
+                    "all recent experiments show "
+                ):
                     return True
                 if title_l.startswith("recent synthesis") and "failure" in title_l:
                     return True
@@ -113,16 +168,49 @@ class _ResultsKnowledgeMixin:
                     return True
 
                 mechanism_tokens = (
-                    "depth", "residual", "inverse", "log ", "frequency", "math_space",
-                    "parameter", "parallel", "routing", "s1", "loss", "novelty", "baseline",
+                    "depth",
+                    "residual",
+                    "inverse",
+                    "log ",
+                    "frequency",
+                    "math_space",
+                    "parameter",
+                    "parallel",
+                    "routing",
+                    "s1",
+                    "loss",
+                    "novelty",
+                    "baseline",
                 )
                 action_tokens = (
-                    "improve", "improves", "degrade", "degrades", "fail", "fails", "underperform",
-                    "correlate", "correlates", "correlation", "predict", "predicts",
-                    "optimal", "requires", "avoid", "boost", "increase", "reduce",
-                    "enhance", "enhances", "outperform", "outperforms", "suggests", "indicates",
+                    "improve",
+                    "improves",
+                    "degrade",
+                    "degrades",
+                    "fail",
+                    "fails",
+                    "underperform",
+                    "correlate",
+                    "correlates",
+                    "correlation",
+                    "predict",
+                    "predicts",
+                    "optimal",
+                    "requires",
+                    "avoid",
+                    "boost",
+                    "increase",
+                    "reduce",
+                    "enhance",
+                    "enhances",
+                    "outperform",
+                    "outperforms",
+                    "suggests",
+                    "indicates",
                 )
-                has_mechanism = any(tok in content_l or tok in title_l for tok in mechanism_tokens)
+                has_mechanism = any(
+                    tok in content_l or tok in title_l for tok in mechanism_tokens
+                )
                 has_action = any(tok in content_l for tok in action_tokens)
                 has_numeric = bool(re.search(r"\d", content_clean))
                 return not (has_mechanism and (has_action or has_numeric))
@@ -131,8 +219,9 @@ class _ResultsKnowledgeMixin:
             resolved = []
             if self._active_campaign_id:
                 all_hyps = nb.get_campaign_hypotheses(self._active_campaign_id)
-                resolved = [h for h in all_hyps
-                           if h.get("status") in ("confirmed", "refuted")]
+                resolved = [
+                    h for h in all_hyps if h.get("status") in ("confirmed", "refuted")
+                ]
 
             context = build_knowledge_extraction_context(recent, resolved)
             entries = self.aria.extract_knowledge(recent, resolved, context=context)
@@ -148,7 +237,9 @@ class _ResultsKnowledgeMixin:
                 existing_by_title[_canonical_text(row.get("title") or "")] = eid
                 existing_by_content[_canonical_text(row.get("content") or "")] = eid
                 category = _normalize_category(str(row.get("category") or "principle"))
-                tokens = _tokenize_semantic(f"{row.get('title') or ''} {row.get('content') or ''}")
+                tokens = _tokenize_semantic(
+                    f"{row.get('title') or ''} {row.get('content') or ''}"
+                )
                 if tokens:
                     existing_by_semantic.setdefault(category, []).append((eid, tokens))
 
@@ -172,10 +263,9 @@ class _ResultsKnowledgeMixin:
                 title_key = _canonical_text(title)
                 content_key = _canonical_text(content)
 
-                existing_entry_id = (
-                    existing_by_title.get(title_key)
-                    or existing_by_content.get(content_key)
-                )
+                existing_entry_id = existing_by_title.get(
+                    title_key
+                ) or existing_by_content.get(content_key)
                 if not existing_entry_id:
                     semantic_tokens = _tokenize_semantic(f"{title} {content}")
                     for eid, seen_tokens in existing_by_semantic.get(category, []):
@@ -203,19 +293,27 @@ class _ResultsKnowledgeMixin:
                 existing_by_content[content_key] = new_entry_id
                 semantic_tokens = _tokenize_semantic(f"{title} {content}")
                 if semantic_tokens:
-                    existing_by_semantic.setdefault(category, []).append((new_entry_id, semantic_tokens))
+                    existing_by_semantic.setdefault(category, []).append(
+                        (new_entry_id, semantic_tokens)
+                    )
                 accepted += 1
 
             if entries:
-                self._emit_event("knowledge_extracted", {
-                    "n_entries": accepted,
-                    "categories": list(set(e.get("category", "") for e in entries)),
-                    "n_deduped": deduped,
-                    "n_skipped_low_value": skipped_low_value,
-                })
+                self._emit_event(
+                    "knowledge_extracted",
+                    {
+                        "n_entries": accepted,
+                        "categories": list(set(e.get("category", "") for e in entries)),
+                        "n_deduped": deduped,
+                        "n_skipped_low_value": skipped_low_value,
+                    },
+                )
                 logger.info(
                     "Knowledge extracted: accepted=%d deduped=%d skipped_low_value=%d raw=%d",
-                    accepted, deduped, skipped_low_value, len(entries),
+                    accepted,
+                    deduped,
+                    skipped_low_value,
+                    len(entries),
                 )
         except Exception as e:
             logger.debug(f"Knowledge extraction failed: {e}")
@@ -256,11 +354,14 @@ class _ResultsKnowledgeMixin:
             success_criteria=f"{camp_data['success_criteria']}{post_hoc_note}",
         )
         self._active_campaign_id = campaign_id
-        self._emit_event("campaign_created", {
-            "campaign_id": campaign_id,
-            "title": camp_data["title"],
-            "objective": camp_data["objective"],
-        })
+        self._emit_event(
+            "campaign_created",
+            {
+                "campaign_id": campaign_id,
+                "title": camp_data["title"],
+                "objective": camp_data["objective"],
+            },
+        )
         logger.info(f"Campaign created: {camp_data['title']} ({campaign_id})")
         return campaign_id
 
@@ -384,19 +485,31 @@ class _ResultsKnowledgeMixin:
         hypothesis: Optional[str],
         exploratory: bool = False,
     ) -> Dict[str, Any]:
-        statement = str(hypothesis or f"{experiment_type} batch will improve prioritized objectives.")
+        statement = str(
+            hypothesis
+            or f"{experiment_type} batch will improve prioritized objectives."
+        )
         primary_metrics = ["loss_ratio", "stage1_passed"]
         if experiment_type in {"novelty", "evolution"}:
             primary_metrics = ["novelty_score", "stage1_passed"]
         if experiment_type in {"validation", "scale_up"}:
-            primary_metrics = ["baseline_loss_ratio", "loss_ratio", "novelty_confidence"]
+            primary_metrics = [
+                "baseline_loss_ratio",
+                "loss_ratio",
+                "novelty_confidence",
+            ]
 
         prereg = HypothesisPreregistration(
             hypothesis={
                 "statement": statement,
                 "variables": {
-                    "independent": ["architecture_family", "op_composition", "training_recipe"],
-                    "dependent": primary_metrics + ["throughput_tok_s", "stability_score"],
+                    "independent": [
+                        "architecture_family",
+                        "op_composition",
+                        "training_recipe",
+                    ],
+                    "dependent": primary_metrics
+                    + ["throughput_tok_s", "stability_score"],
                     "controls": ["model_dim", "n_layers", "stage1_steps", "batch_size"],
                 },
                 "expected_direction": {
@@ -519,12 +632,15 @@ class _ResultsKnowledgeMixin:
                      AND l.composite_score >= ?
                      AND l.investigation_loss_ratio IS NULL
                    ORDER BY l.composite_score DESC LIMIT ?""",
-                (score_threshold, config.auto_investigate_top_n)
+                (score_threshold, config.auto_investigate_top_n),
             ).fetchall()
             if stale:
                 result_ids = [r["result_id"] for r in stale]
-                logger.info("Stale screening check: %d models with composite_score >= %.1f uninvestigated",
-                            len(result_ids), score_threshold)
+                logger.info(
+                    "Stale screening check: %d models with composite_score >= %.1f uninvestigated",
+                    len(result_ids),
+                    score_threshold,
+                )
                 return result_ids
         except Exception as e:
             logger.warning("Stale screening check failed: %s", e)
@@ -542,6 +658,9 @@ class _ResultsKnowledgeMixin:
         requires_justification = not valid
         if valid:
             return True, resolved_reason, False
-        if config.allow_heuristic_novelty_promotion and str(config.heuristic_novelty_justification or "").strip():
+        if (
+            config.allow_heuristic_novelty_promotion
+            and str(config.heuristic_novelty_justification or "").strip()
+        ):
             return True, f"override:{resolved_reason}", True
         return False, resolved_reason, requires_justification

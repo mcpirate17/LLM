@@ -10,7 +10,7 @@ Verifies:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -48,12 +48,16 @@ try:
 except Exception:
     _HAS_NATIVE = False
 
-pytestmark = [pytest.mark.native, pytest.mark.skipif(not _HAS_NATIVE, reason="Native Cython bridge unavailable")]
+pytestmark = [
+    pytest.mark.native,
+    pytest.mark.skipif(not _HAS_NATIVE, reason="Native Cython bridge unavailable"),
+]
 
 
 # ---------------------------------------------------------------------------
 # Forward correctness tests
 # ---------------------------------------------------------------------------
+
 
 class TestForwardCorrectness:
     """Forward output of native autograd ops must match PyTorch reference."""
@@ -122,54 +126,74 @@ class TestForwardCorrectness:
 # Backward correctness tests (gradcheck)
 # ---------------------------------------------------------------------------
 
+
 class TestBackwardGradcheck:
     """Each native autograd Function must pass torch.autograd.gradcheck."""
 
     def test_relu_gradcheck(self):
         # Avoid exact zero where relu is non-differentiable.
         x = torch.tensor([0.5, 1.0, -0.5, 2.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeRelu.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeRelu.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_sigmoid_gradcheck(self):
         x = torch.tensor([0.5, 1.0, -0.5, 2.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeSigmoid.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeSigmoid.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_tanh_gradcheck(self):
         x = torch.tensor([0.5, 1.0, -0.5, 2.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeTanh.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeTanh.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_gelu_gradcheck(self):
         x = torch.tensor([0.5, 1.0, -0.5, 2.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeGelu.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeGelu.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_silu_gradcheck(self):
         x = torch.tensor([0.5, 1.0, -0.5, 2.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeSilu.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeSilu.apply, (x.float(),), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_add_gradcheck(self):
         a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, requires_grad=True)
         b = torch.tensor([4.0, 5.0, 6.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeAdd.apply, (a.float(), b.float()), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeAdd.apply, (a.float(), b.float()), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_mul_gradcheck(self):
         a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, requires_grad=True)
         b = torch.tensor([4.0, 5.0, 6.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeMul.apply, (a.float(), b.float()), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeMul.apply, (a.float(), b.float()), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_sub_gradcheck(self):
         a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, requires_grad=True)
         b = torch.tensor([4.0, 5.0, 6.0], dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeSub.apply, (a.float(), b.float()), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeSub.apply, (a.float(), b.float()), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
     def test_matmul_gradcheck(self):
         A = torch.randn(3, 4, dtype=torch.float64, requires_grad=True)
         B = torch.randn(4, 2, dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(NativeMatmul.apply, (A.float(), B.float()), eps=1e-3, atol=1e-3, rtol=1e-2)
+        assert torch.autograd.gradcheck(
+            NativeMatmul.apply, (A.float(), B.float()), eps=1e-3, atol=1e-3, rtol=1e-2
+        )
 
 
 # ---------------------------------------------------------------------------
 # Manual backward tests (verify gradient values)
 # ---------------------------------------------------------------------------
+
 
 class TestBackwardValues:
     """Verify that backward produces the correct gradient values."""
@@ -197,8 +221,12 @@ class TestBackwardValues:
         y = NativeMul.apply(a, b)
         y.sum().backward()
         # mul grad: grad_a = b, grad_b = a
-        torch.testing.assert_close(a.grad, torch.tensor([5.0, 7.0]), atol=1e-6, rtol=1e-5)
-        torch.testing.assert_close(b.grad, torch.tensor([2.0, 3.0]), atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(
+            a.grad, torch.tensor([5.0, 7.0]), atol=1e-6, rtol=1e-5
+        )
+        torch.testing.assert_close(
+            b.grad, torch.tensor([2.0, 3.0]), atol=1e-6, rtol=1e-5
+        )
 
     def test_sub_backward_values(self):
         a = torch.tensor([1.0, 2.0], requires_grad=True)
@@ -228,6 +256,7 @@ class TestBackwardValues:
 # ---------------------------------------------------------------------------
 # Multi-op chain gradient flow tests
 # ---------------------------------------------------------------------------
+
 
 class TestGradientChain:
     """Gradients must flow correctly through chains of native autograd ops."""
@@ -295,6 +324,7 @@ class TestGradientChain:
 # Dispatch registry tests
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchRegistry:
     """native_autograd_dispatch should select the correct Function class."""
 
@@ -318,16 +348,31 @@ class TestDispatchRegistry:
             native_autograd_dispatch("unknown_op", x)
 
     def test_supported_ops_set(self):
-        expected = {"relu", "sigmoid", "tanh", "gelu", "silu",
-                    "add", "mul", "sub", "matmul",
-                    "softmax", "layernorm", "rmsnorm",
-                    "minimum", "maximum", "div_safe", "sign_ste"}
+        expected = {
+            "relu",
+            "sigmoid",
+            "tanh",
+            "gelu",
+            "silu",
+            "add",
+            "mul",
+            "sub",
+            "matmul",
+            "softmax",
+            "layernorm",
+            "rmsnorm",
+            "minimum",
+            "maximum",
+            "div_safe",
+            "sign_ste",
+        }
         assert NATIVE_AUTOGRAD_SUPPORTED_OPS == expected
 
 
 # ---------------------------------------------------------------------------
 # NativeForwardWrapper autograd routing test
 # ---------------------------------------------------------------------------
+
 
 class TestWrapperAutogradRouting:
     """NativeForwardWrapper.dispatch should use autograd path when grad needed."""

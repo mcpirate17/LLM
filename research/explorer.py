@@ -27,17 +27,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .morphological_box import (
-    ArchSpec, DIMENSIONS, DIMENSION_NAMES,
-    batch_roll, roll, mutate, crossover, describe_spec, is_valid_spec,
+    DIMENSION_NAMES,
+    batch_roll,
+    mutate,
+    describe_spec,
 )
-from .arch_builder import BuildConfig, build_model
-from .evaluator import stage0_smoke_test, stage1_micro_train, Stage0Result, Stage1Result
+from .arch_builder import BuildConfig
+from .evaluator import stage0_smoke_test, stage1_micro_train
 from .database import ExperimentDB
 from .defaults import VOCAB_SIZE
 
@@ -82,16 +83,16 @@ def run_exploration(
     base_seed: Optional[int] = None,
 ) -> None:
     """Generate N random architectures and evaluate them."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Rolling {n} random architectures (generation {generation})")
     if fixed:
         print(f"Fixed dimensions: {fixed}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     specs = batch_roll(n, generation=generation, fixed=fixed, base_seed=base_seed)
 
     for i, spec in enumerate(specs):
-        print(f"\n[{i+1}/{n}] {spec.short_name} (id={spec.id})")
+        print(f"\n[{i + 1}/{n}] {spec.short_name} (id={spec.id})")
         print(f"  Choices: {json.dumps(spec.choices, indent=None)}")
 
         # Save spec
@@ -99,11 +100,11 @@ def run_exploration(
 
         # Stage 0
         if db.has_stage0(spec.id):
-            print(f"  Stage 0: already evaluated, skipping")
+            print("  Stage 0: already evaluated, skipping")
             s0 = db.get_stage0(spec.id)
             s0_passed = bool(s0["passed"])
         else:
-            print(f"  Stage 0: smoke test...", end=" ", flush=True)
+            print("  Stage 0: smoke test...", end=" ", flush=True)
             t0 = time.time()
             s0_result = stage0_smoke_test(spec, config, device=device)
             elapsed = time.time() - t0
@@ -111,10 +112,12 @@ def run_exploration(
             s0_passed = s0_result.passed
 
             if s0_passed:
-                print(f"PASS ({elapsed:.1f}s, {s0_result.param_count/1e6:.1f}M params, "
-                      f"fwd={s0_result.forward_time_ms:.0f}ms, "
-                      f"bwd={s0_result.backward_time_ms:.0f}ms, "
-                      f"mem={s0_result.peak_memory_mb:.0f}MB)")
+                print(
+                    f"PASS ({elapsed:.1f}s, {s0_result.param_count / 1e6:.1f}M params, "
+                    f"fwd={s0_result.forward_time_ms:.0f}ms, "
+                    f"bwd={s0_result.backward_time_ms:.0f}ms, "
+                    f"mem={s0_result.peak_memory_mb:.0f}MB)"
+                )
             else:
                 print(f"FAIL ({elapsed:.1f}s)")
                 print(f"  Error: {s0_result.error}")
@@ -128,28 +131,36 @@ def run_exploration(
             continue
 
         if db.has_stage1(spec.id):
-            print(f"  Stage 1: already evaluated, skipping")
+            print("  Stage 1: already evaluated, skipping")
             continue
 
-        print(f"  Stage 1: micro-training...", end=" ", flush=True)
+        print("  Stage 1: micro-training...", end=" ", flush=True)
         t0 = time.time()
-        s1_result = stage1_micro_train(spec, config, device=device, n_steps=500, seq_len=128)
+        s1_result = stage1_micro_train(
+            spec, config, device=device, n_steps=500, seq_len=128
+        )
         elapsed = time.time() - t0
         db.save_stage1(s1_result)
 
         if s1_result.passed:
             print(f"PASS ({elapsed:.0f}s)")
-            print(f"    loss: {s1_result.initial_loss:.3f} → {s1_result.final_loss:.3f} "
-                  f"(ratio={s1_result.loss_ratio:.3f})")
-            print(f"    throughput: {s1_result.throughput_tok_s:.0f} tok/s, "
-                  f"mem: {s1_result.peak_memory_mb:.0f}MB")
+            print(
+                f"    loss: {s1_result.initial_loss:.3f} → {s1_result.final_loss:.3f} "
+                f"(ratio={s1_result.loss_ratio:.3f})"
+            )
+            print(
+                f"    throughput: {s1_result.throughput_tok_s:.0f} tok/s, "
+                f"mem: {s1_result.peak_memory_mb:.0f}MB"
+            )
         else:
             print(f"FAIL ({elapsed:.0f}s)")
             if s1_result.error:
                 print(f"    Error: {s1_result.error}")
             else:
-                print(f"    loss: {s1_result.initial_loss:.3f} → {s1_result.final_loss:.3f} "
-                      f"(ratio={s1_result.loss_ratio:.3f}) — didn't converge")
+                print(
+                    f"    loss: {s1_result.initial_loss:.3f} → {s1_result.final_loss:.3f} "
+                    f"(ratio={s1_result.loss_ratio:.3f}) — didn't converge"
+                )
 
 
 def run_mutation(
@@ -176,7 +187,9 @@ def run_mutation(
         if parent_spec is None:
             continue
 
-        print(f"\nParent: {parent['short_name']} (loss_ratio={parent['loss_ratio']:.3f})")
+        print(
+            f"\nParent: {parent['short_name']} (loss_ratio={parent['loss_ratio']:.3f})"
+        )
         for j in range(n):
             try:
                 child = mutate(parent_spec, n_mutations=n_mutations, generation=gen)
@@ -192,20 +205,22 @@ def run_mutation(
 
     # Evaluate mutants
     for i, spec in enumerate(all_mutants):
-        print(f"\n[{i+1}/{len(all_mutants)}] {spec.short_name} (mutated from {spec.parent_id})")
+        print(
+            f"\n[{i + 1}/{len(all_mutants)}] {spec.short_name} (mutated from {spec.parent_id})"
+        )
         db.save_spec(spec)
 
         # Stage 0
-        print(f"  Stage 0: smoke test...", end=" ", flush=True)
+        print("  Stage 0: smoke test...", end=" ", flush=True)
         s0 = stage0_smoke_test(spec, config, device=device)
         db.save_stage0(s0)
         if not s0.passed:
             print(f"FAIL — {s0.error}")
             continue
-        print(f"PASS ({s0.param_count/1e6:.1f}M params)")
+        print(f"PASS ({s0.param_count / 1e6:.1f}M params)")
 
         # Stage 1
-        print(f"  Stage 1: micro-training...", end=" ", flush=True)
+        print("  Stage 1: micro-training...", end=" ", flush=True)
         s1 = stage1_micro_train(spec, config, device=device, n_steps=500)
         db.save_stage1(s1)
         if s1.passed:
@@ -217,7 +232,7 @@ def run_mutation(
 def show_leaderboard(db: ExperimentDB, n: int = 20) -> None:
     """Show top architectures."""
     counts = db.count_experiments()
-    print(f"\nExperiment Summary:")
+    print("\nExperiment Summary:")
     print(f"  Total specs: {counts['total_specs']}")
     print(f"  Stage 0: {counts['stage0_passed']}/{counts['stage0_evaluated']} passed")
     print(f"  Stage 1: {counts['stage1_passed']}/{counts['stage1_evaluated']} passed")
@@ -228,17 +243,32 @@ def show_leaderboard(db: ExperimentDB, n: int = 20) -> None:
         return
 
     print(f"\nTop {len(top)} Architectures (by loss ratio):")
-    print(f"{'Rank':>4} {'ID':>12} {'Loss Ratio':>10} {'Final Loss':>10} "
-          f"{'Tok/s':>8} {'Params':>8} {'Gen':>4}  Choices")
+    print(
+        f"{'Rank':>4} {'ID':>12} {'Loss Ratio':>10} {'Final Loss':>10} "
+        f"{'Tok/s':>8} {'Params':>8} {'Gen':>4}  Choices"
+    )
     print("-" * 100)
     for i, arch in enumerate(top):
-        choices_short = {k: v for k, v in arch["choices"].items()
-                        if v not in ("dense_float", "dense_matrix", "rmsnorm_pre",
-                                     "swiglu_mlp", "sequential", "uniform", "rope")}
-        print(f"{i+1:>4} {arch['spec_id']:>12} {arch['loss_ratio']:>10.4f} "
-              f"{arch['final_loss']:>10.4f} {arch['throughput_tok_s']:>8.0f} "
-              f"{arch['param_count']/1e6:>7.1f}M {arch.get('generation', 0):>4}  "
-              f"{json.dumps(choices_short)}")
+        choices_short = {
+            k: v
+            for k, v in arch["choices"].items()
+            if v
+            not in (
+                "dense_float",
+                "dense_matrix",
+                "rmsnorm_pre",
+                "swiglu_mlp",
+                "sequential",
+                "uniform",
+                "rope",
+            )
+        }
+        print(
+            f"{i + 1:>4} {arch['spec_id']:>12} {arch['loss_ratio']:>10.4f} "
+            f"{arch['final_loss']:>10.4f} {arch['throughput_tok_s']:>8.0f} "
+            f"{arch['param_count'] / 1e6:>7.1f}M {arch.get('generation', 0):>4}  "
+            f"{json.dumps(choices_short)}"
+        )
 
 
 def show_analysis(db: ExperimentDB) -> None:
@@ -248,7 +278,7 @@ def show_analysis(db: ExperimentDB) -> None:
         print("No Stage 1 data yet. Run some experiments first.")
         return
 
-    print(f"\nChoice Success Rates (Stage 1 pass rate):")
+    print("\nChoice Success Rates (Stage 1 pass rate):")
     print(f"{'Dimension':>25} {'Option':>30} {'Pass Rate':>10} {'Count':>6}")
     print("-" * 75)
 
@@ -267,23 +297,40 @@ def main():
 
     # Mode
     mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--explore", action="store_true", default=True,
-                      help="Generate and evaluate random architectures (default)")
-    mode.add_argument("--mutate", action="store_true",
-                      help="Mutate top architectures")
-    mode.add_argument("--leaderboard", action="store_true",
-                      help="Show top architectures")
-    mode.add_argument("--analyze", action="store_true",
-                      help="Analyze choice success rates")
-    mode.add_argument("--describe", type=str, metavar="SPEC_ID",
-                      help="Describe a specific architecture")
+    mode.add_argument(
+        "--explore",
+        action="store_true",
+        default=True,
+        help="Generate and evaluate random architectures (default)",
+    )
+    mode.add_argument("--mutate", action="store_true", help="Mutate top architectures")
+    mode.add_argument(
+        "--leaderboard", action="store_true", help="Show top architectures"
+    )
+    mode.add_argument(
+        "--analyze", action="store_true", help="Analyze choice success rates"
+    )
+    mode.add_argument(
+        "--describe",
+        type=str,
+        metavar="SPEC_ID",
+        help="Describe a specific architecture",
+    )
 
     # Generation params
-    p.add_argument("--n", type=int, default=10, help="Number of architectures to generate")
-    p.add_argument("--fix", nargs="*", default=[], metavar="DIM=OPT",
-                   help="Fix dimensions (e.g., --fix token_mixing=linear_attention)")
-    p.add_argument("--stage0_only", action="store_true",
-                   help="Only run Stage 0 (no training)")
+    p.add_argument(
+        "--n", type=int, default=10, help="Number of architectures to generate"
+    )
+    p.add_argument(
+        "--fix",
+        nargs="*",
+        default=[],
+        metavar="DIM=OPT",
+        help="Fix dimensions (e.g., --fix token_mixing=linear_attention)",
+    )
+    p.add_argument(
+        "--stage0_only", action="store_true", help="Only run Stage 0 (no training)"
+    )
     p.add_argument("--seed", type=int, default=None, help="Random seed")
 
     # Model config
@@ -293,12 +340,14 @@ def main():
 
     # Eval config
     p.add_argument("--device", default="cuda", choices=["cpu", "cuda"])
-    p.add_argument("--stage1_steps", type=int, default=500,
-                   help="Training steps for Stage 1")
+    p.add_argument(
+        "--stage1_steps", type=int, default=500, help="Training steps for Stage 1"
+    )
 
     # Database
-    p.add_argument("--db", type=str, default=str(DEFAULT_DB),
-                   help="Path to experiment database")
+    p.add_argument(
+        "--db", type=str, default=str(DEFAULT_DB), help="Path to experiment database"
+    )
 
     args = p.parse_args()
 
@@ -323,12 +372,14 @@ def main():
                 if s0:
                     print(f"\nStage 0: {'PASS' if s0['passed'] else 'FAIL'}")
                     if s0.get("param_count"):
-                        print(f"  Params: {s0['param_count']/1e6:.1f}M")
+                        print(f"  Params: {s0['param_count'] / 1e6:.1f}M")
                 s1 = db.get_stage1(args.describe)
                 if s1:
                     print(f"\nStage 1: {'PASS' if s1['passed'] else 'FAIL'}")
-                    print(f"  Loss: {s1['initial_loss']:.3f} → {s1['final_loss']:.3f} "
-                          f"(ratio={s1['loss_ratio']:.3f})")
+                    print(
+                        f"  Loss: {s1['initial_loss']:.3f} → {s1['final_loss']:.3f} "
+                        f"(ratio={s1['loss_ratio']:.3f})"
+                    )
             else:
                 print(f"Spec '{args.describe}' not found.")
         elif args.mutate:
@@ -336,7 +387,9 @@ def main():
         else:
             fixed = _parse_fixed(args.fix)
             run_exploration(
-                args.n, db, config,
+                args.n,
+                db,
+                config,
                 fixed=fixed,
                 stage0_only=args.stage0_only,
                 device=args.device,

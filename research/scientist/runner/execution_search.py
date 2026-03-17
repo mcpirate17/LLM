@@ -5,20 +5,20 @@ from __future__ import annotations
 import gc
 import time
 import traceback
-from typing import Any, Dict, List
 
 import torch
 
 from ..native_runner import compile_model_native_first as compile_model
 from ...eval.metrics import novelty_score
 from ...eval.fingerprint import compute_fingerprint
-from ..notebook import LabNotebook, ExperimentEntry
+from ..notebook import ExperimentEntry
 from ..shared_utils import resolve_device
 
 import logging
+
 logger = logging.getLogger(__name__)
 
-from ._types import RunConfig, LiveProgress
+from ._types import RunConfig
 
 
 class _ExecutionSearchMixin:
@@ -27,18 +27,35 @@ class _ExecutionSearchMixin:
     __slots__ = ()
 
     # Ops considered "routing" for dashboard template stats
-    _ROUTING_OPS = frozenset({
-        "entropy_score", "token_type_classifier", "route_topk", "route_lanes",
-        "route_recursion", "adaptive_lane_mixer", "mixed_recursion_gate",
-        "early_exit", "cascade", "speculative", "adaptive_recursion",
-        "mod_topk", "token_merging", "token_merge", "relu_gate_routing",
-        "moe_topk", "moe_2expert", "routing_conditioned_compression",
-        "mixture_of_experts", "moe", "conditional_compute", "routing_node",
-        "difficulty_routed_block",
-    })
+    _ROUTING_OPS = frozenset(
+        {
+            "entropy_score",
+            "token_type_classifier",
+            "route_topk",
+            "route_lanes",
+            "route_recursion",
+            "adaptive_lane_mixer",
+            "mixed_recursion_gate",
+            "early_exit",
+            "cascade",
+            "speculative",
+            "adaptive_recursion",
+            "mod_topk",
+            "token_merging",
+            "token_merge",
+            "relu_gate_routing",
+            "moe_topk",
+            "moe_2expert",
+            "routing_conditioned_compression",
+            "mixture_of_experts",
+            "moe",
+            "conditional_compute",
+            "routing_node",
+            "difficulty_routed_block",
+        }
+    )
 
-    def _run_evolution_thread(self, exp_id: str, config: RunConfig,
-                               hypothesis: str):
+    def _run_evolution_thread(self, exp_id: str, config: RunConfig, hypothesis: str):
         """Execute evolutionary search in background."""
         nb = self._make_notebook()
         t_start = time.time()
@@ -63,11 +80,20 @@ class _ExecutionSearchMixin:
             eval_counters = {"total": 0, "s0": 0, "s1": 0}
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
-                self._on_program_evaluated(graph, fitness, sandbox_result, s1_result,
-                                           eval_counters, nb, exp_id, model_source="evolution")
+                self._on_program_evaluated(
+                    graph,
+                    fitness,
+                    sandbox_result,
+                    s1_result,
+                    eval_counters,
+                    nb,
+                    exp_id,
+                    model_source="evolution",
+                )
 
             fitness_fn = self._make_fitness_fn(
-                config, on_evaluate=on_evaluate, fitness_cache=fitness_cache)
+                config, on_evaluate=on_evaluate, fitness_cache=fitness_cache
+            )
 
             def gen_callback(gen, population):
                 if self._stop_event.is_set():
@@ -75,9 +101,17 @@ class _ExecutionSearchMixin:
                 fitnesses = [ind.fitness for ind in population]
                 avg_fit = sum(fitnesses) / len(fitnesses) if fitnesses else 0
                 best_fit = max(fitnesses) if fitnesses else 0
-                
+
                 # Template stats (Task 1I)
-                n_routing = sum(1 for ind in population if any(node.op_name in self._ROUTING_OPS for node in ind.graph.nodes.values() if not node.is_input))
+                n_routing = sum(
+                    1
+                    for ind in population
+                    if any(
+                        node.op_name in self._ROUTING_OPS
+                        for node in ind.graph.nodes.values()
+                        if not node.is_input
+                    )
+                )
                 n_standard = len(population) - n_routing
 
                 with self._lock:
@@ -90,50 +124,56 @@ class _ExecutionSearchMixin:
                         f"Generation {gen + 1}/{config.n_generations}: "
                         f"best={best_fit:.3f}, avg={avg_fit:.3f}, routing={n_routing}/{len(population)}"
                     )
-                self._emit_event("evolution_generation", {
-                    "experiment_id": exp_id,
-                    "generation": gen + 1,
-                    "total_generations": config.n_generations,
-                    "best_fitness": best_fit,
-                    "avg_fitness": avg_fit,
-                    "population_size": len(population),
-                    "n_routing": n_routing,
-                    "n_standard": n_standard,
-                })
+                self._emit_event(
+                    "evolution_generation",
+                    {
+                        "experiment_id": exp_id,
+                        "generation": gen + 1,
+                        "total_generations": config.n_generations,
+                        "best_fitness": best_fit,
+                        "avg_fitness": avg_fit,
+                        "population_size": len(population),
+                        "n_routing": n_routing,
+                        "n_standard": n_standard,
+                    },
+                )
                 try:
-                    nb.add_entry(ExperimentEntry(
-                        entry_type="live_feed",
-                        title=f"Evolution generation {gen + 1}/{config.n_generations}",
-                        content=(
-                            f"Gen {gen + 1}/{config.n_generations}: "
-                            f"best={best_fit:.3f}, avg={avg_fit:.3f}, "
-                            f"pop={len(population)}, routing={n_routing}/{len(population)}"
-                        ),
-                        experiment_id=exp_id,
-                        metadata={
-                            "live_feed_type": "evo_gen",
-                            "payload": {
-                                "experiment_id": exp_id,
-                                "generation": gen + 1,
-                                "total_generations": config.n_generations,
-                                "best_fitness": best_fit,
-                                "avg_fitness": avg_fit,
-                                "population_size": len(population),
-                                "n_routing": n_routing,
-                                "n_standard": n_standard,
+                    nb.add_entry(
+                        ExperimentEntry(
+                            entry_type="live_feed",
+                            title=f"Evolution generation {gen + 1}/{config.n_generations}",
+                            content=(
+                                f"Gen {gen + 1}/{config.n_generations}: "
+                                f"best={best_fit:.3f}, avg={avg_fit:.3f}, "
+                                f"pop={len(population)}, routing={n_routing}/{len(population)}"
+                            ),
+                            experiment_id=exp_id,
+                            metadata={
+                                "live_feed_type": "evo_gen",
+                                "payload": {
+                                    "experiment_id": exp_id,
+                                    "generation": gen + 1,
+                                    "total_generations": config.n_generations,
+                                    "best_fitness": best_fit,
+                                    "avg_fitness": avg_fit,
+                                    "population_size": len(population),
+                                    "n_routing": n_routing,
+                                    "n_standard": n_standard,
+                                },
                             },
-                        },
-                    ))
+                        )
+                    )
                 except Exception as e:
-                    logger.debug("Failed to persist evolution generation feed entry: %s", e)
+                    logger.debug(
+                        "Failed to persist evolution generation feed entry: %s", e
+                    )
 
             def novelty_fn(graph, all_graphs):
                 """Structural novelty relative to current population."""
                 nov = novelty_score(graph)
                 # Penalize duplicates within population
                 my_fp = graph.fingerprint()
-                dup_count = sum(1 for g in all_graphs
-                                if g.fingerprint() == my_fp) - 1
+                dup_count = sum(1 for g in all_graphs if g.fingerprint() == my_fp) - 1
                 penalty = max(0, 1 - dup_count * 0.3)
                 return nov.structural_novelty * penalty
 
@@ -150,25 +190,31 @@ class _ExecutionSearchMixin:
                 "stage05_passed": eval_counters["s0"],
                 "stage1_passed": eval_counters["s1"],
                 "novel_count": sum(1 for ind in population if ind.novelty > 0.5),
-                "best_loss_ratio": 1.0 - max((ind.fitness for ind in population), default=0),
-                "best_novelty_score": max((ind.novelty for ind in population), default=0),
+                "best_loss_ratio": 1.0
+                - max((ind.fitness for ind in population), default=0),
+                "best_novelty_score": max(
+                    (ind.novelty for ind in population), default=0
+                ),
                 "survivors": [],
             }
 
             for ind in population[:20]:
                 if ind.fitness > 0.2:
-                    results["survivors"].append({
-                        "fingerprint": ind.fingerprint,
-                        "novelty": ind.novelty,
-                        "loss_ratio": 1.0 - ind.fitness,
-                    })
+                    results["survivors"].append(
+                        {
+                            "fingerprint": ind.fingerprint,
+                            "novelty": ind.novelty,
+                            "loss_ratio": 1.0 - ind.fitness,
+                        }
+                    )
 
             nb.update_op_success_rates(exp_id)
             nb.update_failure_signatures(exp_id)
 
             # Rich context for Aria
             context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb)
+                results, config, hypothesis, nb
+            )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
 
@@ -176,13 +222,15 @@ class _ExecutionSearchMixin:
             try:
                 validation = self.aria.validate_hypothesis(hypothesis, results, context)
                 if validation:
-                    nb.add_entry(ExperimentEntry(
-                        entry_type="analysis",
-                        title="Hypothesis Validation",
-                        content=validation.get("explanation", ""),
-                        experiment_id=exp_id,
-                        metadata={"validated": validation.get("validated", False)},
-                    ))
+                    nb.add_entry(
+                        ExperimentEntry(
+                            entry_type="analysis",
+                            title="Hypothesis Validation",
+                            content=validation.get("explanation", ""),
+                            experiment_id=exp_id,
+                            metadata={"validated": validation.get("validated", False)},
+                        )
+                    )
             except Exception as e:
                 logger.warning("Hypothesis validation failed for %s: %s", exp_id, e)
 
@@ -205,13 +253,18 @@ class _ExecutionSearchMixin:
             with self._lock:
                 self._progress.status = "completed"
                 self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = summary.split("\n")[-1] if summary else "Evolution complete."
+                self._progress.aria_message = (
+                    summary.split("\n")[-1] if summary else "Evolution complete."
+                )
 
-            self._emit_event("evolution_completed", {
-                "experiment_id": exp_id,
-                "results": results,
-                "summary": summary,
-            })
+            self._emit_event(
+                "evolution_completed",
+                {
+                    "experiment_id": exp_id,
+                    "results": results,
+                    "summary": summary,
+                },
+            )
 
         except Exception as e:
             error = traceback.format_exc()
@@ -221,8 +274,12 @@ class _ExecutionSearchMixin:
                 trigger_type="repeated_exception",
                 experiment_id=exp_id,
                 scope=f"Evolution failure: {str(e)[:240]}",
-                reproduction_steps=["python -m pytest tests/test_integration.py -k \"evolution\" -x --tb=short"],
-                acceptance_tests=["python -m pytest tests/test_integration.py -k \"evolution\" -x --tb=short"],
+                reproduction_steps=[
+                    'python -m pytest tests/test_integration.py -k "evolution" -x --tb=short'
+                ],
+                acceptance_tests=[
+                    'python -m pytest tests/test_integration.py -k "evolution" -x --tb=short'
+                ],
                 trigger_payload={"mode": "evolution", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
@@ -230,16 +287,18 @@ class _ExecutionSearchMixin:
                 self._progress.status = "failed"
                 self._progress.error = str(e)
                 self._progress.aria_message = self.aria.react_to_failure(str(e))
-            self._emit_event("experiment_failed", {
-                "experiment_id": exp_id,
-                "error": str(e),
-            })
+            self._emit_event(
+                "experiment_failed",
+                {
+                    "experiment_id": exp_id,
+                    "error": str(e),
+                },
+            )
         finally:
             nb.close()
             self._run_pending_scale_up()
 
-    def _run_novelty_thread(self, exp_id: str, config: RunConfig,
-                             hypothesis: str):
+    def _run_novelty_thread(self, exp_id: str, config: RunConfig, hypothesis: str):
         """Execute novelty search in background."""
         nb = self._make_notebook()
         t_start = time.time()
@@ -268,9 +327,17 @@ class _ExecutionSearchMixin:
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
                 bfp = fingerprint_cache.get(graph.fingerprint())
-                self._on_program_evaluated(graph, fitness, sandbox_result, s1_result,
-                                           eval_counters, nb, exp_id, model_source="novelty",
-                                           behavioral_fingerprint=bfp)
+                self._on_program_evaluated(
+                    graph,
+                    fitness,
+                    sandbox_result,
+                    s1_result,
+                    eval_counters,
+                    nb,
+                    exp_id,
+                    model_source="novelty",
+                    behavioral_fingerprint=bfp,
+                )
 
             def combined_fitness_fn(graph):
                 """Compile once, run sandbox + micro-train + fingerprint in one pass."""
@@ -328,7 +395,8 @@ class _ExecutionSearchMixin:
 
                     if s1_result.get("passed"):
                         fitness, _components = self._compute_multi_objective_fitness(
-                            s1_result, sandbox_result, graph, config)
+                            s1_result, sandbox_result, graph, config
+                        )
                     else:
                         fitness = 0.1
                 except Exception:
@@ -348,9 +416,17 @@ class _ExecutionSearchMixin:
                 novelties = [ind.novelty for ind in population]
                 avg_fit = sum(fitnesses) / len(fitnesses) if fitnesses else 0
                 best_fit = max(fitnesses) if fitnesses else 0
-                
+
                 # Template stats (Task 1I)
-                n_routing = sum(1 for ind in population if any(node.op_name in self._ROUTING_OPS for node in ind.graph.nodes.values() if not node.is_input))
+                n_routing = sum(
+                    1
+                    for ind in population
+                    if any(
+                        node.op_name in self._ROUTING_OPS
+                        for node in ind.graph.nodes.values()
+                        if not node.is_input
+                    )
+                )
                 n_standard = len(population) - n_routing
 
                 with self._lock:
@@ -364,45 +440,52 @@ class _ExecutionSearchMixin:
                         f"Generation {gen + 1}/{config.n_generations}: "
                         f"archive={archive.size()}, best_fit={best_fit:.3f}, routing={n_routing}/{len(population)}"
                     )
-                self._emit_event("novelty_generation", {
-                    "experiment_id": exp_id,
-                    "generation": gen + 1,
-                    "total_generations": config.n_generations,
-                    "best_fitness": best_fit,
-                    "avg_fitness": avg_fit,
-                    "archive_size": archive.size(),
-                    "best_novelty": max(novelties) if novelties else 0,
-                    "n_routing": n_routing,
-                    "n_standard": n_standard,
-                })
+                self._emit_event(
+                    "novelty_generation",
+                    {
+                        "experiment_id": exp_id,
+                        "generation": gen + 1,
+                        "total_generations": config.n_generations,
+                        "best_fitness": best_fit,
+                        "avg_fitness": avg_fit,
+                        "archive_size": archive.size(),
+                        "best_novelty": max(novelties) if novelties else 0,
+                        "n_routing": n_routing,
+                        "n_standard": n_standard,
+                    },
+                )
                 try:
                     best_novelty = max(novelties) if novelties else 0
-                    nb.add_entry(ExperimentEntry(
-                        entry_type="live_feed",
-                        title=f"Novelty generation {gen + 1}/{config.n_generations}",
-                        content=(
-                            f"Gen {gen + 1}/{config.n_generations}: "
-                            f"best_fit={best_fit:.3f}, archive={archive.size()}, "
-                            f"novelty={best_novelty:.3f}, routing={n_routing}/{len(population)}"
-                        ),
-                        experiment_id=exp_id,
-                        metadata={
-                            "live_feed_type": "nov_gen",
-                            "payload": {
-                                "experiment_id": exp_id,
-                                "generation": gen + 1,
-                                "total_generations": config.n_generations,
-                                "best_fitness": best_fit,
-                                "avg_fitness": avg_fit,
-                                "archive_size": archive.size(),
-                                "best_novelty": best_novelty,
-                                "n_routing": n_routing,
-                                "n_standard": n_standard,
+                    nb.add_entry(
+                        ExperimentEntry(
+                            entry_type="live_feed",
+                            title=f"Novelty generation {gen + 1}/{config.n_generations}",
+                            content=(
+                                f"Gen {gen + 1}/{config.n_generations}: "
+                                f"best_fit={best_fit:.3f}, archive={archive.size()}, "
+                                f"novelty={best_novelty:.3f}, routing={n_routing}/{len(population)}"
+                            ),
+                            experiment_id=exp_id,
+                            metadata={
+                                "live_feed_type": "nov_gen",
+                                "payload": {
+                                    "experiment_id": exp_id,
+                                    "generation": gen + 1,
+                                    "total_generations": config.n_generations,
+                                    "best_fitness": best_fit,
+                                    "avg_fitness": avg_fit,
+                                    "archive_size": archive.size(),
+                                    "best_novelty": best_novelty,
+                                    "n_routing": n_routing,
+                                    "n_standard": n_standard,
+                                },
                             },
-                        },
-                    ))
+                        )
+                    )
                 except Exception as e:
-                    logger.debug("Failed to persist novelty generation feed entry: %s", e)
+                    logger.debug(
+                        "Failed to persist novelty generation feed entry: %s", e
+                    )
 
             ns_result = novelty_search(
                 fitness_fn=combined_fitness_fn,
@@ -417,7 +500,9 @@ class _ExecutionSearchMixin:
                 "stage0_passed": eval_counters["s0"],
                 "stage05_passed": eval_counters["s0"],
                 "stage1_passed": eval_counters["s1"],
-                "novel_count": sum(1 for ind in ns_result.best_individuals if ind.novelty > 0.5),
+                "novel_count": sum(
+                    1 for ind in ns_result.best_individuals if ind.novelty > 0.5
+                ),
                 "best_loss_ratio": None,
                 "best_novelty_score": None,
                 "survivors": [],
@@ -426,34 +511,43 @@ class _ExecutionSearchMixin:
 
             for ind in ns_result.best_individuals[:20]:
                 if ind.fitness > 0.2:
-                    results["survivors"].append({
-                        "fingerprint": ind.fingerprint,
-                        "novelty": ind.novelty,
-                        "loss_ratio": 1.0 - ind.fitness,
-                    })
+                    results["survivors"].append(
+                        {
+                            "fingerprint": ind.fingerprint,
+                            "novelty": ind.novelty,
+                            "loss_ratio": 1.0 - ind.fitness,
+                        }
+                    )
 
             if results["survivors"]:
-                results["best_loss_ratio"] = min(s["loss_ratio"] for s in results["survivors"])
-                results["best_novelty_score"] = max(s["novelty"] for s in results["survivors"])
+                results["best_loss_ratio"] = min(
+                    s["loss_ratio"] for s in results["survivors"]
+                )
+                results["best_novelty_score"] = max(
+                    s["novelty"] for s in results["survivors"]
+                )
 
             nb.update_op_success_rates(exp_id)
             nb.update_failure_signatures(exp_id)
 
             context = self._build_rich_context_for_experiment(
-                results, config, hypothesis, nb)
+                results, config, hypothesis, nb
+            )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
 
             try:
                 validation = self.aria.validate_hypothesis(hypothesis, results, context)
                 if validation:
-                    nb.add_entry(ExperimentEntry(
-                        entry_type="analysis",
-                        title="Hypothesis Validation",
-                        content=validation.get("explanation", ""),
-                        experiment_id=exp_id,
-                        metadata={"validated": validation.get("validated", False)},
-                    ))
+                    nb.add_entry(
+                        ExperimentEntry(
+                            entry_type="analysis",
+                            title="Hypothesis Validation",
+                            content=validation.get("explanation", ""),
+                            experiment_id=exp_id,
+                            metadata={"validated": validation.get("validated", False)},
+                        )
+                    )
             except Exception:
                 pass
 
@@ -476,14 +570,19 @@ class _ExecutionSearchMixin:
             with self._lock:
                 self._progress.status = "completed"
                 self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = summary.split("\n")[-1] if summary else "Novelty search complete."
+                self._progress.aria_message = (
+                    summary.split("\n")[-1] if summary else "Novelty search complete."
+                )
 
-            self._emit_event("novelty_completed", {
-                "experiment_id": exp_id,
-                "results": results,
-                "summary": summary,
-                "archive_size": ns_result.archive_size,
-            })
+            self._emit_event(
+                "novelty_completed",
+                {
+                    "experiment_id": exp_id,
+                    "results": results,
+                    "summary": summary,
+                    "archive_size": ns_result.archive_size,
+                },
+            )
 
         except Exception as e:
             error = traceback.format_exc()
@@ -493,8 +592,12 @@ class _ExecutionSearchMixin:
                 trigger_type="repeated_exception",
                 experiment_id=exp_id,
                 scope=f"Novelty search failure: {str(e)[:240]}",
-                reproduction_steps=["python -m pytest tests/test_integration.py -k \"novelty\" -x --tb=short"],
-                acceptance_tests=["python -m pytest tests/test_integration.py -k \"novelty\" -x --tb=short"],
+                reproduction_steps=[
+                    'python -m pytest tests/test_integration.py -k "novelty" -x --tb=short'
+                ],
+                acceptance_tests=[
+                    'python -m pytest tests/test_integration.py -k "novelty" -x --tb=short'
+                ],
                 trigger_payload={"mode": "novelty", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
@@ -502,10 +605,13 @@ class _ExecutionSearchMixin:
                 self._progress.status = "failed"
                 self._progress.error = str(e)
                 self._progress.aria_message = self.aria.react_to_failure(str(e))
-            self._emit_event("experiment_failed", {
-                "experiment_id": exp_id,
-                "error": str(e),
-            })
+            self._emit_event(
+                "experiment_failed",
+                {
+                    "experiment_id": exp_id,
+                    "error": str(e),
+                },
+            )
         finally:
             nb.close()
             self._run_pending_scale_up()

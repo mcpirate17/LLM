@@ -7,7 +7,7 @@ all: setup bootstrap validate
 setup: setup-api setup-ui
 
 setup-api:
-	cd api && python -m venv .venv && .venv/bin/pip install -r requirements.txt -q
+	cd api && uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt -q
 
 setup-ui:
 	cd ui && npm install

@@ -15,6 +15,7 @@ Usage:
     python -m research.tools.rescreen_leaderboard --pass remaining [--device cuda] [--score-floor 5.0]
     python -m research.tools.rescreen_leaderboard --dry-run --pass top50
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,13 +24,18 @@ import json
 import logging
 import sqlite3
 import time
-import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
 
-from ..defaults import MODEL_DIM, VOCAB_SIZE, MAX_SEQ_LEN, STAGE1_STEPS, STAGE1_LR, STAGE1_BATCH_SIZE
+from ..defaults import (
+    VOCAB_SIZE,
+    MAX_SEQ_LEN,
+    STAGE1_STEPS,
+    STAGE1_LR,
+    STAGE1_BATCH_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +119,8 @@ def _rescreen_one(
     """Compile a graph and run Stage 0 + Stage 1. Returns result dict."""
     from ..synthesis.serializer import graph_from_json
     from ..scientist.native_runner import compile_model_native_first as compile_model
+
     pass  # safe_eval skipped: re-screening only needs fresh training metrics
-    from ..training.optimizer_synthesis import build_optimizer
 
     result: Dict = {"passed": False, "stage0_passed": True, "stage1_passed": False}
 
@@ -129,7 +135,9 @@ def _rescreen_one(
     # Compile
     try:
         layer_graphs = [graph] * n_layers
-        model = compile_model(layer_graphs, vocab_size=vocab_size, max_seq_len=max_seq_len)
+        model = compile_model(
+            layer_graphs, vocab_size=vocab_size, max_seq_len=max_seq_len
+        )
     except Exception as exc:
         result["error_type"] = "compile"
         result["error_message"] = str(exc)[:500]
@@ -144,7 +152,9 @@ def _rescreen_one(
         model = model.to(device)
         result.update(
             _micro_train_standalone(
-                model, device, vocab_size,
+                model,
+                device,
+                vocab_size,
                 steps=stage1_steps,
                 lr=stage1_lr,
                 batch_size=stage1_batch_size,
@@ -179,7 +189,7 @@ def _micro_train_standalone(
         weight_decay=0.0,
     )
 
-    use_amp = (device.type == "cuda")
+    use_amp = device.type == "cuda"
     initial_loss = None
     final_loss = None
     min_loss = float("inf")
@@ -189,12 +199,18 @@ def _micro_train_standalone(
     for step in range(steps):
         g = torch.Generator(device="cpu")
         g.manual_seed(step)
-        input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), generator=g).to(device)
-        targets = torch.randint(0, vocab_size, (batch_size, seq_len), generator=g).to(device)
+        input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), generator=g).to(
+            device
+        )
+        targets = torch.randint(0, vocab_size, (batch_size, seq_len), generator=g).to(
+            device
+        )
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+        with torch.amp.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=use_amp
+        ):
             output = model(input_ids)
             if isinstance(output, tuple):
                 output = output[0]
@@ -229,7 +245,9 @@ def _micro_train_standalone(
     tokens_processed = steps * batch_size * seq_len
     throughput = tokens_processed / elapsed if elapsed > 0 else 0.0
 
-    loss_ratio = final_loss / initial_loss if initial_loss and initial_loss > 0 else None
+    loss_ratio = (
+        final_loss / initial_loss if initial_loss and initial_loss > 0 else None
+    )
     passed = loss_ratio is not None and loss_ratio < 0.95
 
     param_count = sum(p.numel() for p in model.parameters())
@@ -293,7 +311,10 @@ def rescreen_batch(
 
         logger.info(
             "[%d/%d] Re-screening %s (old_score=%.4f)",
-            i + 1, len(rows), entry_id[:12], old_score or 0.0,
+            i + 1,
+            len(rows),
+            entry_id[:12],
+            old_score or 0.0,
         )
 
         s1 = _rescreen_one(graph_json, device)
@@ -376,7 +397,10 @@ def rescreen_batch(
 
             logger.info(
                 "  → new_lr=%.6f old_lr=%.6f new_composite=%.4f delta=%+.4f",
-                new_lr, old_lr or 0, new_composite, delta,
+                new_lr,
+                old_lr or 0,
+                new_composite,
+                delta,
             )
         else:
             # Failed re-screening
@@ -407,16 +431,20 @@ def rescreen_batch(
 
 def print_summary(stats: Dict, pass_name: str) -> None:
     """Print a human-readable summary of re-screening results."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Re-screening Pass: {pass_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total processed:  {stats['total']}")
-    print(f"Improved (new>old): {stats['improved']}  avg delta: {sum(d for d in stats['deltas'] if d > 0) / max(1, stats['improved']):+.4f}")
-    print(f"Degraded (new<old): {stats['degraded']}  avg delta: {sum(d for d in stats['deltas'] if d < 0) / max(1, stats['degraded']):+.4f}")
+    print(
+        f"Improved (new>old): {stats['improved']}  avg delta: {sum(d for d in stats['deltas'] if d > 0) / max(1, stats['improved']):+.4f}"
+    )
+    print(
+        f"Degraded (new<old): {stats['degraded']}  avg delta: {sum(d for d in stats['deltas'] if d < 0) / max(1, stats['degraded']):+.4f}"
+    )
     print(f"Unchanged (<1%):    {stats['unchanged']}")
     print(f"Failed:             {stats['failed']}")
     print(f"Overall avg delta:  {stats['avg_delta']:+.4f}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 # ── Skip criteria ─────────────────────────────────────────────────────
@@ -455,18 +483,34 @@ def apply_skip_criteria(conn: sqlite3.Connection, score_floor: float = 5.0) -> i
 
 def main():
     parser = argparse.ArgumentParser(description="Re-screen leaderboard entries")
-    parser.add_argument("--db", default="research/lab_notebook.db", help="Path to lab_notebook.db")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--pass", dest="pass_name", required=True,
-                        choices=["top50", "mathspace", "remaining", "skip"],
-                        help="Which pass to run")
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Path to lab_notebook.db"
+    )
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    parser.add_argument(
+        "--pass",
+        dest="pass_name",
+        required=True,
+        choices=["top50", "mathspace", "remaining", "skip"],
+        help="Which pass to run",
+    )
     parser.add_argument("--limit", type=int, default=50, help="Limit for top-N pass")
-    parser.add_argument("--score-floor", type=float, default=5.0,
-                        help="Score floor for remaining/skip passes")
-    parser.add_argument("--dry-run", action="store_true", help="Print targets without re-screening")
+    parser.add_argument(
+        "--score-floor",
+        type=float,
+        default=5.0,
+        help="Score floor for remaining/skip passes",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print targets without re-screening"
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
 
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
@@ -491,9 +535,13 @@ def main():
 
     if args.dry_run:
         for row in rows[:20]:
-            has_ms = any(p.strip("%") in (row["graph_json"] or "") for p in _MATHSPACE_PATTERNS)
-            print(f"  {row['entry_id'][:12]}  tier={row['tier']:15s}  "
-                  f"old_score={row['old_composite_score'] or 0:.4f}  mathspace={'Y' if has_ms else 'N'}")
+            has_ms = any(
+                p.strip("%") in (row["graph_json"] or "") for p in _MATHSPACE_PATTERNS
+            )
+            print(
+                f"  {row['entry_id'][:12]}  tier={row['tier']:15s}  "
+                f"old_score={row['old_composite_score'] or 0:.4f}  mathspace={'Y' if has_ms else 'N'}"
+            )
         if len(rows) > 20:
             print(f"  ... and {len(rows) - 20} more")
         conn.close()
@@ -501,6 +549,7 @@ def main():
 
     # Create a rescore experiment
     from ..scientist.notebook import LabNotebook
+
     nb = LabNotebook(args.db)
     exp_id = nb.start_experiment(
         experiment_type="rescore",
@@ -514,10 +563,13 @@ def main():
     print_summary(stats, args.pass_name)
 
     # Complete experiment
-    nb.complete_experiment(exp_id, results={
-        "pass": args.pass_name,
-        "stats": {k: v for k, v in stats.items() if k != "deltas"},
-    })
+    nb.complete_experiment(
+        exp_id,
+        results={
+            "pass": args.pass_name,
+            "stats": {k: v for k, v in stats.items() if k != "deltas"},
+        },
+    )
 
     # Print top-10 overlap if this was top50 pass
     if args.pass_name == "top50":

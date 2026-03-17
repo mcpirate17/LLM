@@ -26,30 +26,31 @@ const ImportDialog = ({ onImport, onClose }) => {
   const [minNovelty, setMinNovelty] = useState(0);
   const [importingId, setImportingId] = useState(null);
 
-  const fetchSurvivors = async () => {
+  useEffect(() => {
+    const ac = new AbortController();
     setLoading(true);
     setError(null);
-    try {
-      const params = new URLSearchParams({
-        n: String(limit),
-        sort_by: String(sortBy),
-        min_novelty: String(minNovelty),
+    const params = new URLSearchParams({
+      n: String(limit),
+      sort_by: String(sortBy),
+      min_novelty: String(minNovelty),
+    });
+    apiCall(`/api/v1/import/survivors?${params.toString()}`, { signal: ac.signal })
+      .then((res) => res.json())
+      .then((data) => {
+        const rows = Array.isArray(data) ? data : (data?.survivors || []);
+        setSurvivors(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) {
+          setError('Failed to fetch research survivors');
+          setSurvivors([]);
+        }
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false);
       });
-      const res = await apiCall(`/api/v1/import/survivors?${params.toString()}`);
-      const data = await res.json();
-      // Support both proxy envelope ({ survivors: [...] }) and direct list payload.
-      const rows = Array.isArray(data) ? data : (data?.survivors || []);
-      setSurvivors(Array.isArray(rows) ? rows : []);
-    } catch (_) {
-      setError('Failed to fetch research survivors');
-      setSurvivors([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchSurvivors();
+    return () => ac.abort();
   }, [limit, sortBy, minNovelty]);
 
   useEffect(() => {

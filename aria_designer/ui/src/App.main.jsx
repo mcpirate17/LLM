@@ -237,12 +237,15 @@ function DesignerApp() {
 
   // Fetch components
   useEffect(() => {
-    apiCall(`/api/v1/components?status=approved`)
+    const ac = new AbortController()
+    apiCall(`/api/v1/components?status=approved`, { signal: ac.signal })
       .then((r) => r.json())
       .then((data) => { setComponents(data); setStatusMsg(`${data.length} components loaded`) })
       .catch(() => {
+        if (ac.signal.aborted) return
         setStatusMsg('API offline — using mock palette')
         import('./mockData').then((m) => {
+          if (ac.signal.aborted) return
           setComponents(m.palette.map((p) => ({
             id: p.id, name: p.label, category: p.category,
             inputs: [{ name: 'x', dtype: 'tensor' }],
@@ -250,6 +253,7 @@ function DesignerApp() {
           })))
         })
       })
+    return () => ac.abort()
   }, [])
 
   // Fetch proposals

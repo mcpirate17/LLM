@@ -8,14 +8,17 @@ from fastapi import APIRouter, HTTPException, Query
 
 from .. import database as db
 from ..component_identity import canonicalize_component_id
-from ..models import ComponentModel, ComponentConfigValidateRequest, utc_now_iso as _utc_now
+from ..models import (
+    ComponentModel,
+    ComponentConfigValidateRequest,
+    utc_now_iso as _utc_now,
+)
 from ..loader import scan_and_load, COMPONENTS_ROOT
 from ..property_audit import audit_components
 from ..shared_api import (
     HAS_BRIDGE,
     _require_component,
     bridge_component_capability,
-    bridge_list_primitives,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,7 +30,9 @@ router = APIRouter(prefix="/api/v1", tags=["components"])
 @router.get("/components")
 def list_components(
     category: Optional[str] = Query(None),
-    status: Optional[str] = Query(None, description="Filter by status (default: approved)"),
+    status: Optional[str] = Query(
+        None, description="Filter by status (default: approved)"
+    ),
 ) -> List[Dict[str, Any]]:
     """List registered components. Defaults to approved only."""
     if status is None:
@@ -51,16 +56,18 @@ def get_component_properties(component_id: str) -> Dict[str, Any]:
     properties = []
     for name, schema in params.items():
         schema = schema or {}
-        properties.append({
-            "name": name,
-            "type": schema.get("type", "string"),
-            "default": schema.get("default"),
-            "description": schema.get("description", ""),
-            "options": schema.get("options"),
-            "constraints": schema.get("constraints"),
-            "format": schema.get("format"),
-            "required": bool(schema.get("required", False)),
-        })
+        properties.append(
+            {
+                "name": name,
+                "type": schema.get("type", "string"),
+                "default": schema.get("default"),
+                "description": schema.get("description", ""),
+                "options": schema.get("options"),
+                "constraints": schema.get("constraints"),
+                "format": schema.get("format"),
+                "required": bool(schema.get("required", False)),
+            }
+        )
 
     return {
         "component_id": comp.get("id"),
@@ -86,7 +93,9 @@ def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
     native_impl = []
     if (component_dir / "kernel.c").exists():
         native_impl.append("c")
-    if (component_dir / "kernel.cpp").exists() or (component_dir / "kernel.cc").exists():
+    if (component_dir / "kernel.cpp").exists() or (
+        component_dir / "kernel.cc"
+    ).exists():
         native_impl.append("cpp")
     if (component_dir / "kernel.rs").exists():
         native_impl.append("rust")
@@ -118,7 +127,9 @@ def get_component_execution_capability(component_id: str) -> Dict[str, Any]:
         "category": category,
         "native_impl": native_impl,
         "python_fallback": python_fallback,
-        "preferred_backend": native_impl[0] if native_impl else ("python" if python_fallback else "none"),
+        "preferred_backend": native_impl[0]
+        if native_impl
+        else ("python" if python_fallback else "none"),
         "bridge": bridge_info,
         "has_semantic_warnings": bool(bridge_info.get("warnings")),
     }
@@ -219,10 +230,12 @@ def _validate_params_against_schema(
 
         expected_type = schema.get("type")
         if expected_type and not _type_ok(schema, value):
-            errors.append({
-                "param": name,
-                "message": f"Expected {expected_type}, got {type(value).__name__}",
-            })
+            errors.append(
+                {
+                    "param": name,
+                    "message": f"Expected {expected_type}, got {type(value).__name__}",
+                }
+            )
             continue
 
         if expected_type == "enum":
@@ -231,16 +244,20 @@ def _validate_params_against_schema(
                 if schema.get("multi_select") or schema.get("multiple"):
                     invalid_values = [v for v in (value or []) if v not in options]
                     if invalid_values:
-                        errors.append({
-                            "param": name,
-                            "message": f"Invalid options {invalid_values}. Allowed: {options}",
-                        })
+                        errors.append(
+                            {
+                                "param": name,
+                                "message": f"Invalid options {invalid_values}. Allowed: {options}",
+                            }
+                        )
                         continue
                 elif value not in options:
-                    errors.append({
-                        "param": name,
-                        "message": f"Invalid option '{value}'. Allowed: {options}",
-                    })
+                    errors.append(
+                        {
+                            "param": name,
+                            "message": f"Invalid option '{value}'. Allowed: {options}",
+                        }
+                    )
                     continue
 
         constraints = schema.get("constraints") or {}
@@ -258,7 +275,9 @@ def _validate_params_against_schema(
     # Flag unknown parameters not declared in the schema.
     for name in raw_config:
         if name not in params:
-            warnings.append({"param": name, "message": "Unknown parameter for this component"})
+            warnings.append(
+                {"param": name, "message": "Unknown parameter for this component"}
+            )
 
     return normalized, errors, warnings
 
@@ -296,16 +315,20 @@ def _run_custom_validation(
                     for msg in custom_errors:
                         errors.append({"param": "__component__", "message": str(msg)})
     except Exception as exc:
-        warnings.append({
-            "param": "__component__",
-            "message": f"Custom validation unavailable: {exc}",
-        })
+        warnings.append(
+            {
+                "param": "__component__",
+                "message": f"Custom validation unavailable: {exc}",
+            }
+        )
 
     return errors, warnings
 
 
 @router.post("/components/{component_id}/validate-config")
-def validate_component_config(component_id: str, req: ComponentConfigValidateRequest) -> Dict[str, Any]:
+def validate_component_config(
+    component_id: str, req: ComponentConfigValidateRequest
+) -> Dict[str, Any]:
     """Validate a component config payload against manifest param schema/defaults."""
     comp = _require_component(component_id)
 
@@ -316,7 +339,9 @@ def validate_component_config(component_id: str, req: ComponentConfigValidateReq
 
     category = str(comp.get("category") or "")
     manifest_id = str(comp.get("id") or component_id)
-    custom_errors, custom_warnings = _run_custom_validation(manifest_id, category, normalized)
+    custom_errors, custom_warnings = _run_custom_validation(
+        manifest_id, category, normalized
+    )
     errors.extend(custom_errors)
     warnings.extend(custom_warnings)
 

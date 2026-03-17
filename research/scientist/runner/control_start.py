@@ -7,11 +7,13 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..native_runner import reset_native_runner_telemetry
 from ..notebook import LabNotebook
-from ..llm.context_experiment import build_mode_selection_context, build_manual_start_fallback_context
+from ..llm.context_experiment import (
+    build_mode_selection_context,
+    build_manual_start_fallback_context,
+)
 
-from ._types import RunConfig, LiveProgress, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
+from ._types import RunConfig, LiveProgress
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +23,13 @@ class _ControlStartMixin:
 
     __slots__ = ()
 
-    def start_experiment(self, config: RunConfig,
-                         hypothesis: Optional[str] = None,
-                         preregistration: Optional[Dict[str, Any]] = None,
-                         exploratory: bool = False) -> str:
+    def start_experiment(
+        self,
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+    ) -> str:
         """Start an experiment in a background thread. Returns experiment ID."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -92,16 +97,24 @@ class _ControlStartMixin:
         critique = None
         if hypothesis:
             try:
-                critique_context = self._build_start_experiment_hypothesis_context(
-                    nb, config,
-                ) if hypothesis_metadata.get("source") == "user_input" else ""
+                critique_context = (
+                    self._build_start_experiment_hypothesis_context(
+                        nb,
+                        config,
+                    )
+                    if hypothesis_metadata.get("source") == "user_input"
+                    else ""
+                )
                 critique = self.aria.critique_hypothesis(
-                    hypothesis, context=critique_context,
+                    hypothesis,
+                    context=critique_context,
                 )
                 hypothesis_metadata["preflight_critique"] = critique
                 hypothesis_metadata["critique"] = critique
                 hypothesis_metadata["critique_confidence"] = critique.get("confidence")
-                hypothesis_metadata["review_status"] = f"preflight_{critique.get('gate', 'warn')}"
+                hypothesis_metadata["review_status"] = (
+                    f"preflight_{critique.get('gate', 'warn')}"
+                )
             except Exception as e:
                 logger.warning(f"Hypothesis critique failed: {e}")
 
@@ -126,14 +139,17 @@ class _ControlStartMixin:
                 hypothesis_critique=critique,
             )
 
-        self._emit_event("experiment_started", {
-            "experiment_id": exp_id,
-            "hypothesis": hypothesis,
-            "config": config.to_dict(),
-            "prescreen": prescreen,
-            "aria_greeting": self.aria.greet(),
-            "hypothesis_critique": critique,
-        })
+        self._emit_event(
+            "experiment_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "config": config.to_dict(),
+                "prescreen": prescreen,
+                "aria_greeting": self.aria.greet(),
+                "hypothesis_critique": critique,
+            },
+        )
 
         self._thread = threading.Thread(
             target=self._run_experiment_thread,
@@ -144,7 +160,9 @@ class _ControlStartMixin:
         return exp_id
 
     def _build_start_experiment_hypothesis_context(
-        self, nb: LabNotebook, config: RunConfig,
+        self,
+        nb: LabNotebook,
+        config: RunConfig,
     ) -> str:
         """Build context for hypothesis generation in manual start_experiment.
 
@@ -165,8 +183,10 @@ class _ControlStartMixin:
                 budget=config.max_cost_dollars,
             )
             if config.max_cost_dollars > 0:
-                context += (f"\n\nBudget: ${self.aria.total_cost:.2f} spent "
-                            f"of ${config.max_cost_dollars:.2f}")
+                context += (
+                    f"\n\nBudget: ${self.aria.total_cost:.2f} spent "
+                    f"of ${config.max_cost_dollars:.2f}"
+                )
             return context
         except Exception as e:
             logger.debug("Failed to build manual hypothesis context: %s", e)
@@ -207,8 +227,11 @@ class _ControlStartMixin:
         logger.info(
             "Starting continuous session: %d programs/cycle, dim=%d, "
             "depth=%d, ops=%d, device=%s [%s]",
-            config.n_programs, config.model_dim, config.max_depth,
-            config.max_ops, config.device,
+            config.n_programs,
+            config.model_dim,
+            config.max_depth,
+            config.max_ops,
+            config.device,
             ", ".join(limits) if limits else "no limits",
         )
 
@@ -258,17 +281,22 @@ class _ControlStartMixin:
                 if isinstance(row, dict):
                     source_rows.append(row)
 
-            requested_intent = str(refine_config.refine_intent or "balanced").strip().lower()
+            requested_intent = (
+                str(refine_config.refine_intent or "balanced").strip().lower()
+            )
             if requested_intent in {"recommended", "auto"}:
                 # Auto-run RefinementAnalyzer if no pre-computed analysis
                 if not refine_config.refine_analysis_json and source_rows:
                     try:
                         from ..analytics import ExperimentAnalytics, RefinementAnalyzer
+
                         analytics = ExperimentAnalytics(nb)
                         analyzer = RefinementAnalyzer(analytics)
                         primary_row = source_rows[0]
                         primary_id = primary_row.get("result_id", ids[0])
-                        analysis = analyzer.analyze_program_for_refinement(primary_id, primary_row)
+                        analysis = analyzer.analyze_program_for_refinement(
+                            primary_id, primary_row
+                        )
                         recipe = analysis.get("recipe", {})
                         resolved_intent = recipe.get("recommended_intent", "balanced")
                         recommendation = {
@@ -279,8 +307,11 @@ class _ControlStartMixin:
                         refine_config.refine_analysis_json = json.dumps(analysis)
                     except Exception as e:
                         logger.warning("RefinementAnalyzer failed, falling back: %s", e)
-                        resolved_intent, recommendation = self._recommend_refinement_intent(
-                            nb, source_rows,
+                        resolved_intent, recommendation = (
+                            self._recommend_refinement_intent(
+                                nb,
+                                source_rows,
+                            )
                         )
                 else:
                     resolved_intent, recommendation = self._recommend_refinement_intent(
@@ -350,7 +381,15 @@ class _ControlStartMixin:
             }
 
         op_success = self._op_success_lookup(nb)
-        sparse_hint_ops = ("sparse", "gate", "topk", "mask", "threshold", "skip", "mixture")
+        sparse_hint_ops = (
+            "sparse",
+            "gate",
+            "topk",
+            "mask",
+            "threshold",
+            "skip",
+            "mixture",
+        )
 
         loss_values: List[float] = []
         novelty_values: List[float] = []
@@ -375,7 +414,11 @@ class _ControlStartMixin:
             if isinstance(graph_json, str) and graph_json.strip():
                 try:
                     graph_data = json.loads(graph_json)
-                    nodes = graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
+                    nodes = (
+                        graph_data.get("nodes", {})
+                        if isinstance(graph_data, dict)
+                        else {}
+                    )
                     for nd in nodes.values():
                         if not isinstance(nd, dict):
                             continue
@@ -395,36 +438,52 @@ class _ControlStartMixin:
                 sparse_ratios.append(float(sparse_ratio))
 
         mean_loss = (sum(loss_values) / len(loss_values)) if loss_values else None
-        mean_novelty = (sum(novelty_values) / len(novelty_values)) if novelty_values else None
+        mean_novelty = (
+            (sum(novelty_values) / len(novelty_values)) if novelty_values else None
+        )
         mean_params = (sum(param_values) / len(param_values)) if param_values else None
         mean_op_success = (
-            sum(op_success_values) / len(op_success_values)
-        ) if op_success_values else None
+            (sum(op_success_values) / len(op_success_values))
+            if op_success_values
+            else None
+        )
         mean_sparse_ratio = (
-            sum(sparse_ratios) / len(sparse_ratios)
-        ) if sparse_ratios else None
+            (sum(sparse_ratios) / len(sparse_ratios)) if sparse_ratios else None
+        )
 
         intent = "balanced"
         rationale = "mixed_signals"
-        if ((mean_loss is not None and mean_loss >= 0.75)
-                or (mean_op_success is not None and mean_op_success < 0.35)):
+        if (mean_loss is not None and mean_loss >= 0.75) or (
+            mean_op_success is not None and mean_op_success < 0.35
+        ):
             intent = "quality"
             rationale = "weak_quality_signal"
-        elif (mean_params is not None and mean_params >= 500_000
-              and (mean_loss is None or mean_loss <= 0.80)):
+        elif (
+            mean_params is not None
+            and mean_params >= 500_000
+            and (mean_loss is None or mean_loss <= 0.80)
+        ):
             intent = "compression"
             rationale = "high_parameter_budget"
         elif mean_novelty is not None and mean_novelty < 0.45:
             intent = "novelty"
             rationale = "low_novelty_signal"
-        elif (mean_sparse_ratio is not None and mean_sparse_ratio < 0.10
-              and mean_params is not None and mean_params >= 1_000_000):
+        elif (
+            mean_sparse_ratio is not None
+            and mean_sparse_ratio < 0.10
+            and mean_params is not None
+            and mean_params >= 1_000_000
+        ):
             intent = "sparsity"
             rationale = "sparse_operator_gap"
-        elif (mean_params is not None and mean_params > 0
-              and mean_loss is not None and mean_loss < 0.60):
+        elif (
+            mean_params is not None
+            and mean_params > 0
+            and mean_loss is not None
+            and mean_loss < 0.60
+        ):
             # Good quality but check FLOP efficiency
-            baseline_params = 6 * 256 ** 2  # ~393K for a minimal 2-layer transformer
+            baseline_params = 6 * 256**2  # ~393K for a minimal 2-layer transformer
             if mean_params > 3 * baseline_params:
                 intent = "compression"
                 rationale = "low_flop_efficiency"
@@ -443,11 +502,15 @@ class _ControlStartMixin:
         }
         return intent, recommendation
 
-    def start_investigation(self, result_ids: List[str], config: RunConfig,
-                            hypothesis: Optional[str] = None,
-                            preregistration: Optional[Dict[str, Any]] = None,
-                            exploratory: bool = False,
-                            force: bool = False) -> str:
+    def start_investigation(
+        self,
+        result_ids: List[str],
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+        force: bool = False,
+    ) -> str:
         """Start investigation phase for selected candidates.
 
         Args:
@@ -467,19 +530,24 @@ class _ControlStartMixin:
             # Tier guard: reject result IDs already at investigation tier or beyond
             tiers = nb.get_tiers_for_result_ids(result_ids)
             already_done = {
-                rid: tier for rid, tier in tiers.items()
+                rid: tier
+                for rid, tier in tiers.items()
                 if tier in ("investigation", "validation", "breakthrough")
             }
             if already_done:
                 nb.close()
-                labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_done.items())
+                labels = ", ".join(
+                    f"{rid} ({tier})" for rid, tier in already_done.items()
+                )
                 raise ValueError(
                     f"Cannot investigate: {len(already_done)} candidate(s) already "
                     f"at or beyond investigation tier: {labels}"
                 )
         else:
-            logger.info("Force re-investigation: skipping tier/fingerprint guards for %s",
-                        ", ".join(r[:8] for r in result_ids))
+            logger.info(
+                "Force re-investigation: skipping tier/fingerprint guards for %s",
+                ", ".join(r[:8] for r in result_ids),
+            )
             # Force re-investigation: don't clear existing leaderboard data.
             # The investigation results will only be updated if the new run
             # produces better results (enforced in _record_investigation_result).
@@ -520,12 +588,15 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting investigation of {len(result_ids)} candidate(s)...",
             )
 
-        self._emit_event("investigation_started", {
-            "experiment_id": exp_id,
-            "hypothesis": hypothesis,
-            "result_ids": result_ids,
-            "n_training_programs": config.n_training_programs,
-        })
+        self._emit_event(
+            "investigation_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "result_ids": result_ids,
+                "n_training_programs": config.n_training_programs,
+            },
+        )
 
         self._thread = threading.Thread(
             target=self._run_investigation_thread,
@@ -535,12 +606,16 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
-    def start_validation(self, result_ids: List[str], config: RunConfig,
-                         hypothesis: Optional[str] = None,
-                         preregistration: Optional[Dict[str, Any]] = None,
-                         exploratory: bool = False,
-                         trigger: str = "manual",
-                         force: bool = False) -> str:
+    def start_validation(
+        self,
+        result_ids: List[str],
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+        trigger: str = "manual",
+        force: bool = False,
+    ) -> str:
         """Start validation phase for investigation survivors."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -554,12 +629,15 @@ class _ControlStartMixin:
         tiers = nb.get_tiers_for_result_ids(result_ids)
         if not force:
             already_validated = {
-                rid: tier for rid, tier in tiers.items()
+                rid: tier
+                for rid, tier in tiers.items()
                 if tier in ("validation", "breakthrough")
             }
             if already_validated:
                 nb.close()
-                labels = ", ".join(f"{rid} ({tier})" for rid, tier in already_validated.items())
+                labels = ", ".join(
+                    f"{rid} ({tier})" for rid, tier in already_validated.items()
+                )
                 raise ValueError(
                     f"Cannot validate: {len(already_validated)} candidate(s) already "
                     f"at or beyond validation tier: {labels}"
@@ -568,8 +646,7 @@ class _ControlStartMixin:
             # (result_ids without leaderboard entries are allowed — they may
             # come from auto-escalation paths that create entries mid-flight)
             not_investigated = {
-                rid for rid in result_ids
-                if tiers.get(rid) == "screening"
+                rid for rid in result_ids if tiers.get(rid) == "screening"
             }
             if not_investigated:
                 nb.close()
@@ -610,11 +687,14 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting validation of {len(result_ids)} candidate(s)...",
             )
 
-        self._emit_event("validation_started", {
-            "experiment_id": exp_id,
-            "hypothesis": hypothesis,
-            "result_ids": result_ids,
-        })
+        self._emit_event(
+            "validation_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "result_ids": result_ids,
+            },
+        )
 
         self._thread = threading.Thread(
             target=self._run_validation_thread,
@@ -624,10 +704,14 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
-    def start_scale_up(self, result_ids: List[str], config: RunConfig,
-                       hypothesis: Optional[str] = None,
-                       preregistration: Optional[Dict[str, Any]] = None,
-                       exploratory: bool = False) -> str:
+    def start_scale_up(
+        self,
+        result_ids: List[str],
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+    ) -> str:
         """Start scale-up validation of specific programs in a background thread."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -668,16 +752,19 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting scale-up validation of {len(result_ids)} program(s)...",
             )
 
-        self._emit_event("scale_up_started", {
-            "experiment_id": exp_id,
-            "hypothesis": hypothesis,
-            "result_ids": result_ids,
-            "config": {
-                "steps": config.scale_up_steps,
-                "batch_size": config.scale_up_batch_size,
-                "seq_len": config.scale_up_seq_len,
+        self._emit_event(
+            "scale_up_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "result_ids": result_ids,
+                "config": {
+                    "steps": config.scale_up_steps,
+                    "batch_size": config.scale_up_batch_size,
+                    "seq_len": config.scale_up_seq_len,
+                },
             },
-        })
+        )
 
         self._thread = threading.Thread(
             target=self._run_scale_up_thread,
@@ -687,10 +774,13 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
-    def start_evolution(self, config: RunConfig,
-                        hypothesis: Optional[str] = None,
-                        preregistration: Optional[Dict[str, Any]] = None,
-                        exploratory: bool = False) -> str:
+    def start_evolution(
+        self,
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+    ) -> str:
         """Start evolutionary search in a background thread."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -734,11 +824,14 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting evolutionary search...",
             )
 
-        self._emit_event("evolution_started", {
-            "experiment_id": exp_id,
-            "hypothesis": hypothesis,
-            "config": config.to_dict(),
-        })
+        self._emit_event(
+            "evolution_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "config": config.to_dict(),
+            },
+        )
 
         self._thread = threading.Thread(
             target=self._run_evolution_thread,
@@ -748,10 +841,13 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
-    def start_novelty_search(self, config: RunConfig,
-                             hypothesis: Optional[str] = None,
-                             preregistration: Optional[Dict[str, Any]] = None,
-                             exploratory: bool = False) -> str:
+    def start_novelty_search(
+        self,
+        config: RunConfig,
+        hypothesis: Optional[str] = None,
+        preregistration: Optional[Dict[str, Any]] = None,
+        exploratory: bool = False,
+    ) -> str:
         """Start novelty search in a background thread."""
         if self.is_running:
             raise RuntimeError("An experiment is already running")
@@ -795,11 +891,14 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting novelty search...",
             )
 
-        self._emit_event("novelty_started", {
-            "experiment_id": exp_id,
-            "hypothesis": hypothesis,
-            "config": config.to_dict(),
-        })
+        self._emit_event(
+            "novelty_started",
+            {
+                "experiment_id": exp_id,
+                "hypothesis": hypothesis,
+                "config": config.to_dict(),
+            },
+        )
 
         self._thread = threading.Thread(
             target=self._run_novelty_thread,
@@ -809,7 +908,9 @@ class _ControlStartMixin:
         self._thread.start()
         return exp_id
 
-    def start_resume(self, experiment_id: str, config: Optional[RunConfig] = None) -> str:
+    def start_resume(
+        self, experiment_id: str, config: Optional[RunConfig] = None
+    ) -> str:
         """Resume an interrupted experiment from its last checkpoint.
 
         Looks up the experiment in the notebook, reconstructs config if needed,
@@ -827,7 +928,8 @@ class _ControlStartMixin:
             nb.close()
             raise ValueError(
                 f"Experiment {experiment_id} not found or not resumable "
-                "(must be 'running' or 'failed')")
+                "(must be 'running' or 'failed')"
+            )
 
         exp_type = exp_data["experiment_type"]
         exp_data.get("hypothesis", "")
@@ -840,7 +942,8 @@ class _ControlStartMixin:
             except Exception:
                 nb.close()
                 raise ValueError(
-                    f"Cannot reconstruct config for experiment {experiment_id}")
+                    f"Cannot reconstruct config for experiment {experiment_id}"
+                )
 
         config.resume_experiment_id = experiment_id
 
@@ -860,10 +963,13 @@ class _ControlStartMixin:
                 aria_message=f"Resuming {exp_type} experiment {experiment_id}...",
             )
 
-        self._emit_event("experiment_resuming", {
-            "experiment_id": experiment_id,
-            "experiment_type": exp_type,
-        })
+        self._emit_event(
+            "experiment_resuming",
+            {
+                "experiment_id": experiment_id,
+                "experiment_type": exp_type,
+            },
+        )
 
         if exp_type == "continuous" or config.continuous:
             self._thread = threading.Thread(
@@ -872,8 +978,11 @@ class _ControlStartMixin:
                 daemon=True,
             )
         else:
-            logger.warning("Resume for experiment type '%s' not yet supported, "
-                           "falling back to continuous", exp_type)
+            logger.warning(
+                "Resume for experiment type '%s' not yet supported, "
+                "falling back to continuous",
+                exp_type,
+            )
             config.continuous = True
             self._thread = threading.Thread(
                 target=self._run_continuous_thread,

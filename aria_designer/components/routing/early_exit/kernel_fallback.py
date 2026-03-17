@@ -1,5 +1,5 @@
 """Auto-generated Python fallback kernel for early_exit."""
-import torch
+
 import torch.nn as nn
 
 

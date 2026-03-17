@@ -56,11 +56,16 @@ class KnowledgeDistiller:
             return
         self._stop_event.clear()
         self._thread = threading.Thread(
-            target=self._run_loop, name="KnowledgeDistiller", daemon=True,
+            target=self._run_loop,
+            name="KnowledgeDistiller",
+            daemon=True,
         )
         self._thread.start()
-        logger.info("KnowledgeDistiller started (interval=%d cycles, model=%s)",
-                     self._interval, self._local_model)
+        logger.info(
+            "KnowledgeDistiller started (interval=%d cycles, model=%s)",
+            self._interval,
+            self._local_model,
+        )
 
     def stop(self):
         """Stop the background thread."""
@@ -112,6 +117,7 @@ class KnowledgeDistiller:
         # Open a dedicated notebook connection for analysis
         try:
             from ..notebook import LabNotebook
+
             nb = LabNotebook(self._db_path)
         except Exception as e:
             logger.warning("Failed to open notebook for distillation: %s", e)
@@ -151,8 +157,11 @@ class KnowledgeDistiller:
                 self._digest = digest
 
             elapsed = time.time() - t0
-            logger.info("Knowledge distillation complete in %.1fs: %s",
-                        elapsed, digest.summary_stats())
+            logger.info(
+                "Knowledge distillation complete in %.1fs: %s",
+                elapsed,
+                digest.summary_stats(),
+            )
         finally:
             nb.close()
 
@@ -189,7 +198,7 @@ class KnowledgeDistiller:
         # Config effects
         sig_effects = [e for e in stats.get("config_effects", []) if e.p_value < 0.05]
         if sig_effects:
-            lines.append(f"\nSignificant Config Effects (p<0.05):")
+            lines.append("\nSignificant Config Effects (p<0.05):")
             for e in sig_effects[:8]:
                 lines.append(
                     f"  {e.param_name} -> {e.target}: "
@@ -203,7 +212,9 @@ class KnowledgeDistiller:
         if syn:
             lines.append(f"\nSynergistic Op Pairs ({len(syn)} found):")
             for s in syn[:5]:
-                lines.append(f"  {s.op_a} + {s.op_b}: lift={s.lift:.2f}x ({s.co_occurrences} co-occurrences)")
+                lines.append(
+                    f"  {s.op_a} + {s.op_b}: lift={s.lift:.2f}x ({s.co_occurrences} co-occurrences)"
+                )
         if anti:
             lines.append(f"\nAnti-Synergistic Pairs ({len(anti)} found):")
             for s in anti[:5]:
@@ -214,8 +225,10 @@ class KnowledgeDistiller:
         if outcomes:
             confirmed = sum(1 for h in outcomes if h.outcome == "confirmed")
             refuted = sum(1 for h in outcomes if h.outcome == "refuted")
-            lines.append(f"\nHypothesis Closure: {confirmed} confirmed, {refuted} refuted, "
-                         f"{len(outcomes) - confirmed - refuted} inconclusive")
+            lines.append(
+                f"\nHypothesis Closure: {confirmed} confirmed, {refuted} refuted, "
+                f"{len(outcomes) - confirmed - refuted} inconclusive"
+            )
 
         return "\n".join(lines)
 
@@ -227,6 +240,7 @@ class KnowledgeDistiller:
         """
         try:
             from ..llm.ollama import OllamaBackend
+
             llm = OllamaBackend()
             llm.model = self._local_model
             llm.keep_alive = 0  # unload after use

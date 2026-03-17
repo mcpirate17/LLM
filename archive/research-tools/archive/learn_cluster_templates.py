@@ -8,16 +8,16 @@ Outputs:
 
 Local-first LLM interpretation with remote fallback if configured.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import random
 import time
 import subprocess
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -93,6 +93,7 @@ def _get_free_vram_gb() -> float:
 def _ollama_list_models() -> List[Dict]:
     try:
         import requests
+
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         r = requests.get(f"{host}/api/tags", timeout=3)
         if r.status_code != 200:
@@ -228,15 +229,17 @@ def _center_scale(X):
 
 def _pca(X, k=8):
     import numpy as np
+
     Xn = np.array(X, dtype=float)
     U, S, Vt = np.linalg.svd(Xn, full_matrices=False)
     comps = Vt[:k]
-    scores = (U[:, :k] * S[:k])
+    scores = U[:, :k] * S[:k]
     return scores, comps, S
 
 
 def _kmeans(X, k=6, iters=20, seed=42):
     import numpy as np
+
     rng = random.Random(seed)
     Xn = np.array(X, dtype=float)
     n = Xn.shape[0]
@@ -262,6 +265,7 @@ def _kmeans(X, k=6, iters=20, seed=42):
 
 def _pls1_nipals(X, y, n_components=4):
     import numpy as np
+
     Xn = np.array(X, dtype=float)
     yv = np.array(y, dtype=float).reshape(-1, 1)
     # center
@@ -295,7 +299,14 @@ def _pls1_nipals(X, y, n_components=4):
     }
 
 
-def learn_templates(db_path: str, limit: int, n_components: int, n_clusters: int, s1_only: bool = False, pls_target: str = "stage1"):
+def learn_templates(
+    db_path: str,
+    limit: int,
+    n_components: int,
+    n_clusters: int,
+    s1_only: bool = False,
+    pls_target: str = "stage1",
+):
     import sqlite3
     from research.synthesis.primitives import PRIMITIVE_REGISTRY
 
@@ -339,36 +350,57 @@ def learn_templates(db_path: str, limit: int, n_components: int, n_clusters: int
     pls = _pls1_nipals(Xc, y, n_components=min(4, n_components))
 
     # Feature names
-    feat_names = top_ops + top_pairs + [
-        "flag_routing", "flag_compression", "flag_adaptive_depth", "flag_adaptive_recursion"
-    ]
+    feat_names = (
+        top_ops
+        + top_pairs
+        + [
+            "flag_routing",
+            "flag_compression",
+            "flag_adaptive_depth",
+            "flag_adaptive_recursion",
+        ]
+    )
 
     # Cluster templates: top features by centroid magnitude
     templates = []
     if labels:
         import numpy as np
+
         Xn = np.array(Xc, dtype=float)
         for cid in sorted(set(labels)):
             idx = [i for i, l in enumerate(labels) if l == cid]
             if not idx:
                 continue
             centroid = Xn[idx].mean(axis=0)
-            top_idx = list(reversed(sorted(range(len(centroid)), key=lambda i: abs(centroid[i]))))[:12]
-            top_feats = [{"feature": feat_names[i], "weight": float(centroid[i])} for i in top_idx]
-            pass_rate = sum(1 for i in idx if rows[i].get("stage1_passed")) / max(1, len(idx))
-            templates.append({
-                "cluster_id": int(cid),
-                "size": len(idx),
-                "stage1_pass_rate": round(pass_rate, 3),
-                "top_features": top_feats,
-            })
+            top_idx = list(
+                reversed(sorted(range(len(centroid)), key=lambda i: abs(centroid[i])))
+            )[:12]
+            top_feats = [
+                {"feature": feat_names[i], "weight": float(centroid[i])}
+                for i in top_idx
+            ]
+            pass_rate = sum(1 for i in idx if rows[i].get("stage1_passed")) / max(
+                1, len(idx)
+            )
+            templates.append(
+                {
+                    "cluster_id": int(cid),
+                    "size": len(idx),
+                    "stage1_pass_rate": round(pass_rate, 3),
+                    "top_features": top_feats,
+                }
+            )
 
     # PLS feature loadings (use first component weights)
     pls_load = pls["W"][0] if pls.get("W") else []
     pls_rank = []
     if pls_load is not None and len(pls_load) > 0:
-        pls_rank = list(reversed(sorted(range(len(pls_load)), key=lambda i: abs(pls_load[i]))))[:20]
-    pls_top = [{"feature": feat_names[i], "weight": float(pls_load[i])} for i in pls_rank]
+        pls_rank = list(
+            reversed(sorted(range(len(pls_load)), key=lambda i: abs(pls_load[i])))
+        )[:20]
+    pls_top = [
+        {"feature": feat_names[i], "weight": float(pls_load[i])} for i in pls_rank
+    ]
 
     out_dir = Path("research/runtime/learning")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -405,10 +437,9 @@ def summarize_with_llm(templates_payload: Dict, db_path: str) -> Dict:
         "You are Aria's local learning summarizer. Return ONLY compact JSON with fields:\n"
         "- summary: <= 280 chars\n"
         "- op_weight_suggestions: map of op_name -> multiplier (0.6 to 1.4)\n"
-        "- avoid_patterns: list of op pairs like \"A->B\"\n"
-        "- promote_patterns: list of op pairs like \"A->B\"\n"
-        "No prose outside JSON.\n\n"
-        + json.dumps(templates_payload, indent=2)
+        '- avoid_patterns: list of op pairs like "A->B"\n'
+        '- promote_patterns: list of op pairs like "A->B"\n'
+        "No prose outside JSON.\n\n" + json.dumps(templates_payload, indent=2)
     )
     host = os.environ.get("OLLAMA_HOST", "")
 
@@ -439,7 +470,12 @@ def summarize_with_llm(templates_payload: Dict, db_path: str) -> Dict:
             # Stop larger models after use to free VRAM
             if model and model != "gemma2:2b":
                 try:
-                    subprocess.run(["ollama", "stop", model], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(
+                        ["ollama", "stop", model],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                 except Exception:
                     pass
 
@@ -470,16 +506,27 @@ def summarize_with_llm(templates_payload: Dict, db_path: str) -> Dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Learn PCA/PLS cluster templates from program_results")
+    parser = argparse.ArgumentParser(
+        description="Learn PCA/PLS cluster templates from program_results"
+    )
     parser.add_argument("--db", default="research/lab_notebook.db")
     parser.add_argument("--limit", type=int, default=1500)
     parser.add_argument("--components", type=int, default=8)
     parser.add_argument("--clusters", type=int, default=6)
     parser.add_argument("--s1-only", action="store_true", help="Use only S1 survivors")
-    parser.add_argument("--pls-target", choices=["stage1", "loss_ratio"], default="stage1")
+    parser.add_argument(
+        "--pls-target", choices=["stage1", "loss_ratio"], default="stage1"
+    )
     args = parser.parse_args()
 
-    payload = learn_templates(args.db, args.limit, args.components, args.clusters, s1_only=args.s1_only, pls_target=args.pls_target)
+    payload = learn_templates(
+        args.db,
+        args.limit,
+        args.components,
+        args.clusters,
+        s1_only=args.s1_only,
+        pls_target=args.pls_target,
+    )
     summary = summarize_with_llm(payload, args.db)
 
     out_dir = Path("research/runtime/learning")
@@ -490,6 +537,7 @@ def main():
 
     # Extract lightweight suggestions if LLM returns JSON
     suggestions = {}
+
     def _strip_fences(text: str) -> str:
         t = (text or "").strip()
         if t.startswith("```"):
@@ -503,6 +551,7 @@ def main():
 
     def _extract_json(text: str) -> Dict:
         import re
+
         t = _strip_fences(text)
         m = re.search(r"\{.+\}", t, flags=re.S)
         if not m:
@@ -546,12 +595,19 @@ def main():
         if not isinstance(s, dict):
             return False
         # Must have expected keys
-        for k in ("summary", "op_weight_suggestions", "avoid_patterns", "promote_patterns"):
+        for k in (
+            "summary",
+            "op_weight_suggestions",
+            "avoid_patterns",
+            "promote_patterns",
+        ):
             if k not in s:
                 return False
         if not isinstance(s.get("op_weight_suggestions"), dict):
             return False
-        if not isinstance(s.get("avoid_patterns"), list) or not isinstance(s.get("promote_patterns"), list):
+        if not isinstance(s.get("avoid_patterns"), list) or not isinstance(
+            s.get("promote_patterns"), list
+        ):
             return False
         # Reject placeholder content
         placeholders = {"A->B", "B->A", "0.6 to 1.4"}
@@ -573,7 +629,11 @@ def main():
                 if pat not in known_pairs:
                     return False
         # Must include at least one actionable item
-        if not s.get("op_weight_suggestions") and not s.get("avoid_patterns") and not s.get("promote_patterns"):
+        if (
+            not s.get("op_weight_suggestions")
+            and not s.get("avoid_patterns")
+            and not s.get("promote_patterns")
+        ):
             return False
         return True
 
@@ -618,9 +678,9 @@ def main():
     suggestions_path.write_text(json.dumps(suggestions, indent=2))
 
     print("Learned cluster templates")
-    print(f"  templates: research/runtime/learning/cluster_templates.json")
-    print(f"  summaries: research/runtime/learning/cluster_summaries.json")
-    print(f"  suggestions: research/runtime/learning/cluster_suggestions.json")
+    print("  templates: research/runtime/learning/cluster_templates.json")
+    print("  summaries: research/runtime/learning/cluster_summaries.json")
+    print("  suggestions: research/runtime/learning/cluster_suggestions.json")
 
 
 if __name__ == "__main__":

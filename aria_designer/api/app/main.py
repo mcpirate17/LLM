@@ -6,6 +6,7 @@ All route handlers live in api/app/routers/. This module handles only:
 - Health check
 - Router registration
 """
+
 from __future__ import annotations
 
 import sys
@@ -36,10 +37,10 @@ from .shared_api import (  # noqa: F401
     bridge_evaluate,
     _sync_lineage_to_research,
 )
-from .config import settings  # noqa: F401
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -91,6 +92,7 @@ app.include_router(chat_router)
 
 # ── Health ────────────────────────────────────────────────────────────
 
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     counts = db.count_components()
@@ -98,6 +100,7 @@ def health() -> Dict[str, Any]:
 
 
 # ── WebSocket Collaboration ───────────────────────────────────────────
+
 
 @app.websocket("/api/v1/collaboration/{workflow_id}")
 async def collaboration_endpoint(websocket: WebSocket, workflow_id: str):

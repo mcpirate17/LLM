@@ -2,6 +2,7 @@
 
 General-purpose utilities used across multiple blueprint modules.
 """
+
 from __future__ import annotations
 
 import json
@@ -148,7 +149,10 @@ def get_external_running_experiment_snapshot(
         "stage1_passed": int(row["n_stage1_passed"] or 0),
         "started_at": float(row["started_at"] or row["timestamp"] or 0.0),
         "last_activity_ts": last_activity_ts,
-        "elapsed_seconds": max(0.0, time.time() - float(row["started_at"] or row["timestamp"] or time.time())),
+        "elapsed_seconds": max(
+            0.0,
+            time.time() - float(row["started_at"] or row["timestamp"] or time.time()),
+        ),
         "source": "external_notebook_process",
     }
 
@@ -211,6 +215,7 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
 
 # ── SSE timeout ─────────────────────────────────────────────────────────
 
+
 def get_sse_timeout_seconds() -> float:
     """Get SSE stream polling timeout from env with safe fallback."""
     raw = os.environ.get("ARIA_SSE_TIMEOUT_SECONDS", "30")
@@ -227,10 +232,9 @@ def get_sse_timeout_seconds() -> float:
 
 # ── JSON safety ─────────────────────────────────────────────────────────
 
-from ..json_utils import json_safe  # noqa: F811 — re-export for callers
-
 
 # ── Env helpers ─────────────────────────────────────────────────────────
+
 
 def env_bool(name: str, default: bool = False) -> bool:
     value = str(os.environ.get(name, "1" if default else "0")).strip().lower()
@@ -239,7 +243,10 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 # ── Native runner progress ──────────────────────────────────────────────
 
-def with_native_runner_progress(progress_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+
+def with_native_runner_progress(
+    progress_payload: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     payload = dict(progress_payload or {})
     try:
         payload["native_runner"] = native_runner_capability_report()
@@ -281,7 +288,9 @@ _NATIVE_CANARY_CACHE: Dict[str, Any] = {
 }
 
 
-def native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict[str, Any]:
+def native_runner_canary_status_payload(
+    *, force_refresh: bool = False
+) -> Dict[str, Any]:
     enabled = env_bool("NATIVE_RUNNER_CANARY_STATUS_ENABLED", False)
     if not enabled:
         return {"enabled": False, "status": "disabled"}
@@ -307,7 +316,11 @@ def native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict[
     with _NATIVE_CANARY_LOCK:
         cache_updated = float(_NATIVE_CANARY_CACHE.get("updated_at") or 0.0)
         cached_payload = _NATIVE_CANARY_CACHE.get("payload")
-        if (not force_refresh) and cached_payload is not None and (now - cache_updated) <= ttl_seconds:
+        if (
+            (not force_refresh)
+            and cached_payload is not None
+            and (now - cache_updated) <= ttl_seconds
+        ):
             out = dict(cached_payload)
             out["cached"] = True
             out["age_s"] = round(max(0.0, now - cache_updated), 3)
@@ -325,7 +338,9 @@ def native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict[
                 "status": "ok",
                 "cached": False,
                 "age_s": 0.0,
-                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "generated_at": datetime.now(timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z"),
                 "iterations": int(result.iterations),
                 "seed": int(result.seed),
                 "probe_avg_latency_ms": float(result.probe_avg_latency_ms),
@@ -334,7 +349,9 @@ def native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict[
                 "latency_ratio": float(result.latency_ratio),
                 "probe_execution_paths": dict(result.probe_execution_paths),
                 "selective_execution_paths": dict(result.selective_execution_paths),
-                "selective_applied_layers_avg": float(result.selective_applied_layers_avg),
+                "selective_applied_layers_avg": float(
+                    result.selective_applied_layers_avg
+                ),
             }
         except Exception as exc:
             payload = {
@@ -352,10 +369,11 @@ def native_runner_canary_status_payload(*, force_refresh: bool = False) -> Dict[
 
 # ── Insight deduplication ───────────────────────────────────────────────
 
+
 def _insight_dedup_key(content: str) -> str:
     """Normalize numeric values to create a stable dedup key for insights."""
-    s = re.sub(r'\d+\.\d+%?', '#', content)
-    s = re.sub(r'\b\d{2,}\b', '#', s)
+    s = re.sub(r"\d+\.\d+%?", "#", content)
+    s = re.sub(r"\b\d{2,}\b", "#", s)
     return s
 
 
@@ -371,6 +389,7 @@ def deduplicate_insights(insights: list) -> list:
 
 
 # ── Result ID normalization ─────────────────────────────────────────────
+
 
 def normalize_result_ids(raw_ids: Any) -> List[str]:
     if not isinstance(raw_ids, list):
@@ -420,11 +439,17 @@ def record_run_trigger(
         return dict(_LAST_RUN_TRIGGER)
 
 
-def get_run_trigger_snapshot(active_experiment_id: Optional[str] = None) -> Dict[str, Any]:
+def get_run_trigger_snapshot(
+    active_experiment_id: Optional[str] = None,
+) -> Dict[str, Any]:
     active_id = str(active_experiment_id or "").strip() or None
     with _RUN_TRIGGER_LOCK:
         snap = dict(_LAST_RUN_TRIGGER)
-    if active_id and snap.get("experiment_id") and snap.get("experiment_id") != active_id:
+    if (
+        active_id
+        and snap.get("experiment_id")
+        and snap.get("experiment_id") != active_id
+    ):
         return {
             "experiment_id": active_id,
             "source": "unknown",
@@ -434,7 +459,11 @@ def get_run_trigger_snapshot(active_experiment_id: Optional[str] = None) -> Dict
             "matched": False,
         }
     snap["experiment_id"] = active_id or snap.get("experiment_id")
-    snap["matched"] = bool(active_id) and bool(snap.get("timestamp")) and snap.get("experiment_id") == active_id
+    snap["matched"] = (
+        bool(active_id)
+        and bool(snap.get("timestamp"))
+        and snap.get("experiment_id") == active_id
+    )
     return snap
 
 
@@ -481,6 +510,7 @@ def get_autonomy(notebook_path: str):
     if _aria_autonomy is None:
         from ..autonomy import AriaAutonomy
         from ..actions import ActionStore
+
         nb = LabNotebook(notebook_path)
         _aria_autonomy = AriaAutonomy(notebook=nb)
         _aria_action_store = ActionStore(nb.conn)
@@ -488,6 +518,7 @@ def get_autonomy(notebook_path: str):
 
 
 # ── LLM config persistence ─────────────────────────────────────────────
+
 
 def llm_config_path(notebook_path: str) -> Path:
     """Path for persisted LLM configuration, next to the notebook DB."""
@@ -501,6 +532,7 @@ def load_persisted_llm_config(notebook_path: str):
         return
     try:
         import json as _json
+
         data = _json.loads(config_path.read_text())
         backend = str(data.get("backend", "")).strip()
         if not backend:
@@ -522,6 +554,7 @@ def save_llm_config(notebook_path: str, config: Dict):
     config_path = llm_config_path(notebook_path)
     try:
         import json as _json
+
         config_path.write_text(_json.dumps(config, indent=2))
         logger.info(f"Saved LLM config to {config_path}")
     except Exception as e:
