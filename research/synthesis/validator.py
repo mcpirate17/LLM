@@ -27,6 +27,7 @@ from collections import deque
 @dataclass
 class ValidationResult:
     """Result of graph validation."""
+
     valid: bool = True
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -50,7 +51,6 @@ def validate_graph(
     graph: ComputationGraph,
     max_ops: int = 20,
     max_depth: int = 15,
-    max_params_ratio: float = 6.0,
     min_splits: int = 0,
 ) -> ValidationResult:
     """Validate a computation graph.
@@ -81,19 +81,13 @@ def validate_graph(
     if result.depth > depth_limit:
         result.add_error(f"Too deep: {result.depth} > {depth_limit}")
 
-    # Parameter budget
-    D = graph.model_dim
-    max_params = int(max_params_ratio * D * D)
-    if result.n_params_estimate > max_params:
-        result.add_error(
-            f"Too many params: ~{result.n_params_estimate} > {max_params}"
-        )
-
     # Dead branch detection (Shadow Complexity)
     reachable_nodes = graph.get_reachable_nodes()
     if len(reachable_nodes) < len(graph.nodes):
         dead_count = len(graph.nodes) - len(reachable_nodes)
-        result.add_error(f"Graph contains {dead_count} unreachable nodes (dead branches)")
+        result.add_error(
+            f"Graph contains {dead_count} unreachable nodes (dead branches)"
+        )
 
     # Gradient flow
     result.has_gradient_path = graph.has_gradient_path()
@@ -107,9 +101,7 @@ def validate_graph(
             f"Output dim {output_shape.dim} != model_dim {graph.model_dim}"
         )
     if not output_shape.is_standard:
-        result.add_error(
-            f"Output seq dimension is '{output_shape.seq}', expected 'S'"
-        )
+        result.add_error(f"Output seq dimension is '{output_shape.seq}', expected 'S'")
 
     # Check all nodes
     for nid in graph.topological_order():
@@ -133,9 +125,7 @@ def validate_graph(
         # Check inputs exist
         for iid in node.input_ids:
             if iid not in graph.nodes:
-                result.add_error(
-                    f"Node {nid}: input {iid} doesn't exist"
-                )
+                result.add_error(f"Node {nid}: input {iid} doesn't exist")
 
         # Track risky ops
         if op.numerically_risky:
@@ -151,6 +141,34 @@ def validate_graph(
 
     if result.n_parameterized_ops == 0:
         result.add_warning("No learnable parameters — model can't learn")
+
+    # Deep projection chain detection: stacked linear projections without
+    # intermediate normalization inflate output magnitudes, causing
+    # initial_loss of 100–250 (vs ~12 for normalized architectures).
+    # 75% of S1 failures come from this pattern (diagnosis 2026-03-20).
+    _NORM_OPS = {"rmsnorm", "layernorm", "batchnorm"}
+    norm_depth = 0
+    max_norm_depth = 0
+    for nid in graph.topological_order():
+        node = graph.nodes[nid]
+        if node.is_input:
+            continue
+        if node.op_name in _NORM_OPS:
+            norm_depth = 0
+            continue
+        try:
+            op = get_primitive(node.op_name)
+        except KeyError:
+            continue
+        if op.has_params and op.shape_rule == "linear":
+            norm_depth += 1
+            if norm_depth > max_norm_depth:
+                max_norm_depth = norm_depth
+    if max_norm_depth > 3:
+        result.add_warning(
+            f"Deep projection chain without normalization (depth={max_norm_depth}): "
+            f"likely high initial loss"
+        )
 
     # Check for cycles (shouldn't happen with our builder, but safety check)
     if _has_cycle(graph):
@@ -186,7 +204,6 @@ def validate_ir(
     ir: ComputationGraphIR,
     max_ops: int = 20,
     max_depth: int = 15,
-    max_params_ratio: float = 6.0,
 ) -> ValidationResult:
     """Validate a computation graph in IR form. High-performance path."""
     result = ValidationResult()
@@ -208,14 +225,7 @@ def validate_ir(
     if not result.has_gradient_path:
         result.add_error("No differentiable path from input to output")
 
-    # Parameter budget (Vectorized in IR)
     result.n_params_estimate = ir.n_params_estimate()
-    D = ir.model_dim
-    max_params = int(max_params_ratio * D * D)
-    if result.n_params_estimate > max_params:
-        result.add_error(
-            f"Too many params: ~{result.n_params_estimate} > {max_params}"
-        )
 
     # Reachability detection (NumPy accelerated)
     if ir.output_node_idx != -1:
@@ -230,14 +240,20 @@ def validate_ir(
         reachable = np.zeros(n, dtype=bool)
         reachable[ir.output_node_idx] = True
         for _ in range(n):
-            new_reachable = reachable | np.any(adj_back[reachable, :], axis=0) if np.any(reachable) else reachable
+            new_reachable = (
+                reachable | np.any(adj_back[reachable, :], axis=0)
+                if np.any(reachable)
+                else reachable
+            )
             if np.array_equal(new_reachable, reachable):
                 break
             reachable = new_reachable
-            
+
         n_reachable = int(np.sum(reachable))
         if n_reachable < n:
-            result.add_error(f"IR contains {n - n_reachable} unreachable nodes (dead branches)")
+            result.add_error(
+                f"IR contains {n - n_reachable} unreachable nodes (dead branches)"
+            )
 
     # Fast structural checks
     if _ir_has_cycle(ir):
@@ -246,11 +262,13 @@ def validate_ir(
     # Per-node property aggregation (Vectorized)
     for i in range(ir.n_nodes()):
         opcode = op_codes[i]
-        if opcode == 0: continue
-        
+        if opcode == 0:
+            continue
+
         op_name = REVERSE_OPCODE_MAP.get(opcode)
-        if not op_name: continue
-        
+        if not op_name:
+            continue
+
         try:
             op = get_primitive(op_name)
             if op.numerically_risky:
@@ -273,17 +291,17 @@ def _ir_has_cycle(ir: ComputationGraphIR) -> bool:
     """Check for cycles in IR using Kahn's algorithm (NumPy accelerated)."""
     n = ir.n_nodes()
     in_degree = np.zeros(n, dtype=np.int32)
-    
+
     # adj[i] list of nodes that depend on i
     adj = [[] for _ in range(n)]
-    
+
     for i in range(n):
         for j in range(2):
             idx = ir.input_indices[i, j]
             if idx != -1:
                 in_degree[i] += 1
                 adj[idx].append(i)
-                
+
     queue = deque(np.where(in_degree == 0)[0])
     visited_count = 0
     while queue:
@@ -293,5 +311,5 @@ def _ir_has_cycle(ir: ComputationGraphIR) -> bool:
             in_degree[v] -= 1
             if in_degree[v] == 0:
                 queue.append(v)
-                
+
     return visited_count < n

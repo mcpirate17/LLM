@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import gc
 import json
+import math
 import random
 import time
 import traceback
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
+
+from ..json_utils import json_safe
 
 import torch
 
@@ -17,7 +19,6 @@ from ...synthesis.motifs import VALIDATED_MOTIFS
 from ...synthesis.templates import DEFAULT_TEMPLATE_WEIGHTS, TEMPLATES
 from ..native_runner import compile_model_native_first as compile_model
 from ...synthesis.validator import validate_graph
-from ...synthesis.primitives import PROTECTED_OPS
 from ..refinement_scoring import rank_synthesis_candidates_by_stability
 from ...eval.flops import estimate_flops
 from ...eval.perf_budget import evaluate_perf_budget_gate
@@ -28,7 +29,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig, LiveProgress
-from ._helpers import _native_proactive_gating
+from ._helpers import _native_proactive_gating, clear_gpu_memory
 
 try:
     from ..judgment import score_candidate, JudgmentContext
@@ -38,6 +39,16 @@ except ImportError:
     _HAS_JUDGMENT = False
 
 _EXPLORATION_BUDGET = 0.15
+
+# S0.75 initial-loss threshold: architectures with initial CE loss above this
+# are killed before rapid screening. Calibrated from diagnosis (2026-03-20):
+# architectures with init_loss > 50 have deep unscaled projection chains and
+# cannot reach the random-baseline floor (~10.94) within 500 S1 steps.
+# Normal architectures start at init_loss ~11–16 (near ln(vocab_size)=11.52).
+INITIAL_LOSS_THRESHOLD: float = 50.0
+
+# Number of gradient steps for S0.75 mini-train probe
+_S075_PROBE_STEPS: int = 5
 
 _BUCKET_TEMPLATE_BOOSTS: Dict[str, Dict[str, float]] = {
     "attention-heavy": {
@@ -654,11 +665,12 @@ class _ExecutionScreeningMixin:
             # Auto-report for single experiments
             self._maybe_auto_report(config, nb, reason="experiment_complete")
 
-            with self._lock:
-                self._progress.status = "completed"
-                self._progress.aria_message = (
-                    summary.split("\n")[-1] if summary else "Experiment complete."
-                )
+            self._update_progress(
+                status="completed",
+                aria_message=summary.split("\n")[-1]
+                if summary
+                else "Experiment complete.",
+            )
 
             self._emit_event(
                 "experiment_completed",
@@ -686,10 +698,11 @@ class _ExecutionScreeningMixin:
                 trigger_payload={"mode": "synthesis", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
-            with self._lock:
-                self._progress.status = "failed"
-                self._progress.error = str(e)
-                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
             self._emit_event(
                 "experiment_failed",
                 {
@@ -725,6 +738,7 @@ class _ExecutionScreeningMixin:
             "stage0_passed": 0,
             "stage05_passed": 0,
             "rapid_screening_killed": 0,
+            "rapid_screening_kill_reasons": {},
             "stage1_passed": 0,
             "novel_count": 0,
             "best_loss_ratio": None,
@@ -732,10 +746,34 @@ class _ExecutionScreeningMixin:
             "survivors": [],
             "skipped_proactive_gating": 0,
             "proactive_gating_failures": [],
+            "funnel_counts": {
+                "raw_generated": 0,
+                "post_batch_dedup": 0,
+                "judgment_filtered": 0,
+                "post_judgment": 0,
+                "screening_considered": 0,
+                "dropped_runtime_dedup": 0,
+                "dropped_toxic": 0,
+                "dropped_proactive_gating": 0,
+                "dropped_invalid_graph": 0,
+                "dropped_runtime_error": 0,
+                "stage0_attempted": 0,
+                "stage0_passed": 0,
+                "dropped_stage0": 0,
+                "stage05_passed": 0,
+                "dropped_stage05": 0,
+                "dropped_s075_high_init": 0,
+                "rapid_screen_attempted": 0,
+                "dropped_rapid_screening": 0,
+                "stage1_queued": 0,
+                "stage1_completed": 0,
+                "stage1_survived": 0,
+                "persisted_rows": 0,
+                "dropped_persistence_quality_gate": 0,
+            },
         }
 
         grammar_weights = None
-        excluded_ops: set = set()
         op_weights: Dict[str, float] = {}
         failure_blocklist: Dict[str, float] = {}
         champion_bias: Dict[str, float] = {}
@@ -763,7 +801,9 @@ class _ExecutionScreeningMixin:
                         nb.log_learning_event(
                             "grammar_weights_blocked",
                             f"Blocked grammar weight update for {exp_id}: weak attribution evidence",
-                            evidence=json.dumps(grammar_gate, sort_keys=True),
+                            evidence=json.dumps(
+                                json_safe(grammar_gate), sort_keys=True
+                            ),
                         )
                         grammar_weights = None
             except Exception as e:
@@ -771,19 +811,13 @@ class _ExecutionScreeningMixin:
                     "Failed computing learned grammar weights for %s: %s", exp_id, e
                 )
 
-            # Populate excluded_ops and soft-penalty op_weights from negative results
-            # IMPORTANT: Only hard-exclude ops that fail at LEARNING (s0 passes but
-            # s1 never does). Ops failing at COMPILATION are compiler bugs, not bad
-            # ops — soft-penalize them instead so they can be retried as the compiler
-            # improves.  Ops that pass rehabilitation (work in isolation) get a mild
-            # penalty instead of exclusion — their failures are placement problems.
+            # Soft-penalize poorly-performing ops (no hard exclusion — causality
+            # sandbox gate catches truly broken ops at eval time)
             op_weights: Dict[str, float] = {}
             try:
                 rehab_cache = nb.get_op_rehabilitation_cache()
                 if analytics is not None:
                     neg = analytics.negative_results_synthesis()
-                    compilation_failures = []
-                    rehabilitated_ops = []
                     for op_info in neg.get("failed_ops", []):
                         if (
                             op_info.get("s1_rate", 1) == 0
@@ -797,47 +831,16 @@ class _ExecutionScreeningMixin:
                                 and rehab.get("compile_passed")
                                 and rehab.get("forward_passed")
                             ):
-                                # Op works in isolation — placement problem, not op problem
                                 op_weights[op_name] = 0.5
-                                rehabilitated_ops.append(op_name)
                             elif op_info.get("failure_stage") == "compilation":
-                                # Compiler bug — soft-penalize, don't exclude
                                 op_weights[op_name] = 0.15
-                                compilation_failures.append(op_name)
                             else:
-                                if op_name in PROTECTED_OPS:
-                                    # Protected op — soft-penalize instead of excluding
-                                    op_weights[op_name] = 0.5
-                                else:
-                                    # Genuine learning failure — hard exclude
-                                    excluded_ops.add(op_name)
-                    # Soft-penalize weak ops (nonzero but poor S1 rate)
+                                op_weights[op_name] = 0.1
                     for op_info in neg.get("weak_ops", []):
                         op_name = op_info.get("op_name", "")
                         penalty = op_info.get("penalty_weight", 1.0)
-                        if op_name and op_name not in excluded_ops:
+                        if op_name:
                             op_weights[op_name] = penalty
-                    if excluded_ops:
-                        nb.log_learning_event(
-                            "excluded_ops_applied",
-                            f"Excluded {len(excluded_ops)} ops with 0% S1 rate (learning failures): "
-                            f"{', '.join(sorted(excluded_ops))}",
-                            excluded_ops=sorted(excluded_ops),
-                        )
-                    if rehabilitated_ops:
-                        nb.log_learning_event(
-                            "rehabilitated_ops_softpenalized",
-                            f"Soft-penalized {len(rehabilitated_ops)} ops that passed rehabilitation "
-                            f"(work in isolation, placement problem): {', '.join(sorted(rehabilitated_ops))}",
-                            rehabilitated_ops=sorted(rehabilitated_ops),
-                        )
-                    if compilation_failures:
-                        nb.log_learning_event(
-                            "compilation_failures_softpenalized",
-                            f"Soft-penalized {len(compilation_failures)} ops failing at compilation "
-                            f"(compiler bugs, not excluded): {', '.join(sorted(compilation_failures))}",
-                            compilation_failures=sorted(compilation_failures),
-                        )
                     if op_weights:
                         nb.log_learning_event(
                             "weak_ops_penalized",
@@ -846,9 +849,7 @@ class _ExecutionScreeningMixin:
                             op_weights=op_weights,
                         )
             except Exception as e:
-                logger.warning(
-                    "Failed computing excluded/weak ops for %s: %s", exp_id, e
-                )
+                logger.warning("Failed computing op penalties for %s: %s", exp_id, e)
 
             # Load failure-signature blocklist (op-pair bigrams with high fail rate)
             failure_blocklist: Dict[str, float] = {}
@@ -870,7 +871,10 @@ class _ExecutionScreeningMixin:
             # and known-good structural/sequence motifs without hard-coding op-level picks.
             try:
                 if analytics is not None:
-                    op_rates = analytics.op_success_rates() or {}
+                    # Use 7d windowed rates to avoid death spiral from
+                    # stale lifetime data poisoning recently-fixed ops
+                    _window_cutoff = time.time() - 604800  # 7 days
+                    op_rates = analytics.op_success_rates(since_ts=_window_cutoff) or {}
                     if op_rates:
                         winning_ops = {"exp", "selective_scan", "tropical_center"}
                         projection_ops = {
@@ -922,13 +926,8 @@ class _ExecutionScreeningMixin:
         except Exception:
             template_weights, motif_weights = {}, {}
 
-        # Note: _excluded_ops_overrides is no longer populated (auto-exclusion
-        # disabled). Failure modes are display-only, never acted on.
-        # excluded_ops only contains non-causal ops from grammar defaults.
         op_weights = {**op_weights, **self._op_weights_overrides}
-        grammar = self._build_grammar_config(
-            config, excluded_ops=excluded_ops, op_weights=op_weights
-        )
+        grammar = self._build_grammar_config(config, op_weights=op_weights)
         # Merge learned template/motif weights, but don't overwrite routing_first preset
         if grammar.routing_mandatory:
             # Routing-first: only merge in weights that don't conflict
@@ -1087,6 +1086,7 @@ class _ExecutionScreeningMixin:
                 use_adaptive_synthesis=use_adaptive,
                 prior=prior,
             )
+        results["funnel_counts"]["raw_generated"] = len(graphs)
         results["total"] = len(graphs)
         op_distribution = self._compute_generated_op_distribution(graphs)
         if op_distribution:
@@ -1101,14 +1101,14 @@ class _ExecutionScreeningMixin:
                 nb.log_learning_event(
                     "architecture_distribution_shift",
                     f"Generated-op distribution shift recorded for synthesis experiment {exp_id}",
-                    evidence=json.dumps(shift, sort_keys=True),
+                    evidence=json.dumps(json_safe(shift), sort_keys=True),
                 )
             else:
                 nb.log_learning_event(
                     "architecture_distribution_snapshot",
                     f"Captured generated-op distribution for synthesis experiment {exp_id}",
                     evidence=json.dumps(
-                        {"op_distribution": op_distribution}, sort_keys=True
+                        json_safe({"op_distribution": op_distribution}), sort_keys=True
                     ),
                 )
 
@@ -1124,18 +1124,23 @@ class _ExecutionScreeningMixin:
             exp_id=exp_id,
             results=results,
         )
+        results["funnel_counts"]["post_batch_dedup"] = len(graphs)
         # judgment_scores maps graph id(graph) → score for persistence
         _judgment_scores: Dict[int, float] = {}
         if graphs:
+            before_judgment = len(graphs)
             graphs = rank_synthesis_candidates_by_stability(graphs)
             results["stability_reranked"] = True
             ranked = _judgment_rerank(graphs, nb, logger)
-            if len(ranked) != results.get("total", 0):
-                results["judgment_filtered"] = results.get("total", 0) - len(ranked)
+            if len(ranked) != before_judgment:
+                results["judgment_filtered"] = before_judgment - len(ranked)
             _judgment_scores = {id(g): s for g, s in ranked}
             graphs = [g for g, _ in ranked]
-        with self._lock:
-            self._progress.total_programs = len(graphs)
+            results["funnel_counts"]["judgment_filtered"] = max(
+                0, before_judgment - len(graphs)
+            )
+        results["funnel_counts"]["post_judgment"] = len(graphs)
+        self._update_progress(total_programs=len(graphs))
 
         # Track ops from S0 failures for op_success_rates (not stored in DB)
         _s0_op_counts: Dict[str, Dict[str, int]] = {}  # op -> {n_used, n_s0, n_s05}
@@ -1144,16 +1149,19 @@ class _ExecutionScreeningMixin:
             if self._stop_event.is_set():
                 break
 
+            results["funnel_counts"]["screening_considered"] += 1
             fp = graph.fingerprint()
-            with self._lock:
-                self._progress.current_program = i + 1
-                self._progress.current_fingerprint = fp[:10]
-                self._progress.elapsed_seconds = time.time() - t_start
+            self._update_progress(
+                current_program=i + 1,
+                current_fingerprint=fp[:10],
+                elapsed_seconds=time.time() - t_start,
+            )
 
             # Real-time dedup: skip if evaluated by another process since experiment start
             if nb.has_fingerprint(fp):
                 results.setdefault("skipped_dedup_runtime", 0)
                 results["skipped_dedup_runtime"] += 1
+                results["funnel_counts"]["dropped_runtime_dedup"] += 1
                 self._emit_event(
                     "program_evaluated",
                     {
@@ -1175,11 +1183,16 @@ class _ExecutionScreeningMixin:
                         if parent and not parent.is_input:
                             bigrams.add(f"{parent.op_name}->{node.op_name}")
                 if bigrams:
-                    toxic_hits = sum(1 for bg in bigrams if bg in failure_blocklist)
-                    toxic_ratio = toxic_hits / len(bigrams)
+                    toxic_weight = sum(
+                        1.0 - failure_blocklist[bg]
+                        for bg in bigrams
+                        if bg in failure_blocklist
+                    )
+                    toxic_ratio = toxic_weight / len(bigrams)
                     if toxic_ratio >= 0.5:
                         results.setdefault("skipped_toxic", 0)
                         results["skipped_toxic"] += 1
+                        results["funnel_counts"]["dropped_toxic"] += 1
                         self._emit_event(
                             "program_evaluated",
                             {
@@ -1221,6 +1234,7 @@ class _ExecutionScreeningMixin:
                 if not native_gating.get("passed", True):
                     results.setdefault("skipped_proactive_gating", 0)
                     results["skipped_proactive_gating"] += 1
+                    results["funnel_counts"]["dropped_proactive_gating"] += 1
 
                     # Update metrics with native data
                     program_metrics["proactive_gating_reason"] = native_gating.get(
@@ -1261,6 +1275,7 @@ class _ExecutionScreeningMixin:
                 # ops for structural violations they didn't cause.
                 results.setdefault("s0_validation_failures", 0)
                 results["s0_validation_failures"] += 1
+                results["funnel_counts"]["dropped_invalid_graph"] += 1
                 self._emit_event(
                     "program_evaluated",
                     {
@@ -1273,12 +1288,23 @@ class _ExecutionScreeningMixin:
                 continue
 
             # Compile & Stage 0/0.5
+            # Progressive screening: Phase 1 uses cheap qualifying vocab (32K)
+            # for S0/S0.5/rapid.  Only Phase 1 survivors get recompiled at
+            # the real vocab for S1 training.  This filters ~93% of candidates
+            # at ~10% of the cost.
+            _use_progressive = (
+                config.progressive_screening
+                and config.vocab_size > config.qualifying_vocab_size
+            )
+            _phase1_vocab = (
+                config.qualifying_vocab_size if _use_progressive else config.vocab_size
+            )
+
             try:
+                results["funnel_counts"]["stage0_attempted"] += 1
                 # Z13: Defensive pause + GC to stabilize Torch Dynamo context if needed
                 if i > 0 and i % 10 == 0:
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    clear_gpu_memory()
 
                     # More aggressive reset every 50 to clear Torch Dynamo cache
                     if i % 50 == 0:
@@ -1292,7 +1318,7 @@ class _ExecutionScreeningMixin:
                 layer_graphs = [graph] * config.n_layers
                 model = compile_model(
                     layer_graphs,
-                    vocab_size=config.vocab_size,
+                    vocab_size=_phase1_vocab,
                     max_seq_len=config.max_seq_len,
                 )
                 _eval_timeout = 60 if getattr(config, "_exotic_mode", False) else 30
@@ -1301,7 +1327,7 @@ class _ExecutionScreeningMixin:
                     stage_tag="candidate_screening",
                     batch_size=2,
                     seq_len=min(128, config.max_seq_len),
-                    vocab_size=config.vocab_size,
+                    vocab_size=_phase1_vocab,
                     device=dev_str,
                     timeout_seconds=_eval_timeout,
                 )
@@ -1316,10 +1342,12 @@ class _ExecutionScreeningMixin:
 
                 if s0_passed:
                     results["stage0_passed"] += 1
+                    results["funnel_counts"]["stage0_passed"] += 1
                     with self._lock:
                         self._progress.stage0_passed += 1
                 if s05_passed:
                     results["stage05_passed"] += 1
+                    results["funnel_counts"]["stage05_passed"] += 1
                     with self._lock:
                         self._progress.stage05_passed += 1
 
@@ -1340,6 +1368,10 @@ class _ExecutionScreeningMixin:
                             c["n_s05"] += 1
 
                 if not s0_passed or not s05_passed:
+                    if not s0_passed:
+                        results["funnel_counts"]["dropped_stage0"] += 1
+                    else:
+                        results["funnel_counts"]["dropped_stage05"] += 1
                     # Don't store S0/S0.5 failures — error counts are tracked
                     # in results dict and error_type in the live feed event.
                     error_type = sandbox_result.error_type or "unknown"
@@ -1374,15 +1406,68 @@ class _ExecutionScreeningMixin:
                     )
                     continue
 
-                # Rapid Screening: 50-step gradient health check
+                # S0.75: Initial-loss pre-screen (5 gradient steps)
+                # Architectures with init_loss > 50 have deep unscaled
+                # projection chains and waste rapid-screen + S1 budget.
+                try:
+                    _s075_dev = torch.device(dev_str)
+                    model.train()
+                    _s075_opt = torch.optim.AdamW(model.parameters(), lr=3e-4)
+                    _s075_ids = torch.randint(
+                        0, _phase1_vocab, (4, 64), device=_s075_dev
+                    )
+                    with torch.amp.autocast(
+                        device_type=_s075_dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(_s075_dev.type == "cuda"),
+                    ):
+                        _s075_logits = model(_s075_ids)
+                        _s075_loss = torch.nn.functional.cross_entropy(
+                            _s075_logits[:, :-1].reshape(-1, _s075_logits.size(-1)),
+                            _s075_ids[:, 1:].reshape(-1),
+                        )
+                    _s075_init_loss = _s075_loss.item()
+                    program_metrics["s075_initial_loss"] = _s075_init_loss
+
+                    if (
+                        not math.isnan(_s075_init_loss)
+                        and not math.isinf(_s075_init_loss)
+                        and _s075_init_loss > INITIAL_LOSS_THRESHOLD
+                    ):
+                        results["funnel_counts"]["dropped_s075_high_init"] += 1
+                        self._emit_event(
+                            "program_evaluated",
+                            {
+                                "index": i,
+                                "fingerprint": fp[:10],
+                                "result": "fail_s075",
+                                "initial_loss": round(_s075_init_loss, 1),
+                                "threshold": INITIAL_LOSS_THRESHOLD,
+                            },
+                        )
+                        del _s075_opt
+                        continue
+
+                    # Clean up probe state before rapid screening
+                    _s075_opt.zero_grad(set_to_none=True)
+                    del _s075_opt
+                except Exception as s075_err:
+                    logger.warning(
+                        "S0.75 probe failed for graph %d, skipping check: %s",
+                        i,
+                        s075_err,
+                    )
+
+                # Rapid Screening: 150-step gradient health check
                 # Catches exploding grads, NaN, stalled loss, routing collapse
                 # BEFORE committing to full Stage 1 training budget.
                 from ...eval.screening_rapid import RapidScreeningCheck
 
                 rapid = RapidScreeningCheck()
+                results["funnel_counts"]["rapid_screen_attempted"] += 1
                 rapid_result = rapid.run(
                     model,
-                    vocab_size=config.vocab_size,
+                    vocab_size=_phase1_vocab,
                     seq_len=min(128, config.max_seq_len),
                     batch_size=2,
                     device=dev_str,
@@ -1396,6 +1481,11 @@ class _ExecutionScreeningMixin:
                     )
                 if not rapid_result.passed:
                     results["rapid_screening_killed"] += 1
+                    results["funnel_counts"]["dropped_rapid_screening"] += 1
+                    kr = rapid_result.kill_reason or "unknown"
+                    results["rapid_screening_kill_reasons"][kr] = (
+                        results["rapid_screening_kill_reasons"].get(kr, 0) + 1
+                    )
                     program_metrics["rapid_screening_kill_reason"] = (
                         rapid_result.kill_reason
                     )
@@ -1418,9 +1508,19 @@ class _ExecutionScreeningMixin:
                     )
                     continue
 
+                # Phase 2: recompile at real vocab for S1 training
+                if _use_progressive:
+                    del model
+                    clear_gpu_memory()
+                    model = compile_model(
+                        layer_graphs,
+                        vocab_size=config.vocab_size,
+                        max_seq_len=config.max_seq_len,
+                    )
+                    program_metrics["progressive_phase2_compiled"] = True
+
                 # Stage 1: Asynchronous Execution (Z6)
-                with self._lock:
-                    self._progress.current_stage = "queuing_s1"
+                self._update_progress(current_stage="queuing_s1")
 
                 orchestrator.submit(
                     index=i,
@@ -1433,11 +1533,13 @@ class _ExecutionScreeningMixin:
                         "batch_id": i // candidate_batch_size,
                         "queue_kind": "candidate_screening",
                     },
-                    model=model,  # Reuse compiled model
+                    model=model,  # Reuse compiled model (at real vocab)
                 )
+                results["funnel_counts"]["stage1_queued"] += 1
 
             except Exception as e:
                 logger.error("Error evaluating graph %d: %s", i, e)
+                results["funnel_counts"]["dropped_runtime_error"] += 1
                 # Reset CUDA context if this was a fatal CUDA error
                 if torch.cuda.is_available():
                     from ...eval.sandbox import is_cuda_fatal
@@ -1466,8 +1568,7 @@ class _ExecutionScreeningMixin:
             )
 
         # Wait for remaining asynchronous Stage 1 evaluations
-        with self._lock:
-            self._progress.status = "finalizing_evaluations"
+        self._update_progress(status="finalizing_evaluations")
 
         while (
             orchestrator.job_queue.unfinished_tasks > 0
@@ -1495,10 +1596,11 @@ class _ExecutionScreeningMixin:
             results["_s0_op_counts"] = _s0_op_counts
 
         elapsed = results.get("elapsed_seconds", time.time() - t_start)
-        with self._lock:
-            self._progress.elapsed_seconds = elapsed
-            self._progress.status = "analyzing"
-            self._progress.aria_message = self.aria.begin_analysis()
+        self._update_progress(
+            elapsed_seconds=elapsed,
+            status="analyzing",
+            aria_message=self.aria.begin_analysis(),
+        )
 
         best = results.get("best_loss_ratio")
         best_str = f", best loss={best:.4f}" if best else ""
