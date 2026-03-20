@@ -1,4 +1,23 @@
-"""Phase 7 split helpers for results._auto_escalate."""
+"""Phase 7 split helpers for results._auto_escalate.
+
+MIGRATION NOTE — loss_ratio formula (2026-03-20)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+program_results.loss_ratio has two historical formulas:
+
+  RAW  = final_loss / initial_loss   (relative improvement, range 0–1+)
+  NORM = final_loss / ln(vocab_size) (absolute position,    range 0–1+)
+
+The auto-escalation threshold 0.18 was calibrated against RAW values.
+Under NORM, a model with final_loss=2.0 scores 0.174 — the threshold is
+nearly unreachable.
+
+As of this commit, execution_training.py stores:
+  loss_ratio      = RAW  (backward compatible)
+  loss_ratio_raw  = RAW  (explicit)
+  loss_ratio_norm = NORM (explicit)
+
+All threshold comparisons in this file use loss_ratio (= RAW).
+"""
 
 from __future__ import annotations
 
@@ -27,7 +46,9 @@ class _ResultsAutoEscalatePhase7Mixin:
         robustness = float(candidate.get("robustness") or 0.0)
         best_loss_ratio = float(candidate.get("best_loss_ratio") or 1.0)
         baseline_loss_ratio = candidate.get("baseline_loss_ratio")
-        baseline_value = float(baseline_loss_ratio) if baseline_loss_ratio is not None else None
+        baseline_value = (
+            float(baseline_loss_ratio) if baseline_loss_ratio is not None else None
+        )
         novelty_confidence = candidate.get("novelty_confidence")
         # Allow near-known-family architectures through when investigation-time
         # evidence is dominant enough that novelty-confidence and missing/noisy
@@ -46,15 +67,22 @@ class _ResultsAutoEscalatePhase7Mixin:
             return False
         return True
 
-    def _auto_escalate(self, results: Dict, config: RunConfig,
-                       nb: LabNotebook, phase: str = "screening") -> None:
+    def _auto_escalate(
+        self,
+        results: Dict,
+        config: RunConfig,
+        nb: LabNotebook,
+        phase: str = "screening",
+    ) -> None:
         """Auto-escalate candidates through the research pipeline."""
         if phase in ("screening", "experiment"):
             self._auto_escalate_screening(results, config, nb)
         elif phase == "investigation":
             self._auto_escalate_investigation(results, config, nb)
 
-    def _auto_escalate_screening(self, results: Dict, config: RunConfig, nb: LabNotebook) -> None:
+    def _auto_escalate_screening(
+        self, results: Dict, config: RunConfig, nb: LabNotebook
+    ) -> None:
         if not config.auto_investigate:
             return
         s1_count = results.get("stage1_passed", 0)
@@ -72,7 +100,9 @@ class _ResultsAutoEscalatePhase7Mixin:
             ).fetchall()
             top = [dict(r) for r in rows]
         else:
-            top = nb.get_top_programs(config.auto_investigate_top_n, sort_by="loss_ratio")
+            top = nb.get_top_programs(
+                config.auto_investigate_top_n, sort_by="loss_ratio"
+            )
 
         try:
             global_rows = nb.conn.execute(
@@ -93,7 +123,10 @@ class _ResultsAutoEscalatePhase7Mixin:
                     top.append(d)
                     seen.add(d.get("result_id"))
             if global_rows:
-                logger.info("Auto-escalate: global sweep found %d leaderboard candidates", len(global_rows))
+                logger.info(
+                    "Auto-escalate: global sweep found %d leaderboard candidates",
+                    len(global_rows),
+                )
         except Exception as e:
             logger.warning("Auto-escalate global sweep failed: %s", e)
 
@@ -103,7 +136,9 @@ class _ResultsAutoEscalatePhase7Mixin:
             top = [p for p in top if p.get("graph_fingerprint") not in investigated_fps]
             skipped = before - len(top)
             if skipped:
-                logger.info("Auto-escalate: skipped %d already-investigated archs", skipped)
+                logger.info(
+                    "Auto-escalate: skipped %d already-investigated archs", skipped
+                )
 
         selection = self._score_candidate_pool(
             candidates=top,
@@ -116,7 +151,9 @@ class _ResultsAutoEscalatePhase7Mixin:
         ranked = selection.get("selected", [])
         candidate_ids: List[str] = []
         for item in ranked:
-            row = next((p for p in top if p.get("result_id") == item["result_id"]), None)
+            row = next(
+                (p for p in top if p.get("result_id") == item["result_id"]), None
+            )
             if row is None:
                 continue
             if not row.get("stage1_passed"):
@@ -177,7 +214,9 @@ class _ResultsAutoEscalatePhase7Mixin:
                 if p["result_id"] not in candidate_ids:
                     continue
                 try:
-                    existing_decisions = nb.get_decisions(campaign_id=self._active_campaign_id)
+                    existing_decisions = nb.get_decisions(
+                        campaign_id=self._active_campaign_id
+                    )
                     already_decided = any(
                         p["result_id"] in (d.get("evidence_ids") or [])
                         for d in existing_decisions
@@ -188,9 +227,9 @@ class _ResultsAutoEscalatePhase7Mixin:
 
                     go_context = build_go_no_go_context(
                         candidate=p,
-                        campaign_criteria=(nb.get_campaign(self._active_campaign_id or "") or {}).get(
-                            "success_criteria", ""
-                        ),
+                        campaign_criteria=(
+                            nb.get_campaign(self._active_campaign_id or "") or {}
+                        ).get("success_criteria", ""),
                     )
                     decision = self.aria.generate_go_no_go(
                         subject=f"Promote {p['result_id'][:8]} to investigation",
@@ -228,7 +267,9 @@ class _ResultsAutoEscalatePhase7Mixin:
                     approved_ids.append(p["result_id"])
 
             candidate_ids = approved_ids if approved_ids else candidate_ids
-            selected_rows = [p for p in selected_rows if p.get("result_id") in candidate_ids]
+            selected_rows = [
+                p for p in selected_rows if p.get("result_id") in candidate_ids
+            ]
 
         for rid in candidate_ids:
             score_row = scored_by_id.get(rid)
@@ -285,8 +326,12 @@ class _ResultsAutoEscalatePhase7Mixin:
             sparse_wins = [p for p in top if (p.get("sparsity_ratio") or 0) > 0.3]
             dense_wins = [p for p in top if (p.get("sparsity_ratio") or 0) <= 0.3]
             if sparse_wins and dense_wins:
-                avg_sparse_loss = sum(p.get("loss_ratio", 1.0) for p in sparse_wins) / len(sparse_wins)
-                avg_dense_loss = sum(p.get("loss_ratio", 1.0) for p in dense_wins) / len(dense_wins)
+                avg_sparse_loss = sum(
+                    p.get("loss_ratio", 1.0) for p in sparse_wins
+                ) / len(sparse_wins)
+                avg_dense_loss = sum(
+                    p.get("loss_ratio", 1.0) for p in dense_wins
+                ) / len(dense_wins)
                 if avg_sparse_loss < avg_dense_loss * 0.95:
                     delta = 0.1
                     old_bias = config.grammar_config.structured_sparsity_bias
@@ -295,13 +340,17 @@ class _ResultsAutoEscalatePhase7Mixin:
                         event_type="grammar_adjustment",
                         description=f"Boosted structured_sparsity_bias by {delta} due to sparse dominance.",
                         old_weights={"bias": old_bias},
-                        new_weights={"bias": config.grammar_config.structured_sparsity_bias},
+                        new_weights={
+                            "bias": config.grammar_config.structured_sparsity_bias
+                        },
                         evidence=f"avg_sparse_loss={avg_sparse_loss:.4f}, avg_dense_loss={avg_dense_loss:.4f}",
                     )
         except Exception as z7_err:
             logger.debug("Z7 learning logic failed: %s", z7_err)
 
-    def _auto_escalate_investigation(self, results: Dict, config: RunConfig, nb: LabNotebook) -> None:
+    def _auto_escalate_investigation(
+        self, results: Dict, config: RunConfig, nb: LabNotebook
+    ) -> None:
         if not config.auto_validate:
             return
 
@@ -311,12 +360,29 @@ class _ResultsAutoEscalatePhase7Mixin:
         if inv_ids:
             placeholders = ",".join("?" for _ in inv_ids)
             rows = nb.conn.execute(
-                f"""SELECT result_id, novelty_valid_for_promotion, cka_source
+                f"""SELECT result_id, novelty_valid_for_promotion, cka_source,
+                       fingerprint_json
                     FROM program_results
                     WHERE result_id IN ({placeholders})""",
                 tuple(inv_ids),
             ).fetchall()
-            novelty_meta = {row["result_id"]: dict(row) for row in rows}
+            for row in rows:
+                meta_dict = dict(row)
+                # Extract fingerprint_completed_post_investigation from JSON
+                fp_json_str = meta_dict.pop("fingerprint_json", None)
+                if fp_json_str:
+                    try:
+                        import json as _json
+
+                        fp_data = _json.loads(fp_json_str)
+                        meta_dict["fingerprint_completed_post_investigation"] = bool(
+                            fp_data.get("fingerprint_completed_post_investigation")
+                        )
+                    except (ValueError, TypeError):
+                        meta_dict["fingerprint_completed_post_investigation"] = False
+                else:
+                    meta_dict["fingerprint_completed_post_investigation"] = False
+                novelty_meta[row["result_id"]] = meta_dict
 
         min_score = config.auto_validate_min_composite_score
         if min_score <= 0:
@@ -327,10 +393,18 @@ class _ResultsAutoEscalatePhase7Mixin:
                 " WHERE COALESCE(is_reference, 0) = 1"
                 " AND screening_loss_ratio IS NOT NULL"
             ).fetchone()
-            best_ref_lr = float(best_ref_lr_row[0]) if best_ref_lr_row and best_ref_lr_row[0] else None
+            best_ref_lr = (
+                float(best_ref_lr_row[0])
+                if best_ref_lr_row and best_ref_lr_row[0]
+                else None
+            )
             # Convert to equivalent composite floor: same formula as scoring
             # but without tier discount, so investigation candidates compare fairly.
-            min_score = 100.0 * max(0, 1.0 - best_ref_lr) * 0.85 if best_ref_lr is not None else 0.0
+            min_score = (
+                100.0 * max(0, 1.0 - best_ref_lr) * 0.85
+                if best_ref_lr is not None
+                else 0.0
+            )
 
         inv_id_list = [r.get("result_id") for r in inv_results if r.get("result_id")]
         composite_scores: Dict[str, float] = {}
@@ -340,21 +414,47 @@ class _ResultsAutoEscalatePhase7Mixin:
                 f"SELECT result_id, composite_score FROM leaderboard WHERE result_id IN ({ph})",
                 tuple(inv_id_list),
             ).fetchall()
-            composite_scores = {row["result_id"]: float(row["composite_score"] or 0) for row in score_rows}
+            composite_scores = {
+                row["result_id"]: float(row["composite_score"] or 0)
+                for row in score_rows
+            }
 
         strong = []
         for r in inv_results:
             rid = r.get("result_id")
             meta = novelty_meta.get(rid or "", {})
-            # Log novelty status but don't gate on it — missing novelty is
-            # informational, not a disqualifier.
-            if meta and not bool(meta.get("novelty_valid_for_promotion")):
-                logger.info(
-                    "Auto-validate: %s has novelty_valid_for_promotion=False "
-                    "(cka_source=%s) — proceeding anyway",
+
+            # Hard gate 1: fingerprint must be completed post-investigation.
+            # Without converged-model CKA, we cannot assess true novelty.
+            if not bool(meta.get("fingerprint_completed_post_investigation")):
+                logger.warning(
+                    "escalation_blocked_fingerprint_incomplete: "
+                    "result_id=%s cka_source=%s",
                     (rid or "?")[:12],
                     meta.get("cka_source", "unknown"),
                 )
+                continue
+
+            # Hard gate 2: novelty_valid_for_promotion must be True.
+            # This means CKA was artifact-backed and non-degenerate.
+            # No code path (including empirical override) bypasses this.
+            if not bool(meta.get("novelty_valid_for_promotion")):
+                logger.info(
+                    "escalation_blocked_novelty_invalid: "
+                    "result_id=%s reason=%s cka_source=%s",
+                    (rid or "?")[:12],
+                    meta.get("novelty_validity_reason", "unknown"),
+                    meta.get("cka_source", "unknown"),
+                )
+                continue
+
+            # novelty_valid_for_promotion=True is the binary gate.
+            # No numeric novelty_score threshold is applied — the score
+            # is source-dependent and a threshold is not meaningful.
+            # DEPRECATED: auto_validate_min_novelty_confidence replaced
+            # by novelty_valid_for_promotion binary gate. The numeric
+            # threshold was not meaningful when novelty source varies
+            # between structural-only and full CKA+behavioral blend.
 
             candidate_score = composite_scores.get(rid, 0.0)
             if min_score > 0 and candidate_score < min_score:
@@ -365,11 +465,6 @@ class _ResultsAutoEscalatePhase7Mixin:
                     min_score,
                 )
                 continue
-            novelty_confidence = r.get("novelty_confidence")
-            novelty_gate_passed = (
-                novelty_confidence is not None
-                and float(novelty_confidence) >= config.auto_validate_min_novelty_confidence
-            )
             baseline_loss_ratio = r.get("baseline_loss_ratio")
             baseline_gate_passed = (
                 baseline_loss_ratio is not None
@@ -382,23 +477,17 @@ class _ResultsAutoEscalatePhase7Mixin:
             )
             if (
                 r.get("robustness", 0) >= config.auto_validate_min_robustness
+                # [CALIBRATION] source: judgment — no config key exists for this threshold
+                #   last reviewed: unknown — flag for calibration sweep
                 and (r.get("best_loss_ratio") or 1.0) < 0.25
                 and (baseline_gate_passed or empirical_override)
-                and (novelty_gate_passed or empirical_override)
                 and not r.get("brittle_risk", False)
                 and (
                     r.get("loss_ratio_multiplier") is None
-                    or r.get("loss_ratio_multiplier") <= config.investigation_max_loss_ratio_multiplier
+                    or r.get("loss_ratio_multiplier")
+                    <= config.investigation_max_loss_ratio_multiplier
                 )
             ):
-                if empirical_override and not novelty_gate_passed:
-                    logger.info(
-                        "Auto-validate: %s accepted via empirical override "
-                        "(novelty_conf=%.3f, score=%.1f)",
-                        (rid or "?")[:12],
-                        float(novelty_confidence or 0.0),
-                        candidate_score,
-                    )
                 strong.append(r)
 
         if not strong:
@@ -451,7 +540,9 @@ class _ResultsAutoEscalatePhase7Mixin:
         )
         scored_by_id = {s["result_id"]: s for s in selection.get("scored", [])}
         ranked = selection.get("selected", [])
-        candidate_ids = [item["result_id"] for item in ranked[: config.auto_validate_top_n]]
+        candidate_ids = [
+            item["result_id"] for item in ranked[: config.auto_validate_top_n]
+        ]
         decision_payload = {
             "decision_id": str(uuid.uuid4())[:12],
             "timestamp": time.time(),

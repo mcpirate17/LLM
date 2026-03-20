@@ -9,6 +9,8 @@ import time
 from contextlib import nullcontext
 from typing import Any, Dict, List, Tuple
 
+from ..json_utils import json_safe
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -338,39 +340,6 @@ class _ExecutionTrainingMixin:
                     result["optimizer_beta1"] = float(betas[0])
                     result["optimizer_beta2"] = float(betas[1])
 
-            # ── RigL dynamic sparse training for sparse architectures ──
-            rigl_scheduler = None
-            if graph_json:
-                _SPARSE_OPS = {
-                    "nm_sparse_linear",
-                    "block_sparse_linear",
-                    "semi_structured_2_4_linear",
-                    "ternary_projection",
-                }
-                try:
-                    _gj = (
-                        json.loads(graph_json)
-                        if isinstance(graph_json, str)
-                        else graph_json
-                    )
-                    _nodes = _gj.get("nodes", [])
-                    _sparse_count = sum(
-                        1 for n in _nodes if n.get("op_name", "") in _SPARSE_OPS
-                    )
-                    if _sparse_count >= 1:
-                        from ...training.sparse_training import RigLScheduler
-
-                        rigl_scheduler = RigLScheduler(
-                            model,
-                            sparsity=0.8,
-                            update_freq=max(50, config.stage1_steps // 10),
-                            total_steps=config.stage1_steps,
-                        )
-                        result["rigl_enabled"] = True
-                        result["rigl_sparse_op_count"] = _sparse_count
-                except Exception:
-                    rigl_scheduler = None
-
             initial_loss = None
             final_loss = None
             min_loss = float("inf")
@@ -442,10 +411,6 @@ class _ExecutionTrainingMixin:
                         )
                 except Exception as e_novel:
                     logger.debug("Adaptive budget novel check failed: %s", e_novel)
-
-            # Implementation of train/val split for Stage 1
-            train_steps = int(total_steps * 0.8)
-            total_steps - train_steps
 
             starvation_interval = max(
                 1, int(getattr(config, "starvation_check_interval", 8) or 8)
@@ -760,13 +725,6 @@ class _ExecutionTrainingMixin:
                     else:
                         _run_step()
 
-                    # RigL mask update (outside closure to avoid scoping issues)
-                    if rigl_scheduler is not None:
-                        try:
-                            rigl_scheduler.step()
-                        except Exception:
-                            rigl_scheduler = None
-
                     loss = step_state.get("loss")
                     grad_norm = float(step_state.get("grad_norm", 0.0))
 
@@ -990,10 +948,17 @@ class _ExecutionTrainingMixin:
                     "top_ops": kernel_profiles[0].get("top_ops", []),
                 }
 
-            if initial_loss and final_loss:
-                result["loss_ratio"] = normalized_loss_ratio(
-                    final_loss, config.vocab_size
-                )
+            if initial_loss is not None and final_loss is not None:
+                # Store both loss ratio formulas with unambiguous names:
+                #   loss_ratio_raw  = final_loss / initial_loss  (relative improvement)
+                #   loss_ratio_norm = final_loss / ln(vocab_size) (absolute position)
+                # The auto-escalation threshold (0.18) is calibrated against RAW.
+                # loss_ratio keeps RAW for backward compatibility.
+                _raw = final_loss / max(initial_loss, 1e-6)
+                _norm = normalized_loss_ratio(final_loss, config.vocab_size)
+                result["loss_ratio"] = _raw
+                result["loss_ratio_raw"] = _raw
+                result["loss_ratio_norm"] = _norm
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
@@ -1018,9 +983,12 @@ class _ExecutionTrainingMixin:
                     )
                 except Exception:
                     ref_losses = {}
+                # Gate uses raw final/initial ratio for divergence checks,
+                # NOT normalized_loss_ratio which measures a different thing.
+                raw_ratio = final_loss / max(initial_loss, 1e-6)
                 gate_passed, gate_reason = stage1_learning_gate(
                     final_loss=final_loss,
-                    loss_ratio=result["loss_ratio"],
+                    loss_ratio=raw_ratio,
                     initial_loss=initial_loss,
                     n_steps=step_count,
                     corpus_type=corpus_type,
@@ -1081,7 +1049,7 @@ class _ExecutionTrainingMixin:
                 # Entropy gate trajectory (sampled during training)
                 if _entropy_gate_trajectory:
                     result["entropy_gate_trajectory_json"] = json.dumps(
-                        _entropy_gate_trajectory
+                        json_safe(_entropy_gate_trajectory)
                     )
                     if any(v < 0.05 for v in _entropy_gate_trajectory):
                         result["routing_collapse_score"] = 1.0
@@ -1118,10 +1086,10 @@ class _ExecutionTrainingMixin:
                         except (json.JSONDecodeError, TypeError):
                             pass
 
-                # Behavioral fingerprint for S1 survivors (novelty scoring)
+                # Behavioral fingerprint for S1 survivors (structural-only at
+                # screening; CKA + behavioral probes deferred to post-investigation)
                 if result.get("passed") and model is not None:
                     try:
-                        # Task 4I: skip full fingerprint for poor performers (Investigation Gating)
                         _lr = result.get("loss_ratio", 1.0)
                         _perf_gate = float(
                             getattr(config, "fingerprint_perf_gate", 0.85) or 0.85
@@ -1135,6 +1103,16 @@ class _ExecutionTrainingMixin:
                                 _perf_gate,
                             )
 
+                        # Parse graph for structural novelty computation
+                        _graph_obj = None
+                        if graph_json:
+                            try:
+                                from ...synthesis.serializer import graph_from_json
+
+                                _graph_obj = graph_from_json(graph_json)
+                            except Exception:
+                                pass
+
                         _fp, full_ran = compute_gated_fingerprint(
                             model,
                             seq_len=min(64, config.max_seq_len),
@@ -1143,6 +1121,11 @@ class _ExecutionTrainingMixin:
                             device=str(dev),
                             full_gate_enabled=True,
                             force_lightning_only=_force_lightning,
+                            graph=_graph_obj,
+                            structural_floor=float(
+                                getattr(config, "lightning_structural_floor", 0.10)
+                                or 0.10
+                            ),
                         )
                         result["_behavioral_fingerprint"] = _fp.to_dict()
                         result["fingerprint_full_ran"] = full_ran
@@ -1175,6 +1158,16 @@ class _ExecutionTrainingMixin:
                             result["wikitext_ppl_improvement"] = wt.get(
                                 "wikitext_ppl_improvement"
                             )
+                        # Slope trajectory fields (for slope reprieve)
+                        for _slope_key in (
+                            "screening_loss_10",
+                            "screening_loss_25",
+                            "screening_loss_50",
+                            "screening_slope",
+                            "screening_slope_consistent",
+                        ):
+                            if wt.get(_slope_key) is not None:
+                                result[_slope_key] = wt[_slope_key]
                             logger.info(
                                 "    Screening WikiText ppl=%.1f score=%.3f (%.0fms)",
                                 wt["wikitext_perplexity"],
@@ -1287,7 +1280,11 @@ class _ExecutionTrainingMixin:
         try:
             return self._micro_train(model, config, dev, seed=seed)
         except Exception as e:
-            return {"error": str(e), "passed": False}
+            return {
+                "error": str(e),
+                "error_type": "training_exception",
+                "passed": False,
+            }
 
     def _train_with_program(
         self,
@@ -1572,17 +1569,19 @@ class _ExecutionTrainingMixin:
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
 
-            if initial_loss and final_loss:
-                result["loss_ratio"] = normalized_loss_ratio(
-                    final_loss, config.vocab_size
-                )
+            if initial_loss is not None and final_loss is not None:
+                _raw = final_loss / max(initial_loss, 1e-6)
+                _norm = normalized_loss_ratio(final_loss, config.vocab_size)
+                result["loss_ratio"] = _raw
+                result["loss_ratio_raw"] = _raw
+                result["loss_ratio_norm"] = _norm
                 result["final_loss"] = final_loss
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
-                result["passed"] = (
-                    result["loss_ratio"] < config.stage1_loss_ratio_threshold
-                )
+                # Use raw final/initial ratio for pass/fail, not normalized
+                raw_ratio = _raw
+                result["passed"] = raw_ratio < config.stage1_loss_ratio_threshold
                 # Validation loss gate
                 _vlr = result.get("validation_loss_ratio")
                 if result["passed"] and _vlr is not None and _vlr > 0.6:
@@ -1620,7 +1619,9 @@ class _ExecutionTrainingMixin:
                 result["n_train_steps"] = len(step_times)
                 result["final_lr"] = getattr(optimizer, "defaults", {}).get("lr", 3e-4)
                 result["training_curve"] = training_curve
-                result["training_program_json"] = json.dumps(program.to_dict())
+                result["training_program_json"] = json.dumps(
+                    json_safe(program.to_dict())
+                )
 
                 # Extract architecture-specific telemetry (MoE, MoD, MoR, etc.)
                 arch_telemetry = self._extract_architecture_telemetry(model)
@@ -1662,7 +1663,9 @@ class _ExecutionTrainingMixin:
     ) -> torch.Tensor:
         """Sample input IDs from configured data source with deterministic seed."""
         mode = str(config.data_mode or "random").strip().lower()
-        generator = torch.Generator(device=dev)
+        # Generator on CPU: corpus batchers use CPU randint for start indices.
+        # Data is moved to the target device after sampling.
+        generator = torch.Generator(device="cpu")
         generator.manual_seed(int(seed))
 
         if mode == "huggingface":
@@ -1703,7 +1706,6 @@ class _ExecutionTrainingMixin:
             int(config.vocab_size),
             (batch_size, seq_len),
             device=dev,
-            generator=generator,
         )
 
     def _make_baseline_data_fn(self, config: RunConfig, split: str = "train"):
@@ -1723,7 +1725,7 @@ class _ExecutionTrainingMixin:
             def data_fn(batch_size, seq_len, dev):
                 step = step_state["step"]
                 step_state["step"] = step + 1
-                generator = torch.Generator(device=dev)
+                generator = torch.Generator(device="cpu")
                 generator.manual_seed(1337 + step)
                 batcher = self._get_hf_batcher(config)
                 if batcher is not None:
@@ -1775,7 +1777,7 @@ class _ExecutionTrainingMixin:
             def data_fn(batch_size, seq_len, dev):
                 step = step_state["step"]
                 step_state["step"] = step + 1
-                generator = torch.Generator(device=dev)
+                generator = torch.Generator(device="cpu")
                 generator.manual_seed(1337 + step)
                 batcher = self._get_corpus_batcher(config)
                 if batcher is not None:
