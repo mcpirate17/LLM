@@ -134,7 +134,7 @@ class _ExecutionCandidatesMixin:
         # Default: graph_synthesis
         grammar = self._build_grammar_config(config)
 
-        graphs = batch_generate(n, grammar)
+        graphs = batch_generate(n, grammar).graphs
         for graph in graphs:
             if self._stop_event.is_set():
                 break
@@ -142,7 +142,6 @@ class _ExecutionCandidatesMixin:
                 graph,
                 max_ops=max(1, int(config.max_ops)),
                 max_depth=max(1, int(config.max_depth)),
-                max_params_ratio=getattr(config, "max_params_ratio", 18.0),
                 min_splits=config.min_splits,
             )
             if not validation.valid:
@@ -185,7 +184,6 @@ class _ExecutionCandidatesMixin:
     def _build_grammar_config(
         self,
         config: RunConfig,
-        excluded_ops: Optional[Set[str]] = None,
         op_weights: Optional[Dict[str, float]] = None,
     ) -> GrammarConfig:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
@@ -197,7 +195,6 @@ class _ExecutionCandidatesMixin:
             if getattr(config, "composition_depth", 0) > 0:
                 grammar.composition_depth = config.composition_depth
             grammar.max_ops = getattr(config, "max_ops", 20)
-            grammar.excluded_ops = grammar.excluded_ops | (excluded_ops or set())
             if op_weights:
                 for op_name, w in op_weights.items():
                     if w < 1.0:
@@ -208,12 +205,9 @@ class _ExecutionCandidatesMixin:
                         grammar.op_weights.setdefault(op_name, w)
             return grammar
 
-        # Exotic mode: use the exotic preset as base, then layer on
-        # excluded_ops and learned op_weights
+        # Exotic mode: use the exotic preset as base, then layer on learned op_weights
         if getattr(config, "_exotic_mode", False):
             grammar = GrammarConfig.exotic(model_dim=config.model_dim)
-            # Merge with defaults (non-causal ops) rather than replacing
-            grammar.excluded_ops = grammar.excluded_ops | (excluded_ops or set())
             # Merge learned op_weights (exotic preset weights take precedence
             # only when learned weight is default 1.0)
             if op_weights:
@@ -229,7 +223,6 @@ class _ExecutionCandidatesMixin:
         # Efficiency mode: use the efficient preset as base
         if getattr(config, "_efficiency_mode", False):
             grammar = GrammarConfig.efficient(model_dim=config.model_dim)
-            grammar.excluded_ops = grammar.excluded_ops | (excluded_ops or set())
             if op_weights:
                 for op_name, w in op_weights.items():
                     if w < 1.0:
@@ -285,9 +278,6 @@ class _ExecutionCandidatesMixin:
         for op_name, default_w in _routing_defaults.items():
             grammar.op_weights.setdefault(op_name, default_w)
 
-        # Merge learned excluded_ops with defaults (non-causal ops)
-        if excluded_ops:
-            grammar.excluded_ops = grammar.excluded_ops | excluded_ops
         # Apply specialized weights
         grammar.category_weights["math_space"] = config.math_space_weight
         # Apply custom category weights from API (overrides defaults)

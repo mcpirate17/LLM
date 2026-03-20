@@ -41,6 +41,16 @@ from .templates import (
 from .validator import validate_graph
 
 
+@dataclass(slots=True)
+class BatchGenerateResult:
+    """Result of batch_generate with generation statistics."""
+
+    graphs: List["ComputationGraph"]
+    n_attempted: int  # total generate_layer_graph calls made
+    n_rejected_grammar: int  # ValueError/RuntimeError during generation
+    n_rejected_dedup: int  # duplicate fingerprints
+
+
 # ── Algebraic Space Compatibility ────────────────────────────────────
 
 
@@ -101,7 +111,6 @@ class GrammarConfig:
     max_depth: int = 10
     max_width: int = 4  # max parallel paths (2 or 3 way splits)
     max_ops: int = 16  # max total operations
-    max_params_ratio: float = 8.0  # max params relative to D^2
     residual_prob: float = 0.7  # probability of residual connection
     split_prob: float = 0.3  # probability of branching into parallel paths
     min_splits: int = 0  # minimum number of split-merge blocks to force
@@ -126,27 +135,6 @@ class GrammarConfig:
             "frequency": 1.0,
             "math_space": 1.5,
             "functional": 3.0,  # Routing/gating/branching ops
-        }
-    )
-    # Excluded op names (quarantined: broken gradient flow or compilation failures)
-    excluded_ops: Set[str] = field(
-        default_factory=lambda: {
-            "softmax_seq",
-            "mean_seq",
-            "sum_seq",
-            "sort_seq",
-            "argsort_seq",
-            "rfft_seq",
-            "irfft_seq",
-        }
-    )
-    # Quarantined ops: known-broken or misleading, excluded from all generation.
-    # These are separate from excluded_ops to allow per-config overrides.
-    quarantined_ops: Set[str] = field(
-        default_factory=lambda: {
-            # dense op with sparsity-themed name — no actual hardware sparse benefit.
-            # Misleads search into thinking it generates HW-efficient architectures.
-            "semi_structured_2_4_linear",
         }
     )
     # Per-op weight multipliers
@@ -178,9 +166,6 @@ class GrammarConfig:
     routing_min_lanes: int = 2  # Minimum routing lanes (2 or 3)
     difficulty_scorer_type: str = "entropy"  # "entropy" or "learned"
 
-    # ── Byte-Safety Config ────────────────────────────────────────────
-    byte_mode: bool = False  # When True, reject byte-unsafe ops
-
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
         self.structured_sparsity_bias = max(
@@ -195,7 +180,6 @@ class GrammarConfig:
             min_depth=3,
             max_depth=8,
             max_ops=12,
-            max_params_ratio=8.0,
             residual_prob=0.7,
             split_prob=0.3,
             merge_prob=0.4,
@@ -350,7 +334,6 @@ class GrammarConfig:
             min_depth=3,
             max_depth=10,
             max_ops=16,
-            max_params_ratio=10.0,
             residual_prob=0.8,
             split_prob=0.3,
             risky_op_prob=0.5,
@@ -432,18 +415,6 @@ def generate_layer_graph(
     if config is None:
         config = GrammarConfig()
 
-    # Merge quarantined ops into excluded set
-    if config.quarantined_ops:
-        config = copy.copy(config)
-        config.excluded_ops = set(config.excluded_ops) | set(config.quarantined_ops)
-
-    # Byte-mode: pre-exclude byte-unsafe ops so generation avoids them
-    if config.byte_mode:
-        from .primitives import _BYTE_UNSAFE_OPS
-
-        config = copy.copy(config)
-        config.excluded_ops = set(config.excluded_ops) | set(_BYTE_UNSAFE_OPS.keys())
-
     rng = random.Random(seed)
     graph = ComputationGraph(config.model_dim)
     input_id = graph.add_input()
@@ -515,7 +486,6 @@ def generate_layer_graph(
             rng,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
-            excluded_ops=frozenset(config.excluded_ops),
         )
 
         if _graph_exceeds_final_budget(trial_graph, config):
@@ -523,17 +493,28 @@ def generate_layer_graph(
         graph = trial_graph
         current = trial_current
 
+    # Optional spectral filter injection (driven by freq_domain_prob)
+    # Wrapped in residual: FFT numerical drift is unrecoverable without skip.
+    # rmsnorm before spectral_filter satisfies MATH_SPACE_RULES.
+    if (
+        rng.random() < config.freq_domain_prob
+        and "spectral_filter" in PRIMITIVE_REGISTRY
+        and not _graph_exceeds_final_budget(graph, config)
+    ):
+        pre_spectral = current
+        current = graph.add_op("rmsnorm", [current])
+        current = graph.add_op("spectral_filter", [current])
+        try:
+            current = graph.add_op("add", [pre_spectral, current])
+        except ValueError:
+            pass  # shape mismatch — keep bare spectral_filter
+
     # Ensure output shape is (B, S, D)
     result_shape = graph.nodes[current].output_shape
     if result_shape.dim != config.model_dim:
         current = graph.add_op(
             "linear_proj", [current], config={"out_dim": config.model_dim}
         )
-
-    if (
-        result_shape.is_freq_domain and "irfft_seq" in PRIMITIVE_REGISTRY
-    ):  # pragma: no cover — irfft_seq removed in audit
-        current = graph.add_op("irfft_seq", [current])
 
     # Optional outer residual connection (if not already added by template)
     # Check if the last op is already an add with input_id
@@ -585,11 +566,12 @@ _ROUTING_OPS: frozenset = frozenset(
 
 def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
+    # Allow +2 depth headroom for multi-step motifs (e.g., 3-4 step math-space
+    # motifs that include norm+op+proj) which can push templates slightly over.
     result = validate_graph(
         graph,
         max_ops=config.max_ops,
-        max_depth=config.max_depth,
-        max_params_ratio=config.max_params_ratio * 3,
+        max_depth=config.max_depth + 2,
         min_splits=config.min_splits,
     )
     if not result.valid:
@@ -608,17 +590,6 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
         op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
         if not op_names & _ROUTING_OPS:
             raise ValueError("routing_mandatory=True but graph has no routing ops")
-
-    # Byte-safety check: reject byte-unsafe ops when byte_mode is enabled
-    if config.byte_mode:
-        for node in graph.nodes.values():
-            if node.is_input:
-                continue
-            op = PRIMITIVE_REGISTRY.get(node.op_name)
-            if op is not None and not op.byte_safe:
-                raise ValueError(
-                    f"byte_mode=True but graph contains byte-unsafe op: {node.op_name}"
-                )
 
     # Depth constraint check: reject ops placed before their min_layer_depth.
     # Approximate layer depth by topological order from input.
@@ -674,6 +645,111 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     if wiring_errors:
         raise ValueError(f"Wiring constraint violated: {wiring_errors[0]}")
 
+    # Activation constraint check: reject activation placements that
+    # empirically always diverge. Checks both directions:
+    #   "before" — which ops may consume this activation's output
+    #   "after"  — which ops must precede this activation (predecessor check)
+    from .motifs import ACTIVATION_RULES, MATH_SPACE_RULES
+    from .op_roles import get_role, OpRole
+
+    for nid in sorted(graph.nodes):
+        node = graph.nodes[nid]
+        if node.is_input:
+            continue
+        rules = ACTIVATION_RULES.get(node.op_name)
+        if rules is None:
+            continue
+
+        # "before" check: reject invalid successors (e.g. sigmoid→add)
+        before = rules.get("before")
+        if before is not None:
+            for other_nid, other_node in graph.nodes.items():
+                if other_node.is_input:
+                    continue
+                if nid not in other_node.input_ids:
+                    continue
+                if other_node.op_name not in before:
+                    raise ValueError(
+                        f"Activation constraint: {node.op_name} (id={nid}) "
+                        f"→ {other_node.op_name} (id={other_nid}) is not allowed; "
+                        f"valid successors: {before}"
+                    )
+
+        # "after" check: reject invalid predecessors (e.g. exp after unbounded op)
+        after = rules.get("after")
+        if after is not None:
+            for parent_id in node.input_ids:
+                parent = graph.nodes.get(parent_id)
+                if parent is None or parent.is_input:
+                    continue
+                parent_role = get_role(parent.op_name)
+                if parent.op_name not in after and parent_role not in after:
+                    raise ValueError(
+                        f"Activation constraint: {parent.op_name} (id={parent_id}) "
+                        f"→ {node.op_name} (id={nid}) is not allowed; "
+                        f"valid predecessors: {after}"
+                    )
+
+    # Math-space composition check: reject math-space ops whose required
+    # predecessors (must_precede) are not satisfied. Templates auto-insert
+    # rmsnorm, but free-form generation can skip it.
+    for nid in sorted(graph.nodes):
+        node = graph.nodes[nid]
+        if node.is_input:
+            continue
+        ms_rules = MATH_SPACE_RULES.get(node.op_name)
+        if ms_rules is None:
+            continue
+
+        # must_precede: at least one parent must be from the required set
+        must_precede = ms_rules.get("must_precede")
+        if must_precede is not None:
+            has_valid_parent = False
+            for parent_id in node.input_ids:
+                parent = graph.nodes.get(parent_id)
+                if parent is not None and parent.op_name in must_precede:
+                    has_valid_parent = True
+                    break
+            if not has_valid_parent:
+                raise ValueError(
+                    f"Math-space constraint: {node.op_name} (id={nid}) "
+                    f"requires predecessor from {must_precede}"
+                )
+
+        # must_follow: this op must come after specific ops
+        must_follow = ms_rules.get("must_follow")
+        if must_follow is not None:
+            has_valid_parent = False
+            for parent_id in node.input_ids:
+                parent = graph.nodes.get(parent_id)
+                if parent is not None and parent.op_name in must_follow:
+                    has_valid_parent = True
+                    break
+            if not has_valid_parent:
+                raise ValueError(
+                    f"Math-space constraint: {node.op_name} (id={nid}) "
+                    f"must follow one of {must_follow}"
+                )
+
+        # must_follow_with: a successor from this set must consume this op
+        must_follow_with = ms_rules.get("must_follow_with")
+        if must_follow_with is not None:
+            has_valid_successor = False
+            for other_nid, other_node in graph.nodes.items():
+                if other_node.is_input:
+                    continue
+                if (
+                    nid in other_node.input_ids
+                    and other_node.op_name in must_follow_with
+                ):
+                    has_valid_successor = True
+                    break
+            if not has_valid_successor:
+                raise ValueError(
+                    f"Math-space constraint: {node.op_name} (id={nid}) "
+                    f"must be followed by one of {must_follow_with}"
+                )
+
 
 def _graph_exceeds_final_budget(
     graph: ComputationGraph,
@@ -690,15 +766,21 @@ def batch_generate(
     base_seed: int = 42,
     use_adaptive_synthesis: bool = False,
     prior: Optional[EfficiencyPrior] = None,
-) -> List[ComputationGraph]:
-    """Generate N unique computation graphs."""
+) -> BatchGenerateResult:
+    """Generate N unique computation graphs.
+
+    Returns BatchGenerateResult with generation statistics (n_attempted,
+    n_rejected_grammar, n_rejected_dedup) to expose the true rejection rate.
+    """
     if config is None:
         config = GrammarConfig()
 
-    graphs = []
+    graphs: List[ComputationGraph] = []
     fingerprints: set = set()
 
     attempts = 0
+    n_rejected_grammar = 0
+    n_rejected_dedup = 0
     max_attempts = n * 10
 
     while len(graphs) < n and attempts < max_attempts:
@@ -710,10 +792,29 @@ def batch_generate(
             if fp not in fingerprints:
                 fingerprints.add(fp)
                 graphs.append(g)
+            else:
+                n_rejected_dedup += 1
         except (ValueError, RuntimeError):
+            n_rejected_grammar += 1
             continue
 
-    return graphs
+    rejection_rate = (n_rejected_grammar + n_rejected_dedup) / max(attempts, 1)
+    logger.info(
+        "batch_generate: %d graphs from %d attempts "
+        "(%d grammar failures, %d duplicates, %.0f%% rejection rate)",
+        len(graphs),
+        attempts,
+        n_rejected_grammar,
+        n_rejected_dedup,
+        rejection_rate * 100,
+    )
+
+    return BatchGenerateResult(
+        graphs=graphs,
+        n_attempted=attempts,
+        n_rejected_grammar=n_rejected_grammar,
+        n_rejected_dedup=n_rejected_dedup,
+    )
 
 
 # ── Legacy compatibility ────────────────────────────────────────────
@@ -730,7 +831,9 @@ class AdaptiveGenerator:
         self.config = config
         self.prior = prior
         self.model_dim = config.model_dim
-        self.max_params = int(config.max_params_ratio * self.model_dim * self.model_dim)
+        self.max_params = (
+            4 * self.model_dim * self.model_dim * 12
+        )  # VRAM is the real constraint
         self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)
 
     def generate(self, seed: Optional[int] = None) -> ComputationGraph:

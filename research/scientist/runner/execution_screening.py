@@ -1080,12 +1080,18 @@ class _ExecutionScreeningMixin:
                 except Exception as e:
                     logger.warning("Failed to initialize efficiency prior: %s", e)
 
-            graphs = batch_generate(
+            _bg_result = batch_generate(
                 config.n_programs,
                 grammar,
                 use_adaptive_synthesis=use_adaptive,
                 prior=prior,
             )
+            graphs = _bg_result.graphs
+            results["batch_generate_stats"] = {
+                "n_attempted": _bg_result.n_attempted,
+                "n_rejected_grammar": _bg_result.n_rejected_grammar,
+                "n_rejected_dedup": _bg_result.n_rejected_dedup,
+            }
         results["funnel_counts"]["raw_generated"] = len(graphs)
         results["total"] = len(graphs)
         op_distribution = self._compute_generated_op_distribution(graphs)

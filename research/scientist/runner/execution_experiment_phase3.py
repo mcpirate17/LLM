@@ -42,10 +42,11 @@ class _ExecutionExperimentPhase3Mixin:
             if self._stop_event.is_set():
                 break
 
-            with self._lock:
-                self._progress.current_program = i + 1
-                self._progress.current_fingerprint = (cand.fingerprint or "")[:10]
-                self._progress.elapsed_seconds = time.time() - t_start
+            self._update_progress(
+                current_program=i + 1,
+                current_fingerprint=(cand.fingerprint or "")[:10],
+                elapsed_seconds=time.time() - t_start,
+            )
 
             model = cand.model
             if model is None:
@@ -221,7 +222,7 @@ class _ExecutionExperimentPhase3Mixin:
             shortfall = original_count - len(graphs)
             if shortfall <= 0:
                 break
-            extra = batch_generate(min(shortfall * 2, original_count), grammar)
+            extra = batch_generate(min(shortfall * 2, original_count), grammar).graphs
             graphs.extend(extra)
             logger.info(
                 "Experiment %s dedup round %d: %d novel / %d generated, added %d extra candidates",
@@ -270,9 +271,7 @@ class _ExecutionExperimentPhase3Mixin:
         grammar: Any,
         config: RunConfig,
     ) -> None:
-        with self._lock:
-            self._progress.total_programs = len(graphs)
-            self._progress.status = "evaluating"
+        self._update_progress(total_programs=len(graphs), status="evaluating")
 
         logger.info(
             "Experiment %s: generated %d graphs (depth=%d, ops=%d, dim=%d, device=%s)",

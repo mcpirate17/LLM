@@ -24,10 +24,10 @@ from ...synthesis.grammar import GrammarConfig, batch_generate
 from ..native_runner import compile_model_native_first as compile_model
 from ...synthesis.validator import validate_graph
 from ...synthesis.serializer import graph_to_json, graph_from_json
-from ...synthesis.primitives import PROTECTED_OPS
 from ...eval.flops import estimate_flops
 from ..notebook import LabNotebook
 from ..refinement_scoring import oscillation_risk_score
+from ..json_utils import json_safe
 
 import logging
 
@@ -152,7 +152,7 @@ class _SynthesisMixin:
             stored_config["grammar_weights"] = applied
             nb.conn.execute(
                 "UPDATE experiments SET config_json = ? WHERE experiment_id = ?",
-                (json.dumps(stored_config), exp_id),
+                (json.dumps(json_safe(stored_config)), exp_id),
             )
             nb.conn.commit()
         except Exception as e:
@@ -178,7 +178,7 @@ class _SynthesisMixin:
             f"Applied learned grammar weights for experiment {exp_id}",
             old_weights=old_weights,
             new_weights=new_weights,
-            evidence=json.dumps({"audit_query": audit_info}, sort_keys=True),
+            evidence=json.dumps(json_safe({"audit_query": audit_info}), sort_keys=True),
         )
         return audit_info
 
@@ -228,7 +228,7 @@ class _SynthesisMixin:
             nb.log_learning_event(
                 "ablation_skipped_no_evaluable_graphs",
                 f"Skipped ablation run: no evaluable graphs for {hypothesis}",
-                evidence=json.dumps(evidence, sort_keys=True),
+                evidence=json.dumps(json_safe(evidence), sort_keys=True),
             )
             return ([], "skipped_no_evaluable_graphs")
 
@@ -312,13 +312,17 @@ class _SynthesisMixin:
                 error_message=s1.get("error") if s1 else None,
                 param_count=s1.get("param_count") if s1 else None,
                 model_source="ablation",
-                perf_report_json=json.dumps(s1.get("perf_report", {}))
+                perf_report_json=json.dumps(json_safe(s1.get("perf_report", {})))
                 if s1_passed
                 else None,
-                kernel_timings_json=json.dumps(s1.get("kernel_timings_ms", {}))
+                kernel_timings_json=json.dumps(
+                    json_safe(s1.get("kernel_timings_ms", {}))
+                )
                 if s1_passed
                 else None,
-                starvation_report_json=json.dumps(s1.get("starvation_report", {}))
+                starvation_report_json=json.dumps(
+                    json_safe(s1.get("starvation_report", {}))
+                )
                 if s1_passed
                 else None,
             )
@@ -362,14 +366,16 @@ class _SynthesisMixin:
                 f"Ablation for '{hypothesis}': delta={ablation_delta:.4f} "
                 f"(original={original_loss_ratio:.4f}, ablated={ablation_best_lr:.4f})",
                 evidence=json.dumps(
-                    {
-                        "hypothesis": hypothesis,
-                        "original_loss_ratio": original_loss_ratio,
-                        "ablation_best_loss_ratio": ablation_best_lr,
-                        "ablation_delta": ablation_delta,
-                        "ablation_s1_pass_rate": stage1_pass / max(total, 1),
-                        "total_ablation_graphs": total,
-                    },
+                    json_safe(
+                        {
+                            "hypothesis": hypothesis,
+                            "original_loss_ratio": original_loss_ratio,
+                            "ablation_best_loss_ratio": ablation_best_lr,
+                            "ablation_delta": ablation_delta,
+                            "ablation_s1_pass_rate": stage1_pass / max(total, 1),
+                            "total_ablation_graphs": total,
+                        }
+                    ),
                     sort_keys=True,
                 ),
             )
@@ -600,9 +606,31 @@ class _SynthesisMixin:
 
         components = {}
 
-        # Quality: 1 - loss_ratio
-        lr = s1_result.get("loss_ratio", 1.0) if s1_result else 1.0
-        components["quality"] = max(0.0, 1.0 - lr)
+        # Quality: combine loss ratio with absolute loss.
+        # Loss ratio alone is misleading — a model can go from 250 → 12 (ratio 0.05)
+        # but still be above random baseline.  Penalize final_loss above baseline.
+        _fl = s1_result.get("final_loss") if s1_result else None
+        _il = s1_result.get("initial_loss") if s1_result else None
+        if _fl is not None and _il is not None and _il > 0:
+            lr = _fl / _il
+        else:
+            lr = s1_result.get("loss_ratio", 1.0) if s1_result else 1.0
+        ratio_quality = max(0.0, 1.0 - lr)
+
+        # Absolute quality: how far below random baseline?
+        # ln(vocab_size) is the expected loss of a random model.
+        import math as _math
+
+        _random_baseline = _math.log(max(config.vocab_size, 2))
+        if _fl is not None and _fl < _random_baseline:
+            # Below baseline: scale 0→1 as final_loss goes from baseline to 0
+            absolute_quality = 1.0 - (_fl / _random_baseline)
+        else:
+            absolute_quality = 0.0
+
+        # Blend: 50% ratio + 50% absolute.  This ensures evolution rewards
+        # both improvement rate AND reaching a useful absolute loss level.
+        components["quality"] = 0.5 * ratio_quality + 0.5 * absolute_quality
 
         # Efficiency: use actual efficiency_multiple vs GPT-2
         max_params = config.model_dim * config.vocab_size * 2
@@ -682,13 +710,6 @@ class _SynthesisMixin:
         recipe = analysis.get("recipe", {})
         hints = recipe.get("grammar_hints", {})
 
-        # Exclude risky ops (but never protected ones)
-        exclude_ops = hints.get("exclude_ops", [])
-        if exclude_ops:
-            base_grammar.excluded_ops = base_grammar.excluded_ops | (
-                set(exclude_ops) - PROTECTED_OPS
-            )
-
         # Boost ops (cap at 3.0)
         boost_ops = hints.get("boost_ops", {})
         for op_name, multiplier in boost_ops.items():
@@ -744,7 +765,7 @@ class _SynthesisMixin:
             logger.warning(
                 "Refinement mode requested without source IDs; falling back to synthesis generation"
             )
-            return batch_generate(target_n, grammar)
+            return batch_generate(target_n, grammar).graphs
 
         source_pairs: List[Tuple[str, Any, Dict[str, Any]]] = []
         source_stage1_passed = 0
@@ -768,7 +789,7 @@ class _SynthesisMixin:
                 "Refinement mode had %d source IDs but no reconstructable graphs; falling back to synthesis",
                 len(source_ids),
             )
-            return batch_generate(target_n, grammar)
+            return batch_generate(target_n, grammar).graphs
 
         try:
             from ...search.evolution import _mutate_graph
@@ -777,7 +798,7 @@ class _SynthesisMixin:
                 "Mutation helper unavailable (%s); falling back to synthesis generation",
                 e,
             )
-            return batch_generate(target_n, grammar)
+            return batch_generate(target_n, grammar).graphs
 
         seed = self._stable_seed("fingerprint_refine", exp_id, ",".join(source_ids))
         rng = random.Random(seed)
@@ -902,7 +923,7 @@ class _SynthesisMixin:
         mutated_graphs = [g for _, g in candidate_pool[:mutated_budget]]
 
         if len(mutated_graphs) < target_n:
-            fallback = batch_generate(target_n - len(mutated_graphs), grammar)
+            fallback = batch_generate(target_n - len(mutated_graphs), grammar).graphs
             for f in fallback:
                 f.metadata.setdefault("refinement", {})
                 f.metadata["refinement"]["intent"] = intent
