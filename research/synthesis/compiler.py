@@ -8,6 +8,7 @@ parameters allocated for parameterized ops.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Dict, List, Optional, Tuple, Callable
 
@@ -17,6 +18,14 @@ import torch.nn.functional as F
 
 from .primitives import get_primitive, PrimitiveOp, _ALGEBRAIC_SPACE_TAGS
 from .graph import ComputationGraph, ShapeInfo
+from .compiler_op_utils import record_kernel_fallback
+
+logger = logging.getLogger(__name__)
+
+# Module-level kernel fallback state — set True on first native kernel fallback.
+# Importable by other modules (e.g. fingerprint.py) to condition validity flags.
+_kernel_fallback_occurred: bool = False
+
 
 try:
     from . import kernels
@@ -87,6 +96,12 @@ def _parallel_associative_scan(log_a: torch.Tensor, b: torch.Tensor) -> torch.Te
     if S <= 1:
         return b
 
+    logger.debug(
+        "kogge_stone_scan: using torch.cat fallback (S=%d, log2(S)=%d allocs)",
+        S,
+        S.bit_length(),
+    )
+
     a = torch.exp(log_a)
     h = b
 
@@ -124,29 +139,25 @@ def register_op(name: str):
     return decorator
 
 
-@register_op("identity")
-def _op_identity(_, inputs, __):
-    """Pass-through op — used by workflow_converter for uniform routing."""
-    return inputs[0]
-
-
 def _record_sparse_telemetry(
     module: nn.Module,
     op_name: str,
     density: float,
     fallback_reason: Optional[str] = None,
 ) -> None:
-    telemetry = getattr(module, "sparse_telemetry", {})
-    stats = telemetry.get(
-        op_name,
-        {
+    telemetry = getattr(module, "sparse_telemetry", None)
+    if telemetry is None:
+        telemetry = {}
+        module.sparse_telemetry = telemetry
+    stats = telemetry.get(op_name)
+    if stats is None:
+        stats = {
             "calls": 0,
             "fallback_calls": 0,
             "density_sum": 0.0,
             "last_density": 1.0,
             "last_fallback_reason": None,
-        },
-    )
+        }
     stats["calls"] += 1
     stats["density_sum"] += float(density)
     stats["last_density"] = float(density)
@@ -167,10 +178,9 @@ def _record_routing_telemetry(
 
     Samples every 8th call to reduce overhead while maintaining statistical accuracy.
     """
-    telemetry = getattr(
-        module,
-        "routing_telemetry",
-        {
+    telemetry = getattr(module, "routing_telemetry", None)
+    if telemetry is None:
+        telemetry = {
             "tokens_total": 0,
             "tokens_processed": 0,
             "expert_counts": torch.zeros(n_experts, device=selected_experts.device),
@@ -178,8 +188,8 @@ def _record_routing_telemetry(
             "count": 0,
             "heatmap": None,
             "_call_count": -1,
-        },
-    )
+        }
+        module.routing_telemetry = telemetry
 
     telemetry["_call_count"] += 1
     B, S = selected_experts.shape[:2]
@@ -321,376 +331,6 @@ def _c(x):
     )
 
 
-@register_op("neg")
-def _op_neg(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.neg_f32(x)
-    return -x
-
-
-@register_op("abs")
-def _op_abs(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.abs_f32(x)
-    return torch.abs(x)
-
-
-@register_op("exp")
-def _op_exp(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.exp_f32(torch.clamp(x, -20, 20))
-    return torch.exp(torch.clamp(x, -20, 20))
-
-
-@register_op("log")
-def _op_log(_, inputs, __):
-    x = inputs[0]
-    # softplus(x) = log(1+exp(x)) is always positive with bounded gradient
-    # log(softplus(x)) gives log-like behavior without near-zero input issues
-    soft = F.softplus(x, beta=1.0, threshold=20)
-    if _c(x):
-        return aria_core.log_f32(soft.detach())
-    return torch.log(soft)
-
-
-@register_op("sin")
-def _op_sin(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.sin_f32(x)
-    return torch.sin(x)
-
-
-@register_op("cos")
-def _op_cos(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.cos_f32(x)
-    return torch.cos(x)
-
-
-@register_op("tanh")
-def _op_tanh(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.tanh_f32(x)
-    return torch.tanh(x)
-
-
-@register_op("sigmoid")
-def _op_sigmoid(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.sigmoid_f32(x)
-    return torch.sigmoid(x)
-
-
-@register_op("relu")
-def _op_relu(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.relu_f32(x)
-    return F.relu(x)
-
-
-@register_op("gelu")
-def _op_gelu(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.gelu_f32(x)
-    return F.gelu(x)
-
-
-@register_op("silu")
-def _op_silu(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.silu_f32(x)
-    return F.silu(x)
-
-
-@register_op("sqrt")
-def _op_sqrt(_, inputs, __):
-    x = inputs[0]
-    clamped = torch.clamp(x.abs(), min=1e-8)
-    if _c(x):
-        return aria_core.sqrt_f32(clamped)
-    return torch.sqrt(clamped)
-
-
-@register_op("square")
-def _op_square(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.square_f32(x)
-    return x * x
-
-
-@register_op("sign_ste")
-def _op_sign_ste(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        signs = aria_core.sign_ste_f32(x)
-        return x + (signs - x).detach()
-    signs = torch.sign(x)
-    return x + (signs - x).detach()
-
-
-@register_op("reciprocal")
-def _op_reciprocal(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.reciprocal_f32(x)
-    # Sigmoid-based: 1/(1+sigmoid(x)), range [0.5, 1.0], bounded gradient
-    return 1.0 / (1.0 + torch.sigmoid(x))
-
-
-@register_op("add")
-def _op_add(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a) and a.numel() == b.numel():
-        return aria_core.add_f32(a, b)
-    return a + b
-
-
-@register_op("mul")
-def _op_mul(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.mul_f32(a, b)
-    return a * b
-
-
-@register_op("sub")
-def _op_sub(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.sub_f32(a, b)
-    return a - b
-
-
-@register_op("div_safe")
-def _op_div_safe(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.div_safe_f32(a, b)
-    # Sigmoid denominator: range [1, 2], always positive, bounded gradient
-    return a / (1.0 + torch.sigmoid(b))
-
-
-@register_op("maximum")
-def _op_maximum(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.maximum_f32(a, b)
-    return torch.maximum(a, b)
-
-
-@register_op("minimum")
-def _op_minimum(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.minimum_f32(a, b)
-    return torch.minimum(a, b)
-
-
-@register_op("sum_last")
-def _op_sum_last(_, inputs, __):
-    return inputs[0].sum(dim=-1, keepdim=True)
-
-
-@register_op("mean_last")
-def _op_mean_last(_, inputs, __):
-    return inputs[0].mean(dim=-1, keepdim=True)
-
-
-@register_op("max_last")
-def _op_max_last(_, inputs, __):
-    return inputs[0].max(dim=-1, keepdim=True).values
-
-
-@register_op("norm_last")
-def _op_norm_last(_, inputs, __):
-    return inputs[0].norm(dim=-1, keepdim=True)
-
-
-@register_op("sum_seq")
-def _op_sum_seq(_, inputs, __):
-    return inputs[0].sum(dim=1, keepdim=True)
-
-
-@register_op("mean_seq")
-def _op_mean_seq(_, inputs, __):
-    return inputs[0].mean(dim=1, keepdim=True)
-
-
-@register_op("cumsum")
-def _op_cumsum(_, inputs, __):
-    return torch.cumsum(inputs[0], dim=1)
-
-
-@register_op("cumprod_safe")
-def _op_cumprod_safe(_, inputs, __):
-    return torch.cumprod(torch.clamp(inputs[0], -2, 2), dim=1)
-
-
-@register_op("matmul")
-def _op_matmul(_, inputs, __):
-    a, b = inputs
-    if a.dim() != 3 or b.dim() != 3:
-        return a  # Fallback for safety
-
-    # CASE 1: Standard Attention Pattern [B, S, D] @ [B, S, D]
-    if a.shape[-1] == b.shape[-1]:
-        scale = math.sqrt(float(a.shape[-1]))
-        # (B, S, D) @ (B, D, S) -> (B, S, S)
-        scores = torch.bmm(a, b.transpose(-2, -1)) / scale
-        S = a.shape[1]
-        if S > 1:
-            mask = torch.triu(
-                torch.ones(S, S, device=a.device, dtype=torch.bool), diagonal=1
-            )
-            scores.masked_fill_(mask, float("-inf"))
-        # (B, S, S) @ (B, S, D) -> (B, S, D)
-        return torch.bmm(F.softmax(scores, dim=-1), b)
-
-    # CASE 2: Linear Algebra Pattern [B, S, D] @ [B, D, K]
-    if a.shape[2] == b.shape[1]:
-        if _c(a):
-            return aria_core.matmul_f32(a, b)
-        return torch.bmm(a, b)
-
-    # CASE 3: Incompatible fallback
-    return a
-
-
-@register_op("outer_product")
-def _op_outer_product(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.mul_f32(a, b)
-    return a * b
-
-
-@register_op("transpose_sd")
-def _op_transpose_sd(_, inputs, __):
-    return inputs[0].transpose(1, 2).contiguous().transpose(1, 2)
-
-
-@register_op("split2")
-def _op_split2(_, inputs, config):
-    part = int(config.get("part", 0))
-    x = inputs[0]
-    w = x.shape[-1] // 2
-    if part == 0:
-        return x[..., :w].contiguous()
-    return x[..., w : 2 * w].contiguous()
-
-
-@register_op("split3")
-def _op_split3(_, inputs, config):
-    part = int(config.get("part", 0))
-    x = inputs[0]
-    w = x.shape[-1] // 3
-    if part == 0:
-        return x[..., :w].contiguous()
-    if part == 1:
-        return x[..., w : 2 * w].contiguous()
-    return x[..., 2 * w : 3 * w].contiguous()
-
-
-@register_op("split4")
-def _op_split4(_, inputs, config):
-    part = int(config.get("part", 0))
-    x = inputs[0]
-    w = x.shape[-1] // 4
-    if part == 0:
-        return x[..., :w].contiguous()
-    if part == 1:
-        return x[..., w : 2 * w].contiguous()
-    if part == 2:
-        return x[..., 2 * w : 3 * w].contiguous()
-    return x[..., 3 * w : 4 * w].contiguous()
-
-
-@register_op("concat")
-def _op_concat(_, inputs, __):
-    return torch.cat(inputs, dim=-1).contiguous()
-
-
-@register_op("roll_seq")
-def _op_roll_seq(_, inputs, __):
-    return torch.roll(inputs[0], shifts=1, dims=1)
-
-
-@register_op("roll_neg")
-def _op_roll_neg(_, inputs, __):
-    return torch.roll(inputs[0], shifts=-1, dims=1)
-
-
-@register_op("multi_head_mix")
-def _op_multi_head_mix(_, inputs, config):
-    x = inputs[0]
-    B, S, D = x.shape
-    H = config.get("n_heads", 4)
-    if D % H != 0:
-        H = 1
-    return F.normalize(x.view(B, S, H, -1), p=2, dim=-1).view(B, S, D)
-
-
-@register_op("linear_proj")
-@register_op("linear_proj_down")
-@register_op("linear_proj_up")
-def _op_linear_common(module, inputs, _):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    x = inputs[0]
-    if _c(x):
-        xf, orig_shape = _flatten_for_kernel(x)
-        bias = getattr(module, "bias", None)
-        out = aria_core.linear_f32(xf, module.weight, bias)
-        return _unflatten_from_kernel(out, orig_shape)
-    return F.linear(x, module.weight, getattr(module, "bias", None))
-
-
-@register_op("fused_linear_gelu")
-def _op_fused_linear_gelu(module, inputs, _):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    x = inputs[0]
-    if _c(x):
-        xf, orig_shape = _flatten_for_kernel(x)
-        bias = getattr(module, "bias", None)
-        if bias is None:
-            bias = torch.zeros(module.weight.shape[0], device=x.device, dtype=x.dtype)
-        out = aria_core.fused_linear_gelu_f32(xf, module.weight, bias)
-        return _unflatten_from_kernel(out, orig_shape)
-    if HAS_KERNELS and x.is_cuda:
-        bias = getattr(module, "bias", None)
-        return kernels.fused_linear_gelu(x, module.weight, bias)
-    out = F.linear(x, module.weight)
-    if hasattr(module, "bias"):
-        out = out + module.bias
-    return F.gelu(out)
-
-
-@register_op("learnable_scale")
-def _op_learnable_scale(module, inputs, _):
-    if not hasattr(module, "scale"):
-        return inputs[0]
-    return inputs[0] * module.scale
-
-
-@register_op("learnable_bias")
-def _op_learnable_bias(module, inputs, _):
-    if not hasattr(module, "bias"):
-        return inputs[0]
-    return inputs[0] + module.bias
-
-
 @register_op("selective_scan")
 def _op_selective_scan(module, inputs, _):
     """
@@ -749,126 +389,6 @@ def _op_conv1d_seq(module, inputs, _):
     return out.transpose(1, 2)
 
 
-@register_op("topk_gate")
-def _op_topk_gate(module, inputs, _):
-    if not hasattr(module, "gate_proj"):
-        return inputs[0]
-    x = inputs[0]
-    B, S, D = x.shape
-    if (
-        _c(x)
-        and hasattr(aria_core, "topk_gate_f32")
-        and isinstance(module.gate_proj, torch.Tensor)
-        and module.gate_proj.dim() == 2
-        and module.gate_proj.shape[0] >= 2
-        and module.gate_proj.shape[1] == D
-    ):
-        try:
-            native_out = aria_core.topk_gate_f32(x, module.gate_proj, 2)
-            if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
-                return native_out
-        except Exception:
-            pass
-    logits = F.linear(x, module.gate_proj)
-    gate_weights = F.softmax(logits, dim=-1)
-
-    # Record routing telemetry
-    _record_routing_telemetry(module, 2, gate_weights.argmax(dim=-1), logits=logits)
-
-    half = D // 2
-    out = torch.cat(
-        [
-            x[..., :half] * gate_weights[..., 0:1],
-            x[..., half : 2 * half] * gate_weights[..., 1:2],
-        ],
-        dim=-1,
-    )
-    if D > 2 * half:
-        out = torch.cat([out, x[..., 2 * half :]], dim=-1)
-    return out
-
-
-@register_op("moe_topk")
-def _op_moe_topk(module, inputs, config):
-    """Sparse Mixture-of-Experts channel mixer."""
-    x = inputs[0]
-    B, S, D = x.shape
-
-    n_experts = int(config.get("num_experts", 4))
-    top_k = int(config.get("top_k", 2))
-
-    if not hasattr(module, "gate_weight"):
-        return x
-
-    logits = F.linear(x, module.gate_weight)
-    weights, indices = logits.topk(top_k, dim=-1)
-    weights = F.softmax(weights, dim=-1)
-
-    # Record routing telemetry
-    _record_routing_telemetry(module, n_experts, indices, logits=logits)
-
-    # Weighted expert contributions
-    if hasattr(module, "experts"):
-        output = torch.zeros_like(x)
-        for i, expert in enumerate(module.experts):
-            mask = (indices == i).any(dim=-1)
-            if mask.any():
-                expert_input = x[mask]
-                exp_mask = indices == i
-                expert_weight = weights[exp_mask].reshape(-1, 1)
-                output[mask] = output[mask] + expert(expert_input) * expert_weight
-    else:
-        output = F.linear(x, module.weight) if hasattr(module, "weight") else x
-
-    return output
-
-
-@register_op("moe_2expert")
-def _op_moe_2expert(module, inputs, config):
-    """Lightweight 2-expert MoE with learned gating."""
-    x = inputs[0]
-    B, S, D = x.shape
-
-    if not hasattr(module, "gate_proj"):
-        return x
-
-    # Compute gate scores
-    logits = F.linear(x, module.gate_proj)  # (B, S, 2)
-    weights = F.softmax(logits, dim=-1)  # (B, S, 2)
-
-    # Record routing telemetry
-    _record_routing_telemetry(module, 2, weights.argmax(dim=-1), logits=logits)
-
-    # Each expert is a simple linear projection
-    e0 = F.linear(x, module.expert_0_weight)  # (B, S, D)
-    e1 = F.linear(x, module.expert_1_weight)  # (B, S, D)
-
-    # Weighted combination
-    output = weights[..., 0:1] * e0 + weights[..., 1:2] * e1
-    return output
-
-
-@register_op("swiglu_mlp")
-def _op_swiglu_mlp(module, inputs, _):
-    """SwiGLU MLP channel mixer."""
-    x = inputs[0]
-    if not hasattr(module, "gate_proj"):
-        return x
-    if _c(x) and x.dim() >= 2:
-        x2, orig = _flatten_for_kernel(x)
-        y = aria_core.swiglu_f32(
-            x2,
-            module.gate_proj.weight,
-            module.up_proj.weight,
-            module.down_proj.weight,
-            getattr(module.gate_proj, "bias", None),
-            getattr(module.up_proj, "bias", None),
-            getattr(module.down_proj, "bias", None),
-        )
-        return _unflatten_from_kernel(y, orig)
-    return module.down_proj(F.silu(module.gate_proj(x)) * module.up_proj(x))
-
-
 @register_op("rwkv_channel")
 def _op_rwkv_channel(module, inputs, _):
     """RWKV-style channel mixing with time-shift."""
@@ -894,66 +414,6 @@ def _op_rwkv_channel(module, inputs, _):
     # Receptance-weighted gated linear update
     k = torch.square(torch.relu(module.key_proj(xk)))
     return torch.sigmoid(module.receptance_proj(xr)) * module.value_proj(k)
-
-
-@register_op("softmax_attention")
-def _op_softmax_attention(module, inputs, _):
-    """Standard causal multi-head softmax attention."""
-    x = inputs[0]
-    if not hasattr(module, "q_proj"):
-        return x
-    B, S, _ = x.shape
-    nh, hd = module.n_heads, module.head_dim
-    q = module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    k = module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
-    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-    attn.masked_fill_(mask, float("-inf"))
-    attn = F.softmax(attn, dim=-1)
-    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
-    return module.o_proj(out)
-
-
-@register_op("linear_attention")
-def _op_linear_attention(module, inputs, _):
-    """Linear attention with ELU kernel (O(S) complexity)."""
-    x = inputs[0]
-    if not hasattr(module, "q_proj"):
-        return x
-    B, S, _ = x.shape
-    nh, hd = module.n_heads, module.head_dim
-    q = F.elu(module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
-    k = F.elu(module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
-    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    # Causal linear attention via cumulative sum
-    kv = torch.einsum("bhsd,bhse->bhsde", k, v)
-    kv_cumsum = kv.cumsum(dim=2)
-    k_cumsum = k.cumsum(dim=2)
-    out = torch.einsum("bhsd,bhsde->bhse", q, kv_cumsum)
-    denom = torch.einsum("bhsd,bhsd->bhs", q, k_cumsum).unsqueeze(-1).clamp(min=1e-6)
-    out = out / denom
-    return module.o_proj(out.transpose(1, 2).reshape(B, S, -1))
-
-
-@register_op("graph_attention")
-def _op_graph_attention(module, inputs, _):
-    """Graph attention with learned edge features + causal softmax attention."""
-    x = inputs[0]
-    if not hasattr(module, "q_proj"):
-        return x
-    B, S, _ = x.shape
-    nh, hd = module.n_heads, module.head_dim
-    x_e = x + module.edge_proj(x)
-    q = module.q_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
-    k = module.k_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
-    v = module.v_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
-    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
-    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-    attn.masked_fill_(mask, float("-inf"))
-    attn = F.softmax(attn, dim=-1)
-    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
-    return module.o_proj(out)
 
 
 @register_op("diff_attention")
@@ -1116,12 +576,7 @@ def _op_block_sparse_linear(module, inputs, config):
         getattr(module, "block_density", config.get("block_density", 0.25))
     )
 
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-        and not inputs[0].requires_grad
-    ):
+    if _c(inputs[0]):
         # Generate block mask (coarse)
         mask = _build_block_sparse_mask(module.weight, block_size, block_density)
         # Convert to uint8 for kernel (needs downsampling if we want true block sparsity optimization)
@@ -1152,8 +607,8 @@ def _op_block_sparse_linear(module, inputs, config):
             return kernels.triton_block_sparse_linear(
                 inputs[0], module.weight, mask, block_size
             )
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, AttributeError) as e:
+            record_kernel_fallback("triton_block_sparse_linear", e)
 
     return F.linear(inputs[0], module.weight * mask)
 
@@ -1162,12 +617,7 @@ def _op_block_sparse_linear(module, inputs, config):
 def _op_low_rank_proj(module, inputs, _):
     if not hasattr(module, "U") or not hasattr(module, "V"):
         return inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-        and not inputs[0].requires_grad
-    ):
+    if _c(inputs[0]):
         bias = getattr(module, "bias", None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
         # C kernel expects U:[rank, dim_in], V:[dim_out, rank] but Python stores
@@ -1187,12 +637,7 @@ def _op_low_rank_proj(module, inputs, _):
 def _op_grouped_linear(module, inputs, _):
     if not hasattr(module, "weight"):
         return inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-        and not inputs[0].requires_grad
-    ):
+    if _c(inputs[0]):
         bias = getattr(module, "bias", None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
         out = aria_core.linear_grouped_f32(x, module.weight, bias, module.n_groups)
@@ -1215,12 +660,7 @@ def _op_grouped_linear(module, inputs, _):
 def _op_bottleneck_proj(module, inputs, _):
     if not hasattr(module, "down") or not hasattr(module, "up"):
         return inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-        and not inputs[0].requires_grad
-    ):
+    if _c(inputs[0]):
         b_down = getattr(module, "bias_down", None)
         b_up = getattr(module, "bias_up", None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
@@ -1235,12 +675,7 @@ def _op_bottleneck_proj(module, inputs, _):
 def _op_shared_basis_proj(module, inputs, _):
     if not hasattr(module, "mixing") or not hasattr(module, "basis"):
         return inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-        and not inputs[0].requires_grad
-    ):
+    if _c(inputs[0]):
         x, orig_shape = _flatten_for_kernel(inputs[0])
         # C kernel expects mixing as (k, D) but we store (D, k) — transpose
         out = aria_core.linear_shared_basis_f32(
@@ -1255,12 +690,7 @@ def _op_shared_basis_proj(module, inputs, _):
 def _op_tied_proj(module, inputs, _):
     if not hasattr(module, "tied_weight"):
         return inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-        and not inputs[0].requires_grad
-    ):
+    if _c(inputs[0]):
         b_down = getattr(module, "bias_down", None)
         b_up = getattr(module, "bias_up", None)
         x, orig_shape = _flatten_for_kernel(inputs[0])
@@ -1287,53 +717,6 @@ def _op_semi_structured_2_4_linear(module, inputs, config):
     return F.linear(inputs[0], module.weight * mask)
 
 
-@register_op("rmsnorm")
-def _op_rmsnorm(module, inputs, _):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    x = inputs[0]
-    if _c(x):
-        return aria_core.rmsnorm_f32(x, module.weight, 1e-6)
-    if HAS_KERNELS and x.is_cuda:
-        try:
-            return kernels.triton_rmsnorm(x, module.weight)
-        except Exception:
-            pass
-    eps = 1e-6
-    rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + eps)
-    return (x / rms) * module.weight
-
-
-@register_op("layernorm")
-def _op_layernorm(module, inputs, _):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    x = inputs[0]
-    if _c(x):
-        return aria_core.layernorm_f32(x, module.weight, module.bias, 1e-5)
-    return F.layer_norm(x, [x.shape[-1]], module.weight, module.bias)
-
-
-@register_op("gated_linear")
-def _op_gated_linear(module, inputs, _):
-    if not hasattr(module, "linear_weight"):
-        return inputs[0]
-    x = inputs[0]
-    if _c(x) and x.ndim == 3:
-        out = aria_core.gated_linear_f32(
-            x,
-            module.linear_weight,
-            module.linear_bias,
-            module.gate_weight,
-            module.gate_bias,
-        )
-        if out.ndim == x.ndim:
-            return out
-    linear = F.linear(x, module.linear_weight, module.linear_bias)
-    gate = torch.sigmoid(F.linear(x, module.gate_weight, module.gate_bias))
-    return linear * gate
-
-
 @register_op("rwkv_time_mixing")
 def _op_rwkv_time_mixing(module, inputs, _):
     """RWKV WKV attention optimized with parallel scan semantics."""
@@ -1343,12 +726,7 @@ def _op_rwkv_time_mixing(module, inputs, _):
     if (
         _c(x)
         and hasattr(aria_core, "rwkv_time_mixing_f32")
-        and hasattr(module, "w_decay")
-        and hasattr(module, "u_bonus")
-        and hasattr(module, "W_k")
-        and hasattr(module, "W_v")
-        and hasattr(module, "W_r")
-        and hasattr(module, "W_o")
+        and getattr(module, "_rwkv_kernel_ready", False)
     ):
         out_native = aria_core.rwkv_time_mixing_f32(
             x,
@@ -1414,553 +792,113 @@ def _op_rwkv_time_mixing(module, inputs, _):
     return F.linear(out, module.W_o)
 
 
-@register_op("padic_residual")
-def _op_padic_residual(module, inputs, config):
-    """Multi-resolution p-adic residual connection."""
-    from ..mathspaces.padic import execute_padic_residual
+@register_op("kronecker_linear")
+def _op_kronecker_linear(module, inputs, config):
+    import math as _math
 
-    return execute_padic_residual(module, inputs[0])
-
-
-@register_op("embedding_lookup")
-def _op_embedding_lookup(module, inputs, _):
-    # In compiled model context, input is usually already embedded — pass through.
-    if not hasattr(module, "embed_table"):
-        return inputs[0]
-    x = inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and hasattr(aria_core, "embedding_lookup_f32")
-        and isinstance(x, torch.Tensor)
-        and x.device.type == "cpu"
-        and x.dtype in (torch.int32, torch.int64)
-    ):
-        try:
-            native_out = aria_core.embedding_lookup_f32(module.embed_table, x)
-            if isinstance(native_out, torch.Tensor):
-                return native_out
-        except Exception:
-            pass
-    return x
-
-
-class _RopeRotateC(torch.autograd.Function):
-    """C-accelerated RoPE rotation with analytical backward (rotate by -angle)."""
-
-    __slots__ = ()
-
-    @staticmethod
-    def forward(ctx, x, theta_base):
-        ctx.theta_base = theta_base
-        ctx.shape = x.shape
-        return aria_core.rope_rotate_f32(x.detach().contiguous(), theta_base)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # RoPE backward: rotate by -angle = apply RoPE to [-x_odd, x_even] pairs
-        # Equivalent to: cos(-a)*g_even - sin(-a)*g_odd = cos(a)*g_even + sin(a)*g_odd
-        # But simpler: just negate sin in the rotation
-        B, S, D = ctx.shape
-        g = grad_output.contiguous()
-        half_dim = D // 2
-        pos = torch.arange(S, device=g.device, dtype=g.dtype).unsqueeze(1)
-        freqs = 1.0 / (
-            ctx.theta_base
-            ** (torch.arange(0, D, 2, device=g.device, dtype=g.dtype) / D)
-        )
-        angles = pos * freqs.unsqueeze(0)
-        cos_a = torch.cos(angles).unsqueeze(0)
-        sin_a = torch.sin(angles).unsqueeze(0)
-        g1, g2 = g[..., 0::2], g[..., 1::2]
-        grad_in = torch.zeros_like(g)
-        # Inverse rotation (transpose of rotation matrix)
-        grad_in[..., 0::2] = g1 * cos_a + g2 * sin_a
-        grad_in[..., 1::2] = -g1 * sin_a + g2 * cos_a
-        return grad_in, None
-
-
-@register_op("rope_rotate")
-def _op_rope_rotate(_, inputs, __):
-    x = inputs[0]
-    if (
-        HAS_ARIA_CORE
-        and hasattr(aria_core, "rope_rotate_f32")
-        and x.device.type == "cpu"
-        and x.dtype == torch.float32
-    ):
-        return _RopeRotateC.apply(x, ROPE_THETA_BASE)
-    B, S, D = x.shape
-    pos = torch.arange(S, device=x.device, dtype=x.dtype).unsqueeze(1)
-    freqs = 1.0 / (
-        ROPE_THETA_BASE ** (torch.arange(0, D, 2, device=x.device, dtype=x.dtype) / D)
-    )
-    angles = pos * freqs.unsqueeze(0)
-    cos_a = torch.cos(angles).unsqueeze(0)
-    sin_a = torch.sin(angles).unsqueeze(0)
-    x1, x2 = x[..., 0::2], x[..., 1::2]
-    out = torch.zeros_like(x)
-    out[..., 0::2] = x1 * cos_a - x2 * sin_a
-    out[..., 1::2] = x1 * sin_a + x2 * cos_a
-    return out
-
-
-@register_op("cosine_similarity")
-def _op_cosine_similarity(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if (
-        _c(a)
-        and _c(b)
-        and a.dim() == 3
-        and b.dim() == 3
-        and a.shape == b.shape
-        and hasattr(aria_core, "cosine_similarity_f32")
-    ):
-        native_sim = aria_core.cosine_similarity_f32(a, b)
-        if isinstance(native_sim, torch.Tensor):
-            if native_sim.dim() == 2 and native_sim.shape == a.shape[:2]:
-                return native_sim.unsqueeze(-1)
-            if (
-                native_sim.dim() == 3
-                and native_sim.shape[-1] == 1
-                and native_sim.shape[:2] == a.shape[:2]
-            ):
-                return native_sim
-    sim = F.cosine_similarity(a, b, dim=-1)
-    return sim.unsqueeze(-1)
-
-
-@register_op("gather_topk")
-def _op_gather_topk(_, inputs, config):
-    x, scores = inputs[0], inputs[1]
-    k = min(int(config.get("k", 4)), x.shape[1])
-    if scores.dim() == 3:
-        # Reduce to (B, S) — mean over last dim handles any D, not just D=1
-        scores = scores.mean(dim=-1)
-    if _c(x) and _c(scores) and scores.dim() == 2 and x.dim() == 3:
-        gathered, _ = aria_core.gather_topk_f32(scores, x, k)
-        if gathered.shape[1] < x.shape[1]:
-            pad = x[:, : x.shape[1] - gathered.shape[1]]
-            gathered = torch.cat([gathered, pad], dim=1)
-        return gathered
-    _, indices = torch.topk(scores, k, dim=-1)
-    indices = indices.clamp(0, x.shape[1] - 1)
-    gathered = torch.gather(x, 1, indices.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
-    if gathered.shape[1] < x.shape[1]:
-        pad = x[:, : x.shape[1] - gathered.shape[1]]
-        gathered = torch.cat([gathered, pad], dim=1)
-    return gathered
-
-
-@register_op("softmax_last")
-def _op_softmax_last(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.softmax_f32(x)
-    return F.softmax(x, dim=-1)
-
-
-@register_op("softmax_seq")
-def _op_softmax_seq(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.softmax_seq_f32(x)
-    return F.softmax(x, dim=1)
-
-
-@register_op("causal_mask")
-def _op_causal_mask(_, inputs, __):
-    """Causal integration: every token becomes the average of itself and all previous tokens.
-    This is a strictly causal 'mixing' operation that prevents future lookahead.
-    """
     x = inputs[0]  # (B, S, D)
-    if _c(x) and hasattr(aria_core, "causal_mask_f32"):
-        return aria_core.causal_mask_f32(x)
-    # Using cumulative sum / counts is O(S) and strictly causal
-    return torch.cumsum(x, dim=1) / torch.arange(
-        1, x.shape[1] + 1, device=x.device
-    ).view(1, -1, 1)
-
-
-@register_op("sort_seq")
-def _op_sort_seq(_, inputs, __):
-    x = inputs[0]
-    if _c(x) and hasattr(aria_core, "sort_seq_f32"):
-        native_sorted = aria_core.sort_seq_f32(x)
-        if isinstance(native_sorted, tuple):
-            native_sorted = native_sorted[0]
-        if isinstance(native_sorted, torch.Tensor) and native_sorted.shape == x.shape:
-            return native_sorted
-    indices = x.mean(dim=-1).argsort(dim=-1)
-    indices = indices.clamp(0, x.shape[1] - 1)
-    return x.gather(1, indices.unsqueeze(-1).expand_as(x))
-
-
-@register_op("argsort_seq")
-def _op_argsort_seq(_, inputs, __):
-    x = inputs[0]
-    if _c(x) and hasattr(aria_core, "argsort_seq_f32"):
-        native_indices = aria_core.argsort_seq_f32(x)
-        if isinstance(native_indices, tuple):
-            native_indices = native_indices[0]
-        if isinstance(native_indices, torch.Tensor):
-            if native_indices.dim() == 2:
-                return native_indices.unsqueeze(-1).expand_as(x).float()
-            if native_indices.shape == x.shape:
-                return native_indices.float()
-    return x.mean(dim=-1).argsort(dim=-1).unsqueeze(-1).expand_as(x).float()
-
-
-@register_op("local_window_attn")
-def _op_local_window_attn(_, inputs, config):
-    x = inputs[0]
     B, S, D = x.shape
-    W = min(config.get("window_size", 32), S)
-    if HAS_KERNELS and x.is_cuda:
-        try:
-            return kernels.triton_local_attn(x, W)
-        except Exception:
-            pass
-    scores = torch.bmm(x, x.transpose(-2, -1)) / math.sqrt(D)
-    row_idx = torch.arange(S, device=x.device).unsqueeze(1)
-    col_idx = torch.arange(S, device=x.device).unsqueeze(0)
-    mask = (col_idx > row_idx) | (row_idx - col_idx >= W)
-    scores = scores.masked_fill(mask.unsqueeze(0), float("-inf"))
-    return torch.bmm(F.softmax(scores, dim=-1), x)
-
-
-@register_op("sliding_window_mask")
-def _op_sliding_window_mask(_, inputs, config):
-    x = inputs[0]
-    B, S, D = x.shape
-    W = int(config.get("window_size", 32))
-
-    if _c(x):
-        return aria_core.sliding_window_mask_f32(x, W)
-
-    # Python Fallback: O(S^2) masking
-    W_safe = min(W, S)
-    row_idx = torch.arange(S, device=x.device).unsqueeze(1)
-    col_idx = torch.arange(S, device=x.device).unsqueeze(0)
-    dist = row_idx - col_idx
-
-    # Causal sliding window: col <= row AND dist < W
-    mask = (dist >= 0) & (dist < W_safe)
-    decay = torch.exp(-dist.float().clamp(min=0) / max(W_safe / 4, 1.0))
-
-    # Normalize per-position to maintain signal scale
-    final_mask = mask.float() * decay
-    final_mask = final_mask / final_mask.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-
-    return torch.bmm(final_mask.unsqueeze(0).expand(B, -1, -1), x)
-
-
-@register_op("token_pool_restore")
-def _op_token_pool_restore(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.token_pool_restore_f32(x)
-    if x.shape[1] < 2:
-        return x
-    S_half = x.shape[1] // 2
-    restored = (
-        (x[:, 0::2, :][:, :S_half] + x[:, 1::2, :][:, :S_half]) / 2.0
-    ).repeat_interleave(2, dim=1)
-    if restored.shape[1] < x.shape[1]:
-        restored = torch.cat([restored, x[:, -1:, :]], dim=1)
-    return restored
-
-
-# ── Routing Ops (Phase 1/2) ──────────────────────────────────────────
-
-
-@register_op("route_topk")
-def _op_route_topk(module, inputs, config):
-    """Top-k routing: zero out all but top-k positions along last dim.
-
-    Input:  (B, S, D)
-    Output: (B, S, D) with only the top-k values per (B, S) slice kept.
-    Uses STE with density scaling to keep gradient magnitude stable.
-    """
-    x = inputs[0]
-    D = x.shape[-1]
-    k = min(int(config.get("k", max(1, D // 8))), D)
-    topk_vals, topk_idx = x.topk(k, dim=-1)  # (B, S, k)
-    _record_routing_telemetry(module, D, topk_idx, logits=x)
-    # Build sparse mask and scatter top-k values back
-    mask = torch.zeros_like(x)
-    mask.scatter_(-1, topk_idx, 1.0)
-    # STE: forward uses hard mask, backward passes through
-    # Sqrt scaling compensates for sparsity without amplifying gradients excessively
-    scale = (D / k) ** 0.5
-    return x * (mask.detach() - x.detach() + x) * scale
-
-
-@register_op("route_lanes")
-def _op_route_lanes(module, inputs, config):
-    """Learned lane routing: difficulty scorer → lane assignment → per-lane transforms."""
-    x = inputs[0]
-    B, S, D = x.shape
-    n_lanes = int(config.get("n_lanes", 3))
-    if not hasattr(module, "lane_scorer"):
-        return x
-    dt = x.dtype
-    lane_logits = F.linear(x, module.lane_scorer.to(dt))
-    lane_weights = F.softmax(lane_logits, dim=-1)
-    _record_routing_telemetry(
-        module, n_lanes, lane_logits.argmax(dim=-1), logits=lane_logits
-    )
-    out = torch.zeros_like(x)
-    for i in range(n_lanes):
-        if hasattr(module, "lane_projs") and i < len(module.lane_projs):
-            lane_out = F.linear(x, module.lane_projs[i].to(dt))
-        else:
-            lane_out = x
-        out = out + lane_weights[..., i : i + 1] * lane_out
-    return out
-
-
-@register_op("route_recursion")
-def _op_route_recursion(module, inputs, config):
-    """Learned depth routing: difficulty scorer → depth assignment → per-depth transforms."""
-    x = inputs[0]
-    B, S, D = x.shape
-    max_depth = int(config.get("max_depth", 3))
-    max_depth = max(1, min(6, max_depth))
-    if not hasattr(module, "depth_scorer"):
-        return x
-    dt = x.dtype
-    depth_logits = F.linear(x, module.depth_scorer.to(dt))
-    depth_weights = F.softmax(depth_logits, dim=-1)
-    _record_routing_telemetry(
-        module, max_depth, depth_logits.argmax(dim=-1), logits=depth_logits
-    )
-    out = torch.zeros_like(x)
-    for i in range(max_depth):
-        if hasattr(module, "depth_projs") and i < len(module.depth_projs):
-            step_out = F.linear(x, module.depth_projs[i].to(dt))
-        else:
-            step_out = x
-        out = out + depth_weights[..., i : i + 1] * step_out
-    return out
-
-
-@register_op("token_merge")
-def _op_token_merge(module, inputs, config):
-    x = inputs[0]
-    n_keep = int(config.get("n_keep", x.shape[1] // 2))
-    seq_len = x.shape[1]
-    if (
-        HAS_ARIA_CORE
-        and x.device.type == "cpu"
-        and x.dtype == torch.float32
-        and not x.requires_grad
-    ):
-        y, restore_map = aria_core.token_merge_simple_f32(x, n_keep)
+    p = int(_math.isqrt(D))
+    q = D // p
+    if p * q != D:
+        for p in range(int(_math.isqrt(D)), 0, -1):
+            if D % p == 0:
+                q = D // p
+                break
+    if hasattr(module, "kron_A"):
+        A, B_mat = module.kron_A, module.kron_B
     else:
-        # Fallback: simple truncation
-        y = x[:, :n_keep, :]
-        restore_map = torch.arange(seq_len, device=x.device).expand(x.shape[0], -1)
-    # Record merge telemetry — tokens_processed = n_keep, tokens_total = seq_len
-    merge_telem = getattr(
-        module,
-        "routing_telemetry",
-        {
-            "tokens_total": 0,
-            "tokens_processed": 0,
-            "merge_kept": 0,
-            "merge_dropped": 0,
-            "expert_counts": torch.zeros(1, device=x.device),
-            "entropy_sum": 0.0,
-            "count": 0,
-            "heatmap": None,
-        },
-    )
-    B = x.shape[0]
-    merge_telem["tokens_total"] += B * seq_len
-    merge_telem["tokens_processed"] += B * n_keep
-    merge_telem["merge_kept"] = merge_telem.get("merge_kept", 0) + B * n_keep
-    merge_telem["merge_dropped"] = merge_telem.get("merge_dropped", 0) + B * (
-        seq_len - n_keep
-    )
-    merge_telem["count"] = merge_telem.get("count", 0) + 1
-    setattr(module, "routing_telemetry", merge_telem)
-    # Restore to original length via causal nearest-kept mapping:
-    # Position i maps to min(i, n_keep-1) — the nearest kept token
-    # at or before position i.  Never looks ahead.
-    pos = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(B, -1)
-    restore_idx = pos.clamp(max=y.shape[1] - 1)
-    return y.gather(1, restore_idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
-
-
-# ── Routing Control Ops (Phase 2) ────────────────────────────────────
-
-
-def _routing_scores_from_x(x: torch.Tensor) -> torch.Tensor:
-    # Simple, deterministic score: mean over channels
-    return x.mean(dim=-1)
-
-
-@register_op("mod_topk")
-def _op_mod_topk(module, inputs, config):
-    x = inputs[0]
-    B, S, D = x.shape
-    capacity = float(config.get("capacity_factor", 0.5))
-    k = max(1, int(S * capacity))
-
-    # Input-dependent router scores
-    if hasattr(module, "router_weight"):
-        scores = F.linear(x, module.router_weight).squeeze(-1)  # (B, S)
-    else:
-        scores = _routing_scores_from_x(x)
-
-    # Select top-k tokens by score
-    topk_scores, topk_indices = scores.topk(k, dim=-1)
-
-    # Build hard mask with STE for gradient flow
-    mask = torch.zeros_like(scores)
-    mask.scatter_(-1, topk_indices, 1.0)
-
-    # Soft version for backward: sigmoid around the k-th threshold
-    threshold = topk_scores[:, -1:]  # (B, 1) — the k-th largest score
-    soft_mask = torch.sigmoid(10.0 * (scores - threshold))
-    # STE: hard mask forward, soft mask backward
-    gate = mask - soft_mask.detach() + soft_mask
-
-    _record_routing_telemetry(module, S, (gate > 0.5).long(), logits=scores)
-
-    return x * gate.unsqueeze(-1)
-
-
-@register_op("early_exit")
-def _op_early_exit(module, inputs, config):
-    """Learned early-exit: tokens with low confidence are attenuated."""
-    x = inputs[0]
-    threshold = float(config.get("threshold", 0.5))
-    if hasattr(module, "confidence_proj"):
-        scores = F.linear(x, module.confidence_proj.to(x.dtype)).squeeze(-1)
-    else:
-        scores = _routing_scores_from_x(x)
-    gate = torch.sigmoid(scores)
-    keep = (gate > threshold).float()
-    gate_ste = keep - gate.detach() + gate
-    _record_routing_telemetry(module, 2, keep.long(), logits=gate)
-    return x * gate_ste.unsqueeze(-1)
-
-
-@register_op("cascade")
-def _op_cascade(module, inputs, config):
-    """Learned progressive cascade: soft gate scales tokens by learned difficulty."""
-    x = inputs[0]
-    threshold = float(config.get("threshold", 0.5))
-    if hasattr(module, "cascade_proj"):
-        scores = F.linear(x, module.cascade_proj.to(x.dtype)).squeeze(-1)
-    else:
-        scores = _routing_scores_from_x(x)
-    gate = torch.sigmoid(scores)
-    _record_routing_telemetry(module, 2, (gate > threshold).long(), logits=gate)
-    return x * gate.unsqueeze(-1)
-
-
-@register_op("speculative")
-def _op_speculative(module, inputs, config):
-    """Speculative execution: cheap path always runs, learned gate blends full path."""
-    x = inputs[0]
-    if not hasattr(module, "cheap_proj"):
-        return x
-    dt = x.dtype
-    cheap_out = F.linear(x, module.cheap_proj.to(dt))
-    gate = torch.sigmoid(F.linear(x, module.verify_gate.to(dt)).squeeze(-1))
-    _record_routing_telemetry(module, 2, (gate > 0.5).long(), logits=gate)
-    return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
-
-
-@register_op("adaptive_recursion")
-def _op_adaptive_recursion(module, inputs, config):
-    """Learned adaptive recursion: per-token depth from learned scorer, per-step transforms."""
-    x = inputs[0]
-    max_depth = int(config.get("max_depth", 3))
-    max_depth = max(1, min(6, max_depth))
-    if hasattr(module, "depth_scorer"):
-        dt = x.dtype
-        depth_logits = F.linear(x, module.depth_scorer.to(dt))
-        depth_weights = F.softmax(depth_logits, dim=-1)
-        _record_routing_telemetry(
-            module, max_depth, depth_weights.argmax(dim=-1), logits=depth_logits
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(p * 65537 + q)
+        A = (torch.randn(p, p, generator=gen) * (p**-0.5)).to(
+            device=x.device, dtype=x.dtype
         )
-        out = torch.zeros_like(x)
-        for i in range(max_depth):
-            if hasattr(module, "step_projs") and i < len(module.step_projs):
-                step_out = F.linear(x, module.step_projs[i].to(dt))
-            else:
-                step_out = x
-            out = out + depth_weights[..., i : i + 1] * step_out
-        return out
-    scores = _routing_scores_from_x(x)
-    depth_scores = torch.stack([scores + (i * 0.1) for i in range(max_depth)], dim=-1)
-    depth = depth_scores.argmax(dim=-1) + 1
-    scale = 1.0 + 0.05 * depth.float()
-    return x * scale.unsqueeze(-1)
+        B_mat = (torch.randn(q, q, generator=gen) * (q**-0.5)).to(
+            device=x.device, dtype=x.dtype
+        )
+    out = x.view(B, S, p, q) @ B_mat.T
+    out = out.permute(0, 1, 3, 2) @ A.T
+    return out.reshape(B, S, D)
 
 
-# ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
-
-
-@register_op("adaptive_lane_mixer")
-def _op_adaptive_lane_mixer(module, inputs, config):
-    """Routes tokens to 'fast' vs 'deep' lanes based on learned difficulty."""
-    x = inputs[0]
+@register_op("n_way_sparse_router")
+def _op_n_way_sparse_router(module, inputs, config):
+    x = inputs[0]  # (B, S, D)
     B, S, D = x.shape
+    n_ways = max(2, min(config.get("n_ways", 4), 16))
+    top_k = max(1, min(config.get("top_k", 2), n_ways))
+    hidden = D // n_ways
 
-    if not hasattr(module, "gate_proj"):
-        return x
+    if hasattr(module, "gate_weight"):
+        W_gate = module.gate_weight
+    else:
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(D * 65537 + n_ways)
+        W_gate = (torch.randn(D, n_ways, generator=gen) * (D**-0.5)).to(
+            device=x.device, dtype=x.dtype
+        )
+    gate_logits = x @ W_gate
+    topk_vals, topk_idx = gate_logits.topk(top_k, dim=-1)
+    gate_weights = F.softmax(topk_vals, dim=-1)
 
-    # Compute 3-way gate: [Fast, Medium, Hard]
-    logits = F.linear(x, module.gate_proj)
-    weights = F.softmax(logits, dim=-1)
+    # Precompute per-expert routing weights via vectorized scatter (eliminates inner loop)
+    # expert_weights: (B, S, n_ways) — how much each expert contributes to each token
+    expert_weights = torch.zeros(B, S, n_ways, device=x.device, dtype=x.dtype)
+    for k_idx in range(top_k):
+        idx = topk_idx[:, :, k_idx].unsqueeze(-1)  # (B, S, 1)
+        expert_weights.scatter_add_(2, idx, gate_weights[:, :, k_idx].unsqueeze(-1))
 
-    _record_routing_telemetry(module, 3, weights.argmax(dim=-1), logits=logits)
+    output = torch.zeros_like(x)
+    for i in range(n_ways):
+        if hasattr(module, f"expert_down_{i}"):
+            W_down = getattr(module, f"expert_down_{i}")
+            W_up = getattr(module, f"expert_up_{i}")
+        else:
+            gen_e = torch.Generator(device="cpu")
+            gen_e.manual_seed(D * 1000 + i * 100 + 1)
+            W_down = (torch.randn(D, hidden, generator=gen_e) * (D**-0.5)).to(
+                device=x.device, dtype=x.dtype
+            )
+            W_up = (torch.randn(hidden, D, generator=gen_e) * (hidden**-0.5)).to(
+                device=x.device, dtype=x.dtype
+            )
+        expert_out = F.gelu(x @ W_down) @ W_up
+        weight = expert_weights[:, :, i].unsqueeze(-1)  # (B, S, 1)
+        output = output + expert_out * weight
+    return output
 
-    # Experts: 0=Identity(Fast), 1=LowRank(Medium), 2=MLP(Hard)
-    out = x * weights[..., 0:1]  # Fast lane: direct skip
 
-    # Medium lane: Low-rank
-    if hasattr(module, "U_mid"):
-        mid = F.linear(F.linear(x, module.U_mid), module.V_mid)
-        out = out + mid * weights[..., 1:2]
+@register_op("chebyshev_spectral_mix")
+def _op_chebyshev_spectral_mix(module, inputs, config):
+    x = inputs[0]  # (B, S, D)
+    K = max(2, min(config.get("chebyshev_order", 6), 16))
+    D = x.shape[-1]
+    x_norm = torch.tanh(x)
 
-    # Hard lane: MLP
-    if hasattr(module, "heavy_mlp"):
-        hard = module.heavy_mlp(x)
-        out = out + hard * weights[..., 2:3]
+    coeffs = []
+    gen_c = torch.Generator(device="cpu")
+    gen_c.manual_seed(K * 65537 + D)
+    for k in range(K):
+        if hasattr(module, f"cheb_c{k}"):
+            coeffs.append(getattr(module, f"cheb_c{k}"))
+        else:
+            c = (torch.randn(D, generator=gen_c) * (K**-0.5)).to(
+                device=x.device, dtype=x.dtype
+            )
+            if k == 1:
+                c = c + 1.0
+            coeffs.append(c)
 
-    return out
+    T_prev2 = torch.ones_like(x_norm)
+    T_prev1 = x_norm
+    output = coeffs[0] * T_prev2 + coeffs[1] * T_prev1
 
-
-@register_op("mixed_recursion_gate")
-def _op_mixed_recursion_gate(module, inputs, config):
-    """Tokens re-enter block with different parameters each recursion.
-    Depth is conditional on input difficulty score (inputs[1]).
-    """
-    x, scores = inputs[0], inputs[1]
-    max_depth = int(config.get("max_depth", 3))
-
-    if not hasattr(module, "step_projs"):
-        return x
-
-    # Determine depth per token from scores
-    depths = scores.argmax(dim=-1)  # [B, S] in range [0, max_depth-1]
-
-    out = x
-    # Sequential application up to max_depth with residual per step.
-    # Tokens whose depth >= current step get the update; others are unchanged.
-    for i in range(max_depth):
-        mask = (depths >= i).float().unsqueeze(-1)
-        step_out = F.linear(out, module.step_projs[i].to(out.dtype))
-        # Residual per step: out + step instead of replace, prevents vanishing gradients
-        out = out + mask * (step_out - out) * 0.5
-
-    _record_routing_telemetry(module, max_depth, depths, logits=scores)
-    return out
+    for k in range(2, K):
+        T_k = 2 * x_norm * T_prev1 - T_prev2
+        output = output + coeffs[k] * T_k
+        T_prev2 = T_prev1
+        T_prev1 = T_k
+    return output
 
 
 @register_op("latent_attention_compressor")
@@ -2008,27 +946,14 @@ def _op_token_type_classifier(module, inputs, config):
     x = inputs[0]  # (B, S, D)
     if not hasattr(module, "classifier_weight"):
         return x
+    if x.shape[-1] != module.classifier_weight.shape[1]:
+        return x
     # (B, S, D) → (B, S, n_classes) with GELU for nonlinear class boundaries
     scores = F.gelu(F.linear(x, module.classifier_weight))
     # Stash classification scores for telemetry / downstream routing
     module._class_scores = scores.detach()
     # Project back to model dim
     return F.linear(scores, module.classifier_proj_back)
-
-
-@register_op("entropy_score")
-def _op_entropy_score(module, inputs, config):
-    """Compute Shannon entropy of input scores as a difficulty signal (B,S,K) → (B,S,1).
-
-    Uses log_softmax for numerical stability and temperature scaling
-    to prevent gradient vanishing from softmax saturation.
-    """
-    scores = inputs[0]
-    temperature = max(scores.shape[-1] ** 0.5, 1.0)
-    log_probs = F.log_softmax(scores / temperature, dim=-1)
-    probs = log_probs.exp()
-    entropy = -torch.sum(probs * log_probs, dim=-1, keepdim=True)
-    return entropy
 
 
 @register_op("progressive_compression_gate")
@@ -2072,35 +997,6 @@ def _op_compression_mixture_experts(module, inputs, config):
     return out0 * weights[..., 0:1] + out1 * weights[..., 1:2]
 
 
-# ── 2026 Frontier Ops ───────────────────────────────────────────────
-
-
-@register_op("relu_gate_routing")
-def _op_relu_gate_routing(module, inputs, config):
-    """ReLU-gated MoE (ReMoE): learned gate activates variable expert count per token."""
-    x = inputs[0]
-    if not hasattr(module, "gate_proj"):
-        return x
-    dt = x.dtype
-    n_experts = module.gate_proj.shape[0]
-    gate_scores = F.relu(F.linear(x, module.gate_proj.to(dt)))
-    gate_sum = gate_scores.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-    gate_weights = gate_scores / gate_sum
-
-    _record_routing_telemetry(
-        module, n_experts, gate_scores.argmax(dim=-1), logits=gate_scores
-    )
-
-    if hasattr(module, "expert_weights"):
-        output = torch.zeros_like(x)
-        for i in range(n_experts):
-            w = gate_weights[..., i : i + 1]
-            expert_out = F.linear(x, module.expert_weights[i].to(dt))
-            output = output + w * expert_out
-        return output
-    return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x
-
-
 @register_op("ternary_projection")
 def _op_ternary_projection(module, inputs, config):
     """1.58-bit Ternary Weights Simulation (BitNet).
@@ -2123,284 +1019,6 @@ def _op_ternary_projection(module, inputs, config):
     return F.linear(
         x, w_sim.to(x.dtype), bias.to(x.dtype) if bias is not None else None
     )
-
-
-@register_op("basis_expansion")
-def _op_basis_expansion(module, inputs, _):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    x = inputs[0]
-    if (
-        _c(x)
-        and hasattr(aria_core, "basis_expansion_f32")
-        and isinstance(module.weight, torch.Tensor)
-    ):
-        freqs = module.weight
-        n_bases = int(freqs.shape[0]) if freqs.dim() > 0 else 1
-        try:
-            native_out = aria_core.basis_expansion_f32(x, freqs, n_bases)
-            if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
-                return native_out
-        except Exception:
-            pass
-    w = module.weight
-    expanded = (
-        torch.sin(inputs[0] * w[0])
-        + torch.cos(inputs[0] * w[1])
-        + torch.sin(inputs[0] * w[2])
-        + torch.cos(inputs[0] * w[3])
-    )
-    return expanded * 0.25
-
-
-@register_op("integral_kernel")
-def _op_integral_kernel(module, inputs, config):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    B, S, D = inputs[0].shape
-    pos = torch.arange(S, device=inputs[0].device, dtype=inputs[0].dtype).unsqueeze(1)
-    kernel = torch.exp(
-        -float(config.get("kernel_scale", 0.25)) * (pos - pos.t()).abs().float()
-    )
-    causal_mask = (
-        pos >= pos.t()
-    ).float()  # lower-triangular: position i attends only to j <= i
-    kernel = kernel * causal_mask
-    kernel = kernel / kernel.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-    return F.linear(
-        torch.bmm(kernel.unsqueeze(0).expand(B, -1, -1), inputs[0]), module.weight
-    )
-
-
-@register_op("fixed_point_iter")
-def _op_fixed_point_iter(module, inputs, config):
-    """
-    Fixed-point iteration vectorized over the sequence and batch dimensions.
-    """
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    B, S, D = inputs[0].shape
-    W = module.weight[:D, :]
-    b = (
-        module.weight[D, :]
-        if module.weight.shape[0] > D
-        else torch.zeros(D, device=inputs[0].device)
-    )
-    z = inputs[0]
-    n_iters = max(1, int(config.get("n_iters", 3)))
-    damping = max(0.0, min(1.0, float(config.get("damping", 0.5))))
-    for _ in range(n_iters):
-        z = (1.0 - damping) * z + damping * torch.tanh(F.linear(z, W) + b)
-    return z
-
-
-@register_op("rfft_seq")
-def _op_rfft_seq(_, inputs, __):
-    return torch.fft.rfft(inputs[0], dim=1).real
-
-
-@register_op("irfft_seq")
-def _op_irfft_seq(_, inputs, __):
-    B, S_freq, D = inputs[0].shape
-    # Ensure real-valued output for downstream ops by making imaginary part zero
-    # and ensuring n is correctly set to reconstruct full sequence length
-    comp = torch.complex(inputs[0], torch.zeros_like(inputs[0]))
-    return torch.fft.irfft(comp, n=(S_freq - 1) * 2, dim=1)
-
-
-@register_op("tropical_center")
-def _op_tropical_center(_, inputs, __):
-    """Causal min centering: subtract cumulative minimum to preserve causality."""
-    x = inputs[0]
-    if _c(x):
-        return aria_core.tropical_center_f32(x)
-    # torch.cummin(x, dim=1).values is causal
-    return x - torch.cummin(x, dim=1).values
-
-
-@register_op("ultrametric_attention")
-def _op_ultrametric_attention(module, inputs, config):
-    """Attention using p-adic distances. Dispatched to mathspace implementation."""
-    from ..mathspaces.padic import execute_ultrametric_attn
-
-    return execute_ultrametric_attn(module, inputs[0])
-
-
-# ── Clifford algebra ops ──
-
-
-@register_op("clifford_attention")
-def _op_clifford_attention(module, inputs, config):
-    from ..mathspaces.clifford import execute_clifford_attention
-
-    return execute_clifford_attention(module, inputs[0])
-
-
-@register_op("geometric_product")
-def _op_geometric_product(module, inputs, config):
-    from ..mathspaces.clifford import execute_geometric_product
-
-    return execute_geometric_product(
-        module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0]
-    )
-
-
-@register_op("rotor_transform")
-def _op_rotor_transform(module, inputs, config):
-    from ..mathspaces.clifford import execute_rotor_transform
-
-    return execute_rotor_transform(module, inputs[0])
-
-
-@register_op("grade_select")
-def _op_grade_select(module, inputs, config):
-    from ..mathspaces.clifford import execute_grade_select
-
-    return execute_grade_select(module, inputs[0])
-
-
-@register_op("grade_mix")
-def _op_grade_mix(module, inputs, config):
-    from ..mathspaces.clifford import execute_grade_mix
-
-    return execute_grade_mix(module, inputs[0])
-
-
-# ── Hyperbolic ops ──
-
-
-@register_op("poincare_add")
-def _op_poincare_add(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_poincare_add
-
-    return execute_poincare_add(module, inputs[0])
-
-
-@register_op("exp_map")
-def _op_exp_map(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_exp_map
-
-    return execute_exp_map(module, inputs[0])
-
-
-@register_op("log_map")
-def _op_log_map(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_log_map
-
-    return execute_log_map(module, inputs[0])
-
-
-@register_op("hyp_distance")
-def _op_hyp_distance(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_hyp_distance
-
-    return execute_hyp_distance(
-        module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0]
-    )
-
-
-@register_op("hyp_linear")
-def _op_hyp_linear(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_hyp_linear
-
-    return execute_hyp_linear(module, inputs[0])
-
-
-@register_op("hyp_tangent_nonlinear")
-def _op_hyp_tangent_nonlinear(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_hyp_tangent_nonlinear
-
-    return execute_hyp_tangent_nonlinear(module, inputs[0])
-
-
-@register_op("hyperbolic_norm")
-def _op_hyperbolic_norm(module, inputs, config):
-    from ..mathspaces.hyperbolic import execute_hyperbolic_norm
-
-    return execute_hyperbolic_norm(module, inputs[0])
-
-
-# ── Tropical ops ──
-
-
-@register_op("tropical_add")
-def _op_tropical_add(module, inputs, config):
-    from ..mathspaces.tropical import execute_tropical_add
-
-    return execute_tropical_add(
-        module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0]
-    )
-
-
-@register_op("tropical_matmul")
-def _op_tropical_matmul(module, inputs, config):
-    from ..mathspaces.tropical import execute_tropical_matmul
-
-    return execute_tropical_matmul(
-        module, inputs[0], inputs[1] if len(inputs) > 1 else inputs[0]
-    )
-
-
-@register_op("tropical_attention")
-def _op_tropical_attention(module, inputs, config):
-    from ..mathspaces.tropical import execute_tropical_attention
-
-    return execute_tropical_attention(module, inputs[0])
-
-
-@register_op("tropical_gate")
-def _op_tropical_gate(module, inputs, config):
-    from ..mathspaces.tropical import execute_tropical_gate
-
-    return execute_tropical_gate(module, inputs[0])
-
-
-# ── p-adic ops ──
-
-
-@register_op("padic_expand")
-def _op_padic_expand(module, inputs, config):
-    from ..mathspaces.padic import execute_padic_expand
-
-    return execute_padic_expand(module, inputs[0])
-
-
-@register_op("padic_gate")
-def _op_padic_gate(module, inputs, config):
-    from ..mathspaces.padic import execute_padic_gate
-
-    return execute_padic_gate(module, inputs[0])
-
-
-# ── Spiking ops ──
-
-
-@register_op("lif_neuron")
-def _op_lif_neuron(module, inputs, config):
-    from ..mathspaces.spiking import execute_lif
-
-    return execute_lif(module, inputs[0])
-
-
-@register_op("spike_rate_code")
-def _op_spike_rate_code(module, inputs, config):
-    from ..mathspaces.spiking import execute_spike_rate_code
-
-    return execute_spike_rate_code(module, inputs[0])
-
-
-@register_op("stdp_attention")
-def _op_stdp_attention(module, inputs, config):
-    from ..mathspaces.spiking import execute_stdp_attention
-
-    return execute_stdp_attention(module, inputs[0])
-
-
-@register_op("sparse_threshold")
-def _op_sparse_threshold(module, inputs, config):
-    from ..mathspaces.spiking import execute_sparse_threshold
-
-    return execute_sparse_threshold(module, inputs[0])
 
 
 _register_split_op_modules()
@@ -2554,7 +1172,10 @@ class CompiledOp(nn.Module):
             if op.has_params:
                 self.weight = self._make_param((D_out, D_in), std=0.02)
             if op.name in ("padic_expand", "padic_residual"):
+                # n_digits=1, sin+cos pair → input dim is D_in * 2
                 self.weight = self._make_param((D_in, D_in * 2), std=0.02)
+                # ReZero: start as identity, gradually introduce p-adic signal
+                self.residual_scale = nn.Parameter(torch.zeros(1))
             elif op.name == "rotor_transform":
                 self.rotor = nn.Parameter(torch.randn(8) * 0.02)
             elif op.name == "poincare_add":
@@ -2647,6 +1268,7 @@ class CompiledOp(nn.Module):
                 setattr(self, "W_v", self._make_param((D_in, D_in), std=0.02)),
                 setattr(self, "W_r", self._make_param((D_in, D_in), std=0.02)),
                 setattr(self, "W_o", self._make_param((D_in, D_in), std=0.02)),
+                setattr(self, "_rwkv_kernel_ready", True),
             ),
             "embedding_lookup": lambda: setattr(
                 self,
@@ -2656,6 +1278,9 @@ class CompiledOp(nn.Module):
             "rope_rotate": lambda: None,
             "cosine_similarity": lambda: None,
             "gather_topk": lambda: None,
+            "spectral_filter": lambda: setattr(
+                self, "freq_mask", nn.Parameter(torch.ones(D_in // 2 + 1))
+            ),
             "semi_structured_2_4_linear": lambda: (
                 setattr(self, "weight", self._make_param((D_out, D_in), std=0.02)),
                 setattr(
@@ -3144,10 +1769,12 @@ class SynthesizedModel(nn.Module):
         self.model_dim = model_dim
         self.vocab_size = vocab_size
         self.embed = nn.Embedding(vocab_size, model_dim)
-        # NOTE: Keep PyTorch default N(0,1) init for embeddings. With weight-
-        # tied lm_head, std=0.02 makes initial logits too flat (std≈0.3),
-        # causing loss_ratio≈1.0 in 500-step micro-training. Default std=1.0
-        # gives initial logits std≈16, providing strong gradient signal.
+        # Init embeddings to std=1/sqrt(D) so tied lm_head logits have std≈1,
+        # giving initial loss ≈ ln(vocab) ≈ 10.4 (random baseline). This lets
+        # the model learn language from step 1 instead of spending 200+ steps
+        # just normalizing a bad output distribution. Verified: all init scales
+        # pass the learning gate with real WikiText data at 500 steps.
+        nn.init.normal_(self.embed.weight, mean=0.0, std=model_dim**-0.5)
         self.layers = nn.ModuleList([CompiledLayer(g) for g in layer_graphs])
         self.norm = nn.LayerNorm(model_dim)
         self.lm_head = nn.Linear(model_dim, vocab_size, bias=False)

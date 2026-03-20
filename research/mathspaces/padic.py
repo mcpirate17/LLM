@@ -58,22 +58,29 @@ def padic_distance(
 def padic_expansion(
     x: torch.Tensor, p: int = DEFAULT_P, n_digits: int = 4
 ) -> torch.Tensor:
-    """Multi-scale decomposition inspired by p-adic expansion.
+    """Smooth multi-scale decomposition inspired by p-adic expansion.
 
     Decomposes x into components at different "scales" (powers of p),
     similar to how a p-adic number is a series sum(a_i * p^i).
 
+    Uses soft periodic extraction (sin/cos) instead of hard torch.remainder
+    to keep the decomposition differentiable. The hard modular arithmetic
+    in the original version produced discontinuous digit boundaries that
+    made the loss landscape jagged (CV 0.3–0.6 in dynamics probes).
+
     Returns: (B, S, D * n_digits) — concatenation of scale components.
     """
     components = []
-    residual = x
     for i in range(n_digits):
-        scale = p**i
-        # Extract component at this scale
-        component = torch.remainder(residual * scale, float(p)) / float(p)
-        components.append(component)
-        residual = (residual * scale - component * p) / scale
+        freq = float(p**i)
+        # Soft periodic extraction: captures structure at scale p^i
+        # sin and cos together give a full period — no information loss
+        # vs hard remainder which had discontinuous jumps at digit boundaries
+        components.append(torch.sin(x * freq))
+        components.append(torch.cos(x * freq))
 
+    # n_digits * 2 components (sin+cos pairs), each of shape (B, S, D)
+    # Concatenate along feature dim → (B, S, D * n_digits * 2)
     return torch.cat(components, dim=-1)
 
 
@@ -228,45 +235,69 @@ def execute_padic_distance(
 
 
 def execute_padic_expand(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Multi-scale p-adic expansion with residual for gradient health."""
-    B, S, D = x.shape
-    expanded = padic_expansion(x, n_digits=2)  # (B, S, D*2)
-    # Project back to D with residual to stabilize gradient flow
+    """Multi-scale p-adic expansion with ReZero residual.
+
+    Uses n_digits=1 (sin+cos pair → D*2) to keep the expansion small.
+    Learnable residual_scale starts at 0 (ReZero) so the p-adic branch
+    begins as identity and gradually introduces signal as training stabilizes.
+    """
+    orig_dtype = x.dtype
+    expanded = padic_expansion(x, n_digits=1)  # (B, S, D*2)
     if hasattr(module, "weight"):
-        return x + torch.nn.functional.linear(expanded, module.weight) * 0.1
-    return expanded[..., :D]
+        projected = torch.nn.functional.linear(
+            expanded.to(module.weight.dtype), module.weight
+        ).to(orig_dtype)
+        scale = module.residual_scale if hasattr(module, "residual_scale") else 0.1
+        return x + projected * scale
+    return expanded[..., : x.shape[-1]].to(orig_dtype)
 
 
 def execute_ultrametric_attn(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Ultrametric attention."""
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+    orig_dtype = x.dtype
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and x.ndim == 3
+        and x.device.type == "cpu"
+        and x.dtype == torch.float32
+    ):
         return aria_core.ultrametric_attention_f32(x, float(DEFAULT_P))
-    return ultrametric_attention(x)
+    return ultrametric_attention(x).to(orig_dtype)
 
 
 def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Gate activations using smooth p-adic valuation signal."""
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.device.type == "cpu":
+    orig_dtype = x.dtype
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and x.device.type == "cpu"
+        and x.dtype == torch.float32
+    ):
         try:
             return aria_core.padic_gate_f32(x, float(DEFAULT_P))
         except TypeError:
             pass  # Fall through to Python path
     valuation = padic_valuation(x).clamp(min=-10.0, max=10.0)
     gate = torch.sigmoid(valuation)
-    return x * gate
+    return (x * gate).to(orig_dtype)
 
 
 def execute_padic_residual(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Multi-resolution skip connection via p-adic expansion.
 
-    P-adic expansion → per-scale linear transform → recombine + residual.
-    Each scale captures structure at a different resolution, and learned
-    transforms can weight them before residual addition.
+    Uses smooth sin/cos expansion and ReZero residual scaling.
     """
-    B, S, D = x.shape
-    expanded = padic_expansion(x, n_digits=2)  # (B, S, D*2)
+    orig_dtype = x.dtype
+    D = x.shape[-1]
+    expanded = padic_expansion(x, n_digits=1)  # (B, S, D*2)
     if hasattr(module, "weight"):
-        transformed = torch.nn.functional.linear(expanded, module.weight) * 0.1
+        transformed = torch.nn.functional.linear(
+            expanded.to(module.weight.dtype), module.weight
+        ).to(orig_dtype)
+        scale = module.residual_scale if hasattr(module, "residual_scale") else 0.1
     else:
-        transformed = (expanded[..., :D] + expanded[..., D:]) * 0.5
-    return x + transformed
+        transformed = (expanded[..., :D] + expanded[..., D:]).to(orig_dtype)
+        scale = 0.5
+    return x + transformed * scale
