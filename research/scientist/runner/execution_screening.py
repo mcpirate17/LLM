@@ -1,4 +1,41 @@
-"""Execution mixin: screening thread + core experiment logic."""
+"""Execution mixin: screening thread + core experiment logic.
+
+# INVESTIGATION NOTE — S0.5 gate (2026-03-20)
+# ────────────────────────────────────────────
+# Diagnosis found 0 S0.5 failures across 500 programs. Investigation:
+#
+# a) S0.5 is computed on EVERY candidate that passes S0 (line ~1332).
+#    It is not gated by any other code path — all S0 survivors reach it.
+#
+# b) stability_score CAN be < 0.5. It is `checks_passed / total_checks`
+#    where total_checks = 6 (random, extreme, sequential, high_id,
+#    causality, training_dynamics). Passing 2/6 = 0.33 < 0.5.
+#    However, for a model that compiled and ran a forward pass:
+#    - Tests 1-4 (forward-pass probes) almost always pass if S0 passed,
+#      because S0 already verified a forward pass with no NaN/Inf.
+#    - Test 5 (causality) passes when diff < 0.05, which is true for
+#      most architectures unless they use non-causal ops (attention
+#      without masking, bidirectional ops).
+#    - Test 6 (training dynamics) needs 20 steps without NaN and CV < 0.25.
+#    In practice, models that survive S0 typically pass 5/6 or 6/6 checks,
+#    giving stability_score >= 0.83. The 0.5 threshold is too low to filter
+#    anything that S0 didn't already catch.
+#
+# c) causality_passed CAN be False — when diff >= 0.05 or the check throws.
+#    This happens with non-causal ops. However, such architectures typically
+#    also fail S0 (safe_eval catches NaN from unbounded attention) or get
+#    killed by rapid screening. The S0.5 causality gate is defense-in-depth
+#    but rarely the first filter to fire.
+#
+# d) CONCLUSION: S0.5 is not vacuous — it can theoretically reject models.
+#    But it is effectively redundant given the current pipeline ordering:
+#    S0 (safe_eval) already rejects models that produce NaN/Inf, which is
+#    the same failure mode that would push stability_score below 0.5.
+#    The 0.5 threshold (config.stage05_stability_threshold) should be raised
+#    to ~0.67 (4/6 checks) to catch models with marginal stability that
+#    currently waste rapid-screen budget. This is NOT a bug fix — it's a
+#    threshold calibration issue for a future tuning pass.
+"""
 
 from __future__ import annotations
 
