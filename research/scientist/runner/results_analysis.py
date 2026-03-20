@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn as nn
 
+from ..json_utils import json_safe
 from ..notebook import LabNotebook
 from ...synthesis.serializer import graph_to_json
 
@@ -82,7 +83,7 @@ class _ResultsAnalysisMixin:
                 except Exception:
                     fp_novelty = fp.novelty_score if fp.novelty_score > 0 else None
                 fp_fields = {
-                    "fingerprint_json": json.dumps(fp.to_dict()),
+                    "fingerprint_json": json.dumps(json_safe(fp.to_dict())),
                     "fp_interaction_locality": fp.interaction_locality,
                     "fp_interaction_sparsity": fp.interaction_sparsity,
                     "fp_interaction_symmetry": fp.interaction_symmetry,
@@ -108,17 +109,51 @@ class _ResultsAnalysisMixin:
                 }
                 graph_metrics.update(fp_fields)
 
+            # Prefer actual loss_ratio from training over synthetic 1.0-fitness
+            _actual_lr = None
+            if s1_result:
+                _fl = s1_result.get("final_loss")
+                _il = s1_result.get("initial_loss")
+                if _fl is not None and _il is not None and _il > 0:
+                    _actual_lr = _fl / _il
+            recorded_lr = (
+                _actual_lr
+                if _actual_lr is not None
+                else (1.0 - fitness if fitness > 0 else None)
+            )
+
+            # S1 pass: fitness > 0.2 AND training gate passed.
+            # The fitness function caps gate-failed programs at 0.19, so
+            # fitness > 0.2 already implies gate passed.  But be explicit:
+            # the proxy fitness threshold must align with actual S1 semantics.
+            _s1_passed = fitness > 0.2 and (
+                s1_result is not None and s1_result.get("passed", False)
+            )
+
+            # S0/S0.5 pass: if s1_result exists the model was compiled and
+            # trained — it reached S1, so S0 and S0.5 are definitionally passed.
+            # Using `fitness > 0` was wrong: fitness=0 when S1 training fails
+            # (baseline gate, convergence failure) or the fitness_fn throws,
+            # but none of those mean compilation failed.
+            _s0_passed = (
+                s1_result is not None or graph_metrics.get("stability_score", 0) > 0
+            )
+            _s05_passed = _s0_passed
+
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
                 graph_json=graph_to_json(graph),
-                stage1_passed=fitness > 0.2,
-                stage0_passed=fitness > 0,
-                stage05_passed=fitness > 0,
-                loss_ratio=1.0 - fitness if fitness > 0 else None,
+                stage1_passed=_s1_passed,
+                stage0_passed=_s0_passed,
+                stage05_passed=_s05_passed,
+                loss_ratio=recorded_lr,
+                final_loss=_fl,
                 novelty_score=fp_novelty,
                 novelty_confidence=fp_confidence,
-                stage_at_death="survived" if fitness > 0.2 else "stage1",
+                stage_at_death=(
+                    "survived" if _s1_passed else ("stage1" if _s0_passed else "stage0")
+                ),
                 model_source=model_source,
                 **graph_metrics,
             )
@@ -131,7 +166,7 @@ class _ResultsAnalysisMixin:
                         "result_id": rid,
                         "model_source": model_source,
                         "graph_fingerprint": graph.fingerprint(),
-                        "loss_ratio": 1.0 - fitness if fitness > 0 else None,
+                        "loss_ratio": recorded_lr,
                         **{
                             k: graph_metrics.get(k)
                             for k in (
@@ -290,7 +325,7 @@ class _ResultsAnalysisMixin:
         if dead_neuron_count is not None:
             metrics["dead_neuron_count"] = dead_neuron_count
         if sparsity_report:
-            metrics["sparsity_report_json"] = json.dumps(sparsity_report)
+            metrics["sparsity_report_json"] = json.dumps(json_safe(sparsity_report))
 
         # Parse output_range "[min, max]" string
         if sandbox_result.output_range:
@@ -486,7 +521,7 @@ class _ResultsAnalysisMixin:
             metrics["sparse_active_params_estimate"] = int(
                 max(0.0, sparse_active_params_estimate)
             )
-            metrics["sparse_telemetry_json"] = json.dumps(telemetry_rows)
+            metrics["sparse_telemetry_json"] = json.dumps(json_safe(telemetry_rows))
             if nm_total > 0:
                 metrics["sparse_nm_compliance"] = nm_compliant / nm_total
             # Compression ratio = effective params / dense params

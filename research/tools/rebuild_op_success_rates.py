@@ -58,6 +58,32 @@ def main():
     conn = sqlite3.connect(args.db, timeout=30)
     conn.row_factory = sqlite3.Row
 
+    # ── Phase 0: Fix mismarked stage0_passed in program_results ────────
+    # Bug: results_analysis.py set stage0_passed = (fitness > 0) for
+    # evolution/novelty search results. Programs that compiled and trained
+    # (stage_at_death='stage1', stability_score > 0) but failed S1 got
+    # fitness=0 → stage0_passed=0. Fix: if it reached S1, it passed S0.
+    mismarked = conn.execute("""
+        SELECT COUNT(*) FROM program_results
+        WHERE stage0_passed = 0
+          AND stability_score IS NOT NULL AND stability_score > 0
+          AND stage_at_death = 'stage1'
+    """).fetchone()[0]
+    logger.info(f"Mismarked records (s0=0 but reached S1): {mismarked}")
+
+    if mismarked > 0 and not args.dry_run:
+        conn.execute("""
+            UPDATE program_results
+            SET stage0_passed = 1, stage05_passed = 1
+            WHERE stage0_passed = 0
+              AND stability_score IS NOT NULL AND stability_score > 0
+              AND stage_at_death = 'stage1'
+        """)
+        conn.commit()
+        logger.info(f"Fixed {mismarked} mismarked records: stage0_passed → 1")
+    elif mismarked > 0:
+        logger.info(f"[DRY RUN] Would fix {mismarked} mismarked records")
+
     # ── Phase 1: Count what we're excluding ────────────────────────────
     total = conn.execute(
         "SELECT COUNT(*) FROM program_results WHERE graph_json IS NOT NULL"
