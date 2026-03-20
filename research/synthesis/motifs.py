@@ -202,10 +202,11 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="ssm_state_space",
         motif_class=MOTIF_CLASS_SSM,
         steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("state_space", OpRole.MIX),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="State-space mixer → projection",
+        description="State-space block: rmsnorm bounds input → state_space → projection",
         support=20,
         avg_loss_ratio=0.180,
         lift=1.3,
@@ -450,11 +451,11 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="tropical_attention_gate",
         motif_class=MOTIF_CLASS_ATTENTION,
         steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("tropical_attention", OpRole.MIX),
-            MotifStep("tropical_gate", OpRole.GATE),
-            MotifStep("tropical_center", OpRole.NORMALIZE),
+            MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="Leaderboard-seeded tropical block: attention → gate → tropical centering",
+        description="Tropical block: rmsnorm bounds input → tropical attention → learnable proj",
         support=3,
         avg_loss_ratio=0.009,
         lift=2.1,
@@ -463,11 +464,11 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="clifford_attention_mix",
         motif_class=MOTIF_CLASS_CHANNEL,
         steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("clifford_attention", OpRole.MIX),
-            MotifStep("grade_mix", OpRole.MIX),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="Leaderboard-seeded Clifford block: multivector attention → grade mixing → projection",
+        description="Clifford block: rmsnorm bounds input → clifford attention → learnable proj",
         support=3,
         avg_loss_ratio=0.008,
         lift=2.3,
@@ -476,11 +477,11 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="padic_hierarchy_block",
         motif_class=MOTIF_CLASS_SSM,
         steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("padic_expand", OpRole.PROJECT),
-            MotifStep("ultrametric_attention", OpRole.MIX),
-            MotifStep("padic_residual", OpRole.RESIDUAL),
+            MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="Leaderboard-seeded p-adic hierarchy block: expansion → ultrametric attention → residual merge",
+        description="P-adic block: rmsnorm bounds input → padic expansion → learnable proj back",
         support=4,
         avg_loss_ratio=0.009,
         lift=2.4,
@@ -505,6 +506,20 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="RWKV time mixing → projection",
         support=20,
         avg_loss_ratio=0.130,
+        lift=1.5,
+    ),
+    # ── Spectral / frequency-domain mixing ───────────────────────────
+    Motif(
+        name="spectral_filter_mix",
+        motif_class=MOTIF_CLASS_CHANNEL,
+        steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+            MotifStep("spectral_filter", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="rmsnorm → spectral_filter → projection (FFT-based per-position filtering)",
+        support=0,
+        avg_loss_ratio=0.0,
         lift=1.5,
     ),
     # ── Compound Efficiency motifs ───────────────────────────────────
@@ -626,7 +641,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Mixture-of-Depths top-k token routing",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="route_speculative",
@@ -734,6 +749,160 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         avg_loss_ratio=0.0,
         lift=1.0,
     ),
+    # ── Recently-added ops: motifs for grammar reachability ─────
+    # These ops have dispatch handlers but no motifs, making them unreachable.
+    Motif(
+        name="kronecker_proj",
+        motif_class=MOTIF_CLASS_EFFICIENT_PROJ,
+        steps=(
+            MotifStep("kronecker_linear", OpRole.PROJECT),
+            MotifStep("gelu", OpRole.ACTIVATE, substitutable=True),
+        ),
+        description="Kronecker-factored projection → activation (128x param compression)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=1.0,
+    ),
+    Motif(
+        name="chebyshev_spectral",
+        motif_class=MOTIF_CLASS_CHANNEL,
+        steps=(
+            MotifStep("chebyshev_spectral_mix", OpRole.MIX),
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+        ),
+        description="Chebyshev spectral mix → normalize",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=1.0,
+    ),
+    Motif(
+        name="n_way_routing",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(
+            MotifStep("n_way_sparse_router", OpRole.ROUTE),
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+        ),
+        description="N-way sparse routing → normalize",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=1.0,
+    ),
+    Motif(
+        name="spectral_filter_block",
+        motif_class=MOTIF_CLASS_CHANNEL,
+        steps=(
+            MotifStep("spectral_filter", OpRole.MIX),
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+        ),
+        description="spectral_filter → rmsnorm (satisfies must_precede constraint)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=1.0,
+    ),
+    Motif(
+        name="tropical_matmul_block",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("tropical_matmul", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="tropical_matmul → linear_proj (back to euclidean)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    # ── Tropical ops (real→real, no space conflict) ─────────────────
+    Motif(
+        name="tropical_gate_block",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("tropical_gate", OpRole.GATE),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="tropical_gate → linear_proj (shortest-path gating)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    Motif(
+        name="tropical_center_norm",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("tropical_center", OpRole.NORMALIZE),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="tropical_center → linear_proj (subtract tropical baseline)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    # ── Grade mix (must follow clifford op per MATH_SPACE_RULES) ──
+    Motif(
+        name="clifford_attention_grade",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+            MotifStep("clifford_attention", OpRole.MIX),
+            MotifStep("grade_mix", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="rmsnorm → clifford_attention → grade_mix → proj (full Clifford block)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    # ── Padic residual bridge (padic→real output) ─────────────────
+    Motif(
+        name="padic_residual_bridge",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+            MotifStep("padic_expand", OpRole.PROJECT),
+            MotifStep("padic_residual", OpRole.RESIDUAL),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="rmsnorm → padic_expand → padic_residual → proj (multi-res p-adic bridge)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    # ── Space-bridging motifs (euclidean → non-euclidean → euclidean) ──
+    Motif(
+        name="poincare_add_bridge",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("exp_map", OpRole.MIX),
+            MotifStep("poincare_add", OpRole.RESIDUAL),
+            MotifStep("log_map", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="exp_map → poincare_add → log_map → proj (Möbius addition bridge)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    # hyp_distance: binary op, handled by tpl_hyp_distance_scoring template
+    Motif(
+        name="ultrametric_attention_bridge",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
+            MotifStep("padic_expand", OpRole.PROJECT),
+            MotifStep("ultrametric_attention", OpRole.MIX),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="rmsnorm → padic_expand → ultrametric_attention → proj (p-adic attention bridge)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    # ── Template-managed ops (intentionally excluded from standalone motifs) ──
+    # These ops require specific wiring context provided by dedicated templates:
+    #   - routing_conditioned_compression: needs token_type_classifier input
+    #   - compression_mixture_experts: needs token_type_classifier input
+    #   - token_type_classifier: signal producer only, wired by templates
+    #   - div_safe: UNSAFE role, needs template context for safety
+    #   - adaptive_lane_mixer: 2-input routing, wired by templates
     # ── B. Guarded Activation motifs (safe predecessor context) ───
     Motif(
         name="act_exp_normed",
@@ -961,18 +1130,6 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         avg_loss_ratio=0.0,
         lift=1.0,
     ),
-    Motif(
-        name="mix_sorted",
-        motif_class=MOTIF_CLASS_CHANNEL,
-        steps=(
-            MotifStep("sort_seq", OpRole.MIX),
-            MotifStep("linear_proj", OpRole.PROJECT),
-        ),
-        description="sort_seq → projection (token reordering)",
-        support=0,
-        avg_loss_ratio=0.0,
-        lift=1.0,
-    ),
     # ── E. Position + Attention motifs ────────────────────────────
     Motif(
         name="attn_rope",
@@ -1085,7 +1242,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="tropical_moe → linear_proj (back to euclidean)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="tropical_router_block",
@@ -1097,7 +1254,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="tropical_router → linear_proj (routing scores)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="clifford_rotor_grade",
@@ -1110,7 +1267,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="rotor_transform → grade_select → proj (Clifford bridge)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="spiking_lif_rate",
@@ -1123,7 +1280,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="lif_neuron → spike_rate_code → proj (spiking bridge)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="spiking_threshold_stdp",
@@ -1136,7 +1293,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="sparse_threshold → stdp_attention → proj (spiking attn)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="padic_gate_proj",
@@ -1148,7 +1305,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="padic_gate → linear_proj (p-adic hierarchy bridge)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="poincare_norm_bridge",
@@ -1160,7 +1317,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="hyperbolic_norm → linear_proj (Poincaré bridge)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     # ── H. Channel/Mix motifs ─────────────────────────────────────
     Motif(
@@ -1199,7 +1356,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="sigmoid → cumprod_safe → proj (sigmoid ∈ (0,1) ⇒ decays)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
 )
 
@@ -1223,14 +1380,170 @@ ACTIVATION_POOL: Tuple[str, ...] = (
     "silu",
     "relu",
     "tanh",
-    "sigmoid",  # existing
+    "sigmoid",
     "sin",
     "cos",
     "abs",
     "neg",
     "square",
-    "softmax_last",  # context-safe additions
+    "softmax_last",
+    "reciprocal",
 )
+
+# ── Context-aware activation placement rules ───────────────────────
+# Each activation maps to:
+#   "after": set of predecessor OpRoles or specific op names where valid.
+#             None means any predecessor is fine.
+#   "before": set of successor op names where valid.
+#              None means any successor is fine.
+# Derived from empirical analysis of 203 training runs.
+
+ACTIVATION_RULES: Dict[str, Dict] = {
+    # Universal: safe everywhere
+    "gelu": {"after": None, "before": None},
+    "silu": {"after": None, "before": None},
+    "relu": {"after": None, "before": None},
+    # Risky: exp amplifies, must only follow bounded output (norm/sigmoid/tanh)
+    "exp": {
+        "after": {OpRole.NORMALIZE, "tanh", "sigmoid", "rmsnorm", "layernorm"},
+        "before": None,
+    },
+    # Bounded [-1,1]: broadly safe (83% success rate empirically)
+    "tanh": {"after": None, "before": None},
+    # Gating: sigmoid → [0,1], only useful before multiplicative ops
+    "sigmoid": {
+        "after": None,
+        "before": {"mul", "outer_product", "matmul", "cosine_similarity"},
+    },
+    # Periodic: learnable frequency features, best after projections/norms
+    "sin": {"after": {OpRole.PROJECT, OpRole.NORMALIZE}, "before": None},
+    "cos": {"after": {OpRole.PROJECT, OpRole.NORMALIZE}, "before": None},
+    # Magnitude: loses sign info, must feed into gating/scaling
+    "abs": {
+        "after": {OpRole.PROJECT, OpRole.MIX},
+        "before": {"mul", "learnable_scale", "topk_gate"},
+    },
+    # Inversion: -x, works broadly but not after sign-flipping ops
+    "neg": {
+        "after": {OpRole.PROJECT, OpRole.MIX, OpRole.ACTIVATE},
+        "before": None,
+    },
+    # Quadratic: magnitude-expanding, needs bounded input
+    "square": {
+        "after": {"ternary_projection", "tanh", "sigmoid", OpRole.NORMALIZE},
+        "before": None,
+    },
+    # Attention-norm: only before matmul-like ops that use weights
+    "softmax_last": {
+        "after": {OpRole.PROJECT, OpRole.MIX},
+        "before": {"matmul", "outer_product", "mul", "cosine_similarity", "div_safe"},
+    },
+    # Reciprocal: bounded [0.5, 1.0] via 1/(1+sigmoid(x)), safe after norm/bounded
+    "reciprocal": {
+        "after": {OpRole.NORMALIZE, "sigmoid", "tanh", "rmsnorm", "layernorm"},
+        "before": None,
+    },
+}
+
+
+def _get_valid_activations(
+    prev_op: Optional[str] = None,
+    next_op: Optional[str] = None,
+) -> List[str]:
+    """Filter ACTIVATION_POOL by context rules.
+
+    Args:
+        prev_op: Name of the preceding op (checked against "after" rules).
+        next_op: Name of the following op (checked against "before" rules).
+
+    Returns:
+        List of activation names valid in this context. Falls back to
+        universally-safe activations if nothing matches.
+    """
+    from .op_roles import get_role
+
+    prev_role = get_role(prev_op) if prev_op else None
+    candidates = []
+    for act in ACTIVATION_POOL:
+        rules = ACTIVATION_RULES.get(act)
+        if rules is None:
+            candidates.append(act)
+            continue
+        # Check "after" constraint
+        after = rules.get("after")
+        if after is not None and prev_op is not None:
+            if prev_op not in after and (prev_role is None or prev_role not in after):
+                continue
+        # Check "before" constraint
+        before = rules.get("before")
+        if before is not None and next_op is not None:
+            if next_op not in before:
+                continue
+        candidates.append(act)
+    # Fallback: always allow the universally safe ones
+    if not candidates:
+        candidates = ["gelu", "silu", "relu"]
+    return candidates
+
+
+# ── Math-space composition rules ─────────────────────────────────
+# Tells the grammar which ops MUST be preceded by a normalizer for
+# numerical stability.  Checked in templates._instantiate_motif().
+#   "must_precede": predecessor must be one of these ops/roles
+#   "must_follow_with": a successor from this set must appear after the op
+
+MATH_SPACE_RULES: Dict[str, Dict] = {
+    # Tropical ops: input must be bounded (they use min/max/softmax internally).
+    # tropical_gate: min-based routing produces sparse gradients. Must be
+    # followed by a parameterized projection to restore gradient density.
+    # (Diagnosis 2026-03-20: 5.7% S1 rate — works, but fragile without proj.)
+    "tropical_gate": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {"linear_proj", "linear_proj_down", "gated_linear"},
+    },
+    # tropical_attention: sequential min ops compound gradient sparsity.
+    # Must be followed by a projection to re-densify gradients. Additionally,
+    # the full tropical attention has 0% S1 rate — require norm after it too.
+    # (Diagnosis 2026-03-20: 0% S1 across 49 attempts, all high-init-loss.)
+    "tropical_attention": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {"linear_proj", "linear_proj_down", "gated_linear"},
+    },
+    "tropical_center": {"must_precede": {"rmsnorm", "layernorm"}},
+    # Clifford ops: input must be bounded (geometric product can amplify)
+    "clifford_attention": {"must_precede": {"rmsnorm", "layernorm"}},
+    "grade_mix": {
+        "must_follow": {"clifford_attention", "rotor_transform", "grade_select"}
+    },
+    # P-adic ops: expansion doubles dim, must project back
+    "padic_expand": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "padic_residual",
+            "ultrametric_attention",
+        },
+    },
+    # State space: bound input to prevent scan explosion
+    "state_space": {"must_precede": {"rmsnorm", "layernorm"}},
+    # conv_only: local-only mixing is insufficient as a sole mixer. Must be
+    # preceded by normalization and followed by a projection that can learn
+    # non-local patterns. (Diagnosis 2026-03-20: 0% S1 rate across 40 attempts,
+    # all unstable_dynamics. The conv itself is fine — it just can't carry a
+    # language model alone.)
+    "conv_only": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "gated_linear",
+            "fused_linear_gelu",
+        },
+    },
+    # Spectral filter: always inside residual (handled by grammar.py fix)
+    "spectral_filter": {"must_precede": {"rmsnorm", "layernorm"}},
+}
 
 
 def pick_motif(
@@ -1263,13 +1576,20 @@ def pick_motif_from_classes(
     return rng.choices(pool, weights=w, k=1)[0]
 
 
-def resolve_step(step: MotifStep, rng: random.Random) -> Tuple[str, Dict]:
+def resolve_step(
+    step: MotifStep,
+    rng: random.Random,
+    *,
+    prev_op: Optional[str] = None,
+    next_op: Optional[str] = None,
+) -> Tuple[str, Dict]:
     """Resolve a motif step to a concrete (op_name, config) pair.
 
-    Handles activation substitution for substitutable steps.
+    Handles context-aware activation substitution for substitutable steps.
     """
     if step.substitutable and step.role == OpRole.ACTIVATE:
-        op_name = rng.choice(ACTIVATION_POOL)
+        candidates = _get_valid_activations(prev_op=prev_op, next_op=next_op)
+        op_name = rng.choice(candidates)
     else:
         op_name = step.op_name
     return op_name, dict(step.config)
