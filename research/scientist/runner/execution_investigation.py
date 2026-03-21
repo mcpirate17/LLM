@@ -321,6 +321,49 @@ class _ExecutionInvestigationMixin:
                     )
                     continue
 
+                # Detect infrastructure failures (CUDA errors, OOM, etc.)
+                # These are not evidence about the architecture — don't record
+                # them as investigation results with robustness=0.
+                _INFRA_MARKERS = (
+                    "cuda",
+                    "illegal memory",
+                    "device-side assert",
+                    "out of memory",
+                )
+                _infra_failures = sum(
+                    1
+                    for r in tp_results
+                    if not r.get("passed")
+                    and any(m in (r.get("error") or "").lower() for m in _INFRA_MARKERS)
+                )
+                _real_failures = (
+                    len(tp_results)
+                    - _infra_failures
+                    - sum(1 for r in tp_results if r.get("passed"))
+                )
+                if _infra_failures > 0 and _infra_failures == len(tp_results):
+                    # ALL failures were infrastructure — skip this candidate
+                    # entirely. Don't write robustness=0 to the leaderboard.
+                    logger.warning(
+                        "Investigation of %s: all %d training programs failed "
+                        "with infrastructure errors (CUDA/OOM) — skipping. "
+                        "This is not an architecture failure.",
+                        source_result_id[:8],
+                        len(tp_results),
+                    )
+                    results.setdefault("infra_failures", []).append(
+                        {
+                            "result_id": source_result_id,
+                            "n_programs": len(tp_results),
+                            "errors": [
+                                r.get("error", "")[:200]
+                                for r in tp_results
+                                if r.get("error")
+                            ],
+                        }
+                    )
+                    continue
+
                 # Compute robustness
                 n_passed = sum(1 for r in tp_results if r.get("passed"))
                 robustness = n_passed / max(len(tp_results), 1)
@@ -530,6 +573,54 @@ class _ExecutionInvestigationMixin:
                 except Exception as e:
                     logger.debug("Investigation checkpoint save failed: %s", e)
 
+            # Detect all-infrastructure-failure: if every candidate was
+            # skipped due to CUDA/OOM errors and no investigation_results
+            # were recorded, mark as failed — not completed. This prevents
+            # recording robustness=0 against architectures that never got
+            # a fair evaluation.
+            infra_only = not results.get("investigation_results") and results.get(
+                "infra_failures"
+            )
+            if infra_only:
+                n_infra = len(results["infra_failures"])
+                err_summary = "; ".join(
+                    f.get("errors", ["unknown"])[0][:80]
+                    for f in results["infra_failures"]
+                )
+                logger.error(
+                    "Investigation %s: all %d candidate(s) failed with "
+                    "infrastructure errors — marking as failed, not completed. "
+                    "Candidates are NOT penalized.",
+                    exp_id[:8],
+                    n_infra,
+                )
+                nb.fail_experiment(
+                    exp_id,
+                    error=f"All {n_infra} candidate(s) failed with infrastructure "
+                    f"errors (CUDA/OOM): {err_summary}",
+                    results=results,
+                )
+                nb.flush_writes()
+                self._update_progress(
+                    status="failed",
+                    elapsed_seconds=time.time() - t_start,
+                    aria_message=(
+                        f"Investigation failed: all candidates hit infrastructure "
+                        f"errors (CUDA/OOM). Architectures were not evaluated — "
+                        f"retry when GPU is healthy."
+                    ),
+                )
+                self._emit_event(
+                    "investigation_completed",
+                    {
+                        "experiment_id": exp_id,
+                        "status": "infra_error",
+                        "infra_failures": results.get("infra_failures"),
+                    },
+                )
+                self._live_training_context = None
+                return
+
             # Complete experiment
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb
@@ -547,7 +638,6 @@ class _ExecutionInvestigationMixin:
             )
 
             nb.flush_writes()
-            # Auto-escalate to validation
             self._auto_escalate(results, config, nb, phase="investigation")
 
             # Clean up investigation checkpoints on success
