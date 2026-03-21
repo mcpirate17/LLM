@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import json
 import time
 import traceback
@@ -16,8 +15,10 @@ from ...training.checkpointing import CheckpointManager
 from ..native_runner import compile_model_native_first as compile_model
 from ..shared_utils import resolve_device
 from ._helpers import (
+    _build_source_map,
     _record_investigation_result,
     _submit_benchmark_eval,
+    clear_gpu_memory,
 )
 
 import logging
@@ -86,14 +87,19 @@ class _ExecutionInvestigationMixin:
             inv_config = RunConfig.from_dict(config.to_dict())
             inv_config.stage1_steps = config.investigation_steps
             inv_config.stage1_batch_size = config.investigation_batch_size
+            # Scale early stopping for longer investigation runs.
+            # Default patience (300) is calibrated for 500-step screening;
+            # without scaling, investigation stops at ~step 400 (16% of 2500).
+            step_ratio = config.investigation_steps / max(config.stage1_steps, 1)
+            inv_config.early_stop_patience = int(
+                config.early_stop_patience * step_ratio
+            )
+            inv_config.early_stop_min_steps = int(
+                config.early_stop_min_steps * step_ratio
+            )
 
             # Fetch all sources at once to avoid N+1 queries
-            program_details = [
-                d or {} for d in (nb.get_program_details(result_ids) or [])
-            ]
-            source_map = {
-                d.get("result_id"): d for d in program_details if d.get("result_id")
-            }
+            source_map = _build_source_map(nb, result_ids)
 
             for prog_idx, source_result_id in enumerate(result_ids):
                 if prog_idx < resume_from_candidate:
@@ -101,15 +107,16 @@ class _ExecutionInvestigationMixin:
                 if self._stop_event.is_set():
                     break
 
-                with self._lock:
-                    self._progress.current_program = prog_idx + 1
-                    self._progress.status = "investigating"
-                    self._progress.aria_message = (
+                self._update_progress(
+                    current_program=prog_idx + 1,
+                    status="investigating",
+                    aria_message=(
                         f"Investigating {prog_idx + 1}/{len(result_ids)}: "
                         f"{source_result_id[:8]}... "
                         f"({config.n_training_programs} training programs)"
-                    )
-                    self._progress.elapsed_seconds = time.time() - t_start
+                    ),
+                    elapsed_seconds=time.time() - t_start,
+                )
 
                 self._emit_event(
                     "investigation_progress",
@@ -185,14 +192,14 @@ class _ExecutionInvestigationMixin:
 
                 # Test each (model x training_program) pair
                 tp_results = []
+                _best_inv_model = None
+                _best_inv_model_lr = float("inf")
+                # Free GPU memory once before processing this candidate
+                clear_gpu_memory()
+
                 for tp_i, tp in enumerate(training_programs):
                     if self._stop_event.is_set():
                         break
-
-                    # Free GPU memory before reconstructing model
-                    if dev.type == "cuda":
-                        torch.cuda.empty_cache()
-                        gc.collect()
 
                     # Reconstruct model fresh for each training program
                     # Use VRAM-capped seq_len for model construction too
@@ -257,10 +264,54 @@ class _ExecutionInvestigationMixin:
                         }
                     )
 
-                    del model
-                    if dev.type == "cuda":
-                        torch.cuda.empty_cache()
-                    gc.collect()
+                    # CUDA fatal error recovery: after a device-side assert the
+                    # entire CUDA context is poisoned. All subsequent operations
+                    # will fail instantly with the same error. Attempt recovery
+                    # before the next training program; if it fails, abort this
+                    # candidate — continuing would waste time on instant failures.
+                    _tp_error = tp_result.get("error") or ""
+                    if "cuda" in _tp_error.lower() and dev.type == "cuda":
+                        from ...eval.sandbox import is_cuda_fatal
+
+                        if is_cuda_fatal(RuntimeError(_tp_error)):
+                            logger.warning(
+                                "CUDA fatal error during investigation of %s "
+                                "program %d/%d — attempting context recovery",
+                                source_result_id[:8],
+                                tp_i + 1,
+                                len(training_programs),
+                            )
+                            try:
+                                del model
+                                torch.cuda.empty_cache()
+                                torch.cuda.reset_peak_memory_stats()
+                                _probe = torch.zeros(1, device=dev)
+                                del _probe
+                                torch.cuda.synchronize()
+                                logger.info("CUDA context recovered after fatal error")
+                            except Exception:
+                                logger.error(
+                                    "CUDA context unrecoverable — aborting "
+                                    "remaining training programs for %s",
+                                    source_result_id[:8],
+                                )
+                                break
+                            continue  # skip model retention, try next program
+
+                    # Retain the best-performing model for post-investigation
+                    # fingerprint completion (needs converged representations).
+                    _this_lr = tp_result.get("loss_ratio")
+                    if _this_lr is not None and (
+                        _best_inv_model is None or _this_lr < _best_inv_model_lr
+                    ):
+                        # Free previous best before reassigning
+                        if _best_inv_model is not None:
+                            del _best_inv_model
+                        _best_inv_model = model
+                        _best_inv_model_lr = _this_lr
+                    else:
+                        del model
+                    clear_gpu_memory()
 
                 # Skip candidates where no training program could reconstruct the model
                 if not tp_results:
@@ -293,9 +344,75 @@ class _ExecutionInvestigationMixin:
                 results["stage05_passed"] += 1
 
                 # Gate: pass investigation if loss quality is good enough.
+                # [CALIBRATION] source: judgment — 0.5 and 0.3 are hardcoded; no config key
+                #   last reviewed: unknown — flag for calibration sweep
                 investigation_passed_early = (best_lr or 1.0) < 0.5 and (
                     not brittle_risk or (best_lr is not None and best_lr < 0.3)
                 )
+
+                # Post-investigation fingerprint completion: run CKA +
+                # behavioral probes on the best converged model.
+                _fp_dict = source.get("_behavioral_fingerprint")
+                if _best_inv_model is not None and _fp_dict is not None:
+                    try:
+                        from ...eval.fingerprint import (
+                            BehavioralFingerprint,
+                            complete_fingerprint_post_investigation,
+                        )
+
+                        _fp = BehavioralFingerprint(
+                            **{
+                                k: v
+                                for k, v in _fp_dict.items()
+                                if k
+                                in {
+                                    f.name
+                                    for f in BehavioralFingerprint.__dataclass_fields__.values()
+                                }
+                            }
+                        )
+                        if not _fp.fingerprint_completed_post_investigation:
+                            _fp = complete_fingerprint_post_investigation(
+                                _fp,
+                                _best_inv_model,
+                                seq_len=min(64, config.max_seq_len),
+                                model_dim=config.model_dim,
+                                vocab_size=config.vocab_size,
+                                device=str(dev),
+                            )
+                            # Update the source fingerprint for downstream use
+                            source["_behavioral_fingerprint"] = _fp.to_dict()
+                            source["novelty_confidence"] = (
+                                0.9
+                                if _fp.quality == "full"
+                                else 0.4 + (_fp.analyses_succeeded * 0.1)
+                                if _fp.quality == "partial"
+                                else 0.3
+                            )
+                            logger.info(
+                                "post_investigation_fingerprint_completed: "
+                                "result_id=%s novelty_score=%.4f "
+                                "novelty_valid=%s cka_source=%s",
+                                source_result_id[:12],
+                                _fp.novelty_score,
+                                _fp.novelty_valid_for_promotion,
+                                _fp.cka_source,
+                            )
+                    except Exception as e:
+                        logger.error(
+                            "post_investigation_fingerprint_failed: "
+                            "result_id=%s error=%s",
+                            source_result_id[:12],
+                            str(e),
+                        )
+                        # fp remains with cka_source="deferred",
+                        # novelty_valid_for_promotion stays False
+
+                # Free the retained model
+                if _best_inv_model is not None:
+                    del _best_inv_model
+                    _best_inv_model = None
+                    clear_gpu_memory()
 
                 investigation_entry = {
                     "result_id": source_result_id,
@@ -440,12 +557,13 @@ class _ExecutionInvestigationMixin:
                 except Exception:
                     pass
 
-            with self._lock:
-                self._progress.status = "completed"
-                self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = (
-                    summary.split("\n")[-1] if summary else "Investigation complete."
-                )
+            self._update_progress(
+                status="completed",
+                elapsed_seconds=time.time() - t_start,
+                aria_message=summary.split("\n")[-1]
+                if summary
+                else "Investigation complete.",
+            )
 
             self._emit_event(
                 "investigation_completed",
@@ -473,10 +591,11 @@ class _ExecutionInvestigationMixin:
                 trigger_payload={"mode": "investigation", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
-            with self._lock:
-                self._progress.status = "failed"
-                self._progress.error = str(e)
-                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
             self._emit_event(
                 "experiment_failed",
                 {
