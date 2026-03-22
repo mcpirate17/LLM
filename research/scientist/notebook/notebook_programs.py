@@ -128,6 +128,7 @@ class _ProgramsMixin:
         graph_fingerprint: str,
         graph_json: str,
         result_id: Optional[str] = None,
+        bypass_quality_gate: bool = False,
         **kwargs,
     ) -> str:
         """Record results for a single synthesized program.
@@ -138,38 +139,57 @@ class _ProgramsMixin:
         Quality gate: rejects results that provide no learning signal —
         S0 failures, S1 failures with no loss data, and results with
         errors — to keep the database lean and focused.
+
+        Set bypass_quality_gate=True (via debug mode) to persist all results.
         """
         # ── Quality gate: reject noise ──
         s0 = kwargs.get("stage0_passed")
         s1 = kwargs.get("stage1_passed")
         loss_ratio = kwargs.get("loss_ratio")
-        err = kwargs.get("error_message")
+        kwargs.get("error_message")
 
-        # Reject S0 failures that carry no error classification.
-        # S0 failures WITH error_type inform compile-failure clustering.
-        if s0 is not None and not s0:
-            error_type = kwargs.get("error_type")
-            if not error_type:
-                LOGGER.debug(
-                    "Quality gate: dropping S0 failure with no error_type (fp=%s)",
-                    graph_fingerprint,
-                )
-                return ""
+        if not bypass_quality_gate:
+            # Reject S0 failures that carry no error classification.
+            # S0 failures WITH error_type inform compile-failure clustering.
+            if s0 is not None and not s0:
+                error_type = kwargs.get("error_type")
+                if not error_type:
+                    LOGGER.debug(
+                        "Quality gate: dropping S0 failure with no error_type (fp=%s)",
+                        graph_fingerprint,
+                    )
+                    return ""
 
-        # Reject S1 failures that carry no learning signal at all:
-        # no loss data AND no error classification AND no novelty data.
-        # Failures WITH loss_ratio inform grammar weights; failures WITH
-        # error_type inform failure-pattern clustering; failures WITH
-        # novelty data inform op success rates — all are valuable.
-        if s0 and not s1:
-            error_type = kwargs.get("error_type")
-            novelty = kwargs.get("novelty_score") or kwargs.get("novelty_confidence")
-            if loss_ratio is None and not error_type and not novelty:
-                LOGGER.debug(
-                    "Quality gate: dropping S1 failure with no signal (fp=%s)",
-                    graph_fingerprint,
+            # Reject S1 failures that carry no learning signal at all:
+            # no loss data AND no error classification AND no novelty data.
+            # Failures WITH loss_ratio inform grammar weights; failures WITH
+            # error_type/error_message inform failure-pattern clustering;
+            # failures WITH novelty data inform op success rates — all valuable.
+            if s0 and not s1:
+                error_type = kwargs.get("error_type")
+                error_msg = kwargs.get("error_message")
+                novelty = kwargs.get("novelty_score") or kwargs.get(
+                    "novelty_confidence"
                 )
-                return ""
+                if (
+                    loss_ratio is None
+                    and not error_type
+                    and not error_msg
+                    and not novelty
+                ):
+                    LOGGER.debug(
+                        "Quality gate: dropping S1 failure with no signal (fp=%s)",
+                        graph_fingerprint,
+                    )
+                    return ""
+        else:
+            LOGGER.info(
+                "Quality gate BYPASSED (debug mode): s0=%s s1=%s lr=%s fp=%s",
+                s0,
+                s1,
+                loss_ratio,
+                graph_fingerprint,
+            )
 
         if not result_id:
             result_id = str(uuid.uuid4())[:12]
@@ -763,6 +783,238 @@ class _ProgramsMixin:
             (result_id,),
         ).fetchone()
         return dict(rows) if rows else None
+
+    def get_leaderboard_consistency_report(self) -> Dict[str, Any]:
+        """Reconcile raw Stage-1 rows against leaderboard coverage.
+
+        A direct leaderboard row is expected for screening-tier survivors.
+        Investigation/validation runs often create descendant program rows for
+        fingerprints already represented by the promoted source result, so they
+        are tracked separately instead of being treated as missing.
+        """
+        screening_modes = ("synthesis", "novelty", "evolution", "reference")
+        screening_placeholders = ",".join("?" for _ in screening_modes)
+
+        total_stage1_rows = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM program_results WHERE stage1_passed = 1"
+            ).fetchone()[0]
+            or 0
+        )
+        total_leaderboard_rows = int(
+            self.conn.execute("SELECT COUNT(*) FROM leaderboard").fetchone()[0] or 0
+        )
+        orphan_leaderboard_rows = int(
+            self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM leaderboard l
+                LEFT JOIN program_results pr ON pr.result_id = l.result_id
+                WHERE pr.result_id IS NULL
+                """
+            ).fetchone()[0]
+            or 0
+        )
+        non_stage1_leaderboard_rows = int(
+            self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM leaderboard l
+                JOIN program_results pr ON pr.result_id = l.result_id
+                WHERE COALESCE(pr.stage1_passed, 0) != 1
+                """
+            ).fetchone()[0]
+            or 0
+        )
+
+        rows = self.conn.execute(
+            """
+            SELECT
+                p.result_id,
+                p.graph_fingerprint,
+                COALESCE(e.experiment_type, 'unknown') AS experiment_type,
+                COALESCE(e.status, 'unknown') AS experiment_status,
+                EXISTS(
+                    SELECT 1 FROM leaderboard l WHERE l.result_id = p.result_id
+                ) AS has_direct_leaderboard,
+                EXISTS(
+                    SELECT 1
+                    FROM leaderboard l
+                    JOIN program_results pr2 ON pr2.result_id = l.result_id
+                    WHERE pr2.graph_fingerprint = p.graph_fingerprint
+                ) AS has_fingerprint_leaderboard
+            FROM program_results p
+            LEFT JOIN experiments e ON e.experiment_id = p.experiment_id
+            WHERE p.stage1_passed = 1
+            """
+        ).fetchall()
+
+        by_experiment_type: Dict[str, Dict[str, int]] = {}
+        direct_covered = 0
+        fingerprint_covered = 0
+        descendant_only_result_ids: List[str] = []
+        missing_screening_result_ids: List[str] = []
+        missing_other_result_ids: List[str] = []
+
+        for row in rows:
+            mode = str(row["experiment_type"] or "unknown")
+            bucket = by_experiment_type.setdefault(
+                mode,
+                {
+                    "stage1_rows": 0,
+                    "direct_leaderboard_rows": 0,
+                    "fingerprint_covered_rows": 0,
+                    "uncovered_rows": 0,
+                },
+            )
+            bucket["stage1_rows"] += 1
+
+            has_direct = bool(row["has_direct_leaderboard"])
+            has_fingerprint = bool(row["has_fingerprint_leaderboard"])
+            if has_direct:
+                direct_covered += 1
+                bucket["direct_leaderboard_rows"] += 1
+            if has_fingerprint:
+                fingerprint_covered += 1
+                bucket["fingerprint_covered_rows"] += 1
+
+            if has_direct or has_fingerprint:
+                if has_fingerprint and not has_direct:
+                    descendant_only_result_ids.append(str(row["result_id"]))
+                continue
+
+            bucket["uncovered_rows"] += 1
+            if mode in screening_modes:
+                missing_screening_result_ids.append(str(row["result_id"]))
+            else:
+                missing_other_result_ids.append(str(row["result_id"]))
+
+        missing_screening_rows = int(
+            self.conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM program_results p
+                JOIN experiments e ON e.experiment_id = p.experiment_id
+                WHERE p.stage1_passed = 1
+                  AND e.experiment_type IN ({screening_placeholders})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM leaderboard l WHERE l.result_id = p.result_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM leaderboard l
+                      JOIN program_results pr2 ON pr2.result_id = l.result_id
+                      WHERE pr2.graph_fingerprint = p.graph_fingerprint
+                  )
+                """,
+                screening_modes,
+            ).fetchone()[0]
+            or 0
+        )
+
+        orphan_ids = [
+            str(r["result_id"])
+            for r in self.conn.execute(
+                """
+                SELECT l.result_id
+                FROM leaderboard l
+                LEFT JOIN program_results pr ON pr.result_id = l.result_id
+                WHERE pr.result_id IS NULL
+                ORDER BY l.timestamp DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        ]
+
+        return {
+            "stage1_program_rows": total_stage1_rows,
+            "leaderboard_rows": total_leaderboard_rows,
+            "direct_stage1_leaderboard_rows": direct_covered,
+            "fingerprint_covered_stage1_rows": fingerprint_covered,
+            "descendant_stage1_rows_without_direct_entry": len(
+                descendant_only_result_ids
+            ),
+            "missing_screening_leaderboard_rows": missing_screening_rows,
+            "missing_non_screening_leaderboard_rows": len(missing_other_result_ids),
+            "orphan_leaderboard_rows": orphan_leaderboard_rows,
+            "non_stage1_leaderboard_rows": non_stage1_leaderboard_rows,
+            "by_experiment_type": by_experiment_type,
+            "samples": {
+                "missing_screening_result_ids": missing_screening_result_ids[:20],
+                "missing_non_screening_result_ids": missing_other_result_ids[:20],
+                "descendant_result_ids": descendant_only_result_ids[:20],
+                "orphan_leaderboard_result_ids": orphan_ids,
+            },
+        }
+
+    def backfill_missing_screening_leaderboard_entries(
+        self,
+        *,
+        experiment_types: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Backfill screening leaderboard entries for uncovered screening survivors."""
+        experiment_types = experiment_types or [
+            "synthesis",
+            "novelty",
+            "evolution",
+            "reference",
+        ]
+        placeholders = ",".join("?" for _ in experiment_types)
+        params: List[Any] = list(experiment_types)
+        query = f"""
+            SELECT p.*
+            FROM program_results p
+            JOIN experiments e ON e.experiment_id = p.experiment_id
+            WHERE p.stage1_passed = 1
+              AND e.experiment_type IN ({placeholders})
+              AND NOT EXISTS (
+                    SELECT 1 FROM leaderboard l WHERE l.result_id = p.result_id
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM leaderboard l
+                    JOIN program_results pr2 ON pr2.result_id = l.result_id
+                    WHERE pr2.graph_fingerprint = p.graph_fingerprint
+              )
+            ORDER BY p.timestamp ASC
+        """
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+
+        rows = self.conn.execute(query, params).fetchall()
+        created_entry_ids: List[str] = []
+        created_result_ids: List[str] = []
+        for row in rows:
+            record = dict(row)
+            entry_id = self.upsert_leaderboard(
+                result_id=str(record["result_id"]),
+                model_source=str(record.get("model_source") or "graph_synthesis"),
+                architecture_desc=str(record.get("graph_fingerprint") or "")[:40],
+                screening_loss_ratio=record.get("loss_ratio"),
+                screening_novelty=record.get("novelty_score"),
+                screening_passed=True,
+                tier="screening",
+                novelty_confidence=record.get("novelty_confidence"),
+                fp_jacobian_spectral_norm=record.get("fp_jacobian_spectral_norm"),
+                routing_savings_ratio=record.get("routing_savings_ratio"),
+                activation_sparsity_score=record.get("activation_sparsity_score"),
+                depth_savings_ratio=record.get("depth_savings_ratio"),
+                compression_ratio=record.get("compression_ratio"),
+                wikitext_perplexity=record.get("wikitext_perplexity"),
+                wikitext_score=record.get("wikitext_score"),
+            )
+            created_entry_ids.append(entry_id)
+            created_result_ids.append(str(record["result_id"]))
+            self._sync_fingerprint_leaderboard(str(record["result_id"]))
+
+        self._maybe_commit()
+        return {
+            "created_entries": len(created_entry_ids),
+            "entry_ids": created_entry_ids,
+            "result_ids": created_result_ids,
+        }
 
     def get_investigated_fingerprints(self) -> set:
         """Return fingerprints that have already been investigated or beyond.

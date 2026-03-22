@@ -1,4 +1,5 @@
 """Contract tests for abs."""
+
 import yaml
 from pathlib import Path
 

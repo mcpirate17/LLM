@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from ..notebook import LabNotebook
 from ..runner import ExperimentRunner
+from .deps import get_notebook
 from ..native_runner import native_runner_capability_report
 from ..persona import get_aria
 
@@ -511,7 +512,7 @@ def get_autonomy(notebook_path: str):
         from ..autonomy import AriaAutonomy
         from ..actions import ActionStore
 
-        nb = LabNotebook(notebook_path)
+        nb = get_notebook(notebook_path)
         _aria_autonomy = AriaAutonomy(notebook=nb)
         _aria_action_store = ActionStore(nb.conn)
     return _aria_autonomy, _aria_action_store

@@ -102,8 +102,12 @@ def build_report(nb: LabNotebook) -> Dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check experiment/fingerprint association integrity.")
-    parser.add_argument("--db", default="research/lab_notebook.db", help="Path to lab_notebook.db")
+    parser = argparse.ArgumentParser(
+        description="Check experiment/fingerprint association integrity."
+    )
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Path to lab_notebook.db"
+    )
     parser.add_argument(
         "--allow-missing-db",
         action="store_true",

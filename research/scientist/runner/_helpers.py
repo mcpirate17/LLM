@@ -13,6 +13,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ..json_utils import json_safe
+
 logger = logging.getLogger(__name__)
 _REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
 
@@ -26,6 +28,16 @@ _REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
 
 _DEFAULT_VOCAB_SIZE: int = 32_000
 _REFERENCE_INITIAL_LOSS: float = math.log(_DEFAULT_VOCAB_SIZE)  # ~10.37
+
+
+def _build_source_map(nb: Any, result_ids: List[str]) -> Dict[str, Dict]:
+    """Fetch program details for *result_ids* and return a {result_id: detail} map.
+
+    Centralises the repeated ``[d or {} for d in (nb.get_program_details(ids) or [])]``
+    pattern used in investigation/validation execution.
+    """
+    details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+    return {d.get("result_id"): d for d in details if d.get("result_id")}
 
 
 def _corpus_type_from_config(config: Any) -> str:
@@ -84,16 +96,40 @@ def stage1_learning_gate(
     3. Corpus-relative: if WikiText-103 + tiktoken, compare to GPT-2 floor
     4. Absolute floor: final_loss must be below random baseline
     """
+    # Random baseline (entropy floor) — used by gates 2 and 4
+    # tiktoken cl100k_base: ln(100277) ~ 11.52
+    # byte tokenizer 32K vocab: ln(32000) ~ 10.37
+    tok_prefix = tokenizer.split("_")[0] if tokenizer else ""
+    random_baseline = {"tiktoken": 11.52, "byte": 10.37}.get(tok_prefix, 11.52)
+
     # Gate 1: Made things worse
     if loss_ratio > 1.0:
         return False, f"loss_ratio={loss_ratio:.3f} > 1.0 — training diverged"
 
-    # Gate 2: Clearly didn't learn (< 5% reduction after real training)
-    if loss_ratio > 0.95 and n_steps >= 200:
-        return False, (
-            f"loss_ratio={loss_ratio:.3f} after {n_steps} steps — "
-            f"model reduced loss by only {(1 - loss_ratio) * 100:.1f}%"
-        )
+    # Gate 2: Clearly didn't learn — entropy-relative threshold.
+    #
+    # Problem: fixed 0.95 ratio penalizes complex architectures that start
+    # close to the entropy floor. A 12-op graph at init=12 has only 1.6 nats
+    # of headroom above ln(vocab), so 5% improvement (0.6 nats) consumes 37%
+    # of headroom. A 4-op graph at init=190 has 180 nats of headroom — 5%
+    # (9.5 nats) is trivial.
+    #
+    # Fix: scale threshold by headroom. Require using at least 10% of
+    # improvable headroom (init_loss - entropy_floor).
+    # At init=190 (headroom=180): need 18 nats drop → threshold=0.905
+    # At init=12  (headroom=1.6): need 0.16 nats drop → threshold=0.987
+    if n_steps >= 200:
+        _init = initial_loss if initial_loss and initial_loss > 0 else 100.0
+        _headroom = max(_init - random_baseline, 0.5)
+        _min_improvement = _headroom * 0.10
+        _raw_thr = 1.0 - _min_improvement / max(_init, 1.0)
+        _ratio_threshold = max(0.90, min(0.99, _raw_thr))
+        if loss_ratio > _ratio_threshold:
+            return False, (
+                f"loss_ratio={loss_ratio:.3f} after {n_steps} steps — "
+                f"model reduced loss by only {(1 - loss_ratio) * 100:.1f}% "
+                f"(threshold={_ratio_threshold:.3f}, headroom={_headroom:.1f})"
+            )
 
     # Gate 3: Corpus-relative gate (WikiText-103 + tiktoken only)
     if corpus_type == "wikitext103" and "tiktoken" in tokenizer:
@@ -108,10 +144,6 @@ def stage1_learning_gate(
                 )
 
     # Gate 4: Absolute random baseline
-    # tiktoken cl100k_base: ln(100277) ~ 11.52 (random model baseline)
-    # byte tokenizer 32K vocab: ln(32000) ~ 10.37
-    tok_prefix = tokenizer.split("_")[0] if tokenizer else ""
-    random_baseline = {"tiktoken": 11.52, "byte": 10.37}.get(tok_prefix, 11.52)
 
     if final_loss > random_baseline * 0.95:
         return False, (
@@ -273,6 +305,72 @@ def clear_gpu_memory() -> None:
     gc.collect()
 
 
+def compute_seed_metrics(
+    seed_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Aggregate metrics from multi-seed training results.
+
+    Returns dict with: passed_seeds, loss_ratios, val_loss_ratio,
+    multi_seed_std, robustness_score, is_unstable, init_sensitivity_std,
+    best_seed.
+    """
+    passed_seeds = [r for r in seed_results if r.get("passed")]
+    loss_ratios = [
+        r["loss_ratio"] for r in seed_results if r.get("loss_ratio") is not None
+    ]
+
+    val_loss_ratio = sum(loss_ratios) / len(loss_ratios) if loss_ratios else None
+    multi_seed_std = 0.0
+    robustness_score = 1.0
+    is_unstable = False
+
+    if len(loss_ratios) > 1:
+        mean_lr = sum(loss_ratios) / len(loss_ratios)
+        variance = sum((lr - mean_lr) ** 2 for lr in loss_ratios) / len(loss_ratios)
+        multi_seed_std = variance**0.5
+        if variance > 0.15:
+            is_unstable = True
+        if mean_lr > 1e-6:
+            robustness_score = max(0.0, 1.0 - (multi_seed_std / mean_lr))
+
+    # Init sensitivity: std between default and xavier seeds
+    init_sensitivity_std = None
+    default_losses = [
+        r["loss_ratio"]
+        for r in seed_results
+        if r.get("init_scheme") == "default" and r.get("loss_ratio") is not None
+    ]
+    xavier_losses = [
+        r["loss_ratio"]
+        for r in seed_results
+        if r.get("init_scheme") == "xavier_uniform" and r.get("loss_ratio") is not None
+    ]
+    if default_losses and xavier_losses:
+        default_mean = sum(default_losses) / len(default_losses)
+        xavier_mean = sum(xavier_losses) / len(xavier_losses)
+        init_sensitivity_std = abs(default_mean - xavier_mean)
+
+    # Best seed: lowest final_loss
+    best_seed = None
+    if loss_ratios:
+        best_seed = min(
+            (r for r in seed_results if r.get("final_loss") is not None),
+            key=lambda r: r["final_loss"],
+            default=None,
+        )
+
+    return {
+        "passed_seeds": passed_seeds,
+        "loss_ratios": loss_ratios,
+        "val_loss_ratio": val_loss_ratio,
+        "multi_seed_std": multi_seed_std,
+        "robustness_score": robustness_score,
+        "is_unstable": is_unstable,
+        "init_sensitivity_std": init_sensitivity_std,
+        "best_seed": best_seed,
+    }
+
+
 def screening_wikitext_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     """Extract persisted screening WikiText fields from a result dict."""
     fields: Dict[str, Any] = {}
@@ -291,7 +389,7 @@ def screening_wikitext_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     budget = row.get("screening_wikitext_budget")
     if budget:
         fields["screening_wikitext_budget_json"] = json.dumps(
-            budget,
+            json_safe(budget),
             sort_keys=True,
             separators=(",", ":"),
         )

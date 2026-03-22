@@ -26,9 +26,10 @@ const STATUS_OPTIONS = [
 ];
 
 export function SummaryBar({ tierCounts }) {
-  const total = tierCounts?.total_survivors || 0;
+  const total = tierCounts?.all || 0;
   const validated = (tierCounts?.validation || 0) + (tierCounts?.breakthrough || 0);
   const breakthroughs = tierCounts?.breakthrough || 0;
+  const references = tierCounts?.references || 0;
 
   return (
     <div
@@ -45,12 +46,13 @@ export function SummaryBar({ tierCounts }) {
         fontSize: 13,
       }}
     >
-      <Stat value={total} label="unique architectures" />
+      <Stat value={total} label="discoveries" />
       <Stat value={tierCounts?.screening || 0} label="screened" color="var(--accent-blue)" />
       <Stat value={tierCounts?.screened_out || 0} label="failed investigation" color="var(--text-muted)" />
       <Stat value={tierCounts?.investigation || 0} label="investigation" color="var(--accent-yellow)" />
       <Stat value={validated} label="validated" color="var(--accent-purple)" />
       <Stat value={breakthroughs} label="breakthroughs" color="var(--accent-green)" />
+      <Stat value={references} label="references" color="var(--accent-purple)" />
     </div>
   );
 }
@@ -153,7 +155,7 @@ export function ScoreCell({ entry }) {
 
   return (
     <div
-      style={{ minWidth: 70, position: 'relative', display: 'inline-block' }}
+      style={{ minWidth: 92, position: 'relative', display: 'inline-block' }}
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
     >

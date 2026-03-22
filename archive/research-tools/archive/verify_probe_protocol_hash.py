@@ -46,7 +46,9 @@ def main() -> int:
         description="Verify manifest probe_protocol_hash against canonicalized probe protocol JSON"
     )
     parser.add_argument("--manifest", required=True, help="Path to manifest.json")
-    parser.add_argument("--probe-spec", required=True, help="Path to probe_protocol.json")
+    parser.add_argument(
+        "--probe-spec", required=True, help="Path to probe_protocol.json"
+    )
     parser.add_argument(
         "--algorithm",
         default="sha256",

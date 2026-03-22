@@ -1,4 +1,5 @@
 """Python fallback kernel for maximum."""
+
 import torch
 from components.base import make_binary_handler
 

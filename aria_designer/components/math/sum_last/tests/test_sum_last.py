@@ -1,4 +1,5 @@
 """Contract tests for sum_last."""
+
 import yaml
 from pathlib import Path
 

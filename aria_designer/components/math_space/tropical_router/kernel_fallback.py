@@ -1,4 +1,5 @@
 """Kernel handler for tropical_router — tropical (shortest-path) routing signal."""
+
 import torch
 import torch.nn as nn
 
@@ -19,7 +20,9 @@ class ComponentHandler:
         D = x.shape[-1]
 
         if self._weight is None or self._weight.shape[0] != D:
-            self._weight = nn.Parameter(torch.randn(D, D, device=x.device, dtype=x.dtype) * 0.02)
+            self._weight = nn.Parameter(
+                torch.randn(D, D, device=x.device, dtype=x.dtype) * 0.02
+            )
             self._scale = nn.Parameter(torch.ones(1, device=x.device, dtype=x.dtype))
 
         # Tropical distance: min over j of (x_i + w_ij) for each output dim

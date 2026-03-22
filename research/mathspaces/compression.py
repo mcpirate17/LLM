@@ -30,7 +30,7 @@ def execute_low_rank_proj(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     Uses D²/2 params instead of D² — captures the dominant subspace
     of a full linear projection.
     """
-    if not hasattr(module, 'U') or not hasattr(module, 'V'):
+    if not hasattr(module, "U") or not hasattr(module, "V"):
         return x
     # x: (B, S, D), U: (D, r), V: (r, D) -> (B, S, D)
     return x @ module.U @ module.V
@@ -42,7 +42,7 @@ def execute_grouped_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     Each group transforms D/g dims independently.
     Uses D²/4 params — captures independent feature subspace transformations.
     """
-    if not hasattr(module, 'weight'):
+    if not hasattr(module, "weight"):
         return x
     B, S, D = x.shape
     g = module.n_groups
@@ -51,7 +51,7 @@ def execute_grouped_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     usable = group_dim * g
     x_groups = x[..., :usable].view(B, S, g, group_dim)  # (B, S, g, D/g)
     # weight: (g, D/g, D/g) — per-group linear
-    out_groups = torch.einsum('bsgd,gde->bsge', x_groups, module.weight)
+    out_groups = torch.einsum("bsgd,gde->bsge", x_groups, module.weight)
     out = out_groups.reshape(B, S, usable)
     # Pass through any remainder dims unchanged
     if usable < D:
@@ -65,11 +65,11 @@ def execute_bottleneck_proj(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     Down-project, GELU nonlinearity, up-project. Classic adapter/inverted
     residual pattern. Uses D²/2 params.
     """
-    if not hasattr(module, 'down') or not hasattr(module, 'up'):
+    if not hasattr(module, "down") or not hasattr(module, "up"):
         return x
     # down: (r, D), up: (D, r)
     hidden = F.gelu(F.linear(x, module.down))  # (B, S, r)
-    return F.linear(hidden, module.up)          # (B, S, D)
+    return F.linear(hidden, module.up)  # (B, S, D)
 
 
 def execute_shared_basis_proj(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -78,7 +78,7 @@ def execute_shared_basis_proj(module: nn.Module, x: torch.Tensor) -> torch.Tenso
     Learn a small basis of k vectors and per-dimension mixing coefficients.
     Dramatically fewer params: 16·D instead of D².
     """
-    if not hasattr(module, 'mixing') or not hasattr(module, 'basis'):
+    if not hasattr(module, "mixing") or not hasattr(module, "basis"):
         return x
     # mixing: (D, k), basis: (k, D) -> x @ mixing @ basis = (B, S, D)
     return x @ module.mixing @ module.basis
@@ -91,8 +91,8 @@ def execute_tied_proj(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     The up-projection reuses the transposed down-projection matrix,
     halving parameters vs bottleneck_proj. Classic autoencoder tie.
     """
-    if not hasattr(module, 'tied_weight'):
+    if not hasattr(module, "tied_weight"):
         return x
     # tied_weight: (r, D)
-    hidden = F.gelu(F.linear(x, module.tied_weight))   # (B, S, r)
-    return F.linear(hidden, module.tied_weight.t())     # (B, S, D)
+    hidden = F.gelu(F.linear(x, module.tied_weight))  # (B, S, r)
+    return F.linear(hidden, module.tied_weight.t())  # (B, S, D)

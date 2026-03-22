@@ -67,7 +67,12 @@ def capability_handshake() -> Dict[str, Any]:
     approximate_mappings: Dict[str, str] = {}
     semantic_warnings: List[Dict[str, str]] = []
 
-    mapping_path = Path(__file__).resolve().parents[2] / "aria_designer" / "runtime" / "component_mapping.yaml"
+    mapping_path = (
+        Path(__file__).resolve().parents[2]
+        / "aria_designer"
+        / "runtime"
+        / "component_mapping.yaml"
+    )
 
     if mapping_path.exists():
         approximate_mappings = _load_approximate_alias_notes(mapping_path)
@@ -135,7 +140,9 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
         roundtrip_graph = bridge_mod.workflow_to_graph(workflow, model_dim=model_dim)
         parity_ok = bool(roundtrip_graph.n_ops() == first_graph.n_ops())
 
-        components_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+        components_dir = (
+            Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+        )
         try:
             compiled = compiler_mod.compile_workflow(workflow, str(components_dir))
         except ValueError as compile_exc:
@@ -145,28 +152,35 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
             exc_msg = str(compile_exc)
             if "Missing runtime kernel_fallback.py" in exc_msg:
                 from .native_runner import (
-                    _NATIVE_C_KERNEL_OPS, _CYTHON_WRAPPER_OPS, _SOFT_BRIDGE_OPS,
+                    _NATIVE_C_KERNEL_OPS,
+                    _CYTHON_WRAPPER_OPS,
+                    _SOFT_BRIDGE_OPS,
                 )
                 from ..synthesis.primitives import PRIMITIVE_REGISTRY
-                all_native = _NATIVE_C_KERNEL_OPS | _CYTHON_WRAPPER_OPS | _SOFT_BRIDGE_OPS
+
+                all_native = (
+                    _NATIVE_C_KERNEL_OPS | _CYTHON_WRAPPER_OPS | _SOFT_BRIDGE_OPS
+                )
                 # Also accept any op known to the research primitive registry
                 # (they have execute functions and don't need designer fallbacks)
                 all_known = all_native | set(PRIMITIVE_REGISTRY.keys())
                 # Extract component types from error: "node_3 (math_space/tropical_gate)"
-                missing_ops = re.findall(r'node_\w+\s+\(([^)]+)\)', exc_msg)
+                missing_ops = re.findall(r"node_\w+\s+\(([^)]+)\)", exc_msg)
                 # Convert component paths to op names: "math_space/tropical_gate" -> "tropical_gate"
                 missing_op_names = [op.split("/")[-1] for op in missing_ops]
                 all_covered = all(op in all_known for op in missing_op_names)
                 if all_covered:
                     compiled = None  # designer compile not needed
-                    report.update({
-                        "succeeded": True,
-                        "parity_ok": parity_ok,
-                        "reason": "ok_native_kernel_bypass",
-                        "workflow_id": workflow.get("workflow_id"),
-                        "workflow_node_count": len(workflow.get("nodes") or []),
-                        "native_bypass_ops": missing_op_names,
-                    })
+                    report.update(
+                        {
+                            "succeeded": True,
+                            "parity_ok": parity_ok,
+                            "reason": "ok_native_kernel_bypass",
+                            "workflow_id": workflow.get("workflow_id"),
+                            "workflow_node_count": len(workflow.get("nodes") or []),
+                            "native_bypass_ops": missing_op_names,
+                        }
+                    )
                     return report
             raise  # re-raise if not handled
 
@@ -174,7 +188,9 @@ def try_designer_runtime_probe(layer_graphs: List[Any]) -> Dict[str, Any]:
             {
                 "succeeded": compiled is not None,
                 "parity_ok": parity_ok,
-                "reason": "ok" if (compiled is not None and parity_ok) else "parity_or_compile_mismatch",
+                "reason": "ok"
+                if (compiled is not None and parity_ok)
+                else "parity_or_compile_mismatch",
                 "workflow_id": workflow.get("workflow_id"),
                 "workflow_node_count": len(workflow.get("nodes") or []),
             }
@@ -218,7 +234,9 @@ def build_designer_layer_modules(layer_graphs: List[Any]) -> Dict[str, Any]:
     result["attempted"] = True
     try:
         importer_mod, _bridge_mod, compiler_mod = _load_designer_runtime_modules()
-        components_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+        components_dir = (
+            Path(__file__).resolve().parents[2] / "aria_designer" / "components"
+        )
 
         for idx, graph in enumerate(layer_graphs):
             try:
@@ -250,9 +268,15 @@ def _load_designer_runtime_modules() -> Tuple[Any, Any, Any]:
     runtime_dir = Path(__file__).resolve().parents[2] / "aria_designer" / "runtime"
     package_name = "aria_designer_runtime"
     _ensure_package_loaded(package_name, runtime_dir)
-    importer_mod = _load_module_from_path(f"{package_name}.importer", runtime_dir / "importer.py")
-    bridge_mod = _load_module_from_path(f"{package_name}.bridge", runtime_dir / "bridge.py")
-    compiler_mod = _load_module_from_path(f"{package_name}.compiler", runtime_dir / "compiler.py")
+    importer_mod = _load_module_from_path(
+        f"{package_name}.importer", runtime_dir / "importer.py"
+    )
+    bridge_mod = _load_module_from_path(
+        f"{package_name}.bridge", runtime_dir / "bridge.py"
+    )
+    compiler_mod = _load_module_from_path(
+        f"{package_name}.compiler", runtime_dir / "compiler.py"
+    )
     return importer_mod, bridge_mod, compiler_mod
 
 
@@ -266,7 +290,9 @@ def _ensure_package_loaded(package_name: str, package_dir: Path) -> None:
         submodule_search_locations=[str(package_dir)],
     )
     if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to load package spec for {package_name} at {init_path}")
+        raise ImportError(
+            f"Unable to load package spec for {package_name} at {init_path}"
+        )
     module = importlib.util.module_from_spec(spec)
     sys.modules[package_name] = module
     spec.loader.exec_module(module)
@@ -275,7 +301,9 @@ def _ensure_package_loaded(package_name: str, package_dir: Path) -> None:
 def _load_module_from_path(module_name: str, module_path: Path):
     spec = importlib.util.spec_from_file_location(module_name, str(module_path))
     if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to load module spec for {module_name} at {module_path}")
+        raise ImportError(
+            f"Unable to load module spec for {module_name} at {module_path}"
+        )
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -287,7 +315,10 @@ def _find_workflow_input_node(workflow: Dict[str, Any]) -> str:
     for node in nodes:
         comp_type = str(node.get("component_type") or "")
         leaf = comp_type.split("/")[-1]
-        if leaf in {"input", "graph_input"} or comp_type in {"io/input", "io/graph_input"}:
+        if leaf in {"input", "graph_input"} or comp_type in {
+            "io/input",
+            "io/graph_input",
+        }:
             node_id = node.get("id")
             if node_id:
                 return str(node_id)

@@ -10,4 +10,4 @@ export function MetricRow({ label, value }) {
   );
 }
 
-export default MetricRow;
+export default React.memo(MetricRow);

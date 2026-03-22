@@ -1,4 +1,5 @@
 """Contract tests for log_map."""
+
 import yaml
 from pathlib import Path
 

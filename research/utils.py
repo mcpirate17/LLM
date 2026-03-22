@@ -8,7 +8,10 @@ import torch.nn as nn
 
 from research.defaults import ROPE_THETA_BASE
 
-def straight_through_estimator(original: torch.Tensor, modified: torch.Tensor) -> torch.Tensor:
+
+def straight_through_estimator(
+    original: torch.Tensor, modified: torch.Tensor
+) -> torch.Tensor:
     """
     Bypasses non-differentiable operations entirely in the backward pass.
     Forward: returns modified
@@ -16,7 +19,9 @@ def straight_through_estimator(original: torch.Tensor, modified: torch.Tensor) -
     """
     return original + (modified - original).detach()
 
+
 # ── Normalization Modules ──────────────────────────────────────────────
+
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -31,6 +36,7 @@ class RMSNorm(nn.Module):
 
 class DynamicNorm(nn.Module):
     """Per-token learned normalization scale."""
+
     def __init__(self, dim: int):
         super().__init__()
         self.scale_proj = nn.Linear(dim, dim)
@@ -43,6 +49,7 @@ class DynamicNorm(nn.Module):
 
 class GroupNormWrapper(nn.Module):
     """GroupNorm wrapped for (B, S, D) format."""
+
     def __init__(self, num_groups: int, dim: int):
         super().__init__()
         self.norm = nn.GroupNorm(num_groups, dim)
@@ -53,6 +60,7 @@ class GroupNormWrapper(nn.Module):
 
 class SigmoidNorm(nn.Module):
     """Sigmoid-gated normalization."""
+
     def __init__(self, dim: int):
         super().__init__()
         self.norm = RMSNorm(dim)
@@ -64,9 +72,13 @@ class SigmoidNorm(nn.Module):
 
 # ── Positional Encoding Modules ───────────────────────────────────────
 
+
 class RoPE(nn.Module):
     """Rotary Position Embeddings."""
-    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = ROPE_THETA_BASE):
+
+    def __init__(
+        self, dim: int, max_seq_len: int = 2048, base: float = ROPE_THETA_BASE
+    ):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
@@ -80,11 +92,14 @@ class RoPE(nn.Module):
         cos = self.cos_cached[:S].unsqueeze(0)
         sin = self.sin_cached[:S].unsqueeze(0)
         x1, x2 = x[..., ::2], x[..., 1::2]
-        return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+        return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(
+            -2
+        )
 
 
 class ALiBi(nn.Module):
     """ALiBi-inspired position encoding (simplified: adds distance-weighted bias)."""
+
     def __init__(self, dim: int, max_seq_len: int = 2048):
         super().__init__()
         self.proj = nn.Linear(1, dim, bias=False)
@@ -98,16 +113,20 @@ class ALiBi(nn.Module):
 
 class ConvPositional(nn.Module):
     """Implicit position from causal convolution."""
+
     def __init__(self, dim: int, kernel_size: int = 5):
         super().__init__()
-        self.conv = nn.Conv1d(dim, dim, kernel_size, padding=kernel_size - 1, groups=dim)
+        self.conv = nn.Conv1d(
+            dim, dim, kernel_size, padding=kernel_size - 1, groups=dim
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.conv(x.transpose(1, 2))[:, :, :x.shape[1]].transpose(1, 2)
+        return x + self.conv(x.transpose(1, 2))[:, :, : x.shape[1]].transpose(1, 2)
 
 
 class LearnedAbsolutePositional(nn.Module):
     """Learned absolute position embeddings."""
+
     def __init__(self, dim: int, max_seq_len: int = 2048):
         super().__init__()
         self.embed = nn.Embedding(max_seq_len, dim)
@@ -120,6 +139,7 @@ class LearnedAbsolutePositional(nn.Module):
 
 class RandomFourierPositional(nn.Module):
     """Random Fourier features for position encoding."""
+
     def __init__(self, dim: int, max_seq_len: int = 2048):
         super().__init__()
         self.proj = nn.Parameter(torch.randn(1, dim // 2) * 0.1, requires_grad=False)

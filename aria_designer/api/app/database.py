@@ -3,6 +3,7 @@
 Uses WAL mode for concurrent reads. Tables: components, component_versions,
 workflows, workflow_runs, aria_proposals.
 """
+
 from __future__ import annotations
 
 import json
@@ -131,14 +132,14 @@ def init_db(db_path: Optional[Path] = None) -> None:
     global _DB_PATH
     if db_path is not None:
         _DB_PATH = db_path
-    
+
     logger.debug("Initializing DB at %s", _DB_PATH)
     # Clear thread-local connection if it exists to ensure we use the new path
     if hasattr(_local, "conn") and _local.conn:
         logger.debug("Closing existing thread-local connection")
         _local.conn.close()
         _local.conn = None
-        
+
     conn = _get_conn()
     conn.executescript(SCHEMA_SQL)
     conn.commit()
@@ -147,7 +148,10 @@ def init_db(db_path: Optional[Path] = None) -> None:
 
 # ── Component CRUD ────────────────────────────────────────────────────
 
-def upsert_component(manifest: Dict[str, Any], created_at: str, updated_at: str) -> None:
+
+def upsert_component(
+    manifest: Dict[str, Any], created_at: str, updated_at: str
+) -> None:
     """Insert or update a component from its manifest dict."""
     conn = _get_conn()
     conn.execute(
@@ -171,7 +175,12 @@ def upsert_component(manifest: Dict[str, Any], created_at: str, updated_at: str)
     conn.execute(
         """INSERT INTO component_versions (component_id, version, manifest_json, created_at)
            VALUES (?, ?, ?, ?)""",
-        (manifest["id"], manifest.get("version", "1.0.0"), json.dumps(manifest), created_at),
+        (
+            manifest["id"],
+            manifest.get("version", "1.0.0"),
+            json.dumps(manifest),
+            created_at,
+        ),
     )
     conn.commit()
 
@@ -260,10 +269,15 @@ def count_components() -> Dict[str, int]:
 
 # ── Workflow CRUD ─────────────────────────────────────────────────────
 
+
 def save_workflow(
-    workflow_id: str, name: str, graph_json: str,
-    author: str = "user", parent_id: Optional[str] = None,
-    created_at: str = "", updated_at: str = "",
+    workflow_id: str,
+    name: str,
+    graph_json: str,
+    author: str = "user",
+    parent_id: Optional[str] = None,
+    created_at: str = "",
+    updated_at: str = "",
 ) -> int:
     """Save or update a workflow. Returns version number."""
     # Canonicalize component IDs before saving
@@ -272,7 +286,9 @@ def save_workflow(
         canonicalize_workflow(wf)
         graph_json = json.dumps(wf)
     except Exception as e:
-        logger.warning("Failed to canonicalize workflow %s before save: %s", workflow_id, e)
+        logger.warning(
+            "Failed to canonicalize workflow %s before save: %s", workflow_id, e
+        )
 
     conn = _get_conn()
     existing = conn.execute(
@@ -291,7 +307,16 @@ def save_workflow(
         conn.execute(
             """INSERT INTO workflows (id, name, graph_json, version, author, parent_id, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (workflow_id, name, graph_json, new_version, author, parent_id, created_at, updated_at),
+            (
+                workflow_id,
+                name,
+                graph_json,
+                new_version,
+                author,
+                parent_id,
+                created_at,
+                updated_at,
+            ),
         )
     conn.commit()
     return new_version
@@ -319,9 +344,13 @@ def list_workflows() -> List[Dict[str, Any]]:
 
 # ── Aria Proposals ────────────────────────────────────────────────────
 
+
 def save_proposal(
-    proposal_id: str, workflow_id: str, patch_json: str,
-    rationale: str, created_at: str,
+    proposal_id: str,
+    workflow_id: str,
+    patch_json: str,
+    rationale: str,
+    created_at: str,
 ) -> None:
     """Save an Aria patch proposal."""
     conn = _get_conn()
@@ -334,7 +363,10 @@ def save_proposal(
 
 
 def resolve_proposal(
-    proposal_id: str, status: str, resolved_by: str, resolved_at: str,
+    proposal_id: str,
+    status: str,
+    resolved_by: str,
+    resolved_at: str,
 ) -> bool:
     """Approve or reject a proposal."""
     conn = _get_conn()
@@ -375,6 +407,7 @@ def get_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
 
 # ── Feedback Loop ─────────────────────────────────────────────────────
 
+
 def record_suggestion_outcome(
     suggestion_id: str,
     outcome: str,
@@ -405,8 +438,11 @@ def record_suggestion_outcome(
 
 # ── Conversations ─────────────────────────────────────────────────────
 
+
 def create_conversation(
-    session_id: str, workflow_id: Optional[str], started_at: str,
+    session_id: str,
+    workflow_id: Optional[str],
+    started_at: str,
 ) -> None:
     """Create a new chat conversation session."""
     conn = _get_conn()
@@ -449,7 +485,10 @@ def end_conversation(session_id: str, timestamp: str) -> bool:
 
 
 def add_message(
-    session_id: str, role: str, content: str, created_at: str,
+    session_id: str,
+    role: str,
+    content: str,
+    created_at: str,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Add a message to a conversation. Returns rowid."""
@@ -457,7 +496,13 @@ def add_message(
     cur = conn.execute(
         """INSERT INTO aria_messages (session_id, role, content, metadata_json, created_at)
            VALUES (?, ?, ?, ?, ?)""",
-        (session_id, role, content, json.dumps(metadata) if metadata else None, created_at),
+        (
+            session_id,
+            role,
+            content,
+            json.dumps(metadata) if metadata else None,
+            created_at,
+        ),
     )
     conn.commit()
     return cur.lastrowid or 0

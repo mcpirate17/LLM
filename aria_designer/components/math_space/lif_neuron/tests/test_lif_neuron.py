@@ -1,4 +1,5 @@
 """Contract tests for lif_neuron."""
+
 import yaml
 from pathlib import Path
 

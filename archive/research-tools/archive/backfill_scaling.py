@@ -19,9 +19,15 @@ import sys
 from pathlib import Path
 
 
-def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
-             n_steps: int = 500, top_pct: int = 100, dry_run: bool = False,
-             verbose: bool = True):
+def backfill(
+    db_path: str,
+    device: str = "cuda",
+    families: str = "gpt2",
+    n_steps: int = 500,
+    top_pct: int = 100,
+    dry_run: bool = False,
+    verbose: bool = True,
+):
     """Score top leaderboard entries against GPT-2 reference scaling curves."""
     from ..eval.scaling_reference import ScalingReferenceManager
     from ..scientist.notebook import LabNotebook
@@ -48,14 +54,16 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
         param_count = detail.get("param_count") or detail.get("graph_n_params_estimate")
         if not final_loss or not param_count:
             continue
-        scoreable.append({
-            "entry": entry,
-            "detail": detail,
-            "final_loss": final_loss,
-            "param_count": param_count,
-            "loss_ratio": detail.get("loss_ratio", 1.0),
-            "flops_forward": detail.get("flops_forward", 0) or (param_count * 2),
-        })
+        scoreable.append(
+            {
+                "entry": entry,
+                "detail": detail,
+                "final_loss": final_loss,
+                "param_count": param_count,
+                "loss_ratio": detail.get("loss_ratio", 1.0),
+                "flops_forward": detail.get("flops_forward", 0) or (param_count * 2),
+            }
+        )
 
     # Sort by loss_ratio (best convergence first) and take top N%
     scoreable.sort(key=lambda x: x["loss_ratio"])
@@ -63,8 +71,9 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
     candidates = scoreable[:n_target]
 
     # Skip entries that already have scaling data
-    candidates = [c for c in candidates
-                  if c["entry"].get("scaling_param_efficiency") is None]
+    candidates = [
+        c for c in candidates if c["entry"].get("scaling_param_efficiency") is None
+    ]
 
     random_chance = math.log(32000)
 
@@ -74,8 +83,10 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
         print(f"  Device: {device}")
         print(f"  Reference families: {family_list}")
         print(f"  Reference training: {n_steps} steps")
-        print(f"  Target: top {top_pct}% of {len(scoreable)} scoreable entries "
-              f"→ {n_target} entries, {len(candidates)} need scoring")
+        print(
+            f"  Target: top {top_pct}% of {len(scoreable)} scoreable entries "
+            f"→ {n_target} entries, {len(candidates)} need scoring"
+        )
         print(f"  Random chance loss: {random_chance:.2f}")
         print()
 
@@ -88,8 +99,10 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
         print("DRY RUN — candidates to score:")
         for c in candidates:
             rid = c["entry"]["result_id"][:8]
-            print(f"  {rid} loss={c['final_loss']:.4f} ratio={c['loss_ratio']:.4f} "
-                  f"params={c['param_count']:,}")
+            print(
+                f"  {rid} loss={c['final_loss']:.4f} ratio={c['loss_ratio']:.4f} "
+                f"params={c['param_count']:,}"
+            )
         nb.close()
         return
 
@@ -111,7 +124,9 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
     )
     if verbose:
         if curve.A > 0:
-            print(f"  Curve: L(N) = {curve.A:.2f} * N^(-{curve.alpha:.4f})  R²={curve.fit_r2:.3f}")
+            print(
+                f"  Curve: L(N) = {curve.A:.2f} * N^(-{curve.alpha:.4f})  R²={curve.fit_r2:.3f}"
+            )
             print(f"  Points: {len(curve.points)}")
             for pt in curve.points:
                 print(f"    {pt.param_count:>12,d} params → loss {pt.loss:.4f}")
@@ -119,7 +134,9 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
             print(f"  WARNING: Could not fit curve ({len(curve.points)} usable points)")
             if len(curve.points) == 0:
                 print("  All reference models failed to learn below random chance.")
-                print(f"  Try --n-steps > {n_steps} or use real data (not random tokens).")
+                print(
+                    f"  Try --n-steps > {n_steps} or use real data (not random tokens)."
+                )
                 nb.close()
                 return
         print()
@@ -170,7 +187,7 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
             if verbose:
                 status = "PASS 3x" if passed else "FAIL"
                 print(
-                    f"  [{i+1}/{len(candidates)}] {rid[:8]}: "
+                    f"  [{i + 1}/{len(candidates)}] {rid[:8]}: "
                     f"loss={c['final_loss']:.4f} "
                     f"param_eff={sr.best_param_efficiency:.2f}x "
                     f"flop_eff={sr.flop_efficiency:.2f}x "
@@ -180,7 +197,7 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
         except Exception as e:
             results["error"] += 1
             if verbose:
-                print(f"  [{i+1}/{len(candidates)}] {rid[:8]}: ERROR {e}")
+                print(f"  [{i + 1}/{len(candidates)}] {rid[:8]}: ERROR {e}")
 
     nb.close()
 
@@ -194,27 +211,46 @@ def backfill(db_path: str, device: str = "cuda", families: str = "gpt2",
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Backfill scaling comparison for top leaderboard entries")
-    parser.add_argument("--db", default="research/lab_notebook.db",
-                        help="Path to lab_notebook.db")
-    parser.add_argument("--device", default="cuda",
-                        help="Device for reference training (default: cuda)")
-    parser.add_argument("--families", default="gpt2",
-                        help="Reference families (default: gpt2)")
-    parser.add_argument("--n-steps", type=int, default=500,
-                        help="Training steps for reference models (default: 500)")
-    parser.add_argument("--top-pct", type=int, default=100,
-                        help="Score top N%% of validation entries (default: 100)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be scored")
+        description="Backfill scaling comparison for top leaderboard entries"
+    )
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Path to lab_notebook.db"
+    )
+    parser.add_argument(
+        "--device", default="cuda", help="Device for reference training (default: cuda)"
+    )
+    parser.add_argument(
+        "--families", default="gpt2", help="Reference families (default: gpt2)"
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=500,
+        help="Training steps for reference models (default: 500)",
+    )
+    parser.add_argument(
+        "--top-pct",
+        type=int,
+        default=100,
+        help="Score top N%% of validation entries (default: 100)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be scored"
+    )
     args = parser.parse_args()
 
     if not Path(args.db).exists():
         print(f"ERROR: Database not found: {args.db}", file=sys.stderr)
         sys.exit(1)
 
-    backfill(args.db, device=args.device, families=args.families,
-             n_steps=args.n_steps, top_pct=args.top_pct, dry_run=args.dry_run)
+    backfill(
+        args.db,
+        device=args.device,
+        families=args.families,
+        n_steps=args.n_steps,
+        top_pct=args.top_pct,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":

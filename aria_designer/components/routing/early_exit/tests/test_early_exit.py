@@ -1,4 +1,5 @@
 """Contract tests for early_exit."""
+
 import yaml
 from pathlib import Path
 

@@ -16,10 +16,12 @@ from ..loader import scan_and_load
 # Optional runtime imports
 try:
     from runtime.importer import import_survivors, import_single
+
     HAS_IMPORTER = True
 except ImportError:
     try:
         from aria_designer.runtime.importer import import_survivors, import_single
+
         HAS_IMPORTER = True
     except ImportError:
         import_survivors = import_single = None
@@ -56,14 +58,16 @@ def _canonicalize_imported_workflow(
     for node in workflow.get("nodes", []):
         component_type = str(node.get("component_type") or "").strip().lower()
         if component_type and component_type not in registry_ids:
-            unresolved.append({
-                "node_id": node.get("id"),
-                "component_type": node.get("component_type"),
-                "message": (
-                    f"Imported node {node.get('id')} uses unresolved component type "
-                    f"'{node.get('component_type')}'."
-                ),
-            })
+            unresolved.append(
+                {
+                    "node_id": node.get("id"),
+                    "component_type": node.get("component_type"),
+                    "message": (
+                        f"Imported node {node.get('id')} uses unresolved component type "
+                        f"'{node.get('component_type')}'."
+                    ),
+                }
+            )
     if unresolved:
         if strict:
             raise HTTPException(
@@ -89,8 +93,7 @@ def get_survivors(
     try:
         survivors = import_survivors(n=n, sort_by=sort_by, min_novelty=min_novelty)
         survivors = [
-            _canonicalize_imported_workflow(dict(s), strict=False)
-            for s in survivors
+            _canonicalize_imported_workflow(dict(s), strict=False) for s in survivors
         ]
         return {"survivors": survivors}
     except FileNotFoundError as e:
@@ -142,12 +145,18 @@ def export_workflow_onnx(req: CompileWorkflowRequest) -> Any:
         raise HTTPException(status_code=501, detail="ONNX export not available")
 
     try:
-        components_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "components"))
+        components_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
+        )
         onnx_bytes = export_onnx(req.workflow.model_dump(), components_dir)
         # Return as downloadable file
         from fastapi.responses import Response
-        return Response(content=onnx_bytes, media_type="application/octet-stream",
-                        headers={"Content-Disposition": "attachment; filename=model.onnx"})
+
+        return Response(
+            content=onnx_bytes,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": "attachment; filename=model.onnx"},
+        )
     except Exception as e:
         logger.error("ONNX export failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))

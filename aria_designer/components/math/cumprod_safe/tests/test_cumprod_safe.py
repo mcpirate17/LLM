@@ -1,4 +1,5 @@
 """Contract tests for cumprod_safe."""
+
 import yaml
 from pathlib import Path
 

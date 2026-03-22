@@ -39,8 +39,8 @@ def test_tropical_matmul_parity():
         b = torch.randn(shape_b)
 
         # Fallback (manual min-plus)
-        expanded_a = a.unsqueeze(3)  # (B, S, D, 1)
-        expanded_b = b.unsqueeze(1)  # (B, 1, D, S2)
+        a.unsqueeze(3)  # (B, S, D, 1)
+        b.unsqueeze(1)  # (B, 1, D, S2)
         # We want min_k(a_ik + b_kj)
         # a: (B, S, D), b: (B, D, S2)
         # expected[b, i, j] = min_k(a[b, i, k] + b[b, k, j])

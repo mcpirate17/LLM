@@ -1,4 +1,5 @@
 """Contract tests for local_window_attn."""
+
 import yaml
 from pathlib import Path
 

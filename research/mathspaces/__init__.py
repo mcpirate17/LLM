@@ -9,13 +9,13 @@ from . import clifford, compression, hyperbolic, padic, spiking, tropical
 from .registry import register_all_mathspaces
 
 __all__ = [
-	"register_all_mathspaces",
-	"hyperbolic",
-	"tropical",
-	"padic",
-	"clifford",
-	"compression",
-	"spiking",
+    "register_all_mathspaces",
+    "hyperbolic",
+    "tropical",
+    "padic",
+    "clifford",
+    "compression",
+    "spiking",
 ]
 
 # Ensure mathspace ops are always registered when this package is imported.

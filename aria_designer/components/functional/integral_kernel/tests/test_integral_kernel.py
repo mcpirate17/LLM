@@ -1,4 +1,5 @@
 """Contract tests for integral_kernel."""
+
 import yaml
 from pathlib import Path
 

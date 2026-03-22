@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 
+
 def search_marketplace(query: str = "") -> List[Dict[str, Any]]:
     """
     Search for components in the global community marketplace.
@@ -13,7 +14,7 @@ def search_marketplace(query: str = "") -> List[Dict[str, Any]]:
             "category": "blocks",
             "author": "state-spaces",
             "stars": 1240,
-            "description": "High-performance Selective SSM block."
+            "description": "High-performance Selective SSM block.",
         },
         {
             "id": "flash_attn_v3",
@@ -21,12 +22,18 @@ def search_marketplace(query: str = "") -> List[Dict[str, Any]]:
             "category": "mixing",
             "author": "dao-ai",
             "stars": 3500,
-            "description": "The latest FlashAttention kernel for Hopper GPUs."
-        }
+            "description": "The latest FlashAttention kernel for Hopper GPUs.",
+        },
     ]
     if not query:
         return curated
-    return [c for c in curated if query.lower() in c["name"].lower() or query.lower() in c["description"].lower()]
+    return [
+        c
+        for c in curated
+        if query.lower() in c["name"].lower()
+        or query.lower() in c["description"].lower()
+    ]
+
 
 def install_component(component_id: str) -> bool:
     """

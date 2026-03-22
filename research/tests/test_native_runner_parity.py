@@ -5,7 +5,10 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from research.scientist.native_runner import compile_model_native_first, reset_native_runner_telemetry
+from research.scientist.native_runner import (
+    compile_model_native_first,
+    reset_native_runner_telemetry,
+)
 from research.synthesis.compiler import compile_model as compile_model_legacy
 from research.synthesis.graph import ComputationGraph
 
@@ -60,13 +63,17 @@ def _compile_pair(layer_graphs):
     }
     reset_native_runner_telemetry()
 
-    with patch("research.scientist.native_runner_adapter.os.environ", env), patch(
-        "research.scientist.native_runner.os.environ", env
-    ), patch(
-        "research.scientist.native_runner_adapter.Path.exists", return_value=True
+    with (
+        patch("research.scientist.native_runner_adapter.os.environ", env),
+        patch("research.scientist.native_runner.os.environ", env),
+        patch(
+            "research.scientist.native_runner_adapter.Path.exists", return_value=True
+        ),
     ):
         torch.manual_seed(77)
-        native_model = compile_model_native_first(layer_graphs, vocab_size=128, max_seq_len=32)
+        native_model = compile_model_native_first(
+            layer_graphs, vocab_size=128, max_seq_len=32
+        )
 
     torch.manual_seed(77)
     legacy_model = compile_model_legacy(layer_graphs, vocab_size=128, max_seq_len=32)
@@ -108,13 +115,17 @@ def test_selective_mode_parity_contract_for_supported_subset():
 
     graphs = [_graph_simple(), _graph_simple()]
     reset_native_runner_telemetry()
-    with patch("research.scientist.native_runner_adapter.os.environ", env), patch(
-        "research.scientist.native_runner.os.environ", env
-    ), patch(
-        "research.scientist.native_runner_adapter.Path.exists", return_value=True
+    with (
+        patch("research.scientist.native_runner_adapter.os.environ", env),
+        patch("research.scientist.native_runner.os.environ", env),
+        patch(
+            "research.scientist.native_runner_adapter.Path.exists", return_value=True
+        ),
     ):
         torch.manual_seed(77)
-        native_model = compile_model_native_first(graphs, vocab_size=128, max_seq_len=32)
+        native_model = compile_model_native_first(
+            graphs, vocab_size=128, max_seq_len=32
+        )
 
     torch.manual_seed(77)
     legacy_model = compile_model_legacy(graphs, vocab_size=128, max_seq_len=32)

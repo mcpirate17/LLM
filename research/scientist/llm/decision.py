@@ -46,18 +46,37 @@ class NextExperimentDecisionPlanner:
     def from_run_config(cls, run_config: Any) -> "NextExperimentDecisionPlanner":
         cfg = NextExperimentPlannerConfig(
             enabled=bool(getattr(run_config, "enable_llm_decision_planner", True)),
-            local_backend=str(getattr(run_config, "llm_decision_local_backend", "") or ""),
+            local_backend=str(
+                getattr(run_config, "llm_decision_local_backend", "") or ""
+            ),
             local_model=str(getattr(run_config, "llm_decision_local_model", "") or ""),
             local_host=str(getattr(run_config, "llm_decision_local_host", "") or ""),
-            remote_backend=str(getattr(run_config, "llm_decision_remote_backend", "") or ""),
-            remote_model=str(getattr(run_config, "llm_decision_remote_model", "") or ""),
-            temperature=float(getattr(run_config, "llm_decision_temperature", 0.2) or 0.2),
+            remote_backend=str(
+                getattr(run_config, "llm_decision_remote_backend", "") or ""
+            ),
+            remote_model=str(
+                getattr(run_config, "llm_decision_remote_model", "") or ""
+            ),
+            temperature=float(
+                getattr(run_config, "llm_decision_temperature", 0.2) or 0.2
+            ),
             max_tokens=int(getattr(run_config, "llm_decision_max_tokens", 700) or 700),
-            budget_dollars=float(getattr(run_config, "llm_decision_budget_dollars", 0.0) or 0.0),
-            max_n_programs=int(getattr(run_config, "llm_decision_max_n_programs", 200) or 200),
-            max_time_minutes=int(getattr(run_config, "llm_decision_max_time_minutes", 120) or 120),
-            min_novelty_weight=float(getattr(run_config, "llm_decision_min_novelty_weight", 0.25) or 0.25),
-            min_family_bonus_weight=float(getattr(run_config, "llm_decision_min_family_bonus_weight", 0.10) or 0.10),
+            budget_dollars=float(
+                getattr(run_config, "llm_decision_budget_dollars", 0.0) or 0.0
+            ),
+            max_n_programs=int(
+                getattr(run_config, "llm_decision_max_n_programs", 200) or 200
+            ),
+            max_time_minutes=int(
+                getattr(run_config, "llm_decision_max_time_minutes", 120) or 120
+            ),
+            min_novelty_weight=float(
+                getattr(run_config, "llm_decision_min_novelty_weight", 0.25) or 0.25
+            ),
+            min_family_bonus_weight=float(
+                getattr(run_config, "llm_decision_min_family_bonus_weight", 0.10)
+                or 0.10
+            ),
         )
         return cls(cfg)
 
@@ -73,7 +92,10 @@ class NextExperimentDecisionPlanner:
         if not self.config.enabled:
             fallback["planner"] = {"source": "disabled", "backend": None}
             return fallback
-        if self.config.budget_dollars > 0 and current_cost_dollars >= self.config.budget_dollars:
+        if (
+            self.config.budget_dollars > 0
+            and current_cost_dollars >= self.config.budget_dollars
+        ):
             fallback["planner"] = {"source": "budget_exhausted", "backend": None}
             return fallback
 
@@ -161,11 +183,20 @@ class NextExperimentDecisionPlanner:
                 return {}
         return {}
 
-    def _validate_and_harden(self, candidate: Dict[str, Any], *, fallback: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _validate_and_harden(
+        self, candidate: Dict[str, Any], *, fallback: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         if not isinstance(candidate, dict):
             return None
         mode = str(candidate.get("mode") or "").strip().lower()
-        if mode not in {"synthesis", "evolution", "novelty", "investigation", "validation", "refinement"}:
+        if mode not in {
+            "synthesis",
+            "evolution",
+            "novelty",
+            "investigation",
+            "validation",
+            "refinement",
+        }:
             return None
         rationale = str(candidate.get("rationale") or "").strip()
         if not rationale:
@@ -176,30 +207,42 @@ class NextExperimentDecisionPlanner:
 
         # Hard guardrails: preserve diversity and avoid single-metric collapse.
         if mode in {"novelty", "evolution", "refinement"}:
-            novelty_weight = float(config.get("novelty_weight", fallback["config"].get("novelty_weight", 0.5)))
-            config["novelty_weight"] = max(novelty_weight, self.config.min_novelty_weight)
-            fam_bonus = float(config.get("selection_family_bonus_weight", fallback["config"].get("selection_family_bonus_weight", 0.2)))
-            config["selection_family_bonus_weight"] = max(fam_bonus, self.config.min_family_bonus_weight)
+            novelty_weight = float(
+                config.get(
+                    "novelty_weight", fallback["config"].get("novelty_weight", 0.5)
+                )
+            )
+            config["novelty_weight"] = max(
+                novelty_weight, self.config.min_novelty_weight
+            )
+            fam_bonus = float(
+                config.get(
+                    "selection_family_bonus_weight",
+                    fallback["config"].get("selection_family_bonus_weight", 0.2),
+                )
+            )
+            config["selection_family_bonus_weight"] = max(
+                fam_bonus, self.config.min_family_bonus_weight
+            )
 
         # Reproducibility defaults.
         config.setdefault("selection_policy", "ucb")
         config.setdefault("selection_epsilon", 0.0)
 
-        # Strip protected ops from LLM-suggested exclusions.
-        if "excluded_ops" in config and isinstance(config["excluded_ops"], list):
-            from ...synthesis.primitives import PROTECTED_OPS
-            config["excluded_ops"] = [op for op in config["excluded_ops"]
-                                      if isinstance(op, str) and op not in PROTECTED_OPS]
-
         # Cost/time bounds.
         if "n_programs" in config:
             try:
-                config["n_programs"] = max(4, min(int(config["n_programs"]), self.config.max_n_programs))
+                config["n_programs"] = max(
+                    4, min(int(config["n_programs"]), self.config.max_n_programs)
+                )
             except Exception:
                 config.pop("n_programs", None)
         if "max_time_minutes" in config:
             try:
-                config["max_time_minutes"] = max(1, min(int(config["max_time_minutes"]), self.config.max_time_minutes))
+                config["max_time_minutes"] = max(
+                    1,
+                    min(int(config["max_time_minutes"]), self.config.max_time_minutes),
+                )
             except Exception:
                 config.pop("max_time_minutes", None)
 
@@ -208,18 +251,34 @@ class NextExperimentDecisionPlanner:
             "reasoning": rationale,
             "confidence": float(candidate.get("confidence", 0.5) or 0.5),
             "config": config,
-            "guardrails": candidate.get("guardrails") if isinstance(candidate.get("guardrails"), dict) else {},
+            "guardrails": candidate.get("guardrails")
+            if isinstance(candidate.get("guardrails"), dict)
+            else {},
         }
 
     @staticmethod
-    def _fallback_plan(summary: Dict[str, Any], fallback_plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _fallback_plan(
+        summary: Dict[str, Any], fallback_plan: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         fallback = fallback_plan if isinstance(fallback_plan, dict) else {}
         mode = str(fallback.get("mode") or "synthesis").strip().lower()
-        if mode not in {"synthesis", "evolution", "novelty", "investigation", "validation", "refinement"}:
+        if mode not in {
+            "synthesis",
+            "evolution",
+            "novelty",
+            "investigation",
+            "validation",
+            "refinement",
+        }:
             mode = "synthesis"
-        reasoning = str(fallback.get("reasoning") or "Rule-based fallback plan from recent outcomes.")
+        reasoning = str(
+            fallback.get("reasoning")
+            or "Rule-based fallback plan from recent outcomes."
+        )
         confidence = float(fallback.get("confidence", 0.45) or 0.45)
-        config = fallback.get("config") if isinstance(fallback.get("config"), dict) else {}
+        config = (
+            fallback.get("config") if isinstance(fallback.get("config"), dict) else {}
+        )
         return {
             "mode": mode,
             "reasoning": reasoning,
@@ -228,7 +287,9 @@ class NextExperimentDecisionPlanner:
             "summary_excerpt": {
                 "recent_experiment_id": summary.get("recent_experiment_id"),
                 "stage1_survivors": summary.get("stage1_survivors", 0),
-                "best_loss_ratio": summary.get("best_validation_loss_ratio", summary.get("best_loss_ratio")),
+                "best_loss_ratio": summary.get(
+                    "best_validation_loss_ratio", summary.get("best_loss_ratio")
+                ),
                 "best_novelty": summary.get("best_novelty"),
             },
         }

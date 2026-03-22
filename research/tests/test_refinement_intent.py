@@ -94,7 +94,13 @@ def test_refinement_balanced_penalizes_oscillation_risk():
     runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "refine_stability.db"))
     risky = _risky_graph()
     stable = _stabilized_risky_graph()
-    op_success = {"moe_2expert": 0.6, "gelu": 0.6, "gated_linear": 0.6, "layernorm": 0.6, "add": 0.6}
+    op_success = {
+        "moe_2expert": 0.6,
+        "gelu": 0.6,
+        "gated_linear": 0.6,
+        "layernorm": 0.6,
+        "add": 0.6,
+    }
 
     risky_score, risky_breakdown = runner._score_refinement_candidate(
         risky, op_success, "balanced", include_breakdown=True
@@ -103,16 +109,21 @@ def test_refinement_balanced_penalizes_oscillation_risk():
         stable, op_success, "balanced", include_breakdown=True
     )
 
-    assert risky_breakdown["components"]["oscillation_risk"] > stable_breakdown["components"]["oscillation_risk"]
+    assert (
+        risky_breakdown["components"]["oscillation_risk"]
+        > stable_breakdown["components"]["oscillation_risk"]
+    )
     assert risky_breakdown["weighted_terms"]["oscillation_penalty"] < 0.0
     assert stable_score > risky_score
 
 
 def test_synthesis_stability_rerank_prefers_stabilized_graph():
-    ranked = rank_synthesis_candidates_by_stability([
-        _risky_graph(),
-        _stabilized_risky_graph(),
-    ])
+    ranked = rank_synthesis_candidates_by_stability(
+        [
+            _risky_graph(),
+            _stabilized_risky_graph(),
+        ]
+    )
     assert ranked[0].has_residual_path()
 
 

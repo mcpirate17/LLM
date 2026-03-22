@@ -9,13 +9,19 @@ import RecommendationCard from '../program/RecommendationCard';
 
 export function ProgramHeaderSection({ program, leaderboardEntry }) {
   if (!program) return null;
+  const headerId = program.graph_fingerprint || program.reference_name || program.result_id || 'unknown';
   return (
     <div>
       <div style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--accent-blue)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span>{program.graph_fingerprint}</span>
+        <span>{headerId}</span>
         {program.stage_at_death && program.stage_at_death !== 'survived' && (
           <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>
             died at {program.stage_at_death}
+          </span>
+        )}
+        {program.is_reference && (
+          <span style={{ fontSize: 10, color: 'var(--accent-purple)', border: '1px solid var(--accent-purple)', borderRadius: 4, padding: '1px 6px' }}>
+            REFERENCE
           </span>
         )}
         {leaderboardEntry && (

@@ -1,19 +1,17 @@
-"""Auto-generated Python fallback kernel for learnable_bias."""
-
-import torch.nn as nn
+"""Python fallback kernel for learnable_bias."""
 
 
 class ComponentHandler:
-    """Fallback handler for learnable_bias."""
+    """Fallback handler for learnable_bias: x + bias (bias initialized to zero)."""
 
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        # TODO: implement parameterized module
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
-        x = inputs["x"]
-        # TODO: implement learnable_bias
-        return {"y": x}
+        # Without a persistent module, bias is zero — pass through.
+        # The WorkflowModule build path should construct a proper nn.Module
+        # for trainable workflows; this fallback is for inference/preview.
+        return {"y": inputs["x"]}

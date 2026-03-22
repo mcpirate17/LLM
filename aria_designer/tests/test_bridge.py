@@ -17,6 +17,7 @@ from aria_designer.runtime.bridge import (
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
+
 def _simple_mlp():
     """Simple: input → linear → relu → linear → output."""
     return {
@@ -28,10 +29,34 @@ def _simple_mlp():
             {"id": "n4", "component_type": "graph_output", "params": {}},
         ],
         "edges": [
-            {"id": "e0", "source": "n0", "target": "n1", "source_port": "out", "target_port": "in"},
-            {"id": "e1", "source": "n1", "target": "n2", "source_port": "out", "target_port": "in"},
-            {"id": "e2", "source": "n2", "target": "n3", "source_port": "out", "target_port": "in"},
-            {"id": "e3", "source": "n3", "target": "n4", "source_port": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "n0",
+                "target": "n1",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "n1",
+                "target": "n2",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e2",
+                "source": "n2",
+                "target": "n3",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e3",
+                "source": "n3",
+                "target": "n4",
+                "source_port": "out",
+                "target_port": "in",
+            },
         ],
     }
 
@@ -51,16 +76,76 @@ def _attention_pattern():
             {"id": "out", "component_type": "graph_output", "params": {}},
         ],
         "edges": [
-            {"id": "e0", "source": "in", "target": "q", "source_port": "out", "target_port": "in"},
-            {"id": "e1", "source": "in", "target": "k", "source_port": "out", "target_port": "in"},
-            {"id": "e2", "source": "in", "target": "v", "source_port": "out", "target_port": "in"},
-            {"id": "e3", "source": "q", "target": "attn", "source_port": "out", "target_port": "a"},
-            {"id": "e4", "source": "k", "target": "attn", "source_port": "out", "target_port": "b"},
-            {"id": "e5", "source": "attn", "target": "sm", "source_port": "out", "target_port": "in"},
-            {"id": "e6", "source": "sm", "target": "out_attn", "source_port": "out", "target_port": "a"},
-            {"id": "e7", "source": "v", "target": "out_attn", "source_port": "out", "target_port": "b"},
-            {"id": "e8", "source": "out_attn", "target": "proj", "source_port": "out", "target_port": "in"},
-            {"id": "e9", "source": "proj", "target": "out", "source_port": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "in",
+                "target": "q",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "in",
+                "target": "k",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e2",
+                "source": "in",
+                "target": "v",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e3",
+                "source": "q",
+                "target": "attn",
+                "source_port": "out",
+                "target_port": "a",
+            },
+            {
+                "id": "e4",
+                "source": "k",
+                "target": "attn",
+                "source_port": "out",
+                "target_port": "b",
+            },
+            {
+                "id": "e5",
+                "source": "attn",
+                "target": "sm",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e6",
+                "source": "sm",
+                "target": "out_attn",
+                "source_port": "out",
+                "target_port": "a",
+            },
+            {
+                "id": "e7",
+                "source": "v",
+                "target": "out_attn",
+                "source_port": "out",
+                "target_port": "b",
+            },
+            {
+                "id": "e8",
+                "source": "out_attn",
+                "target": "proj",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e9",
+                "source": "proj",
+                "target": "out",
+                "source_port": "out",
+                "target_port": "in",
+            },
         ],
     }
 
@@ -72,22 +157,63 @@ def _residual_block():
             {"id": "in", "component_type": "graph_input", "params": {}},
             {"id": "proj", "component_type": "linear_proj", "params": {"out_dim": 256}},
             {"id": "act", "component_type": "gelu", "params": {}},
-            {"id": "proj2", "component_type": "linear_proj", "params": {"out_dim": 256}},
+            {
+                "id": "proj2",
+                "component_type": "linear_proj",
+                "params": {"out_dim": 256},
+            },
             {"id": "res", "component_type": "add", "params": {}},
             {"id": "out", "component_type": "graph_output", "params": {}},
         ],
         "edges": [
-            {"id": "e0", "source": "in", "target": "proj", "source_port": "out", "target_port": "in"},
-            {"id": "e1", "source": "proj", "target": "act", "source_port": "out", "target_port": "in"},
-            {"id": "e2", "source": "act", "target": "proj2", "source_port": "out", "target_port": "in"},
-            {"id": "e3", "source": "proj2", "target": "res", "source_port": "out", "target_port": "a"},
-            {"id": "e4", "source": "in", "target": "res", "source_port": "out", "target_port": "b"},
-            {"id": "e5", "source": "res", "target": "out", "source_port": "out", "target_port": "in"},
+            {
+                "id": "e0",
+                "source": "in",
+                "target": "proj",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e1",
+                "source": "proj",
+                "target": "act",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e2",
+                "source": "act",
+                "target": "proj2",
+                "source_port": "out",
+                "target_port": "in",
+            },
+            {
+                "id": "e3",
+                "source": "proj2",
+                "target": "res",
+                "source_port": "out",
+                "target_port": "a",
+            },
+            {
+                "id": "e4",
+                "source": "in",
+                "target": "res",
+                "source_port": "out",
+                "target_port": "b",
+            },
+            {
+                "id": "e5",
+                "source": "res",
+                "target": "out",
+                "source_port": "out",
+                "target_port": "in",
+            },
         ],
     }
 
 
 # ── Tests: primitive resolution ──────────────────────────────────────
+
 
 def test_resolve_direct_name():
     assert _resolve_primitive("relu") == "relu"
@@ -164,7 +290,9 @@ def test_passthrough_lowering_component_is_supported():
     router_info = get_component_execution_capability("routing/adaptive_lane_mixer")
     assert router_info["bridge_supported"] is True
     assert router_info["primitive_name"] == "adaptive_lane_mixer"
-    dispatch_info = get_component_execution_capability("structural/conditional_dispatch")
+    dispatch_info = get_component_execution_capability(
+        "structural/conditional_dispatch"
+    )
     assert dispatch_info["bridge_supported"] is True
     assert dispatch_info["primitive_name"] is None
     loop_info = get_component_execution_capability("control_flow/loop")
@@ -188,11 +316,15 @@ def test_data_plane_components_are_bridge_supported():
     assert transform_info["bridge_supported"] is True
     assert transform_info["primitive_name"] is None
 
-    split_info = get_component_execution_capability("data_transform/split_train_val_test")
+    split_info = get_component_execution_capability(
+        "data_transform/split_train_val_test"
+    )
     assert split_info["bridge_supported"] is True
     assert split_info["primitive_name"] is None
 
-    projection_info = get_component_execution_capability("data_transform/select_columns")
+    projection_info = get_component_execution_capability(
+        "data_transform/select_columns"
+    )
     assert projection_info["bridge_supported"] is True
     assert projection_info["primitive_name"] is None
 
@@ -206,6 +338,7 @@ def test_data_plane_components_are_bridge_supported():
 
 
 # ── Tests: workflow → graph conversion ───────────────────────────────
+
 
 def test_simple_mlp_conversion():
     graph = workflow_to_graph(_simple_mlp(), model_dim=256)
@@ -250,31 +383,17 @@ def test_cycle_raises():
 
 def test_implicit_io_nodes():
     """Workflow without explicit input/output nodes should infer them from topology."""
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "relu", "params": {}},
-        ],
-        "edges": [],
-    }
     # Single node with no edges: it's both input and output
     # relu is identity-shaped, so it needs an actual input node
     # This should fail because there's no graph_input and relu needs an input
     # Let's test with a proper chain instead
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "linear_proj", "params": {"out_dim": 256}},
-            {"id": "n1", "component_type": "relu", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-        ],
-    }
     # n0 has no incoming edges → treated as implicit input
     # But n0 is a linear_proj, not an input node, so it needs to connect to something
     # This tests the fallback path
 
 
 # ── Tests: validation ────────────────────────────────────────────────
+
 
 def test_validate_simple_mlp():
     result = validate_workflow_graph(_simple_mlp(), model_dim=256)
@@ -374,8 +493,16 @@ def test_workflow_with_difficulty_lane_dispatch_passthrough():
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
             {"id": "n1", "component_type": "routing/difficulty_scorer", "params": {}},
-            {"id": "n2", "component_type": "routing/adaptive_lane_mixer", "params": {"num_lanes": 2}},
-            {"id": "n3", "component_type": "structural/conditional_dispatch", "params": {"num_lanes": 2, "lane": 0}},
+            {
+                "id": "n2",
+                "component_type": "routing/adaptive_lane_mixer",
+                "params": {"num_lanes": 2},
+            },
+            {
+                "id": "n3",
+                "component_type": "structural/conditional_dispatch",
+                "params": {"num_lanes": 2, "lane": 0},
+            },
             {"id": "n4", "component_type": "gelu", "params": {}},
             {"id": "n5", "component_type": "graph_output", "params": {}},
         ],
@@ -417,7 +544,11 @@ def test_workflow_with_control_flow_loop_passthrough():
     wf = {
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "control_flow/loop", "params": {"max_iterations": 3}},
+            {
+                "id": "n1",
+                "component_type": "control_flow/loop",
+                "params": {"max_iterations": 3},
+            },
             {"id": "n2", "component_type": "gelu", "params": {}},
             {"id": "n3", "component_type": "graph_output", "params": {}},
         ],
@@ -458,8 +589,16 @@ def test_workflow_with_template_lowered_block():
 def test_workflow_with_data_plane_lowering_components():
     wf = {
         "nodes": [
-            {"id": "src", "component_type": "data_io/random_data_source", "params": {"seed": 7}},
-            {"id": "xfm", "component_type": "data_transform/filter", "params": {"filter_scope": "token"}},
+            {
+                "id": "src",
+                "component_type": "data_io/random_data_source",
+                "params": {"seed": 7},
+            },
+            {
+                "id": "xfm",
+                "component_type": "data_transform/filter",
+                "params": {"filter_scope": "token"},
+            },
             {"id": "act", "component_type": "relu", "params": {}},
             {"id": "sink", "component_type": "data_io/file_writer", "params": {}},
             {"id": "out", "component_type": "graph_output", "params": {}},
@@ -478,6 +617,7 @@ def test_workflow_with_data_plane_lowering_components():
 
 # ── Tests: performance estimation ────────────────────────────────────
 
+
 def test_estimate_simple_mlp():
     result = estimate_performance(_simple_mlp(), model_dim=256)
     assert result["valid"] is True
@@ -495,6 +635,7 @@ def test_estimate_attention():
 
 # ── Tests: list primitives ───────────────────────────────────────────
 
+
 def test_list_primitives():
     prims = list_available_primitives()
     assert len(prims) > 50  # We know there are 66+
@@ -505,6 +646,7 @@ def test_list_primitives():
 
 
 # ── Tests: full evaluation (CPU only, no fingerprint) ────────────────
+
 
 def test_evaluate_simple_mlp():
     result = evaluate_workflow(
@@ -542,6 +684,7 @@ def test_evaluate_residual():
 
 # ── Tests: serialization ─────────────────────────────────────────────
 
+
 def test_bridge_result_to_dict():
     result = evaluate_workflow(
         _simple_mlp(),
@@ -555,6 +698,7 @@ def test_bridge_result_to_dict():
     d = result.to_dict()
     # Should be JSON-serializable (no numpy types)
     import json
+
     json_str = json.dumps(d)
     assert '"status": "success"' in json_str
 
@@ -563,14 +707,24 @@ def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
     import aria_designer.runtime.bridge as bridge_mod
 
     class _FakeGraph:
-        def fingerprint(self): return "fp_test"
-        def n_ops(self): return 3
-        def depth(self): return 2
-        def n_params_estimate(self): return 123
-        def has_gradient_path(self): return True
+        def fingerprint(self):
+            return "fp_test"
+
+        def n_ops(self):
+            return 3
+
+        def depth(self):
+            return 2
+
+        def n_params_estimate(self):
+            return 123
+
+        def has_gradient_path(self):
+            return True
 
     class _FakeModel:
-        def to(self, _device): return self
+        def to(self, _device):
+            return self
 
     fake_sandbox = SimpleNamespace(
         passed=True,
@@ -612,11 +766,31 @@ def test_evaluate_workflow_uses_behavioral_fingerprint_for_novelty(monkeypatch):
         most_similar_to="ssm",
     )
 
-    monkeypatch.setattr(bridge_mod, "workflow_to_graph", lambda *args, **kwargs: _FakeGraph())
-    monkeypatch.setitem(sys.modules, "research.synthesis.compiler", SimpleNamespace(compile_model=lambda *args, **kwargs: _FakeModel()))
-    monkeypatch.setitem(sys.modules, "research.eval.sandbox", SimpleNamespace(safe_eval=lambda *args, **kwargs: fake_sandbox))
-    monkeypatch.setitem(sys.modules, "research.eval.fingerprint", SimpleNamespace(compute_fingerprint=lambda *args, **kwargs: fp))
-    monkeypatch.setitem(sys.modules, "research.eval.metrics", SimpleNamespace(novelty_score=lambda graph, fingerprint=None, **kwargs: novelty_metrics))
+    monkeypatch.setattr(
+        bridge_mod, "workflow_to_graph", lambda *args, **kwargs: _FakeGraph()
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.synthesis.compiler",
+        SimpleNamespace(compile_model=lambda *args, **kwargs: _FakeModel()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.sandbox",
+        SimpleNamespace(safe_eval=lambda *args, **kwargs: fake_sandbox),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.fingerprint",
+        SimpleNamespace(compute_fingerprint=lambda *args, **kwargs: fp),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "research.eval.metrics",
+        SimpleNamespace(
+            novelty_score=lambda graph, fingerprint=None, **kwargs: novelty_metrics
+        ),
+    )
 
     result = bridge_mod.evaluate_workflow(
         _simple_mlp(),

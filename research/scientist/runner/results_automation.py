@@ -196,17 +196,6 @@ class _ResultsAutomationMixin:
                         grammar_overrides[cat_name] = clamp(
                             float(weight), *GRAMMAR_WEIGHT_CLAMP
                         )
-            elif k == "excluded_ops" and isinstance(v, list):
-                # Failure-mode-driven op exclusion is disabled.
-                # Single-op failures are usually compiler issues, not
-                # architecture problems.  Excluding ops starves the
-                # grammar of components it needs for breakthroughs.
-                # Failure modes are still recorded for dashboard
-                # visibility but never acted on automatically.
-                logger.debug(
-                    "Aria suggested excluding ops %s — ignored (policy: no auto-exclusion)",
-                    v,
-                )
             elif k == "op_weights" and isinstance(v, dict):
                 new_op_weights = {
                     str(op): clamp(float(w), *OP_WEIGHT_CLAMP)

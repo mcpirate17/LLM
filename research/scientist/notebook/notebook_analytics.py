@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
+import heapq
 import json
 import os
 import time
@@ -15,6 +17,7 @@ from ._shared import LOGGER
 
 class _AnalyticsMixin:
     """Analytics operations for the Lab Notebook."""
+
     __slots__ = ()
 
     # ── Op Success Rates ──
@@ -53,20 +56,26 @@ class _AnalyticsMixin:
                 if op_name and op_name != "input":
                     ops_in_graph.add(op_name)
 
-            s0 = r[1]   # stage0_passed
+            s0 = r[1]  # stage0_passed
             s05 = r[2]  # stage05_passed
-            s1 = r[3]   # stage1_passed
-            lr = r[4]   # loss_ratio
+            s1 = r[3]  # stage1_passed
+            lr = r[4]  # loss_ratio
             nov = r[5]  # novelty_score
             nov_conf = r[6]  # novelty_confidence
 
             for op_name in ops_in_graph:
                 if op_name not in op_stats:
                     op_stats[op_name] = {
-                        "n_used": 0, "n_s0": 0, "n_s05": 0, "n_s1": 0,
-                        "lr_sum": 0.0, "lr_n": 0,
-                        "nov_sum": 0.0, "nov_n": 0,
-                        "nov_conf_sum": 0.0, "nov_conf_n": 0,
+                        "n_used": 0,
+                        "n_s0": 0,
+                        "n_s05": 0,
+                        "n_s1": 0,
+                        "lr_sum": 0.0,
+                        "lr_n": 0,
+                        "nov_sum": 0.0,
+                        "nov_n": 0,
+                        "nov_conf_sum": 0.0,
+                        "nov_conf_n": 0,
                     }
                 stats = op_stats[op_name]
                 stats["n_used"] += 1
@@ -90,8 +99,11 @@ class _AnalyticsMixin:
         for op_name, stats in op_stats.items():
             avg_lr = stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
             avg_nov = stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
-            avg_nov_conf = (stats["nov_conf_sum"] / stats["nov_conf_n"]
-                           if stats["nov_conf_n"] else None)
+            avg_nov_conf = (
+                stats["nov_conf_sum"] / stats["nov_conf_n"]
+                if stats["nov_conf_n"]
+                else None
+            )
             self.conn.execute(
                 """INSERT INTO op_success_rates
                    (op_name, n_used, n_stage0_passed, n_stage05_passed,
@@ -103,15 +115,41 @@ class _AnalyticsMixin:
                     n_stage0_passed = n_stage0_passed + excluded.n_stage0_passed,
                     n_stage05_passed = n_stage05_passed + excluded.n_stage05_passed,
                     n_stage1_passed = n_stage1_passed + excluded.n_stage1_passed,
-                    avg_loss_ratio = excluded.avg_loss_ratio,
-                    avg_novelty = excluded.avg_novelty,
-                    avg_novelty_confidence = excluded.avg_novelty_confidence,
+                    avg_loss_ratio = CASE
+                        WHEN op_success_rates.n_used = 0 THEN excluded.avg_loss_ratio
+                        WHEN excluded.avg_loss_ratio IS NULL THEN op_success_rates.avg_loss_ratio
+                        ELSE (op_success_rates.avg_loss_ratio * op_success_rates.n_used
+                              + excluded.avg_loss_ratio * excluded.n_used)
+                             / (op_success_rates.n_used + excluded.n_used)
+                    END,
+                    avg_novelty = CASE
+                        WHEN op_success_rates.n_used = 0 THEN excluded.avg_novelty
+                        WHEN excluded.avg_novelty IS NULL THEN op_success_rates.avg_novelty
+                        ELSE (op_success_rates.avg_novelty * op_success_rates.n_used
+                              + excluded.avg_novelty * excluded.n_used)
+                             / (op_success_rates.n_used + excluded.n_used)
+                    END,
+                    avg_novelty_confidence = CASE
+                        WHEN op_success_rates.n_used = 0 THEN excluded.avg_novelty_confidence
+                        WHEN excluded.avg_novelty_confidence IS NULL THEN op_success_rates.avg_novelty_confidence
+                        ELSE (op_success_rates.avg_novelty_confidence * op_success_rates.n_used
+                              + excluded.avg_novelty_confidence * excluded.n_used)
+                             / (op_success_rates.n_used + excluded.n_used)
+                    END,
                     last_updated = excluded.last_updated""",
-                (op_name, stats["n_used"], stats["n_s0"], stats["n_s05"],
-                 stats["n_s1"], avg_lr, avg_nov, avg_nov_conf, now),
+                (
+                    op_name,
+                    stats["n_used"],
+                    stats["n_s0"],
+                    stats["n_s05"],
+                    stats["n_s1"],
+                    avg_lr,
+                    avg_nov,
+                    avg_nov_conf,
+                    now,
+                ),
             )
         self._maybe_commit()
-
 
     def get_op_success_rates(self) -> List[Dict]:
         """Get all op success rates."""
@@ -121,8 +159,103 @@ class _AnalyticsMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_op_success_rates_windowed(self, since_ts: float) -> List[Dict]:
+        """Compute op success rates from program_results within a time window.
 
-    def get_op_pair_priors(self, min_support: int = 5, limit: int = 100) -> List[Dict[str, Any]]:
+        Read-only windowed view — does not write to the accumulated table.
+        """
+        rows = self.conn.execute(
+            """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
+                      loss_ratio, novelty_score, novelty_confidence
+               FROM program_results
+               WHERE timestamp > ? AND graph_json IS NOT NULL""",
+            (since_ts,),
+        ).fetchall()
+
+        op_stats: Dict[str, Dict] = {}
+        for r in rows:
+            graph_json = r[0]
+            if not graph_json:
+                continue
+            try:
+                graph_data = json.loads(graph_json)
+                nodes = graph_data.get("nodes", {})
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            ops_in_graph = set()
+            for node_data in nodes.values():
+                op_name = node_data.get("op_name", "")
+                if op_name and op_name != "input":
+                    ops_in_graph.add(op_name)
+
+            s0 = r[1]
+            s05 = r[2]
+            s1 = r[3]
+            lr = r[4]
+            nov = r[5]
+            nov_conf = r[6]
+
+            for op_name in ops_in_graph:
+                if op_name not in op_stats:
+                    op_stats[op_name] = {
+                        "n_used": 0,
+                        "n_s0": 0,
+                        "n_s05": 0,
+                        "n_s1": 0,
+                        "lr_sum": 0.0,
+                        "lr_n": 0,
+                        "nov_sum": 0.0,
+                        "nov_n": 0,
+                        "nov_conf_sum": 0.0,
+                        "nov_conf_n": 0,
+                    }
+                stats = op_stats[op_name]
+                stats["n_used"] += 1
+                if s0:
+                    stats["n_s0"] += 1
+                if s05:
+                    stats["n_s05"] += 1
+                if s1:
+                    stats["n_s1"] += 1
+                if lr is not None:
+                    stats["lr_sum"] += lr
+                    stats["lr_n"] += 1
+                if nov is not None:
+                    stats["nov_sum"] += nov
+                    stats["nov_n"] += 1
+                if nov_conf is not None:
+                    stats["nov_conf_sum"] += nov_conf
+                    stats["nov_conf_n"] += 1
+
+        result = []
+        for op_name, stats in sorted(
+            op_stats.items(), key=lambda x: (-x[1]["n_s1"], -x[1]["n_used"])
+        ):
+            avg_lr = stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
+            avg_nov = stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
+            avg_nov_conf = (
+                stats["nov_conf_sum"] / stats["nov_conf_n"]
+                if stats["nov_conf_n"]
+                else None
+            )
+            result.append(
+                {
+                    "op_name": op_name,
+                    "n_used": stats["n_used"],
+                    "n_stage0_passed": stats["n_s0"],
+                    "n_stage05_passed": stats["n_s05"],
+                    "n_stage1_passed": stats["n_s1"],
+                    "avg_loss_ratio": avg_lr,
+                    "avg_novelty": avg_nov,
+                    "avg_novelty_confidence": avg_nov_conf,
+                }
+            )
+        return result
+
+    def get_op_pair_priors(
+        self, min_support: int = 5, limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """Aggregate op bigram priors from program results."""
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, loss_ratio, novelty_score
@@ -132,7 +265,9 @@ class _AnalyticsMixin:
         aggregates: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             for signature in self._extract_op_bigrams(row["graph_json"]):
-                bucket = aggregates.setdefault(signature, self._new_pair_bucket(signature))
+                bucket = aggregates.setdefault(
+                    signature, self._new_pair_bucket(signature)
+                )
                 bucket["support"] += 1
                 bucket["n_stage1_passed"] += int(bool(row["stage1_passed"]))
                 if row["loss_ratio"] is not None:
@@ -146,9 +281,9 @@ class _AnalyticsMixin:
             for signature, bucket in aggregates.items()
             if bucket["support"] >= min_support
         ]
-        priors.sort(key=lambda item: (item["success_rate"], item["support"]), reverse=True)
-        return priors[:limit]
-
+        return heapq.nlargest(
+            limit, priors, key=lambda item: (item["success_rate"], item["support"])
+        )
 
     def get_fingerprint_buckets(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Bucket fingerprints into coarse structural families with top ops/pairs."""
@@ -162,7 +297,9 @@ class _AnalyticsMixin:
         for row in rows:
             record = dict(row)
             bucket_name = self._assign_fingerprint_bucket(record)
-            bucket = buckets.setdefault(bucket_name, self._new_fingerprint_bucket(bucket_name))
+            bucket = buckets.setdefault(
+                bucket_name, self._new_fingerprint_bucket(bucket_name)
+            )
             ops = self._extract_op_names(record["graph_json"])
             pairs = self._extract_op_bigrams(record["graph_json"])
             bucket["n_graphs"] += 1
@@ -173,11 +310,13 @@ class _AnalyticsMixin:
             for op_name in ops:
                 bucket["op_counts"][op_name] = bucket["op_counts"].get(op_name, 0) + 1
             for signature in pairs:
-                bucket["pair_counts"][signature] = bucket["pair_counts"].get(signature, 0) + 1
-        ranked = [self._finalize_fingerprint_bucket(bucket) for bucket in buckets.values()]
-        ranked.sort(key=lambda item: item["n_graphs"], reverse=True)
-        return ranked[:limit]
-
+                bucket["pair_counts"][signature] = (
+                    bucket["pair_counts"].get(signature, 0) + 1
+                )
+        ranked = [
+            self._finalize_fingerprint_bucket(bucket) for bucket in buckets.values()
+        ]
+        return heapq.nlargest(limit, ranked, key=lambda item: item["n_graphs"])
 
     def get_lineage_successor_stats(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Aggregate parent→child fingerprint transitions from designer lineage."""
@@ -197,12 +336,20 @@ class _AnalyticsMixin:
             child_fp = str(record.get("graph_fingerprint") or "").strip()
             if not child_fp:
                 continue
-            parent_fp = self._payload_parent_fingerprint(payload) or str(previous.get("graph_fingerprint") or "").strip()
-            previous_by_workflow[str(record.get("workflow_id"))] = {"graph_fingerprint": child_fp, "payload": payload}
+            parent_fp = (
+                self._payload_parent_fingerprint(payload)
+                or str(previous.get("graph_fingerprint") or "").strip()
+            )
+            previous_by_workflow[str(record.get("workflow_id"))] = {
+                "graph_fingerprint": child_fp,
+                "payload": payload,
+            }
             if not parent_fp or parent_fp == child_fp:
                 continue
             key = f"{parent_fp}->{child_fp}"
-            bucket = transitions.setdefault(key, self._new_lineage_bucket(parent_fp, child_fp))
+            bucket = transitions.setdefault(
+                key, self._new_lineage_bucket(parent_fp, child_fp)
+            )
             bucket["support"] += 1
             parent_metrics = leaderboard.get(parent_fp, {})
             child_metrics = leaderboard.get(child_fp, {})
@@ -214,13 +361,20 @@ class _AnalyticsMixin:
             bucket["delta_sum"] += child_score - parent_score
             parent_payload = previous.get("payload")
             for change in self._summarize_workflow_changes(parent_payload, payload):
-                bucket["change_counts"][change] = bucket["change_counts"].get(change, 0) + 1
-        results = [self._finalize_lineage_bucket(bucket) for bucket in transitions.values()]
-        results.sort(key=lambda item: (item["improved_rate"], item["support"]), reverse=True)
+                bucket["change_counts"][change] = (
+                    bucket["change_counts"].get(change, 0) + 1
+                )
+        results = [
+            self._finalize_lineage_bucket(bucket) for bucket in transitions.values()
+        ]
+        results.sort(
+            key=lambda item: (item["improved_rate"], item["support"]), reverse=True
+        )
         return results[:limit]
 
-
-    def get_failure_risk_signatures(self, limit: int = 100) -> Dict[str, List[Dict[str, Any]]]:
+    def get_failure_risk_signatures(
+        self, limit: int = 100
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """Compute soft failure-risk penalties with positive-evidence filtering."""
         support = self._top_performer_bigram_support()
         rows = self.conn.execute(
@@ -258,7 +412,6 @@ class _AnalyticsMixin:
             "critical_failures": critical[: min(limit, 25)],
         }
 
-
     @staticmethod
     def _new_pair_bucket(signature: str) -> Dict[str, Any]:
         return {
@@ -271,12 +424,15 @@ class _AnalyticsMixin:
             "novelty_n": 0,
         }
 
-
     @staticmethod
     def _finalize_pair_bucket(signature: str, bucket: Dict[str, Any]) -> Dict[str, Any]:
         support = int(bucket["support"])
         avg_loss = (bucket["loss_sum"] / bucket["loss_n"]) if bucket["loss_n"] else None
-        avg_novelty = (bucket["novelty_sum"] / bucket["novelty_n"]) if bucket["novelty_n"] else None
+        avg_novelty = (
+            (bucket["novelty_sum"] / bucket["novelty_n"])
+            if bucket["novelty_n"]
+            else None
+        )
         return {
             "signature": signature,
             "success_rate": round(float(bucket["n_stage1_passed"]) / support, 4),
@@ -284,7 +440,6 @@ class _AnalyticsMixin:
             "avg_loss_ratio": round(avg_loss, 4) if avg_loss is not None else None,
             "avg_novelty": round(avg_novelty, 4) if avg_novelty is not None else None,
         }
-
 
     @staticmethod
     def _new_fingerprint_bucket(bucket_name: str) -> Dict[str, Any]:
@@ -298,25 +453,35 @@ class _AnalyticsMixin:
             "pair_counts": {},
         }
 
-
     @staticmethod
     def _finalize_fingerprint_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
-        novelty = (bucket["novelty_sum"] / bucket["novelty_n"]) if bucket["novelty_n"] else None
+        novelty = (
+            (bucket["novelty_sum"] / bucket["novelty_n"])
+            if bucket["novelty_n"]
+            else None
+        )
         return {
             "bucket": bucket["bucket"],
             "n_graphs": int(bucket["n_graphs"]),
-            "s1_rate": round(float(bucket["n_stage1_passed"]) / max(int(bucket["n_graphs"]), 1), 4),
+            "s1_rate": round(
+                float(bucket["n_stage1_passed"]) / max(int(bucket["n_graphs"]), 1), 4
+            ),
             "avg_novelty": round(novelty, 4) if novelty is not None else None,
             "top_ops": [
                 {"op_name": op_name, "count": count}
-                for op_name, count in sorted(bucket["op_counts"].items(), key=lambda item: item[1], reverse=True)[:10]
+                for op_name, count in sorted(
+                    bucket["op_counts"].items(), key=lambda item: item[1], reverse=True
+                )[:10]
             ],
             "top_pairs": [
                 {"signature": signature, "count": count}
-                for signature, count in sorted(bucket["pair_counts"].items(), key=lambda item: item[1], reverse=True)[:10]
+                for signature, count in sorted(
+                    bucket["pair_counts"].items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:10]
             ],
         }
-
 
     @staticmethod
     def _new_lineage_bucket(parent_fp: str, child_fp: str) -> Dict[str, Any]:
@@ -330,7 +495,6 @@ class _AnalyticsMixin:
             "change_counts": {},
         }
 
-
     @staticmethod
     def _finalize_lineage_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
         support = max(int(bucket["support"]), 1)
@@ -343,23 +507,37 @@ class _AnalyticsMixin:
             "avg_composite_delta": round(float(bucket["delta_sum"]) / support, 4),
             "change_patterns": [
                 {"change": change, "count": count}
-                for change, count in sorted(bucket["change_counts"].items(), key=lambda item: item[1], reverse=True)[:6]
+                for change, count in sorted(
+                    bucket["change_counts"].items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:6]
             ],
         }
-
 
     def _assign_fingerprint_bucket(self, row: Dict[str, Any]) -> str:
         ops = set(self._extract_op_names(row.get("graph_json") or ""))
         hist = self._json_dict(row.get("graph_category_histogram"))
-        sparse = float(row.get("fp_interaction_sparsity") or 0.0) >= 0.55 or self._hist_score(hist, "sparse") >= 0.2
+        sparse = (
+            float(row.get("fp_interaction_sparsity") or 0.0) >= 0.55
+            or self._hist_score(hist, "sparse") >= 0.2
+        )
         attention = (
             float(row.get("fp_cka_vs_transformer") or 0.0) >= 0.5
             or any("attention" in op for op in ops)
             or self._hist_score(hist, "attention") >= 0.2
         )
         mixing = (
-            max(float(row.get("fp_cka_vs_ssm") or 0.0), float(row.get("fp_cka_vs_conv") or 0.0)) >= 0.5
-            or any(token in op for op in ops for token in ("state_space", "scan", "conv", "mix"))
+            max(
+                float(row.get("fp_cka_vs_ssm") or 0.0),
+                float(row.get("fp_cka_vs_conv") or 0.0),
+            )
+            >= 0.5
+            or any(
+                token in op
+                for op in ops
+                for token in ("state_space", "scan", "conv", "mix")
+            )
             or self._hist_score(hist, "mix") >= 0.2
         )
         if attention and mixing:
@@ -372,15 +550,17 @@ class _AnalyticsMixin:
             return "mixing-heavy"
         return "exotic"
 
-
     @staticmethod
     def _hist_score(histogram: Dict[str, Any], token: str) -> float:
         total = sum(float(value or 0.0) for value in histogram.values())
         if total <= 0.0:
             return 0.0
-        matched = sum(float(value or 0.0) for key, value in histogram.items() if token in str(key).lower())
+        matched = sum(
+            float(value or 0.0)
+            for key, value in histogram.items()
+            if token in str(key).lower()
+        )
         return matched / total
-
 
     @staticmethod
     def _json_dict(payload: Any) -> Dict[str, Any]:
@@ -389,7 +569,6 @@ class _AnalyticsMixin:
         except (json.JSONDecodeError, TypeError):
             return {}
         return loaded if isinstance(loaded, dict) else {}
-
 
     @staticmethod
     def _payload_parent_fingerprint(payload: Dict[str, Any]) -> str:
@@ -400,7 +579,6 @@ class _AnalyticsMixin:
             return str(payload["parent_fingerprint"])
         return ""
 
-
     def _extract_op_names(self, graph_json: str) -> List[str]:
         from research.scientist.analytics.analytics_ops import _OpsMixin
 
@@ -408,7 +586,6 @@ class _AnalyticsMixin:
         if ops is None:
             ops = _OpsMixin._extract_ops_fallback(graph_json)
         return list(ops or [])
-
 
     def _leaderboard_by_fingerprint(self) -> Dict[str, Dict[str, Any]]:
         rows = self.conn.execute(
@@ -424,27 +601,41 @@ class _AnalyticsMixin:
                 continue
             existing = scores.get(fingerprint)
             composite = float(row["composite_score"] or 0.0)
-            if existing is None or composite >= float(existing.get("composite_score") or 0.0):
+            if existing is None or composite >= float(
+                existing.get("composite_score") or 0.0
+            ):
                 scores[fingerprint] = {
                     "composite_score": composite,
                     "stage1_passed": int(bool(row["stage1_passed"])),
                 }
         return scores
 
-
     def _top_performer_bigram_support(self) -> Dict[str, int]:
+        # Compute 25th-percentile threshold in SQL instead of sorting all losses in Python
+        threshold_row = self.conn.execute(
+            """SELECT loss_ratio FROM program_results
+               WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
+               ORDER BY loss_ratio ASC
+               LIMIT 1 OFFSET (
+                   SELECT MAX(0, COUNT(*) / 4 - 1) FROM program_results
+                   WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
+               )"""
+        ).fetchone()
+        threshold = float(threshold_row["loss_ratio"]) if threshold_row else None
         rows = self.conn.execute(
             """SELECT pr.graph_json, pr.loss_ratio, l.tier
                FROM program_results pr
                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                WHERE pr.stage1_passed = 1 AND pr.graph_json IS NOT NULL"""
         ).fetchall()
-        losses = sorted(float(row["loss_ratio"]) for row in rows if row["loss_ratio"] is not None)
-        threshold = losses[max(0, (len(losses) // 4) - 1)] if losses else None
         support: Dict[str, int] = defaultdict(int)
         for row in rows:
             tier = str(row["tier"] or "").lower()
-            in_top_loss = threshold is not None and row["loss_ratio"] is not None and float(row["loss_ratio"]) <= threshold
+            in_top_loss = (
+                threshold is not None
+                and row["loss_ratio"] is not None
+                and float(row["loss_ratio"]) <= threshold
+            )
             in_top_tier = tier in {"investigation", "validation", "breakthrough"}
             if not in_top_loss and not in_top_tier:
                 continue
@@ -452,9 +643,10 @@ class _AnalyticsMixin:
                 support[signature] += 1
         return dict(support)
 
-
     @staticmethod
-    def _failure_penalty_weight(fail_rate: float, total: int, positive_support: int) -> Optional[float]:
+    def _failure_penalty_weight(
+        fail_rate: float, total: int, positive_support: int
+    ) -> Optional[float]:
         if fail_rate >= 0.95 and total >= 20 and positive_support >= 5:
             return 0.05
         if fail_rate >= 0.85 and total >= 10 and positive_support >= 3:
@@ -463,9 +655,10 @@ class _AnalyticsMixin:
             return 0.6
         return None
 
-
     @staticmethod
-    def _summarize_workflow_changes(parent_payload: Any, child_payload: Any) -> List[str]:
+    def _summarize_workflow_changes(
+        parent_payload: Any, child_payload: Any
+    ) -> List[str]:
         parent_nodes = _AnalyticsMixin._workflow_nodes(parent_payload)
         child_nodes = _AnalyticsMixin._workflow_nodes(child_payload)
         if not parent_nodes or not child_nodes:
@@ -483,7 +676,6 @@ class _AnalyticsMixin:
         changes.extend(f"remove:{comp}" for comp in removed[:3])
         return changes
 
-
     @staticmethod
     def _workflow_nodes(payload: Any) -> Dict[str, str]:
         if not isinstance(payload, dict):
@@ -496,7 +688,6 @@ class _AnalyticsMixin:
             for node in nodes
             if isinstance(node, dict) and node.get("id") and node.get("component_type")
         }
-
 
     def update_failure_signatures(self, experiment_id: str) -> None:
         """Update failure_signatures table from program results in this experiment.
@@ -545,7 +736,6 @@ class _AnalyticsMixin:
             )
         self._maybe_commit()
 
-
     def backfill_failure_signatures(self) -> int:
         """One-time backfill of failure_signatures from all existing results.
 
@@ -586,9 +776,10 @@ class _AnalyticsMixin:
                 (sig, st["n_f"], st["n_s"], errs_str, now),
             )
         self._maybe_commit()
-        LOGGER.info("Backfilled %d failure signatures from existing results", len(sig_stats))
+        LOGGER.info(
+            "Backfilled %d failure signatures from existing results", len(sig_stats)
+        )
         return len(sig_stats)
-
 
     def recompute_failure_signatures(self) -> int:
         """Delete and rebuild failure_signatures from scratch using S1-only failures.
@@ -628,17 +819,21 @@ class _AnalyticsMixin:
                 (sig, st["n_f"], st["n_s"], errs_str, now),
             )
         self._maybe_commit()
-        LOGGER.info("Recomputed %d failure signatures (S1-only failures)", len(sig_stats))
+        LOGGER.info(
+            "Recomputed %d failure signatures (S1-only failures)", len(sig_stats)
+        )
         return len(sig_stats)
 
-
-    def get_failure_signature_blocklist(self, min_seen: int = 20,
-                                        max_fail_rate: float = 0.95) -> Dict[str, float]:
+    def get_failure_signature_blocklist(
+        self, min_seen: int = 20, max_fail_rate: float = 0.95
+    ) -> Dict[str, float]:
         """Return op-pair bigrams that consistently fail.
 
-        Returns {signature: penalty} where penalty is 0.0 (hard block) for
-        100% failure bigrams and scales up to 1.0.  Only includes bigrams
-        seen at least ``min_seen`` times with failure rate >= ``max_fail_rate``.
+        Returns {signature: penalty} where penalty is a soft deweight factor.
+        100% failure bigrams get 0.05 (95% deweight), scaling up to 0.3 at
+        the ``max_fail_rate`` threshold.  No hard blocks — all pairs retain
+        a small chance of being selected.  Only includes bigrams seen at
+        least ``min_seen`` times with failure rate >= ``max_fail_rate``.
         """
         rows = self.conn.execute(
             """SELECT signature, n_failures, n_successes
@@ -651,15 +846,16 @@ class _AnalyticsMixin:
             total = r[1] + r[2]
             fail_rate = r[1] / total if total else 0
             if fail_rate >= max_fail_rate:
-                # Scale: 100% fail → 0.0, max_fail_rate → 0.3
-                penalty = max(0.0, 0.3 * (1.0 - fail_rate) / (1.0 - max_fail_rate))
+                # Soft deweight: 100% fail → 0.05, max_fail_rate → 0.3
+                penalty = 0.05 + 0.25 * (1.0 - fail_rate) / (1.0 - max_fail_rate)
                 blocklist[r[0]] = round(penalty, 2)
         return blocklist
 
-
     # ── Op Rehabilitation Cache ──
 
-    def get_op_rehabilitation_cache(self, max_age_hours: float = 24.0) -> Dict[str, Dict]:
+    def get_op_rehabilitation_cache(
+        self, max_age_hours: float = 24.0
+    ) -> Dict[str, Dict]:
         """Return cached op rehabilitation results, filtered by recency.
 
         Returns {op_name: {compile_passed, forward_passed, error_message, tested_at, model_dim}}.
@@ -682,14 +878,17 @@ class _AnalyticsMixin:
             }
         return cache
 
-
     # ── Learning Log ──
 
-    def log_learning_event(self, event_type: str, description: str,
-                           old_weights: Optional[Dict] = None,
-                           new_weights: Optional[Dict] = None,
-                           evidence: Optional[str] = None,
-                           **event_data: Any) -> None:
+    def log_learning_event(
+        self,
+        event_type: str,
+        description: str,
+        old_weights: Optional[Dict] = None,
+        new_weights: Optional[Dict] = None,
+        evidence: Optional[str] = None,
+        **event_data: Any,
+    ) -> None:
         """Log a grammar weight change or learning decision.
 
         Backward-compatible with callers that pass extra structured keyword
@@ -712,13 +911,16 @@ class _AnalyticsMixin:
                (timestamp, event_type, description, old_weights,
                 new_weights, evidence)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (time.time(), event_type, description,
-             json.dumps(old_weights) if old_weights else None,
-             json.dumps(new_weights) if new_weights else None,
-             evidence),
+            (
+                time.time(),
+                event_type,
+                description,
+                json.dumps(old_weights) if old_weights else None,
+                json.dumps(new_weights) if new_weights else None,
+                evidence,
+            ),
         )
         self._maybe_commit()
-
 
     def get_learning_log(self, limit: int = 100) -> List[Dict]:
         """Get recent learning log entries."""
@@ -738,10 +940,12 @@ class _AnalyticsMixin:
             results.append(d)
         return results
 
-
-    def save_effective_weights(self, weights: Dict[str, float],
-                               s1_rate: float,
-                               experiment_id: Optional[str] = None) -> None:
+    def save_effective_weights(
+        self,
+        weights: Dict[str, float],
+        s1_rate: float,
+        experiment_id: Optional[str] = None,
+    ) -> None:
         """Save the final applied grammar weights and S1 outcome for EMA continuity."""
         self.log_learning_event(
             "effective_weights_snapshot",
@@ -749,7 +953,6 @@ class _AnalyticsMixin:
             new_weights=weights,
             evidence=json.dumps({"s1_rate": s1_rate, "experiment_id": experiment_id}),
         )
-
 
     def load_last_effective_weights(self) -> Optional[tuple]:
         """Load the most recent effective weights snapshot.
@@ -769,7 +972,6 @@ class _AnalyticsMixin:
             return (weights, meta.get("s1_rate", 0.0))
         except (json.JSONDecodeError, TypeError):
             return None
-
 
     # ── Workflow Definitions ──
 
@@ -797,7 +999,6 @@ class _AnalyticsMixin:
         )
         self._maybe_commit()
 
-
     def get_workflow_definition(self, workflow_id: str) -> Optional[Dict]:
         """Get a specific workflow definition."""
         row = self.conn.execute(
@@ -814,7 +1015,6 @@ class _AnalyticsMixin:
                 d["metadata"] = {}
         return d
 
-
     def list_workflow_definitions(self, limit: int = 50) -> List[Dict]:
         """List recent workflow definitions."""
         rows = self.conn.execute(
@@ -825,7 +1025,6 @@ class _AnalyticsMixin:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
-
 
     # ── Designer Run Lineage ──
 
@@ -877,7 +1076,6 @@ class _AnalyticsMixin:
         )
         self._maybe_commit()
 
-
     def get_designer_run_lineage(self, run_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM designer_run_lineage WHERE run_id = ?",
@@ -895,7 +1093,6 @@ class _AnalyticsMixin:
         except (TypeError, json.JSONDecodeError):
             d["payload"] = {}
         return d
-
 
     def list_designer_run_lineage(
         self, *, workflow_id: Optional[str] = None, limit: int = 100
@@ -917,7 +1114,6 @@ class _AnalyticsMixin:
                 d["metrics"] = {}
             out.append(d)
         return out
-
 
     def get_report_snapshot(
         self,
@@ -946,7 +1142,6 @@ class _AnalyticsMixin:
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
-
 
     def save_report_snapshot(
         self,
@@ -986,11 +1181,17 @@ class _AnalyticsMixin:
         last_cleanup = float(self.__class__._last_report_snapshot_cleanup_at or 0.0)
         if (now - last_cleanup) >= cleanup_interval_seconds:
             try:
-                ttl_seconds = int(os.environ.get("ARIA_REPORT_SNAPSHOT_TTL_SECONDS", str(7 * 24 * 3600)))
+                ttl_seconds = int(
+                    os.environ.get(
+                        "ARIA_REPORT_SNAPSHOT_TTL_SECONDS", str(7 * 24 * 3600)
+                    )
+                )
             except Exception:
                 ttl_seconds = 7 * 24 * 3600
             try:
-                max_rows_per_scope = int(os.environ.get("ARIA_REPORT_SNAPSHOT_MAX_ROWS_PER_SCOPE", "400"))
+                max_rows_per_scope = int(
+                    os.environ.get("ARIA_REPORT_SNAPSHOT_MAX_ROWS_PER_SCOPE", "400")
+                )
             except Exception:
                 max_rows_per_scope = 400
             self.cleanup_report_snapshots(
@@ -998,7 +1199,6 @@ class _AnalyticsMixin:
                 max_rows_per_scope=max(20, max_rows_per_scope),
             )
             self.__class__._last_report_snapshot_cleanup_at = now
-
 
     def cleanup_report_snapshots(
         self,
@@ -1048,7 +1248,6 @@ class _AnalyticsMixin:
         self._maybe_commit()
         return stats
 
-
     def get_report_snapshot_stats(self) -> Dict[str, Any]:
         now = time.time()
         rows = self.conn.execute(
@@ -1075,21 +1274,30 @@ class _AnalyticsMixin:
             if newest > 0 and (newest_seen is None or newest > newest_seen):
                 newest_seen = newest
 
-            scopes.append({
-                "scope": row["scope"],
-                "count": count,
-                "oldest_age_seconds": round(max(0.0, now - oldest), 2) if oldest > 0 else None,
-                "newest_age_seconds": round(max(0.0, now - newest), 2) if newest > 0 else None,
-            })
+            scopes.append(
+                {
+                    "scope": row["scope"],
+                    "count": count,
+                    "oldest_age_seconds": round(max(0.0, now - oldest), 2)
+                    if oldest > 0
+                    else None,
+                    "newest_age_seconds": round(max(0.0, now - newest), 2)
+                    if newest > 0
+                    else None,
+                }
+            )
 
         return {
             "total_snapshots": total,
             "n_scopes": len(scopes),
-            "oldest_age_seconds": round(max(0.0, now - oldest_seen), 2) if oldest_seen else None,
-            "newest_age_seconds": round(max(0.0, now - newest_seen), 2) if newest_seen else None,
+            "oldest_age_seconds": round(max(0.0, now - oldest_seen), 2)
+            if oldest_seen
+            else None,
+            "newest_age_seconds": round(max(0.0, now - newest_seen), 2)
+            if newest_seen
+            else None,
             "scopes": scopes,
         }
-
 
     # ── Attribution Reports ──
 
@@ -1122,9 +1330,9 @@ class _AnalyticsMixin:
         self._maybe_commit()
         return report_id
 
-
-    def get_attribution_reports(self, hypothesis_id: Optional[str] = None,
-                                limit: int = 100) -> List[Dict]:
+    def get_attribution_reports(
+        self, hypothesis_id: Optional[str] = None, limit: int = 100
+    ) -> List[Dict]:
         """Return attribution reports, newest first."""
         query = "SELECT * FROM attribution_reports WHERE 1=1"
         params: List[Any] = []
@@ -1137,7 +1345,11 @@ class _AnalyticsMixin:
         out: List[Dict] = []
         for row in rows:
             item = dict(row)
-            for key in ("supporting_experiments", "ablation_experiments", "report_json"):
+            for key in (
+                "supporting_experiments",
+                "ablation_experiments",
+                "report_json",
+            ):
                 raw = item.get(key)
                 if raw:
                     try:
@@ -1147,11 +1359,11 @@ class _AnalyticsMixin:
             out.append(item)
         return out
 
-
     # ── Report Markdown Export ──
 
-    def save_report_markdown(self, content: str, reason: str,
-                             summary: Optional[Dict] = None) -> Optional[Path]:
+    def save_report_markdown(
+        self, content: str, reason: str, summary: Optional[Dict] = None
+    ) -> Optional[Path]:
         """Save a report as a markdown file alongside the database.
 
         Creates a reports/ directory next to lab_notebook.db and writes
@@ -1159,7 +1371,7 @@ class _AnalyticsMixin:
 
         Returns the path to the created file, or None on failure.
         """
-        logger = logging.getLogger(__name__)
+        logger = LOGGER
         try:
             reports_dir = self.db_path.parent / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1178,7 +1390,8 @@ class _AnalyticsMixin:
             ]
             if summary:
                 header_lines.append(
-                    f"experiments: {summary.get('total_experiments', '?')}")
+                    f"experiments: {summary.get('total_experiments', '?')}"
+                )
                 total_prog = summary.get("total_programs_evaluated", 0)
                 s1 = summary.get("stage1_survivors", 0)
                 rate = s1 / max(total_prog, 1) * 100

@@ -32,6 +32,7 @@ class _ResultsAnalysisMixin:
         exp_id,
         model_source="evolution",
         behavioral_fingerprint=None,
+        debug: bool = False,
     ):
         """Unified callback for recording results and updating counters during search."""
         eval_counters["total"] += 1
@@ -111,6 +112,7 @@ class _ResultsAnalysisMixin:
 
             # Prefer actual loss_ratio from training over synthetic 1.0-fitness
             _actual_lr = None
+            _fl = None
             if s1_result:
                 _fl = s1_result.get("final_loss")
                 _il = s1_result.get("initial_loss")
@@ -121,6 +123,8 @@ class _ResultsAnalysisMixin:
                 if _actual_lr is not None
                 else (1.0 - fitness if fitness > 0 else None)
             )
+            # Remove final_loss from graph_metrics to avoid duplicate kwarg
+            graph_metrics.pop("final_loss", None)
 
             # S1 pass: fitness > 0.2 AND training gate passed.
             # The fitness function caps gate-failed programs at 0.19, so
@@ -140,6 +144,17 @@ class _ResultsAnalysisMixin:
             )
             _s05_passed = _s0_passed
 
+            if debug:
+                logger.info(
+                    "DEBUG record: fp=%s fitness=%.3f s0=%s s1=%s lr=%s bfp=%s",
+                    graph.fingerprint()[:16],
+                    fitness,
+                    _s0_passed,
+                    _s1_passed,
+                    f"{recorded_lr:.4f}" if recorded_lr is not None else "None",
+                    behavioral_fingerprint is not None,
+                )
+
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
@@ -155,8 +170,14 @@ class _ResultsAnalysisMixin:
                     "survived" if _s1_passed else ("stage1" if _s0_passed else "stage0")
                 ),
                 model_source=model_source,
+                bypass_quality_gate=debug,
                 **graph_metrics,
             )
+            if debug and not rid:
+                logger.warning(
+                    "DEBUG: record_program_result returned empty for fp=%s (quality gate still blocked?)",
+                    graph.fingerprint()[:16],
+                )
             if fitness > 0.2 and rid:
                 from ._helpers import _upsert_screening_entry
 
@@ -180,7 +201,13 @@ class _ResultsAnalysisMixin:
                     },
                 )
         except Exception as e:
-            logger.debug("Failed to record program result: %s", e)
+            if debug:
+                logger.exception(
+                    "DEBUG: Failed to record program result for fp=%s",
+                    graph.fingerprint()[:16],
+                )
+            else:
+                logger.debug("Failed to record program result: %s", e)
 
     def _analyze_results(
         self, results: Dict, exp_id: str, nb: LabNotebook, context: str = ""

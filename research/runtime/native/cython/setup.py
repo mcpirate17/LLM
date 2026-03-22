@@ -3,16 +3,29 @@ from Cython.Build import cythonize
 import numpy as np
 import os
 
-designer_src = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), '..', '..', '..', '..', 'aria_designer', 'runtime', 'src'
-))
-aria_core_include = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), '..', '..', '..', '..', 'aria_core', 'include'
-))
-native_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
-native_include = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'include'))
-native_build = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'build'))
-native_lib = os.path.join(native_build, 'libaria_native_runtime.so')
+designer_src = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "..",
+        "..",
+        "aria_designer",
+        "runtime",
+        "src",
+    )
+)
+aria_core_include = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "..", "aria_core", "include"
+    )
+)
+native_src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+native_include = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "include")
+)
+native_build = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "build"))
+native_lib = os.path.join(native_build, "libaria_native_runtime.so")
 
 extensions = [
     Extension(

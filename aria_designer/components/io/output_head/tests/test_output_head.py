@@ -1,4 +1,5 @@
 """Contract tests for output_head."""
+
 import yaml
 from pathlib import Path
 

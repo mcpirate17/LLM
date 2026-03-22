@@ -1,4 +1,5 @@
 """Contract tests for multi_head_mix."""
+
 import yaml
 from pathlib import Path
 

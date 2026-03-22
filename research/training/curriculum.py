@@ -21,6 +21,7 @@ import torch
 @dataclass
 class CurriculumStrategy:
     """A synthesized curriculum/data presentation strategy."""
+
     name: str
     components: List[str] = field(default_factory=list)
     description: str = ""
@@ -41,11 +42,16 @@ class CurriculumStrategy:
             return self.max_seq_len
         elif self.seq_len_schedule == "growing":
             progress = min(1.0, step / max(self.warmup_steps, 1))
-            return int(self.initial_seq_len + progress * (self.max_seq_len - self.initial_seq_len))
+            return int(
+                self.initial_seq_len
+                + progress * (self.max_seq_len - self.initial_seq_len)
+            )
         elif self.seq_len_schedule == "oscillating":
             cycle = math.sin(2 * math.pi * step / max(total_steps, 1) * 4)
             frac = 0.5 + 0.5 * cycle
-            return int(self.initial_seq_len + frac * (self.max_seq_len - self.initial_seq_len))
+            return int(
+                self.initial_seq_len + frac * (self.max_seq_len - self.initial_seq_len)
+            )
         return self.max_seq_len
 
     def get_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
@@ -94,6 +100,7 @@ class CurriculumStrategy:
 
 # ── Synthesis ─────────────────────────────────────────────────────────
 
+
 def synthesize_curriculum(
     max_seq_len: int = 512,
     seed: Optional[int] = None,
@@ -102,7 +109,9 @@ def synthesize_curriculum(
     rng = random.Random(seed)
 
     seq_schedule = rng.choice(["fixed", "growing", "growing", "oscillating"])
-    mask_pattern = rng.choice(["causal", "causal", "prefix", "random_span", "checkerboard"])
+    mask_pattern = rng.choice(
+        ["causal", "causal", "prefix", "random_span", "checkerboard"]
+    )
     diff_sort = rng.random() < 0.3
     spaced_rep = rng.random() < 0.2
 

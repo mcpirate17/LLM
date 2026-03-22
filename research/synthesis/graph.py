@@ -11,10 +11,13 @@ at construction time, so invalid graphs are rejected before compilation.
 
 from __future__ import annotations
 
-import hashlib
+import xxhash
+import logging
 from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from .primitives import (
@@ -26,7 +29,7 @@ from .primitives import (
 )
 
 
-@dataclass
+@dataclass(slots=True)
 class ShapeInfo:
     """Tracked shape through the computation graph.
 
@@ -68,7 +71,7 @@ class ShapeInfo:
         return cls(**d)
 
 
-@dataclass
+@dataclass(slots=True)
 class OpNode:
     """A single node in the computation graph."""
 
@@ -123,6 +126,11 @@ class ComputationGraphIR:
     input_indices: np.ndarray  # int32, shape (N, 2)
     output_node_idx: int
     configs: List[Dict]
+    source_version: int = 0  # _ir_version of source ComputationGraph at construction
+
+    def is_stale(self, graph: "ComputationGraph") -> bool:
+        """Check if this IR was built from an older version of the graph."""
+        return self.source_version != graph._ir_version
 
     def n_nodes(self) -> int:
         return len(self.op_codes)
@@ -224,6 +232,7 @@ class ComputationGraph:
         self._output_node_id: Optional[int] = None
         self.metadata: Dict = {}
         self._cache: Dict = {}  # lazily computed properties
+        self._ir_version: int = 0  # incremented on every structural mutation
 
     def copy(self) -> "ComputationGraph":
         """Create a structural copy without generic deepcopy overhead."""
@@ -241,6 +250,7 @@ class ComputationGraph:
         clone._input_node_id = self._input_node_id
         clone._output_node_id = self._output_node_id
         clone.metadata = dict(self.metadata)
+        clone._ir_version = self._ir_version
         return clone
 
     @property
@@ -269,6 +279,7 @@ class ComputationGraph:
         )
         self.nodes[node_id] = node
         self._input_node_id = node_id
+        self._ir_version += 1
         self._cache.clear()
         return node_id
 
@@ -303,6 +314,7 @@ class ComputationGraph:
             config=config or {},
         )
         self.nodes[node_id] = node
+        self._ir_version += 1
         self._cache.clear()
         return node_id
 
@@ -323,6 +335,7 @@ class ComputationGraph:
             )
         node.is_output = True
         self._output_node_id = node_id
+        self._ir_version += 1
         self._cache.clear()
 
     def _compute_shape(
@@ -580,6 +593,7 @@ class ComputationGraph:
             return 0
         for nid in dead:
             del self.nodes[nid]
+        self._ir_version += 1
         self._cache.clear()
         return len(dead)
 
@@ -665,7 +679,7 @@ class ComputationGraph:
             rc_str = f"|rc={r_kind}:{c_kind}"
 
         key = f"dim={self.model_dim}{rc_str}|" + "|".join(desc)
-        result = hashlib.sha256(key.encode()).hexdigest()[:16]
+        result = xxhash.xxh64(key.encode()).hexdigest()
         self._cache["fingerprint"] = result
         return result
 
@@ -727,6 +741,7 @@ class ComputationGraph:
             del self.nodes[nid]
 
         if dead_ids:
+            self._ir_version += 1
             self._cache.clear()
             # If input was pruned, reset it
             if self._input_node_id in dead_ids:
@@ -772,6 +787,7 @@ class ComputationGraph:
             input_indices=input_indices,
             output_node_idx=output_idx,
             configs=configs,
+            source_version=self._ir_version,
         )
         self._cache["ir"] = ir
         return ir

@@ -1,6 +1,8 @@
 """Contract tests for routing_conditioned_compression."""
+
 import yaml
 from pathlib import Path
+
 
 def test_manifest_valid():
     manifest_path = Path(__file__).parent.parent / "manifest.yaml"

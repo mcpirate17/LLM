@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class AriaState:
     """Aria's current state of mind."""
+
     mood: str = "curious"  # curious, excited, contemplative, frustrated, triumphant
-    energy: float = 1.0    # 0-1, decreases with long runs
+    energy: float = 1.0  # 0-1, decreases with long runs
     experiments_today: int = 0
     discoveries_today: int = 0
     current_hypothesis: Optional[str] = None
@@ -148,16 +149,18 @@ class Aria(
         # generation so the persona can reject near-duplicates of proven failures.
         self._refuted_hypotheses: List[Dict] = []
 
-
     def _get_analyst_llm(self):
         """Lazy-init fast analyst LLM backend."""
         if not self._analyst_llm_initialized:
             self._analyst_llm_initialized = True
             try:
                 from .llm import create_backend
+
                 self._analyst_llm = create_backend(is_analyst=True)
                 if self._analyst_llm:
-                    logger.info(f"Aria Analyst LLM backend: {self._analyst_llm.name} ({getattr(self._analyst_llm, 'model', 'default')})")
+                    logger.info(
+                        f"Aria Analyst LLM backend: {self._analyst_llm.name} ({getattr(self._analyst_llm, 'model', 'default')})"
+                    )
             except Exception as e:
                 logger.debug(f"Analyst LLM backend init failed: {e}")
                 self._analyst_llm = None
@@ -169,11 +172,10 @@ class Aria(
 
     # Rough per-token pricing (USD) for common models
     _COST_PER_TOKEN = {
-        "anthropic": 0.000003,   # ~$3/M tokens (Sonnet avg input+output)
-        "openai": 0.0000025,     # ~$2.50/M tokens (GPT-4o avg)
-        "ollama": 0.0,           # local, free
+        "anthropic": 0.000003,  # ~$3/M tokens (Sonnet avg input+output)
+        "openai": 0.0000025,  # ~$2.50/M tokens (GPT-4o avg)
+        "ollama": 0.0,  # local, free
     }
-
 
     @property
     def total_tokens(self) -> int:
@@ -187,7 +189,6 @@ class Aria(
         """Reset cost counters (e.g., at start of continuous session)."""
         self._total_tokens = 0
         self._total_cost = 0.0
-
 
     def get_llm_config(self) -> Dict:
         """Get current LLM configuration for the dashboard."""
@@ -221,7 +222,9 @@ class Aria(
         if hasattr(llm, "api_key") and llm.api_key:
             key = llm.api_key
             config["api_key_set"] = True
-            config["api_key_hint"] = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+            config["api_key_hint"] = (
+                key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
+            )
         else:
             config["api_key_set"] = False
         return config

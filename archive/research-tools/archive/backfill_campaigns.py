@@ -8,7 +8,9 @@ import sqlite3
 from pathlib import Path
 
 
-def backfill_campaigns(db_path: Path, target_campaigns: int = 3, chunk_size: int = 5) -> int:
+def backfill_campaigns(
+    db_path: Path, target_campaigns: int = 3, chunk_size: int = 5
+) -> int:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -30,7 +32,9 @@ def backfill_campaigns(db_path: Path, target_campaigns: int = 3, chunk_size: int
         exp_ids = exp_ids[chunk_size:]
         camp_id = f"backfill-{existing + created + 1:03d}"
         title = f"Backfilled Campaign {existing + created + 1}"
-        objective = "Backfilled from historical experiments for campaign-level analytics."
+        objective = (
+            "Backfilled from historical experiments for campaign-level analytics."
+        )
         criteria = "Maintain stage1 survivor flow while increasing novelty diversity."
         now = __import__("time").time()
         cur.execute(
@@ -39,10 +43,18 @@ def backfill_campaigns(db_path: Path, target_campaigns: int = 3, chunk_size: int
             (camp_id, now, title, objective, criteria, now),
         )
         for exp_id in batch:
-            cur.execute("UPDATE experiments SET campaign_id = ? WHERE experiment_id = ?", (camp_id, exp_id))
+            cur.execute(
+                "UPDATE experiments SET campaign_id = ? WHERE experiment_id = ?",
+                (camp_id, exp_id),
+            )
         cur.execute(
             "UPDATE campaigns SET completed_at = ?, findings_summary = ?, completion_reason = ? WHERE campaign_id = ?",
-            (now, f"Backfilled {len(batch)} historical experiments.", "backfill", camp_id),
+            (
+                now,
+                f"Backfilled {len(batch)} historical experiments.",
+                "backfill",
+                camp_id,
+            ),
         )
         created += 1
 

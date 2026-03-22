@@ -21,12 +21,15 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..notebook import LabNotebook, ExperimentEntry
+from ..json_utils import json_safe
 from ...healer.core import HealerTaskSpec
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig
+
 
 class _CycleMixin:
     """Main experiment cycle, proactive repair, healer integration."""
@@ -67,28 +70,41 @@ class _CycleMixin:
         if "op_weights" in mode_config_overrides:
             mode_op_weights = mode_config_overrides.pop("op_weights")
             if isinstance(mode_op_weights, dict):
-                self._op_weights_overrides.update({
-                    str(k): max(0.01, min(10.0, float(v)))
-                    for k, v in mode_op_weights.items()
-                    if isinstance(v, (int, float))
-                })
-                logger.info("Mode recommendation applied op_weights: %s", mode_op_weights)
+                self._op_weights_overrides.update(
+                    {
+                        str(k): max(0.01, min(10.0, float(v)))
+                        for k, v in mode_op_weights.items()
+                        if isinstance(v, (int, float))
+                    }
+                )
+                logger.info(
+                    "Mode recommendation applied op_weights: %s", mode_op_weights
+                )
         if "structured_sparsity_bias" in mode_config_overrides:
             bias = mode_config_overrides.pop("structured_sparsity_bias")
             if isinstance(bias, (int, float)):
                 # Store as grammar weight override so _build_grammar_config picks it up
-                self._structured_sparsity_bias_override = max(0.0, min(1.0, float(bias)))
-                logger.info("Mode recommendation applied structured_sparsity_bias: %.2f", bias)
+                self._structured_sparsity_bias_override = max(
+                    0.0, min(1.0, float(bias))
+                )
+                logger.info(
+                    "Mode recommendation applied structured_sparsity_bias: %.2f", bias
+                )
 
-        cycle_config, override_report = self._config_with_overrides(config, mode_config_overrides)
+        cycle_config, override_report = self._config_with_overrides(
+            config, mode_config_overrides
+        )
 
         if override_report.get("applied"):
-            self._emit_event("mode_config_applied", {
-                "mode": selected_mode,
-                "applied": override_report.get("applied"),
-                "ignored": override_report.get("ignored", {}),
-                "experiment_number": n_experiments,
-            })
+            self._emit_event(
+                "mode_config_applied",
+                {
+                    "mode": selected_mode,
+                    "applied": override_report.get("applied"),
+                    "ignored": override_report.get("ignored", {}),
+                    "experiment_number": n_experiments,
+                },
+            )
 
         prescreen_mode = "continuous"
         if selected_mode == "evolution":
@@ -102,23 +118,31 @@ class _CycleMixin:
             auto_harden=True,
         )
         if cycle_prescreen.get("issue_count", 0) > 0:
-            self._emit_event("cycle_prescreen", {
-                "mode": selected_mode,
-                "report": cycle_prescreen,
-                "experiment_number": n_experiments,
-            })
+            self._emit_event(
+                "cycle_prescreen",
+                {
+                    "mode": selected_mode,
+                    "report": cycle_prescreen,
+                    "experiment_number": n_experiments,
+                },
+            )
 
         effective_max_time_minutes = self._effective_max_time_minutes(config)
 
-        self._emit_event("mode_selected", {
-            "mode": selected_mode,
-            "reasoning": mode_reasoning,
-            "confidence": mode_confidence,
-            "experiment_number": n_experiments,
-        })
+        self._emit_event(
+            "mode_selected",
+            {
+                "mode": selected_mode,
+                "reasoning": mode_reasoning,
+                "confidence": mode_confidence,
+                "experiment_number": n_experiments,
+            },
+        )
         logger.info(
             "Cycle %d: mode=%s (confidence=%.2f) — %s",
-            n_experiments, selected_mode, mode_confidence,
+            n_experiments,
+            selected_mode,
+            mode_confidence,
             mode_reasoning[:120] if mode_reasoning else "no reasoning",
         )
 
@@ -129,15 +153,19 @@ class _CycleMixin:
             elapsed_min = (time.time() - t_start) / 60
             limit_info.append(f"{elapsed_min:.0f}/{effective_max_time_minutes}min")
         if config.max_cost_dollars > 0:
-            limit_info.append(f"${self.aria.total_cost:.2f}/${config.max_cost_dollars:.2f}")
+            limit_info.append(
+                f"${self.aria.total_cost:.2f}/${config.max_cost_dollars:.2f}"
+            )
         limit_str = " | ".join(limit_info) if limit_info else f"exp {n_experiments}"
 
         # Check for stale screening candidates that beat references
         # Only override if we're past the exploration-first window (first 3 cycles)
         # and the selected mode isn't already investigation/validation
-        if (config.auto_investigate
-                and selected_mode not in ("investigation", "validation")
-                and n_experiments >= 3):
+        if (
+            config.auto_investigate
+            and selected_mode not in ("investigation", "validation")
+            and n_experiments >= 3
+        ):
             stale_ids = self._check_stale_screening_candidates(nb, config)
             if stale_ids:
                 self._pending_investigation = {
@@ -156,23 +184,29 @@ class _CycleMixin:
             mode_reasoning = pending_inv.get("hypothesis", "Auto-investigation")
             mode_confidence = 0.9
             self._pending_investigation = None
-            self._emit_event("mode_selected", {
-                "mode": "investigation",
-                "reasoning": "Auto-escalation: S1 survivors qualify for investigation",
-                "confidence": 0.9,
-                "experiment_number": n_experiments,
-            })
+            self._emit_event(
+                "mode_selected",
+                {
+                    "mode": "investigation",
+                    "reasoning": "Auto-escalation: S1 survivors qualify for investigation",
+                    "confidence": 0.9,
+                    "experiment_number": n_experiments,
+                },
+            )
         elif pending_val and selected_mode != "validation" and n_experiments >= 3:
             selected_mode = "validation"
             mode_reasoning = pending_val.get("hypothesis", "Auto-validation")
             mode_confidence = 0.9
             self._pending_validation = None
-            self._emit_event("mode_selected", {
-                "mode": "validation",
-                "reasoning": "Auto-escalation: investigation survivors qualify for validation",
-                "confidence": 0.9,
-                "experiment_number": n_experiments,
-            })
+            self._emit_event(
+                "mode_selected",
+                {
+                    "mode": "validation",
+                    "reasoning": "Auto-escalation: investigation survivors qualify for validation",
+                    "confidence": 0.9,
+                    "experiment_number": n_experiments,
+                },
+            )
 
         before_progress = self.progress.to_dict()
         cycle_error: Optional[str] = None
@@ -181,9 +215,9 @@ class _CycleMixin:
         # Modes like novelty/evolution can hang in generation loops; this is the
         # last-resort safety net.  The watchdog sets _stop_event, which the inner
         # loops check, causing a graceful exit rather than a hard kill.
-        max_cycle_seconds = int(
-            getattr(config, "max_cycle_seconds", 0) or 0
-        ) or 1800  # default 30 min
+        max_cycle_seconds = (
+            int(getattr(config, "max_cycle_seconds", 0) or 0) or 1800
+        )  # default 30 min
         _watchdog_fired = False
 
         def _cycle_watchdog():
@@ -191,13 +225,18 @@ class _CycleMixin:
             _watchdog_fired = True
             logger.error(
                 "WATCHDOG: Cycle %d (%s) exceeded %ds — setting stop event",
-                n_experiments, selected_mode, max_cycle_seconds,
+                n_experiments,
+                selected_mode,
+                max_cycle_seconds,
             )
-            self._emit_event("cycle_watchdog", {
-                "experiment_number": n_experiments,
-                "mode": selected_mode,
-                "timeout_seconds": max_cycle_seconds,
-            })
+            self._emit_event(
+                "cycle_watchdog",
+                {
+                    "experiment_number": n_experiments,
+                    "mode": selected_mode,
+                    "timeout_seconds": max_cycle_seconds,
+                },
+            )
             self._stop_event.set()
 
         watchdog = threading.Timer(max_cycle_seconds, _cycle_watchdog)
@@ -214,24 +253,36 @@ class _CycleMixin:
             )
             logger.info(
                 "Cycle %d: starting %s run [%s] (watchdog=%ds)",
-                n_experiments, selected_mode, limit_str, max_cycle_seconds,
+                n_experiments,
+                selected_mode,
+                limit_str,
+                max_cycle_seconds,
             )
             if selected_mode in ("investigation", "validation"):
                 self._run_continuous_phase(
-                    selected_mode, cycle_config, nb, n_experiments,
-                    limit_str, mode_reasoning)
+                    selected_mode,
+                    cycle_config,
+                    nb,
+                    n_experiments,
+                    limit_str,
+                    mode_reasoning,
+                )
             elif selected_mode == "evolution":
                 self._run_continuous_evolution(
-                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning
+                )
             elif selected_mode == "novelty":
                 self._run_continuous_novelty(
-                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning
+                )
             elif selected_mode == "refinement":
                 self._run_continuous_refinement(
-                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning
+                )
             else:
                 self._run_continuous_synthesis(
-                    cycle_config, nb, n_experiments, limit_str, mode_reasoning)
+                    cycle_config, nb, n_experiments, limit_str, mode_reasoning
+                )
         except Exception as e:
             cycle_error = str(e)
             logger.warning("Cycle %d FAILED (%s): %s", n_experiments, selected_mode, e)
@@ -240,12 +291,15 @@ class _CycleMixin:
                 cycle_error,
                 expected_mode=selected_mode,
             )
-            self._emit_event("experiment_failed", {
-                "experiment_number": n_experiments,
-                "mode": selected_mode,
-                "experiment_id": failed_exp_id,
-                "error": cycle_error,
-            })
+            self._emit_event(
+                "experiment_failed",
+                {
+                    "experiment_number": n_experiments,
+                    "mode": selected_mode,
+                    "experiment_id": failed_exp_id,
+                    "error": cycle_error,
+                },
+            )
         finally:
             watchdog.cancel()
             # If watchdog fired, clear stop event so continuous mode can proceed
@@ -277,19 +331,21 @@ class _CycleMixin:
             error=cycle_error,
         )
         try:
-            nb.add_entry(ExperimentEntry(
-                entry_type="live_feed",
-                experiment_id=after_progress.get("experiment_id") or None,
-                title=f"Aria cycle {n_experiments}: {selected_mode}",
-                content=(
-                    f"Cycle {n_experiments} completed in {selected_mode} mode "
-                    f"with ΔS1={summary.get('delta_stage1_survivors', 0)}"
-                ),
-                metadata={
-                    "live_feed_type": "aria_cycle",
-                    "payload": summary,
-                },
-            ))
+            nb.add_entry(
+                ExperimentEntry(
+                    entry_type="live_feed",
+                    experiment_id=after_progress.get("experiment_id") or None,
+                    title=f"Aria cycle {n_experiments}: {selected_mode}",
+                    content=(
+                        f"Cycle {n_experiments} completed in {selected_mode} mode "
+                        f"with ΔS1={summary.get('delta_stage1_survivors', 0)}"
+                    ),
+                    metadata={
+                        "live_feed_type": "aria_cycle",
+                        "payload": summary,
+                    },
+                )
+            )
         except Exception as e:
             logger.debug("Failed to persist aria_cycle live-feed entry: %s", e)
         with self._lock:
@@ -297,7 +353,9 @@ class _CycleMixin:
             self._aria_cycle_history.append(summary)
             if len(self._aria_cycle_history) > 50:
                 self._aria_cycle_history = self._aria_cycle_history[-50:]
-        switch_guardrails = self._evaluate_switch_epic_guardrails(config, nb, n_experiments)
+        switch_guardrails = self._evaluate_switch_epic_guardrails(
+            config, nb, n_experiments
+        )
         summary["switch_epic_guardrails"] = switch_guardrails
         if switch_guardrails.get("should_switch_epic"):
             self._emit_event("switch_epic_recommended", switch_guardrails)
@@ -305,7 +363,7 @@ class _CycleMixin:
                 nb.log_learning_event(
                     "switch_epic_recommended",
                     f"Switch-epic criteria met at cycle {n_experiments}",
-                    evidence=json.dumps(switch_guardrails, sort_keys=True),
+                    evidence=json.dumps(json_safe(switch_guardrails), sort_keys=True),
                 )
             except Exception:
                 pass
@@ -320,7 +378,12 @@ class _CycleMixin:
         loss_str = f", best loss={best_loss:.4f}" if best_loss else ""
         logger.info(
             "Cycle %d done: S0=%d S0.5=%d S1=%d (ΔS1=%+d)%s",
-            n_experiments, s0, s05, s1, delta_s1, loss_str,
+            n_experiments,
+            s0,
+            s05,
+            s1,
+            delta_s1,
+            loss_str,
         )
 
         # PROACTIVE: Auto-repair on cycle failure
@@ -342,11 +405,16 @@ class _CycleMixin:
 
         return summary
 
-    def _proactive_cycle_repair(self, error: str, mode: str,
-                                cycle_index: int, nb: LabNotebook):
+    def _proactive_cycle_repair(
+        self, error: str, mode: str, cycle_index: int, nb: LabNotebook
+    ):
         """Spawn a code agent to fix cycle failures autonomously."""
         try:
-            from ..code_agent import _spawn_code_agent_task, _should_autospawn_self_repair
+            from ..code_agent import (
+                _spawn_code_agent_task,
+                _should_autospawn_self_repair,
+            )
+
             if not _should_autospawn_self_repair(error):
                 return
             # Rate-limit: don't spawn repair agents more than once per 3 minutes
@@ -358,6 +426,7 @@ class _CycleMixin:
 
             # Build targeted goal based on error type
             import re as _re
+
             goal_parts = [f"Cycle {cycle_index} ({mode}) failed with: {error[:500]}."]
             # Extract file references from traceback
             file_refs = _re.findall(r'File "([^"]+)", line (\d+)', error)
@@ -367,11 +436,17 @@ class _CycleMixin:
                 )
             # Detect error class for targeted advice
             if "ImportError" in error or "ModuleNotFoundError" in error:
-                goal_parts.append("This is an import error — check module paths and __init__.py files.")
+                goal_parts.append(
+                    "This is an import error — check module paths and __init__.py files."
+                )
             elif "CUDA" in error or "RuntimeError" in error:
-                goal_parts.append("This may be a CUDA/tensor error — check device placement and tensor shapes.")
+                goal_parts.append(
+                    "This may be a CUDA/tensor error — check device placement and tensor shapes."
+                )
             elif "TypeError" in error or "AttributeError" in error:
-                goal_parts.append("This is a type/attribute error — check function signatures and object interfaces.")
+                goal_parts.append(
+                    "This is a type/attribute error — check function signatures and object interfaces."
+                )
             goal_parts.append(
                 "Investigate root cause. Apply minimal safe fix. "
                 "Use local Ollama model if available."
@@ -383,7 +458,11 @@ class _CycleMixin:
                 allow_write=True,
             )
             task_id = task.get("task_id", "unknown")
-            logger.info("Proactive repair agent spawned: %s for cycle %d error", task_id, cycle_index)
+            logger.info(
+                "Proactive repair agent spawned: %s for cycle %d error",
+                task_id,
+                cycle_index,
+            )
             nb.log_learning_event(
                 "proactive_repair",
                 f"Auto-spawned repair agent {task_id} for cycle {cycle_index} failure: {error[:200]}",
@@ -396,13 +475,22 @@ class _CycleMixin:
             trigger_type="repeated_exception",
             experiment_id=getattr(self._progress, "experiment_id", None),
             scope=f"Cycle failure in mode={mode}: {error[:240]}",
-            reproduction_steps=["python -m pytest tests/test_integration.py -k \"start_experiment\" -x --tb=short"],
-            acceptance_tests=["python -m pytest tests/test_integration.py -k \"start_experiment\" -x --tb=short"],
-            trigger_payload={"mode": mode, "cycle_index": cycle_index, "error": error[:1000]},
+            reproduction_steps=[
+                'python -m pytest tests/test_integration.py -k "start_experiment" -x --tb=short'
+            ],
+            acceptance_tests=[
+                'python -m pytest tests/test_integration.py -k "start_experiment" -x --tb=short'
+            ],
+            trigger_payload={
+                "mode": mode,
+                "cycle_index": cycle_index,
+                "error": error[:1000],
+            },
         )
 
-    def _proactive_stagnation_check(self, cycle_index: int, delta_s1: int,
-                                    nb: LabNotebook):
+    def _proactive_stagnation_check(
+        self, cycle_index: int, delta_s1: int, nb: LabNotebook
+    ):
         """Detect stagnation (consecutive zero-survivor cycles) and auto-adjust."""
         history = getattr(self, "_aria_cycle_history", [])
         if len(history) < 3:
@@ -411,8 +499,10 @@ class _CycleMixin:
         # Check last 3 cycles for zero survivors
         recent = history[-3:]
         consecutive_zero = all(
-            (h.get("delta_stage1_survivors", 0) == 0 and
-             (h.get("after") or {}).get("stage1_passed", 0) == 0)
+            (
+                h.get("delta_stage1_survivors", 0) == 0
+                and (h.get("after") or {}).get("stage1_passed", 0) == 0
+            )
             for h in recent
         )
         if not consecutive_zero:
@@ -426,8 +516,13 @@ class _CycleMixin:
 
         # Apply anti-stagnation: diversify grammar, reduce depth, try different source
         adjustments = {
-            "max_depth": max(4, getattr(self, "_grammar_weight_overrides", {}).get("max_depth", 6) - 2),
-            "max_ops": max(4, getattr(self, "_grammar_weight_overrides", {}).get("max_ops", 8) - 2),
+            "max_depth": max(
+                4,
+                getattr(self, "_grammar_weight_overrides", {}).get("max_depth", 6) - 2,
+            ),
+            "max_ops": max(
+                4, getattr(self, "_grammar_weight_overrides", {}).get("max_ops", 8) - 2
+            ),
         }
         self._last_chat_config_overrides = {
             **(self._last_chat_config_overrides or {}),
@@ -448,7 +543,8 @@ class _CycleMixin:
         )
         logger.info(
             "Anti-stagnation triggered at cycle %d: %s",
-            cycle_index, adjustments,
+            cycle_index,
+            adjustments,
         )
 
     def _proactive_stagnation_agent(self, cycle_index: int, nb: LabNotebook):
@@ -459,10 +555,7 @@ class _CycleMixin:
             return
 
         recent = history[-window:]
-        all_zero = all(
-            h.get("delta_stage1_survivors", 0) == 0
-            for h in recent
-        )
+        all_zero = all(h.get("delta_stage1_survivors", 0) == 0 for h in recent)
         if not all_zero:
             return
 
@@ -481,15 +574,12 @@ class _CycleMixin:
             trajectory = analytics.learning_trajectory()
             s1_slope = trajectory.get("s1_slope", 0) if trajectory else 0
 
-            recent_s1 = [
-                (h.get("after") or {}).get("stage1_passed", 0)
-                for h in recent
-            ]
+            recent_s1 = [(h.get("after") or {}).get("stage1_passed", 0) for h in recent]
 
             goal = (
                 f"STAGNATION: 0 new S1 survivors for {window} consecutive cycles "
                 f"(S1 counts: {recent_s1}, trend slope={s1_slope:.4f}). "
-                f"Current grammar weights: {json.dumps(weights, indent=None)}. "
+                f"Current grammar weights: {json.dumps(json_safe(weights), indent=None)}. "
                 f"Failed ops (0% S1 rate, >=5 uses): {failed_ops}. "
                 f"Read these files and propose a targeted fix:\n"
                 f"- synthesis/grammar.py: GrammarConfig.category_weights defaults and generate_layer_graph() — "
@@ -514,12 +604,16 @@ class _CycleMixin:
             nb.log_learning_event(
                 "proactive_stagnation_agent",
                 f"Spawned agent {task_id} for S1 stagnation ({window} flat cycles)",
-                task_id=task_id, s1_slope=s1_slope,
-                failed_ops=failed_ops, recent_s1=recent_s1,
+                task_id=task_id,
+                s1_slope=s1_slope,
+                failed_ops=failed_ops,
+                recent_s1=recent_s1,
             )
             logger.info(
                 "Stagnation agent spawned at cycle %d (task %s, slope=%.4f)",
-                cycle_index, task_id, s1_slope,
+                cycle_index,
+                task_id,
+                s1_slope,
             )
         except Exception as e:
             logger.debug("Stagnation agent spawn failed: %s", e)
@@ -528,8 +622,12 @@ class _CycleMixin:
             trigger_type="plateau",
             experiment_id=getattr(self._progress, "experiment_id", None),
             scope=f"Persistent stagnation at cycle {cycle_index}",
-            reproduction_steps=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
-            acceptance_tests=["python -m pytest tests/test_selection_policy.py -x --tb=short"],
+            reproduction_steps=[
+                "python -m pytest tests/test_selection_policy.py -x --tb=short"
+            ],
+            acceptance_tests=[
+                "python -m pytest tests/test_selection_policy.py -x --tb=short"
+            ],
             trigger_payload={"cycle_index": cycle_index, "window": window},
         )
 
@@ -558,6 +656,7 @@ class _CycleMixin:
 
         # Find repeated error patterns (same first 80 chars)
         from collections import Counter
+
         error_keys = [e[:80] for e in errors]
         counts = Counter(error_keys)
         repeated = [(k, c) for k, c in counts.items() if c >= 2]
@@ -574,6 +673,7 @@ class _CycleMixin:
         worst_error = max(repeated, key=lambda x: x[1])
         try:
             from ..code_agent import _spawn_code_agent_task
+
             notebook_path = str(nb._db_path) if hasattr(nb, "_db_path") else ""
             task = _spawn_code_agent_task(
                 goal=(
@@ -597,7 +697,9 @@ class _CycleMixin:
             )
             logger.info(
                 "Recurring error agent spawned: %s for pattern seen %dx: %s",
-                task_id, worst_error[1], worst_error[0][:100],
+                task_id,
+                worst_error[1],
+                worst_error[0][:100],
             )
         except Exception as e:
             logger.debug("Failed to spawn recurring error fix agent: %s", e)
@@ -606,9 +708,16 @@ class _CycleMixin:
             trigger_type="repeated_exception",
             experiment_id=getattr(self._progress, "experiment_id", None),
             scope=f"Recurring error pattern {worst_error[0][:200]}",
-            reproduction_steps=["python -m pytest tests/test_integration.py -k \"error\" -x --tb=short"],
-            acceptance_tests=["python -m pytest tests/test_integration.py -k \"error\" -x --tb=short"],
-            trigger_payload={"error_pattern": worst_error[0], "occurrences": worst_error[1]},
+            reproduction_steps=[
+                'python -m pytest tests/test_integration.py -k "error" -x --tb=short'
+            ],
+            acceptance_tests=[
+                'python -m pytest tests/test_integration.py -k "error" -x --tb=short'
+            ],
+            trigger_payload={
+                "error_pattern": worst_error[0],
+                "occurrences": worst_error[1],
+            },
         )
 
     def _healer_signature_seen(self, error: str, scope: str) -> bool:
@@ -617,8 +726,7 @@ class _CycleMixin:
         now = time.time()
         # Expire old signatures (5-minute TTL)
         self._recent_healer_signatures = {
-            k: v for k, v in self._recent_healer_signatures.items()
-            if now - v < 300
+            k: v for k, v in self._recent_healer_signatures.items() if now - v < 300
         }
         if sig in self._recent_healer_signatures:
             return True
@@ -644,8 +752,12 @@ class _CycleMixin:
         ):
             return None
         repro = reproduction_steps or []
-        tests = acceptance_tests or ["python -m pytest tests -k integration -x --tb=short"]
-        command_timeout_seconds = self._resolve_healer_timeout_seconds(nb, experiment_id)
+        tests = acceptance_tests or [
+            "python -m pytest tests -k integration -x --tb=short"
+        ]
+        command_timeout_seconds = self._resolve_healer_timeout_seconds(
+            nb, experiment_id
+        )
         try:
             result = self._healer.open_and_run(
                 HealerTaskSpec(
@@ -701,12 +813,22 @@ class _CycleMixin:
             if row is None or not row["config_json"]:
                 return default_timeout
             config_dict = json.loads(row["config_json"])
-            config = RunConfig.from_dict(config_dict if isinstance(config_dict, dict) else {})
-            return max(1, int(getattr(config, "max_agent_seconds", default_timeout) or default_timeout))
+            config = RunConfig.from_dict(
+                config_dict if isinstance(config_dict, dict) else {}
+            )
+            return max(
+                1,
+                int(
+                    getattr(config, "max_agent_seconds", default_timeout)
+                    or default_timeout
+                ),
+            )
         except Exception:
             return default_timeout
 
-    def _maybe_trigger_integrity_healer(self, nb: LabNotebook, experiment_id: Optional[str]) -> None:
+    def _maybe_trigger_integrity_healer(
+        self, nb: LabNotebook, experiment_id: Optional[str]
+    ) -> None:
         """Run integrity checks periodically and invoke healer on failures."""
         now = time.time()
         if now - self._last_healer_integrity_check < 300:
@@ -714,6 +836,7 @@ class _CycleMixin:
         self._last_healer_integrity_check = now
         try:
             from ...tools.novelty_integrity_check import run_integrity_check
+
             report = run_integrity_check(nb, calibrate_if_missing=False, runs=4)
             if report.get("ok"):
                 return
@@ -749,11 +872,17 @@ class _CycleMixin:
         ignored: Dict[str, Any] = {}
 
         # Fields where the user's value is a floor (override can only raise)
-        _FLOOR_FIELDS = frozenset({
-            "max_depth", "max_ops", "min_depth",
-            "grammar_split_prob", "three_way_split_prob",
-            "residual_prob", "max_params_ratio", "min_splits",
-        })
+        _FLOOR_FIELDS = frozenset(
+            {
+                "max_depth",
+                "max_ops",
+                "min_depth",
+                "grammar_split_prob",
+                "three_way_split_prob",
+                "residual_prob",
+                "min_splits",
+            }
+        )
 
         for key, value in (overrides or {}).items():
             if not hasattr(effective, key):
@@ -775,27 +904,42 @@ class _CycleMixin:
         cycle_index: int,
     ) -> Dict[str, Any]:
         """Evaluate explicit criteria for switching to a new epic/strategy."""
-        confidence_min = float(getattr(config, "switch_epic_breakthrough_confidence_min", 0.75) or 0.75)
-        stagnation_cycles = max(3, int(getattr(config, "switch_epic_stagnation_cycles", 6) or 6))
+        confidence_min = float(
+            getattr(config, "switch_epic_breakthrough_confidence_min", 0.75) or 0.75
+        )
+        stagnation_cycles = max(
+            3, int(getattr(config, "switch_epic_stagnation_cycles", 6) or 6)
+        )
 
         breakthroughs = nb.get_leaderboard(
-            tier="breakthrough", limit=5, sort_by="composite_score", include_references=False
+            tier="breakthrough",
+            limit=5,
+            sort_by="composite_score",
+            include_references=False,
         )
         qualified_breakthroughs = []
         for row in breakthroughs:
             conf = float(row.get("novelty_confidence") or 0.0)
             if conf >= confidence_min:
-                qualified_breakthroughs.append({
-                    "result_id": row.get("result_id"),
-                    "composite_score": float(row.get("composite_score") or 0.0),
-                    "novelty_confidence": conf,
-                })
+                qualified_breakthroughs.append(
+                    {
+                        "result_id": row.get("result_id"),
+                        "composite_score": float(row.get("composite_score") or 0.0),
+                        "novelty_confidence": conf,
+                    }
+                )
 
         recent = list(self._aria_cycle_history[-stagnation_cycles:])
         if recent:
-            recent = recent + [dict(self._last_cycle_summary or {})] if self._last_cycle_summary else recent
+            recent = (
+                recent + [dict(self._last_cycle_summary or {})]
+                if self._last_cycle_summary
+                else recent
+            )
             recent = recent[-stagnation_cycles:]
-        stagnated = bool(recent) and all(int(c.get("delta_stage1_survivors") or 0) == 0 for c in recent)
+        stagnated = bool(recent) and all(
+            int(c.get("delta_stage1_survivors") or 0) == 0 for c in recent
+        )
 
         should_switch = bool(qualified_breakthroughs) or stagnated
         reasons = []
@@ -868,7 +1012,9 @@ class _CycleMixin:
             nb = self._make_notebook()
             cleaned = nb.cleanup_stale_experiments(timeout_minutes=60)
             if cleaned > 0:
-                logger.info("Recovered %d stale experiments from previous crash", cleaned)
+                logger.info(
+                    "Recovered %d stale experiments from previous crash", cleaned
+                )
             nb.close()
         except Exception as e:
             logger.debug("Startup stale-experiment recovery failed: %s", e)

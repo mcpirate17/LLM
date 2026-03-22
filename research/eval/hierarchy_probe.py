@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 try:
     import aria_core
-    _HAS_GROMOV_C = hasattr(aria_core, 'gromov_delta_f32')
+
+    _HAS_GROMOV_C = hasattr(aria_core, "gromov_delta_f32")
 except ImportError:
     _HAS_GROMOV_C = False
 
@@ -59,7 +60,9 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
 
     # Sample 4-tuples
     n_sample = min(n, 30)
-    indices = np.random.choice(n, n_sample, replace=False) if n > n_sample else np.arange(n)
+    indices = (
+        np.random.choice(n, n_sample, replace=False) if n > n_sample else np.arange(n)
+    )
 
     # C kernel fast path: ~10-20x faster for n>=15
     if _HAS_GROMOV_C:
@@ -73,7 +76,12 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
         for j_idx in range(i_idx + 1, len(indices)):
             for k_idx in range(j_idx + 1, len(indices)):
                 for l_idx in range(k_idx + 1, len(indices)):
-                    x, y, z, w = indices[i_idx], indices[j_idx], indices[k_idx], indices[l_idx]
+                    x, y, z, w = (
+                        indices[i_idx],
+                        indices[j_idx],
+                        indices[k_idx],
+                        indices[l_idx],
+                    )
                     s1 = d[x, y] + d[z, w]
                     s2 = d[x, z] + d[y, w]
                     s3 = d[x, w] + d[y, z]
@@ -104,7 +112,11 @@ def hierarchy_fitness(
             n_tokens_sampled: int
     """
     if representations.ndim != 3:
-        return {"hierarchy_fitness": 0.0, "gromov_delta": float("inf"), "n_tokens_sampled": 0}
+        return {
+            "hierarchy_fitness": 0.0,
+            "gromov_delta": float("inf"),
+            "n_tokens_sampled": 0,
+        }
 
     B, S, D = representations.shape
 
@@ -113,7 +125,11 @@ def hierarchy_fitness(
     n = flat.shape[0]
 
     if n < 4:
-        return {"hierarchy_fitness": 0.0, "gromov_delta": float("inf"), "n_tokens_sampled": n}
+        return {
+            "hierarchy_fitness": 0.0,
+            "gromov_delta": float("inf"),
+            "n_tokens_sampled": n,
+        }
 
     if n > max_tokens:
         idx = np.random.choice(n, max_tokens, replace=False)
@@ -123,19 +139,24 @@ def hierarchy_fitness(
     # Compute pairwise Euclidean distances
     try:
         from scipy.spatial.distance import pdist, squareform
+
         dist_condensed = pdist(flat, metric="euclidean")
         dist_matrix = squareform(dist_condensed)
     except ImportError:
         # Fallback without scipy
         diff = flat[:, None, :] - flat[None, :, :]
-        dist_matrix = np.sqrt((diff ** 2).sum(axis=-1) + 1e-10)
+        dist_matrix = np.sqrt((diff**2).sum(axis=-1) + 1e-10)
 
     # Compute Gromov delta
     delta = gromov_delta(dist_matrix)
 
     # Normalize delta to [0, 1] fitness score
     # Use median distance as scale factor
-    median_dist = float(np.median(dist_matrix[dist_matrix > 0])) if (dist_matrix > 0).any() else 1.0
+    median_dist = (
+        float(np.median(dist_matrix[dist_matrix > 0]))
+        if (dist_matrix > 0).any()
+        else 1.0
+    )
     if median_dist < 1e-10:
         median_dist = 1.0
 

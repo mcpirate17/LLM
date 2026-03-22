@@ -119,6 +119,10 @@ def build_score_kwargs(
             pr_dict.get("fp_cka_vs_transformer") is not None
             and pr_dict.get("fp_cka_vs_transformer", 0) > 0
         ),
+        "fingerprint_completed_post_investigation": bool(
+            pr_dict.get("fingerprint_completed_post_investigation")
+        ),
+        "novelty_valid_for_promotion": bool(pr_dict.get("novelty_valid_for_promotion")),
         # Convergence & efficiency
         "loss_improvement_rate": pr_dict.get("loss_improvement_rate"),
         "param_count": pr_dict.get("param_count"),
@@ -265,7 +269,9 @@ def compute_composite_score(
         score += 20.0 * max(0, min(1.0, loss_improvement_rate))
     _track("learning_efficiency", _s0)
 
-    # 2. Novelty Utility
+    # 2. Novelty Utility — source-aware scoring
+    # Full CKA + behavioral blend: up to 40 points
+    # Structural-only (pre-completion or CKA degenerate): capped at 15 points
     _s0 = score
     eff_nov = (
         1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
@@ -281,7 +287,22 @@ def compute_composite_score(
         # 30% novelty credit. Without this floor, the gate creates a degenerate
         # fitness landscape where novelty can never overcome a loss deficit.
         novelty_gate = min(1.0, 0.3 + 0.7 * max(0.0, (0.9 - perf_lr) / 0.6))
-    score += 40.0 * eff_nov * conf * novelty_gate
+    _raw_novelty_pts = 40.0 * eff_nov * conf * novelty_gate
+    # Cap structural-only novelty: if post-investigation fingerprint has not
+    # been completed, or CKA is invalid, novelty contribution is capped.
+    # Calibrated against c9c7075e741a8790: structural_novelty=0.381 should
+    # produce ~5.7 pts, not ~32 pts from fake CKA inflation.
+    _novelty_cap = float(kwargs.get("novelty_structural_only_cap", 15.0))
+    _fp_completed = bool(kwargs.get("fingerprint_completed_post_investigation"))
+    _novelty_valid = bool(kwargs.get("novelty_valid_for_promotion"))
+    if is_reference:
+        score += _raw_novelty_pts
+    elif _fp_completed and _novelty_valid:
+        # Full CKA + behavioral blend — uncapped
+        score += _raw_novelty_pts
+    else:
+        # Structural-only or degenerate CKA — cap applies
+        score += min(_raw_novelty_pts, _novelty_cap)
     _track("novelty", _s0)
 
     # 3. Efficiency & Scaling Utility

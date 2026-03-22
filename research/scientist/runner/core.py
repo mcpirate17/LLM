@@ -13,14 +13,16 @@ Supports background execution controlled from the dashboard.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import math
 import os
 from pathlib import Path
 import queue
+import signal
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -160,7 +162,6 @@ class _CoreMixin:
         self._last_stagnation_agent_cycle = -10
         self._last_anti_stagnation_cycle = -10
         self._last_chat_config_overrides: Dict[str, Any] = {}
-        self._excluded_ops_overrides: Set[str] = set()
         self._op_weights_overrides: Dict[str, float] = {}
         self._structured_sparsity_bias_override: float = 0.0
         try:
@@ -172,6 +173,59 @@ class _CoreMixin:
         self._pending_heal_retry: Optional[Dict] = None
 
         self._recover_stale_experiments_on_startup()
+        self._register_shutdown_handler()
+
+    # ── Progress helpers ─────────────────────────────────────────────
+
+    def _update_progress(self, **kwargs: object) -> None:
+        """Thread-safe batch update of progress fields."""
+        with self._lock:
+            for key, value in kwargs.items():
+                setattr(self._progress, key, value)
+
+    # ── Graceful shutdown ──────────────────────────────────────────────
+
+    def _register_shutdown_handler(self) -> None:
+        """Register atexit + SIGTERM to mark running experiments as interrupted."""
+
+        def _mark_interrupted():
+            try:
+                nb = LabNotebook(self.notebook_path)
+                rows = nb.conn.execute(
+                    "SELECT experiment_id FROM experiments WHERE status = 'running'"
+                ).fetchall()
+                for r in rows:
+                    nb.conn.execute(
+                        "UPDATE experiments SET status = 'interrupted' "
+                        "WHERE experiment_id = ?",
+                        (r["experiment_id"],),
+                    )
+                if rows:
+                    nb.conn.commit()
+                    logger.info(
+                        "Shutdown: marked %d running experiment(s) as interrupted",
+                        len(rows),
+                    )
+                nb.close()
+            except Exception:
+                pass
+
+        atexit.register(_mark_interrupted)
+
+        prev_handler = signal.getsignal(signal.SIGTERM)
+
+        def _sigterm_handler(signum, frame):
+            _mark_interrupted()
+            if callable(prev_handler) and prev_handler not in (
+                signal.SIG_DFL,
+                signal.SIG_IGN,
+            ):
+                prev_handler(signum, frame)
+
+        try:
+            signal.signal(signal.SIGTERM, _sigterm_handler)
+        except (OSError, ValueError):
+            pass  # Not main thread — atexit still covers us
 
     def _make_notebook(self) -> LabNotebook:
         """Create a new notebook connection (thread-safe)."""

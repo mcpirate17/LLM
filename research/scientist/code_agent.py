@@ -6,10 +6,10 @@ of from api.py, avoiding the circular import chain:
 
 Contains the actual implementations of code agent spawn/snapshot functions.
 """
+
 from __future__ import annotations
 
 import logging
-import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -69,29 +69,18 @@ def _spawn_code_agent_task(
     with _CODE_AGENT_TASKS_LOCK:
         _CODE_AGENT_TASKS[task_id] = task
 
-    # Launch background worker
-    def _worker():
-        try:
-            with _CODE_AGENT_TASKS_LOCK:
-                _CODE_AGENT_TASKS[task_id]["status"] = "running"
-                _CODE_AGENT_TASKS[task_id]["started_at"] = time.time()
-            # Placeholder: actual code agent execution would go here
-            logger.info(f"Code agent {task_id} started: {goal[:120]}")
-            with _CODE_AGENT_TASKS_LOCK:
-                _CODE_AGENT_TASKS[task_id]["status"] = "completed"
-                _CODE_AGENT_TASKS[task_id]["completed_at"] = time.time()
-                _CODE_AGENT_TASKS[task_id]["result"] = {
-                    "summary": "Task completed (stub implementation)",
-                }
-        except Exception as exc:
-            logger.error(f"Code agent {task_id} failed: {exc}")
-            with _CODE_AGENT_TASKS_LOCK:
-                _CODE_AGENT_TASKS[task_id]["status"] = "failed"
-                _CODE_AGENT_TASKS[task_id]["completed_at"] = time.time()
-                _CODE_AGENT_TASKS[task_id]["error"] = str(exc)
-
-    t = threading.Thread(target=_worker, daemon=True, name=f"code-agent-{task_id}")
-    t.start()
+    # No actual code agent implementation exists — mark unavailable synchronously.
+    now = time.time()
+    task["status"] = "unavailable"
+    task["started_at"] = now
+    task["completed_at"] = now
+    task["result"] = {
+        "status": "unavailable",
+        "message": "Code agent not implemented",
+    }
+    with _CODE_AGENT_TASKS_LOCK:
+        _CODE_AGENT_TASKS[task_id] = task
+    logger.warning(f"Code agent {task_id} unavailable (not implemented): {goal[:120]}")
 
     return task
 

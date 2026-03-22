@@ -101,7 +101,7 @@ You must:
   * Core: n_programs, model_dim, max_depth, max_ops, residual_prob
   * Grammar probabilities: grammar_split_prob (0-1), grammar_merge_prob (0-1), grammar_risky_op_prob (0-1), grammar_freq_domain_prob (0-1)
   * Category weights (higher = more likely): elementwise_unary, elementwise_binary, reduction, linear_algebra, structural, parameterized, sequence, frequency, math_space, functional
-  * Op control: excluded_ops (list of op names to ban), op_weights (dict of op_name: multiplier)
+  * Op control: op_weights (dict of op_name: multiplier, <1.0 to penalize, >1.0 to boost)
   * Sparsity: structured_sparsity_bias (0-1), morph_focus_sparse (bool)
   * Source: model_source ("graph_synthesis" | "morphological_box" | "mixed")
 - If you detect recurring failures in the data, describe the pattern and what config change addresses it
@@ -187,7 +187,7 @@ Available CONFIG_ADJUSTMENTS keys:
   Core: n_programs, model_dim, max_depth, max_ops, residual_prob
   Grammar probabilities: grammar_split_prob, grammar_merge_prob, grammar_risky_op_prob, grammar_freq_domain_prob
   Category weights: category_weights (dict, e.g. {{"functional": 2.5, "math_space": 3.0}})
-  Op control: excluded_ops (list of op names to ban), op_weights (dict of op_name: multiplier)
+  Op control: op_weights (dict of op_name: multiplier, <1.0 to penalize, >1.0 to boost)
   Sparsity: structured_sparsity_bias (0-1), morph_focus_sparse (bool)
   Source: model_source ("graph_synthesis" | "morphological_box" | "mixed")"""
 
@@ -474,7 +474,7 @@ ACTION BLOCKS — include one or more in your response:
 {{"type": "start_experiment", "mode": "synthesis", "config": {{}}}}
 ```
 
-Available adjust_config keys: n_programs, model_dim, max_depth, max_ops, residual_prob, grammar_split_prob (0-1), grammar_merge_prob (0-1), grammar_risky_op_prob (0-1), grammar_freq_domain_prob (0-1), structured_sparsity_bias (0-1), morph_focus_sparse (bool), model_source, category_weights (dict), excluded_ops (list), op_weights (dict).
+Available adjust_config keys: n_programs, model_dim, max_depth, max_ops, residual_prob, grammar_split_prob (0-1), grammar_merge_prob (0-1), grammar_risky_op_prob (0-1), grammar_freq_domain_prob (0-1), structured_sparsity_bias (0-1), morph_focus_sparse (bool), model_source, category_weights (dict), op_weights (dict).
 Available adjust_grammar keys: any category name (elementwise_unary, elementwise_binary, reduction, linear_algebra, structural, parameterized, sequence, frequency, math_space, functional, mixing).
 
 ```action

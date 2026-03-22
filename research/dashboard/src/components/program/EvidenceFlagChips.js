@@ -27,4 +27,4 @@ export function EvidenceFlagChips({ flags }) {
   );
 }
 
-export default EvidenceFlagChips;
+export default React.memo(EvidenceFlagChips);

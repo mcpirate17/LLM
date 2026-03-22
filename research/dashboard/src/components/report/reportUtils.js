@@ -88,7 +88,6 @@ export const TOKEN_MIXING_FAMILIES = {
   conv1d_seq: 'conv',
   rfft_seq: 'frequency',
   irfft_seq: 'frequency',
-  sort_seq: 'sorting',
   argsort_seq: 'sorting',
   token_pool_restore: 'pooling',
   cumsum_seq: 'pooling',

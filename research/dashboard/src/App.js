@@ -1,16 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, startTransition } from 'react';
 import AriaAvatar from './components/AriaAvatar';
-import AriaChatPanel from './components/AriaChatPanel';
-import ArchitectureDrawer from './components/ArchitectureDrawer';
-import ControlPanel from './components/ControlPanel';
-import LearningPanel from './components/LearningPanel';
 import SummaryCards from './components/SummaryCards';
 import LiveFeed from './components/LiveFeed';
 import GlobalParetoChart from './components/GlobalParetoChart';
 import ActionQueue from './components/ActionQueue';
 import StatusBar from './components/StatusBar';
-import ReferenceArchitectures from './components/ReferenceArchitectures';
-import DecisionTraces from './components/DecisionTraces';
 import {
   AnalyticsTab,
   ErrorBoundary,
@@ -28,6 +22,7 @@ import {
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
 import apiService, { apiCall } from './services/apiService';
+import useLocalStorage from './hooks/useLocalStorage';
 import './App.css';
 
 // Lazy-loaded components (only fetched when their tab/drawer is opened)
@@ -42,13 +37,21 @@ const CampaignView = React.lazy(() => import('./components/CampaignView'));
 const KnowledgeBase = React.lazy(() => import('./components/KnowledgeBase'));
 const CompareView = React.lazy(() => import('./components/CompareView'));
 const NativeProfilePanel = React.lazy(() => import('./components/NativeProfilePanel'));
-const ObservabilityDashboard = React.lazy(() => import('./components/ObservabilityDashboard'));
+const InfrastructureDashboard = React.lazy(() => import('./components/InfrastructureDashboard'));
+const ComponentAnalyticsDashboard = React.lazy(() => import('./components/ComponentAnalyticsDashboard'));
+const ReferenceArchitectures = React.lazy(() => import('./components/ReferenceArchitectures'));
+const DecisionTraces = React.lazy(() => import('./components/DecisionTraces'));
+const AriaChatPanel = React.lazy(() => import('./components/AriaChatPanel'));
+const ArchitectureDrawer = React.lazy(() => import('./components/ArchitectureDrawer'));
+const ControlPanel = React.lazy(() => import('./components/ControlPanel'));
+const LearningPanel = React.lazy(() => import('./components/LearningPanel'));
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
 const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
 const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
 const OVERRIDE_INELIGIBLE_ALWAYS_KEY = 'aria_override_ineligible_always_v1';
+const TAB_KEYS = ['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'];
 
 function normalizeQueue(items) {
   if (!Array.isArray(items)) return [];
@@ -182,7 +185,7 @@ const NAV_CATEGORIES = {
   },
   diagnostics: {
     label: 'Diagnostics',
-    tabs: ['observability', 'perf', 'references'],
+    tabs: ['infrastructure', 'components', 'perf', 'references'],
   }
 };
 
@@ -193,7 +196,8 @@ function AppContent({ onRunningChange }) {
     experiments: 'Experiments',
     discoveries: 'Discoveries',
     comparison: 'Comparison',
-    observability: 'Observability',
+    infrastructure: 'Infrastructure',
+    components: 'Components',
     perf: 'Optimization',
     reports: 'Reports',
     references: 'References',
@@ -206,7 +210,8 @@ function AppContent({ onRunningChange }) {
     experiments: 'Browse all experiments and their results (3)',
     discoveries: 'Best architectures found so far, ranked by tier (4)',
     comparison: 'Side-by-side architecture comparison (5)',
-    observability: 'Pipeline health, component status, alerts, live training stream',
+    infrastructure: 'Pipeline health, alerts, live stream, throughput, resources',
+    components: 'Component health, op analytics, grammar evolution, insights',
     perf: 'System performance and optimization metrics (6)',
     reports: 'Publishable findings, campaigns, and knowledge base (7)',
     references: 'Reference models (GPT-2, Mamba, etc.) baselines (8)',
@@ -236,7 +241,8 @@ function AppContent({ onRunningChange }) {
   const fetchDashboard = refreshSharedData || (() => {});
   const setAriaCycle = () => {};  // ariaCycle is read from provider; refresh updates it
 
-  const [activeTab, setActiveTab] = useState('command');
+  const [activeTab, _setActiveTab] = useState('command');
+  const setActiveTab = useCallback((tab) => startTransition(() => _setActiveTab(tab)), []);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [overviewActivityTab, setOverviewActivityTab] = useState('recent');
   const [showHelp, setShowHelp] = useState(false);
@@ -258,20 +264,8 @@ function AppContent({ onRunningChange }) {
   const [actionError, setActionError] = useState(null);
   const [blockedConfig, setBlockedConfig] = useState(null);
   const [autoRepairTasks, setAutoRepairTasks] = useState([]);
-  const [showCompletedAutoRepairTasks, setShowCompletedAutoRepairTasks] = useState(() => {
-    try {
-      return window.localStorage.getItem(AUTO_REPAIR_SHOW_COMPLETED_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const [overrideIneligibleAlways, setOverrideIneligibleAlways] = useState(() => {
-    try {
-      return window.localStorage.getItem(OVERRIDE_INELIGIBLE_ALWAYS_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
+  const [showCompletedAutoRepairTasks, setShowCompletedAutoRepairTasks] = useLocalStorage(AUTO_REPAIR_SHOW_COMPLETED_KEY, false);
+  const [overrideIneligibleAlways, setOverrideIneligibleAlways] = useLocalStorage(OVERRIDE_INELIGIBLE_ALWAYS_KEY, false);
 
   // Architecture designer drawer
   const [designerSession, setDesignerSession] = useState({ open: false, resultId: null });
@@ -297,14 +291,7 @@ function AppContent({ onRunningChange }) {
   const [allowAdvancedStartOverride, setAllowAdvancedStartOverride] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [comparisonList, setComparisonList] = useState([]);
-  const [investigationQueue, setInvestigationQueue] = useState(() => {
-    try {
-      const stored = window.localStorage.getItem(INVESTIGATION_QUEUE_KEY);
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [investigationQueue, setInvestigationQueue] = useLocalStorage(INVESTIGATION_QUEUE_KEY, []);
 
   const handleAddToComparison = useCallback((resultId) => {
     setComparisonList(prev => {
@@ -321,31 +308,6 @@ function AppContent({ onRunningChange }) {
     setComparisonList(prev => prev.filter(id => id !== resultId));
   }, []);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(INVESTIGATION_QUEUE_KEY, JSON.stringify(investigationQueue));
-    } catch {
-      // Ignore localStorage failures.
-    }
-  }, [investigationQueue]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        AUTO_REPAIR_SHOW_COMPLETED_KEY,
-        showCompletedAutoRepairTasks ? '1' : '0',
-      );
-    } catch {}
-  }, [showCompletedAutoRepairTasks]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        OVERRIDE_INELIGIBLE_ALWAYS_KEY,
-        overrideIneligibleAlways ? '1' : '0',
-      );
-    } catch {}
-  }, [overrideIneligibleAlways]);
 
   // Sync isRunning up to App for AriaDataProvider polling speed
   useEffect(() => {
@@ -364,7 +326,6 @@ function AppContent({ onRunningChange }) {
 
   // Global keyboard shortcuts
   useEffect(() => {
-    const TAB_KEYS = ['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'];
     const handler = (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
@@ -565,12 +526,7 @@ function AppContent({ onRunningChange }) {
 
   const handleResetAutoRepairStripPreferences = useCallback(() => {
     setShowCompletedAutoRepairTasks(false);
-    try {
-      window.localStorage.removeItem(AUTO_REPAIR_SHOW_COMPLETED_KEY);
-    } catch {
-      // Ignore localStorage failures.
-    }
-  }, []);
+  }, [setShowCompletedAutoRepairTasks]);
 
   const emitAutoRepairStarted = useCallback((payload, source = 'start') => {
     const task = payload?.auto_repair_task;
@@ -1364,7 +1320,7 @@ function AppContent({ onRunningChange }) {
           <button
             className="refresh-btn"
             style={{ fontSize: 14, padding: '3px 8px', fontWeight: 700, lineHeight: 1, minWidth: 28 }}
-            onClick={() => setShowSettings(s => !s)}
+            onClick={() => startTransition(() => setShowSettings(s => !s))}
             aria-label="Toggle settings"
             aria-pressed={showSettings}
             title="Settings"
@@ -1683,9 +1639,15 @@ function AppContent({ onRunningChange }) {
           </Suspense>
         )}
 
-        {activeTab === 'observability' && (
+        {activeTab === 'infrastructure' && (
           <Suspense fallback={<LazyFallback />}>
-            <ObservabilityDashboard />
+            <InfrastructureDashboard />
+          </Suspense>
+        )}
+
+        {activeTab === 'components' && (
+          <Suspense fallback={<LazyFallback />}>
+            <ComponentAnalyticsDashboard />
           </Suspense>
         )}
 
@@ -1697,14 +1659,18 @@ function AppContent({ onRunningChange }) {
         )}
 
         {activeTab === 'references' && (
-          <ReferenceArchitectures
-            leaderboardEntries={leaderboardEntries}
-            onSelectProgram={handleSelectProgram}
-          />
+          <Suspense fallback={<LazyFallback />}>
+            <ReferenceArchitectures
+              leaderboardEntries={leaderboardEntries}
+              onSelectProgram={handleSelectProgram}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'decisions' && (
-          <DecisionTraces />
+          <Suspense fallback={<LazyFallback />}>
+            <DecisionTraces />
+          </Suspense>
         )}
 
         {activeTab === 'reports' && (

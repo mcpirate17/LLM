@@ -18,7 +18,9 @@ _COMPONENT_PATH = (
 
 
 def _handler():
-    spec = importlib.util.spec_from_file_location("split_train_val_test_handler", str(_COMPONENT_PATH))
+    spec = importlib.util.spec_from_file_location(
+        "split_train_val_test_handler", str(_COMPONENT_PATH)
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -43,7 +45,10 @@ def test_split_is_deterministic_for_same_seed():
     assert torch.equal(out_a["train"], out_b["train"])
     assert torch.equal(out_a["val"], out_b["val"])
     assert torch.equal(out_a["test"], out_b["test"])
-    assert out_a["train"].shape[0] + out_a["val"].shape[0] + out_a["test"].shape[0] == data.shape[0]
+    assert (
+        out_a["train"].shape[0] + out_a["val"].shape[0] + out_a["test"].shape[0]
+        == data.shape[0]
+    )
 
 
 def test_stratified_split_preserves_all_rows():

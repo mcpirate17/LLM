@@ -1,4 +1,5 @@
 """Contract tests for basis_expansion."""
+
 import yaml
 from pathlib import Path
 

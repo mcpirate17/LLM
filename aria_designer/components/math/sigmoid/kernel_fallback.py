@@ -1,4 +1,5 @@
 """Python fallback kernel for sigmoid."""
+
 import torch
 from components.base import make_unary_handler
 

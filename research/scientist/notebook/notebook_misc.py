@@ -647,6 +647,22 @@ class _MiscMixin:
         value = max(0.0, min(1.0, value))
         return min(0.35, value * 0.4)
 
+    @staticmethod
+    def _reference_family_fallback(reference_name: Optional[str]) -> str:
+        """Infer a stable family label for named baselines when graph data is absent."""
+        name = str(reference_name or "").strip().lower()
+        if not name:
+            return "Unknown"
+        if "gpt" in name or "transformer" in name:
+            return "Attention"
+        if "mamba" in name or "ssm" in name:
+            return "Mamba-SSM"
+        if "rwkv" in name:
+            return "Hybrid-Mixer"
+        if "retrieval" in name or "rag" in name:
+            return "Hybrid-Attention"
+        return "Unknown"
+
     def pin_reference(self, entry_id: str, reference_name: str) -> None:
         """Pin a leaderboard entry as a reference architecture."""
         self.conn.execute(
@@ -663,12 +679,12 @@ class _MiscMixin:
 
     def get_investigation_eligible(
         self,
-        max_lr: float,
+        _max_lr: float,
         min_stability: float,
         min_spectral_norm: float,
         max_spectral_norm: float,
         min_improvement_rate: float,
-        ref_lr_ceiling: Optional[float] = None,
+        _ref_lr_ceiling: Optional[float] = None,
         min_composite_score: Optional[float] = None,
     ) -> List[Dict]:
         """Stage A hard reject: return screening candidates that pass health filters.
@@ -848,10 +864,13 @@ class _MiscMixin:
         for row in rows:
             entry = dict(row)
             entry["graph_fingerprint"] = entry.pop("_graph_fingerprint", None)
-            entry["architecture_family"] = self._classify_architecture_family(
+            family = self._classify_architecture_family(
                 graph_json=entry.pop("_graph_json", None),
                 routing_mode=entry.pop("_routing_mode", None),
             )
+            if family == "Unknown":
+                family = self._reference_family_fallback(entry.get("reference_name"))
+            entry["architecture_family"] = family
             entry["screening_novelty"] = self._reference_novelty_for_display(
                 entry.get("screening_novelty")
             )

@@ -1,4 +1,5 @@
 """Contract tests for sparse_threshold."""
+
 import yaml
 from pathlib import Path
 

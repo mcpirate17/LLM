@@ -1,4 +1,5 @@
 """Contract tests for causal_mask."""
+
 import yaml
 from pathlib import Path
 

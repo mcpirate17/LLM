@@ -1,4 +1,5 @@
 """Contract tests for cos."""
+
 import yaml
 from pathlib import Path
 

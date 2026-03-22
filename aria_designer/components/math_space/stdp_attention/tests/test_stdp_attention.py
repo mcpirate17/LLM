@@ -1,4 +1,5 @@
 """Contract tests for stdp_attention."""
+
 import yaml
 from pathlib import Path
 

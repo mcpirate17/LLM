@@ -1,4 +1,5 @@
 """Python fallback for synthetic_data_source."""
+
 import math
 import torch
 

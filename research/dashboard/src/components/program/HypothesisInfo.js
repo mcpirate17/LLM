@@ -32,4 +32,4 @@ export function HypothesisInfo({ hypothesis }) {
   );
 }
 
-export default HypothesisInfo;
+export default React.memo(HypothesisInfo);

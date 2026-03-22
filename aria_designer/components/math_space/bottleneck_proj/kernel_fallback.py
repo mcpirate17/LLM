@@ -1,6 +1,8 @@
 """Kernel handler for bottleneck_proj — dispatches to aria_core.linear_bottleneck_f32."""
+
 import torch
 from components.base import NativeComponentHandler, _make_weight
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "linear_bottleneck"

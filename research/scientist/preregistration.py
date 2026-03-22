@@ -48,11 +48,22 @@ def validate_preregistration(payload: Dict[str, Any]) -> None:
             raise PreregistrationError(f"Missing hypothesis field: {key}")
 
     analysis = payload.get("analysis_plan") or {}
-    for key in ("primary_metrics", "secondary_metrics", "thresholds", "baseline_comparison"):
+    for key in (
+        "primary_metrics",
+        "secondary_metrics",
+        "thresholds",
+        "baseline_comparison",
+    ):
         if key not in analysis:
             raise PreregistrationError(f"Missing analysis_plan field: {key}")
 
-    if not isinstance(payload.get("falsification_conditions"), list) or not payload["falsification_conditions"]:
+    if (
+        not isinstance(payload.get("falsification_conditions"), list)
+        or not payload["falsification_conditions"]
+    ):
         raise PreregistrationError("falsification_conditions must be a non-empty list.")
-    if not isinstance(payload.get("confounders_checklist"), list) or not payload["confounders_checklist"]:
+    if (
+        not isinstance(payload.get("confounders_checklist"), list)
+        or not payload["confounders_checklist"]
+    ):
         raise PreregistrationError("confounders_checklist must be a non-empty list.")

@@ -83,4 +83,4 @@ export function RefinementLineage({ program, onViewInLeaderboard }) {
   );
 }
 
-export default RefinementLineage;
+export default React.memo(RefinementLineage);

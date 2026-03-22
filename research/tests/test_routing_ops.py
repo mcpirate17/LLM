@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import pytest
 
-from research.synthesis.compiler import (
+from research.synthesis.compiler_ops_routing import (
     _op_route_topk,
     _op_route_lanes,
     _op_route_recursion,
@@ -18,8 +18,8 @@ from research.synthesis.compiler import (
     _op_cascade,
     _op_speculative,
     _op_adaptive_recursion,
-    _record_routing_telemetry,
 )
+from research.synthesis.compiler_op_utils import _record_routing_telemetry
 
 pytestmark = pytest.mark.unit
 
@@ -56,12 +56,14 @@ class TestRouteTopk:
         assert (non_zero_per_slice == k).all(), f"Expected {k} non-zero per slice"
 
     def test_values_preserved(self):
-        """Non-zero entries should match the original input values."""
+        """Non-zero entries should equal original values times density scale."""
         module = DummyModule()
-        x = torch.randn(2, 4, 16)
-        result = _op_route_topk(module, [x], {"k": 3})
+        D, k = 16, 3
+        x = torch.randn(2, 4, D)
+        result = _op_route_topk(module, [x], {"k": k})
         mask = result != 0
-        assert torch.allclose(result[mask], x[mask])
+        scale = (D / k) ** 0.5
+        assert torch.allclose(result[mask], x[mask] * scale)
 
     def test_telemetry_recorded(self):
         module = DummyModule()

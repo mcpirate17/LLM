@@ -93,4 +93,4 @@ export function RobustnessProfile({ program, leaderboardEntry }) {
   );
 }
 
-export default RobustnessProfile;
+export default React.memo(RobustnessProfile);

@@ -6,6 +6,7 @@ Usage:
     python -m research.tools.backfill_screening_leaderboard
     python -m research.tools.backfill_screening_leaderboard --limit 100
 """
+
 from __future__ import annotations
 
 import argparse
@@ -18,10 +19,18 @@ from research.scientist.notebook import LabNotebook
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backfill screening leaderboard entries")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
-    parser.add_argument("--limit", type=int, default=0, help="Max entries to backfill (0=all)")
-    parser.add_argument("--db", default="research/lab_notebook.db", help="Database path")
+    parser = argparse.ArgumentParser(
+        description="Backfill screening leaderboard entries"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Max entries to backfill (0=all)"
+    )
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Database path"
+    )
     args = parser.parse_args()
 
     nb = LabNotebook(args.db)
@@ -46,7 +55,7 @@ def main() -> None:
 
     if args.dry_run:
         for i, row in enumerate(orphans[:20]):
-            print(f"  [{i+1}] fp={row[1][:14]} lr={row[2] or 0:.4f} src={row[3]}")
+            print(f"  [{i + 1}] fp={row[1][:14]} lr={row[2] or 0:.4f} src={row[3]}")
         if len(orphans) > 20:
             print(f"  ... and {len(orphans) - 20} more")
         return

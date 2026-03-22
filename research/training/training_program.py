@@ -20,6 +20,7 @@ from .curriculum import CurriculumStrategy, synthesize_curriculum
 @dataclass
 class TrainingProgram:
     """Complete training specification."""
+
     name: str
     loss: SynthesizedLoss
     optimizer: SynthesizedOptimizer
@@ -62,10 +63,10 @@ class TrainingProgram:
 # ── Init Schemes ──────────────────────────────────────────────────────
 
 INIT_SCHEMES = [
-    "default",      # PyTorch defaults
-    "small",        # Small initialization (scale 0.02)
-    "orthogonal",   # Orthogonal initialization
-    "spectral",     # Spectral normalization of init
+    "default",  # PyTorch defaults
+    "small",  # Small initialization (scale 0.02)
+    "orthogonal",  # Orthogonal initialization
+    "spectral",  # Spectral normalization of init
 ]
 
 
@@ -79,7 +80,9 @@ def synthesize_training_program(
 
     loss = synthesize_loss(seed=rng.randint(0, 2**32))
     optimizer = synthesize_optimizer(seed=rng.randint(0, 2**32))
-    curriculum = synthesize_curriculum(max_seq_len=max_seq_len, seed=rng.randint(0, 2**32))
+    curriculum = synthesize_curriculum(
+        max_seq_len=max_seq_len, seed=rng.randint(0, 2**32)
+    )
     init_scheme = rng.choice(INIT_SCHEMES)
     init_scale = rng.choice([0.02, 0.05, 0.1, 1.0])
 
@@ -125,7 +128,9 @@ def synthesize_training_program_batch(
     telemetry = {
         "n_programs": float(total),
         "scheduling_total_ms": total_ms,
-        "scheduling_avg_ms": (sum(per_program_ms) / len(per_program_ms)) if per_program_ms else 0.0,
+        "scheduling_avg_ms": (sum(per_program_ms) / len(per_program_ms))
+        if per_program_ms
+        else 0.0,
         "scheduling_max_ms": max(per_program_ms) if per_program_ms else 0.0,
     }
     return programs, telemetry

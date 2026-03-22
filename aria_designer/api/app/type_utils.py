@@ -5,6 +5,7 @@ Replaces scattered inline patterns like:
     float(x.get("k") or 0.0)
     (x.get("a") or {}).get("b")
 """
+
 from __future__ import annotations
 
 from typing import Any

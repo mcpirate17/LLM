@@ -1,6 +1,8 @@
 """Kernel handler for spike_rate_code — dispatches to aria_core.spike_rate_code_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "spike_rate_code"

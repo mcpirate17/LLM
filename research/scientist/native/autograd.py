@@ -13,6 +13,7 @@ from .dispatch import (
 
 logger = logging.getLogger(__name__)
 
+
 class NativeSubgraphFunction:
     """torch.autograd.Function for full-graph native forward + backward.
 
@@ -49,6 +50,7 @@ class NativeSubgraphFunction:
                 used_ir_json = fwd["ir_json"]
 
                 import numpy as np
+
                 output_tensor = torch.from_numpy(
                     np.asarray(output_np, dtype=np.float32)
                 ).to(x.device)
@@ -86,6 +88,7 @@ class NativeSubgraphFunction:
                 # The input node gradient is what we need.  Find the input
                 # node id (the node with is_input=True).
                 import numpy as np
+
                 nodes = getattr(graph_ref, "nodes", {})
                 input_node_id = None
                 for nid, node in nodes.items():
@@ -108,6 +111,7 @@ class NativeSubgraphFunction:
                 return grad_output
 
         return _SubgraphFn
+
 
 class SubgraphDispatcher:
     """Dispatches entire computation subgraphs through the Rust scheduler.
@@ -139,6 +143,7 @@ class SubgraphDispatcher:
         if self._all_native:
             try:
                 from ...synthesis.native_ir_converter import graph_to_native_ir_json
+
                 self._ir_json = graph_to_native_ir_json(graph)
             except Exception:
                 logger.debug("Failed to pre-convert graph to IR JSON")
@@ -195,9 +200,7 @@ class SubgraphDispatcher:
 
             # ── Inference path: numpy-based, no autograd ──
             if self._ir_json is not None:
-                result = dispatch_graph_native_cached(
-                    self._ir_json, self._graph, x
-                )
+                result = dispatch_graph_native_cached(self._ir_json, self._graph, x)
             else:
                 result = dispatch_graph_native(self._graph, x)
             self._dispatch_count += 1
@@ -206,12 +209,11 @@ class SubgraphDispatcher:
             if hasattr(x, "detach"):
                 import torch
                 import numpy as np
+
                 return torch.from_numpy(np.asarray(result, dtype=np.float32))
             return result
         except Exception as exc:
-            logger.debug(
-                "Subgraph dispatch failed: %s, falling back to per-op", exc
-            )
+            logger.debug("Subgraph dispatch failed: %s, falling back to per-op", exc)
             self._fallback_count += 1
             return None
 
@@ -222,6 +224,7 @@ class SubgraphDispatcher:
             "subgraph_dispatches": self._dispatch_count,
             "subgraph_fallbacks": self._fallback_count,
         }
+
 
 class NativeForwardWrapper:
     """Wraps a compiled model to route supported ops through native C kernels.
@@ -258,6 +261,7 @@ class NativeForwardWrapper:
                         NATIVE_AUTOGRAD_SUPPORTED_OPS,
                         native_autograd_dispatch,
                     )
+
                     if op_name in NATIVE_AUTOGRAD_SUPPORTED_OPS:
                         result = native_autograd_dispatch(op_name, *tensors)
                         self._dispatch_count += 1

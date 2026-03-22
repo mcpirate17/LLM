@@ -186,12 +186,23 @@ class CodeHealer:
                     notebook_path=self.notebook_path,
                     allow_write=True,
                 )
-                nb.add_healer_event(
-                    task_id,
-                    "Delegated patching to code agent.",
-                    state="patch_proposed",
-                    payload={"agent_task": dispatched_task},
+                agent_status = (dispatched_task.get("result") or {}).get(
+                    "status", dispatched_task.get("status")
                 )
+                if agent_status == "unavailable":
+                    nb.add_healer_event(
+                        task_id,
+                        "Code agent unavailable: not implemented.",
+                        state="patch_proposed",
+                        payload={"agent_task": dispatched_task},
+                    )
+                else:
+                    nb.add_healer_event(
+                        task_id,
+                        "Delegated patching to code agent.",
+                        state="patch_proposed",
+                        payload={"agent_task": dispatched_task},
+                    )
             except Exception as e:
                 nb.add_healer_event(
                     task_id,

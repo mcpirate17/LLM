@@ -29,7 +29,9 @@ def _ensure_dict(value: Any, field_name: str, errors: List[str]) -> Dict[str, An
     return value
 
 
-def _ensure_list_of_strings(value: Any, field_name: str, errors: List[str]) -> List[str]:
+def _ensure_list_of_strings(
+    value: Any, field_name: str, errors: List[str]
+) -> List[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         errors.append(f"{field_name} must be a list of strings")
         return []
@@ -73,17 +75,23 @@ def validate_manifest(manifest: Dict[str, Any]) -> ManifestValidation:
     if "code_version" in manifest and not _is_non_empty_string(code_version):
         errors.append("code_version must be a non-empty string")
 
-    if "probe_protocol_hash" in manifest and not _is_non_empty_string(manifest.get("probe_protocol_hash")):
+    if "probe_protocol_hash" in manifest and not _is_non_empty_string(
+        manifest.get("probe_protocol_hash")
+    ):
         errors.append("probe_protocol_hash must be a non-empty string")
 
-    versions = _ensure_dict(manifest.get("python_torch_versions"), "python_torch_versions", errors)
+    versions = _ensure_dict(
+        manifest.get("python_torch_versions"), "python_torch_versions", errors
+    )
     if versions:
         if not _is_non_empty_string(versions.get("python")):
             errors.append("python_torch_versions.python must be a non-empty string")
         if not _is_non_empty_string(versions.get("torch")):
             errors.append("python_torch_versions.torch must be a non-empty string")
 
-    families = _ensure_list_of_strings(manifest.get("reference_families"), "reference_families", errors)
+    families = _ensure_list_of_strings(
+        manifest.get("reference_families"), "reference_families", errors
+    )
     if families:
         normalized = {family.strip().lower() for family in families if family.strip()}
         if not normalized:
@@ -91,21 +99,34 @@ def validate_manifest(manifest: Dict[str, Any]) -> ManifestValidation:
         missing_families = EXPECTED_REFERENCE_FAMILIES - normalized
         if missing_families:
             warnings.append(
-                "reference_families is missing expected entries: " + ", ".join(sorted(missing_families))
+                "reference_families is missing expected entries: "
+                + ", ".join(sorted(missing_families))
             )
 
-    activation_schema = _ensure_dict(manifest.get("activation_schema"), "activation_schema", errors)
+    activation_schema = _ensure_dict(
+        manifest.get("activation_schema"), "activation_schema", errors
+    )
     if activation_schema:
         if not _is_non_empty_string(activation_schema.get("representation_format")):
-            errors.append("activation_schema.representation_format must be a non-empty string")
-        if not isinstance(activation_schema.get("vector_dim"), int) or activation_schema.get("vector_dim") <= 0:
+            errors.append(
+                "activation_schema.representation_format must be a non-empty string"
+            )
+        if (
+            not isinstance(activation_schema.get("vector_dim"), int)
+            or activation_schema.get("vector_dim") <= 0
+        ):
             errors.append("activation_schema.vector_dim must be a positive integer")
 
     quality_flags = _ensure_dict(manifest.get("quality_flags"), "quality_flags", errors)
     if quality_flags:
-        invalid_flags = [name for name, value in quality_flags.items() if not isinstance(value, bool)]
+        invalid_flags = [
+            name for name, value in quality_flags.items() if not isinstance(value, bool)
+        ]
         if invalid_flags:
-            errors.append("quality_flags values must be booleans: " + ", ".join(sorted(invalid_flags)))
+            errors.append(
+                "quality_flags values must be booleans: "
+                + ", ".join(sorted(invalid_flags))
+            )
 
     return ManifestValidation(valid=not errors, errors=errors, warnings=warnings)
 
@@ -168,11 +189,21 @@ def _print_validation(result: ManifestValidation) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scaffold and validate CKA reference artifact manifests")
-    parser.add_argument("--validate", type=Path, help="Path to an existing manifest.json to validate")
-    parser.add_argument("--out", type=Path, help="Write a scaffold manifest.json to this path")
-    parser.add_argument("--version", default="v1", help="Artifact version for scaffold generation")
-    parser.add_argument("--code-version", default="unknown", help="Code version for scaffold generation")
+    parser = argparse.ArgumentParser(
+        description="Scaffold and validate CKA reference artifact manifests"
+    )
+    parser.add_argument(
+        "--validate", type=Path, help="Path to an existing manifest.json to validate"
+    )
+    parser.add_argument(
+        "--out", type=Path, help="Write a scaffold manifest.json to this path"
+    )
+    parser.add_argument(
+        "--version", default="v1", help="Artifact version for scaffold generation"
+    )
+    parser.add_argument(
+        "--code-version", default="unknown", help="Code version for scaffold generation"
+    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -184,7 +215,9 @@ def main() -> int:
         parser.error("must provide at least one action: --validate and/or --out")
 
     if args.out is not None:
-        scaffold = build_stub_manifest(version=args.version, code_version=args.code_version)
+        scaffold = build_stub_manifest(
+            version=args.version, code_version=args.code_version
+        )
         _write_manifest(args.out, scaffold)
         print(f"Wrote scaffold manifest: {args.out}")
 

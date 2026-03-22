@@ -18,7 +18,9 @@ def main() -> None:
     try:
         synced = nb.backfill_fingerprint_aggregates()
         nb.conn.commit()
-        print(f"Synchronized fingerprint aggregates for {synced} fingerprints in {db_path}.")
+        print(
+            f"Synchronized fingerprint aggregates for {synced} fingerprints in {db_path}."
+        )
     finally:
         nb.close()
 

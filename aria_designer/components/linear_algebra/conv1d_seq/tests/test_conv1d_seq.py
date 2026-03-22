@@ -1,4 +1,5 @@
 """Contract tests for conv1d_seq."""
+
 import yaml
 from pathlib import Path
 

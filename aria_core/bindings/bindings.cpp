@@ -142,7 +142,7 @@ torch::Tensor tropical_matmul_f32(torch::Tensor A, torch::Tensor B) {
 
 torch::Tensor tropical_matmul_batched_f32(torch::Tensor A, torch::Tensor B) {
     CHECK_INPUT_ANY(A); CHECK_INPUT_ANY(B);
-    int64_t batch = A.size(0), M = A.size(1), K = A.size(2), N = B.size(2);
+    int64_t batch = A.size(0), M = A.size(1), K = A.size(2), N = B.size(1);
     auto C = torch::zeros({batch, M, N}, A.options());
     if (A.is_cuda()) {
         launch_cuda_tropical_matmul_batched_f32(A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), batch, M, K, N);
@@ -151,6 +151,28 @@ torch::Tensor tropical_matmul_batched_f32(torch::Tensor A, torch::Tensor B) {
     }
     return C;
 }
+
+
+std::vector<torch::Tensor> tropical_matmul_batched_backward_f32(
+    torch::Tensor grad_out, torch::Tensor A, torch::Tensor B, float tau) {
+    CHECK_INPUT_ANY(grad_out); CHECK_INPUT_ANY(A); CHECK_INPUT_ANY(B);
+    int64_t batch = A.size(0), M = A.size(1), K = A.size(2), N = B.size(1);
+    auto grad_A = torch::zeros_like(A);
+    auto grad_B = torch::zeros_like(B);
+
+    if (A.is_cuda()) {
+        // Fallback or CUDA kernel could go here, but for now we throw error if called on GPU without Triton
+        TORCH_CHECK(false, "CUDA backward not implemented natively yet, use Triton");
+    } else {
+        aria_tropical_matmul_batched_backward_f32(
+            grad_out.data_ptr<float>(), A.data_ptr<float>(), B.data_ptr<float>(),
+            grad_A.data_ptr<float>(), grad_B.data_ptr<float>(),
+            batch, M, K, N, tau
+        );
+    }
+    return {grad_A, grad_B};
+}
+
 
 torch::Tensor linear_f32(torch::Tensor x, torch::Tensor W, c10::optional<torch::Tensor> bias) {
     CHECK_INPUT(x); CHECK_INPUT(W);
@@ -1579,6 +1601,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("matmul_f32", &matmul_f32);
     m.def("tropical_matmul_f32", &tropical_matmul_f32);
     m.def("tropical_matmul_batched_f32", &tropical_matmul_batched_f32);
+    m.def("tropical_matmul_batched_backward_f32", &tropical_matmul_batched_backward_f32);
     m.def("linear_f32", &linear_f32);
     m.def("rmsnorm_f32", &rmsnorm_f32); m.def("layernorm_f32", &layernorm_f32);
     m.def("softmax_f32", &softmax_f32); m.def("softmax_seq_f32", &softmax_seq_f32);

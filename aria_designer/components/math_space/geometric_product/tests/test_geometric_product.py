@@ -1,4 +1,5 @@
 """Contract tests for geometric_product."""
+
 import yaml
 from pathlib import Path
 

@@ -1,6 +1,6 @@
-"""Auto-generated Python fallback kernel for concat."""
+"""Python fallback kernel for concat."""
 
-import torch.nn as nn
+import torch
 
 
 class ComponentHandler:
@@ -10,10 +10,9 @@ class ComponentHandler:
         return []
 
     def build(self, config):
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
         a = inputs["a"]
         b = inputs["b"]
-        # TODO: implement concat
-        return {"y": a}
+        return {"y": torch.cat([a, b], dim=-1)}

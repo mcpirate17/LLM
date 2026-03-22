@@ -4,15 +4,16 @@ Persistent, structured record of all experiments, hypotheses,
 observations, and conclusions. Stored as SQLite for queryability
 and served to the React dashboard via API.
 """
+
 from __future__ import annotations
 
 # Re-export public API from _shared
 from ._shared import (
-    ExperimentEntry,
-    NOTEBOOK_SCHEMA,
-    _PROGRAM_RESULTS_NEW_COLUMNS,
-    infer_insight_identity,
-    sanitize_for_db,
+    ExperimentEntry as ExperimentEntry,
+    NOTEBOOK_SCHEMA as NOTEBOOK_SCHEMA,
+    _PROGRAM_RESULTS_NEW_COLUMNS as _PROGRAM_RESULTS_NEW_COLUMNS,
+    infer_insight_identity as infer_insight_identity,
+    sanitize_for_db as sanitize_for_db,
 )
 
 # Mixin imports
@@ -44,4 +45,5 @@ class LabNotebook(
 
     Composed from targeted mixins under notebook/ directory.
     """
+
     pass

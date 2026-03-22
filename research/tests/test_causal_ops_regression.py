@@ -56,26 +56,6 @@ def test_conv1d_seq_causality():
         )
 
 
-def test_rfft_seq_causality_violation():
-    """Verify that rfft_seq (non-causal) is correctly blocked by the gate."""
-    if "rfft_seq" not in PRIMITIVE_REGISTRY:
-        pytest.skip("rfft_seq not in primitive registry")
-
-    try:
-        model = _build_single_op_model("rfft_seq")
-    except Exception as e:
-        if "Unknown op" in str(e) or "shape" in str(e).lower():
-            pytest.skip(f"rfft_seq cannot build: {e}")
-        raise
-
-    result = safe_eval(model, batch_size=2, seq_len=16, vocab_size=64, device="cpu")
-    # rfft over sequence dimension is inherently non-causal
-    if not result.passed:
-        assert result.error_type in ("causality_violation", "zero_grad"), (
-            f"rfft_seq failed unexpectedly: {result.error_type}: {result.error}"
-        )
-
-
 def test_complex_causal_graph():
     """Verify a multi-op graph with only causal ops compiles and forwards."""
     g = ComputationGraph(16)

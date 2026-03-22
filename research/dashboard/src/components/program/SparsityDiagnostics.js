@@ -58,4 +58,4 @@ export function SparsityDiagnostics({ program }) {
   );
 }
 
-export default SparsityDiagnostics;
+export default React.memo(SparsityDiagnostics);

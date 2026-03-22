@@ -159,14 +159,18 @@ def rehabilitate_ops(
                 rehabilitated.append(op_name)
                 logger.info("Op '%s' rehabilitated — works in isolation", op_name)
             else:
-                logger.info("Op '%s' failed rehab: %s", op_name, result["error_message"])
+                logger.info(
+                    "Op '%s' failed rehab: %s", op_name, result["error_message"]
+                )
         except Exception as e:
             logger.warning("Rehab test for '%s' raised exception: %s", op_name, e)
 
     if rehabilitated:
         logger.info(
             "Rehabilitated %d/%d ops: %s",
-            len(rehabilitated), len(ops_to_test), ", ".join(rehabilitated),
+            len(rehabilitated),
+            len(ops_to_test),
+            ", ".join(rehabilitated),
         )
 
     return rehabilitated

@@ -177,7 +177,9 @@ def test_safe_eval_native_abi_primary_parity_strict_fails_on_drift():
 
     class _DriftModel(torch.nn.Module):
         def forward(self, x):
-            return torch.zeros((x.shape[0], x.shape[1], vocab_size), dtype=torch.float32)
+            return torch.zeros(
+                (x.shape[0], x.shape[1], vocab_size), dtype=torch.float32
+            )
 
     model = _DriftModel()
 

@@ -1,4 +1,5 @@
 """Contract tests for split2."""
+
 import yaml
 from pathlib import Path
 

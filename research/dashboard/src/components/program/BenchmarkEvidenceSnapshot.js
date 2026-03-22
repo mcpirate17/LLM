@@ -48,4 +48,4 @@ export function BenchmarkEvidenceSnapshot({ program, leaderboardEntry }) {
   );
 }
 
-export default BenchmarkEvidenceSnapshot;
+export default React.memo(BenchmarkEvidenceSnapshot);

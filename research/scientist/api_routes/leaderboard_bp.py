@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, Dict, List
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
-from ..notebook import LabNotebook
+from .deps import ApiRouteContext
+from ._utils import with_notebook_context
 from ._strategy_recommendations import (
     annotate_qkv_usage,
     attach_long_context_breakdown,
@@ -13,9 +15,159 @@ from ._strategy_recommendations import (
     infer_tier_for_program,
     count_discovery_tiers,
 )
-from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
+
+
+def _dedupe_discovery_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse repeated fingerprints to the strongest representative row."""
+    deduped: List[Dict[str, Any]] = []
+    index_by_key: Dict[str, int] = {}
+    for entry in entries:
+        fingerprint = str(entry.get("graph_fingerprint") or "").strip()
+        result_id = str(entry.get("result_id") or "").strip()
+        key = fingerprint or result_id
+        if not key:
+            deduped.append(entry)
+            continue
+        existing_index = index_by_key.get(key)
+        if existing_index is None:
+            index_by_key[key] = len(deduped)
+            deduped.append(entry)
+            continue
+        existing = deduped[existing_index]
+        existing_score = float(existing.get("composite_score") or 0.0)
+        new_score = float(entry.get("composite_score") or 0.0)
+        if new_score > existing_score:
+            deduped[existing_index] = entry
+    return deduped
+
+
+def _search_discoveries(
+    nb,
+    *,
+    query: str,
+    tier: str | None,
+    limit: int,
+    include_references: bool = False,
+) -> List[Dict[str, Any]]:
+    """Search leaderboard + raw stage1 survivors across the full notebook."""
+    q = str(query or "").strip()
+    if not q:
+        return []
+
+    wildcard = f"%{q}%"
+    prefix = f"{q}%"
+    sql = """
+        SELECT
+            pr.*,
+            l.entry_id,
+            l.tier AS leaderboard_tier,
+            l.composite_score,
+            l.screening_loss_ratio,
+            l.screening_novelty,
+            l.screening_passed,
+            l.investigation_loss_ratio,
+            l.investigation_robustness,
+            l.investigation_passed,
+            l.validation_loss_ratio,
+            l.validation_baseline_ratio,
+            l.validation_passed,
+            l.discovery_loss_ratio AS leaderboard_discovery_loss_ratio,
+            l.is_reference,
+            l.reference_name,
+            l.model_source AS leaderboard_model_source,
+            l.architecture_desc AS leaderboard_architecture_desc,
+            l.timestamp AS leaderboard_timestamp
+        FROM program_results pr
+        LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+        WHERE COALESCE(pr.stage1_passed, 0) = 1
+          AND (
+                LOWER(COALESCE(pr.graph_fingerprint, '')) LIKE LOWER(?)
+             OR LOWER(COALESCE(pr.result_id, '')) LIKE LOWER(?)
+             OR LOWER(COALESCE(pr.model_source, '')) LIKE LOWER(?)
+             OR LOWER(COALESCE(l.reference_name, '')) LIKE LOWER(?)
+             OR LOWER(COALESCE(l.architecture_desc, '')) LIKE LOWER(?)
+          )
+        ORDER BY
+            CASE
+                WHEN LOWER(COALESCE(pr.graph_fingerprint, '')) = LOWER(?) THEN 0
+                WHEN LOWER(COALESCE(pr.graph_fingerprint, '')) LIKE LOWER(?) THEN 1
+                WHEN LOWER(COALESCE(pr.result_id, '')) = LOWER(?) THEN 2
+                WHEN LOWER(COALESCE(pr.result_id, '')) LIKE LOWER(?) THEN 3
+                ELSE 4
+            END,
+            COALESCE(l.composite_score, 0) DESC,
+            COALESCE(l.timestamp, pr.timestamp) DESC
+        LIMIT ?
+    """
+    rows = nb.conn.execute(
+        sql,
+        (
+            wildcard,
+            wildcard,
+            wildcard,
+            wildcard,
+            wildcard,
+            q,
+            prefix,
+            q,
+            prefix,
+            max(limit * 8, 200),
+        ),
+    ).fetchall()
+
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        entry = dict(row)
+        entry["tier"] = entry.get("leaderboard_tier") or infer_tier_for_program(
+            nb, entry
+        )
+        entry["architecture_desc"] = (
+            entry.get("leaderboard_architecture_desc")
+            or entry.get("architecture_desc")
+            or entry.get("graph_fingerprint")
+        )
+        entry["model_source"] = entry.get("leaderboard_model_source") or entry.get(
+            "model_source"
+        )
+        if (
+            entry.get("discovery_loss_ratio") is None
+            and entry.get("leaderboard_discovery_loss_ratio") is not None
+        ):
+            entry["discovery_loss_ratio"] = entry.get(
+                "leaderboard_discovery_loss_ratio"
+            )
+        entry["timestamp"] = entry.get("leaderboard_timestamp") or entry.get(
+            "timestamp"
+        )
+        entry["architecture_family"] = nb._classify_architecture_family(
+            graph_json=entry.get("graph_json"),
+            routing_mode=entry.get("routing_mode"),
+        )
+        if tier and str(entry.get("tier") or "").lower() != str(tier).lower():
+            continue
+        if not include_references and entry.get("is_reference"):
+            continue
+        entries.append(entry)
+
+    deduped = _dedupe_discovery_rows(entries)
+    return deduped[:limit]
+
+
+def _matches_discovery_query(entry: Dict[str, Any], query: str) -> bool:
+    q = str(query or "").strip().lower()
+    if not q:
+        return True
+    haystacks = (
+        entry.get("display_name"),
+        entry.get("reference_name"),
+        entry.get("architecture_desc"),
+        entry.get("architecture_family"),
+        entry.get("graph_fingerprint"),
+        entry.get("result_id"),
+    )
+    return any(str(value or "").lower().find(q) >= 0 for value in haystacks)
 
 
 def _entry_has_promotion_path(entry: dict) -> bool:
@@ -73,6 +225,7 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "novelty_confidence": entry.get("novelty_confidence"),
         "novelty_valid_for_promotion": entry.get("novelty_valid_for_promotion"),
         "param_count": entry.get("param_count"),
+        "graph_n_params_estimate": entry.get("graph_n_params_estimate"),
         "throughput_tok_s": entry.get("throughput_tok_s"),
         "sample_efficiency": entry.get("sample_efficiency"),
         "architecture_family": entry.get("architecture_family"),
@@ -97,9 +250,11 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
 
 def register_leaderboard_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
+    wnb = with_notebook_context(notebook_path)
 
     @app.route("/api/leaderboard")
-    def api_leaderboard():
+    @wnb
+    def api_leaderboard(nb=None):
         """Get leaderboard entries, optionally filtered by tier."""
         tier = request.args.get("tier")
         limit = request.args.get("limit", 50, type=int)
@@ -113,242 +268,20 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             "true",
             "yes",
         }
-        nb = LabNotebook(notebook_path)
-        try:
-            from ..analytics import ExperimentAnalytics
+        from ..analytics import ExperimentAnalytics
 
-            analytics = None if compact else ExperimentAnalytics(nb)
-            base_limit = limit if quality != "promotable" else max(limit * 4, 100)
-            entries = nb.get_leaderboard(
-                tier=tier,
-                limit=base_limit,
-                sort_by=sort_by,
-                include_references=include_references,
-            )
-            if quality == "promotable":
-                entries = [
-                    entry for entry in entries if _entry_has_promotion_path(entry)
-                ]
-                entries = entries[:limit]
-            if not compact:
-                attach_long_context_breakdown(nb, entries)
-                stability = compute_cross_run_stability(
-                    nb, nb.get_top_programs(20, sort_by="loss_ratio")
-                )
-                stability_by_result = {
-                    c.get("result_id"): c
-                    for c in stability.get("candidates", [])
-                    if c.get("result_id")
-                }
-                for entry in entries:
-                    entry["cross_run_stability"] = stability_by_result.get(
-                        entry.get("result_id"),
-                        {
-                            "trend": "unknown",
-                            "seen_runs": 0,
-                            "latest_rank": None,
-                            "previous_rank": None,
-                            "rank_delta": None,
-                        },
-                    )
-                annotate_qkv_usage(entries, analytics)
-            else:
-                entries = [_compact_leaderboard_entry(entry) for entry in entries]
-                stability = {"summary": {}, "window_size": 0}
-            # Enrich entries with gap_vs_gpt2 and loss_improvement_rate
-            for entry in entries:
-                rid = entry.get("result_id")
-                if rid:
-                    pr = nb.conn.execute(
-                        "SELECT arch_spec_json, loss_improvement_rate FROM program_results WHERE result_id = ?",
-                        (rid,),
-                    ).fetchone()
-                    if pr:
-                        if pr["loss_improvement_rate"] is not None:
-                            entry["loss_improvement_rate"] = float(
-                                pr["loss_improvement_rate"]
-                            )
-                        spec_json = pr["arch_spec_json"]
-                        if spec_json:
-                            try:
-                                import json as _json
-
-                                spec = (
-                                    _json.loads(spec_json)
-                                    if isinstance(spec_json, str)
-                                    else spec_json
-                                )
-                                if spec.get("gap_nats") is not None:
-                                    entry["gap_vs_gpt2"] = float(spec["gap_nats"])
-                                if (
-                                    spec.get("improvement_rate") is not None
-                                    and entry.get("loss_improvement_rate") is None
-                                ):
-                                    entry["loss_improvement_rate"] = float(
-                                        spec["improvement_rate"]
-                                    )
-                            except (ValueError, TypeError, _json.JSONDecodeError):
-                                pass
-            tiers = {}
-            for entry in entries:
-                t = entry.get("tier", "screening")
-                if t not in tiers:
-                    tiers[t] = []
-                tiers[t].append(entry)
-            return jsonify(
-                {
-                    "entries": entries,
-                    "by_tier": tiers,
-                    "total": len(entries),
-                    "compact": compact,
-                    "quality": quality or "all",
-                    "cross_run_stability_summary": stability.get("summary", {}),
-                    "cross_run_stability_window": stability.get("window_size", 0),
-                }
-            )
-        except Exception as e:
-            logger.error(f"Error in /api/leaderboard: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
-
-    @app.route("/api/leaderboard/status", methods=["POST"])
-    def api_leaderboard_update_status():
-        body = request.get_json(silent=True) or {}
-        tier = str(body.get("tier") or "").strip().lower()
-        entry_id = str(body.get("entry_id") or "").strip()
-        result_id = str(body.get("result_id") or "").strip()
-
-        valid_tiers = {
-            "screening",
-            "screened_out",
-            "investigation",
-            "validation",
-            "breakthrough",
-        }
-        if tier not in valid_tiers:
-            return jsonify(
-                {
-                    "error": "tier must be one of screening, screened_out, investigation, validation, breakthrough"
-                }
-            ), 400
-        if not entry_id and not result_id:
-            return jsonify({"error": "entry_id or result_id is required"}), 400
-
-        nb = LabNotebook(notebook_path)
-        try:
-            row = None
-            if entry_id:
-                row = nb.conn.execute(
-                    "SELECT entry_id, result_id, tier FROM leaderboard WHERE entry_id = ?",
-                    (entry_id,),
-                ).fetchone()
-            if row is None and result_id:
-                row = nb.conn.execute(
-                    "SELECT entry_id, result_id, tier FROM leaderboard WHERE result_id = ?",
-                    (result_id,),
-                ).fetchone()
-            if row is None:
-                return jsonify({"error": "Leaderboard entry not found"}), 404
-
-            resolved_entry_id = row["entry_id"]
-            nb.promote_to_tier(resolved_entry_id, tier)
-
-            updated = nb.conn.execute(
-                "SELECT entry_id, result_id, tier, timestamp FROM leaderboard WHERE entry_id = ?",
-                (resolved_entry_id,),
-            ).fetchone()
-
-            return jsonify(
-                {
-                    "success": True,
-                    "entry": dict(updated)
-                    if updated
-                    else {"entry_id": resolved_entry_id, "tier": tier},
-                }
-            )
-        except Exception as e:
-            logger.error(f"Error in /api/leaderboard/status: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
-
-    @app.route("/api/leaderboard/pin", methods=["POST"])
-    def api_leaderboard_pin():
-        body = request.get_json(silent=True) or {}
-        entry_id = str(body.get("entry_id") or "").strip()
-        result_id = str(body.get("result_id") or "").strip()
-        pinned = bool(body.get("pinned", False))
-
-        if not entry_id and not result_id:
-            return jsonify({"error": "entry_id or result_id is required"}), 400
-
-        nb = LabNotebook(notebook_path)
-        try:
-            resolved_entry_id = entry_id
-            if not resolved_entry_id and result_id:
-                row = nb.conn.execute(
-                    "SELECT entry_id FROM leaderboard WHERE result_id = ?",
-                    (result_id,),
-                ).fetchone()
-                if row:
-                    resolved_entry_id = row["entry_id"]
-            if not resolved_entry_id:
-                return jsonify({"error": "Leaderboard entry not found"}), 404
-
-            nb.set_leaderboard_pin(resolved_entry_id, pinned)
-            return jsonify(
-                {"success": True, "entry_id": resolved_entry_id, "pinned": pinned}
-            )
-        except Exception as e:
-            logger.error(f"Error in /api/leaderboard/pin: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
-
-    @app.route("/api/discoveries")
-    def api_discoveries():
-        """Unified discoveries endpoint merging leaderboard + raw candidates."""
-        from ..naming import annotate_display_names
-
-        tier = request.args.get("tier")
-        limit = request.args.get("limit", 100, type=int)
-        sort_by = request.args.get("sort", "composite_score")
-        view = request.args.get("view", "ranked")
-        nb = LabNotebook(notebook_path)
-        try:
-            from ..analytics import ExperimentAnalytics
-
-            analytics = ExperimentAnalytics(nb)
-
-            if view == "all":
-                programs = nb.get_top_programs(limit, sort_by="loss_ratio")
-                attach_long_context_breakdown(nb, programs)
-                annotate_qkv_usage(programs, analytics)
-                for p in programs:
-                    p["architecture_family"] = nb._classify_architecture_family(
-                        graph_json=p.get("graph_json"),
-                        routing_mode=p.get("routing_mode"),
-                    )
-                    p["tier"] = infer_tier_for_program(nb, p)
-                annotate_display_names(programs)
-                for p in programs:
-                    p.pop("graph_json", None)
-                    p.pop("_graph_json", None)
-                    p.pop("loss_curve", None)
-
-                tier_counts = count_discovery_tiers(nb)
-
-                return jsonify(
-                    {
-                        "entries": _json_safe(programs),
-                        "total": len(programs),
-                        "tier_counts": tier_counts,
-                        "view": "all",
-                    }
-                )
-
-            entries = nb.get_leaderboard(tier=tier, limit=limit, sort_by=sort_by)
+        analytics = None if compact else ExperimentAnalytics(nb)
+        base_limit = limit if quality != "promotable" else max(limit * 4, 100)
+        entries = nb.get_leaderboard(
+            tier=tier,
+            limit=base_limit,
+            sort_by=sort_by,
+            include_references=include_references,
+        )
+        if quality == "promotable":
+            entries = [entry for entry in entries if _entry_has_promotion_path(entry)]
+            entries = entries[:limit]
+        if not compact:
             attach_long_context_breakdown(nb, entries)
             stability = compute_cross_run_stability(
                 nb, nb.get_top_programs(20, sort_by="loss_ratio")
@@ -370,22 +303,234 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                     },
                 )
             annotate_qkv_usage(entries, analytics)
-            annotate_display_names(entries)
+        else:
+            entries = [_compact_leaderboard_entry(entry) for entry in entries]
+            stability = {"summary": {}, "window_size": 0}
+        # Enrich entries with gap_vs_gpt2 and loss_improvement_rate
+        # Data is already available from get_leaderboard()'s LEFT JOIN
+        import json as _json
 
-            tier_counts = count_discovery_tiers(nb)
+        for entry in entries:
+            spec_json = entry.get("_arch_spec_json")
+            if spec_json:
+                try:
+                    spec = (
+                        _json.loads(spec_json)
+                        if isinstance(spec_json, str)
+                        else spec_json
+                    )
+                    if spec.get("gap_nats") is not None:
+                        entry["gap_vs_gpt2"] = float(spec["gap_nats"])
+                    if (
+                        spec.get("improvement_rate") is not None
+                        and entry.get("loss_improvement_rate") is None
+                    ):
+                        entry["loss_improvement_rate"] = float(spec["improvement_rate"])
+                except (ValueError, TypeError, _json.JSONDecodeError):
+                    pass
+        tiers = {}
+        for entry in entries:
+            t = entry.get("tier", "screening")
+            if t not in tiers:
+                tiers[t] = []
+            tiers[t].append(entry)
+        return jsonify(
+            {
+                "entries": entries,
+                "by_tier": tiers,
+                "total": len(entries),
+                "compact": compact,
+                "quality": quality or "all",
+                "cross_run_stability_summary": stability.get("summary", {}),
+                "cross_run_stability_window": stability.get("window_size", 0),
+            }
+        )
+
+    @app.route("/api/leaderboard/status", methods=["POST"])
+    @wnb
+    def api_leaderboard_update_status(nb=None):
+        body = request.get_json(silent=True) or {}
+        tier = str(body.get("tier") or "").strip().lower()
+        entry_id = str(body.get("entry_id") or "").strip()
+        result_id = str(body.get("result_id") or "").strip()
+
+        valid_tiers = {
+            "screening",
+            "screened_out",
+            "investigation",
+            "validation",
+            "breakthrough",
+        }
+        if tier not in valid_tiers:
+            return jsonify(
+                {
+                    "error": "tier must be one of screening, screened_out, investigation, validation, breakthrough"
+                }
+            ), 400
+        if not entry_id and not result_id:
+            return jsonify({"error": "entry_id or result_id is required"}), 400
+
+        row = None
+        if entry_id:
+            row = nb.conn.execute(
+                "SELECT entry_id, result_id, tier FROM leaderboard WHERE entry_id = ?",
+                (entry_id,),
+            ).fetchone()
+        if row is None and result_id:
+            row = nb.conn.execute(
+                "SELECT entry_id, result_id, tier FROM leaderboard WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+        if row is None:
+            return jsonify({"error": "Leaderboard entry not found"}), 404
+
+        resolved_entry_id = row["entry_id"]
+        nb.promote_to_tier(resolved_entry_id, tier)
+
+        updated = nb.conn.execute(
+            "SELECT entry_id, result_id, tier, timestamp FROM leaderboard WHERE entry_id = ?",
+            (resolved_entry_id,),
+        ).fetchone()
+
+        return jsonify(
+            {
+                "success": True,
+                "entry": dict(updated)
+                if updated
+                else {"entry_id": resolved_entry_id, "tier": tier},
+            }
+        )
+
+    @app.route("/api/leaderboard/pin", methods=["POST"])
+    @wnb
+    def api_leaderboard_pin(nb=None):
+        body = request.get_json(silent=True) or {}
+        entry_id = str(body.get("entry_id") or "").strip()
+        result_id = str(body.get("result_id") or "").strip()
+        pinned = bool(body.get("pinned", False))
+
+        if not entry_id and not result_id:
+            return jsonify({"error": "entry_id or result_id is required"}), 400
+
+        resolved_entry_id = entry_id
+        if not resolved_entry_id and result_id:
+            row = nb.conn.execute(
+                "SELECT entry_id FROM leaderboard WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            if row:
+                resolved_entry_id = row["entry_id"]
+        if not resolved_entry_id:
+            return jsonify({"error": "Leaderboard entry not found"}), 404
+
+        nb.set_leaderboard_pin(resolved_entry_id, pinned)
+        return jsonify(
+            {"success": True, "entry_id": resolved_entry_id, "pinned": pinned}
+        )
+
+    @app.route("/api/discoveries")
+    @wnb
+    def api_discoveries(nb=None):
+        """Unified discoveries endpoint merging leaderboard + raw candidates."""
+        from ..naming import annotate_display_names
+
+        tier = request.args.get("tier")
+        limit = request.args.get("limit", 100, type=int)
+        sort_by = request.args.get("sort", "composite_score")
+        view = request.args.get("view", "ranked")
+        search_query = str(request.args.get("q") or "").strip()
+        search_scope = str(request.args.get("scope") or "ranked").strip().lower()
+        from ..analytics import ExperimentAnalytics
+
+        analytics = ExperimentAnalytics(nb)
+        tier_counts = count_discovery_tiers(nb)
+        references = nb.get_references()
+        annotate_display_names(references)
+        if search_query:
+            references = [
+                entry
+                for entry in references
+                if _matches_discovery_query(entry, search_query)
+            ]
+
+        if view == "all":
+            programs = nb.get_top_programs(limit, sort_by="loss_ratio")
+            attach_long_context_breakdown(nb, programs)
+            annotate_qkv_usage(programs, analytics)
+            for p in programs:
+                p["architecture_family"] = nb._classify_architecture_family(
+                    graph_json=p.get("graph_json"),
+                    routing_mode=p.get("routing_mode"),
+                )
+                p["tier"] = infer_tier_for_program(nb, p)
+            annotate_display_names(programs)
+            for p in programs:
+                p.pop("graph_json", None)
+                p.pop("_graph_json", None)
+                p.pop("loss_curve", None)
 
             return jsonify(
                 {
-                    "entries": _json_safe(entries),
-                    "total": len(entries),
+                    "entries": _json_safe(programs),
+                    "references": _json_safe(references),
+                    "total": len(programs),
+                    "counts": tier_counts,
                     "tier_counts": tier_counts,
-                    "cross_run_stability_summary": stability.get("summary", {}),
-                    "cross_run_stability_window": stability.get("window_size", 0),
-                    "view": "ranked",
+                    "view": "all",
                 }
             )
-        except Exception as e:
-            logger.error(f"Error in /api/discoveries: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
+
+        if search_query and search_scope == "all":
+            entries = _search_discoveries(
+                nb,
+                query=search_query,
+                tier=tier,
+                limit=limit,
+                include_references=False,
+            )
+        else:
+            entries = nb.get_leaderboard(
+                tier=tier,
+                limit=limit,
+                sort_by=sort_by,
+                include_references=False,
+            )
+        attach_long_context_breakdown(nb, entries)
+        stability = compute_cross_run_stability(
+            nb, nb.get_top_programs(20, sort_by="loss_ratio")
+        )
+        stability_by_result = {
+            c.get("result_id"): c
+            for c in stability.get("candidates", [])
+            if c.get("result_id")
+        }
+        for entry in entries:
+            entry["cross_run_stability"] = stability_by_result.get(
+                entry.get("result_id"),
+                {
+                    "trend": "unknown",
+                    "seen_runs": 0,
+                    "latest_rank": None,
+                    "previous_rank": None,
+                    "rank_delta": None,
+                },
+            )
+        annotate_qkv_usage(entries, analytics)
+        annotate_display_names(entries)
+
+        return jsonify(
+            {
+                "entries": _json_safe(entries),
+                "references": _json_safe(references),
+                "total": len(entries),
+                "counts": tier_counts,
+                "tier_counts": tier_counts,
+                "cross_run_stability_summary": stability.get("summary", {}),
+                "cross_run_stability_window": stability.get("window_size", 0),
+                "search": {
+                    "query": search_query,
+                    "scope": search_scope,
+                },
+                "view": "ranked",
+            }
+        )

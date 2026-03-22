@@ -57,7 +57,7 @@ def test_dispatch_file_loader_csv_native_or_fallback(tmp_path):
     csv_path.write_text("a,b,c\n1,2,3\n4,5,6\n", encoding="utf-8")
 
     arr = dispatcher.file_loader_csv(
-        str(csv_path), max_rows=8, max_cols=3, delimiter=",", has_header=True
+        str(csv_path), _max_rows=8, max_cols=3, delimiter=",", has_header=True
     )
     assert arr.shape[0] == 2
     np.testing.assert_allclose(arr[0], np.array([1.0, 2.0, 3.0], dtype=np.float32))

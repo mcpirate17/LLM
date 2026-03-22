@@ -58,4 +58,4 @@ export function TrainingCurve({ resultId }) {
   );
 }
 
-export default TrainingCurve;
+export default React.memo(TrainingCurve);

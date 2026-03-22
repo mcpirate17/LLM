@@ -4,6 +4,7 @@ Derives "works well with" / "avoid with" from intent_parser category
 adjacency rules and research failure_risk_signatures. Results are cached
 aggressively since the underlying data changes infrequently.
 """
+
 from __future__ import annotations
 
 import threading
@@ -87,7 +88,9 @@ def _build_tips(component_id: str) -> Dict[str, Any]:
     patterns: list[str] = []
     if "normalization" in cats:
         patterns.append("Place before mixing/attention layers for stable activations")
-        patterns.append("RMSNorm is cheaper than LayerNorm — prefer unless batch stats needed")
+        patterns.append(
+            "RMSNorm is cheaper than LayerNorm — prefer unless batch stats needed"
+        )
     if "activation" in cats:
         patterns.append("Place after linear projections to introduce nonlinearity")
         patterns.append("SiLU/GELU outperform ReLU in modern architectures")
@@ -158,7 +161,8 @@ def get_component_tips(
         top_entries = research_signals.get("top_entries")
         if isinstance(top_entries, list):
             usage_count = sum(
-                1 for entry in top_entries
+                1
+                for entry in top_entries
                 if isinstance(entry, dict)
                 and cache_key in str(entry.get("program_text") or "").lower()
             )
@@ -178,7 +182,13 @@ def get_patterns_summary() -> Dict[str, Any]:
             {
                 "name": "Transformer Block",
                 "description": "LayerNorm -> Attention -> Residual -> LayerNorm -> FFN -> Residual",
-                "components": ["layernorm", "softmax_attention", "add", "linear_proj", "gelu"],
+                "components": [
+                    "layernorm",
+                    "softmax_attention",
+                    "add",
+                    "linear_proj",
+                    "gelu",
+                ],
             },
             {
                 "name": "SSM Block (Mamba-style)",
@@ -193,7 +203,12 @@ def get_patterns_summary() -> Dict[str, Any]:
             {
                 "name": "Hybrid Attention + SSM",
                 "description": "Parallel attention and SSM paths merged for best of both",
-                "components": ["softmax_attention", "selective_scan", "concat", "linear_proj"],
+                "components": [
+                    "softmax_attention",
+                    "selective_scan",
+                    "concat",
+                    "linear_proj",
+                ],
             },
             {
                 "name": "Compressed FFN",

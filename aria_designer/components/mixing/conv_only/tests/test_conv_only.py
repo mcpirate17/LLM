@@ -1,4 +1,5 @@
 """Contract tests for conv_only."""
+
 import yaml
 from pathlib import Path
 

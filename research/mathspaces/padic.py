@@ -70,18 +70,20 @@ def padic_expansion(
 
     Returns: (B, S, D * n_digits) — concatenation of scale components.
     """
-    components = []
-    for i in range(n_digits):
-        freq = float(p**i)
-        # Soft periodic extraction: captures structure at scale p^i
-        # sin and cos together give a full period — no information loss
-        # vs hard remainder which had discontinuous jumps at digit boundaries
-        components.append(torch.sin(x * freq))
-        components.append(torch.cos(x * freq))
-
-    # n_digits * 2 components (sin+cos pairs), each of shape (B, S, D)
-    # Concatenate along feature dim → (B, S, D * n_digits * 2)
-    return torch.cat(components, dim=-1)
+    # Vectorized: compute all frequencies at once via broadcasting
+    freqs = torch.tensor(
+        [float(p**i) for i in range(n_digits)], device=x.device, dtype=x.dtype
+    )  # (n_digits,)
+    # x: (B, S, D) → (B, S, 1, D) * (n_digits, 1) → (B, S, n_digits, D)
+    scaled = x.unsqueeze(-2) * freqs.view(-1, 1)  # (B, S, n_digits, D)
+    # sin and cos: each (B, S, n_digits, D)
+    # Original layout: [sin_freq0(D), cos_freq0(D), sin_freq1(D), cos_freq1(D), ...]
+    # → interleave sin/cos per frequency, then flatten
+    sin_parts = torch.sin(scaled)
+    cos_parts = torch.cos(scaled)
+    # Stack: (B, S, n_digits, 2, D) → reshape to (B, S, n_digits * 2 * D)
+    paired = torch.stack([sin_parts, cos_parts], dim=-2)  # (B, S, n_digits, 2, D)
+    return paired.reshape(x.shape[0], x.shape[1], -1)
 
 
 def padic_norm(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
@@ -146,7 +148,7 @@ class _UltrametricAttentionFn(torch.autograd.Function):
         p = ctx.p
         chunk_size = ctx.chunk_size
         B, S, D = x.shape
-        log_p = math.log(p)
+        math.log(p)
 
         grad_x = torch.zeros_like(x)
         # Backward uses smaller chunks — more intermediates per chunk than forward
@@ -261,6 +263,7 @@ def execute_ultrametric_attn(module: nn.Module, x: torch.Tensor) -> torch.Tensor
         and x.ndim == 3
         and x.device.type == "cpu"
         and x.dtype == torch.float32
+        and not x.requires_grad
     ):
         return aria_core.ultrametric_attention_f32(x, float(DEFAULT_P))
     return ultrametric_attention(x).to(orig_dtype)
@@ -274,6 +277,7 @@ def execute_padic_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
         and x.is_contiguous()
         and x.device.type == "cpu"
         and x.dtype == torch.float32
+        and not x.requires_grad
     ):
         try:
             return aria_core.padic_gate_f32(x, float(DEFAULT_P))

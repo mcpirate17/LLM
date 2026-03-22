@@ -1,6 +1,8 @@
 """Contract tests for entropy_score."""
+
 import yaml
 from pathlib import Path
+
 
 def test_manifest_valid():
     manifest_path = Path(__file__).parent.parent / "manifest.yaml"

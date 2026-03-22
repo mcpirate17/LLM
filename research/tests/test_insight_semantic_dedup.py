@@ -96,8 +96,7 @@ def test_migrate_backfills_semantic_key_and_supersedes_existing_duplicates(tmp_p
     nb = LabNotebook(db_path)
     try:
         cols = {
-            row[1]
-            for row in nb.conn.execute("PRAGMA table_info(insights)").fetchall()
+            row[1] for row in nb.conn.execute("PRAGMA table_info(insights)").fetchall()
         }
         assert "semantic_key" in cols
         assert "insight_type" in cols

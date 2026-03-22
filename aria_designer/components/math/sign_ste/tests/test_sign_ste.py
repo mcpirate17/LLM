@@ -1,4 +1,5 @@
 """Contract tests for sign_ste."""
+
 import yaml
 from pathlib import Path
 

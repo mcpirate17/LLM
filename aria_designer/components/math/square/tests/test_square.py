@@ -1,4 +1,5 @@
 """Contract tests for square."""
+
 import yaml
 from pathlib import Path
 

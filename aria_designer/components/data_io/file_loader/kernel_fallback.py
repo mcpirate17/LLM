@@ -1,4 +1,5 @@
 """Python fallback for file_loader."""
+
 from pathlib import Path
 import csv
 import json
@@ -23,7 +24,9 @@ class ComponentHandler:
         if fmt == "csv":
             delim = str(config.get("delimiter", ","))
             has_header = bool(config.get("has_header", True))
-            with file_path.open("r", newline="", encoding=str(config.get("text_encoding", "utf-8"))) as f:
+            with file_path.open(
+                "r", newline="", encoding=str(config.get("text_encoding", "utf-8"))
+            ) as f:
                 reader = csv.reader(f, delimiter=delim)
                 rows = list(reader)
                 if has_header and rows:
@@ -32,7 +35,9 @@ class ComponentHandler:
             return {"data": torch.from_numpy(arr)}
 
         if fmt == "json":
-            with file_path.open("r", encoding=str(config.get("text_encoding", "utf-8"))) as f:
+            with file_path.open(
+                "r", encoding=str(config.get("text_encoding", "utf-8"))
+            ) as f:
                 payload = json.load(f)
             arr = np.array(payload, dtype=np.float32)
             return {"data": torch.from_numpy(arr)}
@@ -48,7 +53,9 @@ class ComponentHandler:
             raise ValueError("PT file must contain a tensor")
 
         if fmt == "txt":
-            with file_path.open("r", encoding=str(config.get("text_encoding", "utf-8"))) as f:
+            with file_path.open(
+                "r", encoding=str(config.get("text_encoding", "utf-8"))
+            ) as f:
                 lines = [line.strip() for line in f if line.strip()]
             arr = np.array([float(x) for x in lines], dtype=np.float32)
             return {"data": torch.from_numpy(arr)}

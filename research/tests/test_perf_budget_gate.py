@@ -65,7 +65,9 @@ def test_designer_budget_profile_uses_nested_metrics_and_duplicate_work():
             "detected_count": 0,
         },
     }
-    verdict = evaluate_perf_budget_gate(perf_report, budget_profile="designer_interactive")
+    verdict = evaluate_perf_budget_gate(
+        perf_report, budget_profile="designer_interactive"
+    )
     assert verdict["passed"] is True
 
 
@@ -80,6 +82,8 @@ def test_native_coverage_budget_is_minimum_not_maximum():
             "detected_count": 0,
         },
     }
-    verdict = evaluate_perf_budget_gate(perf_report, budget_profile="designer_interactive")
+    verdict = evaluate_perf_budget_gate(
+        perf_report, budget_profile="designer_interactive"
+    )
     failed = {check["metric"] for check in verdict["checks"] if not check["passed"]}
     assert "metrics.native_coverage" in failed

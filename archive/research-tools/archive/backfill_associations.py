@@ -13,7 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from research.tools.backfill_common import add_common_backfill_args, default_lab_notebook_path, ensure_db_exists
+from research.tools.backfill_common import (
+    add_common_backfill_args,
+    default_lab_notebook_path,
+    ensure_db_exists,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -81,7 +85,9 @@ def _ensure_lineage_backfill_experiment(nb: LabNotebook) -> None:
     nb.conn.commit()
 
 
-def _convert_workflow_to_graph_json(workflow: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+def _convert_workflow_to_graph_json(
+    workflow: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
     try:
         from runtime.bridge import workflow_to_graph as _w2g
         from research.synthesis.serializer import graph_to_json
@@ -104,7 +110,9 @@ def _convert_workflow_to_graph_json(workflow: Dict[str, Any]) -> Tuple[Optional[
         return None, None
 
 
-def _backfill_designer(nb: LabNotebook, designer_db: Path, stats: Stats, dry_run: bool) -> None:
+def _backfill_designer(
+    nb: LabNotebook, designer_db: Path, stats: Stats, dry_run: bool
+) -> None:
     if not designer_db.exists():
         return
 
@@ -187,7 +195,9 @@ def _backfill_designer(nb: LabNotebook, designer_db: Path, stats: Stats, dry_run
             except Exception:
                 loss_ratio = 1.0
             try:
-                novelty_score = float(novelty_score) if novelty_score is not None else None
+                novelty_score = (
+                    float(novelty_score) if novelty_score is not None else None
+                )
             except Exception:
                 novelty_score = None
 
@@ -261,9 +271,17 @@ def _repair_refinement_links(nb: LabNotebook, stats: Stats, dry_run: bool) -> No
             stats.refinement_links_unresolved += 1
             continue
 
-        metadata = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-        refinement = metadata.get("refinement") if isinstance(metadata.get("refinement"), dict) else {}
-        lineage = metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+        metadata = (
+            graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
+        )
+        refinement = (
+            metadata.get("refinement")
+            if isinstance(metadata.get("refinement"), dict)
+            else {}
+        )
+        lineage = (
+            metadata.get("lineage") if isinstance(metadata.get("lineage"), dict) else {}
+        )
         child_ts = float(row["timestamp"] or 0.0)
 
         parent_fp = str(lineage.get("parent") or "").strip()
@@ -324,7 +342,9 @@ def _sync_experiment_summaries(nb: LabNotebook, stats: Stats, dry_run: bool) -> 
         stats.experiments_synced += 1
 
 
-def _annotate_experiments_without_programs(nb: LabNotebook, stats: Stats, dry_run: bool) -> None:
+def _annotate_experiments_without_programs(
+    nb: LabNotebook, stats: Stats, dry_run: bool
+) -> None:
     rows = nb.conn.execute(
         """
         SELECT e.experiment_id, e.status, e.results_json
@@ -347,7 +367,11 @@ def _annotate_experiments_without_programs(nb: LabNotebook, stats: Stats, dry_ru
             except Exception:
                 payload = {}
 
-        integrity = payload.get("integrity") if isinstance(payload.get("integrity"), dict) else {}
+        integrity = (
+            payload.get("integrity")
+            if isinstance(payload.get("integrity"), dict)
+            else {}
+        )
         integrity["association_state"] = "missing_program_results"
         integrity["decision_policy"] = "exclude_or_downrank"
         integrity["annotated_by"] = "backfill_associations"
@@ -359,12 +383,14 @@ def _annotate_experiments_without_programs(nb: LabNotebook, stats: Stats, dry_ru
             "Experiment has no persisted program_results rows; exclude from ranking decisions.",
         )
 
-        aria_summary = (
-            "INTEGRITY FLAG: missing program_results associations; excluded from ranking decisions."
-        )
+        aria_summary = "INTEGRITY FLAG: missing program_results associations; excluded from ranking decisions."
 
         if not dry_run:
-            new_status = "invalid" if str(row["status"] or "").strip().lower() == "completed" else row["status"]
+            new_status = (
+                "invalid"
+                if str(row["status"] or "").strip().lower() == "completed"
+                else row["status"]
+            )
             nb.conn.execute(
                 """
                 UPDATE experiments
@@ -392,7 +418,9 @@ def run_backfill(research_db: Path, designer_db: Path, dry_run: bool = False) ->
         nb.flush_writes()
         _repair_refinement_links(nb, stats, dry_run)
         if not dry_run:
-            stats.result_lineage_rows_backfilled = int(nb.rebuild_result_lineage_index() or 0)
+            stats.result_lineage_rows_backfilled = int(
+                nb.rebuild_result_lineage_index() or 0
+            )
         _sync_experiment_summaries(nb, stats, dry_run)
         _annotate_experiments_without_programs(nb, stats, dry_run)
         nb.flush_writes()
@@ -410,8 +438,12 @@ def _default_designer_db() -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Backfill experiment/fingerprint lineage associations.")
-    parser.add_argument("--research-db", type=Path, default=Path(default_lab_notebook_path()))
+    parser = argparse.ArgumentParser(
+        description="Backfill experiment/fingerprint lineage associations."
+    )
+    parser.add_argument(
+        "--research-db", type=Path, default=Path(default_lab_notebook_path())
+    )
     parser.add_argument("--designer-db", type=Path, default=_default_designer_db())
     add_common_backfill_args(parser, include_db=False, include_dry_run=True)
     args = parser.parse_args()

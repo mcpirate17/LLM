@@ -27,6 +27,7 @@ class AnthropicBackend(LLMBackend):
     def _get_client(self):
         if self._client is None:
             import anthropic
+
             self._client = anthropic.Anthropic(api_key=self.api_key)
         return self._client
 
@@ -39,8 +40,13 @@ class AnthropicBackend(LLMBackend):
         except Exception:
             return False
 
-    def generate(self, prompt: str, system: str = "",
-                 max_tokens: int = 1024, temperature: float = 0.7) -> LLMResponse:
+    def generate(
+        self,
+        prompt: str,
+        system: str = "",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         client = self._get_client()
 
         kwargs = {
@@ -80,8 +86,11 @@ class AnthropicBackend(LLMBackend):
                 ",".join(block_types) if block_types else "none",
             )
 
-        tokens = (response.usage.input_tokens + response.usage.output_tokens
-                  if response.usage else 0)
+        tokens = (
+            response.usage.input_tokens + response.usage.output_tokens
+            if response.usage
+            else 0
+        )
 
         return LLMResponse(
             text=text,

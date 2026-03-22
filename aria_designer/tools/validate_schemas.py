@@ -4,6 +4,7 @@
 Usage:
     python tools/validate_schemas.py
 """
+
 from __future__ import annotations
 
 import json
@@ -13,6 +14,7 @@ SCHEMAS_ROOT = Path(__file__).parent.parent / "schemas"
 
 try:
     import jsonschema
+
     HAS_JSONSCHEMA = True
 except ImportError:
     HAS_JSONSCHEMA = False

@@ -129,4 +129,4 @@ export function ReferenceComparison({ program, leaderboardEntry }) {
   );
 }
 
-export default ReferenceComparison;
+export default React.memo(ReferenceComparison);

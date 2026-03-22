@@ -63,10 +63,15 @@ def _download_tinystories(
 
 
 def evaluate_tinystories(
-    model, vocab_size, device,
-    n_train_steps=200, seq_len=128,
-    n_train_batches=32, n_eval_batches=8,
-    batch_size=4, lr=3e-4,
+    model,
+    vocab_size,
+    device,
+    n_train_steps=200,
+    seq_len=128,
+    n_train_batches=32,
+    n_eval_batches=8,
+    batch_size=4,
+    lr=3e-4,
     max_chars_train=_DEFAULT_MAX_CHARS_TRAIN,
     max_chars_val=_DEFAULT_MAX_CHARS_VAL,
 ) -> Dict[str, Any]:
@@ -84,14 +89,20 @@ def evaluate_tinystories(
     if len(train_tokens) < seq_len + 1 or len(val_tokens) < seq_len + 1:
         return {"tinystories_perplexity": None, "error": "insufficient_tokens"}
 
-    train_batches = make_batches(train_tokens, batch_size, seq_len, n_train_batches, device)
-    val_batches = make_batches(val_tokens, batch_size, seq_len, n_eval_batches, device, seed=123)
+    train_batches = make_batches(
+        train_tokens, batch_size, seq_len, n_train_batches, device
+    )
+    val_batches = make_batches(
+        val_tokens, batch_size, seq_len, n_eval_batches, device, seed=123
+    )
 
     if not train_batches or not val_batches:
         return {"tinystories_perplexity": None, "error": "batch_generation_failed"}
 
     pre_ppl = compute_perplexity(model, val_batches, vocab_size)
-    train_final_loss = micro_train_loop(model, train_batches, vocab_size, n_train_steps, lr)
+    train_final_loss = micro_train_loop(
+        model, train_batches, vocab_size, n_train_steps, lr
+    )
     post_ppl = compute_perplexity(model, val_batches, vocab_size)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -107,7 +118,9 @@ def evaluate_tinystories(
 
     return {
         "tinystories_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
-        "tinystories_pre_perplexity": round(pre_ppl, 2) if pre_ppl is not None else None,
+        "tinystories_pre_perplexity": round(pre_ppl, 2)
+        if pre_ppl is not None
+        else None,
         "tinystories_score": tinystories_score,
         "train_final_loss": round(train_final_loss, 6),
         "n_train_steps": n_train_steps,

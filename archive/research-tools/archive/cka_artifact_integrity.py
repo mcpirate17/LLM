@@ -37,9 +37,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="One-command CKA artifact integrity flow: scaffold, hash, verify, validate"
     )
-    parser.add_argument("--artifact-dir", default="artifacts/cka_references/v1", help="Artifact pack directory")
-    parser.add_argument("--version", default="v1", help="Artifact version for scaffold step")
-    parser.add_argument("--code-version", default="unknown", help="Code version for scaffold step")
+    parser.add_argument(
+        "--artifact-dir",
+        default="artifacts/cka_references/v1",
+        help="Artifact pack directory",
+    )
+    parser.add_argument(
+        "--version", default="v1", help="Artifact version for scaffold step"
+    )
+    parser.add_argument(
+        "--code-version", default="unknown", help="Code version for scaffold step"
+    )
     parser.add_argument(
         "--scaffold-if-missing",
         action="store_true",
@@ -70,7 +78,9 @@ def main() -> int:
 
     if not manifest_path.exists():
         if not args.scaffold_if_missing:
-            print(f"error: missing manifest: {manifest_path} (use --scaffold-if-missing)")
+            print(
+                f"error: missing manifest: {manifest_path} (use --scaffold-if-missing)"
+            )
             return 2
         scaffold_cmd = [
             sys.executable,
@@ -124,7 +134,6 @@ def main() -> int:
     print("cka artifact integrity check complete")
     return 0
 
-    
 
 if __name__ == "__main__":
     try:

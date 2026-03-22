@@ -70,7 +70,10 @@ def test_repair_leaderboard_tier_data_fills_missing_tier_fields():
             investigation_passed=True,
             init_sensitivity_std=0.018,
         )
-        nb.conn.execute("UPDATE leaderboard SET screening_novelty = NULL WHERE result_id = ?", (screening_rid,))
+        nb.conn.execute(
+            "UPDATE leaderboard SET screening_novelty = NULL WHERE result_id = ?",
+            (screening_rid,),
+        )
         nb.conn.execute(
             """
             UPDATE leaderboard

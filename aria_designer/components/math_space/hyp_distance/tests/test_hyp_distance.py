@@ -1,4 +1,5 @@
 """Contract tests for hyp_distance."""
+
 import yaml
 from pathlib import Path
 

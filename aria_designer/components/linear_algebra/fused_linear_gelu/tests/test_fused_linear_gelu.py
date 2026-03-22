@@ -1,4 +1,5 @@
 """Contract tests for fused_linear_gelu."""
+
 import yaml
 from pathlib import Path
 

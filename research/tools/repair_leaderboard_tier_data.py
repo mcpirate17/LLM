@@ -54,9 +54,13 @@ def _repair_row(nb: LabNotebook, row: Dict[str, Any]) -> bool:
         )
         inv_robust = _coalesce(
             row.get("investigation_robustness"),
-            1.0 if tier in {"validation", "breakthrough"} and inv_loss is not None else None,
+            1.0
+            if tier in {"validation", "breakthrough"} and inv_loss is not None
+            else None,
             1.0 if tier == "investigation" and inv_loss is not None else None,
-            0.0 if tier == "investigation" and row.get("investigation_passed") == 0 else None,
+            0.0
+            if tier == "investigation" and row.get("investigation_passed") == 0
+            else None,
         )
         inv_passed = _coalesce(
             row.get("investigation_passed"),
@@ -70,7 +74,9 @@ def _repair_row(nb: LabNotebook, row: Dict[str, Any]) -> bool:
             updates["investigation_passed"] = int(bool(inv_passed))
 
     if tier in {"validation", "breakthrough"}:
-        val_loss = _coalesce(row.get("validation_loss_ratio"), row.get("pr_validation_loss_ratio"))
+        val_loss = _coalesce(
+            row.get("validation_loss_ratio"), row.get("pr_validation_loss_ratio")
+        )
         val_baseline = _coalesce(
             row.get("validation_baseline_ratio"),
             row.get("baseline_loss_ratio"),
@@ -190,8 +196,12 @@ def repair_leaderboard_tier_data(db_path: str, dry_run: bool = False) -> Dict[st
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="research/lab_notebook.db", help="Path to notebook SQLite DB")
-    parser.add_argument("--dry-run", action="store_true", help="Report affected rows without mutating")
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Path to notebook SQLite DB"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Report affected rows without mutating"
+    )
     args = parser.parse_args()
 
     counts = repair_leaderboard_tier_data(args.db, dry_run=args.dry_run)

@@ -3,6 +3,7 @@ import { apiCall } from '../services/apiService';
 
 const STATUS_COLORS = {
   healthy: '#22c55e',
+  structural: '#6b7280',
   degraded: '#eab308',
   broken: '#ef4444',
 };
@@ -58,7 +59,7 @@ const SORT_COLUMNS = [
   { key: 'reasons', label: 'Issues' },
 ];
 
-const STATUS_ORDER = { broken: 0, degraded: 1, healthy: 2 };
+const STATUS_ORDER = { broken: 0, degraded: 1, structural: 2, healthy: 3 };
 
 function sortComponents(list, sortKey, sortDir) {
   if (!sortKey) return list;
@@ -124,15 +125,15 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
   };
 
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={{ overflowX: 'auto', maxHeight: 600, overflowY: 'auto' }}>
       <table className="data-table" style={{ fontSize: 12 }}>
-        <thead>
+        <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-primary)' }}>
           <tr>
             {SORT_COLUMNS.map(col => (
               <th
                 key={col.key}
                 onClick={() => handleSort(col.key)}
-                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
               >
                 {col.label}{sortArrow(col.key)}
               </th>
@@ -226,16 +227,60 @@ function FailureBlocklist({ blocklist }) {
 }
 
 // ─── Op Pair Heatmap ───
+const PAIR_COLUMNS = [
+  { key: 'op_a', label: 'Op A' },
+  { key: 'op_b', label: 'Op B' },
+  { key: 'n', label: 'Count' },
+  { key: 's0_rate', label: 'S0 Rate' },
+  { key: 's1_rate', label: 'S1 Rate' },
+];
+
 function OpPairHeatmap({ pairs }) {
-  if (!pairs || pairs.length === 0) return null;
+  const [sortKey, setSortKey] = useState('n');
+  const [sortDir, setSortDir] = useState('desc');
+
+  const handleSort = useCallback((key) => {
+    setSortKey(prev => {
+      if (prev === key) {
+        setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        return key;
+      }
+      setSortDir(key === 'op_a' || key === 'op_b' ? 'asc' : 'desc');
+      return key;
+    });
+  }, []);
+
+  const sorted = useMemo(() => {
+    return sortComponents(pairs || [], sortKey, sortDir);
+  }, [pairs, sortKey, sortDir]);
+
+  if (!sorted || sorted.length === 0) return null;
+
+  const sortArrow = (key) => {
+    if (sortKey !== key) return <span style={{ opacity: 0.25, marginLeft: 2 }}>↕</span>;
+    return <span style={{ marginLeft: 2 }}>{sortDir === 'asc' ? '↑' : '↓'}</span>;
+  };
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <div className="card-title">Top Op Pairs (co-occurrence)</div>
-      <div style={{ overflowX: 'auto' }}>
+      <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
         <table className="data-table" style={{ fontSize: 12 }}>
-          <thead><tr><th>Op A</th><th>Op B</th><th>Count</th><th>S0 Rate</th><th>S1 Rate</th></tr></thead>
+          <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-primary)' }}>
+            <tr>
+              {PAIR_COLUMNS.map(col => (
+                <th
+                  key={col.key}
+                  onClick={() => handleSort(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
+                >
+                  {col.label}{sortArrow(col.key)}
+                </th>
+              ))}
+            </tr>
+          </thead>
           <tbody>
-            {pairs.map(p => {
+            {sorted.map(p => {
               const s0Color = p.s0_rate < 0.3 ? STATUS_COLORS.broken : p.s0_rate < 0.6 ? STATUS_COLORS.degraded : '#22c55e';
               return (
                 <tr key={`${p.op_a}-${p.op_b}`}>

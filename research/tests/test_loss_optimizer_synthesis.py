@@ -55,8 +55,10 @@ def test_build_optimizer_adamw_default_betas():
 def test_build_optimizer_adamw_custom_betas():
     model = _make_model()
     opt = build_optimizer(
-        model.parameters(), optimizer_type="adamw",
-        lr=1e-3, betas=(0.85, 0.98),
+        model.parameters(),
+        optimizer_type="adamw",
+        lr=1e-3,
+        betas=(0.85, 0.98),
     )
     assert opt.param_groups[0]["betas"] == (0.85, 0.98)
 
@@ -94,9 +96,7 @@ def test_muon_step_updates_params():
     loss.backward()
     opt.step()
 
-    changed = any(
-        not torch.equal(b, a) for b, a in zip(before, model.parameters())
-    )
+    changed = any(not torch.equal(b, a) for b, a in zip(before, model.parameters()))
     assert changed, "MuonOptimizer did not update parameters"
 
 
@@ -112,12 +112,13 @@ def test_muon_state_size_is_1x_params():
 
     total_param_elems = sum(p.numel() for p in model.parameters())
     total_state_elems = sum(
-        v.numel() for p in model.parameters()
-        for v in opt.state[p].values() if isinstance(v, torch.Tensor)
+        v.numel()
+        for p in model.parameters()
+        for v in opt.state[p].values()
+        if isinstance(v, torch.Tensor)
     )
     assert total_state_elems == total_param_elems, (
-        f"Expected 1x params in state ({total_param_elems}), "
-        f"got {total_state_elems}"
+        f"Expected 1x params in state ({total_param_elems}), got {total_state_elems}"
     )
 
 

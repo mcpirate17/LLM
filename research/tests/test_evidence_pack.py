@@ -51,7 +51,12 @@ def test_validate_evidence_pack_rejects_missing_novelty_reference():
     pack = {
         "hypothesis": "test",
         "supporting_metrics": [
-            {"name": "best_novelty_score", "value": 0.5, "baseline": 0.4, "delta_vs_baseline": 0.1}
+            {
+                "name": "best_novelty_score",
+                "value": 0.5,
+                "baseline": 0.4,
+                "delta_vs_baseline": 0.1,
+            }
         ],
         "uncertainty": {},
         "confounders": [],
@@ -81,10 +86,12 @@ def test_log_grammar_weight_application_includes_audit_query():
             self.events = []
 
         def log_learning_event(self, event_type, description, **kwargs):
-            self.events.append({
-                "event_type": event_type,
-                "evidence": kwargs.get("evidence"),
-            })
+            self.events.append(
+                {
+                    "event_type": event_type,
+                    "evidence": kwargs.get("evidence"),
+                }
+            )
 
     class _FakeAnalytics:
         def grammar_weight_audit_info(self):
@@ -113,12 +120,16 @@ def test_mode_selection_entry_includes_evidence_pack():
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(runner, "_gather_analytics_data", _fake_analytics)
-        mp.setattr(runner.aria, "recommend_next_mode", lambda **_kw: {
-            "mode": "synthesis",
-            "reasoning": "test",
-            "confidence": 0.7,
-            "config": {},
-        })
+        mp.setattr(
+            runner.aria,
+            "recommend_next_mode",
+            lambda **_kw: {
+                "mode": "synthesis",
+                "reasoning": "test",
+                "confidence": 0.7,
+                "config": {},
+            },
+        )
 
         rec = runner._select_next_mode(RunConfig(device="cpu"), nb, n_experiments=1)
 

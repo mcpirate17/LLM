@@ -1,4 +1,5 @@
 """Contract tests for learnable_bias."""
+
 import yaml
 from pathlib import Path
 

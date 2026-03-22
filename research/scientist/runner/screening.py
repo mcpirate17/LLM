@@ -22,14 +22,19 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import torch
 import torch.nn as nn
 
-from ..native_runner import compile_model_native_first as compile_model, record_native_abi_parity_result
+from ..native_runner import (
+    compile_model_native_first as compile_model,
+    record_native_abi_parity_result,
+)
 from ...synthesis.serializer import graph_from_json
 from ...eval.sandbox import safe_eval
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig
+
 
 class _ScreeningMixin:
     """Config validation, CUDA health, prescreening."""
@@ -143,10 +148,13 @@ class _ScreeningMixin:
         seq_len_override: Optional[int] = None,
     ) -> Optional[nn.Module]:
         """Reconstruct a model from either morphological spec or graph JSON."""
-        seq_len = seq_len_override if seq_len_override is not None else config.max_seq_len
+        seq_len = (
+            seq_len_override if seq_len_override is not None else config.max_seq_len
+        )
         if model_source == "morphological_box" and arch_spec_json_str:
             from ...morphological_box import ArchSpec
             from ...arch_builder import build_model, BuildConfig
+
             spec_data = json.loads(arch_spec_json_str)
             spec = ArchSpec(**spec_data)
             build_cfg = BuildConfig(
@@ -256,25 +264,30 @@ class _ScreeningMixin:
         ) -> None:
             nonlocal risk_score
             risk_score += max(0, int(risk_points))
-            issues.append({
-                "key": key,
-                "severity": severity,
-                "reason": reason,
-                "value": old_value,
-                "suggested_value": suggested_value,
-                "risk_points": int(risk_points),
-                "adjusted": adjusted,
-            })
-            if adjusted:
-                adjustments.append({
+            issues.append(
+                {
                     "key": key,
-                    "from": old_value,
-                    "to": suggested_value,
+                    "severity": severity,
                     "reason": reason,
-                })
+                    "value": old_value,
+                    "suggested_value": suggested_value,
+                    "risk_points": int(risk_points),
+                    "adjusted": adjusted,
+                }
+            )
+            if adjusted:
+                adjustments.append(
+                    {
+                        "key": key,
+                        "from": old_value,
+                        "to": suggested_value,
+                        "reason": reason,
+                    }
+                )
 
-        def _harden_min_int(field_name: str, minimum: int,
-                            severity: str, reason: str, points: int) -> None:
+        def _harden_min_int(
+            field_name: str, minimum: int, severity: str, reason: str, points: int
+        ) -> None:
             old = int(getattr(screened, field_name))
             if old >= minimum:
                 return
@@ -291,27 +304,37 @@ class _ScreeningMixin:
             )
 
         _harden_min_int(
-            "n_programs", 1, "high",
+            "n_programs",
+            1,
+            "high",
             "n_programs must be >= 1 to run any evaluation.",
             30,
         )
         _harden_min_int(
-            "stage1_steps", 1, "high",
+            "stage1_steps",
+            1,
+            "high",
             "stage1_steps must be >= 1 to avoid zero-step training failures.",
             30,
         )
         _harden_min_int(
-            "n_layers", 1, "medium",
+            "n_layers",
+            1,
+            "medium",
             "n_layers must be >= 1 for valid model construction.",
             20,
         )
         _harden_min_int(
-            "model_dim", 16, "medium",
+            "model_dim",
+            16,
+            "medium",
             "Very small model_dim is brittle and can trigger invalid shapes.",
             15,
         )
         _harden_min_int(
-            "max_seq_len", 16, "medium",
+            "max_seq_len",
+            16,
+            "medium",
             "Very small max_seq_len can destabilize evaluation and diagnostics.",
             15,
         )
@@ -341,7 +364,10 @@ class _ScreeningMixin:
                     adjusted=False,
                 )
 
-        if str(screened.device).strip().lower() == "cuda" and not torch.cuda.is_available():
+        if (
+            str(screened.device).strip().lower() == "cuda"
+            and not torch.cuda.is_available()
+        ):
             if auto_harden:
                 screened.device = "cpu"
             _record_issue(
@@ -375,8 +401,16 @@ class _ScreeningMixin:
                 recent_cuda = self._recent_cuda_assert_signals(window=5)
                 recent_count = int(recent_cuda.get("count") or 0)
                 if recent_count >= 3:
-                    experiment_ids = [str(x)[:8] for x in (recent_cuda.get("experiment_ids") or []) if str(x)]
-                    exp_label = ", ".join(experiment_ids[:5]) if experiment_ids else "recent runs"
+                    experiment_ids = [
+                        str(x)[:8]
+                        for x in (recent_cuda.get("experiment_ids") or [])
+                        if str(x)
+                    ]
+                    exp_label = (
+                        ", ".join(experiment_ids[:5])
+                        if experiment_ids
+                        else "recent runs"
+                    )
                     if auto_harden:
                         screened.device = "cpu"
                     _record_issue(
@@ -394,12 +428,16 @@ class _ScreeningMixin:
 
         if mode_norm in {"continuous", "evolve", "novelty"}:
             _harden_min_int(
-                "max_depth", 2, "medium",
+                "max_depth",
+                2,
+                "medium",
                 "max_depth must be >= 2 to produce meaningful architectures.",
                 10,
             )
             _harden_min_int(
-                "max_ops", 4, "medium",
+                "max_ops",
+                4,
+                "medium",
                 "max_ops must be >= 4 for search-space viability.",
                 10,
             )
@@ -462,14 +500,18 @@ class _ScreeningMixin:
                     adjusted=auto_harden,
                 )
             _harden_min_int(
-                "n_generations", 1, "high",
+                "n_generations",
+                1,
+                "high",
                 "n_generations must be >= 1 for evolution/novelty search.",
                 20,
             )
 
         if mode_norm == "continuous":
             _harden_min_int(
-                "max_experiments", 1, "medium",
+                "max_experiments",
+                1,
+                "medium",
                 "max_experiments must be >= 1 in continuous mode.",
                 10,
             )
@@ -547,8 +589,9 @@ class _ScreeningMixin:
         }
         return screened, report
 
-    def _check_continuous_limits(self, config: RunConfig, t_start: float,
-                                  n_experiments: int) -> Optional[str]:
+    def _check_continuous_limits(
+        self, config: RunConfig, t_start: float, n_experiments: int
+    ) -> Optional[str]:
         """Check if any continuous mode limit has been reached.
 
         Returns a stop reason string, or None to continue.
@@ -563,7 +606,9 @@ class _ScreeningMixin:
         if config.max_cost_dollars > 0:
             cost = self.aria.total_cost
             if cost >= config.max_cost_dollars:
-                return f"Cost limit reached (${cost:.2f} / ${config.max_cost_dollars:.2f})"
+                return (
+                    f"Cost limit reached (${cost:.2f} / ${config.max_cost_dollars:.2f})"
+                )
 
         return None
 
@@ -578,21 +623,19 @@ class _ScreeningMixin:
             return None
 
         with self._lock:
-            recent = list(self._aria_cycle_history[-self._PLATEAU_WINDOW:])
+            recent = list(self._aria_cycle_history[-self._PLATEAU_WINDOW :])
 
         if len(recent) < self._PLATEAU_WINDOW:
             return None
 
         # Check if any recent cycle produced new S1 survivors
-        total_delta_s1 = sum(
-            int(c.get("delta_stage1_survivors") or 0) for c in recent
-        )
+        total_delta_s1 = sum(int(c.get("delta_stage1_survivors") or 0) for c in recent)
         if total_delta_s1 > 0:
             return None  # Still making progress
 
         # Check mode diversity — if all recent cycles used the same mode, we're stuck
         recent_modes = [c.get("mode", "synthesis") for c in recent]
-        unique_modes = set(recent_modes)
+        set(recent_modes)
 
         # Check for repeated errors
         error_count = sum(1 for c in recent if c.get("error"))
@@ -609,4 +652,3 @@ class _ScreeningMixin:
                 f"cycles (modes: {mode_str}). "
                 f"Pausing — try adjusting grammar weights, config, or hypothesis."
             )
-

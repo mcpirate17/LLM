@@ -1,0 +1,443 @@
+[
+  {
+    "component": "graph_attention",
+    "root_cause": "B. stale evidence from fixed bug, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "local_window_attn",
+    "root_cause": "B. stale evidence from fixed bug",
+    "code_fix_applied": true,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "fixed_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "state_space",
+    "root_cause": "C. vocab/gate mismatch artifact, H. numerical instability, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "sliding_window_mask",
+    "root_cause": "B. stale evidence from fixed bug, K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "causal_mask",
+    "root_cause": "B. stale evidence from fixed bug, K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "tropical_center",
+    "root_cause": "C. vocab/gate mismatch artifact, D. graph-context misuse, H. numerical instability, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "early_exit",
+    "root_cause": "D. graph-context misuse, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "gated_delta",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "diff_attention",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "fused_linear_gelu",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "integral_kernel",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "split3",
+    "root_cause": "K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "exp",
+    "root_cause": "H. numerical instability, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "cumprod_safe",
+    "root_cause": "unclassified",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "lif_neuron",
+    "root_cause": "D. graph-context misuse, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "sparse_threshold",
+    "root_cause": "D. graph-context misuse, G. shape/contract mismatch, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "stdp_attention",
+    "root_cause": "D. graph-context misuse, G. shape/contract mismatch, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "cumsum",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "sub",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "chebyshev_spectral_mix",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "minimum",
+    "root_cause": "M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "embedding_lookup",
+    "root_cause": "unclassified",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "geometric_product",
+    "root_cause": "D. graph-context misuse, G. shape/contract mismatch, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "n_way_sparse_router",
+    "root_cause": "D. graph-context misuse, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "sign_ste",
+    "root_cause": "H. numerical instability, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "tropical_matmul",
+    "root_cause": "D. graph-context misuse, G. shape/contract mismatch, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "norm_last",
+    "root_cause": "K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "sqrt",
+    "root_cause": "H. numerical instability, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "log",
+    "root_cause": "H. numerical instability, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "genuinely weak"
+  },
+  {
+    "component": "mod_topk",
+    "root_cause": "unclassified",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "sum_last",
+    "root_cause": "K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "max_last",
+    "root_cause": "K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "mean_last",
+    "root_cause": "K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": false,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "reciprocal",
+    "root_cause": "unclassified",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "linear_attention",
+    "root_cause": "B. stale evidence from fixed bug, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "identity",
+    "root_cause": "C. vocab/gate mismatch artifact, K. structural/non-learnable op, L. niche op needing restricted placement, N. telemetry/reporting ambiguity",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "progressive_compression_gate",
+    "root_cause": "B. stale evidence from fixed bug, D. graph-context misuse, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "softmax_attention",
+    "root_cause": "B. stale evidence from fixed bug, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "linear_proj_down",
+    "root_cause": "B. stale evidence from fixed bug, C. vocab/gate mismatch artifact",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "linear_proj_up",
+    "root_cause": "unclassified",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "concat",
+    "root_cause": "B. stale evidence from fixed bug, C. vocab/gate mismatch artifact, K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "hyp_linear",
+    "root_cause": "C. vocab/gate mismatch artifact, D. graph-context misuse, G. shape/contract mismatch, I. gradient explosion, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "hyp_tangent_nonlinear",
+    "root_cause": "C. vocab/gate mismatch artifact, D. graph-context misuse, G. shape/contract mismatch, I. gradient explosion, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "rwkv_time_mixing",
+    "root_cause": "B. stale evidence from fixed bug, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "rope_rotate",
+    "root_cause": "B. stale evidence from fixed bug",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "split2",
+    "root_cause": "B. stale evidence from fixed bug, C. vocab/gate mismatch artifact, K. structural/non-learnable op, L. niche op needing restricted placement",
+    "code_fix_applied": false,
+    "rule_fix_applied": true,
+    "rerun_performed": true,
+    "new_result": "structural",
+    "recommendation": "structural-only"
+  },
+  {
+    "component": "fixed_point_iter",
+    "root_cause": "C. vocab/gate mismatch artifact, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  },
+  {
+    "component": "transpose_sd",
+    "root_cause": "unclassified",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": false,
+    "new_result": "works_now",
+    "recommendation": "restricted-use"
+  },
+  {
+    "component": "grouped_linear",
+    "root_cause": "C. vocab/gate mismatch artifact, I. gradient explosion, M. valid but weak",
+    "code_fix_applied": false,
+    "rule_fix_applied": false,
+    "rerun_performed": true,
+    "new_result": "works_now",
+    "recommendation": "rerun-needed"
+  }
+]

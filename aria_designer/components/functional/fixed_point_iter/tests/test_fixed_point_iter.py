@@ -1,4 +1,5 @@
 """Contract tests for fixed_point_iter."""
+
 import yaml
 from pathlib import Path
 

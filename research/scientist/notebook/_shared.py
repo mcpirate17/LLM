@@ -2,6 +2,7 @@
 
 Single source of truth — all notebook_*.py mixins import from here.
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,9 +15,13 @@ LOGGER = logging.getLogger("research.scientist.notebook")
 
 # --- Compiled regex patterns (compiled once, shared across all mixins) ---
 _INSIGHT_TOP_OPS_RE = re.compile(r"^Top-performing ops \(S1 rate\):\s*(.+?)\.\s")
-_INSIGHT_WINNING_COMBO_RE = re.compile(r"^Winning combination:\s*(.+?)\s+appears in\s+\d+\s+survivors")
+_INSIGHT_WINNING_COMBO_RE = re.compile(
+    r"^Winning combination:\s*(.+?)\s+appears in\s+\d+\s+survivors"
+)
 _INSIGHT_FAILING_OPS_RE = re.compile(r"^Consistently failing ops:\s*(.+?)\.\s")
-_INSIGHT_GRAPH_CORR_RE = re.compile(r"^Graph\s+(.+?)\s+is\s+(?:positively|negatively)\s+correlated")
+_INSIGHT_GRAPH_CORR_RE = re.compile(
+    r"^Graph\s+(.+?)\s+is\s+(?:positively|negatively)\s+correlated"
+)
 _INSIGHT_COMMON_FAILURE_RE = re.compile(r"^Most common failure:\s*(.+?)\s+\(")
 _INSIGHT_STANDALONE_NUM_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
 
@@ -117,6 +122,7 @@ def sanitize_for_db(value: Any) -> Any:
 @dataclass(slots=True)
 class ExperimentEntry:
     """A single lab notebook entry."""
+
     entry_type: str
     title: str
     content: str
@@ -680,6 +686,11 @@ CREATE INDEX IF NOT EXISTS idx_selection_insight_interactions_reward ON selectio
 CREATE INDEX IF NOT EXISTS idx_knowledge_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_base(status);
 
+-- Composite indexes for most-queried patterns on program_results
+CREATE INDEX IF NOT EXISTS idx_programs_stage1_loss ON program_results(stage1_passed, loss_ratio);
+CREATE INDEX IF NOT EXISTS idx_programs_experiment_ts ON program_results(experiment_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_programs_stage1_passed_partial ON program_results(stage1_passed) WHERE stage1_passed = 1;
+
 CREATE TABLE IF NOT EXISTS aria_chat (
     message_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -888,6 +899,12 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "screening_wikitext_variant": "TEXT",
     "screening_wikitext_elapsed_ms": "REAL",
     "screening_wikitext_budget_json": "TEXT",
+    # Screening slope trajectory (slope reprieve feature)
+    "screening_loss_10": "REAL",
+    "screening_loss_25": "REAL",
+    "screening_loss_50": "REAL",
+    "screening_slope": "REAL",
+    "screening_slope_consistent": "INTEGER",
     # TinyStories (domain generalization)
     "tinystories_perplexity": "REAL",
     "tinystories_score": "REAL",
@@ -920,8 +937,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "wikitext_ppl_500": "REAL",
     "wikitext_improvement_ratio": "REAL",
     "wikitext_eval_steps": "INTEGER",
-    "wikitext_pre_perplexity": "REAL",
-    "wikitext_ppl_improvement": "REAL",
-    "screening_wikitext_status": "TEXT",
-    "screening_wikitext_metric_version": "TEXT",
+    # Cached LLM explanations (avoid repeated LLM calls on program detail view)
+    "llm_explanation": "TEXT",
+    # Failure attribution (parsed from traceback)
+    "failure_op": "TEXT",
 }

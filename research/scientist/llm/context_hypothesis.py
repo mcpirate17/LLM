@@ -16,18 +16,63 @@ def _knowledge_canonical(raw: str) -> str:
 
 
 _KNOWLEDGE_STOPWORDS = {
-    "the", "and", "for", "that", "with", "this", "from", "into", "when", "then", "than", "were", "been",
-    "have", "has", "had", "are", "was", "show", "shows", "showed", "over", "under", "across", "between",
-    "using", "use", "used", "high", "low", "very", "more", "less", "near", "around", "recent", "experiments",
-    "experiment", "result", "results", "indicate", "indicates", "suggest", "suggests", "mode", "patterns",
-    "pattern", "architecture", "architectures",
+    "the",
+    "and",
+    "for",
+    "that",
+    "with",
+    "this",
+    "from",
+    "into",
+    "when",
+    "then",
+    "than",
+    "were",
+    "been",
+    "have",
+    "has",
+    "had",
+    "are",
+    "was",
+    "show",
+    "shows",
+    "showed",
+    "over",
+    "under",
+    "across",
+    "between",
+    "using",
+    "use",
+    "used",
+    "high",
+    "low",
+    "very",
+    "more",
+    "less",
+    "near",
+    "around",
+    "recent",
+    "experiments",
+    "experiment",
+    "result",
+    "results",
+    "indicate",
+    "indicates",
+    "suggest",
+    "suggests",
+    "mode",
+    "patterns",
+    "pattern",
+    "architecture",
+    "architectures",
 }
 
 
 def _knowledge_tokens(raw: str) -> set[str]:
     canonical = _knowledge_canonical(raw)
     return {
-        tok for tok in canonical.split()
+        tok
+        for tok in canonical.split()
         if len(tok) > 3 and tok not in _KNOWLEDGE_STOPWORDS
     }
 
@@ -39,7 +84,9 @@ def _knowledge_low_signal(row: Dict) -> bool:
         return True
     if len(title) < 12 or len(content) < 40:
         return True
-    if title.startswith("recent experiments show ") or title.startswith("all recent experiments show "):
+    if title.startswith("recent experiments show ") or title.startswith(
+        "all recent experiments show "
+    ):
         return True
     if "..." in title or "..." in content:
         return True
@@ -70,7 +117,9 @@ def _select_knowledge_for_llm(knowledge: List[Dict], limit: int = 6) -> List[Dic
         )
         if key in seen:
             continue
-        row_tokens = _knowledge_tokens(f"{row.get('title') or ''} {row.get('content') or ''}")
+        row_tokens = _knowledge_tokens(
+            f"{row.get('title') or ''} {row.get('content') or ''}"
+        )
         if row_tokens:
             near_dup = False
             for tokens in semantic_seen:
@@ -126,9 +175,7 @@ def build_hypothesis_context(
         lines = ["Recent Hypotheses:"]
         for h in recent_hypotheses[:5]:
             status = h.get("status", "pending")
-            lines.append(
-                f"  [{status.upper()}] {h.get('prediction', '?')[:80]}"
-            )
+            lines.append(f"  [{status.upper()}] {h.get('prediction', '?')[:80]}")
             if h.get("outcome_summary"):
                 lines.append(f"    -> {h['outcome_summary'][:80]}")
         sections.append("\n".join(lines))
@@ -215,7 +262,9 @@ def build_campaign_report_context(
 
     if knowledge:
         selected_knowledge = _select_knowledge_for_llm(knowledge, limit=6)
-        lines = [f"\nKnowledge Extracted ({len(selected_knowledge)} selected from {len(knowledge)} entries):"]
+        lines = [
+            f"\nKnowledge Extracted ({len(selected_knowledge)} selected from {len(knowledge)} entries):"
+        ]
         for k in selected_knowledge:
             lines.append(
                 f"  [{k.get('category', '?')}] {k.get('title', '?')}: "
@@ -296,5 +345,3 @@ def build_campaign_formulation_context(
         sections.append("\n".join(lines))
 
     return "\n\n".join(sections)
-
-

@@ -64,9 +64,6 @@ class ModelCandidate:
 
 from ._helpers import _native_runner_progress_report
 
-_LIVE_LOSS_CURVE_MAX_POINTS = 20000
-_TRAINING_STEP_SSE_EVERY = 10
-
 
 @dataclass(slots=True)
 class RunConfig:
@@ -84,6 +81,7 @@ class RunConfig:
     stage1_lr: float = STAGE1_LR
     stage1_batch_size: int = STAGE1_BATCH_SIZE
     enable_perf_tracing: bool = False
+    debug: bool = False  # verbose logging + bypass quality gate + persist all results
     collect_training_curve: bool = True
     gradient_clip_norm: float = 1.0
     optimizer_fused: bool = True
@@ -105,11 +103,15 @@ class RunConfig:
     kernel_profile_top_k: int = 20
     # Training data source
     data_mode: str = "corpus"  # "random" | "corpus" | "hydra"
-    corpus_path: str = "/home/tim/Projects/LLM/research/micro_corpus.txt"  # TXT or JSONL path for corpus mode
+    corpus_path: str = "/home/tim/Projects/LLM/research/corpus/wikitext103_train.npy"
     corpus_format: str = "auto"  # "auto" | "txt" | "jsonl"
     corpus_text_key: str = "text"  # JSONL key when format is jsonl
-    tokenizer_mode: str = "byte"  # "byte" | "whitespace" | "tiktoken"
-    tiktoken_encoding: str = "gpt2"  # "gpt2" | "cl100k_base"
+    tokenizer_mode: str = "tiktoken"  # "byte" | "whitespace" | "tiktoken"
+    tiktoken_encoding: str = "cl100k_base"  # "gpt2" | "cl100k_base"
+    # Progressive screening: cheap qualifying pass at small vocab before
+    # expensive full eval.  Filters ~93% of candidates at ~10% of the cost.
+    progressive_screening: bool = True
+    qualifying_vocab_size: int = 32000
     corpus_max_chars: int = 200000
     corpus_train_fraction: float = 0.9
     corpus_val_fraction: float = 0.1
@@ -136,7 +138,6 @@ class RunConfig:
     min_depth: int = 3
     max_depth: int = 10
     max_ops: int = 16
-    max_params_ratio: float = 18.0
     math_space_weight: float = 2.0
     residual_prob: float = 0.7
     composition_depth: int = 2  # Minimum template blocks per graph
@@ -257,14 +258,16 @@ class RunConfig:
     validation_n_seeds: int = 5
     # Auto-escalation pipeline
     auto_investigate: bool = True
-    auto_investigate_min_survivors: int = 1
-    auto_investigate_top_n: int = 15
+    auto_investigate_min_survivors: int = 3  # need 3 S1 survivors before escalating any
+    auto_investigate_top_n: int = 3  # top 3 candidates per batch (was 1)
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_max_baseline_ratio: float = 0.60
     auto_validate_min_composite_score: float = (
         0.0  # 0 = use best reference as dynamic floor
     )
+    # [CALIBRATION] source: judgment — also used with getattr fallback in continuous_validation.py
+    #   last reviewed: unknown — flag for calibration sweep
     breakthrough_raw_threshold: float = 0.70
     breakthrough_normalized_threshold: float = 0.85
     auto_validate_min_novelty_confidence: float = 0.50
@@ -292,9 +295,13 @@ class RunConfig:
     enable_scaling_comparison: bool = True
     scaling_reference_families: str = "gpt2"  # comma-separated: "gpt2,mamba"
     scaling_d512_enabled: bool = True  # retrain breakthrough candidates at d=512
+    # [CALIBRATION] source: judgment — also hardcoded in continuous_validation.py scaling gate
+    #   last reviewed: unknown — flag for calibration sweep
     scaling_param_efficiency_target: float = (
         3.0  # min param efficiency for breakthrough
     )
+    # [CALIBRATION] source: judgment — also hardcoded in continuous_validation.py scaling gate
+    #   last reviewed: unknown — flag for calibration sweep
     scaling_flop_ceiling: float = 2.0  # max FLOP ratio vs reference
     # Checkpoint/resume
     checkpoint_dir: str = "checkpoints"
@@ -310,18 +317,37 @@ class RunConfig:
     stage05_stability_threshold: float = 0.5
     investigation_loss_ratio_threshold: float = 0.15
     investigation_robustness_threshold: float = 0.5
+    # Lightning structural floor: minimum structural novelty to proceed past
+    # the lightning gate. Below this the graph is too similar to existing
+    # population to justify investigation cost.
+    lightning_structural_floor: float = 0.10
+    # Max composite points from structural-only novelty (no post-investigation
+    # CKA completion). Full CKA-backed novelty can reach 40 points.
+    # Calibrated against c9c7075e741a8790: structural_novelty=0.381 → ~5.7 pts
+    novelty_structural_only_cap: float = 15.0
     # Pre-investigation gate
     pre_inv_gate_enabled: bool = True
-    pre_inv_max_lr: float = 0.5
-    pre_inv_min_stability: float = 0.3
+    pre_inv_max_lr: float = (
+        0.40  # loss_ratio < 0.40 → final_loss < 4.6 on wikitext103+tiktoken
+    )
+    pre_inv_min_stability: float = 0.5
     pre_inv_max_spectral_norm: float = 50.0
     pre_inv_min_spectral_norm: float = 0.01
-    pre_inv_min_improvement_rate: float = 0.0
+    pre_inv_min_improvement_rate: float = 0.05  # must show 5% improvement
     pre_inv_top_n: int = 15
     pre_inv_reference_margin: float = 1.5
     pre_inv_probe_enabled: bool = False
     pre_inv_probe_steps_fraction: float = 0.25
     pre_inv_probe_max_lr: float = 0.85
+    # Slope reprieve: allows slow-start candidates a 150-step second chance
+    # Default disabled — enable only after observing slope distribution
+    slope_reprieve_enabled: bool = False
+    slope_reprieve_threshold: float = 0.015
+    slope_reprieve_consistent_required: bool = True
+    slope_reprieve_loss_floor: float = 0.85
+    slope_reprieve_max_per_cycle: int = 3
+    slope_reprieve_eval_steps: int = 150
+    slope_reprieve_score_multiplier: float = 0.75
     # Grammar structure probabilities (forwarded to GrammarConfig)
     grammar_split_prob: float = 0.3
     grammar_merge_prob: float = 0.2

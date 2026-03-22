@@ -1,4 +1,5 @@
 """Python fallback kernel for diff_attention."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -37,8 +38,10 @@ class ComponentHandler:
         k = self._module["k"](x).reshape(B, S, n_heads, 2, hd).permute(0, 2, 3, 1, 4)
         v = self._module["v"](x).reshape(B, S, n_heads, hd).transpose(1, 2)
 
-        scale = hd ** -0.5
-        mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+        scale = hd**-0.5
+        mask = torch.triu(
+            torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1
+        )
         a1 = (q[:, :, 0] @ k[:, :, 0].transpose(-2, -1)) * scale
         a2 = (q[:, :, 1] @ k[:, :, 1].transpose(-2, -1)) * scale
         a1.masked_fill_(mask, float("-inf"))

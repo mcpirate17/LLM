@@ -1,4 +1,5 @@
 """Kernel dispatcher — routes calls to aria_core (pybind11) or Python/torch fallback."""
+
 import numpy as np
 import torch
 from typing import Optional
@@ -7,6 +8,7 @@ from research.defaults import ROPE_THETA_BASE
 
 try:
     import aria_core
+
     _HAS_ARIA_CORE = True
 except ImportError:
     _HAS_ARIA_CORE = False
@@ -24,6 +26,7 @@ def _torch_to_np(t):
 
 class KernelDispatcher:
     """Dispatches calls to aria_core or Python/torch fallback."""
+
     __slots__ = ("use_native",)
 
     def __init__(self, use_native=True):
@@ -64,7 +67,12 @@ class KernelDispatcher:
                     queue.append(nb)
         if len(topo) != n:
             return {"valid": False, "error": "Cycle detected", "code": -3}
-        return {"valid": True, "topo_order": topo, "in_degrees": [0]*n, "out_degrees": out_deg}
+        return {
+            "valid": True,
+            "topo_order": topo,
+            "in_degrees": [0] * n,
+            "out_degrees": out_deg,
+        }
 
     # ── Shape inference ───────────────────────────────────────────────
 
@@ -77,17 +85,20 @@ class KernelDispatcher:
             edge_list = [[int(e[0]), int(e[1]), int(e[2]), int(e[3])] for e in edges]
             rules_dicts = []
             for rd in node_rules:
-                d = {"rule": int(rd["rule"]),
-                     "n_inputs": rd.get("n_inputs", 1),
-                     "n_outputs": rd.get("n_outputs", 1),
-                     "split_n": rd.get("split_n", 0),
-                     "out_dim": rd.get("out_dim", -1),
-                     "orig_seq_len": rd.get("orig_seq_len", 0)}
+                d = {
+                    "rule": int(rd["rule"]),
+                    "n_inputs": rd.get("n_inputs", 1),
+                    "n_outputs": rd.get("n_outputs", 1),
+                    "split_n": rd.get("split_n", 0),
+                    "out_dim": rd.get("out_dim", -1),
+                    "orig_seq_len": rd.get("orig_seq_len", 0),
+                }
                 if "input_shapes" in rd:
                     d["input_shapes"] = rd["input_shapes"]
                 rules_dicts.append(d)
             return aria_core.propagate_shapes(
-                [int(x) for x in topo_order], edge_list, rules_dicts)
+                [int(x) for x in topo_order], edge_list, rules_dicts
+            )
 
         return {"valid": False, "error": "No shape inference backend available"}
 
@@ -106,13 +117,18 @@ class KernelDispatcher:
 
     def tropical_add(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.tropical_add_f32(_np_to_torch(a), _np_to_torch(b)))
+            return _torch_to_np(
+                aria_core.tropical_add_f32(_np_to_torch(a), _np_to_torch(b))
+            )
         return np.minimum(a, b)
 
     def tropical_matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.tropical_matmul_f32(_np_to_torch(a), _np_to_torch(b)))
-        m, k = a.shape; _, n = b.shape
+            return _torch_to_np(
+                aria_core.tropical_matmul_f32(_np_to_torch(a), _np_to_torch(b))
+            )
+        m, k = a.shape
+        _, n = b.shape
         out = np.empty((m, n), dtype=np.float32)
         for i in range(m):
             for j in range(n):
@@ -127,15 +143,23 @@ class KernelDispatcher:
 
     def hyp_distance(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.hyp_distance_f32(_np_to_torch(x), _np_to_torch(y)))
+            return _torch_to_np(
+                aria_core.hyp_distance_f32(_np_to_torch(x), _np_to_torch(y))
+            )
         return np.linalg.norm(x - y, axis=-1)
 
     # ── Reference Architecture Ops ──
 
-    def embedding_lookup(self, table: np.ndarray, idx: np.ndarray, pe: Optional[np.ndarray] = None) -> np.ndarray:
+    def embedding_lookup(
+        self, table: np.ndarray, idx: np.ndarray, pe: Optional[np.ndarray] = None
+    ) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
             pe_t = _np_to_torch(pe) if pe is not None else None
-            return _torch_to_np(aria_core.embedding_lookup_f32(_np_to_torch(table), torch.from_numpy(idx.astype(np.int32)), pe_t))
+            return _torch_to_np(
+                aria_core.embedding_lookup_f32(
+                    _np_to_torch(table), torch.from_numpy(idx.astype(np.int32)), pe_t
+                )
+            )
         t = torch.from_numpy(table)
         i = torch.from_numpy(idx.astype(np.int64))
         res = t[i]
@@ -143,31 +167,69 @@ class KernelDispatcher:
             res += torch.from_numpy(pe)
         return res.numpy()
 
-    def rope_rotate(self, x: np.ndarray, theta_base: float = ROPE_THETA_BASE) -> np.ndarray:
+    def rope_rotate(
+        self, x: np.ndarray, theta_base: float = ROPE_THETA_BASE
+    ) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base)))
+            return _torch_to_np(
+                aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base))
+            )
         return x
 
-    def gated_linear(self, x: np.ndarray, w: np.ndarray, b: Optional[np.ndarray], wg: np.ndarray, bg: Optional[np.ndarray]) -> np.ndarray:
+    def gated_linear(
+        self,
+        x: np.ndarray,
+        w: np.ndarray,
+        b: Optional[np.ndarray],
+        wg: np.ndarray,
+        bg: Optional[np.ndarray],
+    ) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
             bt = _np_to_torch(b) if b is not None else None
             bgt = _np_to_torch(bg) if bg is not None else None
-            return _torch_to_np(aria_core.gated_linear_f32(_np_to_torch(x), _np_to_torch(w), bt, _np_to_torch(wg), bgt))
+            return _torch_to_np(
+                aria_core.gated_linear_f32(
+                    _np_to_torch(x), _np_to_torch(w), bt, _np_to_torch(wg), bgt
+                )
+            )
         xt = torch.from_numpy(x)
-        res = torch.nn.functional.linear(xt, torch.from_numpy(w), torch.from_numpy(b) if b is not None else None)
-        gate = torch.nn.functional.linear(xt, torch.from_numpy(wg), torch.from_numpy(bg) if bg is not None else None)
+        res = torch.nn.functional.linear(
+            xt, torch.from_numpy(w), torch.from_numpy(b) if b is not None else None
+        )
+        gate = torch.nn.functional.linear(
+            xt, torch.from_numpy(wg), torch.from_numpy(bg) if bg is not None else None
+        )
         return (res * torch.sigmoid(gate)).numpy()
 
     def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.cosine_similarity_f32(_np_to_torch(a), _np_to_torch(b)))
+            return _torch_to_np(
+                aria_core.cosine_similarity_f32(_np_to_torch(a), _np_to_torch(b))
+            )
         at = torch.from_numpy(a)
         bt = torch.from_numpy(b)
         return torch.nn.functional.cosine_similarity(at, bt, dim=-1).numpy()
 
-    def rwkv_time_mixing(self, x: np.ndarray, decay: np.ndarray, bonus: np.ndarray, wk: np.ndarray, wv: np.ndarray, wr: np.ndarray) -> np.ndarray:
+    def rwkv_time_mixing(
+        self,
+        x: np.ndarray,
+        decay: np.ndarray,
+        bonus: np.ndarray,
+        wk: np.ndarray,
+        wv: np.ndarray,
+        wr: np.ndarray,
+    ) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.rwkv_time_mixing_f32(_np_to_torch(x), _np_to_torch(decay), _np_to_torch(bonus), _np_to_torch(wk), _np_to_torch(wv), _np_to_torch(wr)))
+            return _torch_to_np(
+                aria_core.rwkv_time_mixing_f32(
+                    _np_to_torch(x),
+                    _np_to_torch(decay),
+                    _np_to_torch(bonus),
+                    _np_to_torch(wk),
+                    _np_to_torch(wv),
+                    _np_to_torch(wr),
+                )
+            )
         return x
 
     def causal_mask(self, x: np.ndarray) -> np.ndarray:
@@ -175,7 +237,7 @@ class KernelDispatcher:
             return _torch_to_np(aria_core.causal_mask_f32(_np_to_torch(x)))
         xt = torch.from_numpy(x)
         mask = torch.triu(torch.ones(xt.size(-2), xt.size(-1)), diagonal=1).bool()
-        xt.masked_fill_(mask, float('-inf'))
+        xt.masked_fill_(mask, float("-inf"))
         return xt.numpy()
 
     def padic_gate(self, x: np.ndarray, p: float = 2.0) -> np.ndarray:
@@ -189,7 +251,9 @@ class KernelDispatcher:
 
     def tropical_attention(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.tropical_attention_f32(_np_to_torch(x), temperature))
+            return _torch_to_np(
+                aria_core.tropical_attention_f32(_np_to_torch(x), temperature)
+            )
         b, s, d = x.shape
         out = np.empty_like(x, dtype=np.float32)
         for i in range(b):
@@ -204,7 +268,9 @@ class KernelDispatcher:
 
     def tropical_gate(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.tropical_gate_f32(_np_to_torch(x), temperature))
+            return _torch_to_np(
+                aria_core.tropical_gate_f32(_np_to_torch(x), temperature)
+            )
         b, s, d = x.shape
         out = np.empty_like(x, dtype=np.float32)
         for i in range(b):
@@ -218,29 +284,41 @@ class KernelDispatcher:
             out[i] = x[i] * (1.0 / (1.0 + np.exp(-gated)))
         return out
 
-    def file_loader_csv(self, file_path: str, max_rows: int = 4096, max_cols: int = 1024,
-                        delimiter: str = ",", has_header: bool = True) -> np.ndarray:
+    def file_loader_csv(
+        self,
+        file_path: str,
+        _max_rows: int = 4096,
+        max_cols: int = 1024,
+        delimiter: str = ",",
+        has_header: bool = True,
+    ) -> np.ndarray:
         rows = []
         with open(file_path, "r", encoding="utf-8") as f:
             for i, line in enumerate(f):
                 if has_header and i == 0:
                     continue
-                parts = [p.strip() for p in line.strip().split(delimiter) if p.strip() != ""]
+                parts = [
+                    p.strip() for p in line.strip().split(delimiter) if p.strip() != ""
+                ]
                 if not parts:
                     continue
                 rows.append([float(v) for v in parts])
         return np.array(rows, dtype=np.float32)
 
-    def binary_file_reader(self, file_path: str, max_elems: int = 1_000_000,
-                           offset_bytes: int = 0) -> np.ndarray:
+    def binary_file_reader(
+        self, file_path: str, max_elems: int = 1_000_000, offset_bytes: int = 0
+    ) -> np.ndarray:
         with open(file_path, "rb") as f:
             if offset_bytes > 0:
                 f.seek(offset_bytes)
             raw = f.read(max_elems * 4)
         return np.frombuffer(raw, dtype=np.float32).copy()
 
-    def file_writer_txt(self, file_path: str, data: np.ndarray, overwrite: bool = False) -> int:
+    def file_writer_txt(
+        self, file_path: str, data: np.ndarray, overwrite: bool = False
+    ) -> int:
         from pathlib import Path
+
         data = np.ascontiguousarray(data, dtype=np.float32).reshape(-1)
         path = Path(file_path)
         if path.exists() and not overwrite:

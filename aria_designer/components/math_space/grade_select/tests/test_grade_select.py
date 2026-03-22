@@ -1,4 +1,5 @@
 """Contract tests for grade_select."""
+
 import yaml
 from pathlib import Path
 

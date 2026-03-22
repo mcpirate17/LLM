@@ -12,9 +12,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+
 @dataclass
 class SparsityResult:
     """Statistics for a single layer's activation sparsity."""
+
     layer_id: str
     layer_type: str
     n_neurons: int
@@ -22,11 +24,13 @@ class SparsityResult:
     mean_sparsity: float  # Fraction of zero activations
     p90_sparsity: float
     max_sparsity: float
-    is_collapsed: bool    # True if >95% neurons are dead
+    is_collapsed: bool  # True if >95% neurons are dead
+
 
 @dataclass
 class ModelSparsityReport:
     """Comprehensive sparsity report for a whole model."""
+
     layers: List[SparsityResult]
     total_neurons: int
     total_dead_neurons: int
@@ -44,17 +48,17 @@ class ModelSparsityReport:
             "dead_neuron_ratio": self.dead_neuron_ratio,
         }
 
-def check_activation_sparsity(model: nn.Module, 
-                             dataloader: Any, 
-                             n_batches: int = 1,
-                             threshold: float = 1e-6) -> ModelSparsityReport:
+
+def check_activation_sparsity(
+    model: nn.Module, dataloader: Any, n_batches: int = 1, threshold: float = 1e-6
+) -> ModelSparsityReport:
     """
     Run the model on sample data and track activation statistics.
     Uses forward hooks to capture intermediate tensor values.
     """
     model.eval()
     device = next(model.parameters()).device
-    
+
     stats = {}
     hooks = []
 
@@ -65,7 +69,7 @@ def check_activation_sparsity(model: nn.Module,
                 flat = out.detach().reshape(-1, out.shape[-1])
                 # Count zeros per neuron across all tokens in the batch
                 is_zero = (flat.abs() < threshold).float()
-                
+
                 if name not in stats:
                     stats[name] = {
                         "zero_counts": torch.zeros(flat.shape[-1], device=flat.device),
@@ -73,9 +77,10 @@ def check_activation_sparsity(model: nn.Module,
                         "type": mod.__class__.__name__,
                         "op_name": getattr(mod, "op_name", ""),
                     }
-                
+
                 stats[name]["zero_counts"] += is_zero.sum(dim=0)
                 stats[name]["total_counts"] += flat.shape[0]
+
         return hook
 
     # Register hooks for all interesting layers
@@ -84,7 +89,7 @@ def check_activation_sparsity(model: nn.Module,
         if isinstance(module, (nn.Linear, nn.LayerNorm, nn.RMSNorm)):
             hooks.append(module.register_forward_hook(get_hook(name, module)))
         # Also catch custom CompiledOp if it has an execute_fn that returns a tensor
-        elif hasattr(module, 'op_name'):
+        elif hasattr(module, "op_name"):
             hooks.append(module.register_forward_hook(get_hook(name, module)))
 
     try:
@@ -97,7 +102,7 @@ def check_activation_sparsity(model: nn.Module,
                     input_ids = batch[0].to(device)
                 else:
                     input_ids = batch.to(device)
-                
+
                 model(input_ids)
     finally:
         # Always remove hooks
@@ -108,9 +113,14 @@ def check_activation_sparsity(model: nn.Module,
     layer_results = []
     total_neurons = 0
     total_dead = 0
-    
+
     # Spiking ops produce intentionally sparse binary outputs — use relaxed threshold
-    _SPIKING_OPS = {"lif_neuron", "spike_rate_code", "stdp_attention", "sparse_threshold"}
+    _SPIKING_OPS = {
+        "lif_neuron",
+        "spike_rate_code",
+        "stdp_attention",
+        "sparse_threshold",
+    }
 
     for name, data in stats.items():
         zero_frac = (data["zero_counts"] / max(1, data["total_counts"])).cpu().numpy()
@@ -128,7 +138,7 @@ def check_activation_sparsity(model: nn.Module,
             mean_sparsity=float(zero_frac.mean()),
             p90_sparsity=float(np.percentile(zero_frac, 90)),
             max_sparsity=float(zero_frac.max()),
-            is_collapsed=dead > collapse_threshold * len(zero_frac)
+            is_collapsed=dead > collapse_threshold * len(zero_frac),
         )
         layer_results.append(res)
         total_neurons += res.n_neurons
@@ -136,15 +146,19 @@ def check_activation_sparsity(model: nn.Module,
 
     overall_sparsity = 0.0
     if layer_results:
-        overall_sparsity = sum(r.mean_sparsity for r in layer_results) / len(layer_results)
+        overall_sparsity = sum(r.mean_sparsity for r in layer_results) / len(
+            layer_results
+        )
 
     return ModelSparsityReport(
         layers=layer_results,
         total_neurons=total_neurons,
         total_dead_neurons=total_dead,
         overall_sparsity=overall_sparsity,
-        max_layer_collapse=max([r.dead_neurons/r.n_neurons for r in layer_results]) if layer_results else 0.0,
-        dead_neuron_ratio=total_dead / max(1, total_neurons)
+        max_layer_collapse=max([r.dead_neurons / r.n_neurons for r in layer_results])
+        if layer_results
+        else 0.0,
+        dead_neuron_ratio=total_dead / max(1, total_neurons),
     )
 
 
@@ -179,7 +193,9 @@ def evaluate_activation_sparsity(
         score = 0.0
     else:
         alive_ratio = 1.0 - report.dead_neuron_ratio
-        collapse_penalty = sum(1 for l in report.layers if l.is_collapsed) / max(len(report.layers), 1)
+        collapse_penalty = sum(1 for l in report.layers if l.is_collapsed) / max(
+            len(report.layers), 1
+        )
         score = alive_ratio * (1.0 - collapse_penalty)
 
     collapsed = [l.layer_id for l in report.layers if l.is_collapsed]

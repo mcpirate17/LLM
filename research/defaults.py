@@ -4,6 +4,7 @@ All projects (research, aria_designer, aria_core) import from here
 instead of hardcoding values.  Keep this module dependency-free
 (stdlib only) so it can be imported anywhere without side-effects.
 """
+
 from __future__ import annotations
 
 # ── Service ports ─────────────────────────────────────────────────────
@@ -24,9 +25,9 @@ LAB_NOTEBOOK_DB: str = "research/lab_notebook.db"
 
 # ── Model architecture defaults ──────────────────────────────────────
 MODEL_DIM: int = 256
-VOCAB_SIZE: int = 32000
-MAX_SEQ_LEN: int = 256            # stage-1 / screening
-VALIDATION_SEQ_LEN: int = 512     # investigation + validation
+VOCAB_SIZE: int = 100277  # tiktoken cl100k_base
+MAX_SEQ_LEN: int = 256  # stage-1 / screening
+VALIDATION_SEQ_LEN: int = 512  # investigation + validation
 N_LAYERS: int = 4
 N_HEADS: int = 8
 N_KV_HEADS: int = 4

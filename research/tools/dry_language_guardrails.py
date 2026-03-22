@@ -24,7 +24,9 @@ from typing import Dict, List, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BASELINE = REPO_ROOT / "research" / "tools" / "baselines" / "dry_guardrails_baseline.json"
+DEFAULT_BASELINE = (
+    REPO_ROOT / "research" / "tools" / "baselines" / "dry_guardrails_baseline.json"
+)
 
 
 ALIASES: Dict[str, str] = {
@@ -125,7 +127,10 @@ def _normalize_fallback(text: str, slug: str) -> str:
         if s.startswith("#"):
             continue
         # Remove top-level module docstring line noise
-        if "Python fallback kernel for" in s or "Auto-generated Python fallback kernel for" in s:
+        if (
+            "Python fallback kernel for" in s
+            or "Auto-generated Python fallback kernel for" in s
+        ):
             continue
         lines.append(s)
     normalized = "\n".join(lines)
@@ -229,15 +234,27 @@ def _write_baseline(path: Path, metrics: Dict[str, int]) -> None:
         "schema_version": 1,
         "metrics": metrics,
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--strict", action="store_true", help="Fail on regressions against baseline.")
-    parser.add_argument("--update-baseline", action="store_true", help="Write current metrics to baseline file.")
-    parser.add_argument("--baseline-file", default=str(DEFAULT_BASELINE), help="Path to baseline JSON.")
-    parser.add_argument("--json", action="store_true", help="Print machine-readable output.")
+    parser.add_argument(
+        "--strict", action="store_true", help="Fail on regressions against baseline."
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="Write current metrics to baseline file.",
+    )
+    parser.add_argument(
+        "--baseline-file", default=str(DEFAULT_BASELINE), help="Path to baseline JSON."
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Print machine-readable output."
+    )
     args = parser.parse_args()
 
     canonical_violations = _canonical_component_violations()
@@ -284,10 +301,16 @@ def main() -> int:
         )
     else:
         print("DRY/Language Guardrails Report")
-        print(f"- canonical alias occurrences: {metrics['canonical_alias_occurrences']}")
+        print(
+            f"- canonical alias occurrences: {metrics['canonical_alias_occurrences']}"
+        )
         print(f"- duplicate C symbols: {metrics['duplicate_c_symbols']}")
-        print(f"- duplicate fallback template groups: {metrics['fallback_duplicate_groups']}")
-        print(f"- duplicate fallback template files: {metrics['fallback_duplicate_files']}")
+        print(
+            f"- duplicate fallback template groups: {metrics['fallback_duplicate_groups']}"
+        )
+        print(
+            f"- duplicate fallback template files: {metrics['fallback_duplicate_files']}"
+        )
         print(f"- hotpath python loops: {metrics['hotpath_python_loops']}")
         if canonical_violations:
             print("\nTop canonical-name violations:")

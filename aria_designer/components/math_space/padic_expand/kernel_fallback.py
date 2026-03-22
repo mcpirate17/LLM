@@ -1,6 +1,8 @@
 """Kernel handler for padic_expand — dispatches to aria_core.padic_expand_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "padic_expand"
@@ -19,5 +21,5 @@ class ComponentHandler(NativeComponentHandler):
         val = x.abs()
         for _ in range(n_digits):
             digits.append(val % p)
-            val = val.div(p, rounding_mode='floor')
+            val = val.div(p, rounding_mode="floor")
         return {"y": torch.stack(digits, dim=-1).reshape(*x.shape[:-1], -1)}

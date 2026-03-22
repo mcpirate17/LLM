@@ -7,13 +7,19 @@ from research.perf_contract import list_recent_perf_artifacts, summarize_perf_ar
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Summarize recent Aria performance artifacts")
-    parser.add_argument("--component", choices=["research", "aria_designer"], default=None)
+    parser = argparse.ArgumentParser(
+        description="Summarize recent Aria performance artifacts"
+    )
+    parser.add_argument(
+        "--component", choices=["research", "aria_designer"], default=None
+    )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args()
 
-    artifacts = list_recent_perf_artifacts(component=args.component, limit=max(1, args.limit))
+    artifacts = list_recent_perf_artifacts(
+        component=args.component, limit=max(1, args.limit)
+    )
     payload = {
         "summary": summarize_perf_artifacts(artifacts, component=args.component),
         "artifacts": artifacts,

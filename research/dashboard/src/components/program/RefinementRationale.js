@@ -79,4 +79,4 @@ export function RefinementRationale({ program }) {
   );
 }
 
-export default RefinementRationale;
+export default React.memo(RefinementRationale);

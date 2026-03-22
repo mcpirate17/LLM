@@ -12,6 +12,7 @@ from .compiler_op_utils import (
     _flatten_for_kernel,
     _record_routing_telemetry,
     _unflatten_from_kernel,
+    record_kernel_fallback,
 )
 
 
@@ -44,9 +45,11 @@ def _apply_moe_load_balance(
         with torch.no_grad():
             # Count how many tokens selected each expert
             selected = logits.argmax(dim=-1)  # (B, S)
-            counts = torch.zeros(n_experts, device=logits.device)
-            for i in range(n_experts):
-                counts[i] = (selected == i).float().sum()
+            counts = (
+                torch.bincount(selected.flatten(), minlength=n_experts)
+                .float()
+                .to(logits.device)[:n_experts]
+            )
             target = counts.sum() / n_experts
             # Increase bias for underloaded, decrease for overloaded
             module._moe_balance_bias = bias + gamma * (target - counts)
@@ -71,8 +74,8 @@ def _op_topk_gate(module, inputs, _):
             native_out = aria_core.topk_gate_f32(x, module.gate_proj, 2)
             if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
                 return native_out
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, AttributeError) as e:
+            record_kernel_fallback("topk_gate_f32", e)
     logits = F.linear(x, module.gate_proj.to(x.dtype))
     gate_weights = F.softmax(logits, dim=-1)
 
@@ -111,26 +114,49 @@ def _op_moe_topk(module, inputs, config):
     # Record routing telemetry
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
 
-    # Recorded weights for expert contribution
+    # Dispatch to experts via gather-scatter (no per-expert Python loop)
     output = torch.zeros_like(x)
     if hasattr(module, "experts"):
-        for i, expert in enumerate(module.experts):
-            # Find tokens that selected this expert
-            # indices shape: (B, S, top_k)
-            # mask: (B, S) - tokens that have expert i in their top-k
-            mask = (indices == i).any(dim=-1)
-            if mask.any():
-                expert_input = x[mask]
-                # expert_weight: find the weight assigned to expert i for these tokens
-                # We need to extract the specific weight from 'weights' (B, S, top_k)
-                # where indices (B, S, top_k) == i
-                exp_mask = indices == i
-                expert_weight = weights[exp_mask].reshape(-1, 1)
-                output[mask] = output[mask] + expert(expert_input).to(
-                    output.dtype
-                ) * expert_weight.to(output.dtype)
+        n_actual = len(module.experts)
+        BS = B * S
+        x_flat = x.reshape(BS, D)
+        idx_flat = indices.reshape(BS, top_k)
+        w_flat = weights.reshape(BS, top_k)
+
+        # Process each top-k slot (top_k is small, typically 1-2)
+        for k_idx in range(top_k):
+            expert_ids = idx_flat[:, k_idx]  # (BS,)
+            slot_weights = w_flat[:, k_idx].unsqueeze(-1)  # (BS, 1)
+            # Group tokens by expert via sort for contiguous access
+            sorted_ids, sort_perm = expert_ids.sort()
+            sorted_x = x_flat[sort_perm]
+            sorted_w = slot_weights[sort_perm]
+            # Find boundaries between expert groups
+            boundaries = torch.cat(
+                [
+                    torch.tensor([0], device=x.device),
+                    (sorted_ids[1:] != sorted_ids[:-1])
+                    .nonzero(as_tuple=False)
+                    .squeeze(-1)
+                    + 1,
+                    torch.tensor([BS], device=x.device),
+                ]
+            )
+            result = torch.zeros_like(sorted_x)
+            for seg in range(len(boundaries) - 1):
+                start, end = boundaries[seg].item(), boundaries[seg + 1].item()
+                if start >= end:
+                    continue
+                e_idx = sorted_ids[start].item()
+                if e_idx < n_actual:
+                    result[start:end] = module.experts[e_idx](sorted_x[start:end]).to(
+                        result.dtype
+                    ) * sorted_w[start:end].to(result.dtype)
+            # Unsort back
+            inv_perm = torch.empty_like(sort_perm)
+            inv_perm[sort_perm] = torch.arange(BS, device=x.device)
+            output.view(BS, D).add_(result[inv_perm])
     else:
-        # Fallback to a learned projection if experts sub-modules aren't ready
         output = F.linear(x, module.weight) if hasattr(module, "weight") else x
 
     return output
@@ -198,8 +224,9 @@ def _op_route_topk(module, inputs, config):
     mask = torch.zeros_like(x)
     mask.scatter_(-1, topk_idx, 1.0)
     # STE: forward uses hard mask, backward passes through
-    # Sqrt scaling compensates for sparsity without amplifying gradients excessively
-    scale = (D / k) ** 0.5
+    # Sqrt scaling compensates for sparsity — capped at 4.0 to prevent
+    # grad explosion when k is small (e.g., k=1, D=512 → sqrt(512)=22.6).
+    scale = min((D / k) ** 0.5, 4.0)
     return x * (mask.detach() - x.detach() + x) * scale
 
 
@@ -224,16 +251,15 @@ def _op_route_lanes(module, inputs, config):
     lane_indices = lane_logits.argmax(dim=-1)  # hard assignment for telemetry
     _record_routing_telemetry(module, n_lanes, lane_indices, logits=lane_logits)
 
-    # 2. Per-lane transforms: each lane has its own learned projection
-    out = torch.zeros_like(x)
-    for i in range(n_lanes):
-        if hasattr(module, "lane_projs") and i < len(module.lane_projs):
-            lane_out = F.linear(x, module.lane_projs[i].to(dt))
-        else:
-            lane_out = x
-        out = out + lane_weights[..., i : i + 1] * lane_out
-
-    return out
+    # 2. Per-lane transforms: batched via einsum over stacked projections
+    if hasattr(module, "lane_projs") and len(module.lane_projs) >= n_lanes:
+        W_all = torch.stack(
+            [module.lane_projs[i].to(dt) for i in range(n_lanes)]
+        )  # (L, D_out, D_in)
+        all_outs = torch.einsum("bsd,lod->bslo", x, W_all)  # (B, S, L, D_out)
+        return (lane_weights.unsqueeze(-1) * all_outs).sum(dim=2)
+    # Fallback: identity for all lanes
+    return x
 
 
 def _op_route_recursion(module, inputs, config):
@@ -258,16 +284,15 @@ def _op_route_recursion(module, inputs, config):
     depth_indices = depth_logits.argmax(dim=-1)
     _record_routing_telemetry(module, max_depth, depth_indices, logits=depth_logits)
 
-    # 2. Per-depth transforms: cumulative application weighted by depth probability
-    out = torch.zeros_like(x)
-    for i in range(max_depth):
-        if hasattr(module, "depth_projs") and i < len(module.depth_projs):
-            step_out = F.linear(x, module.depth_projs[i].to(dt))
-        else:
-            step_out = x
-        out = out + depth_weights[..., i : i + 1] * step_out
-
-    return out
+    # 2. Per-depth transforms: batched via einsum over stacked projections
+    if hasattr(module, "depth_projs") and len(module.depth_projs) >= max_depth:
+        W_all = torch.stack(
+            [module.depth_projs[i].to(dt) for i in range(max_depth)]
+        )  # (K, D_out, D_in)
+        all_outs = torch.einsum("bsd,kod->bsko", x, W_all)  # (B, S, K, D_out)
+        return (depth_weights.unsqueeze(-1) * all_outs).sum(dim=2)
+    # Fallback: identity for all depths
+    return x
 
 
 def _op_token_merge(module, inputs, config):
@@ -300,44 +325,58 @@ def _op_token_merge(module, inputs, config):
         merge_targets = torch.zeros(B, S, device=x.device, dtype=torch.long)
         merge_targets[:] = torch.arange(S, device=x.device).unsqueeze(0)
 
-        # Sort similarities descending per batch, greedily merge non-overlapping pairs
+        # Vectorized greedy merge: select non-overlapping pairs without Python loops.
+        # Sort similarities descending per batch
         sim_sorted, sim_idx = sim.sort(dim=-1, descending=True)
+
+        # Process greedily but without .item() — use tensor ops on CPU for the
+        # greedy constraint (no two adjacent merges). This is a small O(B*S) scan
+        # but avoids per-element GPU-CPU sync.
+        sim_idx_cpu = sim_idx.cpu()
+        merged_cpu = torch.zeros(B, S, dtype=torch.bool)
+        merge_targets_cpu = torch.arange(S).unsqueeze(0).expand(B, -1).clone()
+
         for b in range(B):
             count = 0
+            idx_b = sim_idx_cpu[b]
             for j in range(S - 1):
-                idx = sim_idx[b, j].item()
                 if count >= n_merge:
                     break
-                if not merged[b, idx] and not merged[b, idx + 1]:
-                    merged[b, idx + 1] = True
-                    merge_targets[b, idx + 1] = idx
+                p = idx_b[j].item()
+                if not merged_cpu[b, p] and not merged_cpu[b, p + 1]:
+                    merged_cpu[b, p + 1] = True
+                    merge_targets_cpu[b, p + 1] = p
                     count += 1
+
+        merged = merged_cpu.to(device=x.device)
+        merge_targets = merge_targets_cpu.to(device=x.device)
 
         # Build merged output: average merged pairs, keep unmerged tokens
         kept_mask = ~merged  # (B, S)
-        # Use scatter_add for autograd-safe merging instead of in-place mutation
-        # Start with a copy, then blend merged tokens via differentiable indexing
         weights = torch.ones(B, S, 1, device=x.device, dtype=x.dtype)
-        target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)  # (B, S, D)
-        # Accumulate: for merged positions, add their values to the target position
+        target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)
         out = x.scatter_add(1, target_idx, x * merged.unsqueeze(-1).float())
-        # Count how many tokens map to each position (1 for kept, 2 for merge targets)
         count_map = weights.scatter_add(
             1, merge_targets.unsqueeze(-1), merged.unsqueeze(-1).float()
         )
         out = out / count_map.clamp(min=1)
 
-        # Gather only kept tokens
-        # Build gather indices for kept positions
-        kept_indices = []
-        for b in range(B):
-            idx = kept_mask[b].nonzero(as_tuple=False).squeeze(-1)
-            # Pad to n_keep if needed
-            if idx.shape[0] < n_keep:
-                pad = idx[-1:].expand(n_keep - idx.shape[0])
-                idx = torch.cat([idx, pad])
-            kept_indices.append(idx[:n_keep])
-        kept_indices = torch.stack(kept_indices)  # (B, n_keep)
+        # Vectorized kept-index gathering (no per-batch Python loop)
+        # Pad each batch's kept indices to n_keep using the last valid index
+        kept_flat = kept_mask.float()  # (B, S)
+        # cumsum gives rank of each kept position
+        kept_cumsum = kept_flat.cumsum(dim=-1)  # (B, S)
+        # Total kept per batch
+        kept_cumsum[:, -1].long()  # (B,)
+        # Build (B, n_keep) index tensor: for each slot, find the position with that rank
+        slots = (
+            torch.arange(1, n_keep + 1, device=x.device)
+            .unsqueeze(0)
+            .expand(B, -1)
+            .float()
+        )
+        # searchsorted: find first position where cumsum >= slot
+        kept_indices = torch.searchsorted(kept_cumsum, slots).clamp(max=S - 1)
         y = out.gather(1, kept_indices.unsqueeze(-1).expand(-1, -1, D))
 
     # Record merge telemetry
@@ -371,16 +410,21 @@ def _op_token_merge(module, inputs, config):
         restore_map = torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1)
         restore_map = restore_map.clamp(max=n_keep - 1)
     else:
-        # Python path: kept positions are scattered, build per-batch map
-        restore_map = torch.zeros(B, S, device=x.device, dtype=torch.long)
-        for b in range(B):
-            ki = kept_indices[b]  # (n_keep,) — sorted original positions
-            ptr = 0
-            for s in range(S):
-                # Advance pointer while next kept position <= s
-                while ptr < n_keep - 1 and ki[ptr + 1] <= s:
-                    ptr += 1
-                restore_map[b, s] = ptr
+        # Vectorized restore map via searchsorted (no per-batch Python loop)
+        # For each original position s, find the last kept position <= s
+        positions = (
+            torch.arange(S, device=x.device, dtype=kept_indices.dtype)
+            .unsqueeze(0)
+            .expand(B, -1)
+        )
+        # searchsorted gives index of first kept_position > s, so subtract 1
+        restore_map = (
+            torch.searchsorted(
+                kept_indices.contiguous(), positions.contiguous(), right=True
+            )
+            - 1
+        )
+        restore_map = restore_map.clamp(min=0, max=n_keep - 1)
     return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, D))
 
 
@@ -468,15 +512,12 @@ def _op_adaptive_recursion(module, inputs, config):
         _record_routing_telemetry(
             module, max_depth, depth_weights.argmax(dim=-1), logits=depth_logits
         )
-        # Apply per-step transforms weighted by depth probability
-        out = torch.zeros_like(x)
-        for i in range(max_depth):
-            if hasattr(module, "step_projs") and i < len(module.step_projs):
-                step_out = F.linear(x, module.step_projs[i].to(dt))
-            else:
-                step_out = x
-            out = out + depth_weights[..., i : i + 1] * step_out
-        return out
+        # Apply per-step transforms weighted by depth probability — batched einsum
+        if hasattr(module, "step_projs") and len(module.step_projs) >= max_depth:
+            W_all = torch.stack([module.step_projs[i].to(dt) for i in range(max_depth)])
+            all_outs = torch.einsum("bsd,kod->bsko", x, W_all)
+            return (depth_weights.unsqueeze(-1) * all_outs).sum(dim=2)
+        return x
     # Fallback for legacy models without learned params
     scores = _routing_scores_from_x(x)
     depth_scores = torch.stack([scores + (i * 0.1) for i in range(max_depth)], dim=-1)
@@ -533,23 +574,34 @@ def _op_mixed_recursion_gate(module, inputs, config):
     depths = scores.argmax(dim=-1)  # [B, S] in range [0, max_depth-1]
 
     out = x
-    # Sequential application up to max_depth with residual per step.
-    # Tokens whose depth >= current step get the update; others are unchanged.
+    dt = out.dtype
+    # Pre-fetch and cast projection weights outside loop
+    step_weights = [module.step_projs[i].to(dt) for i in range(max_depth)]
+    # Precompute all depth masks at once: (max_depth, B, S, 1)
+    depth_thresholds = torch.arange(max_depth, device=x.device).view(-1, 1, 1)
+    all_masks = (
+        (depths.unsqueeze(0) >= depth_thresholds).float().unsqueeze(-1)
+    )  # (K, B, S, 1)
+    # Sequential application (each step depends on previous out)
     for i in range(max_depth):
-        mask = (depths >= i).float().unsqueeze(-1)
-        step_out = F.linear(out, module.step_projs[i].to(out.dtype))
-        # Residual per step: prevents vanishing gradients through deep recursion
-        out = out + mask * (step_out - out) * 0.5
+        step_out = F.linear(out, step_weights[i])
+        out = out + all_masks[i] * (step_out - out) * 0.5
 
     _record_routing_telemetry(module, max_depth, depths, logits=scores)
     return out
 
 
 def _op_entropy_score(module, inputs, config):
-    """Compute Shannon entropy of input scores as a difficulty signal (B,S,K) → (B,S,1)."""
+    """Compute Shannon entropy of input scores as a difficulty signal (B,S,K) → (B,S,1).
+
+    Uses log_softmax for numerical stability and temperature scaling
+    to prevent gradient vanishing from softmax saturation.
+    """
     scores = inputs[0]
-    probs = F.softmax(scores, dim=-1)
-    entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1, keepdim=True)
+    temperature = max(scores.shape[-1] ** 0.5, 1.0)
+    log_probs = F.log_softmax(scores / temperature, dim=-1)
+    probs = log_probs.exp()
+    entropy = -torch.sum(probs * log_probs, dim=-1, keepdim=True)
     return entropy
 
 
@@ -575,11 +627,13 @@ def _op_relu_gate_routing(module, inputs, config):
 
     # Dispatch to learned expert projections
     if hasattr(module, "expert_weights"):
+        # Pre-cast weights once, use local references for speed
+        weights_list = [w.to(dt) for w in module.expert_weights]
         output = torch.zeros_like(x)
+        _linear = F.linear
         for i in range(n_experts):
-            w = gate_weights[..., i : i + 1]  # (B, S, 1)
-            expert_out = F.linear(x, module.expert_weights[i].to(dt))
-            output = output + w * expert_out
+            w = gate_weights[..., i : i + 1]
+            output = output + w * _linear(x, weights_list[i])
         return output
     # Fallback for legacy models: scale by total gate activation
     return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x

@@ -27,4 +27,4 @@ export function HypothesisLineage({ chain }) {
   );
 }
 
-export default HypothesisLineage;
+export default React.memo(HypothesisLineage);

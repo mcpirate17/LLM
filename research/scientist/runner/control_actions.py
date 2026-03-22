@@ -7,12 +7,16 @@ import queue
 import time
 from typing import Any, Dict, Optional
 
-from ..native_runner import reset_native_runner_telemetry
+
 from ..notebook import ExperimentEntry, LabNotebook
 
-from ._types import RunConfig, _LIVE_LOSS_CURVE_MAX_POINTS, _TRAINING_STEP_SSE_EVERY
+from ._types import RunConfig
+
+_LIVE_LOSS_CURVE_MAX_POINTS = 20000
+_TRAINING_STEP_SSE_EVERY = 10
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 _PERSISTED_LIVE_FEED_EVENTS = {
@@ -58,17 +62,19 @@ class _ControlActionsMixin:
         nb = None
         try:
             nb = self._make_notebook()
-            nb.add_entry(ExperimentEntry(
-                entry_type="live_feed",
-                title=title,
-                content=content,
-                experiment_id=experiment_id,
-                metadata={
-                    "live_feed_type": event_type,
-                    "event_type": event_type,
-                    "payload": data,
-                },
-            ))
+            nb.add_entry(
+                ExperimentEntry(
+                    entry_type="live_feed",
+                    title=title,
+                    content=content,
+                    experiment_id=experiment_id,
+                    metadata={
+                        "live_feed_type": event_type,
+                        "event_type": event_type,
+                        "payload": data,
+                    },
+                )
+            )
         except Exception as exc:
             logger.debug("Failed to persist live-feed event %s: %s", event_type, exc)
         finally:
@@ -154,7 +160,7 @@ class _ControlActionsMixin:
                 curve.clear()
             curve.append(data)
             if len(curve) > _LIVE_LOSS_CURVE_MAX_POINTS:
-                del curve[:len(curve) - _LIVE_LOSS_CURVE_MAX_POINTS]
+                del curve[: len(curve) - _LIVE_LOSS_CURVE_MAX_POINTS]
 
     def execute_chat_action(self, action: Dict[str, Any], nb) -> Dict[str, Any]:
         """Execute an action dispatched from Aria's chat response.
@@ -178,8 +184,11 @@ class _ControlActionsMixin:
                 changes=report.get("applied", {}),
                 ignored=report.get("ignored", {}),
             )
-            return {"status": "applied", "changes": report.get("applied", {}),
-                    "ignored": report.get("ignored", {})}
+            return {
+                "status": "applied",
+                "changes": report.get("applied", {}),
+                "ignored": report.get("ignored", {}),
+            }
 
         elif action_type == "adjust_grammar":
             weights = action.get("weights") or {}
@@ -214,7 +223,11 @@ class _ControlActionsMixin:
                     if hasattr(config, k):
                         setattr(config, k, v)
             try:
-                if mode in {"sparse_morph", "sparse_morphology", "sparse_morphological"}:
+                if mode in {
+                    "sparse_morph",
+                    "sparse_morphology",
+                    "sparse_morphological",
+                }:
                     config.model_source = "morphological_box"
                     config.morph_focus_sparse = True
                     config.n_programs = max(120, int(config.n_programs))
@@ -226,7 +239,11 @@ class _ControlActionsMixin:
                     exp_id = self.start_evolution(config)
                 elif mode == "novelty":
                     exp_id = self.start_novelty_search(config)
-                elif mode in {"sparse_morph", "sparse_morphology", "sparse_morphological"}:
+                elif mode in {
+                    "sparse_morph",
+                    "sparse_morphology",
+                    "sparse_morphological",
+                }:
                     pass
                 else:
                     exp_id = self.start_experiment(config)
@@ -260,11 +277,21 @@ class _ControlActionsMixin:
         # Safety: allow edits only within known project subpaths
         allowed_prefixes = (
             "research/",
-            "scientist/", "synthesis/", "eval/", "search/", "training/",
-            "dashboard/", "tests/", "tools/", "mathspaces/",
+            "scientist/",
+            "synthesis/",
+            "eval/",
+            "search/",
+            "training/",
+            "dashboard/",
+            "tests/",
+            "tools/",
+            "mathspaces/",
         )
         if not any(path.startswith(prefix) for prefix in allowed_prefixes):
-            return {"status": "error", "error": "Path must be under research/ or a known project folder"}
+            return {
+                "status": "error",
+                "error": "Path must be under research/ or a known project folder",
+            }
 
         # Safety: only .py and .js files
         if not (path.endswith(".py") or path.endswith(".js")):
@@ -275,7 +302,9 @@ class _ControlActionsMixin:
         # If the incoming path already starts with research/, resolve from repo root;
         # otherwise resolve from project_root directly.
         # __file__ is runner/control_actions.py; go up 3 levels to reach research/
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
         repo_root = os.path.dirname(project_root)
         if path.startswith("research/"):
             abs_path = os.path.normpath(os.path.join(repo_root, path))
@@ -284,7 +313,10 @@ class _ControlActionsMixin:
 
         # Double-check resolved path is under project
         if not abs_path.startswith(project_root):
-            return {"status": "error", "error": "Resolved path escapes project directory"}
+            return {
+                "status": "error",
+                "error": "Resolved path escapes project directory",
+            }
 
         if not os.path.isfile(abs_path):
             return {"status": "error", "error": f"File not found: {path}"}
@@ -314,7 +346,10 @@ class _ControlActionsMixin:
                 # Restore backup
                 shutil.copy2(backup_path, abs_path)
                 os.remove(backup_path)
-                return {"status": "error", "error": f"Syntax error after edit, reverted: {e}"}
+                return {
+                    "status": "error",
+                    "error": f"Syntax error after edit, reverted: {e}",
+                }
 
         # Log to notebook
         nb.log_learning_event(
@@ -325,13 +360,19 @@ class _ControlActionsMixin:
             description=description,
         )
 
-        return {"status": "applied", "path": path, "backup": backup_path,
-                "description": description}
+        return {
+            "status": "applied",
+            "path": path,
+            "backup": backup_path,
+            "description": description,
+        }
 
     # ── Database Maintenance Actions ──────────────────────────────────────
 
     def _execute_maintain_database_action(
-        self, action: Dict[str, Any], nb: LabNotebook,
+        self,
+        action: Dict[str, Any],
+        nb: LabNotebook,
     ) -> Dict[str, Any]:
         """Execute a database maintenance operation.
 
@@ -348,7 +389,7 @@ class _ControlActionsMixin:
             return {
                 "status": "error",
                 "error": f"Unknown maintenance operation: {operation}. "
-                         f"Allowed: {', '.join(sorted(self._MAINTENANCE_OPS))}",
+                f"Allowed: {', '.join(sorted(self._MAINTENANCE_OPS))}",
             }
 
         try:
@@ -373,7 +414,10 @@ class _ControlActionsMixin:
             elif operation == "reset_op_stats":
                 ops = action.get("ops") or []
                 if not isinstance(ops, list) or not ops:
-                    return {"status": "error", "error": "Provide 'ops' list of op names to reset"}
+                    return {
+                        "status": "error",
+                        "error": "Provide 'ops' list of op names to reset",
+                    }
                 op_names = [str(o).strip() for o in ops if str(o).strip()]
                 if not op_names:
                     return {"status": "error", "error": "No valid op names provided"}
@@ -394,7 +438,10 @@ class _ControlActionsMixin:
             elif operation == "clear_toxic_signatures":
                 ops = action.get("ops") or []
                 if not isinstance(ops, list) or not ops:
-                    return {"status": "error", "error": "Provide 'ops' list of op names to clear signatures for"}
+                    return {
+                        "status": "error",
+                        "error": "Provide 'ops' list of op names to clear signatures for",
+                    }
                 total = 0
                 for op in ops:
                     op = str(op).strip()
@@ -411,12 +458,17 @@ class _ControlActionsMixin:
                     f"Aria cleared {total} toxic signatures for {ops}",
                     ops=[str(o).strip() for o in ops],
                 )
-                return {"status": "applied", "signatures_deleted": total, "ops": [str(o).strip() for o in ops]}
+                return {
+                    "status": "applied",
+                    "signatures_deleted": total,
+                    "ops": [str(o).strip() for o in ops],
+                }
 
             elif operation == "vacuum":
                 nb.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 # VACUUM requires isolation_level=None; run on a fresh connection
                 import sqlite3
+
                 vac_conn = sqlite3.connect(nb.db_path, isolation_level=None)
                 vac_conn.execute("VACUUM")
                 vac_conn.close()

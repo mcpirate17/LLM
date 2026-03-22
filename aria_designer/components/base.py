@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 # Try aria_core for native kernel dispatch
 try:
     import aria_core
+
     _HAS_ARIA_CORE = True
 except ImportError:
     _HAS_ARIA_CORE = False
@@ -34,6 +35,7 @@ def _try_native(op_name, *tensors):
 
 class BaseComponentHandler:
     """Base class for component handlers to reduce boilerplate."""
+
     def validate_config(self, config):
         return []
 
@@ -46,7 +48,8 @@ class BaseComponentHandler:
 
 class SimpleBinaryOpHandler(BaseComponentHandler):
     """Generic handler for binary operations like add, mul, sub."""
-    __slots__ = ('module_cls', 'op_fn', 'native_op_name')
+
+    __slots__ = ("module_cls", "op_fn", "native_op_name")
 
     def __init__(self, module_cls, op_fn, native_op_name=None):
         self.module_cls = module_cls
@@ -57,8 +60,8 @@ class SimpleBinaryOpHandler(BaseComponentHandler):
         return self.module_cls()
 
     def forward(self, inputs, config):
-        a = inputs.get('a')
-        b = inputs.get('b')
+        a = inputs.get("a")
+        b = inputs.get("b")
         if a is None or b is None:
             keys = list(inputs.keys())
             if len(keys) >= 2:
@@ -67,13 +70,14 @@ class SimpleBinaryOpHandler(BaseComponentHandler):
         if self.native_op_name is not None:
             result = _try_native(self.native_op_name, a, b)
             if result is not None:
-                return {'y': result}
-        return {'y': self.op_fn(a, b)}
+                return {"y": result}
+        return {"y": self.op_fn(a, b)}
 
 
 class SimpleUnaryOpHandler(BaseComponentHandler):
     """Generic handler for unary operations like relu, sigmoid, exp."""
-    __slots__ = ('module_cls', 'op_fn', 'native_op_name')
+
+    __slots__ = ("module_cls", "op_fn", "native_op_name")
 
     def __init__(self, module_cls, op_fn, native_op_name=None):
         self.module_cls = module_cls
@@ -84,7 +88,7 @@ class SimpleUnaryOpHandler(BaseComponentHandler):
         return self.module_cls()
 
     def forward(self, inputs, config):
-        x = inputs.get('x')
+        x = inputs.get("x")
         if x is None:
             keys = list(inputs.keys())
             if keys:
@@ -92,8 +96,8 @@ class SimpleUnaryOpHandler(BaseComponentHandler):
         if self.native_op_name is not None:
             result = _try_native(self.native_op_name, x)
             if result is not None:
-                return {'y': result}
-        return {'y': self.op_fn(x)}
+                return {"y": result}
+        return {"y": self.op_fn(x)}
 
 
 def make_unary_handler(op_fn, native_op_name=None):
@@ -103,25 +107,29 @@ def make_unary_handler(op_fn, native_op_name=None):
     The generated handler exposes ``validate_config``, ``build``, ``forward``
     as expected by the runtime dispatch system.
     """
+
     class _Module(nn.Module):
         def forward(self, x):
             return op_fn(x)
 
     class ComponentHandler:
         __slots__ = ()
+
         def validate_config(self, config):
             return []
+
         def build(self, config):
             return _Module()
+
         def forward(self, inputs, config):
-            x = inputs.get('x')
+            x = inputs.get("x")
             if x is None:
                 x = next(iter(inputs.values()))
             if native_op_name is not None:
                 result = _try_native(native_op_name, x)
                 if result is not None:
-                    return {'y': result}
-            return {'y': op_fn(x)}
+                    return {"y": result}
+            return {"y": op_fn(x)}
 
     return ComponentHandler
 
@@ -131,19 +139,23 @@ def make_binary_handler(op_fn, native_op_name=None):
 
     ``op_fn`` takes two tensors (a, b) and returns a tensor.
     """
+
     class _Module(nn.Module):
         def forward(self, a, b):
             return op_fn(a, b)
 
     class ComponentHandler:
         __slots__ = ()
+
         def validate_config(self, config):
             return []
+
         def build(self, config):
             return _Module()
+
         def forward(self, inputs, config):
-            a = inputs.get('a')
-            b = inputs.get('b')
+            a = inputs.get("a")
+            b = inputs.get("b")
             if a is None or b is None:
                 keys = list(inputs.keys())
                 if len(keys) >= 2:
@@ -152,8 +164,8 @@ def make_binary_handler(op_fn, native_op_name=None):
             if native_op_name is not None:
                 result = _try_native(native_op_name, a, b)
                 if result is not None:
-                    return {'y': result}
-            return {'y': op_fn(a, b)}
+                    return {"y": result}
+            return {"y": op_fn(a, b)}
 
     return ComponentHandler
 
@@ -170,6 +182,7 @@ class NativeComponentHandler(BaseComponentHandler):
     Subclasses set native_op_name and implement _get_native_args and _fallback.
     Weights are lazily initialized on first forward() and reused thereafter.
     """
+
     native_op_name = None
 
     def __init__(self):
@@ -216,5 +229,9 @@ class NativeComponentHandler(BaseComponentHandler):
                     result = fn(*args)
                     return {"y": result}
                 except Exception:
-                    logger.debug("Native kernel failed for %s, using Python fallback", self.native_op_name, exc_info=True)
+                    logger.debug(
+                        "Native kernel failed for %s, using Python fallback",
+                        self.native_op_name,
+                        exc_info=True,
+                    )
         return self._fallback(inputs, config)

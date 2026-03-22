@@ -20,7 +20,7 @@ export const AVAILABLE_OPS_REFERENCE = {
   structural: "concat, gather_sorted, multi_head_mix, roll_neg, roll_seq, scatter_unsort, split2, split3",
   parameterized: "block_sparse_linear, conv1d_seq, fused_linear_gelu, learnable_bias, learnable_scale, linear_proj, linear_proj_down, linear_proj_up, moe_topk, nm_sparse_linear, rmsnorm, rwkv_channel, selective_scan, semi_structured_2_4_linear, swiglu_mlp, topk_gate",
   mixing: "conv_only, fourier_mixing, graph_attention, linear_attention, softmax_attention, state_space",
-  sequence: "argsort_seq, causal_mask, local_window_attn, sliding_window_mask, softmax_last, softmax_seq, sort_seq, token_pool_restore",
+  sequence: "argsort_seq, causal_mask, local_window_attn, sliding_window_mask, softmax_last, softmax_seq, token_pool_restore",
   frequency: "irfft_seq, rfft_seq",
   math_space: "(loaded dynamically from math space modules)",
   functional: "basis_expansion, fixed_point_iter, integral_kernel",

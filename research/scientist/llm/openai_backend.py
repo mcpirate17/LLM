@@ -23,6 +23,7 @@ class OpenAIBackend(LLMBackend):
     def _get_client(self):
         if self._client is None:
             import openai
+
             self._client = openai.OpenAI(api_key=self.api_key)
         return self._client
 
@@ -35,8 +36,13 @@ class OpenAIBackend(LLMBackend):
         except Exception:
             return False
 
-    def generate(self, prompt: str, system: str = "",
-                 max_tokens: int = 1024, temperature: float = 0.7) -> LLMResponse:
+    def generate(
+        self,
+        prompt: str,
+        system: str = "",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         client = self._get_client()
 
         messages = []

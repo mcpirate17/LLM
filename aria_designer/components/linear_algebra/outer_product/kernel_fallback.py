@@ -1,19 +1,16 @@
-"""Auto-generated Python fallback kernel for outer_product."""
-
-import torch.nn as nn
+"""Python fallback kernel for outer_product."""
 
 
 class ComponentHandler:
-    """Fallback handler for outer_product."""
+    """Fallback handler for outer_product: element-wise a * b."""
 
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
         a = inputs["a"]
         b = inputs["b"]
-        # TODO: implement outer_product
-        return {"y": a}
+        return {"y": a * b}

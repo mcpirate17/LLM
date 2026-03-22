@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tup
 @dataclass(slots=True)
 class JudgmentContext:
     """Input context for judgment scoring."""
+
     fingerprint_bucket: str = ""
     active_op_pairs: Tuple[str, ...] = ()
     parent_fingerprint: Optional[str] = None
@@ -33,6 +34,7 @@ class JudgmentContext:
 @dataclass(slots=True)
 class JudgmentResult:
     """Output from judgment scoring."""
+
     total_score: float = 0.0
     signal_breakdown: Dict[str, float] = field(default_factory=dict)
     confidence: float = 0.0
@@ -62,6 +64,7 @@ _EXPLORATION_BUDGET = 0.15
 
 
 # ── Individual signal scorers ─────────────────────────────────────────
+
 
 def _score_op_priors(
     candidate: Dict[str, Any],
@@ -94,13 +97,15 @@ def _score_op_priors(
         score_sum += delta
         n_matched += 1
         if abs(delta) > 0.2:
-            evidence.append({
-                "signal": "op_priors",
-                "op": op_name,
-                "s1_rate": s1_rate,
-                "support": n_used,
-                "delta": round(delta, 4),
-            })
+            evidence.append(
+                {
+                    "signal": "op_priors",
+                    "op": op_name,
+                    "s1_rate": s1_rate,
+                    "support": n_used,
+                    "delta": round(delta, 4),
+                }
+            )
 
     if n_matched == 0:
         return 0.0, 0.0, []
@@ -140,13 +145,15 @@ def _score_op_pairs(
         score_sum += delta
         n_matched += 1
         if abs(delta) > 0.15:
-            evidence.append({
-                "signal": "op_pairs",
-                "pair": pair_sig,
-                "success_rate": success_rate,
-                "support": support,
-                "delta": round(delta, 4),
-            })
+            evidence.append(
+                {
+                    "signal": "op_pairs",
+                    "pair": pair_sig,
+                    "success_rate": success_rate,
+                    "support": support,
+                    "delta": round(delta, 4),
+                }
+            )
 
     if n_matched == 0:
         return 0.0, 0.0, []
@@ -176,13 +183,19 @@ def _score_fingerprint_bucket(
     delta = (s1_rate - 0.3) * 1.5
     confidence = min(1.0, n_graphs / 20.0) if n_graphs >= _MIN_SUPPORT else 0.3
 
-    evidence = [{
-        "signal": "fingerprint_bucket",
-        "bucket": ctx.fingerprint_bucket,
-        "s1_rate": s1_rate,
-        "n_graphs": n_graphs,
-        "delta": round(delta, 4),
-    }] if abs(delta) > 0.1 else []
+    evidence = (
+        [
+            {
+                "signal": "fingerprint_bucket",
+                "bucket": ctx.fingerprint_bucket,
+                "s1_rate": s1_rate,
+                "n_graphs": n_graphs,
+                "delta": round(delta, 4),
+            }
+        ]
+        if abs(delta) > 0.1
+        else []
+    )
 
     return delta, confidence, evidence
 
@@ -199,8 +212,7 @@ def _score_lineage(
 
     # Find transitions from parent fingerprint
     relevant = [
-        s for s in successors
-        if s.get("parent_fingerprint") == ctx.parent_fingerprint
+        s for s in successors if s.get("parent_fingerprint") == ctx.parent_fingerprint
     ]
     if not relevant:
         return 0.0, 0.0, []
@@ -213,13 +225,19 @@ def _score_lineage(
         delta *= support / _MIN_SUPPORT
 
     confidence = min(1.0, support / 5.0)
-    evidence = [{
-        "signal": "lineage",
-        "parent_fp": ctx.parent_fingerprint,
-        "improved_rate": improved_rate,
-        "support": support,
-        "delta": round(delta, 4),
-    }] if abs(delta) > 0.1 else []
+    evidence = (
+        [
+            {
+                "signal": "lineage",
+                "parent_fp": ctx.parent_fingerprint,
+                "improved_rate": improved_rate,
+                "support": support,
+                "delta": round(delta, 4),
+            }
+        ]
+        if abs(delta) > 0.1
+        else []
+    )
 
     return delta, confidence, evidence
 
@@ -253,24 +271,28 @@ def _score_failure_risk(
         if sig in critical_set:
             penalty -= 0.8
             risk_flags.append(f"critical_failure:{sig}")
-            evidence.append({
-                "signal": "failure_risk",
-                "signature": sig,
-                "severity": "critical",
-                "delta": -0.8,
-            })
+            evidence.append(
+                {
+                    "signal": "failure_risk",
+                    "signature": sig,
+                    "severity": "critical",
+                    "delta": -0.8,
+                }
+            )
         elif sig in risk_map:
             weight = float(risk_map[sig].get("weight", 1.0))
             # weight is already 0.05-0.6 scale; convert to penalty
             sig_penalty = -(1.0 - weight) * 0.3
             penalty += sig_penalty
             if abs(sig_penalty) > 0.05:
-                evidence.append({
-                    "signal": "failure_risk",
-                    "signature": sig,
-                    "weight": weight,
-                    "delta": round(sig_penalty, 4),
-                })
+                evidence.append(
+                    {
+                        "signal": "failure_risk",
+                        "signature": sig,
+                        "weight": weight,
+                        "delta": round(sig_penalty, 4),
+                    }
+                )
 
     confidence = 0.8 if evidence else 0.0
     return max(-1.0, penalty), confidence, evidence
@@ -286,9 +308,7 @@ def _score_insight_interactions(
     if not interactions or not ctx.matched_insights:
         return 0.0, 0.0, []
 
-    insight_ids = frozenset(
-        i.get("insight_id", "") for i in ctx.matched_insights
-    )
+    insight_ids = frozenset(i.get("insight_id", "") for i in ctx.matched_insights)
     if not insight_ids:
         return 0.0, 0.0, []
 
@@ -307,12 +327,14 @@ def _score_insight_interactions(
             score_sum += delta
             n_matched += 1
             if abs(delta) > 0.1:
-                evidence.append({
-                    "signal": "insight_interactions",
-                    "pair": f"{a}+{b}",
-                    "mean_reward": reward,
-                    "delta": round(delta, 4),
-                })
+                evidence.append(
+                    {
+                        "signal": "insight_interactions",
+                        "pair": f"{a}+{b}",
+                        "mean_reward": reward,
+                        "delta": round(delta, 4),
+                    }
+                )
 
     if n_matched == 0:
         return 0.0, 0.0, []
@@ -334,11 +356,17 @@ def _score_novelty(
 
     # Higher novelty = exploration bonus
     delta = (novelty_score - 0.5) * 0.8  # moderate influence
-    evidence = [{
-        "signal": "novelty",
-        "novelty_score": novelty_score,
-        "delta": round(delta, 4),
-    }] if abs(delta) > 0.05 else []
+    evidence = (
+        [
+            {
+                "signal": "novelty",
+                "novelty_score": novelty_score,
+                "delta": round(delta, 4),
+            }
+        ]
+        if abs(delta) > 0.05
+        else []
+    )
 
     return delta, confidence_val, evidence
 
@@ -353,22 +381,44 @@ def _score_intent_alignment(
         return 0.0, 0.0, []
 
     _INTENT_OP_AFFINITIES: Dict[str, FrozenSet[str]] = {
-        "refine_compression": frozenset({
-            "ternary_projection", "nm_sparse_linear", "block_sparse_linear",
-            "semi_structured_2_4_linear", "low_rank_proj", "bottleneck_proj",
-            "token_merging",
-        }),
-        "improve_stability": frozenset({
-            "rmsnorm", "layernorm", "dynamic_norm", "learnable_scale",
-        }),
-        "expand_capacity": frozenset({
-            "moe_topk", "moe_2expert", "linear_proj_up", "softmax_attention",
-            "graph_attention", "linear_attention",
-        }),
-        "beat_benchmarks": frozenset({
-            "softmax_attention", "selective_scan", "swiglu_mlp",
-            "linear_attention", "conv1d_seq",
-        }),
+        "refine_compression": frozenset(
+            {
+                "ternary_projection",
+                "nm_sparse_linear",
+                "block_sparse_linear",
+                "semi_structured_2_4_linear",
+                "low_rank_proj",
+                "bottleneck_proj",
+                "token_merging",
+            }
+        ),
+        "improve_stability": frozenset(
+            {
+                "rmsnorm",
+                "layernorm",
+                "dynamic_norm",
+                "learnable_scale",
+            }
+        ),
+        "expand_capacity": frozenset(
+            {
+                "moe_topk",
+                "moe_2expert",
+                "linear_proj_up",
+                "softmax_attention",
+                "graph_attention",
+                "linear_attention",
+            }
+        ),
+        "beat_benchmarks": frozenset(
+            {
+                "softmax_attention",
+                "selective_scan",
+                "swiglu_mlp",
+                "linear_attention",
+                "conv1d_seq",
+            }
+        ),
     }
 
     affinity_ops = _INTENT_OP_AFFINITIES.get(ctx.intent, frozenset())
@@ -381,22 +431,30 @@ def _score_intent_alignment(
 
     matches = ops & affinity_ops
     if not matches:
-        return -0.1, 0.5, [{
-            "signal": "intent_alignment",
-            "intent": ctx.intent,
-            "matched": 0,
-            "delta": -0.1,
-        }]
+        return (
+            -0.1,
+            0.5,
+            [
+                {
+                    "signal": "intent_alignment",
+                    "intent": ctx.intent,
+                    "matched": 0,
+                    "delta": -0.1,
+                }
+            ],
+        )
 
     alignment = len(matches) / max(len(ops), 1)
     delta = alignment * 0.6
-    evidence = [{
-        "signal": "intent_alignment",
-        "intent": ctx.intent,
-        "matched_ops": sorted(matches),
-        "alignment": round(alignment, 4),
-        "delta": round(delta, 4),
-    }]
+    evidence = [
+        {
+            "signal": "intent_alignment",
+            "intent": ctx.intent,
+            "matched_ops": sorted(matches),
+            "alignment": round(alignment, 4),
+            "delta": round(delta, 4),
+        }
+    ]
     return delta, 0.7, evidence
 
 
@@ -415,6 +473,7 @@ _SIGNAL_SCORERS: Dict[str, _ScorerFn] = {
 
 
 # ── Scoring pipeline ─────────────────────────────────────────────────
+
 
 def _run_scoring_pipeline(
     candidate: Dict[str, Any],
@@ -483,6 +542,7 @@ def _recommend_action(score: float, risk_flags: List[str], ctx: JudgmentContext)
 
 
 # ── Public entry points ───────────────────────────────────────────────
+
 
 def _extract_candidate_dict(graph: Any) -> Dict[str, Any]:
     """Extract a candidate dict from a ComputationGraph or dict."""

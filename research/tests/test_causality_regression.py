@@ -88,8 +88,6 @@ def test_op_causality_regression(op_name):
         "mean_seq",
         "max_seq",
         "min_seq",
-        "sort_seq",
-        "argsort_seq",
         "gather_topk",
         "transpose_sd",
     ]:

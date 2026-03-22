@@ -18,6 +18,7 @@ from ..native_runner_adapter import capability_handshake
 
 logger = logging.getLogger(__name__)
 
+
 def reset_native_runner_telemetry() -> None:
     for key in list(_FALLBACK_METRICS.keys()):
         _FALLBACK_METRICS[key] = 0
@@ -27,17 +28,20 @@ def reset_native_runner_telemetry() -> None:
     _SELECTIVE_GUARDRAIL["last_reason"] = None
     _SELECTIVE_GUARDRAIL_HISTORY.clear()
 
+
 def native_runner_capability_report() -> Dict[str, Any]:
     report = capability_handshake()
     state = detect_native_state()
     # Phase D: ABI model-only is always active when native is enabled.
-    abi_model_only = state.enabled
     disable_legacy_compile = _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE", False)
     disable_legacy_compile_native_enabled = _env_flag(
         "NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED",
         False,
     )
-    legacy_disabled = bool(disable_legacy_compile or (state.enabled and disable_legacy_compile_native_enabled))
+    legacy_disabled = bool(
+        disable_legacy_compile
+        or (state.enabled and disable_legacy_compile_native_enabled)
+    )
     if legacy_disabled and state.enabled and disable_legacy_compile_native_enabled:
         legacy_disabled_reason = "native_enabled_gate"
     elif legacy_disabled:
@@ -65,11 +69,19 @@ def native_runner_capability_report() -> Dict[str, Any]:
         "legacy_compile_count": legacy_count,
         "legacy_compile_invocations": legacy_count,
         "hybrid_compiles": hybrid,
-        "fallback_rate": (float(fallback) / float(native_total)) if native_total > 0 else 0.0,
-        "hybrid_rate": (float(hybrid) / float(native_total)) if native_total > 0 else 0.0,
+        "fallback_rate": (float(fallback) / float(native_total))
+        if native_total > 0
+        else 0.0,
+        "hybrid_rate": (float(hybrid) / float(native_total))
+        if native_total > 0
+        else 0.0,
         "max_allowed_fallback_rate": os.environ.get("NATIVE_RUNNER_MAX_FALLBACK_RATE"),
-        "max_allowed_legacy_compile_count": os.environ.get("NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"),
-        "max_allowed_legacy_compile_invocations": os.environ.get("NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"),
+        "max_allowed_legacy_compile_count": os.environ.get(
+            "NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"
+        ),
+        "max_allowed_legacy_compile_invocations": os.environ.get(
+            "NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"
+        ),
         "samples_considered": native_total,
         "all_compile_calls": total,
         "deprecated_fields": {
@@ -85,13 +97,15 @@ def native_runner_capability_report() -> Dict[str, Any]:
         except Exception:
             fallback_limit = 1.0
         fallback_rate = report["fallback_metrics"]["fallback_rate"]
-        checks.append({
-            "name": "fallback_rate",
-            "active": True,
-            "pass": bool(fallback_rate <= fallback_limit),
-            "actual": float(fallback_rate),
-            "limit": float(fallback_limit),
-        })
+        checks.append(
+            {
+                "name": "fallback_rate",
+                "active": True,
+                "pass": bool(fallback_rate <= fallback_limit),
+                "actual": float(fallback_rate),
+                "limit": float(fallback_limit),
+            }
+        )
 
     legacy_limit_raw = os.environ.get("NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS")
     if legacy_limit_raw is not None:
@@ -100,34 +114,40 @@ def native_runner_capability_report() -> Dict[str, Any]:
         except Exception:
             legacy_limit = 0
         legacy_used = legacy_count
-        checks.append({
-            "name": "legacy_compile_invocations",
-            "active": True,
-            "pass": bool(legacy_used <= legacy_limit),
-            "actual": int(legacy_used),
-            "limit": int(legacy_limit),
-        })
+        checks.append(
+            {
+                "name": "legacy_compile_invocations",
+                "active": True,
+                "pass": bool(legacy_used <= legacy_limit),
+                "actual": int(legacy_used),
+                "limit": int(legacy_limit),
+            }
+        )
 
     require_parity = _env_flag("NATIVE_RUNNER_REQUIRE_PARITY_PASS", False)
     parity_samples = int(_FALLBACK_METRICS.get("parity_samples") or 0)
     parity_failures = int(_FALLBACK_METRICS.get("parity_failures") or 0)
     if require_parity:
         if parity_samples <= 0:
-            checks.append({
-                "name": "parity",
-                "active": True,
-                "pass": None,
-                "actual": "no_samples",
-                "limit": "no_failures",
-            })
+            checks.append(
+                {
+                    "name": "parity",
+                    "active": True,
+                    "pass": None,
+                    "actual": "no_samples",
+                    "limit": "no_failures",
+                }
+            )
         else:
-            checks.append({
-                "name": "parity",
-                "active": True,
-                "pass": bool(parity_failures == 0),
-                "actual": int(parity_failures),
-                "limit": 0,
-            })
+            checks.append(
+                {
+                    "name": "parity",
+                    "active": True,
+                    "pass": bool(parity_failures == 0),
+                    "actual": int(parity_failures),
+                    "limit": 0,
+                }
+            )
 
     active_checks = [c for c in checks if c.get("active")]
     if not active_checks:
@@ -145,7 +165,9 @@ def native_runner_capability_report() -> Dict[str, Any]:
         "checks": active_checks,
     }
     try:
-        threshold = int(str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5")))
+        threshold = int(
+            str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5"))
+        )
     except Exception:
         threshold = 5
     threshold = max(1, threshold)
@@ -160,6 +182,7 @@ def native_runner_capability_report() -> Dict[str, Any]:
         "history": [dict(item) for item in _SELECTIVE_GUARDRAIL_HISTORY],
     }
     return report
+
 
 def _log_native_fallback_coverage(op_support: Dict[str, Any]) -> None:
     """Log native coverage fallback with burst deduplication.
@@ -178,7 +201,9 @@ def _log_native_fallback_coverage(op_support: Dict[str, Any]) -> None:
     state = _NATIVE_FALLBACK_LOG_STATE
 
     same_signature = signature == state["signature"]
-    within_window = (now - float(state["last_ts"] or 0.0)) <= _NATIVE_FALLBACK_LOG_WINDOW_S
+    within_window = (
+        now - float(state["last_ts"] or 0.0)
+    ) <= _NATIVE_FALLBACK_LOG_WINDOW_S
 
     if same_signature and within_window:
         state["suppressed"] = int(state["suppressed"] or 0) + 1
@@ -205,9 +230,11 @@ def _log_native_fallback_coverage(op_support: Dict[str, Any]) -> None:
     state["last_ts"] = now
     state["suppressed"] = 0
 
+
 def _record_legacy_compile_invocation() -> None:
     _FALLBACK_METRICS["legacy_compile_count"] += 1
     _FALLBACK_METRICS["legacy_compile_invocations"] += 1
+
 
 def _legacy_compile_count() -> int:
     canonical = _FALLBACK_METRICS.get("legacy_compile_count")

@@ -4,10 +4,15 @@ from collections import Counter
 from typing import Dict, List
 
 from .models import HistoricalInsightsResponse
-from .research_signals import fetch_leaderboard_top_entries, fetch_research_recommendation_signals
+from .research_signals import (
+    fetch_leaderboard_top_entries,
+    fetch_research_recommendation_signals,
+)
 
 
-def _top_components_from_entries(entries: List[Dict[str, object]]) -> List[Dict[str, object]]:
+def _top_components_from_entries(
+    entries: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
     comp_counter: Counter[str] = Counter()
     for entry in entries:
         component_ids = entry.get("_component_ids")

@@ -21,6 +21,7 @@ from uuid import uuid4
 
 class PatchError(Exception):
     """Raised when a patch operation fails."""
+
     def __init__(self, op_index: int, op_type: str, message: str):
         self.op_index = op_index
         self.op_type = op_type
@@ -131,7 +132,8 @@ def _apply_remove_node(
 
     # Remove all edges connected to this node
     to_remove = [
-        eid for eid, e in edges.items()
+        eid
+        for eid, e in edges.items()
         if e.get("source") == node_id or e.get("target") == node_id
     ]
     for eid in to_remove:
@@ -182,7 +184,9 @@ def _apply_rewire(
         source = payload.get("source")
         target = payload.get("target")
         if not source or not target:
-            raise PatchError(idx, "rewire", "Missing 'source' or 'target' for add action")
+            raise PatchError(
+                idx, "rewire", "Missing 'source' or 'target' for add action"
+            )
         if source not in nodes:
             raise PatchError(idx, "rewire", f"Source node '{source}' not found")
         if target not in nodes:
@@ -205,16 +209,23 @@ def _apply_rewire(
             source = payload.get("source")
             target = payload.get("target")
             if not source or not target:
-                raise PatchError(idx, "rewire", "Missing 'edge_id' or 'source'+'target' for remove action")
-            
+                raise PatchError(
+                    idx,
+                    "rewire",
+                    "Missing 'edge_id' or 'source'+'target' for remove action",
+                )
+
             to_remove = [
-                eid for eid, e in edges.items()
+                eid
+                for eid, e in edges.items()
                 if e.get("source") == source and e.get("target") == target
             ]
             if not to_remove:
                 # Log or warn? For patches, if it's already gone, maybe it's fine,
                 # but PatchError is safer to detect bugs in patch generation.
-                raise PatchError(idx, "rewire", f"No edge found from '{source}' to '{target}'")
+                raise PatchError(
+                    idx, "rewire", f"No edge found from '{source}' to '{target}'"
+                )
             for eid in to_remove:
                 del edges[eid]
 
@@ -227,11 +238,15 @@ def _apply_rewire(
         edge = edges[edge_id]
         if "source" in payload:
             if payload["source"] not in nodes:
-                raise PatchError(idx, "rewire", f"Source node '{payload['source']}' not found")
+                raise PatchError(
+                    idx, "rewire", f"Source node '{payload['source']}' not found"
+                )
             edge["source"] = payload["source"]
         if "target" in payload:
             if payload["target"] not in nodes:
-                raise PatchError(idx, "rewire", f"Target node '{payload['target']}' not found")
+                raise PatchError(
+                    idx, "rewire", f"Target node '{payload['target']}' not found"
+                )
             edge["target"] = payload["target"]
         if "source_port" in payload:
             edge["source_port"] = payload["source_port"]

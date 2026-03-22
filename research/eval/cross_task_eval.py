@@ -117,6 +117,8 @@ def _download_nl_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
     combined = "\n".join(t for t in texts if t.strip())
     if len(combined) > max_chars:
         combined = combined[:max_chars]
+
+
 def evaluate_cross_task_robustness(
     make_model_fn,
     vocab_size: int,
@@ -159,28 +161,36 @@ def evaluate_cross_task_robustness(
     nl_split = int(len(nl_tokens) * 0.9)
 
     code_train_batches = make_batches(
-        code_tokens[:code_split], batch_size, seq_len, n_train_batches, device, seed=42)
+        code_tokens[:code_split], batch_size, seq_len, n_train_batches, device, seed=42
+    )
     code_val_batches = make_batches(
-        code_tokens[code_split:], batch_size, seq_len, n_eval_batches, device, seed=99)
+        code_tokens[code_split:], batch_size, seq_len, n_eval_batches, device, seed=99
+    )
     nl_train_batches = make_batches(
-        nl_tokens[:nl_split], batch_size, seq_len, n_train_batches, device, seed=42)
+        nl_tokens[:nl_split], batch_size, seq_len, n_train_batches, device, seed=42
+    )
     nl_val_batches = make_batches(
-        nl_tokens[nl_split:], batch_size, seq_len, n_eval_batches, device, seed=99)
+        nl_tokens[nl_split:], batch_size, seq_len, n_eval_batches, device, seed=99
+    )
 
-    if not all([code_train_batches, code_val_batches, nl_train_batches, nl_val_batches]):
+    if not all(
+        [code_train_batches, code_val_batches, nl_train_batches, nl_val_batches]
+    ):
         return {"cross_task_score": None, "error": "batch_generation_failed"}
 
     # Train fresh model on code
     code_model = make_model_fn().to(device)
     code_loss = micro_train_loop(
-        code_model, code_train_batches, vocab_size, n_train_steps, lr)
+        code_model, code_train_batches, vocab_size, n_train_steps, lr
+    )
     code_ppl = compute_perplexity(code_model, code_val_batches, vocab_size)
     del code_model
 
     # Train fresh model on NL
     nl_model = make_model_fn().to(device)
     nl_loss = micro_train_loop(
-        nl_model, nl_train_batches, vocab_size, n_train_steps, lr)
+        nl_model, nl_train_batches, vocab_size, n_train_steps, lr
+    )
     nl_ppl = compute_perplexity(nl_model, nl_val_batches, vocab_size)
     del nl_model
 

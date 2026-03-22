@@ -1,16 +1,27 @@
 """Experiment launch mode, eligibility, and preflight helpers."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from ..notebook import LabNotebook
+from .deps import get_notebook
 
 
-_VALID_START_MODES = frozenset({
-    "single", "continuous", "evolve", "novelty",
-    "investigation", "validation", "scale_up",
-    "refine_fingerprint", "compact_synthesis", "sparse_morph",
-})
+_VALID_START_MODES = frozenset(
+    {
+        "single",
+        "continuous",
+        "evolve",
+        "novelty",
+        "investigation",
+        "validation",
+        "scale_up",
+        "refine_fingerprint",
+        "compact_synthesis",
+        "sparse_morph",
+    }
+)
 
 
 def resolve_scale_up_result_ids(
@@ -66,14 +77,16 @@ def resolve_scale_up_result_ids(
             }
             for row in rows
         ]
-        resolved.append({
-            "requested_fingerprint": fingerprint,
-            "selected_result_id": chosen.get("result_id"),
-            "selected_graph_fingerprint": chosen.get("graph_fingerprint"),
-            "selected_experiment_id": chosen.get("experiment_id"),
-            "candidate_count": len(rows),
-            "candidates": candidates,
-        })
+        resolved.append(
+            {
+                "requested_fingerprint": fingerprint,
+                "selected_result_id": chosen.get("result_id"),
+                "selected_graph_fingerprint": chosen.get("graph_fingerprint"),
+                "selected_experiment_id": chosen.get("experiment_id"),
+                "candidate_count": len(rows),
+                "candidates": candidates,
+            }
+        )
 
     return {
         "result_ids": merged_result_ids,
@@ -82,7 +95,9 @@ def resolve_scale_up_result_ids(
     }
 
 
-def _ineligible_from_missing_rows(result_id: str, program: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _ineligible_from_missing_rows(
+    result_id: str, program: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
     if program is None:
         return {
             "result_id": result_id,
@@ -102,7 +117,9 @@ def _ineligible_from_missing_rows(result_id: str, program: Optional[Dict[str, An
     }
 
 
-def _evaluate_mode_eligibility(mode: str, result_id: str, tier: str, lb: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _evaluate_mode_eligibility(
+    mode: str, result_id: str, tier: str, lb: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
     if mode == "investigation":
         if tier == "screening":
             return None
@@ -180,7 +197,9 @@ def build_start_mode_eligibility(
         program = program_by_id.get(result_id)
 
         if lb is None:
-            payload["ineligible"].append(_ineligible_from_missing_rows(result_id, program))
+            payload["ineligible"].append(
+                _ineligible_from_missing_rows(result_id, program)
+            )
             continue
 
         tier = str(lb.get("tier") or "").lower()
@@ -190,7 +209,9 @@ def build_start_mode_eligibility(
         else:
             payload["ineligible"].append(failure)
 
-    payload["all_eligible"] = len(payload["ineligible"]) == 0 and len(payload["eligible_result_ids"]) > 0
+    payload["all_eligible"] = (
+        len(payload["ineligible"]) == 0 and len(payload["eligible_result_ids"]) > 0
+    )
     payload["summary"] = {
         "requested": len(result_ids),
         "eligible": len(payload["eligible_result_ids"]),
@@ -224,39 +245,43 @@ def run_launch_preflight(
 
     prescreen_warnings = prescreen.get("warnings", [])
     if prescreen_warnings:
-        checks.append({
-            "name": "prescreen_warnings",
-            "status": "warn",
-            "details": prescreen_warnings,
-        })
+        checks.append(
+            {
+                "name": "prescreen_warnings",
+                "status": "warn",
+                "details": prescreen_warnings,
+            }
+        )
         verdict = "warn"
 
     prescreen_blockers = prescreen.get("blockers", [])
     if prescreen_blockers:
-        checks.append({
-            "name": "prescreen_blockers",
-            "status": "fail",
-            "details": prescreen_blockers,
-        })
+        checks.append(
+            {
+                "name": "prescreen_blockers",
+                "status": "fail",
+                "details": prescreen_blockers,
+            }
+        )
         verdict = "fail"
 
-    nb = LabNotebook(notebook_path)
+    nb = get_notebook(notebook_path)
     try:
         active = nb.conn.execute(
             "SELECT COUNT(*) FROM experiments WHERE status = 'running'"
         ).fetchone()[0]
         if active > 0:
-            checks.append({
-                "name": "active_experiment",
-                "status": "warn",
-                "details": f"{active} experiment(s) marked as running",
-            })
+            checks.append(
+                {
+                    "name": "active_experiment",
+                    "status": "warn",
+                    "details": f"{active} experiment(s) marked as running",
+                }
+            )
             if verdict == "pass":
                 verdict = "warn"
     except Exception:
         pass
-    finally:
-        nb.close()
 
     if not checks:
         checks.append({"name": "all_clear", "status": "pass", "details": None})
@@ -270,7 +295,9 @@ def apply_compact_synthesis_bias(config) -> Dict[str, Any]:
     Returns dict of changes applied (for logging/response).
     """
     changes: Dict[str, Any] = {}
-    if hasattr(config, "max_nodes") and (config.max_nodes is None or config.max_nodes > 12):
+    if hasattr(config, "max_nodes") and (
+        config.max_nodes is None or config.max_nodes > 12
+    ):
         changes["max_nodes"] = {"from": config.max_nodes, "to": 12}
         config.max_nodes = 12
     if hasattr(config, "grammar_config") and config.grammar_config is not None:

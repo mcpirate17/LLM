@@ -1,4 +1,5 @@
 """Contract tests for swiglu_mlp."""
+
 import yaml
 from pathlib import Path
 

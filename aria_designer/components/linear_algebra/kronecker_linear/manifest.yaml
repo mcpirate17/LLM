@@ -1,0 +1,55 @@
+id: kronecker_linear
+version: 1.0.0
+name: Kronecker-factored linear projection
+category: linear_algebra
+tags:
+- parameterized
+- learnable
+- vram_efficient
+status: approved
+description: "Linear projection via Kronecker product factorization: W = A \u2297 B where A,B are sqrt(D)\xD7sqrt(D). Parameters: 2*D vs D\xB2 for standard linear."
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: 2*D
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Kronecker-factored linear projection: W = A ⊗ B.
+
+  A ∈ ℝ^{p×p}, B ∈ ℝ^{q×q}, pq = D.
+
+  Parameters go from D² to p² + q² (128x compression for D=256).
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+
+  ### Plain Language
+
+  A parameter-efficient linear layer that factors the weight matrix using Kronecker
+  products. Achieves full-rank expressiveness with dramatically fewer parameters.
+
+  '

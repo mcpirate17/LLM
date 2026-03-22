@@ -202,7 +202,7 @@ class TestEvidenceJson:
     def test_evidence_json_stored_and_parsed(self, nb):
         """evidence_json is stored as JSON text and parsed on retrieval."""
         evidence = {"test": "fisher_exact", "p_value": 0.001, "n": 500}
-        iid = nb.record_insight(
+        nb.record_insight(
             category="pattern",
             content="test evidence",
             semantic_key="test:evidence",

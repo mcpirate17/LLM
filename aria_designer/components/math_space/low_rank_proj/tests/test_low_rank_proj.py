@@ -1,4 +1,5 @@
 """Contract tests for low_rank_proj."""
+
 import yaml
 from pathlib import Path
 

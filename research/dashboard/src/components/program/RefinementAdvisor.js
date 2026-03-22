@@ -138,4 +138,4 @@ export function RefinementAdvisor({ analysis, loading, error, onLaunchRefinement
   );
 }
 
-export default RefinementAdvisor;
+export default React.memo(RefinementAdvisor);

@@ -384,3 +384,85 @@ void aria_gated_linear_backward_f32(const float *grad_out,
 #ifdef __cplusplus
 }
 #endif
+
+void aria_tropical_matmul_batched_backward_f32(
+    const float *grad_out,
+    const float *a,
+    const float *b,
+    float *grad_a,
+    float *grad_b,
+    int64_t batch, int64_t M, int64_t K, int64_t N,
+    float tau
+) {
+    float inv_tau = 1.0f / tau;
+
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (int64_t b_idx = 0; b_idx < batch; ++b_idx) {
+        for (int64_t i = 0; i < M; ++i) {
+            for (int64_t j = 0; j < N; ++j) {
+                float max_val = -INFINITY;
+                
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    if (val > max_val) {
+                        max_val = val;
+                    }
+                }
+                
+                float sum_exp = 0.0f;
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    sum_exp += expf(val - max_val);
+                }
+                
+                float lse = max_val + logf(sum_exp);
+                float gout = grad_out[(b_idx * M + i) * N + j];
+                
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    float sm_weight = expf(val - lse);
+                    float g_pairwise = gout * sm_weight;
+                    
+                    grad_a[(b_idx * M + i) * K + k] += g_pairwise;
+                }
+            }
+        }
+    }
+
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (int64_t b_idx = 0; b_idx < batch; ++b_idx) {
+        for (int64_t j = 0; j < N; ++j) {
+            for (int64_t i = 0; i < M; ++i) {
+                float max_val = -INFINITY;
+                
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    if (val > max_val) {
+                        max_val = val;
+                    }
+                }
+                
+                float sum_exp = 0.0f;
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    sum_exp += expf(val - max_val);
+                }
+                
+                float lse = max_val + logf(sum_exp);
+                float gout = grad_out[(b_idx * M + i) * N + j];
+                
+                for (int64_t k = 0; k < K; ++k) {
+                    float val = -(a[(b_idx * M + i) * K + k] + b[(b_idx * N + j) * K + k]) * inv_tau;
+                    float sm_weight = expf(val - lse);
+                    float g_pairwise = gout * sm_weight;
+                    
+                    grad_b[(b_idx * N + j) * K + k] += g_pairwise;
+                }
+            }
+        }
+    }
+}

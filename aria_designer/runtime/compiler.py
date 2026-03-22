@@ -8,13 +8,14 @@ from .port_dtypes import find_unsupported_edge_dtype_pairings
 
 logger = logging.getLogger(__name__)
 
+
 class WorkflowModule(nn.Module):
     def __init__(self, workflow_json, component_registry):
         super().__init__()
-        self.workflow_id = workflow_json['workflow_id']
-        self.name = workflow_json['name']
-        self.nodes_config = {n['id']: n for n in workflow_json['nodes']}
-        self.edges = workflow_json['edges']
+        self.workflow_id = workflow_json["workflow_id"]
+        self.name = workflow_json["name"]
+        self.nodes_config = {n["id"]: n for n in workflow_json["nodes"]}
+        self.edges = workflow_json["edges"]
         self.component_registry = component_registry
 
         dtype_issues = find_unsupported_edge_dtype_pairings(
@@ -32,21 +33,21 @@ class WorkflowModule(nn.Module):
         c_edges = []
         for e in self.edges:
             # We use indices for the C validator
-            c_edges.append((node_to_idx[e['source']], node_to_idx[e['target']], 0, 0))
+            c_edges.append((node_to_idx[e["source"]], node_to_idx[e["target"]], 0, 0))
 
         res = dispatcher.validate_graph(node_ids, c_edges)
-        if not res['valid']:
+        if not res["valid"]:
             raise ValueError(f"Invalid graph: {res['error']}")
 
-        self.topo_order = [node_ids[idx] for idx in res['topo_order']]
+        self.topo_order = [node_ids[idx] for idx in res["topo_order"]]
 
         # Instantiate submodules
         self.submodules = nn.ModuleDict()
         self.node_handlers = {}
         missing_runtime = []
         for node_id, config in self.nodes_config.items():
-            comp_type = config['component_type']
-            params = config['params']
+            comp_type = config["component_type"]
+            params = config["params"]
 
             handler_class = self.component_registry.get_handler(comp_type)
             if not handler_class:
@@ -85,22 +86,24 @@ class WorkflowModule(nn.Module):
             # Gather inputs from edges
             node_inputs = {}
             for e in self.edges:
-                if e['target'] == node_id:
-                    src_val = node_outputs.get(e['source'])
+                if e["target"] == node_id:
+                    src_val = node_outputs.get(e["source"])
                     # If multiple outputs from source, we'd need port handling
                     # For now, simplify.
-                    port_name = e['target_port'] if e['target_port'] else 'x'
+                    port_name = e["target_port"] if e["target_port"] else "x"
                     node_inputs[port_name] = src_val
 
             # Execute node
             config = self.nodes_config[node_id]
-            comp_type = config['component_type']
-            params = config['params']
+            comp_type = config["component_type"]
+            params = config["params"]
 
             if node_id in self.submodules:
                 module = self.submodules[node_id]
                 if len(node_inputs) > 0:
-                    node_outputs[node_id] = self._invoke_node(node_id, module, node_inputs, params)
+                    node_outputs[node_id] = self._invoke_node(
+                        node_id, module, node_inputs, params
+                    )
             else:
                 # Pure functional component fallback or placeholder
                 out = self._invoke_handler(node_id, comp_type, node_inputs, params)
@@ -113,13 +116,13 @@ class WorkflowModule(nn.Module):
 
     def _has_incoming_edges(self, node_id):
         for e in self.edges:
-            if e['target'] == node_id:
+            if e["target"] == node_id:
                 return True
         return False
 
     def _get_sink_nodes(self):
-        targets = {e['target'] for e in self.edges}
-        sources = {e['source'] for e in self.edges}
+        {e["target"] for e in self.edges}
+        sources = {e["source"] for e in self.edges}
         all_nodes = set(self.nodes_config.keys())
         # Sinks are nodes that are NOT sources for any edge
         return all_nodes - sources
@@ -127,14 +130,20 @@ class WorkflowModule(nn.Module):
     def _invoke_node(self, node_id, module, node_inputs, params):
         # Prefer handler.forward() if available — it knows the port names
         handler = self.node_handlers.get(node_id)
-        if handler and hasattr(handler, 'forward'):
+        if handler and hasattr(handler, "forward"):
             try:
                 result = handler.forward(node_inputs, params)
                 if isinstance(result, dict):
-                    return result.get('y', result.get('out', next(iter(result.values()))))
+                    return result.get(
+                        "y", result.get("out", next(iter(result.values())))
+                    )
                 return result
             except Exception:
-                logger.debug("Native dispatch failed for node %s, using fallback", node_id, exc_info=True)
+                logger.debug(
+                    "Native dispatch failed for node %s, using fallback",
+                    node_id,
+                    exc_info=True,
+                )
 
         if len(node_inputs) == 1:
             key, val = next(iter(node_inputs.items()))
@@ -155,7 +164,9 @@ class WorkflowModule(nn.Module):
                 continue
 
         # Last resort: use handler forward or raise
-        out = self._invoke_handler(node_id, self.nodes_config[node_id]['component_type'], node_inputs, params)
+        out = self._invoke_handler(
+            node_id, self.nodes_config[node_id]["component_type"], node_inputs, params
+        )
         if out is not None:
             return out
 
@@ -177,8 +188,9 @@ class WorkflowModule(nn.Module):
 
         out = handler.forward(node_inputs, params)
         if isinstance(out, dict):
-            return out.get('y', list(out.values())[0])
+            return out.get("y", list(out.values())[0])
         return out
+
 
 class ComponentRegistry:
     def __init__(self, components_dir):
@@ -188,6 +200,7 @@ class ComponentRegistry:
 
     def _resolve_component_dir(self, component_type):
         from aria_designer.api.app.component_identity import canonicalize_component_id
+
         component_type = canonicalize_component_id(component_type)
         parts = component_type.split("/")
         if len(parts) == 2:
@@ -247,6 +260,7 @@ class ComponentRegistry:
         spec.loader.exec_module(module)
         self.handlers[component_type] = module.ComponentHandler
         return module.ComponentHandler
+
 
 def compile_workflow(workflow_json, components_dir):
     registry = ComponentRegistry(components_dir)

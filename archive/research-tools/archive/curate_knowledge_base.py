@@ -20,18 +20,64 @@ ALLOWED_CATEGORIES = {
 }
 
 STOPWORDS = {
-    "the", "and", "for", "that", "with", "this", "from", "into", "when", "then", "than", "were", "been",
-    "have", "has", "had", "are", "was", "show", "shows", "showed", "over", "under", "across", "between",
-    "using", "use", "used", "high", "low", "very", "more", "less", "near", "around", "recent", "experiments",
-    "experiment", "result", "results", "indicate", "indicates", "suggest", "suggests", "mode", "patterns",
-    "pattern", "architecture", "architectures",
+    "the",
+    "and",
+    "for",
+    "that",
+    "with",
+    "this",
+    "from",
+    "into",
+    "when",
+    "then",
+    "than",
+    "were",
+    "been",
+    "have",
+    "has",
+    "had",
+    "are",
+    "was",
+    "show",
+    "shows",
+    "showed",
+    "over",
+    "under",
+    "across",
+    "between",
+    "using",
+    "use",
+    "used",
+    "high",
+    "low",
+    "very",
+    "more",
+    "less",
+    "near",
+    "around",
+    "recent",
+    "experiments",
+    "experiment",
+    "result",
+    "results",
+    "indicate",
+    "indicates",
+    "suggest",
+    "suggests",
+    "mode",
+    "patterns",
+    "pattern",
+    "architecture",
+    "architectures",
 }
 
 
 def _is_low_value(title: str, content: str, category: str) -> Tuple[bool, str]:
     title_clean = " ".join(str(title or "").split()).strip()
     content_clean = " ".join(str(content or "").split()).strip()
-    category_clean = str(category or "").strip().lower().replace("-", "_").replace(" ", "_")
+    category_clean = (
+        str(category or "").strip().lower().replace("-", "_").replace(" ", "_")
+    )
     title_l = title_clean.lower()
     content_l = content_clean.lower()
 
@@ -43,7 +89,9 @@ def _is_low_value(title: str, content: str, category: str) -> Tuple[bool, str]:
         return True, "ellipsis_placeholder"
     if "1-2 sentences" in content_l or "i will now synthesize" in content_l:
         return True, "template_artifact"
-    if title_l.startswith("recent experiments show ") or title_l.startswith("all recent experiments show "):
+    if title_l.startswith("recent experiments show ") or title_l.startswith(
+        "all recent experiments show "
+    ):
         return True, "generic_prefix"
     if "[principle/" in title_l or "hybrid? no" in title_l:
         return True, "malformed_title"
@@ -51,14 +99,45 @@ def _is_low_value(title: str, content: str, category: str) -> Tuple[bool, str]:
         return True, "noisy_markup"
 
     mechanism_tokens = (
-        "depth", "residual", "inverse", "log ", "frequency", "math_space",
-        "parameter", "parallel", "routing", "s1", "loss", "novelty", "baseline",
+        "depth",
+        "residual",
+        "inverse",
+        "log ",
+        "frequency",
+        "math_space",
+        "parameter",
+        "parallel",
+        "routing",
+        "s1",
+        "loss",
+        "novelty",
+        "baseline",
     )
     action_tokens = (
-        "improve", "improves", "degrade", "degrades", "fail", "fails", "underperform",
-        "correlate", "correlates", "correlation", "predict", "predicts",
-        "optimal", "requires", "avoid", "boost", "increase", "reduce",
-        "enhance", "enhances", "outperform", "outperforms", "suggests", "indicates",
+        "improve",
+        "improves",
+        "degrade",
+        "degrades",
+        "fail",
+        "fails",
+        "underperform",
+        "correlate",
+        "correlates",
+        "correlation",
+        "predict",
+        "predicts",
+        "optimal",
+        "requires",
+        "avoid",
+        "boost",
+        "increase",
+        "reduce",
+        "enhance",
+        "enhances",
+        "outperform",
+        "outperforms",
+        "suggests",
+        "indicates",
     )
     has_mechanism = any(tok in content_l or tok in title_l for tok in mechanism_tokens)
     has_action = any(tok in content_l for tok in action_tokens)
@@ -92,10 +171,7 @@ def _canonical(raw: str) -> str:
 
 def _semantic_tokens(title: str, content: str) -> Set[str]:
     canonical = _canonical(f"{title or ''} {content or ''}")
-    return {
-        tok for tok in canonical.split()
-        if len(tok) > 3 and tok not in STOPWORDS
-    }
+    return {tok for tok in canonical.split() if len(tok) > 3 and tok not in STOPWORDS}
 
 
 def _jaccard(a: Set[str], b: Set[str]) -> float:
@@ -119,7 +195,9 @@ def _effective_confidence(confidence: float, validated: int) -> float:
     return min(0.95, max(0.0, confidence) + bonus)
 
 
-def curate(db_path: Path, apply: bool, strict: bool, weak_signal_max_validated: int) -> None:
+def curate(
+    db_path: Path, apply: bool, strict: bool, weak_signal_max_validated: int
+) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -191,7 +269,10 @@ def curate(db_path: Path, apply: bool, strict: bool, weak_signal_max_validated: 
         for row in rows_cat:
             placed = False
             for cluster in clusters:
-                if any(_is_theme_duplicate(row["tokens"], other["tokens"]) for other in cluster):
+                if any(
+                    _is_theme_duplicate(row["tokens"], other["tokens"])
+                    for other in cluster
+                ):
                     cluster.append(row)
                     placed = True
                     break
@@ -204,7 +285,9 @@ def curate(db_path: Path, apply: bool, strict: bool, weak_signal_max_validated: 
             ranked = sorted(
                 cluster,
                 key=lambda item: (
-                    _effective_confidence(float(item["confidence"]), int(item["times_validated"])),
+                    _effective_confidence(
+                        float(item["confidence"]), int(item["times_validated"])
+                    ),
                     int(item["times_validated"]),
                     float(item["timestamp"]),
                 ),
@@ -213,7 +296,12 @@ def curate(db_path: Path, apply: bool, strict: bool, weak_signal_max_validated: 
             keeper = ranked[0]["entry_id"]
             weak_cluster_kept += 1
             for loser in ranked[1:]:
-                weak_dedup_archives.append((str(loser["entry_id"]), f"weak_signal_theme_duplicate_keep:{keeper}"))
+                weak_dedup_archives.append(
+                    (
+                        str(loser["entry_id"]),
+                        f"weak_signal_theme_duplicate_keep:{keeper}",
+                    )
+                )
     if weak_dedup_archives:
         seen_archive = {entry_id for entry_id, _ in to_archive}
         for entry_id, reason in weak_dedup_archives:
@@ -254,10 +342,23 @@ def curate(db_path: Path, apply: bool, strict: bool, weak_signal_max_validated: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Curate knowledge_base entries.")
-    parser.add_argument("--db", default="research/lab_notebook.db", help="Path to lab_notebook.db")
-    parser.add_argument("--apply", action="store_true", help="Apply changes (default is dry run)")
-    parser.add_argument("--strict", action="store_true", help="Also archive weak-signal rows with low validation count")
-    parser.add_argument("--weak-signal-max-validated", type=int, default=2, help="Strict mode threshold for weak-signal archival")
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Path to lab_notebook.db"
+    )
+    parser.add_argument(
+        "--apply", action="store_true", help="Apply changes (default is dry run)"
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Also archive weak-signal rows with low validation count",
+    )
+    parser.add_argument(
+        "--weak-signal-max-validated",
+        type=int,
+        default=2,
+        help="Strict mode threshold for weak-signal archival",
+    )
     args = parser.parse_args()
     curate(
         Path(args.db),

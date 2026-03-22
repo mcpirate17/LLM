@@ -156,9 +156,10 @@ class _ContinuousLoopMixin:
                     note=f"Session ended: {stop_reason}",
                 )
 
-                with self._lock:
-                    self._progress.status = "completed"
-                    self._progress.aria_message = f"Session ended: {stop_reason}"
+                self._update_progress(
+                    status="completed",
+                    aria_message=f"Session ended: {stop_reason}",
+                )
                 self._emit_event(
                     "continuous_limit_reached",
                     {
@@ -218,9 +219,10 @@ class _ContinuousLoopMixin:
                     pass
 
             # Update cost in progress
-            with self._lock:
-                self._progress.estimated_cost = self.aria.total_cost
-                self._progress.total_tokens = self.aria.total_tokens
+            self._update_progress(
+                estimated_cost=self.aria.total_cost,
+                total_tokens=self.aria.total_tokens,
+            )
 
             # Save checkpoint after every checkpoint_interval experiments
             if (
@@ -332,6 +334,17 @@ class _ContinuousLoopMixin:
                 for e in recent
                 if e.get("best_novelty_score") is not None
             ]
+            # Fallback: if experiments table has no novelty, compute from program_results
+            if not novelty_scores:
+                try:
+                    _nov_rows = nb.conn.execute(
+                        "SELECT AVG(novelty_score) as avg_nov FROM program_results "
+                        "WHERE novelty_score IS NOT NULL AND stage1_passed = 1"
+                    ).fetchone()
+                    if _nov_rows and _nov_rows["avg_nov"] is not None:
+                        novelty_scores = [float(_nov_rows["avg_nov"])]
+                except Exception:
+                    pass
             avg_novelty = (
                 sum(novelty_scores) / len(novelty_scores) if novelty_scores else 0
             )

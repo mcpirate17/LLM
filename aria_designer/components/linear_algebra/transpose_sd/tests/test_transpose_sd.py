@@ -1,4 +1,5 @@
 """Contract tests for transpose_sd."""
+
 import yaml
 from pathlib import Path
 

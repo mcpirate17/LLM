@@ -23,8 +23,15 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
 
     def test_get_profile_empty_when_no_execution(self):
         """GET returns empty profile when no profiled execution has happened."""
-        with patch("research.scientist.native_runner.get_native_profile", return_value=None), \
-             patch("research.scientist.native_runner._try_import_rust_scheduler", return_value=None):
+        with (
+            patch(
+                "research.scientist.native_runner.get_native_profile", return_value=None
+            ),
+            patch(
+                "research.scientist.native_runner._try_import_rust_scheduler",
+                return_value=None,
+            ),
+        ):
             resp = self.client.get("/api/native-profile/v2/data")
 
         self.assertEqual(resp.status_code, 200)
@@ -39,9 +46,27 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
         """GET returns node_profiles and timing data after a profiled execution."""
         fake_profile = {
             "node_profiles": [
-                {"node_id": 0, "op_name": "input", "duration_us": 1.5, "start_ns": 100, "end_ns": 1600},
-                {"node_id": 1, "op_name": "relu", "duration_us": 3.2, "start_ns": 1700, "end_ns": 4900},
-                {"node_id": 2, "op_name": "add", "duration_us": 2.0, "start_ns": 5000, "end_ns": 7000},
+                {
+                    "node_id": 0,
+                    "op_name": "input",
+                    "duration_us": 1.5,
+                    "start_ns": 100,
+                    "end_ns": 1600,
+                },
+                {
+                    "node_id": 1,
+                    "op_name": "relu",
+                    "duration_us": 3.2,
+                    "start_ns": 1700,
+                    "end_ns": 4900,
+                },
+                {
+                    "node_id": 2,
+                    "op_name": "add",
+                    "duration_us": 2.0,
+                    "start_ns": 5000,
+                    "end_ns": 7000,
+                },
             ],
             "peak_memory_bytes": 4096,
         }
@@ -49,8 +74,16 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
         mock_rust = MagicMock()
         mock_rust.profiler_enabled.return_value = True
 
-        with patch("research.scientist.native_runner.get_native_profile", return_value=fake_profile), \
-             patch("research.scientist.native_runner._try_import_rust_scheduler", return_value=mock_rust):
+        with (
+            patch(
+                "research.scientist.native_runner.get_native_profile",
+                return_value=fake_profile,
+            ),
+            patch(
+                "research.scientist.native_runner._try_import_rust_scheduler",
+                return_value=mock_rust,
+            ),
+        ):
             resp = self.client.get("/api/native-profile/v2/data")
 
         self.assertEqual(resp.status_code, 200)
@@ -74,8 +107,16 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
         mock_rust = MagicMock()
         mock_rust.profiler_enabled.return_value = True
 
-        with patch("research.scientist.native_runner.enable_native_profiling", return_value=True) as mock_enable, \
-             patch("research.scientist.native_runner._try_import_rust_scheduler", return_value=mock_rust):
+        with (
+            patch(
+                "research.scientist.native_runner.enable_native_profiling",
+                return_value=True,
+            ) as mock_enable,
+            patch(
+                "research.scientist.native_runner._try_import_rust_scheduler",
+                return_value=mock_rust,
+            ),
+        ):
             resp = self.client.post(
                 "/api/native-profile/v2/enable",
                 data=json.dumps({"enable": True}),
@@ -95,8 +136,16 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
         mock_rust = MagicMock()
         mock_rust.profiler_enabled.return_value = False
 
-        with patch("research.scientist.native_runner.enable_native_profiling", return_value=True) as mock_enable, \
-             patch("research.scientist.native_runner._try_import_rust_scheduler", return_value=mock_rust):
+        with (
+            patch(
+                "research.scientist.native_runner.enable_native_profiling",
+                return_value=True,
+            ) as mock_enable,
+            patch(
+                "research.scientist.native_runner._try_import_rust_scheduler",
+                return_value=mock_rust,
+            ),
+        ):
             resp = self.client.post(
                 "/api/native-profile/v2/enable",
                 data=json.dumps({"enable": False}),
@@ -112,8 +161,16 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
 
     def test_post_enable_no_rust_scheduler(self):
         """POST returns accepted=False when Rust scheduler is unavailable."""
-        with patch("research.scientist.native_runner.enable_native_profiling", return_value=False) as mock_enable, \
-             patch("research.scientist.native_runner._try_import_rust_scheduler", return_value=None):
+        with (
+            patch(
+                "research.scientist.native_runner.enable_native_profiling",
+                return_value=False,
+            ),
+            patch(
+                "research.scientist.native_runner._try_import_rust_scheduler",
+                return_value=None,
+            ),
+        ):
             resp = self.client.post(
                 "/api/native-profile/v2/enable",
                 data=json.dumps({"enable": True}),
@@ -132,8 +189,16 @@ class TestNativeProfileApiEndpoints(unittest.TestCase):
         mock_rust = MagicMock()
         mock_rust.profiler_enabled.return_value = True
 
-        with patch("research.scientist.native_runner.enable_native_profiling", return_value=True) as mock_enable, \
-             patch("research.scientist.native_runner._try_import_rust_scheduler", return_value=mock_rust):
+        with (
+            patch(
+                "research.scientist.native_runner.enable_native_profiling",
+                return_value=True,
+            ) as mock_enable,
+            patch(
+                "research.scientist.native_runner._try_import_rust_scheduler",
+                return_value=mock_rust,
+            ),
+        ):
             resp = self.client.post(
                 "/api/native-profile/v2/enable",
                 content_type="application/json",

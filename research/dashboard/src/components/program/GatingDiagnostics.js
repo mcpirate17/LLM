@@ -297,4 +297,4 @@ export function GatingDiagnostics({ program }) {
   );
 }
 
-export default GatingDiagnostics;
+export default React.memo(GatingDiagnostics);

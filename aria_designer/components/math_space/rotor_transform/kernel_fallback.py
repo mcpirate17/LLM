@@ -1,12 +1,14 @@
 """Kernel handler for rotor_transform — dispatches to aria_core.rotor_transform_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "rotor_transform"
 
     def _ensure_weights(self, x, config):
-        D = x.shape[-1]
+        x.shape[-1]
         rotor = torch.randn(*x.shape) * 0.1
         rotor[..., 0] = 1.0
         self._weights["rotor"] = rotor

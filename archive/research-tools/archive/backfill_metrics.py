@@ -11,6 +11,7 @@ Rebuilds each model from stored graph_json, runs:
 Usage:
     python -m research.tools.backfill_metrics [--limit 50] [--tier screening] [--device cpu]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,6 +28,7 @@ log = logging.getLogger(__name__)
 def _ensure_mathspaces():
     """Register mathspace ops so compile_model can handle them."""
     from ..mathspaces.registry import register_all_mathspaces
+
     register_all_mathspaces()
 
 
@@ -72,14 +74,20 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
     compile_err = None
     for layers in ([graph, graph], [graph]):
         try:
-            model = compile_model(layers, vocab_size=vocab_size, max_seq_len=seq_len).to(dev)
+            model = compile_model(
+                layers, vocab_size=vocab_size, max_seq_len=seq_len
+            ).to(dev)
             compile_err = None
             break
         except Exception as e:
             compile_err = e
             model = None
     if model is None:
-        return {"result_id": result_id, "status": "compile_failed", "error": str(compile_err)}
+        return {
+            "result_id": result_id,
+            "status": "compile_failed",
+            "error": str(compile_err),
+        }
 
     # Quick forward sanity check (non-fatal for partial backfill)
     model_usable = True
@@ -97,8 +105,13 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
     # Novelty (prefer structural+behavioral; fall back to structural-only)
     try:
         if model_usable:
-            bfp = compute_fingerprint(model, seq_len=min(seq_len, 64), model_dim=d_model,
-                                      vocab_size=vocab_size, device=str(dev))
+            bfp = compute_fingerprint(
+                model,
+                seq_len=min(seq_len, 64),
+                model_dim=d_model,
+                vocab_size=vocab_size,
+                device=str(dev),
+            )
             nm = novelty_score(graph, fingerprint=bfp)
             # Z13: Capture spectral norm for stability scoring
             updates["fp_jacobian_spectral_norm"] = float(bfp.jacobian_spectral_norm)
@@ -118,8 +131,12 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
     # Noise sensitivity
     if model_usable:
         try:
-            input_batches = [torch.randint(0, vocab_size, (2, seq_len), device=dev) for _ in range(3)]
-            noise_result = evaluate_noise_sensitivity(model, input_batches, dev, vocab_size=vocab_size)
+            input_batches = [
+                torch.randint(0, vocab_size, (2, seq_len), device=dev) for _ in range(3)
+            ]
+            noise_result = evaluate_noise_sensitivity(
+                model, input_batches, dev, vocab_size=vocab_size
+            )
             ns = noise_result.get("noise_sensitivity_score")
             if ns is not None:
                 updates["robustness_noise_score"] = float(ns)
@@ -129,7 +146,9 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
     # Quantization
     if model_usable:
         try:
-            quant_batches = [torch.randint(0, vocab_size, (2, seq_len), device=dev) for _ in range(3)]
+            quant_batches = [
+                torch.randint(0, vocab_size, (2, seq_len), device=dev) for _ in range(3)
+            ]
             quant_result = evaluate_sparse_quant_quality(model, quant_batches, dev)
             if quant_result:
                 ret = quant_result.get("full_retention")
@@ -147,14 +166,20 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
             seed_ratios = []
             for seed in [42, 789]:
                 torch.manual_seed(seed)
-                seed_model = compile_model([graph], vocab_size=vocab_size, max_seq_len=seq_len).to(dev)
-                optimizer = torch.optim.AdamW(seed_model.parameters(), lr=3e-4, weight_decay=0.01)
+                seed_model = compile_model(
+                    [graph], vocab_size=vocab_size, max_seq_len=seq_len
+                ).to(dev)
+                optimizer = torch.optim.AdamW(
+                    seed_model.parameters(), lr=3e-4, weight_decay=0.01
+                )
                 losses = []
                 for step in range(n_train_steps):
                     ids = torch.randint(0, vocab_size, (2, seq_len), device=dev)
                     logits = seed_model(ids)[:, :-1].contiguous()
                     loss = torch.nn.functional.cross_entropy(
-                        logits.view(-1, logits.size(-1)), ids[:, 1:].contiguous().view(-1))
+                        logits.view(-1, logits.size(-1)),
+                        ids[:, 1:].contiguous().view(-1),
+                    )
                     if torch.isnan(loss) or torch.isinf(loss):
                         break
                     optimizer.zero_grad()
@@ -166,7 +191,9 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
                     seed_ratios.append(losses[-1] / losses[0])
                 del seed_model
             if len(seed_ratios) == 2:
-                updates["init_sensitivity_std"] = float(abs(seed_ratios[0] - seed_ratios[1]))
+                updates["init_sensitivity_std"] = float(
+                    abs(seed_ratios[0] - seed_ratios[1])
+                )
         except Exception:
             pass
 
@@ -176,10 +203,16 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
         if loss_ratio is not None:
             baseline = TransformerBaseline()
             baseline_loss = baseline.get_baseline_loss(
-                d_model=d_model, seq_len=seq_len, n_steps=n_train_steps,
-                vocab_size=vocab_size, device=str(dev))
+                d_model=d_model,
+                seq_len=seq_len,
+                n_steps=n_train_steps,
+                vocab_size=vocab_size,
+                device=str(dev),
+            )
             if baseline_loss and baseline_loss > 0:
-                updates["normalized_baseline_ratio"] = float(loss_ratio) / float(baseline_loss)
+                updates["normalized_baseline_ratio"] = float(loss_ratio) / float(
+                    baseline_loss
+                )
     except Exception:
         pass
 
@@ -194,28 +227,45 @@ def backfill_entry(row, device="cpu", n_train_steps=50):
                 vals.append(v)
             vals.append(entry_id)
             nb.conn.execute(
-                f"UPDATE leaderboard SET {', '.join(set_parts)} WHERE entry_id = ?", vals)
+                f"UPDATE leaderboard SET {', '.join(set_parts)} WHERE entry_id = ?",
+                vals,
+            )
             nb.conn.commit()
         except Exception as e:
             return {"result_id": result_id, "status": "update_failed", "error": str(e)}
 
     del model
     status = "backfilled" if model_usable else "backfilled_partial"
-    return {"result_id": result_id, "status": status, "metrics_added": list(updates.keys())}
+    return {
+        "result_id": result_id,
+        "status": status,
+        "metrics_added": list(updates.keys()),
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill robustness metrics for leaderboard entries")
-    parser.add_argument("--limit", type=int, default=50,
-                        help="Max entries to backfill per run")
-    parser.add_argument("--tier", default="all",
-                        choices=["screening", "investigation", "validation", "all"])
+    parser = argparse.ArgumentParser(
+        description="Backfill robustness metrics for leaderboard entries"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=50, help="Max entries to backfill per run"
+    )
+    parser.add_argument(
+        "--tier",
+        default="all",
+        choices=["screening", "investigation", "validation", "all"],
+    )
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--min-loss", type=float, default=0.5,
-                        help="Only backfill entries with loss_ratio below this")
+    parser.add_argument(
+        "--min-loss",
+        type=float,
+        default=0.5,
+        help="Only backfill entries with loss_ratio below this",
+    )
     args = parser.parse_args()
 
     from ..scientist.notebook import LabNotebook
+
     nb = LabNotebook()
 
     tier_filter = "" if args.tier == "all" else f"AND lb.tier = '{args.tier}'"
@@ -238,18 +288,30 @@ def main():
         LIMIT ?
     """
     rows = nb.conn.execute(query, (args.min_loss, args.limit)).fetchall()
-    col_names = [desc[0] for desc in nb.conn.execute(query, (args.min_loss, 1)).description]
+    col_names = [
+        desc[0] for desc in nb.conn.execute(query, (args.min_loss, 1)).description
+    ]
 
-    log.info("Found %d entries to backfill (limit=%d, tier=%s, max_loss=%.2f)",
-             len(rows), args.limit, args.tier, args.min_loss)
+    log.info(
+        "Found %d entries to backfill (limit=%d, tier=%s, max_loss=%.2f)",
+        len(rows),
+        args.limit,
+        args.tier,
+        args.min_loss,
+    )
 
     success = 0
     failed = 0
     for i, row_tuple in enumerate(rows):
         row = dict(zip(col_names, row_tuple))
-        log.info("[%d/%d] Backfilling %s (tier=%s, loss=%.6f)...",
-                 i + 1, len(rows), row["result_id"][:12], row["tier"],
-                 row.get("screening_loss_ratio") or 0)
+        log.info(
+            "[%d/%d] Backfilling %s (tier=%s, loss=%.6f)...",
+            i + 1,
+            len(rows),
+            row["result_id"][:12],
+            row["tier"],
+            row.get("screening_loss_ratio") or 0,
+        )
         try:
             result = backfill_entry(row, device=args.device)
             if result["status"] in ("backfilled", "backfilled_partial"):
@@ -257,16 +319,26 @@ def main():
                 log.info("  OK: added %s", result.get("metrics_added", []))
             else:
                 failed += 1
-                log.warning("  SKIP: %s — %s", result["status"], result.get("error", ""))
+                log.warning(
+                    "  SKIP: %s — %s", result["status"], result.get("error", "")
+                )
         except Exception:
             failed += 1
-            log.error("  ERROR: %s", traceback.format_exc().split('\n')[-2])
+            log.error("  ERROR: %s", traceback.format_exc().split("\n")[-2])
 
-    log.info("Done: %d backfilled, %d failed/skipped out of %d total", success, failed, len(rows))
-    log.info("Remaining to backfill: %d",
-             nb.conn.execute(
-                 "SELECT count(*) FROM leaderboard WHERE is_reference=0 AND screening_loss_ratio < ? AND quant_int8_retention IS NULL",
-                 (args.min_loss,)).fetchone()[0])
+    log.info(
+        "Done: %d backfilled, %d failed/skipped out of %d total",
+        success,
+        failed,
+        len(rows),
+    )
+    log.info(
+        "Remaining to backfill: %d",
+        nb.conn.execute(
+            "SELECT count(*) FROM leaderboard WHERE is_reference=0 AND screening_loss_ratio < ? AND quant_int8_retention IS NULL",
+            (args.min_loss,),
+        ).fetchone()[0],
+    )
 
 
 if __name__ == "__main__":

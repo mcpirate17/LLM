@@ -1,4 +1,5 @@
 """Contract tests for silu."""
+
 import yaml
 from pathlib import Path
 

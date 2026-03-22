@@ -153,7 +153,9 @@ export function SettingsOverlay({
           </button>
         </div>
       )}
-      <ControlPanelComponent {...controlPanelProps} />
+      <Suspense fallback={<div style={{ padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>Loading settings...</div>}>
+        <ControlPanelComponent {...controlPanelProps} />
+      </Suspense>
     </OverlayFrame>
   );
 }

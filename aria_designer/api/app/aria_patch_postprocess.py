@@ -7,25 +7,33 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
-def _append_edge(edges: List[Dict[str, Any]], source: str, target: str, source_port: str = "out", target_port: str = "in") -> None:
+def _append_edge(
+    edges: List[Dict[str, Any]],
+    source: str,
+    target: str,
+    source_port: str = "out",
+    target_port: str = "in",
+) -> None:
     if not source or not target or source == target:
         return
     exists = any(
-        e.get("source") == source and
-        e.get("target") == target and
-        (e.get("source_port") or "out") == (source_port or "out") and
-        (e.get("target_port") or "in") == (target_port or "in")
+        e.get("source") == source
+        and e.get("target") == target
+        and (e.get("source_port") or "out") == (source_port or "out")
+        and (e.get("target_port") or "in") == (target_port or "in")
         for e in edges
     )
     if exists:
         return
-    edges.append({
-        "id": f"aria_e_{uuid4().hex[:6]}",
-        "source": source,
-        "source_port": source_port or "out",
-        "target": target,
-        "target_port": target_port or "in",
-    })
+    edges.append(
+        {
+            "id": f"aria_e_{uuid4().hex[:6]}",
+            "source": source,
+            "source_port": source_port or "out",
+            "target": target,
+            "target_port": target_port or "in",
+        }
+    )
 
 
 def _contains_token(component_type: str, token: str) -> bool:
@@ -63,13 +71,17 @@ def _node_edge_indexes(
     nodes: List[Dict[str, Any]],
     edges: List[Dict[str, Any]],
     new_id: str,
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Optional[Dict[str, Any]], set[str]]:
+) -> tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], Optional[Dict[str, Any]], set[str]
+]:
     incoming = [edge for edge in edges if edge.get("target") == new_id]
     outgoing = [edge for edge in edges if edge.get("source") == new_id]
     output_node = next(
         (
-            node for node in reversed(nodes)
-            if node.get("id") != new_id and _contains_token(node.get("component_type", ""), "output")
+            node
+            for node in reversed(nodes)
+            if node.get("id") != new_id
+            and _contains_token(node.get("component_type", ""), "output")
         ),
         None,
     )
@@ -97,7 +109,9 @@ def _auto_connect_added_nodes(
         if _contains_token(ctype, "input") or _contains_token(ctype, "output"):
             continue
 
-        incoming, outgoing, output_node, source_ids = _node_edge_indexes(nodes, edges, str(new_id))
+        incoming, outgoing, output_node, source_ids = _node_edge_indexes(
+            nodes, edges, str(new_id)
+        )
 
         if incoming and outgoing:
             continue
@@ -121,11 +135,17 @@ def _auto_connect_added_nodes(
                 continue
 
         if (not incoming) and outgoing:
-            out_to_output = [e for e in outgoing if output_node and e.get("target") == output_node.get("id")]
+            out_to_output = [
+                e
+                for e in outgoing
+                if output_node and e.get("target") == output_node.get("id")
+            ]
             if out_to_output and output_node:
                 in_to_output = [
-                    e for e in edges
-                    if e.get("target") == output_node.get("id") and e.get("source") != new_id
+                    e
+                    for e in edges
+                    if e.get("target") == output_node.get("id")
+                    and e.get("source") != new_id
                 ]
                 if in_to_output:
                     old = in_to_output[-1]
@@ -133,10 +153,18 @@ def _auto_connect_added_nodes(
                         edges.remove(old)
                     except ValueError:
                         pass
-                    _append_edge(edges, str(old.get("source", "")), str(new_id), str(old.get("source_port") or "out"), "in")
+                    _append_edge(
+                        edges,
+                        str(old.get("source", "")),
+                        str(new_id),
+                        str(old.get("source_port") or "out"),
+                        "in",
+                    )
                     continue
 
-                sink = _last_non_new_sink(nodes, source_ids, {str(new_id), str(output_node.get("id"))})
+                sink = _last_non_new_sink(
+                    nodes, source_ids, {str(new_id), str(output_node.get("id"))}
+                )
                 if sink:
                     _append_edge(edges, str(sink.get("id", "")), str(new_id))
                     continue
@@ -146,19 +174,35 @@ def _auto_connect_added_nodes(
             if output_node:
                 while _remove_edge_once(edges, src, str(output_node.get("id", ""))):
                     pass
-                _append_edge(edges, str(new_id), str(output_node.get("id", "")), "out", "in")
+                _append_edge(
+                    edges, str(new_id), str(output_node.get("id", "")), "out", "in"
+                )
                 continue
 
         if output_node:
-            inc_to_output = [e for e in edges if e.get("target") == output_node.get("id")]
+            inc_to_output = [
+                e for e in edges if e.get("target") == output_node.get("id")
+            ]
             if inc_to_output:
                 old = inc_to_output[-1]
                 try:
                     edges.remove(old)
                 except ValueError:
                     pass
-                _append_edge(edges, str(old.get("source", "")), str(new_id), str(old.get("source_port") or "out"), "in")
-                _append_edge(edges, str(new_id), str(output_node.get("id", "")), "out", str(old.get("target_port") or "in"))
+                _append_edge(
+                    edges,
+                    str(old.get("source", "")),
+                    str(new_id),
+                    str(old.get("source_port") or "out"),
+                    "in",
+                )
+                _append_edge(
+                    edges,
+                    str(new_id),
+                    str(output_node.get("id", "")),
+                    "out",
+                    str(old.get("target_port") or "in"),
+                )
                 continue
 
         sink = _last_non_new_sink(nodes, source_ids, {str(new_id)})
@@ -166,7 +210,12 @@ def _auto_connect_added_nodes(
             _append_edge(edges, str(sink.get("id", "")), str(new_id))
             continue
 
-        inputs = [n for n in nodes if _contains_token(n.get("component_type", ""), "input") and n.get("id") != new_id]
+        inputs = [
+            n
+            for n in nodes
+            if _contains_token(n.get("component_type", ""), "input")
+            and n.get("id") != new_id
+        ]
         if inputs:
             _append_edge(edges, str(inputs[0].get("id", "")), str(new_id))
 
@@ -232,13 +281,17 @@ def _auto_layout_workflow(
         by_depth.setdefault(d, []).append(n)
 
     for group in by_depth.values():
+
         def _y(node: Dict[str, Any]) -> float:
-            pos = ((node.get("ui_meta") or {}).get("position") or {})
+            pos = (node.get("ui_meta") or {}).get("position") or {}
             try:
                 return float(pos.get("y", 0))
             except Exception:
-                logger.debug("Failed to parse node y-position, defaulting to 0.0", exc_info=True)
+                logger.debug(
+                    "Failed to parse node y-position, defaulting to 0.0", exc_info=True
+                )
                 return 0.0
+
         group.sort(key=_y)
 
     x_step = 260

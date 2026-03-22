@@ -1,4 +1,5 @@
 """Python fallback kernel for compression_mixture_experts."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,10 +29,18 @@ class ComponentHandler:
 
         # Lazy init with proper parameters
         if self._U_lr is None or self._U_lr.shape != (rank, D):
-            self._U_lr = nn.Parameter(torch.randn(rank, D, device=x.device, dtype=x.dtype) * 0.02)
-            self._V_lr = nn.Parameter(torch.randn(D, rank, device=x.device, dtype=x.dtype) * 0.02)
-            self._W_down = nn.Parameter(torch.randn(rank_bn, D, device=x.device, dtype=x.dtype) * 0.02)
-            self._W_up = nn.Parameter(torch.randn(D, rank_bn, device=x.device, dtype=x.dtype) * 0.02)
+            self._U_lr = nn.Parameter(
+                torch.randn(rank, D, device=x.device, dtype=x.dtype) * 0.02
+            )
+            self._V_lr = nn.Parameter(
+                torch.randn(D, rank, device=x.device, dtype=x.dtype) * 0.02
+            )
+            self._W_down = nn.Parameter(
+                torch.randn(rank_bn, D, device=x.device, dtype=x.dtype) * 0.02
+            )
+            self._W_up = nn.Parameter(
+                torch.randn(D, rank_bn, device=x.device, dtype=x.dtype) * 0.02
+            )
 
         # Expert 0: Low-rank factored linear
         out0 = F.linear(F.linear(x, self._U_lr), self._V_lr)
@@ -43,6 +52,8 @@ class ComponentHandler:
         if routing_signal is not None and routing_signal.shape[-1] >= 2:
             weights = F.softmax(routing_signal[..., :2], dim=-1)
         else:
-            weights = torch.full((*x.shape[:-1], 2), 0.5, device=x.device, dtype=x.dtype)
+            weights = torch.full(
+                (*x.shape[:-1], 2), 0.5, device=x.device, dtype=x.dtype
+            )
 
         return {"y": out0 * weights[..., 0:1] + out1 * weights[..., 1:2]}

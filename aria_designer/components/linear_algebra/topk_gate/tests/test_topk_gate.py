@@ -1,4 +1,5 @@
 """Contract tests for topk_gate."""
+
 import yaml
 from pathlib import Path
 

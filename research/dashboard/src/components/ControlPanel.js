@@ -9,15 +9,16 @@ import {
   applyTelemetryPresetSettings,
 } from './controlPanelTelemetryPresets';
 
-import { DEFAULT_CONFIG, readCanaryPrefs, writeCanaryPrefs, clearCanaryPrefs } from '../utils/configDefaults';
+import { DEFAULT_CONFIG, readCanaryPrefs, writeCanaryPrefs } from '../utils/configDefaults';
 
 // Control Components
 import HypothesisCritique from './control/HypothesisCritique';
 import RunStatusPanel from './control/RunStatusPanel';
 import ModeSelector from './control/ModeSelector';
-import AriaRecommendationPanel from './control/AriaRecommendationPanel';
-import CategoryWeightsControl from './control/CategoryWeightsControl';
-import ConfigField from './control/ConfigField';
+import SystemStatusSection from './control/SystemStatusSection';
+import SearchSpaceConfig from './control/SearchSpaceConfig';
+import AdvancedConfigPanels from './control/AdvancedConfigPanels';
+import ExperimentActions from './control/ExperimentActions';
 
 /**
  * ControlPanel — Orchestrates experiment launching, configuration,
@@ -28,34 +29,21 @@ function ControlPanel({
   progress,
   onStart,
   onStop,
-  onRestart,
-  restartExperimentId,
-  onRefresh,
   autoRecommendation,
   prefillRequest,
   onPrefillApplied,
   startLocked = false,
-  startLockReason = '',
 }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [hypothesis, setHypothesis] = useState('');
   const [mode, setMode] = useState('single');
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const { summary: liveSummary } = useAriaData() || {};
   const [systemStatus, setSystemStatus] = useState(null);
-  const [validating, setValidating] = useState(false);
-  const [validationResult, setValidationResult] = useState(null);
   const [recommendation, setRecommendation] = useState(null);
   const [loadingRec, setLoadingRec] = useState(false);
-  const [showLlmConfig, setShowLlmConfig] = useState(false);
-  const [llmConfig, setLlmConfig] = useState(null);
-  const [llmForm, setLlmForm] = useState({ backend: '', api_key: '', model: '', host: '' });
-  const [llmSaving, setLlmSaving] = useState(false);
-  const [llmMessage, setLlmMessage] = useState('');
   const [actionError, setActionError] = useState('');
   const [blockedConfig, setBlockedConfig] = useState(null);
-  const [showCutoverDetails, setShowCutoverDetails] = useState(false);
-  
+
   // Scale-up state
   const [scaleUpUseTop, setScaleUpUseTop] = useState(true);
   const [scaleUpTopN, setScaleUpTopN] = useState(5);
@@ -64,7 +52,8 @@ function ControlPanel({
   const [scaleUpBatchSize, setScaleUpBatchSize] = useState(8);
   const [scaleUpSeqLen, setScaleUpSeqLen] = useState(512);
   const [prefillSummary, setPrefillSummary] = useState(null);
-  
+
+  // Canary telemetry preferences (persisted to localStorage)
   const [showCanarySummary, setShowCanarySummary] = useState(() => {
     const prefs = readCanaryPrefs();
     return typeof prefs.showCanarySummary === 'boolean' ? prefs.showCanarySummary : true;
@@ -140,15 +129,11 @@ function ControlPanel({
     }
   }, [autoRecommendation, isRunning]);
 
-  // Fetch system status and LLM config on mount
+  // Fetch system status on mount
   useEffect(() => {
-    apiCall(`/api/system/status`)
+    apiCall('/api/system/status')
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setSystemStatus(data); })
-      .catch(() => {});
-    apiCall(`/api/llm/config`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setLlmConfig(data); })
       .catch(() => {});
   }, []);
 
@@ -202,7 +187,7 @@ function ControlPanel({
       ...overrideParams
     };
 
-    // Only send non-default category weights to avoid noise
+    // Only send non-default category weights
     if (finalConfig.category_weights && typeof finalConfig.category_weights === 'object') {
       const nonDefault = {};
       Object.entries(finalConfig.category_weights).forEach(([k, v]) => {
@@ -211,7 +196,7 @@ function ControlPanel({
       finalConfig.category_weights = Object.keys(nonDefault).length > 0 ? nonDefault : undefined;
     }
 
-    // Convert string-based op control fields to proper types for the API
+    // Convert string-based op control fields to proper types
     if (typeof finalConfig.excluded_ops === 'string') {
       const ops = finalConfig.excluded_ops.split(',').map(s => s.trim()).filter(Boolean);
       finalConfig.excluded_ops = ops.length > 0 ? ops : undefined;
@@ -326,38 +311,19 @@ function ControlPanel({
       }
       return;
     }
-    
+
     await processStart(finalConfig);
   };
 
-  const updateConfig = (key, value) => {
+  const updateConfig = useCallback((key, value) => {
     setConfig(prev => ({ ...prev, [key]: value }));
-  };
-
-  const handleValidate = useCallback(async () => {
-    setValidating(true);
-    setValidationResult(null);
-    try {
-      const res = await apiCall(`/api/validate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ n: 5 }),
-      });
-      if (res.ok) {
-        setValidationResult(await res.json());
-      }
-    } catch (e) {
-      setValidationResult({ healthy: false, errors: [e.message] });
-    }
-    setValidating(false);
   }, []);
 
   const handleAskAria = useCallback(async () => {
     setLoadingRec(true);
     setRecommendation(null);
     try {
-      // Increase timeout to 60s for comprehensive research analysis
-      const res = await apiCall(`/api/aria/recommendation`, { timeoutMs: 60000 });
+      const res = await apiCall('/api/aria/recommendation', { timeoutMs: 60000 });
       if (res.ok) {
         setRecommendation(await res.json());
       }
@@ -367,7 +333,7 @@ function ControlPanel({
     setLoadingRec(false);
   }, []);
 
-  const applyRecommendation = () => {
+  const applyRecommendation = useCallback(() => {
     if (recommendation?.config) {
       setConfig(prev => {
         const next = { ...prev, ...recommendation.config };
@@ -384,69 +350,14 @@ function ControlPanel({
       });
       setRecommendation(null);
     }
-  };
+  }, [recommendation]);
 
-  const handleLlmSave = useCallback(async () => {
-    if (!llmForm.backend) return;
-    setLlmSaving(true);
-    setLlmMessage('');
-    try {
-      const res = await apiCall(`/api/llm/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(llmForm),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setLlmConfig(data.config);
-        setLlmMessage(data.warning ? `Warning: ${data.warning}` : 'LLM configured and verified successfully');
-        setLlmForm(prev => ({ ...prev, api_key: '' }));
-        window.dispatchEvent(new CustomEvent('llm-configured'));
-        apiCall(`/api/system/status`).then(r => r.ok ? r.json() : null).then(d => { if (d) setSystemStatus(d); }).catch(() => {});
-      } else {
-        setLlmMessage(data.error || 'Configuration failed');
-      }
-    } catch (e) {
-      setLlmMessage('Error: ' + e.message);
-    }
-    setLlmSaving(false);
-  }, [llmForm]);
-
-  const handleRefreshCanaryNow = useCallback(async () => {
-    if (canaryRefreshing || canaryRefreshCooldownS > 0) return;
-    setActionError('');
-    setCanaryRefreshing(true);
-    try {
-      const res = await apiCall(`/api/native-runner/canary/refresh`, { method: 'POST' });
-      const data = await (res.ok ? res.json() : null);
-      if (data?.native_runner_canary) {
-        setSystemStatus((prev) => ({ ...(prev || {}), native_runner_canary: data.native_runner_canary }));
-      } else {
-        setActionError('Canary refresh returned no payload.');
-      }
-    } catch (e) {
-      setActionError('Canary refresh failed: ' + e.message);
-    } finally {
-      setCanaryRefreshing(false);
-      setCanaryRefreshCooldownS(clampCanaryCooldown(canaryCooldownSeconds));
-    }
-  }, [canaryRefreshing, canaryRefreshCooldownS, canaryCooldownSeconds]);
-
-  const handleTelemetryPresetChange = useCallback((preset) => {
-    const next = applyTelemetryPresetSettings(preset);
-    if (!next) return;
-    setShowCanarySummary(next.showCanarySummary);
-    setShowCanaryRefreshHint(next.showCanaryRefreshHint);
-    setNativeTelemetryExpanded(next.nativeTelemetryExpanded);
-    setCanaryCooldownSeconds(next.canaryCooldownSeconds);
-    setCanaryRefreshCooldownS(next.canaryRefreshCooldownS);
-    setCanaryTelemetryPreset(next.canaryTelemetryPreset);
-    setCanaryPrefsNotice(next.canaryPrefsNotice);
+  const handleCategoryWeightChange = useCallback((cat, val) => {
+    setConfig(prev => ({ ...prev, category_weights: { ...prev.category_weights, [cat]: val } }));
   }, []);
 
   const isEvolutionMode = mode === 'evolve' || mode === 'novelty';
-  const isScaleUpMode = mode === 'scale_up';
-  
+
   const programTotal = progress?.total_programs || 0;
   const programCurrent = progress?.current_program || 0;
   const generationTotal = progress?.total_generations || 0;
@@ -468,7 +379,7 @@ function ControlPanel({
   return (
     <div className="card control-panel">
       <div className="card-title">Experiment Control</div>
-      
+
       {!isRunning && (
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
           Generate and test random computation graphs as potential replacements for transformer attention layers.
@@ -496,312 +407,60 @@ function ControlPanel({
         </div>
       )}
 
-      <RunStatusPanel 
-        isRunning={isRunning} 
-        progress={progress} 
-        onStop={onStop} 
-        programProgressText={programProgressText} 
-        pct={pct} 
-        isGenerationProgress={isGenerationProgress} 
+      <RunStatusPanel
+        isRunning={isRunning}
+        progress={progress}
+        onStop={onStop}
+        programProgressText={programProgressText}
+        pct={pct}
+        isGenerationProgress={isGenerationProgress}
         mode={mode}
       />
 
       {!isRunning ? (
         <>
-          <div className="system-status-badges">
-            <span className={`sys-badge ${systemStatus?.cuda?.available ? 'pass' : 'fail'}`}>
-              {systemStatus?.cuda?.available ? `CUDA: ${systemStatus.cuda.device_name || 'GPU'}` : 'CPU Only'}
-            </span>
-            <span className={`sys-badge ${systemStatus?.llm?.available ? 'pass' : 'warn'}`}>
-              {systemStatus?.llm?.available ? `LLM: ${systemStatus.llm.backend}` : 'No LLM'}
-            </span>
-            <button className="sys-badge info" onClick={() => {
-              if (!showLlmConfig) {
-                const current = llmConfig || systemStatus?.llm;
-                if (current) {
-                  setLlmForm({
-                    backend: current.backend || '',
-                    api_key: '',
-                    model: current.model || '',
-                    host: current.host || '',
-                  });
-                }
-              }
-              setShowLlmConfig(!showLlmConfig);
-            }}>
-              {showLlmConfig ? 'Hide Config' : 'Configure LLM'}
-            </button>
-          </div>
-
-          {showLlmConfig && (
-            <div className="llm-config-section">
-              <div className="config-grid">
-                <ConfigField label="Backend">
-                  <select value={llmForm.backend} onChange={(e) => setLlmForm(prev => ({ ...prev, backend: e.target.value }))}>
-                    <option value="">Select...</option>
-                    <option value="anthropic">Anthropic (Claude)</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="ollama">Ollama (Local)</option>
-                  </select>
-                </ConfigField>
-                {(llmForm.backend === 'anthropic' || llmForm.backend === 'openai') && (
-                  <>
-                    <ConfigField label={llmConfig?.api_key_set ? `API Key (saved: ${llmConfig.api_key_hint})` : 'API Key'}>
-                      <input
-                        type="text"
-                        name="llm_api_key_field"
-                        autoComplete="off"
-                        value={llmForm.api_key}
-                        placeholder={llmConfig?.api_key_set ? 'Leave blank to keep current key' : 'sk-ant-...'}
-                        onChange={(e) => setLlmForm(prev => ({ ...prev, api_key: e.target.value }))}
-                        style={llmConfig?.api_key_set && !llmForm.api_key ? { borderColor: 'var(--accent)', opacity: 0.8 } : {}}
-                      />
-                    </ConfigField>
-                    <ConfigField label="Model">
-                      <input
-                        type="text"
-                        value={llmForm.model}
-                        placeholder={llmForm.backend === 'anthropic' ? "claude-sonnet-4-5-20250929" : "gpt-4o"}
-                        onChange={(e) => setLlmForm(prev => ({ ...prev, model: e.target.value }))}
-                      />
-                    </ConfigField>
-                  </>
-                )}
-                {llmForm.backend === 'ollama' && (
-                  <>
-                    <ConfigField label="Model">
-                      <input 
-                        type="text" 
-                        value={llmForm.model} 
-                        placeholder="e.g. qwen2.5-coder:7b" 
-                        onChange={(e) => setLlmForm(prev => ({ ...prev, model: e.target.value }))} 
-                      />
-                    </ConfigField>
-                    <ConfigField label="Host">
-                      <input 
-                        type="text" 
-                        value={llmForm.host} 
-                        placeholder="http://localhost:11434" 
-                        onChange={(e) => setLlmForm(prev => ({ ...prev, host: e.target.value }))} 
-                      />
-                    </ConfigField>
-                  </>
-                )}
-              </div>
-              {llmForm.backend && (
-                <button className="validate-btn" onClick={handleLlmSave} disabled={llmSaving} style={{ marginTop: 8 }}>
-                  {llmSaving ? 'Configuring...' : 'Configure LLM'}
-                </button>
-              )}
-              {llmMessage && <div className={`llm-message ${llmMessage.includes('success') ? 'pass' : 'fail'}`}>{llmMessage}</div>}
-            </div>
-          )}
+          <SystemStatusSection
+            systemStatus={systemStatus}
+            onSystemStatusUpdate={setSystemStatus}
+          />
 
           <ModeSelector selectedMode={mode} onModeChange={setMode} disabled={isRunning} />
 
           <div className="control-row">
             <label className="control-label" style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Research Hypothesis</label>
-            <input 
-              className="control-input" 
-              type="text" 
-              value={hypothesis} 
-              onChange={(e) => setHypothesis(e.target.value)} 
-              placeholder="Let Aria formulate one automatically based on evidence..." 
+            <input
+              className="control-input"
+              type="text"
+              value={hypothesis}
+              onChange={(e) => setHypothesis(e.target.value)}
+              placeholder="Let Aria formulate one automatically based on evidence..."
               style={{ borderRadius: 8, padding: '10px 12px' }}
             />
           </div>
 
-          <div className="section-subheader">Architecture Search Space</div>
-          <div className="config-grid" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-            {!isEvolutionMode && (
-              <ConfigField label="Programs">
-                <input type="number" min="5" max="500" value={config.n_programs} onChange={(e) => updateConfig('n_programs', parseInt(e.target.value))} />
-              </ConfigField>
-            )}
-            <ConfigField label="Dimension">
-              <select value={config.model_dim} onChange={(e) => updateConfig('model_dim', parseInt(e.target.value))}>
-                {[64, 128, 256, 512].map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
-            </ConfigField>
-            <ConfigField label="Layers">
-              <input type="number" min="1" max="12" value={config.n_layers} onChange={(e) => updateConfig('n_layers', parseInt(e.target.value))} />
-            </ConfigField>
-          </div>
+          <SearchSpaceConfig
+            config={config}
+            updateConfig={updateConfig}
+            isEvolutionMode={isEvolutionMode}
+          />
 
-          <div className="section-subheader">Training Parameters (Stage 1)</div>
-          <div className="config-grid" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-            <ConfigField label="Steps">
-              <input type="number" value={config.stage1_steps} onChange={(e) => updateConfig('stage1_steps', parseInt(e.target.value))} />
-            </ConfigField>
-            <ConfigField label="LR">
-              <input type="number" step="0.0001" value={config.stage1_lr} onChange={(e) => updateConfig('stage1_lr', parseFloat(e.target.value))} />
-            </ConfigField>
-          </div>
+          <AdvancedConfigPanels
+            config={config}
+            updateConfig={updateConfig}
+            onCategoryWeightChange={handleCategoryWeightChange}
+          />
 
-          {isEvolutionMode && (
-            <>
-              <div className="section-subheader">Evolutionary Strategy</div>
-              <div className="config-grid" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-                <ConfigField label="Population">
-                  <input type="number" value={config.population_size} onChange={(e) => updateConfig('population_size', parseInt(e.target.value))} />
-                </ConfigField>
-                <ConfigField label="Generations">
-                  <input type="number" value={config.n_generations} onChange={(e) => updateConfig('n_generations', parseInt(e.target.value))} />
-                </ConfigField>
-                <ConfigField label="Tourn Size">
-                  <input type="number" value={config.tournament_size} onChange={(e) => updateConfig('tournament_size', parseInt(e.target.value))} />
-                </ConfigField>
-                <ConfigField label="Mutation Rate">
-                  <input type="number" step="0.1" value={config.mutation_rate} onChange={(e) => updateConfig('mutation_rate', parseFloat(e.target.value))} />
-                </ConfigField>
-              </div>
-            </>
-          )}
-
-          <details style={{ marginTop: 16 }}>
-            <summary style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-blue)', cursor: 'pointer', padding: '4px 0' }}>
-              Advanced Search Space Weights
-            </summary>
-            <div style={{ marginTop: 12, background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-              <CategoryWeightsControl 
-                weights={config.category_weights} 
-                onChange={(cat, val) => setConfig(prev => ({ ...prev, category_weights: { ...prev.category_weights, [cat]: val } }))} 
-              />
-              <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <ConfigField label="Excluded Ops (comma-sep)">
-                  <input type="text" value={config.excluded_ops} onChange={(e) => updateConfig('excluded_ops', e.target.value)} placeholder="" />
-                </ConfigField>
-                <ConfigField label="Op Weights (op:weight, ...)">
-                  <input type="text" value={config.op_weights} onChange={(e) => updateConfig('op_weights', e.target.value)} placeholder="" />
-                </ConfigField>
-              </div>
-            </div>
-          </details>
-
-          <details style={{ marginTop: 8 }}>
-            <summary style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0' }}>
-              Structural & Grammar Constraints
-            </summary>
-            <div className="config-grid" style={{ marginTop: 12, background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-              <ConfigField label="Max Depth">
-                <input type="number" value={config.max_depth} onChange={(e) => updateConfig('max_depth', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Max Ops">
-                <input type="number" value={config.max_ops} onChange={(e) => updateConfig('max_ops', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Residual Prob">
-                <input type="number" step="0.1" value={config.residual_prob} onChange={(e) => updateConfig('residual_prob', parseFloat(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Math Space W">
-                <input type="number" step="0.5" value={config.math_space_weight} onChange={(e) => updateConfig('math_space_weight', parseFloat(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Grammar Split">
-                <input type="number" step="0.05" value={config.grammar_split_prob} onChange={(e) => updateConfig('grammar_split_prob', parseFloat(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Grammar Merge">
-                <input type="number" step="0.05" value={config.grammar_merge_prob} onChange={(e) => updateConfig('grammar_merge_prob', parseFloat(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Min Splits">
-                <input type="number" value={config.min_splits} onChange={(e) => updateConfig('min_splits', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="3-Way Prob">
-                <input type="number" step="0.05" value={config.three_way_split_prob} onChange={(e) => updateConfig('three_way_split_prob', parseFloat(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Branch Depth">
-                <input type="number" value={config.branch_depth} onChange={(e) => updateConfig('branch_depth', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Max Recursion">
-                <input type="number" value={config.max_recursion_depth} onChange={(e) => updateConfig('max_recursion_depth', parseInt(e.target.value))} />
-              </ConfigField>
-            </div>
-          </details>
-
-          <details style={{ marginTop: 8 }}>
-            <summary style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0' }}>
-              Automation & Discovery Pipeline
-            </summary>
-            <div className="config-grid" style={{ marginTop: 12, background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-              <ConfigField label="Auto Scale Up">
-                <input type="checkbox" checked={config.auto_scale_up} onChange={(e) => updateConfig('auto_scale_up', e.target.checked)} />
-              </ConfigField>
-              <ConfigField label="Auto Investigate">
-                <input type="checkbox" checked={config.auto_investigate} onChange={(e) => updateConfig('auto_investigate', e.target.checked)} />
-              </ConfigField>
-              <ConfigField label="Auto Validate">
-                <input type="checkbox" checked={config.auto_validate} onChange={(e) => updateConfig('auto_validate', e.target.checked)} />
-              </ConfigField>
-              <ConfigField label="Auto Report">
-                <input type="checkbox" checked={config.auto_report} onChange={(e) => updateConfig('auto_report', e.target.checked)} />
-              </ConfigField>
-              <ConfigField label="Pruning Base.">
-                <input type="checkbox" checked={config.one_shot_pruning_baseline} onChange={(e) => updateConfig('one_shot_pruning_baseline', e.target.checked)} />
-              </ConfigField>
-              {config.one_shot_pruning_baseline && (
-                <>
-                  <ConfigField label="Pruning Spar.">
-                    <input type="number" step="0.05" value={config.one_shot_pruning_sparsity} onChange={(e) => updateConfig('one_shot_pruning_sparsity', parseFloat(e.target.value))} />
-                  </ConfigField>
-                  <ConfigField label="Pruning Meth.">
-                    <select value={config.one_shot_pruning_method} onChange={(e) => updateConfig('one_shot_pruning_method', e.target.value)}>
-                      <option value="wanda">Wanda</option>
-                      <option value="sparsegpt">SparseGPT</option>
-                    </select>
-                  </ConfigField>
-                </>
-              )}
-            </div>
-            <div className="config-grid" style={{ marginTop: 12, background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-              <ConfigField label="Invest. Steps">
-                <input type="number" value={config.investigation_steps} onChange={(e) => updateConfig('investigation_steps', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Valid. Steps">
-                <input type="number" value={config.validation_steps} onChange={(e) => updateConfig('validation_steps', parseInt(e.target.value))} />
-              </ConfigField>
-            </div>
-          </details>
-
-          <details style={{ marginTop: 8 }}>
-            <summary style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0' }}>
-              Experiment Limits & Source
-            </summary>
-            <div className="config-grid" style={{ marginTop: 12, background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-              <ConfigField label="Max Experim.">
-                <input type="number" value={config.max_experiments} onChange={(e) => updateConfig('max_experiments', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Max Time (m)">
-                <input type="number" value={config.max_time_minutes} onChange={(e) => updateConfig('max_time_minutes', parseInt(e.target.value))} />
-              </ConfigField>
-              <ConfigField label="Model Source">
-                <select value={config.model_source} onChange={(e) => updateConfig('model_source', e.target.value)}>
-                  <option value="synthesized">Synthesized</option>
-                  <option value="morphed">Morphed</option>
-                  <option value="mixed">Mixed</option>
-                </select>
-              </ConfigField>
-              <ConfigField label="Morph Ratio">
-                <input type="number" step="0.1" value={config.morph_ratio} onChange={(e) => updateConfig('morph_ratio', parseFloat(e.target.value))} />
-              </ConfigField>
-            </div>
-          </details>
-
-          <div style={{ marginTop: 16 }}>
-            <button className="refresh-btn" onClick={handleAskAria} disabled={loadingRec} style={{ width: '100%', justifyContent: 'center', background: 'rgba(137, 87, 229, 0.1)', color: 'var(--accent-purple)', borderColor: 'rgba(137, 87, 229, 0.3)' }}>
-              {loadingRec ? 'Aria is thinking...' : 'Ask Aria for Experiment Strategy'}
-            </button>
-          </div>
-
-          <AriaRecommendationPanel recommendation={recommendation} onApply={applyRecommendation} />
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-            <button className="start-btn" onClick={() => handleStart()} disabled={startLocked} style={{ flex: 1 }}>
-              {mode === 'continuous' ? 'Start Continuous Research' : 'Run Experiment'}
-            </button>
-            {blockedConfig && (
-              <button className="start-btn" onClick={() => handleStart({ preflight_override: true })} style={{ background: 'rgba(248, 81, 73, 0.1)', color: 'var(--accent-red)' }}>
-                Force Start
-              </button>
-            )}
-          </div>
+          <ExperimentActions
+            mode={mode}
+            loadingRec={loadingRec}
+            onAskAria={handleAskAria}
+            recommendation={recommendation}
+            onApplyRecommendation={applyRecommendation}
+            onStart={() => handleStart()}
+            startLocked={startLocked}
+            blockedConfig={blockedConfig}
+            onForceStart={() => handleStart({ preflight_override: true })}
+          />
         </>
       ) : (
         <div className="experiment-progress">

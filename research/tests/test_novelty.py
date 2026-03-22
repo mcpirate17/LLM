@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 # Detect available dependencies
 try:
-    import torch
+    import torch  # noqa: F401
 
     HAS_TORCH = True
 except ImportError:
@@ -579,92 +579,6 @@ class TestNoveltyCalibration(unittest.TestCase):
             self.assertEqual(diag.get("fingerprint_cap"), 3.0)
 
             nb.close()
-
-    def test_composite_score_discounts_low_confidence_novelty(self):
-        """Composite score should weight novelty contribution by confidence."""
-        from research.scientist.notebook import LabNotebook
-
-        # Full confidence: novelty fully counted
-        score_full = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.9
-        )
-        # Low confidence: novelty discounted
-        score_low = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.2
-        )
-        # No confidence param: defaults to 1.0 (backward compat)
-        score_none = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8
-        )
-
-        self.assertGreater(
-            score_full, score_low, "High confidence should yield higher composite score"
-        )
-        self.assertEqual(
-            score_none,
-            LabNotebook.compute_composite_score(
-                screening_lr=0.5, screening_nov=0.8, novelty_confidence=1.0
-            ),
-            "None confidence should behave like 1.0",
-        )
-        # Zero confidence should eliminate novelty contribution entirely
-        score_zero = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.8, novelty_confidence=0.0
-        )
-        score_no_nov = LabNotebook.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.0
-        )
-        self.assertAlmostEqual(
-            score_zero,
-            score_no_nov,
-            places=6,
-            msg="Zero confidence should be equivalent to zero novelty",
-        )
-
-    def test_upsert_leaderboard_passes_novelty_confidence(self):
-        """upsert_leaderboard should use novelty_confidence in composite score."""
-        import tempfile
-        import os
-        from research.scientist.notebook import LabNotebook
-
-        with tempfile.TemporaryDirectory() as d:
-            nb = LabNotebook(os.path.join(d, "test.db"))
-            exp_id = nb.start_experiment("test", {}, "test")
-            rid = nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint="fp1",
-                graph_json="{}",
-                loss_ratio=0.5,
-                novelty_score=0.8,
-                novelty_confidence=0.9,
-            )
-            # High confidence
-            eid_high = nb.upsert_leaderboard(
-                result_id=rid,
-                model_source="test",
-                screening_loss_ratio=0.5,
-                screening_novelty=0.8,
-                novelty_confidence=0.9,
-            )
-            # Low confidence
-            rid2 = nb.record_program_result(
-                experiment_id=exp_id,
-                graph_fingerprint="fp2",
-                graph_json="{}",
-                loss_ratio=0.5,
-                novelty_score=0.8,
-                novelty_confidence=0.2,
-            )
-            eid_low = nb.upsert_leaderboard(
-                result_id=rid2,
-                model_source="test",
-                screening_loss_ratio=0.5,
-                screening_novelty=0.8,
-                novelty_confidence=0.2,
-            )
-            lb = nb.get_leaderboard(limit=10)
-            scores = {e["entry_id"]: e["composite_score"] for e in lb}
-            self.assertGreater(scores[eid_high], scores[eid_low])
 
     def test_composite_score_rewards_real_token_quality(self):
         """WikiText quality should materially improve composite score."""

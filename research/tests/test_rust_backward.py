@@ -12,40 +12,69 @@ import numpy as np
 # Try importing the Rust scheduler module.
 try:
     import aria_scheduler  # type: ignore[import-untyped]
+
     HAS_RUST_SCHEDULER = True
 except ImportError:
     try:
         from scientist import aria_scheduler  # type: ignore[import-untyped]
+
         HAS_RUST_SCHEDULER = True
     except ImportError:
         HAS_RUST_SCHEDULER = False
 
-pytestmark = [pytest.mark.native, pytest.mark.skipif(
-    not HAS_RUST_SCHEDULER,
-    reason="aria_scheduler Rust module not available",
-)]
+pytestmark = [
+    pytest.mark.native,
+    pytest.mark.skipif(
+        not HAS_RUST_SCHEDULER,
+        reason="aria_scheduler Rust module not available",
+    ),
+]
 
 
 def _make_graph_json(nodes, edges, output_node_id):
     """Helper to build a native IR JSON string."""
-    return json.dumps({
-        "schema_version": "0.1",
-        "model_dim": 4,
-        "nodes": nodes,
-        "edges": edges,
-        "output_node_id": output_node_id,
-        "metadata": None,
-    })
+    return json.dumps(
+        {
+            "schema_version": "0.1",
+            "model_dim": 4,
+            "nodes": nodes,
+            "edges": edges,
+            "output_node_id": output_node_id,
+            "metadata": None,
+        }
+    )
 
 
 # ── Graph builders ──────────────────────────────────────────────────
 
+
 def _relu_chain_graph():
     """input(0) -> relu(1) -> output(2)"""
     nodes = [
-        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": True, "is_output": False},
-        {"id": 1, "op_name": "relu", "input_ids": [0], "config": {}, "is_input": False, "is_output": False},
-        {"id": 2, "op_name": "output", "input_ids": [1], "config": {}, "is_input": False, "is_output": True},
+        {
+            "id": 0,
+            "op_name": "input",
+            "input_ids": [],
+            "config": {},
+            "is_input": True,
+            "is_output": False,
+        },
+        {
+            "id": 1,
+            "op_name": "relu",
+            "input_ids": [0],
+            "config": {},
+            "is_input": False,
+            "is_output": False,
+        },
+        {
+            "id": 2,
+            "op_name": "output",
+            "input_ids": [1],
+            "config": {},
+            "is_input": False,
+            "is_output": True,
+        },
     ]
     edges = [
         {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -61,9 +90,30 @@ def _add_graph():
     op has two references to the same input.  This tests gradient accumulation.
     """
     nodes = [
-        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": True, "is_output": False},
-        {"id": 1, "op_name": "add", "input_ids": [0, 0], "config": {}, "is_input": False, "is_output": False},
-        {"id": 2, "op_name": "output", "input_ids": [1], "config": {}, "is_input": False, "is_output": True},
+        {
+            "id": 0,
+            "op_name": "input",
+            "input_ids": [],
+            "config": {},
+            "is_input": True,
+            "is_output": False,
+        },
+        {
+            "id": 1,
+            "op_name": "add",
+            "input_ids": [0, 0],
+            "config": {},
+            "is_input": False,
+            "is_output": False,
+        },
+        {
+            "id": 2,
+            "op_name": "output",
+            "input_ids": [1],
+            "config": {},
+            "is_input": False,
+            "is_output": True,
+        },
     ]
     edges = [
         {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -75,9 +125,30 @@ def _add_graph():
 def _sigmoid_chain_graph():
     """input(0) -> sigmoid(1) -> output(2)"""
     nodes = [
-        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": True, "is_output": False},
-        {"id": 1, "op_name": "sigmoid", "input_ids": [0], "config": {}, "is_input": False, "is_output": False},
-        {"id": 2, "op_name": "output", "input_ids": [1], "config": {}, "is_input": False, "is_output": True},
+        {
+            "id": 0,
+            "op_name": "input",
+            "input_ids": [],
+            "config": {},
+            "is_input": True,
+            "is_output": False,
+        },
+        {
+            "id": 1,
+            "op_name": "sigmoid",
+            "input_ids": [0],
+            "config": {},
+            "is_input": False,
+            "is_output": False,
+        },
+        {
+            "id": 2,
+            "op_name": "output",
+            "input_ids": [1],
+            "config": {},
+            "is_input": False,
+            "is_output": True,
+        },
     ]
     edges = [
         {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -89,9 +160,30 @@ def _sigmoid_chain_graph():
 def _gelu_chain_graph():
     """input(0) -> gelu(1) -> output(2)"""
     nodes = [
-        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": True, "is_output": False},
-        {"id": 1, "op_name": "gelu", "input_ids": [0], "config": {}, "is_input": False, "is_output": False},
-        {"id": 2, "op_name": "output", "input_ids": [1], "config": {}, "is_input": False, "is_output": True},
+        {
+            "id": 0,
+            "op_name": "input",
+            "input_ids": [],
+            "config": {},
+            "is_input": True,
+            "is_output": False,
+        },
+        {
+            "id": 1,
+            "op_name": "gelu",
+            "input_ids": [0],
+            "config": {},
+            "is_input": False,
+            "is_output": False,
+        },
+        {
+            "id": 2,
+            "op_name": "output",
+            "input_ids": [1],
+            "config": {},
+            "is_input": False,
+            "is_output": True,
+        },
     ]
     edges = [
         {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -103,10 +195,38 @@ def _gelu_chain_graph():
 def _relu_relu_chain_graph():
     """input(0) -> relu(1) -> relu(2) -> output(3)"""
     nodes = [
-        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": True, "is_output": False},
-        {"id": 1, "op_name": "relu", "input_ids": [0], "config": {}, "is_input": False, "is_output": False},
-        {"id": 2, "op_name": "relu", "input_ids": [1], "config": {}, "is_input": False, "is_output": False},
-        {"id": 3, "op_name": "output", "input_ids": [2], "config": {}, "is_input": False, "is_output": True},
+        {
+            "id": 0,
+            "op_name": "input",
+            "input_ids": [],
+            "config": {},
+            "is_input": True,
+            "is_output": False,
+        },
+        {
+            "id": 1,
+            "op_name": "relu",
+            "input_ids": [0],
+            "config": {},
+            "is_input": False,
+            "is_output": False,
+        },
+        {
+            "id": 2,
+            "op_name": "relu",
+            "input_ids": [1],
+            "config": {},
+            "is_input": False,
+            "is_output": False,
+        },
+        {
+            "id": 3,
+            "op_name": "output",
+            "input_ids": [2],
+            "config": {},
+            "is_input": False,
+            "is_output": True,
+        },
     ]
     edges = [
         {"source": 0, "target": 1, "source_port": None, "target_port": None},
@@ -117,6 +237,7 @@ def _relu_relu_chain_graph():
 
 
 # ── Tests ───────────────────────────────────────────────────────────
+
 
 class TestForwardSaved:
     """Test execute_graph_forward_saved returns activations."""
@@ -237,8 +358,10 @@ class TestBackwardSigmoid:
             s = 1.0 / (1.0 + math.exp(-xi))
             expected_grad = s * (1.0 - s)
             np.testing.assert_allclose(
-                input_grad[i], expected_grad, atol=1e-5,
-                err_msg=f"sigmoid backward mismatch at index {i}"
+                input_grad[i],
+                expected_grad,
+                atol=1e-5,
+                err_msg=f"sigmoid backward mismatch at index {i}",
             )
 
 

@@ -74,7 +74,9 @@ class _ExecutionMicroTrainPhase3Mixin:
                     vocab_size=int(config.vocab_size),
                     dev=dev,
                 )
-                with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=True):
+                with torch.amp.autocast(
+                    device_type=dev.type, dtype=torch.bfloat16, enabled=True
+                ):
                     d_logits = model(d_batch)
                     d_loss = F.cross_entropy(
                         d_logits[:, :-1].reshape(-1, int(config.vocab_size)),
@@ -97,7 +99,9 @@ class _ExecutionMicroTrainPhase3Mixin:
         """Compute optional heldout validation loss on corpus val split."""
         val_batches = max(1, int(getattr(config, "stage1_val_batches", 0) or 0))
         compute_val = bool(getattr(config, "stage1_compute_val_loss", True))
-        val_batch_size = int(getattr(config, "stage1_val_batch_size", 0) or config.stage1_batch_size)
+        val_batch_size = int(
+            getattr(config, "stage1_val_batch_size", 0) or config.stage1_batch_size
+        )
         val_frac = float(getattr(config, "corpus_val_fraction", 0.0) or 0.0)
         if not (compute_val and val_batches > 0 and val_frac > 0.0):
             return None
@@ -119,7 +123,11 @@ class _ExecutionMicroTrainPhase3Mixin:
                     )
                     if input_ids is None:
                         continue
-                    with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+                    with torch.amp.autocast(
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
                         logits = model(input_ids)
                         loss = F.cross_entropy(
                             logits[:, :-1].reshape(-1, logits.shape[-1]),
@@ -142,9 +150,14 @@ class _ExecutionMicroTrainPhase3Mixin:
         seed: int,
     ) -> Optional[float]:
         """Compute optional discovery loss on random tokens."""
-        discovery_batches = max(1, int(getattr(config, "stage1_discovery_batches", 0) or 0))
+        discovery_batches = max(
+            1, int(getattr(config, "stage1_discovery_batches", 0) or 0)
+        )
         compute_discovery = bool(getattr(config, "stage1_compute_discovery_loss", True))
-        discovery_batch_size = int(getattr(config, "stage1_discovery_batch_size", 0) or config.stage1_batch_size)
+        discovery_batch_size = int(
+            getattr(config, "stage1_discovery_batch_size", 0)
+            or config.stage1_batch_size
+        )
         if not (compute_discovery and discovery_batches > 0):
             return None
 
@@ -162,7 +175,11 @@ class _ExecutionMicroTrainPhase3Mixin:
                         device=dev,
                         generator=gen,
                     )
-                    with torch.amp.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=(dev.type == "cuda")):
+                    with torch.amp.autocast(
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
+                        enabled=(dev.type == "cuda"),
+                    ):
                         logits = model(input_ids)
                         loss = F.cross_entropy(
                             logits[:, :-1].reshape(-1, logits.shape[-1]),

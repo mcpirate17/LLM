@@ -54,4 +54,4 @@ export function AriaAdvice({ analysis }) {
   );
 }
 
-export default AriaAdvice;
+export default React.memo(AriaAdvice);

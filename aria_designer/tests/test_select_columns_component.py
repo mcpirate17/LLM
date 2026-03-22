@@ -18,7 +18,9 @@ _COMPONENT_PATH = (
 
 
 def _handler():
-    spec = importlib.util.spec_from_file_location("select_columns_handler", str(_COMPONENT_PATH))
+    spec = importlib.util.spec_from_file_location(
+        "select_columns_handler", str(_COMPONENT_PATH)
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)

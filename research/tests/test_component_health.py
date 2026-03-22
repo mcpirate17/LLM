@@ -127,39 +127,6 @@ class TestGradNormOps:
         assert input_gn < 100, f"reciprocal input_grad={input_gn:.1f}"
 
 
-# ── Quarantine mechanism ───────────────────────────────────────────────
-
-
-class TestQuarantineMechanism:
-    """Verify quarantined ops are excluded from architecture generation."""
-
-    def test_quarantined_ops_excluded(self):
-        from research.synthesis.grammar import GrammarConfig, generate_layer_graph
-
-        config = GrammarConfig(
-            model_dim=64,
-            quarantined_ops={"FAKE_BROKEN_OP"},
-        )
-        # Generate 20 graphs and verify none contain the quarantined op
-        for seed in range(20):
-            g = generate_layer_graph(seed=seed, config=config)
-            op_names = {n.op_name for n in g.nodes.values()}
-            assert "FAKE_BROKEN_OP" not in op_names
-
-    def test_excluded_ops_default(self):
-        from research.synthesis.grammar import GrammarConfig
-
-        config = GrammarConfig()
-        assert "softmax_seq" in config.excluded_ops
-
-    def test_semi_structured_2_4_quarantined(self):
-        """semi_structured_2_4_linear is quarantined — dense op, no HW sparse benefit."""
-        from research.synthesis.grammar import GrammarConfig
-
-        config = GrammarConfig()
-        assert "semi_structured_2_4_linear" in config.quarantined_ops
-
-
 # ── Pass 2: Gradient amplifiers and math-space boundary norm fixes ─────
 
 

@@ -18,7 +18,7 @@ DB_PATH = "research/lab_notebook.db"
 
 
 def backfill_diagnostics(limit: int = 50):
-    nb = LabNotebook(DB_PATH)
+    LabNotebook(DB_PATH)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()

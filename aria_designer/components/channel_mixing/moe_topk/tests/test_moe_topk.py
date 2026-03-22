@@ -1,4 +1,5 @@
 """Contract tests for moe_topk."""
+
 import yaml
 from pathlib import Path
 

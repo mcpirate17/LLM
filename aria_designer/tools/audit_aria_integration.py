@@ -51,27 +51,32 @@ class ComponentAudit:
     param_count: int
 
 
-def _detect_native_impl(component_dir: Path, primitive_name: Optional[str]) -> List[str]:
+def _detect_native_impl(
+    component_dir: Path, primitive_name: Optional[str]
+) -> List[str]:
     impl = []
     if (component_dir / "kernel.c").exists():
         impl.append("c")
-    if (component_dir / "kernel.cpp").exists() or (component_dir / "kernel.cc").exists():
+    if (component_dir / "kernel.cpp").exists() or (
+        component_dir / "kernel.cc"
+    ).exists():
         impl.append("cpp")
     if (component_dir / "kernel.rs").exists():
         impl.append("rust")
     if (component_dir / "kernel.pyx").exists():
         impl.append("cython")
-    
+
     # Dynamic check against aria_core
     try:
         import aria_core
+
         if primitive_name:
             candidates = [primitive_name, f"{primitive_name}_f32"]
             if any(hasattr(aria_core, c) for c in candidates):
                 impl.append("aria_core")
     except ImportError:
         pass
-        
+
     return impl
 
 
@@ -125,7 +130,9 @@ def _load_manifests() -> List[ComponentAudit]:
 
 def _build_report(audits: List[ComponentAudit]) -> Dict[str, Any]:
     by_status = Counter(a.primitive_status for a in audits)
-    by_category_unmapped = Counter(a.category for a in audits if a.primitive_status == "unmapped")
+    by_category_unmapped = Counter(
+        a.category for a in audits if a.primitive_status == "unmapped"
+    )
     native_count = sum(1 for a in audits if a.native_impl)
     fallback_count = sum(1 for a in audits if a.has_python_fallback)
 
@@ -148,7 +155,9 @@ def _build_report(audits: List[ComponentAudit]) -> Dict[str, Any]:
             "python_fallback_components": fallback_count,
             "primitive_registry_size": len(PRIMITIVE_REGISTRY),
         },
-        "unmapped_by_category": {k: sorted(v) for k, v in sorted(unmapped_by_cat.items())},
+        "unmapped_by_category": {
+            k: sorted(v) for k, v in sorted(unmapped_by_cat.items())
+        },
         "unmapped_category_counts": dict(sorted(by_category_unmapped.items())),
         "components": [asdict(a) for a in audits],
     }
@@ -180,7 +189,14 @@ def _write_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Highest Priority Gaps")
 
-    priority_cats = ("mixing", "routing", "data_io", "data_transform", "blocks", "control_flow")
+    priority_cats = (
+        "mixing",
+        "routing",
+        "data_io",
+        "data_transform",
+        "blocks",
+        "control_flow",
+    )
     for cat in priority_cats:
         items = report["unmapped_by_category"].get(cat, [])
         if not items:

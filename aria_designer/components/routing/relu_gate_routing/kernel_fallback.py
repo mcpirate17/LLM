@@ -1,4 +1,5 @@
 """Kernel handler for relu_gate_routing — ReLU-gated MoE with learned experts."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +23,9 @@ class ComponentHandler:
 
         if self._gate is None or self._gate.in_features != D:
             self._gate = nn.Linear(D, n_experts, bias=False)
-            self._experts = nn.ModuleList([nn.Linear(D, D, bias=False) for _ in range(n_experts)])
+            self._experts = nn.ModuleList(
+                [nn.Linear(D, D, bias=False) for _ in range(n_experts)]
+            )
             nn.init.normal_(self._gate.weight, std=0.02)
             for expert in self._experts:
                 nn.init.normal_(expert.weight, std=0.02)
@@ -36,5 +39,5 @@ class ComponentHandler:
 
         y = torch.zeros_like(x)
         for i, expert in enumerate(self._experts):
-            y = y + gate_weights[..., i:i+1] * expert(x)
+            y = y + gate_weights[..., i : i + 1] * expert(x)
         return {"y": y}

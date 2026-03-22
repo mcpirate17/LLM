@@ -6,11 +6,13 @@ import numpy as np
 
 class _RoutingMixin:
     """Routing health, gating diagnostics, MoE telemetry."""
+
     __slots__ = ()
 
     @staticmethod
-    def _explain_routing_health(by_mode: List[Dict], total_programs: int,
-                                overall_stage1_pass_rate: float) -> str:
+    def _explain_routing_health(
+        by_mode: List[Dict], total_programs: int, overall_stage1_pass_rate: float
+    ) -> str:
         """Generate deterministic plain-language routing interpretation."""
         if not by_mode:
             return (
@@ -54,7 +56,9 @@ class _RoutingMixin:
         elif avg_entropy >= 1.2:
             entropy_text = f"utilization appears balanced (entropy {avg_entropy:.2f})"
         elif avg_entropy >= 0.8:
-            entropy_text = f"utilization is moderately balanced (entropy {avg_entropy:.2f})"
+            entropy_text = (
+                f"utilization is moderately balanced (entropy {avg_entropy:.2f})"
+            )
         else:
             entropy_text = f"utilization looks concentrated (entropy {avg_entropy:.2f})"
 
@@ -102,7 +106,9 @@ class _RoutingMixin:
         return "low"
 
     @staticmethod
-    def _routing_confidence_label(avg_confidence_mean: Optional[float], avg_confidence_std: Optional[float]) -> str:
+    def _routing_confidence_label(
+        avg_confidence_mean: Optional[float], avg_confidence_std: Optional[float]
+    ) -> str:
         if avg_confidence_mean is None:
             return "unknown"
         adjusted = avg_confidence_mean - 0.5 * (avg_confidence_std or 0.0)
@@ -190,7 +196,11 @@ class _RoutingMixin:
             avg_tokens_total = row["avg_tokens_total"]
             avg_tokens_processed = row["avg_tokens_processed"]
             token_retention = None
-            if avg_tokens_total and avg_tokens_total > 0 and avg_tokens_processed is not None:
+            if (
+                avg_tokens_total
+                and avg_tokens_total > 0
+                and avg_tokens_processed is not None
+            ):
                 token_retention = avg_tokens_processed / avg_tokens_total
             elif avg_drop_rate is not None:
                 token_retention = max(0.0, min(1.0, 1.0 - avg_drop_rate))
@@ -198,25 +208,29 @@ class _RoutingMixin:
             avg_conf_mean = row["avg_confidence_mean"]
             avg_conf_std = row["avg_confidence_std"]
 
-            by_mode.append({
-                "routing_mode": mode,
-                "n_programs": n_programs,
-                "stage1_pass_rate": stage1_pass_rate,
-                "avg_loss_ratio": row["avg_loss_ratio"],
-                "avg_tokens_total": avg_tokens_total,
-                "avg_tokens_processed": avg_tokens_processed,
-                "avg_tokens_skipped": row["avg_tokens_skipped"],
-                "avg_drop_rate": avg_drop_rate,
-                "avg_utilization_entropy": row["avg_utilization_entropy"],
-                "avg_capacity_overflow_count": row["avg_capacity_overflow_count"],
-                "avg_confidence_mean": avg_conf_mean,
-                "avg_confidence_std": avg_conf_std,
-                "token_retention": token_retention,
-                "sample_size_label": self._routing_sample_size_label(n_programs),
-                "confidence_label": self._routing_confidence_label(avg_conf_mean, avg_conf_std),
-                "stability_label": self._routing_stability_label(avg_conf_std),
-                "efficiency_label": self._routing_efficiency_label(token_retention),
-            })
+            by_mode.append(
+                {
+                    "routing_mode": mode,
+                    "n_programs": n_programs,
+                    "stage1_pass_rate": stage1_pass_rate,
+                    "avg_loss_ratio": row["avg_loss_ratio"],
+                    "avg_tokens_total": avg_tokens_total,
+                    "avg_tokens_processed": avg_tokens_processed,
+                    "avg_tokens_skipped": row["avg_tokens_skipped"],
+                    "avg_drop_rate": avg_drop_rate,
+                    "avg_utilization_entropy": row["avg_utilization_entropy"],
+                    "avg_capacity_overflow_count": row["avg_capacity_overflow_count"],
+                    "avg_confidence_mean": avg_conf_mean,
+                    "avg_confidence_std": avg_conf_std,
+                    "token_retention": token_retention,
+                    "sample_size_label": self._routing_sample_size_label(n_programs),
+                    "confidence_label": self._routing_confidence_label(
+                        avg_conf_mean, avg_conf_std
+                    ),
+                    "stability_label": self._routing_stability_label(avg_conf_std),
+                    "efficiency_label": self._routing_efficiency_label(token_retention),
+                }
+            )
 
         overall_stage1_pass_rate = total_stage1 / max(total_programs, 1)
 
@@ -248,7 +262,9 @@ class _RoutingMixin:
                 "n_modes": 0,
                 "total_programs": 0,
                 "by_mode": [],
-                "explanation": comparison.get("explanation", "Routing telemetry is unavailable."),
+                "explanation": comparison.get(
+                    "explanation", "Routing telemetry is unavailable."
+                ),
             }
         return {
             "available": True,
@@ -298,7 +314,12 @@ class _RoutingMixin:
                 "available": False,
                 "total_routed_programs": 0,
                 "avg_gate_entropy": None,
-                "collapse_risk_counts": {"low": 0, "medium": 0, "high": 0, "unknown": 0},
+                "collapse_risk_counts": {
+                    "low": 0,
+                    "medium": 0,
+                    "high": 0,
+                    "unknown": 0,
+                },
                 "by_mode": [],
                 "token_retention_curve_overall": [],
                 "explanation": (
@@ -315,13 +336,16 @@ class _RoutingMixin:
 
         for row in rows:
             mode = row["routing_mode"] or "uniform"
-            bucket = by_mode_raw.setdefault(mode, {
-                "n_programs": 0,
-                "entropies": [],
-                "retentions": [],
-                "drop_rates": [],
-                "overflows": [],
-            })
+            bucket = by_mode_raw.setdefault(
+                mode,
+                {
+                    "n_programs": 0,
+                    "entropies": [],
+                    "retentions": [],
+                    "drop_rates": [],
+                    "overflows": [],
+                },
+            )
             bucket["n_programs"] += 1
 
             entropy = row["routing_utilization_entropy"]
@@ -342,7 +366,11 @@ class _RoutingMixin:
             retention = None
             total_tokens = row["routing_tokens_total"]
             processed_tokens = row["routing_tokens_processed"]
-            if total_tokens is not None and processed_tokens is not None and float(total_tokens) > 0:
+            if (
+                total_tokens is not None
+                and processed_tokens is not None
+                and float(total_tokens) > 0
+            ):
                 retention = float(processed_tokens) / float(total_tokens)
             elif drop_rate is not None:
                 retention = max(0.0, min(1.0, 1.0 - float(drop_rate)))
@@ -353,7 +381,9 @@ class _RoutingMixin:
                 overall_retentions.append(retention)
 
         by_mode: List[Dict[str, Any]] = []
-        for mode, bucket in sorted(by_mode_raw.items(), key=lambda item: item[1]["n_programs"], reverse=True):
+        for mode, bucket in sorted(
+            by_mode_raw.items(), key=lambda item: item[1]["n_programs"], reverse=True
+        ):
             entropies = bucket["entropies"]
             retentions = bucket["retentions"]
             avg_entropy = (sum(entropies) / len(entropies)) if entropies else None
@@ -367,19 +397,29 @@ class _RoutingMixin:
                 if value is not None:
                     token_curve.append({"quantile": name, "retention": value})
 
-            avg_drop = (sum(bucket["drop_rates"]) / len(bucket["drop_rates"])) if bucket["drop_rates"] else None
-            avg_overflow = (sum(bucket["overflows"]) / len(bucket["overflows"])) if bucket["overflows"] else None
+            avg_drop = (
+                (sum(bucket["drop_rates"]) / len(bucket["drop_rates"]))
+                if bucket["drop_rates"]
+                else None
+            )
+            avg_overflow = (
+                (sum(bucket["overflows"]) / len(bucket["overflows"]))
+                if bucket["overflows"]
+                else None
+            )
 
-            by_mode.append({
-                "routing_mode": mode,
-                "n_programs": bucket["n_programs"],
-                "avg_gate_entropy": avg_entropy,
-                "collapse_risk_label": collapse_label,
-                "avg_token_retention": avg_retention,
-                "token_retention_curve": token_curve,
-                "avg_drop_rate": avg_drop,
-                "avg_capacity_overflow_count": avg_overflow,
-            })
+            by_mode.append(
+                {
+                    "routing_mode": mode,
+                    "n_programs": bucket["n_programs"],
+                    "avg_gate_entropy": avg_entropy,
+                    "collapse_risk_label": collapse_label,
+                    "avg_token_retention": avg_retention,
+                    "token_retention_curve": token_curve,
+                    "avg_drop_rate": avg_drop,
+                    "avg_capacity_overflow_count": avg_overflow,
+                }
+            )
 
         overall_curve = []
         for quantile, name in ((0.25, "p25"), (0.5, "p50"), (0.75, "p75")):
@@ -387,7 +427,9 @@ class _RoutingMixin:
             if value is not None:
                 overall_curve.append({"quantile": name, "retention": value})
 
-        avg_gate_entropy = (total_entropy / entropy_count) if entropy_count > 0 else None
+        avg_gate_entropy = (
+            (total_entropy / entropy_count) if entropy_count > 0 else None
+        )
         explanation = (
             f"Gating diagnostics over {len(rows)} routed candidates: "
             f"avg gate entropy is {avg_gate_entropy:.2f}. "
@@ -486,18 +528,25 @@ class _RoutingMixin:
                     utilizations = json.loads(util_json)
                     if isinstance(utilizations, list):
                         for eidx, util_val in enumerate(utilizations):
-                            bucket = expert_totals.setdefault(eidx, {
-                                "expert_id": eidx,
-                                "sum_utilization": 0.0,
-                                "n_samples": 0,
-                                "max_utilization": 0.0,
-                                "min_utilization": 1.0,
-                            })
+                            bucket = expert_totals.setdefault(
+                                eidx,
+                                {
+                                    "expert_id": eidx,
+                                    "sum_utilization": 0.0,
+                                    "n_samples": 0,
+                                    "max_utilization": 0.0,
+                                    "min_utilization": 1.0,
+                                },
+                            )
                             u = float(util_val)
                             bucket["sum_utilization"] += u
                             bucket["n_samples"] += 1
-                            bucket["max_utilization"] = max(bucket["max_utilization"], u)
-                            bucket["min_utilization"] = min(bucket["min_utilization"], u)
+                            bucket["max_utilization"] = max(
+                                bucket["max_utilization"], u
+                            )
+                            bucket["min_utilization"] = min(
+                                bucket["min_utilization"], u
+                            )
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -507,13 +556,15 @@ class _RoutingMixin:
             b = expert_totals[eidx]
             n = b["n_samples"]
             avg = b["sum_utilization"] / n if n > 0 else 0.0
-            experts.append({
-                "expert_id": eidx,
-                "avg_utilization": round(avg, 4),
-                "max_utilization": round(b["max_utilization"], 4),
-                "min_utilization": round(b["min_utilization"], 4),
-                "n_samples": n,
-            })
+            experts.append(
+                {
+                    "expert_id": eidx,
+                    "avg_utilization": round(avg, 4),
+                    "max_utilization": round(b["max_utilization"], 4),
+                    "min_utilization": round(b["min_utilization"], 4),
+                    "n_samples": n,
+                }
+            )
 
         # Compute load balance score from average utilizations
         # Perfect balance = all experts have equal utilization
@@ -524,19 +575,27 @@ class _RoutingMixin:
             mean_u = sum(utils) / len(utils) if utils else 0
             if mean_u > 0 and len(utils) > 1:
                 var = sum((u - mean_u) ** 2 for u in utils) / len(utils)
-                cv = (var ** 0.5) / mean_u
+                cv = (var**0.5) / mean_u
                 load_balance_score = round(max(0.0, min(1.0, 1.0 - cv)), 4)
 
         summary = {
             "n_programs": n_programs,
             "n_survived": n_survived,
-            "survival_rate": round(n_survived / n_programs, 4) if n_programs > 0 else 0.0,
+            "survival_rate": round(n_survived / n_programs, 4)
+            if n_programs > 0
+            else 0.0,
             "avg_loss_ratio": round(sum_loss / n_loss, 4) if n_loss > 0 else None,
             "best_loss_ratio": round(best_loss, 4) if best_loss is not None else None,
-            "avg_utilization_entropy": round(sum_entropy / n_entropy, 4) if n_entropy > 0 else None,
+            "avg_utilization_entropy": round(sum_entropy / n_entropy, 4)
+            if n_entropy > 0
+            else None,
             "avg_drop_rate": round(sum_drop_rate / n_drop, 4) if n_drop > 0 else None,
-            "avg_capacity_overflow": round(sum_overflow / n_overflow, 2) if n_overflow > 0 else None,
-            "avg_routing_confidence": round(sum_confidence / n_confidence, 4) if n_confidence > 0 else None,
+            "avg_capacity_overflow": round(sum_overflow / n_overflow, 2)
+            if n_overflow > 0
+            else None,
+            "avg_routing_confidence": round(sum_confidence / n_confidence, 4)
+            if n_confidence > 0
+            else None,
             "load_balance_score": load_balance_score,
             "n_experts_observed": len(experts),
         }
@@ -583,7 +642,7 @@ class _RoutingMixin:
             density_mean = row[4]
             density_last = row[5]
             prune_method = row[6]
-            prune_target = row[7]
+            row[7]
             prune_actual = row[8]
             prune_retention = row[9]
             dense_loss = row[10]
@@ -644,10 +703,14 @@ class _RoutingMixin:
             "n_programs": len(programs),
             "n_with_retention": n_with_retention,
             "avg_quality_retention": (
-                round(sum_retention / n_with_retention, 4) if n_with_retention > 0 else None
+                round(sum_retention / n_with_retention, 4)
+                if n_with_retention > 0
+                else None
             ),
             "avg_compression_ratio_int8": (
-                round(sum_compression / n_with_retention, 2) if n_with_retention > 0 else None
+                round(sum_compression / n_with_retention, 2)
+                if n_with_retention > 0
+                else None
             ),
             "best_quality_per_byte": round(best_qpb, 4) if best_qpb else None,
             "best_qpb_program_id": best_qpb_id,
@@ -658,4 +721,3 @@ class _RoutingMixin:
             "programs": programs,
             "summary": summary,
         }
-

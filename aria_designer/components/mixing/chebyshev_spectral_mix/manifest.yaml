@@ -1,0 +1,63 @@
+id: chebyshev_spectral_mix
+version: 1.0.0
+name: Chebyshev polynomial spectral mixing
+category: mixing
+tags:
+- parameterized
+- learnable
+- vram_efficient
+- spectral
+status: approved
+description: "Spectral mixing via Chebyshev polynomial recurrence. K learned coefficients per feature dim: K*D params vs D\xB2 for dense mixing (42x compression at K=6, D=256)."
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  chebyshev_order:
+    type: int
+    default: 6
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: 6*D
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  Spectral mixing via Chebyshev polynomial basis.
+
+  Uses the recurrence T_k(x) = 2x*T_{k-1}(x) - T_{k-2}(x).
+
+  K learned coefficients per dimension: K*D total params.
+
+  No transcendental functions (faster than Fourier sin/cos).
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: chebyshev_order (int, default=6, range 2-16).
+
+
+  ### Plain Language
+
+  Mixes features using Chebyshev polynomials — an optimal polynomial basis
+  for approximation. Much more parameter-efficient than dense mixing matrices.
+
+  '

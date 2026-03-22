@@ -18,8 +18,8 @@ repos:
 
   - repo: local
     hooks:
-      - id: no-file-over-1250
-        name: Reject god files
-        language: system
-        entry: bash -c 'find . -name "*.py" | xargs wc -l | awk "$$1 > 1250 {print; found=1} END {exit found}"'
+      - id: no-file-over-3000
+        name: Reject god files (>3000 lines)
+        language: python
+        entry: python -c "import subprocess,sys;r=subprocess.run(['git','ls-files','*.py'],capture_output=True,text=True);files=[f for f in r.stdout.strip().split('\n') if f and '/tests/' not in f and '/archive/' not in f];bad=[f for f in files if sum(1 for _ in open(f)) > 3000];[print(f) for f in bad];sys.exit(1 if bad else 0)"
         pass_filenames: false

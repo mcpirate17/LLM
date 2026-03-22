@@ -18,7 +18,7 @@ pytestmark = pytest.mark.unit
 
 # Detect available dependencies
 try:
-    import torch
+    import torch  # noqa: F401
 
     HAS_TORCH = True
 except ImportError:
@@ -426,7 +426,7 @@ class TestContextBuilderExpanded(unittest.TestCase):
         ctx_mod._OP_REGISTRY_CACHE = None  # Force rebuild
         section = _build_op_registry_section()
         self.assertIn("Available Ops", section)
-        self.assertIn("excluded_ops", section)
+        self.assertIn("op_weights", section)
         self.assertIn("elementwise_unary", section)
         self.assertIn("relu", section)
         self.assertIn("matmul", section)
@@ -443,27 +443,6 @@ class TestContextBuilderExpanded(unittest.TestCase):
             },
         )
         self.assertIn("Set category_weights in CONFIG", ctx)
-
-    def test_excluded_ops_hint_in_negative_results(self):
-        """Negative results section should suggest using excluded_ops."""
-        from research.scientist.llm.context_experiment import build_rich_context
-
-        ctx = build_rich_context(
-            results={"total": 10, "stage0_passed": 5, "stage1_passed": 1},
-            analytics_data={
-                "negative_results": {
-                    "failed_ops": [
-                        {
-                            "op_name": "bad_op",
-                            "n_used": 10,
-                            "failure_stage": "stage0",
-                            "confidence": 0.9,
-                        },
-                    ],
-                },
-            },
-        )
-        self.assertIn("Use excluded_ops in CONFIG to ban these", ctx)
 
     def test_designer_telemetry_section(self):
         """Designer telemetry should render in context when present."""
@@ -518,7 +497,6 @@ class TestRuleBasedStrategies(unittest.TestCase):
         valid_override_keys = {
             "math_space_weight",
             "category_weights",
-            "excluded_ops",
             "op_weights",
             "grammar_split_prob",
             "grammar_merge_prob",
@@ -547,7 +525,6 @@ class TestRuleBasedStrategies(unittest.TestCase):
         valid_override_keys = {
             "math_space_weight",
             "category_weights",
-            "excluded_ops",
             "op_weights",
             "grammar_split_prob",
             "grammar_merge_prob",

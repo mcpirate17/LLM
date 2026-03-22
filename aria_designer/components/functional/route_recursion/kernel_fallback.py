@@ -2,6 +2,7 @@
 
 import torch
 
+
 class ComponentHandler:
     """Fallback handler for route_recursion."""
 
@@ -15,6 +16,8 @@ class ComponentHandler:
         scores = inputs["scores"]
         if scores.dim() != 3:
             raise ValueError("route_recursion expects scores with shape [B, S, Dp]")
-        max_depth = max(1, min(int(config.get("max_depth", scores.size(-1))), scores.size(-1)))
+        max_depth = max(
+            1, min(int(config.get("max_depth", scores.size(-1))), scores.size(-1))
+        )
         depth = torch.argmax(scores[..., :max_depth], dim=-1)
         return {"depth": depth}

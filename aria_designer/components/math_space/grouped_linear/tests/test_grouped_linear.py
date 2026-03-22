@@ -1,4 +1,5 @@
 """Contract tests for grouped_linear."""
+
 import yaml
 from pathlib import Path
 

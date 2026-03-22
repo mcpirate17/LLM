@@ -27,22 +27,56 @@ _NATIVE_OP_ALIASES: Dict[str, str] = {
     "transpose": "transpose2d",
 }
 _NATIVE_C_KERNEL_OPS: Set[str] = {
-    "relu", "gelu", "silu", "sigmoid", "tanh", "exp", "square", "abs", "neg",
-    "sin", "cos", "log", "sqrt", "reciprocal",
-    "add", "sub", "mul", "matmul", "linear", "rmsnorm", "layernorm", "softmax",
+    "relu",
+    "gelu",
+    "silu",
+    "sigmoid",
+    "tanh",
+    "exp",
+    "square",
+    "abs",
+    "neg",
+    "sin",
+    "cos",
+    "log",
+    "sqrt",
+    "reciprocal",
+    "add",
+    "sub",
+    "mul",
+    "matmul",
+    "linear",
+    "rmsnorm",
+    "layernorm",
+    "softmax",
     "transpose2d",
 }
 _CYTHON_WRAPPER_OPS: Set[str] = set(_NATIVE_C_KERNEL_OPS)
-_SOFT_BRIDGE_OPS: Set[str] = {"causal_mask", "sort_seq", "argsort_seq", "topk_gate"}
+_SOFT_BRIDGE_OPS: Set[str] = {"causal_mask", "argsort_seq", "topk_gate"}
 _CYTHON_UNARY_OPS: Set[str] = {
-    "relu", "gelu", "silu", "square", "abs", "neg", "reciprocal",
-    "log", "sqrt", "sin", "cos", "sigmoid", "tanh", "exp",
+    "relu",
+    "gelu",
+    "silu",
+    "square",
+    "abs",
+    "neg",
+    "reciprocal",
+    "log",
+    "sqrt",
+    "sin",
+    "cos",
+    "sigmoid",
+    "tanh",
+    "exp",
 }
 _CYTHON_BINARY_OPS: Set[str] = {"add", "mul", "sub"}
 _CYTHON_UNARY_BACKWARD_OPS: Set[str] = {"relu", "gelu", "silu", "sigmoid", "tanh"}
 _CYTHON_BINARY_BACKWARD_OPS: Set[str] = {"add", "mul", "sub"}
 
-def _check_native_op_support(layer_graphs: List[Any], native_lib: Any) -> Dict[str, Any]:
+
+def _check_native_op_support(
+    layer_graphs: List[Any], native_lib: Any
+) -> Dict[str, Any]:
     """Check which ops in the graphs have native kernel support.
 
     Prefers the Cython bridge (aria_bridge.is_native) when available.
@@ -130,11 +164,13 @@ def _check_native_op_support(layer_graphs: List[Any], native_lib: Any) -> Dict[s
         "native_coverage": native_coverage,
     }
 
+
 def _requested_execution_mode() -> str:
     raw = str(os.environ.get("NATIVE_RUNNER_EXECUTION_MODE", "probe")).strip().lower()
     if raw in {"probe", "selective"}:
         return raw
     return "probe"
+
 
 def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
     """Dispatch a single op through the native Cython bridge.
@@ -156,15 +192,16 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
     bridge = _try_import_cython_bridge()
     if bridge is None:
         raise RuntimeError(
-            "Cython bridge (aria_bridge) is not available. "
-            "Cannot dispatch op natively."
+            "Cython bridge (aria_bridge) is not available. Cannot dispatch op natively."
         )
 
     canonical_op = _NATIVE_OP_ALIASES.get(op_name, op_name)
 
     if canonical_op in _CYTHON_UNARY_OPS:
         if len(tensors) != 1:
-            raise ValueError(f"Unary op '{op_name}' expects 1 tensor, got {len(tensors)}")
+            raise ValueError(
+                f"Unary op '{op_name}' expects 1 tensor, got {len(tensors)}"
+            )
         if canonical_op == "square":
             try:
                 return bridge.dispatch_unary(canonical_op, tensors[0])
@@ -174,7 +211,9 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
 
     if canonical_op in _CYTHON_BINARY_OPS:
         if len(tensors) != 2:
-            raise ValueError(f"Binary op '{op_name}' expects 2 tensors, got {len(tensors)}")
+            raise ValueError(
+                f"Binary op '{op_name}' expects 2 tensors, got {len(tensors)}"
+            )
         return bridge.dispatch_binary(canonical_op, tensors[0], tensors[1])
 
     if canonical_op == "matmul":
@@ -184,13 +223,17 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
 
     if canonical_op == "linear":
         if len(tensors) < 2:
-            raise ValueError(f"linear expects at least 2 tensors (x, W), got {len(tensors)}")
+            raise ValueError(
+                f"linear expects at least 2 tensors (x, W), got {len(tensors)}"
+            )
         bias = kwargs.get("bias", tensors[2] if len(tensors) > 2 else None)
         return bridge.dispatch_linear(tensors[0], tensors[1], bias=bias)
 
     if canonical_op == "rmsnorm":
         if len(tensors) < 2:
-            raise ValueError(f"rmsnorm expects at least 2 tensors (x, weight), got {len(tensors)}")
+            raise ValueError(
+                f"rmsnorm expects at least 2 tensors (x, weight), got {len(tensors)}"
+            )
         eps = kwargs.get("eps", 1e-5)
         return bridge.dispatch_rmsnorm(tensors[0], tensors[1], eps=eps)
 
@@ -201,7 +244,9 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
 
     if canonical_op == "layernorm":
         if len(tensors) < 3:
-            raise ValueError(f"layernorm expects 3 tensors (x, weight, bias), got {len(tensors)}")
+            raise ValueError(
+                f"layernorm expects 3 tensors (x, weight, bias), got {len(tensors)}"
+            )
         eps = kwargs.get("eps", 1e-5)
         return bridge.dispatch_layernorm(tensors[0], tensors[1], tensors[2], eps=eps)
 
@@ -211,6 +256,7 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
         return bridge.dispatch_transpose2d(tensors[0])
 
     raise ValueError(f"Unsupported op for native dispatch: '{op_name}'")
+
 
 def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> Any:
     """Dispatch a backward (gradient) op through the native Cython bridge.
@@ -245,14 +291,18 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
             raise ValueError(
                 f"Binary backward '{op_name}' expects 2 saved tensors (a, b), got {len(saved_tensors)}"
             )
-        return bridge.dispatch_binary_backward(op_name, grad_output, saved_tensors[0], saved_tensors[1])
+        return bridge.dispatch_binary_backward(
+            op_name, grad_output, saved_tensors[0], saved_tensors[1]
+        )
 
     if op_name == "matmul":
         if len(saved_tensors) != 2:
             raise ValueError(
                 f"matmul backward expects 2 saved tensors (A, B), got {len(saved_tensors)}"
             )
-        return bridge.dispatch_matmul_backward(grad_output, saved_tensors[0], saved_tensors[1])
+        return bridge.dispatch_matmul_backward(
+            grad_output, saved_tensors[0], saved_tensors[1]
+        )
 
     if op_name == "softmax":
         if len(saved_tensors) != 1:
@@ -266,16 +316,21 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
             raise ValueError(
                 f"layernorm backward expects 2 saved tensors (input, gamma), got {len(saved_tensors)}"
             )
-        return bridge.dispatch_layernorm_backward(grad_output, saved_tensors[0], saved_tensors[1])
+        return bridge.dispatch_layernorm_backward(
+            grad_output, saved_tensors[0], saved_tensors[1]
+        )
 
     if op_name == "rmsnorm":
         if len(saved_tensors) != 2:
             raise ValueError(
                 f"rmsnorm backward expects 2 saved tensors (input, gamma), got {len(saved_tensors)}"
             )
-        return bridge.dispatch_rmsnorm_backward(grad_output, saved_tensors[0], saved_tensors[1])
+        return bridge.dispatch_rmsnorm_backward(
+            grad_output, saved_tensors[0], saved_tensors[1]
+        )
 
     raise ValueError(f"Unsupported op for native backward dispatch: '{op_name}'")
+
 
 def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     """Execute a full computation graph using the Rust scheduler.
@@ -295,6 +350,7 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     from ..synthesis.native_ir_converter import graph_to_native_ir_json
 
     import numpy as np
+
     if hasattr(input_data, "detach"):
         # Convert torch tensor to numpy
         x_np = input_data.detach().cpu().numpy().astype(np.float32)
@@ -307,7 +363,7 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     x_flat = x_np.ravel().tolist()
 
     graph_json = graph_to_native_ir_json(graph)
-    
+
     try:
         global _last_profile_data
         # Prefer execute_graph_with_stats for arena usage observability.
@@ -351,6 +407,7 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
         logger.error("Rust scheduler execution failed: %s", exc)
         raise
 
+
 def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str, Any]:
     """Execute a full forward pass, returning output and saved activations.
 
@@ -375,6 +432,7 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
     from ..synthesis.native_ir_converter import graph_to_native_ir_json
 
     import numpy as np
+
     if hasattr(input_data, "detach"):
         x_np = input_data.detach().cpu().numpy().astype(np.float32)
     else:
@@ -401,13 +459,16 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
 
     output = node_outputs.get(output_node_id)
     if output is None:
-        raise RuntimeError(f"Graph output node {output_node_id} not found in forward pass")
+        raise RuntimeError(
+            f"Graph output node {output_node_id} not found in forward pass"
+        )
 
     return {
         "output": np.asarray(output, dtype=np.float32),
         "saved_activations": dict(node_outputs),
         "ir_json": graph_json,
     }
+
 
 def dispatch_graph_backward_native(
     graph: Any,
@@ -500,6 +561,7 @@ def dispatch_graph_backward_native(
 
     return grads
 
+
 def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> Any:
     """Execute a graph using a pre-converted native_ir JSON string.
 
@@ -520,6 +582,7 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
         raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
 
     import numpy as np
+
     if hasattr(input_data, "detach"):
         x_np = input_data.detach().cpu().numpy().astype(np.float32)
     else:
@@ -561,6 +624,7 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
         logger.error("Rust scheduler execution failed: %s", exc)
         raise
 
+
 def _activate_selective_native_dispatch(native_lib: Any) -> Dict[str, Any]:
     """Run a tiny native-kernel execution path to confirm selective activation.
 
@@ -580,6 +644,7 @@ def _activate_selective_native_dispatch(native_lib: Any) -> Dict[str, Any]:
     if bridge is not None:
         try:
             import numpy as np
+
             x = np.array([-1.0, 0.0, 2.0, 3.5], dtype=np.float32)
             relu_out = bridge.dispatch_unary("relu", x)
             relu_list = [float(v) for v in relu_out]
@@ -598,18 +663,37 @@ def _activate_selective_native_dispatch(native_lib: Any) -> Dict[str, Any]:
             result["activated"] = True
             result["reason"] = "ok"
             result["dispatch_backend"] = "cython"
-            
+
             # Also check Rust scheduler
             rust = _try_import_rust_scheduler()
             if rust is not None:
                 result["rust_scheduler"] = "available"
                 # Simple topo probe
-                order = rust.topological_order(json.dumps({
-                    "schema_version": "0.1", "model_dim": 4, "output_node_id": 1,
-                    "nodes": [{"id": 0, "op_name": "input", "is_input": True, "input_ids": [], "config": {}},
-                              {"id": 1, "op_name": "relu", "input_ids": [0], "config": {}}],
-                    "edges": [{"source": 0, "target": 1}]
-                }))
+                order = rust.topological_order(
+                    json.dumps(
+                        {
+                            "schema_version": "0.1",
+                            "model_dim": 4,
+                            "output_node_id": 1,
+                            "nodes": [
+                                {
+                                    "id": 0,
+                                    "op_name": "input",
+                                    "is_input": True,
+                                    "input_ids": [],
+                                    "config": {},
+                                },
+                                {
+                                    "id": 1,
+                                    "op_name": "relu",
+                                    "input_ids": [0],
+                                    "config": {},
+                                },
+                            ],
+                            "edges": [{"source": 0, "target": 1}],
+                        }
+                    )
+                )
                 if order == [0, 1]:
                     result["rust_scheduler"] = "ok"
                 else:
@@ -619,7 +703,9 @@ def _activate_selective_native_dispatch(native_lib: Any) -> Dict[str, Any]:
 
             return result
         except Exception as exc:
-            logger.debug("Cython bridge activation failed, falling back to ctypes: %s", exc)
+            logger.debug(
+                "Cython bridge activation failed, falling back to ctypes: %s", exc
+            )
             # Fall through to ctypes path.
 
     # Fallback: raw ctypes path.

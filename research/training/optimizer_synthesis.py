@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SynthesizedOptimizer:
     """A synthesized optimizer."""
+
     name: str
     components: List[str] = field(default_factory=list)
     lr: float = 3e-4
@@ -56,12 +57,8 @@ class SynthesizedOptimizer:
             return ContrastiveLocalOptimizer(params, lr=lr, weight_decay=wd)
         elif "rigl_sparse" in self.components:
             from .sparse_training import RigLOptimizer
-            sparsity = kwargs.get("sparsity", 0.8)
-            total_steps = kwargs.get("total_steps", 1000)
-            return RigLOptimizer(
-                params, lr=lr, weight_decay=wd,
-                sparsity=sparsity, total_steps=total_steps,
-            )
+
+            return RigLOptimizer(params, lr=lr, weight_decay=wd)
         else:
             # Default: AdamW with modified betas
             betas = (0.9, 0.95)
@@ -241,8 +238,9 @@ class TropicalGradientOptimizer(torch.optim.Optimizer):
                 abs_acc = acc.abs()
                 abs_grad = grad.abs()
                 new_abs = torch.minimum(abs_acc * decay, abs_grad)
-                new_sign = torch.where(abs_grad < abs_acc * decay,
-                                      grad.sign(), acc.sign())
+                new_sign = torch.where(
+                    abs_grad < abs_acc * decay, grad.sign(), acc.sign()
+                )
                 state["tropical_acc"] = new_sign * new_abs
 
                 # Second moment (for adaptive LR)
@@ -263,10 +261,8 @@ class TropicalGradientOptimizer(torch.optim.Optimizer):
 class LionVariantOptimizer(torch.optim.Optimizer):
     """Variant of Lion (sign-based) with learned interpolation."""
 
-    def __init__(self, params, lr=1e-4, weight_decay=0.01,
-                 beta1=0.9, beta2=0.99):
-        defaults = dict(lr=lr, weight_decay=weight_decay,
-                       beta1=beta1, beta2=beta2)
+    def __init__(self, params, lr=1e-4, weight_decay=0.01, beta1=0.9, beta2=0.99):
+        defaults = dict(lr=lr, weight_decay=weight_decay, beta1=beta1, beta2=beta2)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -320,11 +316,20 @@ class HebbianOptimizer(torch.optim.Optimizer):
     secondary signal to maintain task performance.
     """
 
-    def __init__(self, params, lr=1e-4, weight_decay=0.01,
-                 hebbian_strength=0.1, anti_hebbian_decay=0.01):
-        defaults = dict(lr=lr, weight_decay=weight_decay,
-                       hebbian_strength=hebbian_strength,
-                       anti_hebbian_decay=anti_hebbian_decay)
+    def __init__(
+        self,
+        params,
+        lr=1e-4,
+        weight_decay=0.01,
+        hebbian_strength=0.1,
+        anti_hebbian_decay=0.01,
+    ):
+        defaults = dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            hebbian_strength=hebbian_strength,
+            anti_hebbian_decay=anti_hebbian_decay,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -385,11 +390,20 @@ class ForwardForwardOptimizer(torch.optim.Optimizer):
     each layer to independently maximize its representational quality.
     """
 
-    def __init__(self, params, lr=3e-4, weight_decay=0.01,
-                 goodness_threshold=1.0, local_norm=True):
-        defaults = dict(lr=lr, weight_decay=weight_decay,
-                       goodness_threshold=goodness_threshold,
-                       local_norm=local_norm)
+    def __init__(
+        self,
+        params,
+        lr=3e-4,
+        weight_decay=0.01,
+        goodness_threshold=1.0,
+        local_norm=True,
+    ):
+        defaults = dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            goodness_threshold=goodness_threshold,
+            local_norm=local_norm,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -462,11 +476,20 @@ class PerturbationOptimizer(torch.optim.Optimizer):
     when available to get the best of both worlds.
     """
 
-    def __init__(self, params, lr=1e-4, weight_decay=0.01,
-                 perturbation_scale=0.01, blend_factor=0.3):
-        defaults = dict(lr=lr, weight_decay=weight_decay,
-                       perturbation_scale=perturbation_scale,
-                       blend_factor=blend_factor)
+    def __init__(
+        self,
+        params,
+        lr=1e-4,
+        weight_decay=0.01,
+        perturbation_scale=0.01,
+        blend_factor=0.3,
+    ):
+        defaults = dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            perturbation_scale=perturbation_scale,
+            blend_factor=blend_factor,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -527,11 +550,15 @@ class ContrastiveLocalOptimizer(torch.optim.Optimizer):
     gradient problem inherent in deep backprop.
     """
 
-    def __init__(self, params, lr=3e-4, weight_decay=0.01,
-                 contrast_strength=0.2, temperature=0.1):
-        defaults = dict(lr=lr, weight_decay=weight_decay,
-                       contrast_strength=contrast_strength,
-                       temperature=temperature)
+    def __init__(
+        self, params, lr=3e-4, weight_decay=0.01, contrast_strength=0.2, temperature=0.1
+    ):
+        defaults = dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            contrast_strength=contrast_strength,
+            temperature=temperature,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -561,7 +588,7 @@ class ContrastiveLocalOptimizer(torch.optim.Optimizer):
                     state["m"] = torch.zeros_like(grad)
 
                 state["step"] += 1
-                prev_grad = state["prev_grad"]
+                state["prev_grad"]
                 prev_update = state["prev_update"]
                 m = state["m"]
 
@@ -608,10 +635,22 @@ OPTIMIZER_RECIPES = [
     ("tropical_gradient", ["tropical_grad"], "Tropical gradient accumulation"),
     ("lion_variant", ["lion_variant"], "Lion-style sign-based optimizer"),
     ("hebbian", ["hebbian"], "Hebbian local learning rule"),
-    ("forward_forward", ["forward_forward"], "Forward-forward goodness-based optimizer"),
+    (
+        "forward_forward",
+        ["forward_forward"],
+        "Forward-forward goodness-based optimizer",
+    ),
     ("perturbation", ["perturbation"], "Perturbation-based gradient estimation (SPSA)"),
-    ("contrastive_local", ["contrastive_local"], "Contrastive local layer-wise optimizer"),
-    ("rigl_sparse", ["rigl_sparse"], "RigL dynamic sparse training (fixed param budget)"),
+    (
+        "contrastive_local",
+        ["contrastive_local"],
+        "Contrastive local layer-wise optimizer",
+    ),
+    (
+        "rigl_sparse",
+        ["rigl_sparse"],
+        "RigL dynamic sparse training (fixed param budget)",
+    ),
 ]
 
 
@@ -623,7 +662,7 @@ def synthesize_optimizer(seed: Optional[int] = None) -> SynthesizedOptimizer:
 
     # Randomize hyperparameters
     lr = 10 ** rng.uniform(-4.5, -3.0)  # 3e-5 to 1e-3
-    wd = 10 ** rng.uniform(-3, -1)      # 0.001 to 0.1
+    wd = 10 ** rng.uniform(-3, -1)  # 0.001 to 0.1
 
     return SynthesizedOptimizer(
         name=name,
@@ -639,7 +678,8 @@ def synthesize_optimizer(seed: Optional[int] = None) -> SynthesizedOptimizer:
 
 
 def _newton_schulz_orthogonalize(
-    M: torch.Tensor, n_steps: int = 5,
+    M: torch.Tensor,
+    n_steps: int = 5,
 ) -> torch.Tensor:
     """Newton-Schulz iteration to approximate the orthogonal component of M.
 
@@ -661,7 +701,11 @@ def _newton_schulz_orthogonalize(
     X = M / norm
     for _ in range(n_steps):
         A = X.T @ X
-        X = X @ (a * torch.eye(A.shape[0], device=A.device, dtype=A.dtype) + b * A + c * A @ A)
+        X = X @ (
+            a * torch.eye(A.shape[0], device=A.device, dtype=A.dtype)
+            + b * A
+            + c * A @ A
+        )
     if rows < cols:
         X = X.T
     return X
@@ -691,8 +735,11 @@ class MuonOptimizer(torch.optim.Optimizer):
         ns_steps: int = 5,
     ):
         defaults = dict(
-            lr=lr, weight_decay=weight_decay, momentum=momentum,
-            nesterov=nesterov, ns_steps=ns_steps,
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
         )
         super().__init__(params, defaults)
 
@@ -731,7 +778,8 @@ class MuonOptimizer(torch.optim.Optimizer):
                 # Orthogonalize for 2D weight matrices
                 if p.ndim >= 2:
                     update = _newton_schulz_orthogonalize(
-                        update.view(p.shape[0], -1), n_steps=ns_steps,
+                        update.view(p.shape[0], -1),
+                        n_steps=ns_steps,
                     ).view_as(p)
 
                 # Decoupled weight decay
@@ -779,12 +827,17 @@ def build_optimizer(
 
     if name == "muon":
         return MuonOptimizer(
-            params, lr=lr, weight_decay=weight_decay, momentum=momentum,
+            params,
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
         )
 
     elif name == "adamw":
         kwargs: Dict[str, object] = dict(
-            lr=lr, weight_decay=weight_decay, betas=betas,
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
         )
         if fused:
             kwargs["fused"] = True
@@ -803,12 +856,14 @@ def build_optimizer(
 
     elif name == "sgd":
         return torch.optim.SGD(
-            params, lr=lr, weight_decay=weight_decay,
-            momentum=momentum, nesterov=True,
+            params,
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=True,
         )
 
     else:
         raise ValueError(
-            f"Unknown optimizer_type {name!r}. "
-            f"Valid options: muon, adamw, sgd"
+            f"Unknown optimizer_type {name!r}. Valid options: muon, adamw, sgd"
         )

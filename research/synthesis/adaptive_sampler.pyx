@@ -81,7 +81,7 @@ class AdaptiveGenerator:
         self.config = config
         self.prior = prior
         self.model_dim = config.model_dim
-        self.max_params = int(config.max_params_ratio * self.model_dim * self.model_dim)
+        self.max_params = 4 * self.model_dim * self.model_dim * 12  # VRAM is the real constraint
         # Max FLOPs relative to a standard Transformer layer (approx 12*D^2*S)
         # We cap at 4x Transformer complexity for the search.
         self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)

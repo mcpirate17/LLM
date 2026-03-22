@@ -40,8 +40,8 @@ function finitePositiveOrNull(value) {
 // ── Main Component ─────────────────────────────────────────────────
 
 const COLUMNS = [
-  { key: '_score', label: 'Discovery Score', title: 'Internal ranking score based on novelty and performance.' },
-  { key: 'display_name', label: 'Architecture', title: 'Human-readable name or fingerprint of the model topology.' },
+  { key: '_score', label: 'Discovery Score', width: 124, title: 'Internal ranking score based on novelty and performance.' },
+  { key: 'display_name', label: 'Architecture', width: 240, title: 'Human-readable name or fingerprint of the model topology.' },
   { key: 'architecture_family', label: 'Family', title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
   { key: 'discovery_loss_ratio', label: 'Discovery Loss', title: 'Loss ratio on random tokens (fast triage).' },
   { key: 'validation_loss_ratio', label: 'Validation Loss', title: 'Loss ratio on real micro-corpus (true causal performance).' },
@@ -100,6 +100,7 @@ function Discoveries({
   const [sortKey, setSortKey] = useState(() => typeof prefs?.sortKey === 'string' ? prefs.sortKey : '_score');
   const [sortDesc, setSortDesc] = useState(() => typeof prefs?.sortDesc === 'boolean' ? prefs.sortDesc : true);
   const [searchQuery, setSearchQuery] = useState(() => typeof prefs?.searchQuery === 'string' ? prefs.searchQuery : '');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(() => typeof prefs?.searchQuery === 'string' ? prefs.searchQuery : '');
   const [expandedRowId, setExpandedRowId] = useState(null);
   const [highlightId, setHighlightId] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -160,6 +161,13 @@ function Discoveries({
     } catch {}
   }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns, hideFailed]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   // Handle external highlight
   useEffect(() => {
     if (highlightResultId) {
@@ -189,6 +197,11 @@ function Discoveries({
     try {
       const params = new URLSearchParams({ sort: 'composite_score', limit: '200', view: 'ranked' });
       if (activeTier !== 'all') params.set('tier', activeTier);
+      const q = debouncedSearchQuery.trim();
+      if (q) {
+        params.set('q', q);
+        params.set('scope', 'all');
+      }
       const res = await apiCall(`/api/discoveries?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
@@ -204,7 +217,7 @@ function Discoveries({
       if (!isBackground) setError('Failed to load discoveries: ' + e.message);
     }
     if (!isBackground) setLoading(false);
-  }, [activeTier]);
+  }, [activeTier, debouncedSearchQuery]);
 
   useEffect(() => {
     fetchData(false);
@@ -279,10 +292,10 @@ function Discoveries({
     }
   }, [fetchData]);
 
-  // Sort & augment entries
+  // Sort & augment discovery entries
   const sorted = useMemo(() => {
     const entries = data?.entries || [];
-    const refs = entries.filter(e => e.is_reference);
+    const refs = data?.references || [];
     
     const augmented = entries.map(e => {
       const entryBestLoss = bestLoss(e);
@@ -316,13 +329,6 @@ function Discoveries({
       };
     });
     augmented.sort((a, b) => {
-      // ONLY prioritize references at the top if we are sorting by score (the default)
-      if (sortKey === '_score') {
-        const aRef = Number(Boolean(a?.is_reference));
-        const bRef = Number(Boolean(b?.is_reference));
-        if (aRef !== bRef) return bRef - aRef;
-      }
-
       let va, vb;
       if (sortKey === 'tier') {
         va = TIER_ORDER[a.tier] || 0;
@@ -342,10 +348,22 @@ function Discoveries({
     return augmented;
   }, [data?.entries, sortKey, sortDesc]);
 
-  const visibilityFiltered = useMemo(() => {
-    if (showReferences) return sorted;
-    return sorted.filter(e => !e?.is_reference);
-  }, [sorted, showReferences]);
+  const references = useMemo(() => {
+    const refs = (data?.references || []).map((e) => ({
+      ...e,
+      _score: (e.composite_score != null ? Number(e.composite_score) : candidateScore(e, TIER_ORDER)),
+      _best_loss: bestLoss(e),
+      _novelty: e.screening_novelty ?? e.novelty_score ?? null,
+    }));
+    refs.sort((a, b) => {
+      const aScore = Number(a._score || 0);
+      const bScore = Number(b._score || 0);
+      return bScore - aScore;
+    });
+    return refs;
+  }, [data?.references]);
+
+  const visibilityFiltered = useMemo(() => sorted, [sorted]);
 
   const failedFiltered = useMemo(() => {
     if (!hideFailed) return visibilityFiltered;
@@ -382,20 +400,9 @@ function Discoveries({
     return Math.max(0, (failedFiltered?.length || 0) - (qualityFiltered?.length || 0));
   }, [qualityFloorEnabled, failedFiltered, qualityFiltered]);
 
-  // Search filter
-  const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return qualityFiltered;
-    const q = searchQuery.trim().toLowerCase();
-    return qualityFiltered.filter(e =>
-      (e.display_name && e.display_name.toLowerCase().includes(q)) ||
-      (e.architecture_family && e.architecture_family.toLowerCase().includes(q)) ||
-      (e.graph_fingerprint && e.graph_fingerprint.toLowerCase().includes(q)) ||
-      (e.result_id && e.result_id.toLowerCase().includes(q)) ||
-      (e.architecture_desc && e.architecture_desc.toLowerCase().includes(q))
-    );
-  }, [qualityFiltered, searchQuery]);
+  const filtered = qualityFiltered;
 
-  const tierCounts = data?.tier_counts || {};
+  const counts = data?.counts || data?.tier_counts || {};
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
 
   return (
@@ -410,7 +417,7 @@ function Discoveries({
       {/* Summary bar */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
-          <SummaryBar tierCounts={tierCounts} />
+          <SummaryBar tierCounts={counts} />
         </div>
         <button
           className={`refresh-btn ${showChart ? 'active' : ''}`}
@@ -430,8 +437,8 @@ function Discoveries({
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
         {tiers.map(tier => {
           const count = tier === 'all'
-            ? (data?.total || 0)
-            : (tierCounts[tier] || 0);
+            ? (counts.all || 0)
+            : (counts[tier] || 0);
           return (
             <button
               key={tier}
@@ -467,7 +474,12 @@ function Discoveries({
             borderRadius: 4, color: showReferences ? 'var(--accent-purple)' : 'var(--text-secondary)',
           }}
         >
-          {showReferences ? 'Hide references' : 'Show references'}
+          {showReferences ? `Hide references` : `Show references`}
+          {Number(counts.references || 0) > 0 && (
+            <span style={{ marginLeft: 5, fontSize: 10, color: 'var(--accent-purple)' }}>
+              ({counts.references})
+            </span>
+          )}
         </button>
         <button
           onClick={() => setHideFailed(v => !v)}
@@ -557,7 +569,7 @@ function Discoveries({
         />
         {searchQuery && (
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-            {filtered.length} of {qualityFiltered.length} entries
+            {loading ? 'Searching full DB...' : `${filtered.length} matches`}
           </span>
         )}
         {qualityFloorEnabled && qualityHiddenCount > 0 && (
@@ -573,7 +585,7 @@ function Discoveries({
       </div>
 
       {/* Reference Baselines Banner */}
-      {showReferences && sorted.filter(e => e.is_reference).length > 0 && (
+      {showReferences && references.length > 0 && (
         <div style={{
           marginBottom: 14, padding: '10px 14px',
           background: 'rgba(188, 140, 255, 0.06)',
@@ -583,13 +595,16 @@ function Discoveries({
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-purple)', marginBottom: 8 }}>
             Reference Baselines
           </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Baselines stay visible independently of discovery stage filters.
+          </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {sorted.filter(e => e.is_reference).map(ref => (
+            {references.map(ref => (
               <div key={ref.entry_id || ref.result_id} style={{
                 padding: '6px 12px', borderRadius: 5,
                 background: 'rgba(188, 140, 255, 0.10)',
                 border: '1px solid rgba(188, 140, 255, 0.18)',
-                fontSize: 11, lineHeight: 1.5, minWidth: 130,
+                fontSize: 11, lineHeight: 1.5, minWidth: 150,
               }}>
                 <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                   {ref.reference_name || ref.display_name || ref.architecture_desc || 'Reference'}
@@ -601,6 +616,22 @@ function Discoveries({
                 {ref.param_count != null && (
                   <div style={{ color: 'var(--text-muted)' }}>
                     {(ref.param_count / 1e6).toFixed(1)}M params
+                  </div>
+                )}
+                {ref.result_id && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={() => onSelectProgram?.(ref.result_id)}
+                      style={{
+                        ...actionBtnStyle,
+                        borderColor: 'var(--accent-purple)',
+                        color: 'var(--accent-purple)',
+                        background: 'rgba(188, 140, 255, 0.12)',
+                      }}
+                      title="Open full reference detail"
+                    >
+                      Details
+                    </button>
                   </div>
                 )}
               </div>
@@ -617,7 +648,7 @@ function Discoveries({
       ) : filtered.length === 0 && !error ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
           {searchQuery.trim() ? (
-            <p>No entries match "{searchQuery}".</p>
+            <p>No discoveries match "{searchQuery}" in the full notebook.</p>
           ) : activeTier === 'all' ? (
             <p>No discoveries yet. Run experiments to generate candidates.</p>
           ) : (
@@ -707,12 +738,12 @@ function Discoveries({
 }
 
 const thStyle = {
-  padding: '6px 8px', textAlign: 'left', fontSize: 11,
+  padding: '6px 12px', textAlign: 'left', fontSize: 11,
   color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', whiteSpace: 'nowrap',
 };
 
 const tdStyle = {
-  padding: '6px 8px', whiteSpace: 'nowrap',
+  padding: '6px 12px', whiteSpace: 'nowrap',
 };
 
 const actionBtnStyle = {

@@ -963,6 +963,43 @@ class _ExecutionScreeningMixin:
         except Exception:
             template_weights, motif_weights = {}, {}
 
+        # Data-driven op/template weights from accumulated S1 pass rates
+        if analytics is not None:
+            _window_cutoff = time.time() - 604800  # 7 days
+            try:
+                learned_op_weights = analytics.compute_op_weights(
+                    since_ts=_window_cutoff
+                )
+                op_weights.update(learned_op_weights)
+            except Exception:
+                pass
+            try:
+                learned_tpl_weights = analytics.compute_template_weights(
+                    since_ts=_window_cutoff
+                )
+                if learned_tpl_weights:
+                    template_weights.update(learned_tpl_weights)
+            except Exception:
+                pass
+            try:
+                learned_motif_weights = analytics.compute_motif_weights(
+                    since_ts=_window_cutoff
+                )
+                if learned_motif_weights:
+                    motif_weights.update(learned_motif_weights)
+            except Exception:
+                pass
+            # Synergy-driven boosts: ops that co-occur in S1 survivors
+            # get their motifs/templates boosted to encourage recombination.
+            try:
+                syn_motif_boosts, syn_tpl_boosts = analytics.compute_synergy_boosts()
+                for name, boost in syn_motif_boosts.items():
+                    motif_weights[name] = motif_weights.get(name, 1.0) * boost
+                for name, boost in syn_tpl_boosts.items():
+                    template_weights[name] = template_weights.get(name, 1.0) * boost
+            except Exception:
+                pass
+
         op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, op_weights=op_weights)
         # Merge learned template/motif weights, but don't overwrite routing_first preset
@@ -1120,7 +1157,7 @@ class _ExecutionScreeningMixin:
             _bg_result = batch_generate(
                 config.n_programs,
                 grammar,
-                use_adaptive_synthesis=use_adaptive,
+                _use_adaptive_synthesis=use_adaptive,
                 prior=prior,
             )
             graphs = _bg_result.graphs
@@ -1517,6 +1554,22 @@ class _ExecutionScreeningMixin:
                 )
                 program_metrics["rapid_screening_passed"] = rapid_result.passed
                 program_metrics["rapid_screening_elapsed_ms"] = rapid_result.elapsed_ms
+                # Extract screening loss checkpoints for failure diagnostics
+                _rm = rapid_result.metrics
+                for _step, _col in (
+                    (10, "screening_loss_10"),
+                    (25, "screening_loss_25"),
+                    (50, "screening_loss_50"),
+                ):
+                    _key = f"loss_at_{_step}"
+                    if _key not in _rm and len(_rm.get("losses", [])) >= _step:
+                        _rm[_key] = _rm["losses"][_step - 1]
+                    if _rm.get(_key) is not None:
+                        program_metrics[_col] = _rm[_key]
+                # Extract grad norms even for failures
+                if _rm.get("max_grad_norm") is not None:
+                    program_metrics.setdefault("max_grad_norm", _rm["max_grad_norm"])
+                    program_metrics.setdefault("mean_grad_norm", _rm["mean_grad_norm"])
                 if rapid_result.degraded:
                     program_metrics["rapid_screening_degraded"] = True
                     program_metrics["rapid_screening_degraded_reasons"] = (

@@ -1,4 +1,5 @@
 """Contract tests for cumsum."""
+
 import yaml
 from pathlib import Path
 

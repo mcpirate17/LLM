@@ -1,4 +1,5 @@
 """Contract tests for sin."""
+
 import yaml
 from pathlib import Path
 

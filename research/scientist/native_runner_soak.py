@@ -55,22 +55,27 @@ def run_native_runner_fallback_soak(
 
     reset_native_runner_telemetry()
 
-    with patch("research.scientist.native_runner_adapter.os.environ", env), patch(
-        "research.scientist.native_runner.os.environ", env
-    ), patch(
-        "research.scientist.native_runner_adapter.Path.exists", return_value=True
-    ), patch(
-        "research.scientist.native_runner.try_designer_runtime_probe",
-        return_value=probe_payload,
-    ), patch(
-        "research.scientist.native_runner._legacy_compile_model", return_value=_DummyModel()
+    with (
+        patch("research.scientist.native_runner_adapter.os.environ", env),
+        patch("research.scientist.native_runner.os.environ", env),
+        patch(
+            "research.scientist.native_runner_adapter.Path.exists", return_value=True
+        ),
+        patch(
+            "research.scientist.native_runner_adapter.try_designer_runtime_probe",
+            return_value=probe_payload,
+        ),
+        patch(
+            "research.scientist.native_runner._legacy_compile_model",
+            return_value=_DummyModel(),
+        ),
     ):
         for _ in range(iterations):
             compile_model_native_first([object()], vocab_size=128, max_seq_len=32)
 
         report = native_runner_capability_report()
 
-    fallback = (report.get("fallback_metrics") or {})
+    fallback = report.get("fallback_metrics") or {}
     return NativeRunnerSoakResult(
         iterations=iterations,
         native_enabled_compiles=int(fallback.get("native_enabled_compiles") or 0),

@@ -3,6 +3,7 @@
 Tests fused kernel outputs against sequential unfused operations.
 Tolerance: atol=1e-5 for f32 operations.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -15,10 +16,16 @@ pytestmark = pytest.mark.native
 
 # Path to the built native library
 _LIB_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'runtime', 'native', 'build', 'libaria_native_runtime.so'
+    os.path.dirname(__file__),
+    "..",
+    "runtime",
+    "native",
+    "build",
+    "libaria_native_runtime.so",
 )
 
 _lib = None
+
 
 def _load_lib():
     global _lib
@@ -36,8 +43,9 @@ ATOL_APPROX = 2e-5
 RTOL_APPROX = 2e-5
 
 
-def _assert_close(actual: np.ndarray, expected: np.ndarray, label: str = "",
-                   approx: bool = False):
+def _assert_close(
+    actual: np.ndarray, expected: np.ndarray, label: str = "", approx: bool = False
+):
     atol = ATOL_APPROX if approx else ATOL
     rtol = RTOL_APPROX if approx else RTOL
     np.testing.assert_allclose(actual, expected, atol=atol, rtol=rtol, err_msg=label)
@@ -46,11 +54,12 @@ def _assert_close(actual: np.ndarray, expected: np.ndarray, label: str = "",
 def _np_gelu(x):
     """Reference GELU (tanh approximation matching the C kernel)."""
     coeff = np.sqrt(2.0 / np.pi).astype(np.float32)
-    inner = coeff * (x + 0.044715 * x ** 3)
+    inner = coeff * (x + 0.044715 * x**3)
     return (0.5 * x * (1.0 + np.tanh(inner))).astype(np.float32)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def lib():
@@ -59,6 +68,7 @@ def lib():
 
 # ── matmul_relu ───────────────────────────────────────────────────────
 
+
 class TestMatmulRelu:
     @pytest.fixture(autouse=True)
     def setup(self, lib):
@@ -66,8 +76,14 @@ class TestMatmulRelu:
 
     def _call_fused(self, A, B, C, M, K, N):
         fn = self.lib.aria_matmul_relu_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(A.ctypes.data, B.ctypes.data, C.ctypes.data, M, K, N)
 
@@ -76,8 +92,14 @@ class TestMatmulRelu:
         tmp = np.empty((M, N), dtype=np.float32)
         out = np.empty((M, N), dtype=np.float32)
         fn_mm = self.lib.aria_matmul_f32
-        fn_mm.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                          ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn_mm.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn_mm.restype = None
         fn_mm(A.ctypes.data, B.ctypes.data, tmp.ctypes.data, M, K, N)
         fn_relu = self.lib.aria_relu_f32
@@ -133,12 +155,15 @@ class TestMatmulRelu:
         t_unfused = time.perf_counter() - t0
 
         ratio = t_fused / t_unfused
-        print(f"\n  matmul_relu 256x256: fused={t_fused:.4f}s unfused={t_unfused:.4f}s ratio={ratio:.3f}")
+        print(
+            f"\n  matmul_relu 256x256: fused={t_fused:.4f}s unfused={t_unfused:.4f}s ratio={ratio:.3f}"
+        )
         # BLAS dominates at 256x256; allow up to 50% noise margin
         assert ratio < 5.0, f"Fused is too slow: {ratio:.3f}x"
 
 
 # ── matmul_bias_relu ──────────────────────────────────────────────────
+
 
 class TestMatmulBiasRelu:
     @pytest.fixture(autouse=True)
@@ -147,8 +172,15 @@ class TestMatmulBiasRelu:
 
     def _call_fused(self, A, B, bias, C, M, K, N):
         fn = self.lib.aria_matmul_bias_relu_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(A.ctypes.data, B.ctypes.data, bias.ctypes.data, C.ctypes.data, M, K, N)
 
@@ -176,8 +208,14 @@ class TestMatmulBiasRelu:
         # Sequential: matmul, then manually add bias, then relu
         tmp = np.empty((M, N), dtype=np.float32)
         fn_mm = self.lib.aria_matmul_f32
-        fn_mm.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                          ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn_mm.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn_mm.restype = None
         fn_mm(A.ctypes.data, B.ctypes.data, tmp.ctypes.data, M, K, N)
         # Add bias row-wise
@@ -193,6 +231,7 @@ class TestMatmulBiasRelu:
 
 # ── layernorm_residual ────────────────────────────────────────────────
 
+
 class TestLayernormResidual:
     @pytest.fixture(autouse=True)
     def setup(self, lib):
@@ -200,12 +239,27 @@ class TestLayernormResidual:
 
     def _call_fused(self, x, residual, gamma, beta, y, rows, cols, eps=1e-5):
         fn = self.lib.aria_layernorm_residual_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(x.ctypes.data, residual.ctypes.data, gamma.ctypes.data,
-           beta.ctypes.data, y.ctypes.data, rows, cols, eps)
+        fn(
+            x.ctypes.data,
+            residual.ctypes.data,
+            gamma.ctypes.data,
+            beta.ctypes.data,
+            y.ctypes.data,
+            rows,
+            cols,
+            eps,
+        )
 
     @pytest.mark.parametrize("rows,cols", [(8, 8), (64, 64), (256, 256)])
     def test_parity(self, rows, cols):
@@ -241,18 +295,39 @@ class TestLayernormResidual:
         # Sequential: add, then layernorm
         combined = np.empty((rows, cols), dtype=np.float32)
         fn_add = self.lib.aria_add_f32
-        fn_add.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+        fn_add.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+        ]
         fn_add.restype = None
         fn_add(x.ctypes.data, residual.ctypes.data, combined.ctypes.data, rows * cols)
 
         y_seq = np.empty((rows, cols), dtype=np.float32)
         fn_ln = self.lib.aria_layernorm_f32
-        fn_ln.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                          ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn_ln.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn_ln.restype = None
-        fn_ln(combined.ctypes.data, gamma.ctypes.data, beta.ctypes.data,
-              y_seq.ctypes.data, rows, cols, eps)
-        _assert_close(y_fused, y_seq, f"layernorm_residual fused vs sequential {rows}x{cols}")
+        fn_ln(
+            combined.ctypes.data,
+            gamma.ctypes.data,
+            beta.ctypes.data,
+            y_seq.ctypes.data,
+            rows,
+            cols,
+            eps,
+        )
+        _assert_close(
+            y_fused, y_seq, f"layernorm_residual fused vs sequential {rows}x{cols}"
+        )
 
     def test_performance(self):
         rows, cols = 256, 256
@@ -267,18 +342,39 @@ class TestLayernormResidual:
         # Sequential setup (do first to ensure OMP threads are warmed up)
         combined = np.empty((rows, cols), dtype=np.float32)
         fn_add = self.lib.aria_add_f32
-        fn_add.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+        fn_add.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+        ]
         fn_add.restype = None
         fn_ln = self.lib.aria_layernorm_f32
-        fn_ln.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                          ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn_ln.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn_ln.restype = None
 
         # Extended warmup (OMP thread pool initialization)
         for _ in range(20):
-            fn_add(x.ctypes.data, residual.ctypes.data, combined.ctypes.data, rows * cols)
-            fn_ln(combined.ctypes.data, gamma.ctypes.data, beta.ctypes.data,
-                  y.ctypes.data, rows, cols, eps)
+            fn_add(
+                x.ctypes.data, residual.ctypes.data, combined.ctypes.data, rows * cols
+            )
+            fn_ln(
+                combined.ctypes.data,
+                gamma.ctypes.data,
+                beta.ctypes.data,
+                y.ctypes.data,
+                rows,
+                cols,
+                eps,
+            )
             self._call_fused(x, residual, gamma, beta, y, rows, cols, eps)
 
         iters = 500
@@ -289,17 +385,29 @@ class TestLayernormResidual:
 
         t0 = time.perf_counter()
         for _ in range(iters):
-            fn_add(x.ctypes.data, residual.ctypes.data, combined.ctypes.data, rows * cols)
-            fn_ln(combined.ctypes.data, gamma.ctypes.data, beta.ctypes.data,
-                  y.ctypes.data, rows, cols, eps)
+            fn_add(
+                x.ctypes.data, residual.ctypes.data, combined.ctypes.data, rows * cols
+            )
+            fn_ln(
+                combined.ctypes.data,
+                gamma.ctypes.data,
+                beta.ctypes.data,
+                y.ctypes.data,
+                rows,
+                cols,
+                eps,
+            )
         t_unfused = time.perf_counter() - t0
 
         ratio = t_fused / t_unfused
-        print(f"\n  layernorm_residual 256x256: fused={t_fused:.4f}s unfused={t_unfused:.4f}s ratio={ratio:.3f}")
+        print(
+            f"\n  layernorm_residual 256x256: fused={t_fused:.4f}s unfused={t_unfused:.4f}s ratio={ratio:.3f}"
+        )
         assert ratio < 5.0, f"Fused is too slow: {ratio:.3f}x"
 
 
 # ── matmul_gelu ───────────────────────────────────────────────────────
+
 
 class TestMatmulGelu:
     @pytest.fixture(autouse=True)
@@ -308,8 +416,14 @@ class TestMatmulGelu:
 
     def _call_fused(self, A, B, C, M, K, N):
         fn = self.lib.aria_matmul_gelu_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(A.ctypes.data, B.ctypes.data, C.ctypes.data, M, K, N)
 
@@ -336,15 +450,23 @@ class TestMatmulGelu:
         tmp = np.empty((M, N), dtype=np.float32)
         out = np.empty((M, N), dtype=np.float32)
         fn_mm = self.lib.aria_matmul_f32
-        fn_mm.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                          ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn_mm.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn_mm.restype = None
         fn_mm(A.ctypes.data, B.ctypes.data, tmp.ctypes.data, M, K, N)
         fn_gelu = self.lib.aria_gelu_f32
         fn_gelu.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
         fn_gelu.restype = None
         fn_gelu(tmp.ctypes.data, out.ctypes.data, M * N)
-        _assert_close(C_fused, out, f"matmul_gelu fused vs sequential {M}x{K}x{N}", approx=True)
+        _assert_close(
+            C_fused, out, f"matmul_gelu fused vs sequential {M}x{K}x{N}", approx=True
+        )
 
     def test_performance(self):
         """Fused should not be slower than sequential.
@@ -364,8 +486,14 @@ class TestMatmulGelu:
         tmp = np.empty((M, N), dtype=np.float32)
         out = np.empty((M, N), dtype=np.float32)
         fn_mm = self.lib.aria_matmul_f32
-        fn_mm.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                          ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn_mm.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn_mm.restype = None
         fn_gelu = self.lib.aria_gelu_f32
         fn_gelu.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
@@ -390,12 +518,15 @@ class TestMatmulGelu:
         t_unfused = time.perf_counter() - t0
 
         ratio = t_fused / t_unfused
-        print(f"\n  matmul_gelu 256x256: fused={t_fused:.4f}s unfused={t_unfused:.4f}s ratio={ratio:.3f}")
+        print(
+            f"\n  matmul_gelu 256x256: fused={t_fused:.4f}s unfused={t_unfused:.4f}s ratio={ratio:.3f}"
+        )
         # BLAS dominates at 256x256; allow up to 50% noise margin
         assert ratio < 5.0, f"Fused is too slow: {ratio:.3f}x"
 
 
 # ── Registry ──────────────────────────────────────────────────────────
+
 
 class TestFusedRegistry:
     @pytest.fixture(autouse=True)
@@ -403,9 +534,9 @@ class TestFusedRegistry:
         self.lib = lib
         self.lib.aria_registry_init()
 
-    @pytest.mark.parametrize("op", [
-        "matmul_relu", "matmul_bias_relu", "layernorm_residual", "matmul_gelu"
-    ])
+    @pytest.mark.parametrize(
+        "op", ["matmul_relu", "matmul_bias_relu", "layernorm_residual", "matmul_gelu"]
+    )
     def test_fused_registered(self, op):
         fn = self.lib.aria_registry_is_native
         fn.argtypes = [ctypes.c_char_p]

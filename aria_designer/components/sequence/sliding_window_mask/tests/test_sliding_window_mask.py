@@ -1,4 +1,5 @@
 """Contract tests for sliding_window_mask."""
+
 import yaml
 from pathlib import Path
 

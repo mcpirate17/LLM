@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from .compiler_op_utils import (
     aria_core,
     _c,
+    record_kernel_fallback,
 )
 
 
@@ -33,8 +34,8 @@ def _op_basis_expansion(module, inputs, _):
             native_out = aria_core.basis_expansion_f32(x, freqs, n_bases)
             if isinstance(native_out, torch.Tensor) and native_out.shape == x.shape:
                 return native_out
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, AttributeError) as e:
+            record_kernel_fallback("basis_expansion_f32", e)
     w = module.weight
     expanded = (
         torch.sin(inputs[0] * w[0])
@@ -82,18 +83,6 @@ def _op_fixed_point_iter(module, inputs, config):
     for _ in range(n_iters):
         z = (1.0 - damping) * z + damping * torch.tanh(F.linear(z, W) + b)
     return z
-
-
-def _op_rfft_seq(_, inputs, __):
-    return torch.fft.rfft(inputs[0], dim=1).real
-
-
-def _op_irfft_seq(_, inputs, __):
-    B, S_freq, D = inputs[0].shape
-    # Ensure real-valued output for downstream ops by making imaginary part zero
-    # and ensuring n is correctly set to reconstruct full sequence length
-    comp = torch.complex(inputs[0], torch.zeros_like(inputs[0]))
-    return torch.fft.irfft(comp, n=(S_freq - 1) * 2, dim=1)
 
 
 def _op_tropical_center(_, inputs, __):
@@ -268,6 +257,19 @@ def _op_sparse_threshold(module, inputs, config):
     return execute_sparse_threshold(module, inputs[0])
 
 
+def _op_spectral_filter(module, inputs, config):
+    """Learnable spectral filter over feature dim — causal (per-position, no sequence interaction)."""
+    x = inputs[0]
+    if not hasattr(module, "freq_mask"):
+        return x
+    X_f = torch.fft.rfft(x, dim=-1)
+    # Clamp mask to [-2, 2] to prevent spectral blow-up during training.
+    # Values beyond ±2 cause FFT output explosion (48% forward_error rate).
+    mask = module.freq_mask.clamp(-2.0, 2.0)
+    X_f = X_f * mask
+    return torch.fft.irfft(X_f, n=x.shape[-1], dim=-1)
+
+
 OP_IMPLS: Dict[str, Callable] = {
     "poincare_add": _op_poincare_add,
     "exp_map": _op_exp_map,
@@ -293,10 +295,9 @@ OP_IMPLS: Dict[str, Callable] = {
     "spike_rate_code": _op_spike_rate_code,
     "stdp_attention": _op_stdp_attention,
     "sparse_threshold": _op_sparse_threshold,
+    "spectral_filter": _op_spectral_filter,
     "basis_expansion": _op_basis_expansion,
     "integral_kernel": _op_integral_kernel,
     "fixed_point_iter": _op_fixed_point_iter,
-    "rfft_seq": _op_rfft_seq,
-    "irfft_seq": _op_irfft_seq,
     "ultrametric_attention": _op_ultrametric_attention,
 }

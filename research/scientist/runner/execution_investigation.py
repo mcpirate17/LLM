@@ -82,7 +82,7 @@ class _ExecutionInvestigationMixin:
             }
 
             dev = resolve_device(config.device)
-            dev_str = str(dev)
+            str(dev)
 
             inv_config = RunConfig.from_dict(config.to_dict())
             inv_config.stage1_steps = config.investigation_steps
@@ -605,9 +605,9 @@ class _ExecutionInvestigationMixin:
                     status="failed",
                     elapsed_seconds=time.time() - t_start,
                     aria_message=(
-                        f"Investigation failed: all candidates hit infrastructure "
-                        f"errors (CUDA/OOM). Architectures were not evaluated — "
-                        f"retry when GPU is healthy."
+                        "Investigation failed: all candidates hit infrastructure "
+                        "errors (CUDA/OOM). Architectures were not evaluated — "
+                        "retry when GPU is healthy."
                     ),
                 )
                 self._emit_event(

@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import gc
 import time
 import traceback
 
-import torch
 
 from ..native_runner import compile_model_native_first as compile_model
 from ...eval.metrics import novelty_score
 from ...eval.fingerprint import compute_fingerprint
 from ..notebook import ExperimentEntry
 from ..shared_utils import resolve_device
+from ._helpers import clear_gpu_memory
 
 import logging
 
@@ -78,6 +77,7 @@ class _ExecutionSearchMixin:
 
             fitness_cache: dict = {}
             eval_counters = {"total": 0, "s0": 0, "s1": 0}
+            _evo_debug = config.debug
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
                 self._on_program_evaluated(
@@ -89,6 +89,7 @@ class _ExecutionSearchMixin:
                     nb,
                     exp_id,
                     model_source="evolution",
+                    debug=_evo_debug,
                 )
 
             fitness_fn = self._make_fitness_fn(
@@ -114,16 +115,17 @@ class _ExecutionSearchMixin:
                 )
                 n_standard = len(population) - n_routing
 
-                with self._lock:
-                    self._progress.current_generation = gen + 1
-                    self._progress.status = "evaluating"
-                    self._progress.best_fitness = best_fit
-                    self._progress.avg_fitness = avg_fit
-                    self._progress.elapsed_seconds = time.time() - t_start
-                    self._progress.aria_message = (
+                self._update_progress(
+                    current_generation=gen + 1,
+                    status="evaluating",
+                    best_fitness=best_fit,
+                    avg_fitness=avg_fit,
+                    elapsed_seconds=time.time() - t_start,
+                    aria_message=(
                         f"Generation {gen + 1}/{config.n_generations}: "
                         f"best={best_fit:.3f}, avg={avg_fit:.3f}, routing={n_routing}/{len(population)}"
-                    )
+                    ),
+                )
                 self._emit_event(
                     "evolution_generation",
                     {
@@ -250,12 +252,13 @@ class _ExecutionSearchMixin:
             self._maybe_auto_scale_up(results, config, nb)
             self._maybe_auto_report(config, nb, reason="evolution_complete")
 
-            with self._lock:
-                self._progress.status = "completed"
-                self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = (
-                    summary.split("\n")[-1] if summary else "Evolution complete."
-                )
+            self._update_progress(
+                status="completed",
+                elapsed_seconds=time.time() - t_start,
+                aria_message=summary.split("\n")[-1]
+                if summary
+                else "Evolution complete.",
+            )
 
             self._emit_event(
                 "evolution_completed",
@@ -283,10 +286,11 @@ class _ExecutionSearchMixin:
                 trigger_payload={"mode": "evolution", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
-            with self._lock:
-                self._progress.status = "failed"
-                self._progress.error = str(e)
-                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
             self._emit_event(
                 "experiment_failed",
                 {
@@ -316,6 +320,7 @@ class _ExecutionSearchMixin:
                 population_size=config.population_size,
                 n_generations=config.n_generations,
                 grammar_config=grammar,
+                debug=config.debug,
             )
 
             dev = resolve_device(config.device)
@@ -324,6 +329,8 @@ class _ExecutionSearchMixin:
             fitness_cache: dict = {}
             fingerprint_cache: dict = {}
             eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+            _debug = config.debug
 
             def on_evaluate(graph, fitness, sandbox_result, s1_result):
                 bfp = fingerprint_cache.get(graph.fingerprint())
@@ -337,6 +344,7 @@ class _ExecutionSearchMixin:
                     exp_id,
                     model_source="novelty",
                     behavioral_fingerprint=bfp,
+                    debug=_debug,
                 )
 
             def combined_fitness_fn(graph):
@@ -369,7 +377,8 @@ class _ExecutionSearchMixin:
                         on_evaluate(graph, fitness, sandbox_result, s1_result)
                         return fitness
 
-                    # Compute behavioral fingerprint while model is in memory
+                    # Compute fingerprint with behavioral probes for novelty archive;
+                    # CKA deferred to post-investigation.
                     try:
                         bfp = compute_fingerprint(
                             model,
@@ -377,10 +386,26 @@ class _ExecutionSearchMixin:
                             model_dim=config.model_dim,
                             vocab_size=config.vocab_size,
                             device=dev_str,
+                            include_cka=False,
+                            include_behavioral_probes=True,
                         )
                         fingerprint_cache[gfp] = bfp
+                        if _debug:
+                            logger.info(
+                                "DEBUG fingerprint: %s quality=%s probes_ok=%d locality=%s isotropy=%s",
+                                gfp[:16],
+                                bfp.quality,
+                                bfp.analyses_succeeded,
+                                bfp.interaction_locality,
+                                bfp.isotropy,
+                            )
                     except Exception as e:
-                        logger.debug("Fingerprint computation failed: %s", e)
+                        if _debug:
+                            logger.exception(
+                                "DEBUG: Fingerprint computation failed for %s", gfp[:16]
+                            )
+                        else:
+                            logger.debug("Fingerprint computation failed: %s", e)
 
                     s1_result = self._micro_train(
                         model,
@@ -389,9 +414,7 @@ class _ExecutionSearchMixin:
                         seed=self._stable_seed("fitness", gfp),
                     )
                     del model
-                    if dev.type == "cuda":
-                        torch.cuda.empty_cache()
-                    gc.collect()
+                    clear_gpu_memory()
 
                     if s1_result.get("passed"):
                         fitness, _components = self._compute_multi_objective_fitness(
@@ -429,17 +452,18 @@ class _ExecutionSearchMixin:
                 )
                 n_standard = len(population) - n_routing
 
-                with self._lock:
-                    self._progress.current_generation = gen + 1
-                    self._progress.status = "evaluating"
-                    self._progress.best_fitness = best_fit
-                    self._progress.avg_fitness = avg_fit
-                    self._progress.archive_size = archive.size()
-                    self._progress.elapsed_seconds = time.time() - t_start
-                    self._progress.aria_message = (
+                self._update_progress(
+                    current_generation=gen + 1,
+                    status="evaluating",
+                    best_fitness=best_fit,
+                    avg_fitness=avg_fit,
+                    archive_size=archive.size(),
+                    elapsed_seconds=time.time() - t_start,
+                    aria_message=(
                         f"Generation {gen + 1}/{config.n_generations}: "
                         f"archive={archive.size()}, best_fit={best_fit:.3f}, routing={n_routing}/{len(population)}"
-                    )
+                    ),
+                )
                 self._emit_event(
                     "novelty_generation",
                     {
@@ -567,12 +591,13 @@ class _ExecutionSearchMixin:
             self._maybe_auto_scale_up(results, config, nb)
             self._maybe_auto_report(config, nb, reason="novelty_search_complete")
 
-            with self._lock:
-                self._progress.status = "completed"
-                self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = (
-                    summary.split("\n")[-1] if summary else "Novelty search complete."
-                )
+            self._update_progress(
+                status="completed",
+                elapsed_seconds=time.time() - t_start,
+                aria_message=summary.split("\n")[-1]
+                if summary
+                else "Novelty search complete.",
+            )
 
             self._emit_event(
                 "novelty_completed",
@@ -601,10 +626,11 @@ class _ExecutionSearchMixin:
                 trigger_payload={"mode": "novelty", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
-            with self._lock:
-                self._progress.status = "failed"
-                self._progress.error = str(e)
-                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
             self._emit_event(
                 "experiment_failed",
                 {

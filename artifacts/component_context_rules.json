@@ -1,0 +1,1461 @@
+[
+  {
+    "component": "graph_attention",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm",
+      "split2"
+    ],
+    "forbidden_predecessors": [
+      "collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "residual_block",
+      "attention_variants"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe after compiler param cast fix",
+    "residual_branch_requirements": "use inside residual attention block",
+    "causal_constraints": "causal-only",
+    "search_mode": "general search"
+  },
+  {
+    "component": "local_window_attn",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "collapsed dims",
+      "unnormalized deep residuals"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "residual_block",
+      "attention_variants"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "run attention math in fp32 under bf16 autocast",
+    "residual_branch_requirements": "must sit inside a residual attention block",
+    "causal_constraints": "causal-only local window",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "state_space",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "sliding_window_mask",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "non-standard rank",
+      "collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_attention",
+      "linear_proj"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "attn_sliding_window"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe after compiler param cast fix",
+    "residual_branch_requirements": "use inside residual attention blocks",
+    "causal_constraints": "causal-only local window",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "causal_mask",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "already non-causal or seq-reordered tensors"
+    ],
+    "preferred_successors": [
+      "softmax_attention",
+      "linear_proj"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "attn_causal_mask"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe after compiler param cast fix",
+    "residual_branch_requirements": "use inside attention/residual stacks",
+    "causal_constraints": "causal-only",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "tropical_center",
+    "preferred_predecessors": [
+      "tropical_attention",
+      "tropical_gate"
+    ],
+    "forbidden_predecessors": [
+      "plain euclidean ops without tropical bridge"
+    ],
+    "preferred_successors": [
+      "tropical_gate",
+      "add",
+      "linear_proj"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "tropical_core"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "fp32 preferred for stability probes",
+    "residual_branch_requirements": "keep inside tropical residual block",
+    "causal_constraints": "non-causal / structural-only in current formulation",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "early_exit",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "gated_delta",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "diff_attention",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "fused_linear_gelu",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "integral_kernel",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "split3",
+    "preferred_predecessors": [
+      "linear_proj to 3-divisible dim",
+      "rmsnorm"
+    ],
+    "forbidden_predecessors": [
+      "non-3-divisible dims",
+      "collapsed_dim tensors"
+    ],
+    "preferred_successors": [
+      "three_way_split branches",
+      "concat"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "three_way_split"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "must rejoin via concat + projection or residual add",
+    "causal_constraints": "feature split only; do not interpret as seq reordering",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "exp",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "cumprod_safe",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "lif_neuron",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "sparse_threshold",
+    "preferred_predecessors": [
+      "lif_neuron",
+      "spike_rate_code",
+      "rmsnorm"
+    ],
+    "forbidden_predecessors": [
+      "plain dense euclidean activations"
+    ],
+    "preferred_successors": [
+      "stdp_attention",
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "spiking_neuromorphic"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "fp32 preferred around thresholding",
+    "residual_branch_requirements": "use inside spiking residual block",
+    "causal_constraints": "causal-only spike timing",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "stdp_attention",
+    "preferred_predecessors": [
+      "lif_neuron",
+      "spike_rate_code",
+      "sparse_threshold"
+    ],
+    "forbidden_predecessors": [
+      "plain dense euclidean activations"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "spiking_neuromorphic"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "fp32 preferred around exponential decay",
+    "residual_branch_requirements": "use inside spiking residual block",
+    "causal_constraints": "causal-only spike timing",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "cumsum",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "sub",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "chebyshev_spectral_mix",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "minimum",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "embedding_lookup",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "geometric_product",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "n_way_sparse_router",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "sign_ste",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "tropical_matmul",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "norm_last",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "linear_proj_down"
+    ],
+    "forbidden_predecessors": [
+      "already-collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_proj_up",
+      "mul"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "reduce_norm"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "must rebroadcast or reproject before residual merge",
+    "causal_constraints": "feature reduction only",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "sqrt",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "log",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "mod_topk",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "sum_last",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "linear_proj_down"
+    ],
+    "forbidden_predecessors": [
+      "already-collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_proj_up",
+      "mul"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "reduce_sum"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "fp32 preferred only for extreme values",
+    "residual_branch_requirements": "must rebroadcast or reproject before residual merge",
+    "causal_constraints": "feature reduction only",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "max_last",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "linear_proj_down"
+    ],
+    "forbidden_predecessors": [
+      "already-collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_proj_up",
+      "mul"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "reduce_max"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "must rebroadcast or reproject before residual merge",
+    "causal_constraints": "feature reduction only",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "mean_last",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "linear_proj_down"
+    ],
+    "forbidden_predecessors": [
+      "already-collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_proj_up",
+      "mul"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "reduce_mean"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "must rebroadcast or reproject before residual merge",
+    "causal_constraints": "feature reduction only",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "reciprocal",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "linear_attention",
+    "preferred_predecessors": [
+      "sliding_window_mask",
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "non-standard rank",
+      "collapsed dims"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "attn_sliding_window",
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe after compiler param cast fix",
+    "residual_branch_requirements": "use inside residual attention block",
+    "causal_constraints": "causal-only",
+    "search_mode": "general search"
+  },
+  {
+    "component": "identity",
+    "preferred_predecessors": [
+      "route scaffolding only"
+    ],
+    "forbidden_predecessors": [
+      "general learned blocks"
+    ],
+    "preferred_successors": [
+      "selective_scan",
+      "conv1d_seq",
+      "rwkv_channel"
+    ],
+    "forbidden_successors": [
+      "standalone output_head"
+    ],
+    "required_graph_motifs": [
+      "routing scaffolds only"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "structural only; do not judge by S1 alone",
+    "causal_constraints": "feature-preserving only",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "progressive_compression_gate",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "softmax_attention",
+    "preferred_predecessors": [
+      "rope_rotate",
+      "causal_mask",
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "odd-dim rope misuse"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "attn_rope",
+      "attn_causal_mask",
+      "transformer_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe after compiler param cast fix",
+    "residual_branch_requirements": "use inside residual attention block",
+    "causal_constraints": "causal-only",
+    "search_mode": "general search"
+  },
+  {
+    "component": "linear_proj_down",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "linear_proj_up",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "concat",
+    "preferred_predecessors": [
+      "parallel branch outputs of matching seq len"
+    ],
+    "forbidden_predecessors": [
+      "mismatched seq or rank"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "parallel_split",
+      "three_way_split"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "should be followed by projection back to model dim",
+    "causal_constraints": "preserve per-token alignment",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "hyp_linear",
+    "preferred_predecessors": [
+      "exp_map"
+    ],
+    "forbidden_predecessors": [
+      "plain euclidean ops without exp_map"
+    ],
+    "preferred_successors": [
+      "hyp_tangent_nonlinear"
+    ],
+    "forbidden_successors": [
+      "output_head directly",
+      "plain euclidean mixers"
+    ],
+    "required_graph_motifs": [
+      "hyperbolic_poincare"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "fp32 preferred in hyperbolic region if norms spike",
+    "residual_branch_requirements": "return through log_map before residual merge",
+    "causal_constraints": "causal-neutral",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "hyp_tangent_nonlinear",
+    "preferred_predecessors": [
+      "hyp_linear"
+    ],
+    "forbidden_predecessors": [
+      "plain euclidean ops"
+    ],
+    "preferred_successors": [
+      "log_map"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "hyperbolic_poincare"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "fp32 preferred in hyperbolic region if norms spike",
+    "residual_branch_requirements": "return through log_map before residual merge",
+    "causal_constraints": "causal-neutral",
+    "search_mode": "niche mode"
+  },
+  {
+    "component": "rwkv_time_mixing",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "rope_rotate",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "split2",
+    "preferred_predecessors": [
+      "input",
+      "rmsnorm",
+      "rope_rotate"
+    ],
+    "forbidden_predecessors": [
+      "collapsed_dim tensors",
+      "reduce_last outputs"
+    ],
+    "preferred_successors": [
+      "parallel branches",
+      "concat"
+    ],
+    "forbidden_successors": [
+      "output_head directly"
+    ],
+    "required_graph_motifs": [
+      "parallel_split"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "none",
+    "residual_branch_requirements": "must rejoin via concat + projection or residual add",
+    "causal_constraints": "feature split only; do not interpret as seq reordering",
+    "search_mode": "restricted-use"
+  },
+  {
+    "component": "fixed_point_iter",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "transpose_sd",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  },
+  {
+    "component": "grouped_linear",
+    "preferred_predecessors": [
+      "rmsnorm",
+      "layernorm"
+    ],
+    "forbidden_predecessors": [
+      "sum_last",
+      "mean_last",
+      "max_last",
+      "norm_last"
+    ],
+    "preferred_successors": [
+      "linear_proj",
+      "add"
+    ],
+    "forbidden_successors": [
+      "split2",
+      "split3"
+    ],
+    "required_graph_motifs": [
+      "residual_block"
+    ],
+    "forbidden_graph_motifs": [
+      "standalone_single_op"
+    ],
+    "dtype_constraints": "bf16-safe unless noted",
+    "residual_branch_requirements": "should sit inside a residual block",
+    "causal_constraints": "must preserve causal token ordering",
+    "search_mode": "general search"
+  }
+]

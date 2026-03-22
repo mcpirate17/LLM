@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+
 class DesignerWorkflowLayerAdapter:
     """Adapt aria_designer WorkflowModule to the layer(x)->y interface."""
 
@@ -32,6 +33,7 @@ class DesignerWorkflowLayerAdapter:
 
     def as_module(self):
         return self.module
+
 
 def _validate_designer_layer_adapter_contract(
     adapter_module: Any,
@@ -66,6 +68,7 @@ def _validate_designer_layer_adapter_contract(
     if int(y.shape[2]) != model_dim:
         return f"adapter_output_dim_mismatch:{int(y.shape[2])}!={model_dim}"
     return None
+
 
 def _summarize_layer_build(layer_build: Dict[str, Any]) -> Dict[str, Any]:
     """Build compact summary fields for API/dashboard parsing."""

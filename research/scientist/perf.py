@@ -16,18 +16,19 @@ from typing import Dict, List, Optional, Any
 @dataclass
 class PerfTrace:
     """A single performance trace for an operation."""
+
     name: str
     cpu_start: float
     cpu_end: Optional[float] = None
     gpu_start: Optional[torch.cuda.Event] = None
     gpu_end: Optional[torch.cuda.Event] = None
-    
+
     @property
     def duration_ms(self) -> float:
         """Total duration in milliseconds."""
         if self.cpu_end is None:
             return 0.0
-        
+
         # If GPU events are available and on CUDA, use them for more precision
         if self.gpu_start and self.gpu_end and torch.cuda.is_available():
             try:
@@ -36,13 +37,13 @@ class PerfTrace:
                 return self.gpu_start.elapsed_time(self.gpu_end)
             except Exception:
                 pass
-        
+
         return (self.cpu_end - self.cpu_start) * 1000
 
 
 class PerfTracer:
     """Context manager and aggregator for performance traces."""
-    
+
     def __init__(self):
         self.traces: List[PerfTrace] = []
         self._active: Dict[str, PerfTrace] = {}
@@ -53,12 +54,8 @@ class PerfTracer:
         if use_gpu and torch.cuda.is_available():
             gpu_start = torch.cuda.Event(enable_timing=True)
             gpu_start.record()
-            
-        trace = PerfTrace(
-            name=name,
-            cpu_start=time.perf_counter(),
-            gpu_start=gpu_start
-        )
+
+        trace = PerfTrace(name=name, cpu_start=time.perf_counter(), gpu_start=gpu_start)
         self._active[name] = trace
         return trace
 
@@ -66,15 +63,15 @@ class PerfTracer:
         """Stop a named trace and record it."""
         if name not in self._active:
             return
-        
+
         trace = self._active.pop(name)
         trace.cpu_end = time.perf_counter()
-        
+
         if trace.gpu_start and torch.cuda.is_available():
             gpu_end = torch.cuda.Event(enable_timing=True)
             gpu_end.record()
             trace.gpu_end = gpu_end
-            
+
         self.traces.append(trace)
         return trace
 
@@ -107,7 +104,7 @@ class PerfTracer:
                 tracer.start(name, use_gpu=use_gpu)
                 return self_inner
 
-            def __exit__(self_inner, exc_type, exc, tb):
+            def __exit__(self_inner, _exc_type, exc, tb):
                 tracer.stop(name)
                 return False
 
@@ -174,15 +171,17 @@ class OpKernelProfiler:
 
             total_cpu_ms += cpu_ms
             total_cuda_ms += cuda_ms
-            rows.append({
-                "op": str(getattr(evt, "key", "unknown")),
-                "cpu_ms": round(cpu_ms, 4),
-                "cuda_ms": round(cuda_ms, 4),
-                "calls": int(getattr(evt, "count", 0) or 0),
-            })
+            rows.append(
+                {
+                    "op": str(getattr(evt, "key", "unknown")),
+                    "cpu_ms": round(cpu_ms, 4),
+                    "cuda_ms": round(cuda_ms, 4),
+                    "calls": int(getattr(evt, "count", 0) or 0),
+                }
+            )
 
         rows.sort(key=lambda r: max(r["cpu_ms"], r["cuda_ms"]), reverse=True)
-        rows = rows[:max(1, int(top_k))]
+        rows = rows[: max(1, int(top_k))]
 
         return {
             "top_ops": rows,
@@ -194,6 +193,7 @@ class OpKernelProfiler:
 
 class GPUStarvationDetector:
     """Detects if the GPU is starving due to CPU or data-loader bottlenecks."""
+
     def __init__(self, threshold_ms: float = 5.0):
         self.threshold_ms = threshold_ms
         self.last_event = None
@@ -209,22 +209,22 @@ class GPUStarvationDetector:
         """Mark the end of a potential stall and return stall duration in ms."""
         if not torch.cuda.is_available() or self.last_event is None:
             return None
-        
+
         end_event = torch.cuda.Event(enable_timing=True)
         end_event.record()
         torch.cuda.synchronize()
-        
+
         duration = self.last_event.elapsed_time(end_event)
         if duration > self.threshold_ms:
             self.starvation_events.append(duration)
-        
+
         self.last_event = None
         return duration
 
     def get_summary(self) -> Dict[str, Any]:
         if not self.starvation_events:
             return {"starvation_detected": False, "count": 0}
-        
+
         return {
             "starvation_detected": True,
             "count": len(self.starvation_events),
@@ -236,14 +236,14 @@ class GPUStarvationDetector:
 
 class KernelTimer:
     """Hooks into PyTorch models to time individual kernel/op executions."""
-    
+
     def __init__(self, model: nn.Module, enabled: bool = True):
         self.model = model
         self.enabled = enabled
         self.timings: Dict[str, List[Tuple[torch.cuda.Event, torch.cuda.Event]]] = {}
         self._hooks = []
         self._active_events: Dict[int, torch.cuda.Event] = {}
-        
+
         if enabled:
             self._attach_hooks()
 
@@ -253,7 +253,7 @@ class KernelTimer:
             # Skip the root model itself to avoid double counting
             if name == "":
                 continue
-            
+
             # Use closure to capture name
             def _get_hooks(mod_name):
                 def pre_hook(mod, input):
@@ -263,17 +263,19 @@ class KernelTimer:
                         # Store start event using id of the current thread/call context if possible
                         # For simplicity in single-threaded training, we use a stack-like approach per module
                         self._active_events.setdefault(id(mod), []).append(start_event)
-                
+
                 def post_hook(mod, input, output):
                     if torch.cuda.is_available() and self.enabled:
                         end_event = torch.cuda.Event(enable_timing=True)
                         end_event.record()
-                        
+
                         starts = self._active_events.get(id(mod), [])
                         if starts:
                             start_event = starts.pop()
-                            self.timings.setdefault(mod_name, []).append((start_event, end_event))
-                
+                            self.timings.setdefault(mod_name, []).append(
+                                (start_event, end_event)
+                            )
+
                 return pre_hook, post_hook
 
             pre, post = _get_hooks(name)
@@ -284,7 +286,7 @@ class KernelTimer:
         """Synchronize GPU and calculate average durations in ms."""
         if not torch.cuda.is_available() or not self.enabled:
             return {}
-            
+
         torch.cuda.synchronize()
         report = {}
         for name, events in self.timings.items():
@@ -307,17 +309,16 @@ class KernelTimer:
 
 class QueueTelemetry:
     """Tracks latency and throughput for task queues (batching, scheduling)."""
-    
+
     def __init__(self):
         self.stats: Dict[str, Dict[str, Any]] = {}
 
     def record_wait(self, queue_name: str, wait_ms: float):
         """Record how long a task spent in the queue."""
-        q_stats = self.stats.setdefault(queue_name, {
-            "wait_times_ms": [],
-            "task_count": 0,
-            "start_time": time.time()
-        })
+        q_stats = self.stats.setdefault(
+            queue_name,
+            {"wait_times_ms": [], "task_count": 0, "start_time": time.time()},
+        )
         q_stats["wait_times_ms"].append(wait_ms)
         q_stats["task_count"] += 1
 
@@ -327,12 +328,12 @@ class QueueTelemetry:
             waits = q_stats["wait_times_ms"]
             if not waits:
                 continue
-            
+
             elapsed = time.time() - q_stats["start_time"]
             summary[name] = {
                 "avg_wait_ms": sum(waits) / len(waits),
                 "max_wait_ms": max(waits),
                 "tasks_per_sec": q_stats["task_count"] / max(elapsed, 1.0),
-                "total_tasks": q_stats["task_count"]
+                "total_tasks": q_stats["task_count"],
             }
         return summary

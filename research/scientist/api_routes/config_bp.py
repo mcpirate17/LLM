@@ -1,4 +1,5 @@
 """config API route registration."""
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,9 @@ def register_config_routes(app, context: ApiRouteContext):
 
         backend_name = str(body.get("backend", "")).strip()
         if not backend_name:
-            return jsonify({"error": "backend is required (anthropic, openai, ollama)"}), 400
+            return jsonify(
+                {"error": "backend is required (anthropic, openai, ollama)"}
+            ), 400
 
         api_key = str(body.get("api_key", "")).strip()
         model = str(body.get("model", "")).strip()
@@ -54,7 +57,8 @@ def register_config_routes(app, context: ApiRouteContext):
                 try:
                     test_resp = llm.generate(
                         "Respond with exactly: OK",
-                        max_tokens=10, temperature=0,
+                        max_tokens=10,
+                        temperature=0,
                     )
                     if not (test_resp and test_resp.text):
                         health_ok = False
@@ -64,12 +68,15 @@ def register_config_routes(app, context: ApiRouteContext):
                     health_error = f"{type(e).__name__}: {str(e)[:150]}"
                     logger.warning(f"LLM health check failed: {health_error}")
 
-            save_llm_config(notebook_path, {
-                "backend": backend_name,
-                "api_key": api_key,
-                "model": model,
-                "host": host,
-            })
+            save_llm_config(
+                notebook_path,
+                {
+                    "backend": backend_name,
+                    "api_key": api_key,
+                    "model": model,
+                    "host": host,
+                },
+            )
 
             if hasattr(aria, "_briefing_cache"):
                 aria._briefing_cache = None

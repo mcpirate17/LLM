@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,6 +12,7 @@ from ...synthesis.serializer import graph_from_json
 from ...training.training_program import synthesize_training_program
 from ..native_runner import compile_model_native_first as compile_model
 from ..shared_utils import resolve_device
+from ._helpers import _build_source_map, clear_gpu_memory
 from ._types import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -46,11 +46,12 @@ class _ExecutionValidationPhase3Mixin:
         val_config.stage1_steps = config.validation_steps
         val_config.stage1_batch_size = config.validation_batch_size
         val_config.max_seq_len = config.validation_seq_len
+        # Scale early stopping for longer validation runs.
+        step_ratio = config.validation_steps / max(config.stage1_steps, 1)
+        val_config.early_stop_patience = int(config.early_stop_patience * step_ratio)
+        val_config.early_stop_min_steps = int(config.early_stop_min_steps * step_ratio)
 
-        program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-        source_map = {
-            d.get("result_id"): d for d in program_details if d.get("result_id")
-        }
+        source_map = _build_source_map(nb, result_ids)
         return results, dev, dev_str, val_config, source_map
 
     def _get_validation_best_training_json(
@@ -204,8 +205,6 @@ class _ExecutionValidationPhase3Mixin:
             )
 
             del model
-            if dev.type == "cuda":
-                torch.cuda.empty_cache()
-            gc.collect()
+            clear_gpu_memory()
 
         return seed_results

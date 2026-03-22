@@ -3,6 +3,7 @@
 On API startup, scans all components/<category>/<id>/manifest.yaml files,
 validates them, and upserts into the component registry.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,14 +20,36 @@ logger = logging.getLogger(__name__)
 COMPONENTS_ROOT = Path(__file__).resolve().parent.parent.parent / "components"
 
 # Required top-level keys in manifest
-REQUIRED_KEYS = {"id", "version", "name", "category", "inputs", "outputs", "implementation"}
+REQUIRED_KEYS = {
+    "id",
+    "version",
+    "name",
+    "category",
+    "inputs",
+    "outputs",
+    "implementation",
+}
 
 VALID_CATEGORIES = {
-    "math", "linear_algebra", "structural", "routing",
-    "mixing", "channel_mixing", "normalization", "positional",
-    "blocks", "io", "representation", "topology",
-    "sequence", "frequency", "functional",
-    "math_space", "data_io", "data_transform", "control_flow",
+    "math",
+    "linear_algebra",
+    "structural",
+    "routing",
+    "mixing",
+    "channel_mixing",
+    "normalization",
+    "positional",
+    "blocks",
+    "io",
+    "representation",
+    "topology",
+    "sequence",
+    "frequency",
+    "functional",
+    "math_space",
+    "data_io",
+    "data_transform",
+    "control_flow",
 }
 
 VALID_STATUSES = {"draft", "approved", "deprecated", "quarantined"}

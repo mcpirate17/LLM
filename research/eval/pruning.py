@@ -50,7 +50,9 @@ def _score_tensor(weight: torch.Tensor, method: str) -> torch.Tensor:
     method_norm = str(method or "wanda").strip().lower()
     if method_norm == "sparsegpt":
         return w
-    row_scale = torch.sqrt(torch.clamp((weight.detach() ** 2).mean(dim=-1, keepdim=True), min=1e-12))
+    row_scale = torch.sqrt(
+        torch.clamp((weight.detach() ** 2).mean(dim=-1, keepdim=True), min=1e-12)
+    )
     return w * row_scale
 
 
@@ -142,7 +144,11 @@ def run_dense_vs_structured_sparse_ablation(
     variants = [
         ("dense", "linear_proj", {"out_dim": model_dim}),
         ("nm_2_4", "nm_sparse_linear", {"out_dim": model_dim, "n": 2, "m": 4}),
-        ("block_16", "block_sparse_linear", {"out_dim": model_dim, "block_size": 16, "block_density": 0.25}),
+        (
+            "block_16",
+            "block_sparse_linear",
+            {"out_dim": model_dim, "block_size": 16, "block_density": 0.25},
+        ),
     ]
 
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
@@ -156,9 +162,13 @@ def run_dense_vs_structured_sparse_ablation(
         graph.set_output(node)
 
         try:
-            model = compile_model([graph], vocab_size=vocab_size, max_seq_len=seq_len).to(dev)
+            model = compile_model(
+                [graph], vocab_size=vocab_size, max_seq_len=seq_len
+            ).to(dev)
         except Exception as e:
-            rows.append({"label": label, "op_name": op_name, "error": str(e), "passed": False})
+            rows.append(
+                {"label": label, "op_name": op_name, "error": str(e), "passed": False}
+            )
             continue
 
         model.train()
@@ -168,7 +178,10 @@ def run_dense_vs_structured_sparse_ablation(
         for _ in range(max(1, int(steps))):
             opt.zero_grad(set_to_none=True)
             logits = model(input_ids)
-            loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.shape[-1]), targets[:, :-1].reshape(-1))
+            loss = F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.shape[-1]),
+                targets[:, :-1].reshape(-1),
+            )
             if torch.isnan(loss) or torch.isinf(loss):
                 break
             loss.backward()
@@ -178,25 +191,33 @@ def run_dense_vs_structured_sparse_ablation(
             torch.cuda.synchronize(dev)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-        rows.append({
-            "label": label,
-            "op_name": op_name,
-            "passed": len(losses) > 0,
-            "steps": len(losses),
-            "final_loss": float(losses[-1]) if losses else None,
-            "avg_step_ms": float(elapsed_ms / max(len(losses), 1)),
-            "total_time_ms": float(elapsed_ms),
-        })
+        rows.append(
+            {
+                "label": label,
+                "op_name": op_name,
+                "passed": len(losses) > 0,
+                "steps": len(losses),
+                "final_loss": float(losses[-1]) if losses else None,
+                "avg_step_ms": float(elapsed_ms / max(len(losses), 1)),
+                "total_time_ms": float(elapsed_ms),
+            }
+        )
 
-    dense = next((r for r in rows if r.get("label") == "dense" and r.get("passed")), None)
+    dense = next(
+        (r for r in rows if r.get("label") == "dense" and r.get("passed")), None
+    )
     if dense:
         dense_loss = float(dense.get("final_loss") or 1.0)
         dense_step_ms = float(dense.get("avg_step_ms") or 1.0)
         for row in rows:
             if not row.get("passed") or row.get("label") == "dense":
                 continue
-            row["loss_ratio_vs_dense"] = float(row.get("final_loss") or dense_loss) / max(dense_loss, 1e-8)
-            row["speedup_vs_dense"] = dense_step_ms / max(float(row.get("avg_step_ms") or dense_step_ms), 1e-8)
+            row["loss_ratio_vs_dense"] = float(
+                row.get("final_loss") or dense_loss
+            ) / max(dense_loss, 1e-8)
+            row["speedup_vs_dense"] = dense_step_ms / max(
+                float(row.get("avg_step_ms") or dense_step_ms), 1e-8
+            )
 
     return {
         "device": str(dev),

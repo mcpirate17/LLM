@@ -1155,4 +1155,4 @@ function CampaignView({ onSelectExperiment, selectedCampaignId, onCampaignIdClea
   );
 }
 
-export default CampaignView;
+export default React.memo(CampaignView);

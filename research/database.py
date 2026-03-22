@@ -8,7 +8,6 @@ Stores specs, evaluation results, and lineage (parent→child mutations).
 from __future__ import annotations
 
 import json
-import queue
 import sqlite3
 import threading
 import time
@@ -80,7 +79,19 @@ CREATE INDEX IF NOT EXISTS idx_experiments_parent ON experiments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_stage0_passed ON stage0_results(passed);
 CREATE INDEX IF NOT EXISTS idx_stage1_passed ON stage1_results(passed);
 CREATE INDEX IF NOT EXISTS idx_stage1_loss_ratio ON stage1_results(loss_ratio);
+CREATE INDEX IF NOT EXISTS idx_stage1_passed_loss ON stage1_results(passed, loss_ratio DESC);
 """
+
+# Cache keys affected by each table write
+_CACHE_KEYS_BY_TABLE = {
+    "experiments": ("count_experiments", "unevaluated_specs_0", "unevaluated_specs_1"),
+    "stage0_results": (
+        "count_experiments",
+        "unevaluated_specs_0",
+        "unevaluated_specs_1",
+    ),
+    "stage1_results": ("count_experiments", "unevaluated_specs_1"),
+}
 
 
 class ExperimentDB:
@@ -88,72 +99,53 @@ class ExperimentDB:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        # Enable WAL mode for high-concurrency performance
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(DB_SCHEMA)
         self.conn.commit()
-        
+
         self._batch_depth = 0  # >0 means inside a batch() context
-        self._write_queue = queue.Queue()
-        self._stop_event = threading.Event()
-        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
-        self._writer_thread.start()
-        
-        # In-memory cache for frequent queries
-        self._cache = {}
+        self._lock = threading.Lock()
+
+        # In-memory cache for frequent queries (TTL + max size)
+        self._cache: Dict[str, Tuple[float, Any]] = {}  # key → (expires_at, value)
         self._cache_lock = threading.Lock()
+        self._cache_ttl = 30.0  # seconds
+        self._cache_max_size = 64
 
-    def _writer_loop(self):
-        """Background thread that handles all database writes."""
-        # Writer needs its own connection if we wanted to be strictly thread-safe
-        # but since all writes go through this queue, we can share the main conn
-        # if we handle it carefully. Actually, better to have a dedicated writer connection.
-        writer_conn = sqlite3.connect(str(self.db_path))
-        writer_conn.execute("PRAGMA journal_mode=WAL")
-        writer_conn.execute("PRAGMA synchronous=NORMAL")
-        
-        batch = []
-        last_commit = time.time()
-        
-        while not self._stop_event.is_set() or not self._write_queue.empty():
-            try:
-                # Wait for work, but wake up periodically to commit if needed
-                item = self._write_queue.get(timeout=0.1)
-                if item is None: # Sentinel
-                    break
-                
-                sql, params = item
-                writer_conn.execute(sql, params)
-                batch.append(item)
-                
-                # Commit if batch is large or enough time has passed
-                if len(batch) >= 50 or (time.time() - last_commit > 1.0 and batch):
-                    writer_conn.commit()
-                    batch = []
-                    last_commit = time.time()
-                    
-            except queue.Empty:
-                if batch:
-                    writer_conn.commit()
-                    batch = []
-                    last_commit = time.time()
-                continue
-            except Exception as e:
-                # Log error (simplified for now)
-                print(f"Database writer error: {e}")
-        
-        if batch:
-            writer_conn.commit()
-        writer_conn.close()
-
-    def _submit_write(self, sql: str, params: Tuple):
-        """Submit a write task to the background queue."""
-        self._write_queue.put((sql, params))
-        # Invalidate relevant caches
+    def _cache_get(self, key: str) -> Tuple[bool, Any]:
+        """Return (hit, value) from cache, respecting TTL."""
         with self._cache_lock:
-            self._cache.clear()
+            entry = self._cache.get(key)
+            if entry is not None and time.time() < entry[0]:
+                return True, entry[1]
+            if entry is not None:
+                del self._cache[key]
+            return False, None
+
+    def _cache_set(self, key: str, value: Any) -> None:
+        """Store value in cache with TTL, evicting oldest if at max size."""
+        with self._cache_lock:
+            if len(self._cache) >= self._cache_max_size and key not in self._cache:
+                # Evict the entry closest to expiry
+                oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
+                del self._cache[oldest_key]
+            self._cache[key] = (time.time() + self._cache_ttl, value)
+
+    def _invalidate_cache_for(self, table: str) -> None:
+        """Invalidate only cache keys affected by writes to *table*."""
+        keys = _CACHE_KEYS_BY_TABLE.get(table, ())
+        if not keys:
+            return
+        with self._cache_lock:
+            for key in keys:
+                self._cache.pop(key, None)
+            # Also invalidate any top_architectures_* keys for stage1 writes
+            if table == "stage1_results":
+                to_drop = [k for k in self._cache if k.startswith("top_architectures_")]
+                for k in to_drop:
+                    del self._cache[k]
 
     def _compress(self, data: Any) -> bytes:
         """JSON-encode and zlib-compress data."""
@@ -172,10 +164,6 @@ class ExperimentDB:
             return json.loads(blob)
 
     def close(self):
-        self._stop_event.set()
-        self._write_queue.put(None) # Sentinel
-        if self._writer_thread.is_alive():
-            self._writer_thread.join(timeout=2.0)
         self.conn.close()
 
     def __enter__(self):
@@ -202,6 +190,10 @@ class ExperimentDB:
             if self._batch_depth == 0:
                 self.conn.commit()
 
+    def flush(self) -> None:
+        """Force-commit any pending writes."""
+        self.conn.commit()
+
     def _maybe_commit(self):
         """Commit unless inside a batch() context."""
         if self._batch_depth == 0:
@@ -210,50 +202,93 @@ class ExperimentDB:
     # ── Write ──
 
     def save_spec(self, spec: ArchSpec):
-        self._submit_write(
-            """INSERT OR REPLACE INTO experiments
-            (spec_id, short_name, choices, seed, generation, parent_id, created_at, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (spec.id, spec.short_name, self._compress(spec.choices),
-             spec.seed, spec.generation, spec.parent_id,
-             time.time(), json.dumps(sorted(spec.all_tags()))),
-        )
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO experiments
+                (spec_id, short_name, choices, seed, generation, parent_id, created_at, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    spec.id,
+                    spec.short_name,
+                    self._compress(spec.choices),
+                    spec.seed,
+                    spec.generation,
+                    spec.parent_id,
+                    time.time(),
+                    json.dumps(sorted(spec.all_tags())),
+                ),
+            )
+            self._maybe_commit()
+        self._invalidate_cache_for("experiments")
 
     def save_stage0(self, result: Stage0Result):
         d = result.to_dict()
-        self._submit_write(
-            """INSERT OR REPLACE INTO stage0_results
-            (spec_id, passed, error, error_type, param_count, forward_time_ms,
-             backward_time_ms, peak_memory_mb, output_shape, grad_norm,
-             has_nan_grad, has_zero_grad, evaluated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (d["spec_id"], int(d["passed"]), d["error"], d["error_type"],
-             d["param_count"], d["forward_time_ms"], d["backward_time_ms"],
-             d["peak_memory_mb"], d["output_shape"], d["grad_norm"],
-             int(d["has_nan_grad"]), int(d["has_zero_grad"]), time.time()),
-        )
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO stage0_results
+                (spec_id, passed, error, error_type, param_count, forward_time_ms,
+                 backward_time_ms, peak_memory_mb, output_shape, grad_norm,
+                 has_nan_grad, has_zero_grad, evaluated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    d["spec_id"],
+                    int(d["passed"]),
+                    d["error"],
+                    d["error_type"],
+                    d["param_count"],
+                    d["forward_time_ms"],
+                    d["backward_time_ms"],
+                    d["peak_memory_mb"],
+                    d["output_shape"],
+                    d["grad_norm"],
+                    int(d["has_nan_grad"]),
+                    int(d["has_zero_grad"]),
+                    time.time(),
+                ),
+            )
+            self._maybe_commit()
+        self._invalidate_cache_for("stage0_results")
 
     def save_stage1(self, result: Stage1Result):
         d = result.to_dict()
-        self._submit_write(
-            """INSERT OR REPLACE INTO stage1_results
-            (spec_id, passed, error, steps_completed, initial_loss, final_loss,
-             best_loss, loss_ratio, discovery_loss, discovery_loss_ratio,
-             validation_loss, validation_loss_ratio, generalization_gap,
-             avg_step_time_ms, throughput_tok_s,
-             peak_memory_mb, loss_curve, avg_grad_norm, max_grad_norm,
-             loss_decreasing, loss_stable, converges, evaluated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (d["spec_id"], int(d["passed"]), d["error"], d["steps_completed"],
-             d["initial_loss"], d["final_loss"], d["best_loss"], d["loss_ratio"],
-             d.get("discovery_loss"), d.get("discovery_loss_ratio"),
-             d.get("validation_loss"), d.get("validation_loss_ratio"),
-             d.get("generalization_gap"),
-             d["avg_step_time_ms"], d["throughput_tok_s"], d["peak_memory_mb"],
-             self._compress(d["loss_curve"]), d["avg_grad_norm"], d["max_grad_norm"],
-             int(d["loss_decreasing"]), int(d["loss_stable"]),
-             int(d["converges"]), time.time()),
-        )
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO stage1_results
+                (spec_id, passed, error, steps_completed, initial_loss, final_loss,
+                 best_loss, loss_ratio, discovery_loss, discovery_loss_ratio,
+                 validation_loss, validation_loss_ratio, generalization_gap,
+                 avg_step_time_ms, throughput_tok_s,
+                 peak_memory_mb, loss_curve, avg_grad_norm, max_grad_norm,
+                 loss_decreasing, loss_stable, converges, evaluated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    d["spec_id"],
+                    int(d["passed"]),
+                    d["error"],
+                    d["steps_completed"],
+                    d["initial_loss"],
+                    d["final_loss"],
+                    d["best_loss"],
+                    d["loss_ratio"],
+                    d.get("discovery_loss"),
+                    d.get("discovery_loss_ratio"),
+                    d.get("validation_loss"),
+                    d.get("validation_loss_ratio"),
+                    d.get("generalization_gap"),
+                    d["avg_step_time_ms"],
+                    d["throughput_tok_s"],
+                    d["peak_memory_mb"],
+                    self._compress(d["loss_curve"]),
+                    d["avg_grad_norm"],
+                    d["max_grad_norm"],
+                    int(d["loss_decreasing"]),
+                    int(d["loss_stable"]),
+                    int(d["converges"]),
+                    time.time(),
+                ),
+            )
+            self._maybe_commit()
+        self._invalidate_cache_for("stage1_results")
 
     # ── Read ──
 
@@ -301,9 +336,9 @@ class ExperimentDB:
     def count_experiments(self) -> Dict[str, int]:
         """Summary counts (single query)."""
         cache_key = "count_experiments"
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key]
+        hit, val = self._cache_get(cache_key)
+        if hit:
+            return val
 
         row = self.conn.execute("""
             SELECT
@@ -320,16 +355,15 @@ class ExperimentDB:
             "stage1_evaluated": row[3],
             "stage1_passed": row[4],
         }
-        with self._cache_lock:
-            self._cache[cache_key] = res
+        self._cache_set(cache_key, res)
         return res
 
     def top_architectures(self, n: int = 10) -> List[Dict]:
         """Get the best performing architectures by loss ratio."""
         cache_key = f"top_architectures_{n}"
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key]
+        hit, val = self._cache_get(cache_key)
+        if hit:
+            return val
 
         rows = self.conn.execute(
             """SELECT e.spec_id, e.short_name, e.choices, e.generation,
@@ -348,9 +382,8 @@ class ExperimentDB:
             d = dict(row)
             d["choices"] = self._decompress(d["choices"])
             results.append(d)
-        
-        with self._cache_lock:
-            self._cache[cache_key] = results
+
+        self._cache_set(cache_key, results)
         return results
 
     def stage0_passed_ids(self) -> List[str]:
@@ -395,15 +428,17 @@ class ExperimentDB:
         for dim_name, opts in counts.items():
             rates[dim_name] = {}
             for opt_name, results in opts.items():
-                rates[dim_name][opt_name] = sum(results) / len(results) if results else 0.0
+                rates[dim_name][opt_name] = (
+                    sum(results) / len(results) if results else 0.0
+                )
         return rates
 
     def unevaluated_specs(self, stage: int = 0) -> List[str]:
         """Get spec IDs not yet evaluated at the given stage."""
         cache_key = f"unevaluated_specs_{stage}"
-        with self._cache_lock:
-            if cache_key in self._cache:
-                return self._cache[cache_key]
+        hit, val = self._cache_get(cache_key)
+        if hit:
+            return val
 
         if stage == 0:
             rows = self.conn.execute(
@@ -420,10 +455,9 @@ class ExperimentDB:
             ).fetchall()
         else:
             return []
-        
+
         res = [r[0] for r in rows]
-        with self._cache_lock:
-            self._cache[cache_key] = res
+        self._cache_set(cache_key, res)
         return res
 
     def reconstruct_spec(self, spec_id: str) -> Optional[ArchSpec]:

@@ -6,6 +6,7 @@ Gate criteria:
 - Native softmax batch=16 dim=4096 must complete in < 100us (absolute latency budget)
 - Native relu 262144 must complete in < 200us (throughput gate)
 """
+
 import ctypes
 import os
 import time
@@ -22,7 +23,11 @@ os.environ.setdefault("OMP_DYNAMIC", "FALSE")
 
 _LIB_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "..", "runtime", "native", "build", "libaria_native_runtime.so",
+    "..",
+    "runtime",
+    "native",
+    "build",
+    "libaria_native_runtime.so",
 )
 
 
@@ -58,6 +63,7 @@ def _median_us(fn, *args, iterations=50):
 # Absolute latency gate tests
 # ---------------------------------------------------------------------------
 
+
 class TestAbsoluteLatencyGates:
     """Hard latency budgets for key kernels."""
 
@@ -78,8 +84,12 @@ class TestAbsoluteLatencyGates:
         """matmul 256x256x256 must complete in < 5000us (5ms)."""
         fn = lib.aria_matmul_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
         ]
         fn.restype = None
 
@@ -95,8 +105,10 @@ class TestAbsoluteLatencyGates:
         """softmax batch=16 dim=4096 must complete in < 500us."""
         fn = lib.aria_softmax_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
         ]
         fn.restype = None
 
@@ -111,8 +123,13 @@ class TestAbsoluteLatencyGates:
         """layernorm batch=16 dim=1024 must complete in < 200us."""
         fn = lib.aria_layernorm_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_float,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
         ]
         fn.restype = None
 
@@ -122,15 +139,23 @@ class TestAbsoluteLatencyGates:
         b = np.random.randn(dim).astype(np.float32)
         y = np.empty((batch, dim), dtype=np.float32)
 
-        t = _median_us(lambda: fn(_ptr(x), _ptr(w), _ptr(b), _ptr(y), batch, dim, ctypes.c_float(1e-5)))
+        t = _median_us(
+            lambda: fn(
+                _ptr(x), _ptr(w), _ptr(b), _ptr(y), batch, dim, ctypes.c_float(1e-5)
+            )
+        )
         assert t < 200.0, f"layernorm 16x1024: {t:.1f}us > 200us budget"
 
     def test_rmsnorm_latency_gate(self, lib):
         """rmsnorm batch=16 dim=1024 must complete in < 200us."""
         fn = lib.aria_rmsnorm_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_float,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
         ]
         fn.restype = None
 
@@ -139,7 +164,9 @@ class TestAbsoluteLatencyGates:
         w = np.random.randn(dim).astype(np.float32)
         y = np.empty((batch, dim), dtype=np.float32)
 
-        t = _median_us(lambda: fn(_ptr(x), _ptr(w), _ptr(y), batch, dim, ctypes.c_float(1e-5)))
+        t = _median_us(
+            lambda: fn(_ptr(x), _ptr(w), _ptr(y), batch, dim, ctypes.c_float(1e-5))
+        )
         assert t < 200.0, f"rmsnorm 16x1024: {t:.1f}us > 200us budget"
 
 
@@ -149,7 +176,10 @@ class TestAbsoluteLatencyGates:
 
 UNARY_OPS = [
     ("relu", lambda x: np.maximum(x, 0)),
-    ("gelu", lambda x: 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))),
+    (
+        "gelu",
+        lambda x: 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3))),
+    ),
     ("silu", lambda x: x / (1 + np.exp(-x))),
     ("sigmoid", lambda x: 1.0 / (1.0 + np.exp(-x))),
     ("exp", np.exp),
@@ -192,11 +222,18 @@ class TestRelativeSpeedupGates:
             f"speedup={speedup:.2f}x < 0.5x threshold"
         )
 
-    @pytest.mark.parametrize("op_name,np_fn", BINARY_OPS, ids=[o[0] for o in BINARY_OPS])
+    @pytest.mark.parametrize(
+        "op_name,np_fn", BINARY_OPS, ids=[o[0] for o in BINARY_OPS]
+    )
     def test_binary_vs_numpy(self, lib, op_name, np_fn):
         """Binary op must achieve >= 0.5x NumPy throughput on 65536 elements."""
         c_fn = getattr(lib, f"aria_{op_name}_f32")
-        c_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+        c_fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+        ]
         c_fn.restype = None
 
         n = _GATE_SIZE
@@ -217,8 +254,12 @@ class TestRelativeSpeedupGates:
         """matmul 128x128x128 must achieve >= 0.5x NumPy throughput."""
         fn = lib.aria_matmul_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
         ]
         fn.restype = None
 
@@ -240,8 +281,13 @@ class TestRelativeSpeedupGates:
         """linear 16x256x256 must achieve >= 0.5x NumPy throughput."""
         fn = lib.aria_linear_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
         ]
         fn.restype = None
 
@@ -251,7 +297,9 @@ class TestRelativeSpeedupGates:
         bias = np.random.randn(dim_out).astype(np.float32)
         y = np.empty((batch, dim_out), dtype=np.float32)
 
-        native_us = _median_us(lambda: fn(_ptr(x), _ptr(W), _ptr(bias), _ptr(y), batch, dim_in, dim_out))
+        native_us = _median_us(
+            lambda: fn(_ptr(x), _ptr(W), _ptr(bias), _ptr(y), batch, dim_in, dim_out)
+        )
 
         def np_linear():
             return x @ W.T + bias
@@ -268,8 +316,10 @@ class TestRelativeSpeedupGates:
         """softmax batch=8 dim=1024 must achieve >= 0.5x NumPy throughput."""
         fn = lib.aria_softmax_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
         ]
         fn.restype = None
 
@@ -296,8 +346,12 @@ class TestRelativeSpeedupGates:
         """rmsnorm batch=8 dim=1024 must achieve >= 0.5x NumPy throughput."""
         fn = lib.aria_rmsnorm_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_float,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
         ]
         fn.restype = None
 
@@ -307,7 +361,9 @@ class TestRelativeSpeedupGates:
         y = np.empty((batch, dim), dtype=np.float32)
         eps = 1e-5
 
-        native_us = _median_us(lambda: fn(_ptr(x), _ptr(w), _ptr(y), batch, dim, ctypes.c_float(eps)))
+        native_us = _median_us(
+            lambda: fn(_ptr(x), _ptr(w), _ptr(y), batch, dim, ctypes.c_float(eps))
+        )
 
         def np_rmsnorm():
             rms = np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + eps)
@@ -325,8 +381,13 @@ class TestRelativeSpeedupGates:
         """layernorm batch=8 dim=1024 must achieve >= 0.5x NumPy throughput."""
         fn = lib.aria_layernorm_f32
         fn.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int64, ctypes.c_int64, ctypes.c_float,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
         ]
         fn.restype = None
 
@@ -337,7 +398,11 @@ class TestRelativeSpeedupGates:
         y = np.empty((batch, dim), dtype=np.float32)
         eps = 1e-5
 
-        native_us = _median_us(lambda: fn(_ptr(x), _ptr(w), _ptr(b), _ptr(y), batch, dim, ctypes.c_float(eps)))
+        native_us = _median_us(
+            lambda: fn(
+                _ptr(x), _ptr(w), _ptr(b), _ptr(y), batch, dim, ctypes.c_float(eps)
+            )
+        )
 
         def np_layernorm():
             mean = np.mean(x, axis=-1, keepdims=True)

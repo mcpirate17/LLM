@@ -25,8 +25,12 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
         conn.execute("SELECT ncd_score FROM program_results LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE program_results ADD COLUMN ncd_score REAL")
-        conn.execute("ALTER TABLE program_results ADD COLUMN ncd_description_length INTEGER")
-        conn.execute("ALTER TABLE program_results ADD COLUMN ncd_description_length_per_param REAL")
+        conn.execute(
+            "ALTER TABLE program_results ADD COLUMN ncd_description_length INTEGER"
+        )
+        conn.execute(
+            "ALTER TABLE program_results ADD COLUMN ncd_description_length_per_param REAL"
+        )
         conn.commit()
 
     # Find results with graph_json and training curves that don't have ncd_score yet
@@ -50,7 +54,12 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
                 (row["result_id"],),
             ).fetchall()
             curve = [
-                {"step": s["step"], "loss": s["loss"], "grad_norm": s["grad_norm"], "step_time_ms": s["step_time_ms"]}
+                {
+                    "step": s["step"],
+                    "loss": s["loss"],
+                    "grad_norm": s["grad_norm"],
+                    "step_time_ms": s["step_time_ms"],
+                }
                 for s in steps
             ]
             if not curve:
@@ -67,8 +76,12 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
                     """UPDATE program_results
                        SET ncd_score=?, ncd_description_length=?, ncd_description_length_per_param=?
                        WHERE result_id=?""",
-                    (result["ncd_score"], result["description_length"],
-                     result.get("description_length_per_param"), row["result_id"]),
+                    (
+                        result["ncd_score"],
+                        result["description_length"],
+                        result.get("description_length_per_param"),
+                        row["result_id"],
+                    ),
                 )
 
                 # Also update leaderboard if entry exists
@@ -78,7 +91,9 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
                 )
 
             updated += 1
-            print(f"  {row['result_id'][:8]}.. ncd={result['ncd_score']:.4f} dl={result['description_length']}")
+            print(
+                f"  {row['result_id'][:8]}.. ncd={result['ncd_score']:.4f} dl={result['description_length']}"
+            )
         except Exception as e:
             errors += 1
             if errors <= 5:
@@ -87,13 +102,17 @@ def backfill_ncd(db_path: str, dry_run: bool = False) -> None:
     if not dry_run:
         conn.commit()
 
-    print(f"{'Would update' if dry_run else 'Updated'} {updated} results ({errors} errors)")
+    print(
+        f"{'Would update' if dry_run else 'Updated'} {updated} results ({errors} errors)"
+    )
     conn.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill NCD scores")
-    parser.add_argument("--db", default="research/lab_notebook.db", help="Database path")
+    parser.add_argument(
+        "--db", default="research/lab_notebook.db", help="Database path"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Don't write changes")
     args = parser.parse_args()
 

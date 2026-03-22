@@ -24,7 +24,7 @@ def _format_just_completed(just_completed: Dict) -> str:
     etype = just_completed.get("experiment_type") or just_completed.get("mode") or "?"
     gen = just_completed.get("n_programs_generated") or 0
     s1 = just_completed.get("n_stage1_passed") or 0
-    rate = f"{s1/gen*100:.1f}%" if gen > 0 else "N/A"
+    rate = f"{s1 / gen * 100:.1f}%" if gen > 0 else "N/A"
     loss_parts = _loss_parts(just_completed)
     loss_str = f", {', '.join(loss_parts)}" if loss_parts else ""
     summary = just_completed.get("aria_summary") or ""
@@ -43,18 +43,28 @@ def _format_recent_experiments(recent_experiments: List[Dict]) -> str:
         status = exp.get("status", "?")
         gen = exp.get("n_programs_generated") or 0
         s1 = exp.get("n_stage1_passed") or 0
-        rate = f"{s1/gen*100:.1f}%" if gen > 0 else "N/A"
+        rate = f"{s1 / gen * 100:.1f}%" if gen > 0 else "N/A"
         loss_parts = _loss_parts(exp)
         loss_str = f", {', '.join(loss_parts)}" if loss_parts else ""
         summary = exp.get("aria_summary") or ""
         summary_str = f" — {summary[:60]}" if summary else ""
-        lines.append(f"  [{eid}] {etype} {status}: {s1}/{gen} S1 ({rate}){loss_str}{summary_str}")
+        lines.append(
+            f"  [{eid}] {etype} {status}: {s1}/{gen} S1 ({rate}){loss_str}{summary_str}"
+        )
     return "\n".join(lines)
 
 
 def _format_pipeline(pipeline_tiers: Dict[str, int]) -> str:
-    parts = [f"{tier}: {pipeline_tiers.get(tier, 0)}" for tier in ("screening", "investigation", "validation", "breakthrough") if pipeline_tiers.get(tier, 0) > 0]
-    return f"Pipeline: {', '.join(parts)}" if parts else "Pipeline: empty (no candidates yet)"
+    parts = [
+        f"{tier}: {pipeline_tiers.get(tier, 0)}"
+        for tier in ("screening", "investigation", "validation", "breakthrough")
+        if pipeline_tiers.get(tier, 0) > 0
+    ]
+    return (
+        f"Pipeline: {', '.join(parts)}"
+        if parts
+        else "Pipeline: empty (no candidates yet)"
+    )
 
 
 def _format_learning_trend(learning_trajectory: Dict) -> str:
@@ -63,9 +73,9 @@ def _format_learning_trend(learning_trajectory: Dict) -> str:
     recent_rate = learning_trajectory.get("recent_s1_rate")
     line = f"Learning Trend: {trend}"
     if slope is not None:
-        line += f" (slope: {slope*100:+.2f}%/experiment)"
+        line += f" (slope: {slope * 100:+.2f}%/experiment)"
     if recent_rate is not None:
-        line += f", recent S1 rate: {recent_rate*100:.1f}%"
+        line += f", recent S1 rate: {recent_rate * 100:.1f}%"
     return line
 
 
@@ -77,7 +87,9 @@ def _format_campaign(campaign: Dict) -> str:
     )
 
 
-def _format_grammar_changes(grammar_weights: Dict, default_weights: Dict) -> Optional[str]:
+def _format_grammar_changes(
+    grammar_weights: Dict, default_weights: Dict
+) -> Optional[str]:
     deltas = []
     for cat in sorted(grammar_weights.keys()):
         cur = grammar_weights.get(cat, 1.0)
@@ -143,11 +155,15 @@ def _format_sparsity_coverage(sparse_coverage: Dict) -> Optional[str]:
 def _format_reference_comparison(ref_comparison: Dict) -> str:
     refs = ref_comparison.get("references") or []
     lines = ["Reference Baselines (targets to beat):"]
-    lines.extend(f"  {ref.get('name', '?')}: score={ref.get('score', 0):.1f}" for ref in refs)
+    lines.extend(
+        f"  {ref.get('name', '?')}: score={ref.get('score', 0):.1f}" for ref in refs
+    )
     if ref_comparison.get("beats_all_references"):
         margin = ref_comparison.get("margin_pct", 0)
         best = ref_comparison.get("best_synthesized_score", 0)
-        lines.append(f"  *** MILESTONE: Best synthesized model (score={best:.1f}) beats ALL references by {margin}%! ***")
+        lines.append(
+            f"  *** MILESTONE: Best synthesized model (score={best:.1f}) beats ALL references by {margin}%! ***"
+        )
     return "\n".join(lines)
 
 

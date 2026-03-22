@@ -83,7 +83,7 @@ class TestRunConfig(unittest.TestCase):
         from research.scientist.runner import RunConfig
 
         config = RunConfig()
-        self.assertEqual(config.auto_investigate_min_survivors, 1)
+        self.assertEqual(config.auto_investigate_min_survivors, 3)
 
     def test_auto_investigate_enabled_by_default(self):
         """Auto-investigation should be on by default."""
@@ -185,6 +185,29 @@ class TestAutoEscalation(unittest.TestCase):
             auto_validate=True,
         )
 
+    def _seed_promotable_results(self, nb, result_ids):
+        """Insert minimal program_results rows that pass the escalation gates.
+
+        The phase-7 auto-escalation requires:
+          - fingerprint_completed_post_investigation = True (in fingerprint_json)
+          - novelty_valid_for_promotion = 1
+        """
+        fp_json = json.dumps({"fingerprint_completed_post_investigation": True})
+        exp_id = nb.start_experiment("seed", {}, "seed")
+        for rid in result_ids:
+            nb.record_program_result(
+                experiment_id=exp_id,
+                result_id=rid,
+                graph_fingerprint=f"fp_{rid}",
+                graph_json="{}",
+                stage1_passed=True,
+                loss_ratio=0.3,
+                novelty_score=0.6,
+                fingerprint_json=fp_json,
+                novelty_valid_for_promotion=1,
+            )
+        nb.flush_writes()
+
     def test_auto_escalate_queues_investigation(self):
         """S1 survivors with good loss should queue investigation."""
         nb = LabNotebook(self.db_path)
@@ -268,6 +291,7 @@ class TestAutoEscalation(unittest.TestCase):
     def test_auto_escalate_queues_validation(self):
         """Investigation results with good robustness should queue validation."""
         nb = LabNotebook(self.db_path)
+        self._seed_promotable_results(nb, ["r1", "r2"])
 
         results = {
             "investigation_results": [
@@ -300,6 +324,9 @@ class TestAutoEscalation(unittest.TestCase):
     def test_auto_escalate_excludes_brittle_candidates(self):
         """Brittle investigation outcomes should not auto-queue for validation."""
         nb = LabNotebook(self.db_path)
+        self._seed_promotable_results(
+            nb, ["stable", "brittle_flag", "brittle_multiplier"]
+        )
 
         results = {
             "investigation_results": [
@@ -342,8 +369,11 @@ class TestAutoEscalation(unittest.TestCase):
         nb.close()
 
     def test_auto_escalate_requires_baseline_and_novelty_confidence(self):
-        """Validation auto-queue should require strong baseline + novelty confidence evidence."""
+        """Validation auto-queue requires fingerprint + novelty gates and baseline evidence."""
         nb = LabNotebook(self.db_path)
+        # Only "qualified" gets promotable fingerprint/novelty data;
+        # the others are blocked by the phase-7 fingerprint gate.
+        self._seed_promotable_results(nb, ["qualified"])
 
         results = {
             "investigation_results": [
@@ -1558,62 +1588,7 @@ class TestDiagnosticTasks(unittest.TestCase):
 
 
 class TestNegativeResultsLoop(unittest.TestCase):
-    """Test the learning-from-failures loop: excluded_ops + negative context."""
-
-    def test_excluded_ops_populated_from_negative_results(self):
-        """GrammarConfig.excluded_ops gets populated from negative results."""
-        from research.synthesis.grammar import GrammarConfig
-
-        # Simulate: 3 ops with 0% S1 rate, sufficient samples, high confidence
-        neg_results = {
-            "failed_ops": [
-                {
-                    "op_name": "bad_op_a",
-                    "s1_rate": 0,
-                    "n_used": 10,
-                    "confidence": 0.8,
-                    "failure_stage": "learning",
-                },
-                {
-                    "op_name": "bad_op_b",
-                    "s1_rate": 0,
-                    "n_used": 7,
-                    "confidence": 0.75,
-                    "failure_stage": "compilation",
-                },
-                # Should NOT be excluded: low confidence
-                {
-                    "op_name": "maybe_ok",
-                    "s1_rate": 0,
-                    "n_used": 6,
-                    "confidence": 0.5,
-                    "failure_stage": "learning",
-                },
-                # Should NOT be excluded: too few samples
-                {
-                    "op_name": "rare_op",
-                    "s1_rate": 0,
-                    "n_used": 3,
-                    "confidence": 0.9,
-                    "failure_stage": "learning",
-                },
-            ],
-        }
-
-        excluded = set()
-        for op_info in neg_results.get("failed_ops", []):
-            if (
-                op_info.get("s1_rate", 1) == 0
-                and op_info.get("n_used", 0) >= 5
-                and op_info.get("confidence", 0) >= 0.7
-            ):
-                excluded.add(op_info["op_name"])
-
-        self.assertEqual(excluded, {"bad_op_a", "bad_op_b"})
-
-        # Verify GrammarConfig accepts excluded_ops
-        cfg = GrammarConfig(model_dim=64, excluded_ops=excluded)
-        self.assertEqual(cfg.excluded_ops, {"bad_op_a", "bad_op_b"})
+    """Test the learning-from-failures loop: op penalties + negative context."""
 
     def test_negative_results_in_rich_context(self):
         """build_rich_context includes negative results when present."""

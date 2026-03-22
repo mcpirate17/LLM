@@ -1,4 +1,5 @@
 """Contract tests for poincare_add."""
+
 import yaml
 from pathlib import Path
 

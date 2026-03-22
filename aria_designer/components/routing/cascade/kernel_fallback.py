@@ -1,19 +1,20 @@
-"""Auto-generated Python fallback kernel for cascade."""
+"""Python fallback kernel for cascade."""
 
-import torch.nn as nn
+import torch
 
 
 class ComponentHandler:
-    """Fallback handler for cascade."""
+    """Fallback handler for cascade: progressive difficulty gating."""
 
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        # TODO: implement parameterized module
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
-        x = inputs["x"]
-        # TODO: implement cascade
-        return {"y": x}
+        x = inputs["x"]  # (B, S, D)
+        # Soft gating by token difficulty (mean activation as proxy)
+        scores = x.mean(dim=-1, keepdim=True)
+        gate = torch.sigmoid(scores)
+        return {"y": x * gate}

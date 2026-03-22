@@ -1,14 +1,15 @@
 """Rapid pre-screening filter for architecture candidates.
 
-Runs 75 gradient steps to detect fatal issues BEFORE committing
+Runs 150 gradient steps to detect fatal issues BEFORE committing
 to full Stage 1 training. Catches:
   - NaN/Inf gradients (steps 1-5)
   - Exploding grad norms (step 10)
   - Stalled loss trajectory (steps 25, 50)
   - Routing collapse / expert starvation (step 50)
-  - Post-minimum loss spike (step 75) — entropy collapse detection
+  - Post-minimum loss spike (step 100) — entropy collapse detection
+  - Learning signal check (step 150) — must show improvement
 
-Budget: 75 gradient steps, < 45 seconds on GPU.
+Budget: 150 gradient steps, < 90 seconds on GPU.
 """
 
 from __future__ import annotations
@@ -49,8 +50,8 @@ class ScreeningResult:
 class RapidScreeningCheck:
     """Fast pre-screening filter. Runs before full Stage 1 training.
 
-    Kills bad architectures in < 45 seconds.
-    Budget: 75 gradient steps max.
+    Kills bad architectures in < 90 seconds.
+    Budget: 150 gradient steps max.
     """
 
     __slots__ = (
@@ -68,13 +69,13 @@ class RapidScreeningCheck:
 
     GRAD_NORM_HARD_LIMIT: float = 500.0
     GRAD_NORM_WARNING: float = 50.0
-    LOSS_AT_STEP_25_LIMIT: float = 200.0
-    LOSS_AT_STEP_50_LIMIT: float = 150.0
+    LOSS_AT_STEP_25_LIMIT: float = 500.0
+    LOSS_AT_STEP_50_LIMIT: float = 300.0
     LOSS_SPIKE_RATIO: float = 2.0
     ROUTING_ENTROPY_MINIMUM: float = 0.05
     NAN_GRACE_STEPS: int = 5
-    LOSS_CHECK_FINAL_STEP: int = 75
-    MAX_STEPS: int = 75
+    LOSS_CHECK_FINAL_STEP: int = 150
+    MAX_STEPS: int = 150
 
     def __init__(
         self,
@@ -137,7 +138,7 @@ class RapidScreeningCheck:
         has_entropy_gate = self._detect_entropy_gate(model)
         metrics["has_entropy_gate"] = has_entropy_gate
         entropy_gate_trajectory: List[float] = []
-        _ENTROPY_SAMPLE_STEPS = frozenset({10, 25, 50, 75})
+        _ENTROPY_SAMPLE_STEPS = frozenset({10, 25, 50, 75, 100, 150})
         min_loss_so_far = float("inf")
 
         for step in range(1, self.max_steps + 1):
@@ -312,8 +313,8 @@ class RapidScreeningCheck:
                     f"Grad norm {grad_norm:.1f} > {self.grad_norm_warning} at step 50"
                 )
 
-            # CHECK 8: Post-minimum loss spike at step 75 (entropy collapse)
-            if step == 75:
+            # CHECK 8: Post-minimum loss spike at step 100 (entropy collapse)
+            if step == 100:
                 min_loss = min(metrics["losses"])
                 if min_loss > 0 and loss_val > min_loss * self.loss_spike_ratio:
                     self._kill(
@@ -327,11 +328,42 @@ class RapidScreeningCheck:
                     )
                     break
 
-            # Note: relative learning check (loss_ratio at step 75) is NOT
-            # applied here. Rapid screening uses random tokens, which have
-            # no learnable structure — even GPT-2 barely reduces loss on
-            # random data in 75 steps. The real learning gate is the S1
-            # pass threshold (stage1_loss_ratio_threshold=0.4).
+            # CHECK 9: Learning signal at final step — must show some
+            # improvement over initial loss. Uses an adaptive threshold
+            # that accounts for the initial loss level.
+            #
+            # Problem: fixed 2% threshold penalizes complex architectures
+            # that start closer to the entropy floor (low init_loss).
+            # Data shows: 45% of 11-op graphs killed vs 0% of 4-op graphs.
+            #
+            # Fix: scale the required improvement by initial loss level.
+            # High init_loss (>50): require 2% relative improvement (unchanged)
+            # Low init_loss (<50): require progressively less, down to 0.5%
+            # at init_loss near ln(vocab)≈5.5 (entropy floor).
+            #
+            # Formula: threshold = init * (1 - improvement_rate)
+            # where improvement_rate = 0.02 * min(1, init_loss / 25)
+            # At init=190: rate=2.0%, must drop 3.8 nats
+            # At init=25:  rate=2.0%, must drop 0.5 nats
+            # At init=12:  rate=1.0%, must drop 0.12 nats
+            # At init=6:   rate=0.5%, must drop 0.03 nats
+            if step == self.max_steps and len(metrics["losses"]) >= self.max_steps:
+                init_l = metrics["losses"][0]
+                if init_l > 0:
+                    improvement_rate = 0.02 * min(1.0, init_l / 25.0)
+                    threshold = init_l * (1.0 - improvement_rate)
+                    if loss_val >= threshold:
+                        self._kill(
+                            result,
+                            step,
+                            "no_learning_signal",
+                            loss_val,
+                            threshold,
+                            f"No learning after {step} steps: "
+                            f"init={init_l:.3f} final={loss_val:.3f} "
+                            f"(threshold={threshold:.3f}, rate={improvement_rate:.3f})",
+                        )
+                        break
 
         # Entropy gate trajectory
         if entropy_gate_trajectory:
@@ -341,12 +373,18 @@ class RapidScreeningCheck:
         if metrics["losses"]:
             metrics["initial_loss"] = metrics["losses"][0]
             metrics["final_loss"] = metrics["losses"][-1]
+            if len(metrics["losses"]) >= 10:
+                metrics["loss_at_10"] = metrics["losses"][9]
             if len(metrics["losses"]) >= 25:
                 metrics["loss_at_25"] = metrics["losses"][24]
             if len(metrics["losses"]) >= 50:
                 metrics["loss_at_50"] = metrics["losses"][49]
             if len(metrics["losses"]) >= 75:
                 metrics["loss_at_75"] = metrics["losses"][74]
+            if len(metrics["losses"]) >= 100:
+                metrics["loss_at_100"] = metrics["losses"][99]
+            if len(metrics["losses"]) >= 150:
+                metrics["loss_at_150"] = metrics["losses"][149]
         if metrics["grad_norms"]:
             finite_norms = [g for g in metrics["grad_norms"] if math.isfinite(g)]
             if finite_norms:

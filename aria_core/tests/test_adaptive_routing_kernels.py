@@ -11,7 +11,11 @@ def _ref_difficulty_scorer(x, w1, b1, w2, b2):
 
 
 def _ref_lane_router_threshold(scores, lanes, thresholds):
-    boundaries = thresholds if thresholds is not None else torch.linspace(0, 1, lanes + 1, dtype=scores.dtype)[1:-1]
+    boundaries = (
+        thresholds
+        if thresholds is not None
+        else torch.linspace(0, 1, lanes + 1, dtype=scores.dtype)[1:-1]
+    )
     assignments = torch.bucketize(scores, boundaries)
     assignments = torch.clamp(assignments, 0, lanes - 1).to(torch.int64)
     weights = torch.zeros(scores.shape[0], scores.shape[1], lanes, dtype=scores.dtype)
@@ -82,7 +86,9 @@ def test_lane_router_threshold_assignments_and_weights():
     assert assignments.shape == (1, 4)
     assert weights.shape == (1, 4, 3)
     assert assignments.tolist() == [[0, 1, 2, 2]]
-    torch.testing.assert_close(weights.sum(dim=-1), torch.ones(1, 4), atol=1e-6, rtol=0.0)
+    torch.testing.assert_close(
+        weights.sum(dim=-1), torch.ones(1, 4), atol=1e-6, rtol=0.0
+    )
 
 
 def test_load_balance_loss_matches_expected_l2():
@@ -128,7 +134,9 @@ def test_conditional_dispatch_counts_and_index_map():
     x = torch.arange(1 * 5 * 3, dtype=torch.float32).reshape(1, 5, 3)
     assignments = torch.tensor([[0, 2, 1, 2, 0]], dtype=torch.int64)
 
-    lane_out, index_map, lane_counts = aria_core.conditional_dispatch_f32(x, assignments, 2)
+    lane_out, index_map, lane_counts = aria_core.conditional_dispatch_f32(
+        x, assignments, 2
+    )
 
     assert lane_counts.tolist() == [2]
     assert index_map.tolist() == [[-1, 0, -1, 1, -1]]
@@ -142,11 +150,15 @@ def test_conditional_gather_reconstructs_with_one_hot_weights():
     x = torch.randn(b, s, d)
     scores = torch.rand(b, s)
     thresholds = torch.tensor([0.33, 0.66], dtype=torch.float32)
-    assignments, one_hot = aria_core.lane_router_threshold_f32(scores, lanes, thresholds)
+    assignments, one_hot = aria_core.lane_router_threshold_f32(
+        scores, lanes, thresholds
+    )
 
     y = torch.zeros_like(x)
     for lane_id in range(lanes):
-        lane_out, index_map, _ = aria_core.conditional_dispatch_f32(x, assignments, lane_id)
+        lane_out, index_map, _ = aria_core.conditional_dispatch_f32(
+            x, assignments, lane_id
+        )
         lane_w = one_hot[:, :, lane_id].contiguous()
         y = y + aria_core.conditional_gather_f32(lane_out, index_map, lane_w)
 
@@ -185,7 +197,9 @@ def test_conditional_backward_shapes_and_basic_values():
     grad_y = torch.ones_like(x)
     weights = torch.tensor([[0.0, 1.0, 0.0, 1.0]], dtype=torch.float32)
 
-    grad_lane, grad_weights = aria_core.conditional_gather_backward_f32(grad_y, lane_out, index_map, weights)
+    grad_lane, grad_weights = aria_core.conditional_gather_backward_f32(
+        grad_y, lane_out, index_map, weights
+    )
     grad_x = aria_core.conditional_dispatch_backward_f32(grad_lane, index_map)
 
     assert grad_lane.shape == lane_out.shape
@@ -206,8 +220,12 @@ def test_conditional_gather_backward_parity_vs_reference():
     grad_y = torch.randn(2, 5, 3)
     weights = torch.rand(2, 5)
 
-    n_grad_lane, n_grad_w = aria_core.conditional_gather_backward_f32(grad_y, lane_out, index_map, weights)
-    r_grad_lane, r_grad_w = _ref_conditional_gather_backward(grad_y, lane_out, index_map, weights)
+    n_grad_lane, n_grad_w = aria_core.conditional_gather_backward_f32(
+        grad_y, lane_out, index_map, weights
+    )
+    r_grad_lane, r_grad_w = _ref_conditional_gather_backward(
+        grad_y, lane_out, index_map, weights
+    )
     torch.testing.assert_close(n_grad_lane, r_grad_lane, atol=1e-6, rtol=0.0)
     torch.testing.assert_close(n_grad_w, r_grad_w, atol=1e-6, rtol=0.0)
 
@@ -222,12 +240,14 @@ def test_fused_adaptive_route_dispatch_matches_composed_path():
     b2 = torch.randn(1) * 0.01
     thresholds = torch.tensor([0.25, 0.5], dtype=torch.float32)
 
-    f_scores, f_assign, f_weights, f_lane_out, f_index_map, f_lane_counts = aria_core.adaptive_route_dispatch_f32(
-        x, w1, b1, w2, b2, lanes, thresholds
+    f_scores, f_assign, f_weights, f_lane_out, f_index_map, f_lane_counts = (
+        aria_core.adaptive_route_dispatch_f32(x, w1, b1, w2, b2, lanes, thresholds)
     )
 
     c_scores = aria_core.difficulty_scorer_f32(x, w1, b1, w2, b2)
-    c_assign, c_weights = aria_core.lane_router_threshold_f32(c_scores.squeeze(-1), lanes, thresholds)
+    c_assign, c_weights = aria_core.lane_router_threshold_f32(
+        c_scores.squeeze(-1), lanes, thresholds
+    )
 
     lane_outs = []
     maps = []

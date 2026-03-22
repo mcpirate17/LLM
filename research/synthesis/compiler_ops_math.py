@@ -16,6 +16,72 @@ from .compiler_op_utils import (
 )
 
 
+# ── Table-driven dispatch for simple unary/binary ops ────────────────
+#
+# Ops that follow a uniform pattern are generated from tables rather than
+# hand-written per-op functions.  Custom ops that need preprocessing
+# (clamp, softplus, STE, etc.) remain as explicit functions below.
+
+
+def _make_unary_op(torch_fn, native_name):
+    """Generate a unary op: aria_core.{native_name}(x) when eligible, else torch_fn(x)."""
+    native_fn = None  # resolved lazily since aria_core may be None
+
+    def op(_, inputs, __):
+        nonlocal native_fn
+        x = inputs[0]
+        if _c(x):
+            if native_fn is None:
+                native_fn = getattr(aria_core, native_name)
+            return native_fn(x)
+        return torch_fn(x)
+
+    return op
+
+
+def _make_binary_op(torch_fn, native_name):
+    """Generate a binary op: aria_core.{native_name}(a, b) when eligible, else torch_fn(a, b)."""
+    native_fn = None
+
+    def op(_, inputs, __):
+        nonlocal native_fn
+        a, b = inputs[0], inputs[1]
+        if _c(a):
+            if native_fn is None:
+                native_fn = getattr(aria_core, native_name)
+            return native_fn(a, b)
+        return torch_fn(a, b)
+
+    return op
+
+
+# name -> (torch_fn, aria_core attr name)
+_SIMPLE_UNARY_OPS = {
+    "abs": (torch.abs, "abs_f32"),
+    "sin": (torch.sin, "sin_f32"),
+    "cos": (torch.cos, "cos_f32"),
+    "tanh": (torch.tanh, "tanh_f32"),
+    "sigmoid": (torch.sigmoid, "sigmoid_f32"),
+    "relu": (F.relu, "relu_f32"),
+    "gelu": (F.gelu, "gelu_f32"),
+    "silu": (F.silu, "silu_f32"),
+}
+
+_SIMPLE_BINARY_OPS = {
+    "sub": (lambda a, b: a - b, "sub_f32"),
+}
+
+# Generate op functions from tables
+_TABLE_OPS: Dict[str, Callable] = {}
+for _name, (_tfn, _nname) in _SIMPLE_UNARY_OPS.items():
+    _TABLE_OPS[_name] = _make_unary_op(_tfn, _nname)
+for _name, (_tfn, _nname) in _SIMPLE_BINARY_OPS.items():
+    _TABLE_OPS[_name] = _make_binary_op(_tfn, _nname)
+
+
+# ── Custom ops that need special logic ───────────────────────────────
+
+
 def _op_identity(_, inputs, __):
     """Pass-through op — used by workflow_converter for uniform routing."""
     return inputs[0]
@@ -28,11 +94,27 @@ def _op_neg(_, inputs, __):
     return -x
 
 
-def _op_abs(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.abs_f32(x)
-    return torch.abs(x)
+def _op_minimum(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a) and not a.requires_grad:
+        native_fn = getattr(aria_core, "minimum_f32", None)
+        if native_fn is not None:
+            return native_fn(a, b)
+    # Smooth min: -tau * log(exp(-a/tau) + exp(-b/tau)), tau=1.0
+    # Gradient flows through both inputs (unlike hard torch.minimum)
+    tau = 1.0
+    return -tau * torch.logaddexp(-a / tau, -b / tau)
+
+
+def _op_maximum(_, inputs, __):
+    a, b = inputs[0], inputs[1]
+    if _c(a) and not a.requires_grad:
+        native_fn = getattr(aria_core, "maximum_f32", None)
+        if native_fn is not None:
+            return native_fn(a, b)
+    # Smooth max: tau * log(exp(a/tau) + exp(b/tau)), tau=1.0
+    tau = 1.0
+    return tau * torch.logaddexp(a / tau, b / tau)
 
 
 def _op_exp(_, inputs, __):
@@ -44,66 +126,20 @@ def _op_exp(_, inputs, __):
 
 def _op_log(_, inputs, __):
     x = inputs[0]
-    # softplus ensures always-positive input with bounded gradient
-    soft = F.softplus(x, beta=1.0, threshold=20)
-    if _c(x):
-        return aria_core.log_f32(soft.detach())
+    # softplus ensures always-positive input.
+    # Clamp softplus output to >= 0.01 to bound log gradient (d/dx = 1/x):
+    # at 0.01 grad is 100, at 1e-6 grad is 1e6.
+    soft = F.softplus(x, beta=1.0, threshold=20).clamp(min=0.01)
+    if _c(x) and not x.requires_grad:
+        return aria_core.log_f32(soft)
     return torch.log(soft)
-
-
-def _op_sin(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.sin_f32(x)
-    return torch.sin(x)
-
-
-def _op_cos(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.cos_f32(x)
-    return torch.cos(x)
-
-
-def _op_tanh(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.tanh_f32(x)
-    return torch.tanh(x)
-
-
-def _op_sigmoid(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.sigmoid_f32(x)
-    return torch.sigmoid(x)
-
-
-def _op_relu(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.relu_f32(x)
-    return F.relu(x)
-
-
-def _op_gelu(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.gelu_f32(x)
-    return F.gelu(x)
-
-
-def _op_silu(_, inputs, __):
-    x = inputs[0]
-    if _c(x):
-        return aria_core.silu_f32(x)
-    return F.silu(x)
 
 
 def _op_sqrt(_, inputs, __):
     x = inputs[0]
-    clamped = torch.clamp(x.abs(), min=1e-8)
-    if _c(x):
+    # Clamp to 1e-4 (not 1e-8): grad of sqrt at 1e-8 is 5623, at 1e-4 is 50
+    clamped = torch.clamp(x.abs(), min=1e-4)
+    if _c(x) and not x.requires_grad:
         return aria_core.sqrt_f32(clamped)
     return torch.sqrt(clamped)
 
@@ -119,17 +155,23 @@ def _op_sign_ste(_, inputs, __):
     x = inputs[0]
     if _c(x):
         signs = aria_core.sign_ste_f32(x)
-        return x + (signs - x).detach()
-    signs = torch.sign(x)
-    return x + (signs - x).detach()
+    else:
+        signs = torch.sign(x)
+    # STE: forward uses hard sign, backward uses identity (gradient passes through)
+    return signs + (x - signs).detach()
 
 
 def _op_reciprocal(_, inputs, __):
     x = inputs[0]
-    if _c(x):
+    if _c(x) and not x.requires_grad:
         return aria_core.reciprocal_f32(x)
-    # Sigmoid-based: 1/(1+sigmoid(x)), range [0.5, 1.0], bounded gradient
-    return 1.0 / (1.0 + torch.sigmoid(x))
+    # Sigmoid-based: 1/(1+sigmoid(x)), range [0.5, 1.0], bounded gradient.
+    # Always use this path during training — C kernel uses raw 1/x which
+    # has unbounded gradient near zero.
+    # Clamp input to prevent extreme sigmoid saturation from amplifying
+    # gradients when composed with mul(x, reciprocal(x)).
+    x_clamped = torch.clamp(x, min=-10.0, max=10.0)
+    return 1.0 / (1.0 + torch.sigmoid(x_clamped))
 
 
 def _op_add(_, inputs, __):
@@ -146,33 +188,15 @@ def _op_mul(_, inputs, __):
     return a * b
 
 
-def _op_sub(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.sub_f32(a, b)
-    return a - b
-
-
 def _op_div_safe(_, inputs, __):
     a, b = inputs[0], inputs[1]
     if _c(a):
         return aria_core.div_safe_f32(a, b)
-    # Sigmoid denominator: range [1, 2], always positive, bounded gradient
-    return a / (1.0 + torch.sigmoid(b))
-
-
-def _op_maximum(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.maximum_f32(a, b)
-    return torch.maximum(a, b)
-
-
-def _op_minimum(_, inputs, __):
-    a, b = inputs[0], inputs[1]
-    if _c(a):
-        return aria_core.minimum_f32(a, b)
-    return torch.minimum(a, b)
+    # Sigmoid denominator: range [1, 2], always positive.
+    # Clamp numerator to prevent gradient explosion through b:
+    # d/db = -a * sigmoid'(b) / (1+sigmoid(b))^2, unbounded if a is large.
+    a_clamped = torch.clamp(a, min=-10.0, max=10.0)
+    return a_clamped / (1.0 + torch.sigmoid(b))
 
 
 def _op_sum_last(_, inputs, __):
@@ -189,14 +213,6 @@ def _op_max_last(_, inputs, __):
 
 def _op_norm_last(_, inputs, __):
     return inputs[0].norm(dim=-1, keepdim=True)
-
-
-def _op_sum_seq(_, inputs, __):
-    return inputs[0].sum(dim=1, keepdim=True)
-
-
-def _op_mean_seq(_, inputs, __):
-    return inputs[0].mean(dim=1, keepdim=True)
 
 
 def _op_cumsum(_, inputs, __):
@@ -244,8 +260,10 @@ def _op_outer_product(_, inputs, __):
 
 
 def _op_transpose_sd(_, inputs, __):
-    # Swap sequence (dim=1) and feature (dim=2) dimensions
-    return inputs[0].transpose(1, 2).contiguous()
+    # Causal feature permutation: interleave even/odd channels
+    # No sequence interaction — each position processed independently
+    x = inputs[0]
+    return torch.cat([x[..., ::2], x[..., 1::2]], dim=-1)
 
 
 def _op_split2(_, inputs, config):
@@ -253,8 +271,8 @@ def _op_split2(_, inputs, config):
     x = inputs[0]
     w = x.shape[-1] // 2
     if part == 0:
-        return x[..., :w]
-    return x[..., w : 2 * w]
+        return x[..., :w].contiguous()
+    return x[..., w : 2 * w].contiguous()
 
 
 def _op_split3(_, inputs, config):
@@ -262,10 +280,10 @@ def _op_split3(_, inputs, config):
     x = inputs[0]
     w = x.shape[-1] // 3
     if part == 0:
-        return x[..., :w]
+        return x[..., :w].contiguous()
     if part == 1:
-        return x[..., w : 2 * w]
-    return x[..., 2 * w : 3 * w]
+        return x[..., w : 2 * w].contiguous()
+    return x[..., 2 * w : 3 * w].contiguous()
 
 
 def _op_split4(_, inputs, config):
@@ -273,12 +291,12 @@ def _op_split4(_, inputs, config):
     x = inputs[0]
     w = x.shape[-1] // 4
     if part == 0:
-        return x[..., :w]
+        return x[..., :w].contiguous()
     if part == 1:
-        return x[..., w : 2 * w]
+        return x[..., w : 2 * w].contiguous()
     if part == 2:
-        return x[..., 2 * w : 3 * w]
-    return x[..., 3 * w : 4 * w]
+        return x[..., 2 * w : 3 * w].contiguous()
+    return x[..., 3 * w : 4 * w].contiguous()
 
 
 def _op_concat(_, inputs, __):
@@ -306,12 +324,16 @@ def _op_linear_common(module, inputs, _):
     if not hasattr(module, "weight"):
         return inputs[0]
     x = inputs[0]
+    if x.shape[-1] != module.weight.shape[1]:
+        return x
     if _c(x):
         xf, orig_shape = _flatten_for_kernel(x)
         bias = getattr(module, "bias", None)
         out = aria_core.linear_f32(xf, module.weight, bias)
         return _unflatten_from_kernel(out, orig_shape)
-    return F.linear(x, module.weight, getattr(module, "bias", None))
+    w = module.weight.to(x.dtype)
+    b = getattr(module, "bias", None)
+    return F.linear(x, w, b.to(x.dtype) if b is not None else None)
 
 
 def _op_fused_linear_gelu(module, inputs, _):
@@ -347,34 +369,24 @@ def _op_learnable_bias(module, inputs, _):
 
 
 OP_IMPLS: Dict[str, Callable] = {
+    # Table-generated simple ops (unary + binary)
+    **_TABLE_OPS,
+    # Custom ops with special logic
     "identity": _op_identity,
     "neg": _op_neg,
-    "abs": _op_abs,
     "exp": _op_exp,
     "log": _op_log,
-    "sin": _op_sin,
-    "cos": _op_cos,
-    "tanh": _op_tanh,
-    "sigmoid": _op_sigmoid,
-    "relu": _op_relu,
-    "gelu": _op_gelu,
-    "silu": _op_silu,
     "sqrt": _op_sqrt,
     "square": _op_square,
     "sign_ste": _op_sign_ste,
     "reciprocal": _op_reciprocal,
     "add": _op_add,
     "mul": _op_mul,
-    "sub": _op_sub,
     "div_safe": _op_div_safe,
-    "maximum": _op_maximum,
-    "minimum": _op_minimum,
     "sum_last": _op_sum_last,
     "mean_last": _op_mean_last,
     "max_last": _op_max_last,
     "norm_last": _op_norm_last,
-    "sum_seq": _op_sum_seq,
-    "mean_seq": _op_mean_seq,
     "cumsum": _op_cumsum,
     "cumprod_safe": _op_cumprod_safe,
     "matmul": _op_matmul,
@@ -393,4 +405,6 @@ OP_IMPLS: Dict[str, Callable] = {
     "fused_linear_gelu": _op_fused_linear_gelu,
     "learnable_scale": _op_learnable_scale,
     "learnable_bias": _op_learnable_bias,
+    "minimum": _op_minimum,
+    "maximum": _op_maximum,
 }

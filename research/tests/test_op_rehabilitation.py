@@ -2,9 +2,8 @@
 
 Covers:
 - Smoke tests: 27 previously-broken ops compile, run forward, produce correct shape, no NaN
-- Protection tests: all 27 ops are in PROTECTED_OPS
 - Sparsity tests: spiking ops not falsely flagged as collapsed
-- Grammar tests: protected standalone ops get sampled
+- Grammar tests: standalone ops get sampled
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import torch
 
 pytestmark = pytest.mark.unit
 
-from research.synthesis.primitives import PROTECTED_OPS, get_primitive
+from research.synthesis.primitives import get_primitive
 from research.synthesis.grammar import GrammarConfig
 
 # All ops that were at 0% S1 rate or soft-penalized
@@ -165,17 +164,6 @@ class TestOpSmoke:
         assert x.grad.abs().sum() > 0, f"{op_name} gradient is all zeros"
 
 
-class TestProtection:
-    """All rehab ops should be in PROTECTED_OPS."""
-
-    @pytest.mark.parametrize("op_name", REHAB_OPS)
-    def test_op_is_protected(self, op_name):
-        assert op_name in PROTECTED_OPS, f"{op_name} is NOT in PROTECTED_OPS"
-
-    def test_protected_ops_count(self):
-        assert len(PROTECTED_OPS) >= 27, f"Only {len(PROTECTED_OPS)} protected ops"
-
-
 class TestSparsity:
     """Spiking ops should not be falsely flagged as collapsed."""
 
@@ -187,7 +175,7 @@ class TestSparsity:
         # All-zero output means all neurons are "dead" but that's expected for spiking
         n_neurons = 64
         zero_frac = np.ones(n_neurons)  # 100% zeros (no spikes with zero input)
-        dead = int((zero_frac > 0.999).sum())  # all dead
+        int((zero_frac > 0.999).sum())  # all dead
 
         # With relaxed threshold (0.99 for spiking ops), this should NOT be collapsed
         # dead (64) > 0.99 * 64 (63.36) is True, BUT the threshold is per-neuron
@@ -215,24 +203,24 @@ class TestSparsity:
 
 
 class TestGrammar:
-    """Protected standalone ops should appear in generated programs."""
+    """Standalone rehab ops should appear in generated programs."""
 
-    def test_protected_ops_sampled(self):
-        """Over 500 programs, standalone protected ops should be sampled."""
+    def test_rehab_ops_sampled(self):
+        """Over 500 programs, standalone rehab ops should be sampled."""
         from research.synthesis.grammar import generate_layer_graph
 
-        # Get standalone protected ops that are actually registered
-        standalone_protected = set()
-        for op_name in PROTECTED_OPS:
+        # Get standalone rehab ops that are actually registered
+        standalone_rehab = set()
+        for op_name in REHAB_OPS:
             try:
                 prim = get_primitive(op_name)
                 if prim.standalone:
-                    standalone_protected.add(op_name)
+                    standalone_rehab.add(op_name)
             except KeyError:
                 continue
 
-        if not standalone_protected:
-            pytest.skip("No standalone protected ops registered")
+        if not standalone_rehab:
+            pytest.skip("No standalone rehab ops registered")
 
         seen_ops = set()
         config = GrammarConfig(model_dim=64, max_ops=16, max_depth=8, risky_op_prob=0.8)
@@ -240,20 +228,18 @@ class TestGrammar:
             try:
                 g = generate_layer_graph(config)
                 for nid, node in g.nodes.items():
-                    if node.op_name in standalone_protected:
+                    if node.op_name in standalone_rehab:
                         seen_ops.add(node.op_name)
             except Exception:
                 continue
 
-        # We expect at least 20% of standalone protected ops to appear.
-        # Many protected ops are math-space or exotic ops with low base
+        # We expect at least 20% of standalone rehab ops to appear.
+        # Many rehab ops are math-space or exotic ops with low base
         # sampling probability, so coverage is inherently limited.
-        coverage = (
-            len(seen_ops) / len(standalone_protected) if standalone_protected else 1.0
-        )
+        coverage = len(seen_ops) / len(standalone_rehab) if standalone_rehab else 1.0
         assert coverage >= 0.2, (
-            f"Only {len(seen_ops)}/{len(standalone_protected)} standalone protected ops "
-            f"sampled in 800 programs ({coverage:.0%}). Missing: {standalone_protected - seen_ops}"
+            f"Only {len(seen_ops)}/{len(standalone_rehab)} standalone rehab ops "
+            f"sampled in 800 programs ({coverage:.0%}). Missing: {standalone_rehab - seen_ops}"
         )
 
     def test_no_default_op_weights_penalty(self):

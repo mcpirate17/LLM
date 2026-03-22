@@ -1,4 +1,5 @@
 """Contract tests for padic_expand."""
+
 import yaml
 from pathlib import Path
 

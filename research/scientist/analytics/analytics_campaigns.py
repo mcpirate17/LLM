@@ -3,8 +3,6 @@ import json
 import re
 from typing import Dict, List, Optional
 
-from ...synthesis.primitives import PROTECTED_OPS
-
 
 class _CampaignsMixin:
     """Campaign criteria tracking, negative results synthesis, decision analysis."""
@@ -298,13 +296,9 @@ class _CampaignsMixin:
                     "failure_stage": "learning",
                     "confidence": round(min(0.95, 0.4 + n_s0 / 100), 2),
                 }
-                if op_name in PROTECTED_OPS:
-                    # Protected ops go to weak_ops with soft penalty, never failed
-                    entry["penalty_weight"] = 0.5
-                    entry["protected_op"] = True
-                    result["weak_ops"].append(entry)
-                else:
-                    result["failed_ops"].append(entry)
+                # All failed ops get soft penalties (no hard exclusion)
+                entry["penalty_weight"] = 0.5
+                result["weak_ops"].append(entry)
 
         # 1b. Weak ops: nonzero but poor S1 rate (soft penalty candidates).
         # These shouldn't be hard-excluded but should be selected less often.

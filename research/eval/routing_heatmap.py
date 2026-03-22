@@ -30,7 +30,10 @@ def _gini_coefficient(counts: np.ndarray) -> float:
     sorted_counts = np.sort(counts)
     n = len(sorted_counts)
     cumsum = np.cumsum(sorted_counts)
-    return float((2.0 * np.sum((np.arange(1, n + 1) * sorted_counts)) / (n * cumsum[-1])) - (n + 1) / n)
+    return float(
+        (2.0 * np.sum((np.arange(1, n + 1) * sorted_counts)) / (n * cumsum[-1]))
+        - (n + 1) / n
+    )
 
 
 def _max_entropy(n_experts: int) -> float:
@@ -109,7 +112,11 @@ def evaluate_routing_heatmap(
         count = rt.get("count", 0)
 
         # Compute per-module metrics
-        gini = _gini_coefficient(counts_np) if counts_np is not None and n_experts > 1 else 0.0
+        gini = (
+            _gini_coefficient(counts_np)
+            if counts_np is not None and n_experts > 1
+            else 0.0
+        )
         avg_entropy = (entropy_sum / count) if count > 0 else 0.0
         max_ent = _max_entropy(n_experts)
         normalized_entropy = (avg_entropy / max_ent) if max_ent > 0 else 0.0

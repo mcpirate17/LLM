@@ -1,4 +1,5 @@
 """Contract tests for bottleneck_proj."""
+
 import yaml
 from pathlib import Path
 

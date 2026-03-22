@@ -8,7 +8,9 @@ available to the synthesis engine.
 from __future__ import annotations
 
 from ..synthesis.primitives import (
-    PrimitiveOp, OpCategory, register_external_primitive,
+    PrimitiveOp,
+    OpCategory,
+    register_external_primitive,
 )
 from . import hyperbolic, tropical, padic, clifford, compression, spiking
 from . import tropical_routing
@@ -419,5 +421,5 @@ def _with_execute(op: PrimitiveOp, fn) -> PrimitiveOp:
     Since PrimitiveOp is frozen, we store it as an attribute on the object.
     """
     # Use object.__setattr__ to bypass frozen dataclass
-    object.__setattr__(op, 'execute_fn', fn)
+    object.__setattr__(op, "execute_fn", fn)
     return op

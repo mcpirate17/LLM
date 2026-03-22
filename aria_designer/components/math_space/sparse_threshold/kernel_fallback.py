@@ -1,6 +1,8 @@
 """Kernel handler for sparse_threshold — dispatches to aria_core.sparse_threshold_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "sparse_threshold"

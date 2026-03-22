@@ -1,4 +1,5 @@
 """Contract tests for neg."""
+
 import yaml
 from pathlib import Path
 

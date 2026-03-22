@@ -52,9 +52,9 @@ class _BaselineTransformer(nn.Module):
     def __init__(self, vocab_size: int, d_model: int, n_layers: int = 2):
         super().__init__()
         self.embed = nn.Embedding(vocab_size, d_model)
-        self.layers = nn.ModuleList([
-            _SimpleTransformerLayer(d_model) for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [_SimpleTransformerLayer(d_model) for _ in range(n_layers)]
+        )
         self.head = nn.Linear(d_model, vocab_size, bias=False)
         self.ln_f = nn.LayerNorm(d_model)
 
@@ -91,15 +91,21 @@ class TransformerBaseline:
         conn.commit()
         conn.close()
 
-    def _config_key(self, d_model: int, seq_len: int, n_steps: int,
-                    vocab_size: int, n_layers: int = 2,
-                    device: str = "cuda",
-                    optimizer_name: str = "adamw",
-                    weight_decay: float = 0.01,
-                    momentum: float = 0.0,
-                    betas: Optional[Tuple[float, float]] = None,
-                    data_mode: str = "random",
-                    data_tag: str = "none") -> str:
+    def _config_key(
+        self,
+        d_model: int,
+        seq_len: int,
+        n_steps: int,
+        vocab_size: int,
+        n_layers: int = 2,
+        device: str = "cuda",
+        optimizer_name: str = "adamw",
+        weight_decay: float = 0.01,
+        momentum: float = 0.0,
+        betas: Optional[Tuple[float, float]] = None,
+        data_mode: str = "random",
+        data_tag: str = "none",
+    ) -> str:
         dev_tag = "gpu" if device == "cuda" else "cpu"
         opt = (optimizer_name or "adamw").lower()
         wd_tag = f"{weight_decay:.8f}"
@@ -121,8 +127,7 @@ class TransformerBaseline:
         conn.close()
         return row[0] if row else None
 
-    def _save_cache(self, config_key: str, final_loss: float,
-                    initial_loss: float):
+    def _save_cache(self, config_key: str, final_loss: float, initial_loss: float):
         conn = sqlite3.connect(str(self.cache_path))
         conn.execute(
             """INSERT OR REPLACE INTO baseline_results
@@ -161,9 +166,18 @@ class TransformerBaseline:
             data_tag: Cache key suffix for data source (e.g. "shakespeare").
         """
         config_key = self._config_key(
-            d_model, seq_len, n_steps, vocab_size,
-            n_layers, device, optimizer_name, weight_decay, momentum, betas,
-            data_mode=data_mode, data_tag=data_tag,
+            d_model,
+            seq_len,
+            n_steps,
+            vocab_size,
+            n_layers,
+            device,
+            optimizer_name,
+            weight_decay,
+            momentum,
+            betas,
+            data_mode=data_mode,
+            data_tag=data_tag,
         )
 
         if cache_data_fn:
@@ -176,8 +190,14 @@ class TransformerBaseline:
         losses = []
         for seed in range(n_seeds):
             loss = self._train_baseline(
-                d_model, seq_len, n_steps, vocab_size,
-                batch_size, lr, device, n_layers,
+                d_model,
+                seq_len,
+                n_steps,
+                vocab_size,
+                batch_size,
+                lr,
+                device,
+                n_layers,
                 optimizer_name=optimizer_name,
                 weight_decay=weight_decay,
                 momentum=momentum,
@@ -233,7 +253,6 @@ class TransformerBaseline:
             )
         model.train()
 
-        initial_loss = None
         final_loss = float("inf")
 
         try:
@@ -243,10 +262,14 @@ class TransformerBaseline:
                     input_ids = data_fn(batch_size, seq_len, dev)
                 else:
                     input_ids = torch.randint(
-                        0, vocab_size, (batch_size, seq_len), device=dev,
+                        0,
+                        vocab_size,
+                        (batch_size, seq_len),
+                        device=dev,
                     )
                 with torch.amp.autocast(
-                    device_type=dev.type, dtype=torch.bfloat16,
+                    device_type=dev.type,
+                    dtype=torch.bfloat16,
                     enabled=(dev.type == "cuda"),
                 ):
                     logits = model(input_ids)
@@ -265,7 +288,7 @@ class TransformerBaseline:
 
                 loss_val = loss.item()
                 if step == 0:
-                    initial_loss = loss_val
+                    pass
                 final_loss = loss_val
 
         finally:
@@ -298,10 +321,22 @@ class TransformerBaseline:
     ) -> float:
         """Compare program loss to baseline. Returns ratio (< 1.0 = better)."""
         baseline_loss = self.get_baseline_loss(
-            d_model, seq_len, n_steps, vocab_size, batch_size, lr, device,
-            n_layers=2, optimizer_name=optimizer_name,
-            weight_decay=weight_decay, momentum=momentum, betas=betas,
-            data_fn=data_fn, data_mode=data_mode, data_tag=data_tag, cache_data_fn=cache_data_fn,
+            d_model,
+            seq_len,
+            n_steps,
+            vocab_size,
+            batch_size,
+            lr,
+            device,
+            n_layers=2,
+            optimizer_name=optimizer_name,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            betas=betas,
+            data_fn=data_fn,
+            data_mode=data_mode,
+            data_tag=data_tag,
+            cache_data_fn=cache_data_fn,
         )
         if baseline_loss <= 0 or math.isnan(baseline_loss):
             return 1.0
@@ -335,9 +370,22 @@ class TransformerBaseline:
     ) -> Dict[str, float]:
         """Compare program loss to a parameter-matched baseline."""
         raw_ratio = self.compare(
-            program_loss, d_model, seq_len, n_steps, vocab_size,
-            batch_size, lr, device, n_layers, optimizer_name,
-            weight_decay, momentum, betas, data_fn, data_mode=data_mode, data_tag=data_tag,
+            program_loss,
+            d_model,
+            seq_len,
+            n_steps,
+            vocab_size,
+            batch_size,
+            lr,
+            device,
+            n_layers,
+            optimizer_name,
+            weight_decay,
+            momentum,
+            betas,
+            data_fn,
+            data_mode=data_mode,
+            data_tag=data_tag,
             cache_data_fn=cache_data_fn,
         )
 
@@ -346,7 +394,9 @@ class TransformerBaseline:
         params_per_layer = 12 * d_model * d_model
         embed_params = vocab_size * d_model
         non_embed_params = max(0, program_params - embed_params)
-        matched_layers = max(2, min(12, int(math.ceil(non_embed_params / max(params_per_layer, 1)))))
+        matched_layers = max(
+            2, min(12, int(math.ceil(non_embed_params / max(params_per_layer, 1))))
+        )
 
         if matched_layers <= 2:
             # Program is smaller or equal to standard baseline — normalized = raw
@@ -359,15 +409,29 @@ class TransformerBaseline:
 
         # Train a matched-param baseline
         matched_loss = self.get_baseline_loss(
-            d_model, seq_len, n_steps, vocab_size, batch_size, lr,
-            device, n_layers=matched_layers,
-            optimizer_name=optimizer_name, weight_decay=weight_decay,
-            momentum=momentum, betas=betas,
-            data_fn=data_fn, data_mode=data_mode, data_tag=data_tag,
+            d_model,
+            seq_len,
+            n_steps,
+            vocab_size,
+            batch_size,
+            lr,
+            device,
+            n_layers=matched_layers,
+            optimizer_name=optimizer_name,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            betas=betas,
+            data_fn=data_fn,
+            data_mode=data_mode,
+            data_tag=data_tag,
         )
 
         random_chance = math.log(max(vocab_size, 2))
-        if matched_loss <= 0 or math.isnan(matched_loss) or matched_loss >= random_chance * 0.95:
+        if (
+            matched_loss <= 0
+            or math.isnan(matched_loss)
+            or matched_loss >= random_chance * 0.95
+        ):
             normalized_ratio = raw_ratio
         else:
             normalized_ratio = program_loss / matched_loss

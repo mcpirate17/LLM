@@ -1,4 +1,5 @@
 """Diagnostics helpers for strategy routes."""
+
 from __future__ import annotations
 
 import time
@@ -19,22 +20,30 @@ def diagnose_research_issues(
 
     op_rates = analytics_data.get("op_success_rates") or {}
     if isinstance(op_rates, dict):
-        total_uses = sum(v.get("total_uses", 0) for v in op_rates.values() if isinstance(v, dict))
-        total_passes = sum(v.get("s1_passes", 0) for v in op_rates.values() if isinstance(v, dict))
+        total_uses = sum(
+            v.get("total_uses", 0) for v in op_rates.values() if isinstance(v, dict)
+        )
+        total_passes = sum(
+            v.get("s1_passes", 0) for v in op_rates.values() if isinstance(v, dict)
+        )
         if total_uses > 50 and total_passes == 0:
-            issues.append({
-                "issue": "Zero S1 passes across all ops — grammar may be misconfigured",
-                "action_type": "info",
-            })
+            issues.append(
+                {
+                    "issue": "Zero S1 passes across all ops — grammar may be misconfigured",
+                    "action_type": "info",
+                }
+            )
 
     grammar = analytics_data.get("grammar_weights") or {}
     if isinstance(grammar, dict):
         learned = grammar.get("learned") or {}
         if not learned:
-            issues.append({
-                "issue": "No learned grammar weights — consider running more experiments",
-                "action_type": "info",
-            })
+            issues.append(
+                {
+                    "issue": "No learned grammar weights — consider running more experiments",
+                    "action_type": "info",
+                }
+            )
 
     try:
         stuck = nb.conn.execute(
@@ -43,10 +52,12 @@ def diagnose_research_issues(
             (time.time() - 7200,),
         ).fetchone()[0]
         if stuck > 0:
-            issues.append({
-                "issue": f"{stuck} experiment(s) stuck in 'running' for >2 hours",
-                "action_type": "info",
-            })
+            issues.append(
+                {
+                    "issue": f"{stuck} experiment(s) stuck in 'running' for >2 hours",
+                    "action_type": "info",
+                }
+            )
     except Exception:
         pass
 

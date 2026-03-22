@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import gc
 from typing import Any, Dict, List, Optional
 
-import torch
 
 from ..native_runner import compile_model_native_first as compile_model
 from ...eval.metrics import novelty_score
@@ -16,6 +14,7 @@ from ..llm.context_experiment import (
 )
 from ..llm.context_hypothesis import build_hypothesis_context
 from ..shared_utils import resolve_device
+from ._helpers import clear_gpu_memory
 
 import logging
 
@@ -550,6 +549,7 @@ class _ContinuousModesMixin:
             population_size=config.n_programs,
             n_generations=config.n_generations,
             grammar_config=grammar,
+            debug=config.debug,
         )
         dev = resolve_device(config.device)
         dev_str = str(dev)
@@ -557,6 +557,8 @@ class _ContinuousModesMixin:
         fitness_cache: dict = {}
         fingerprint_cache: dict = {}
         eval_counters = {"total": 0, "s0": 0, "s1": 0}
+
+        _debug = config.debug
 
         def on_evaluate(graph, fitness, sandbox_result, s1_result):
             bfp = fingerprint_cache.get(graph.fingerprint())
@@ -570,6 +572,7 @@ class _ContinuousModesMixin:
                 exp_id,
                 model_source="novelty",
                 behavioral_fingerprint=bfp,
+                debug=_debug,
             )
 
         def combined_fitness_fn(graph):
@@ -603,7 +606,8 @@ class _ContinuousModesMixin:
                     on_evaluate(graph, fitness, sandbox_result, s1_result)
                     return fitness
 
-                # Compute behavioral fingerprint while model is still in memory
+                # Compute fingerprint with behavioral probes for novelty archive;
+                # CKA deferred to post-investigation.
                 try:
                     bfp = compute_fingerprint(
                         model,
@@ -611,10 +615,17 @@ class _ContinuousModesMixin:
                         model_dim=config.model_dim,
                         vocab_size=config.vocab_size,
                         device=dev_str,
+                        include_cka=False,
+                        include_behavioral_probes=True,
                     )
                     fingerprint_cache[gfp] = bfp
                 except Exception as e:
-                    logger.debug("Fingerprint computation failed: %s", e)
+                    if _debug:
+                        logger.exception(
+                            "DEBUG: Fingerprint computation failed for %s", gfp[:16]
+                        )
+                    else:
+                        logger.debug("Fingerprint computation failed: %s", e)
 
                 s1_result = self._micro_train(
                     model,
@@ -623,9 +634,7 @@ class _ContinuousModesMixin:
                     seed=self._stable_seed("fitness", gfp),
                 )
                 del model
-                if dev.type == "cuda":
-                    torch.cuda.empty_cache()
-                gc.collect()
+                clear_gpu_memory()
 
                 if s1_result.get("passed"):
                     fitness, _components = self._compute_multi_objective_fitness(

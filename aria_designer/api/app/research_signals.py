@@ -27,7 +27,9 @@ def _extract_component_ids(entry: Dict[str, Any]) -> list[str]:
         try:
             graph = json.loads(graph_json)
         except Exception:
-            logger.debug("Failed to parse graph_json for component ID extraction", exc_info=True)
+            logger.debug(
+                "Failed to parse graph_json for component ID extraction", exc_info=True
+            )
             graph = None
         if isinstance(graph, dict):
             nodes = graph.get("nodes")
@@ -61,7 +63,9 @@ def _get_json(url: str, *, timeout: float) -> Optional[Any]:
         return None
 
 
-def fetch_research_recommendation_signals(force: bool = False) -> Optional[Dict[str, Any]]:
+def fetch_research_recommendation_signals(
+    force: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Fetch and cache recommendation signals from the research analytics API."""
     if not settings.RECOMMENDER_USE_RESEARCH_SIGNALS:
         return None
@@ -70,10 +74,16 @@ def fetch_research_recommendation_signals(force: bool = False) -> Optional[Dict[
     with _RESEARCH_SIGNALS_CACHE_LOCK:
         cached_payload = _RESEARCH_SIGNALS_CACHE.get("payload")
         fetched_at = float(_RESEARCH_SIGNALS_CACHE.get("fetched_at") or 0.0)
-        if not force and cached_payload and (now - fetched_at) <= max(1.0, settings.RECOMMENDER_SIGNALS_TTL_S):
+        if (
+            not force
+            and cached_payload
+            and (now - fetched_at) <= max(1.0, settings.RECOMMENDER_SIGNALS_TTL_S)
+        ):
             return cached_payload
 
-    url = f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/api/analytics/recommendation-signals"
+    url = (
+        f"{settings.LINEAGE_SYNC_BASE.rstrip('/')}/api/analytics/recommendation-signals"
+    )
     payload = _get_json(url, timeout=max(0.2, settings.RECOMMENDER_SIGNALS_TIMEOUT))
     if not isinstance(payload, dict):
         return None
@@ -124,7 +134,9 @@ def fetch_leaderboard_top_entries(
         try:
             composite = float(entry.get("composite_score") or 0.0)
         except Exception:
-            logger.debug("Failed to parse composite_score for leaderboard entry", exc_info=True)
+            logger.debug(
+                "Failed to parse composite_score for leaderboard entry", exc_info=True
+            )
             composite = 0.0
         if composite >= float(min_composite):
             filtered.append(_hydrate_leaderboard_entry(entry))

@@ -3,10 +3,14 @@
 import pytest
 import yaml
 
-from aria_designer.runtime.constraints import check_compatibility, compute_palette_constraints
+from aria_designer.runtime.constraints import (
+    check_compatibility,
+    compute_palette_constraints,
+)
 
 
 # ── Test fixtures with temp component directories ────────────────────
+
 
 @pytest.fixture
 def components_dir(tmp_path):
@@ -14,65 +18,85 @@ def components_dir(tmp_path):
     # Component A: declares incompatibility with tag "exclusive_b"
     comp_a = tmp_path / "math" / "comp_a"
     comp_a.mkdir(parents=True)
-    (comp_a / "manifest.yaml").write_text(yaml.dump({
-        "id": "comp_a",
-        "category": "math",
-        "tags": ["tag_a"],
-        "constraints": {
-            "incompatible_with": ["exclusive_b"],
-            "requires": [],
-        },
-    }))
+    (comp_a / "manifest.yaml").write_text(
+        yaml.dump(
+            {
+                "id": "comp_a",
+                "category": "math",
+                "tags": ["tag_a"],
+                "constraints": {
+                    "incompatible_with": ["exclusive_b"],
+                    "requires": [],
+                },
+            }
+        )
+    )
 
     # Component B: has tag "exclusive_b"
     comp_b = tmp_path / "math" / "comp_b"
     comp_b.mkdir(parents=True)
-    (comp_b / "manifest.yaml").write_text(yaml.dump({
-        "id": "comp_b",
-        "category": "math",
-        "tags": ["exclusive_b"],
-        "constraints": {
-            "incompatible_with": [],
-            "requires": [],
-        },
-    }))
+    (comp_b / "manifest.yaml").write_text(
+        yaml.dump(
+            {
+                "id": "comp_b",
+                "category": "math",
+                "tags": ["exclusive_b"],
+                "constraints": {
+                    "incompatible_with": [],
+                    "requires": [],
+                },
+            }
+        )
+    )
 
     # Component C: requires "tag_a"
     comp_c = tmp_path / "core" / "comp_c"
     comp_c.mkdir(parents=True)
-    (comp_c / "manifest.yaml").write_text(yaml.dump({
-        "id": "comp_c",
-        "category": "core",
-        "tags": ["tag_c"],
-        "constraints": {
-            "incompatible_with": [],
-            "requires": ["tag_a"],
-        },
-    }))
+    (comp_c / "manifest.yaml").write_text(
+        yaml.dump(
+            {
+                "id": "comp_c",
+                "category": "core",
+                "tags": ["tag_c"],
+                "constraints": {
+                    "incompatible_with": [],
+                    "requires": ["tag_a"],
+                },
+            }
+        )
+    )
 
     # Component D: no constraints
     comp_d = tmp_path / "core" / "comp_d"
     comp_d.mkdir(parents=True)
-    (comp_d / "manifest.yaml").write_text(yaml.dump({
-        "id": "comp_d",
-        "category": "core",
-        "tags": [],
-        "constraints": {
-            "incompatible_with": [],
-            "requires": [],
-        },
-    }))
+    (comp_d / "manifest.yaml").write_text(
+        yaml.dump(
+            {
+                "id": "comp_d",
+                "category": "core",
+                "tags": [],
+                "constraints": {
+                    "incompatible_with": [],
+                    "requires": [],
+                },
+            }
+        )
+    )
 
     # graph_input / graph_output (IO)
     for io_id in ("graph_input", "graph_output"):
         io_dir = tmp_path / "io" / io_id
         io_dir.mkdir(parents=True)
-        (io_dir / "manifest.yaml").write_text(yaml.dump({
-            "id": io_id,
-            "category": "io",
-            "tags": [],
-            "constraints": {"incompatible_with": [], "requires": []},
-        }))
+        (io_dir / "manifest.yaml").write_text(
+            yaml.dump(
+                {
+                    "id": io_id,
+                    "category": "io",
+                    "tags": [],
+                    "constraints": {"incompatible_with": [], "requires": []},
+                }
+            )
+        )
 
     return str(tmp_path)
 
@@ -87,6 +111,7 @@ def _make_workflow(nodes):
 
 
 # ── Tests ────────────────────────────────────────────────────────────
+
 
 def test_compatible_no_constraints(components_dir):
     wf = _make_workflow(["graph_input", "comp_d"])

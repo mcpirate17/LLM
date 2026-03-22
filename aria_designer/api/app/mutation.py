@@ -28,7 +28,9 @@ def _loss_ratio_value(parent_scores: Dict[str, Any]) -> float:
     return safe_float(parent_scores.get("loss_ratio"), default=0.5)
 
 
-def _param_delta_window(loss_ratio: float, max_param_delta: float) -> Tuple[float, float]:
+def _param_delta_window(
+    loss_ratio: float, max_param_delta: float
+) -> Tuple[float, float]:
     if loss_ratio < 0.3:
         upper = max(max_param_delta, 0.3)
         return 0.12, min(0.3, upper)
@@ -77,7 +79,9 @@ def _resolve_signal_component(
     return normalized
 
 
-def _graph_adjacency(graph: Dict[str, Any]) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+def _graph_adjacency(
+    graph: Dict[str, Any],
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
     nodes_by_id = {str(node.get("id")): node for node in graph.get("nodes", [])}
     parents: Dict[str, List[str]] = {}
     children: Dict[str, List[str]] = {}
@@ -228,22 +232,31 @@ def _build_replacement_mutation(
 ) -> Optional[MutationPlan]:
     candidates = _target_nodes(graph, constraints, {"activation", "normalization"})
     if not candidates:
-        candidates = _target_nodes(graph, constraints, set(constraints.preferred_component_groups))
+        candidates = _target_nodes(
+            graph, constraints, set(constraints.preferred_component_groups)
+        )
     if not candidates:
         return None
     node = rng.choice(candidates)
     current = str(node.get("component_type") or "")
     current_leaf = component_leaf(current)
     options = [
-        item for item in constraints.replacement_components
+        item
+        for item in constraints.replacement_components
         if component_leaf(item) != current_leaf
     ]
     if not options:
         return None
     parents, children, nodes_by_id = _graph_adjacency(graph)
     node_id = str(node.get("id"))
-    prev_ops = [component_leaf(nodes_by_id[parent_id].get("component_type")) for parent_id in parents.get(node_id, [])]
-    next_ops = [component_leaf(nodes_by_id[child_id].get("component_type")) for child_id in children.get(node_id, [])]
+    prev_ops = [
+        component_leaf(nodes_by_id[parent_id].get("component_type"))
+        for parent_id in parents.get(node_id, [])
+    ]
+    next_ops = [
+        component_leaf(nodes_by_id[child_id].get("component_type"))
+        for child_id in children.get(node_id, [])
+    ]
     replacement = ""
     pair_rates = _signal_pair_rates(fetch_research_recommendation_signals())
     if pair_rates:
@@ -261,15 +274,22 @@ def _build_replacement_mutation(
         PatchOpModel(
             op="replace_node",
             node_id=str(node.get("id")),
-            payload={"component_type": replacement, "params": dict(node.get("params") or {})},
+            payload={
+                "component_type": replacement,
+                "params": dict(node.get("params") or {}),
+            },
         )
     ]
     if constraints.intent_key == "improve_stability":
-        tweak = _stability_followup_op(graph, constraints, rng, exclude_node=str(node.get("id")))
+        tweak = _stability_followup_op(
+            graph, constraints, rng, exclude_node=str(node.get("id"))
+        )
         if tweak is not None:
             ops.append(tweak)
     multiplier = _predicted_multiplier(parent_scores, ops, constraints)
-    return MutationPlan(tuple(ops), f"Evolution: stabilized {current} at {node.get('id')}", multiplier)
+    return MutationPlan(
+        tuple(ops), f"Evolution: stabilized {current} at {node.get('id')}", multiplier
+    )
 
 
 def _build_add_layer_mutation(
@@ -283,8 +303,7 @@ def _build_add_layer_mutation(
         return None
     _, _, nodes_by_id = _graph_adjacency(graph)
     candidates = [
-        edge for edge in edges
-        if _can_insert_clone(edge, nodes_by_id, constraints)
+        edge for edge in edges if _can_insert_clone(edge, nodes_by_id, constraints)
     ]
     if not candidates:
         return None
@@ -301,7 +320,8 @@ def _build_add_layer_mutation(
             (component_leaf(target_node.get("component_type")),),
             pair_rates,
             constraints,
-            fallback_component=inserted_component or str(target_node.get("component_type") or ""),
+            fallback_component=inserted_component
+            or str(target_node.get("component_type") or ""),
         )
         if preferred_component:
             inserted_component = preferred_component
@@ -339,7 +359,9 @@ def _build_add_layer_mutation(
         ),
     ]
     multiplier = _predicted_multiplier(parent_scores, ops, constraints)
-    rationale = f"Evolution: inserted {inserted_component} between {source_id} and {target_id}"
+    rationale = (
+        f"Evolution: inserted {inserted_component} between {source_id} and {target_id}"
+    )
     return MutationPlan(tuple(ops), rationale, multiplier)
 
 
@@ -351,7 +373,9 @@ def _numeric_param_candidates(
     candidates: List[Tuple[Dict[str, Any], str, float]] = []
     for node in _target_nodes(graph, constraints, allowed):
         for name, value in (node.get("params") or {}).items():
-            if name not in constraints.target_param_names or not isinstance(value, (int, float)):
+            if name not in constraints.target_param_names or not isinstance(
+                value, (int, float)
+            ):
                 continue
             candidates.append((node, str(name), float(value)))
     if candidates:
@@ -412,7 +436,8 @@ def _stability_followup_op(
     exclude_node: str,
 ) -> Optional[PatchOpModel]:
     candidates = [
-        candidate for candidate in _numeric_param_candidates(graph, constraints)
+        candidate
+        for candidate in _numeric_param_candidates(graph, constraints)
         if str(candidate[0].get("id")) != exclude_node
     ]
     if not candidates:
@@ -421,7 +446,11 @@ def _stability_followup_op(
     return PatchOpModel(
         op="mutate_param",
         node_id=str(node.get("id")),
-        payload={param_name: _mutated_value(param_name, value, constraints, {"loss_ratio": 0.8}, rng)},
+        payload={
+            param_name: _mutated_value(
+                param_name, value, constraints, {"loss_ratio": 0.8}, rng
+            )
+        },
     )
 
 
@@ -457,7 +486,9 @@ def _predicted_multiplier(
     return max(0.75, 1.0 - penalty)
 
 
-def _meets_parent_score_floor(plan: MutationPlan, parent_scores: Dict[str, Any]) -> bool:
+def _meets_parent_score_floor(
+    plan: MutationPlan, parent_scores: Dict[str, Any]
+) -> bool:
     parent_composite = float(parent_scores.get("composite_score") or 0.0)
     if parent_composite <= 0.0:
         return True
@@ -474,7 +505,11 @@ def _format_rationale(
         return rationale
     tier = str(parent_scores.get("tier") or "unknown")
     score = float(parent_scores.get("composite_score") or 0.0)
-    novelty = float(parent_scores.get("screening_novelty") or parent_scores.get("novelty_score") or 0.0)
+    novelty = float(
+        parent_scores.get("screening_novelty")
+        or parent_scores.get("novelty_score")
+        or 0.0
+    )
     return (
         f"{rationale} "
         f"[intent={constraints.intent_key}; parent_tier={tier}; parent_composite={score:.3f}; novelty={novelty:.3f}]"

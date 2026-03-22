@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import math
 
-import pytest
 import torch
 import torch.nn as nn
 
 from research.synthesis.validator import validate_graph
-from research.synthesis.graph import ComputationGraph, ShapeInfo
+from research.synthesis.graph import ComputationGraph
 
 
 # ── Fix 2A: Validator deep projection chain warning ──────────────────

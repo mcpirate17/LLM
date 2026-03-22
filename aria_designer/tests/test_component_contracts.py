@@ -1,9 +1,11 @@
 """Automated contract verification for all Aria Designer components."""
+
 import os
 import yaml
 import torch
 import pytest
 from pathlib import Path
+
 
 def get_all_components():
     components_dir = Path(__file__).parent.parent / "components"
@@ -13,41 +15,50 @@ def get_all_components():
             components.append(Path(root))
     return components
 
+
 @pytest.mark.parametrize("comp_path", get_all_components())
 def test_component_contract(comp_path):
     # 1. Load manifest
     manifest_path = comp_path / "manifest.yaml"
     with open(manifest_path) as f:
         manifest = yaml.safe_load(f)
-    
+
     # 2. Check basics
     assert "id" in manifest
     assert "category" in manifest
-    
+
     # Skip data_io for now as it involves complex file side effects
     if manifest["category"] == "data_io":
         pytest.skip("Skipping data_io contract tests")
-    
+
     # 3. Try to load fallback kernel
     fallback_path = comp_path / "kernel_fallback.py"
     if not fallback_path.exists():
         pytest.skip(f"No fallback kernel for {manifest['id']}")
-        
+
     import importlib.util
+
     spec = importlib.util.spec_from_file_location("handler", str(fallback_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    
+
     handler = module.ComponentHandler()
-    
+
     # 4. Prepare dummy inputs
+    # Build symbolic dimension map from manifest shapes so inputs are compatible
+    _DIM_DEFAULTS = {"B": 1, "S": 16, "D": 256, "K": 64}
+    sym_dims = dict(_DIM_DEFAULTS)
     inputs = {}
     for inp in manifest.get("inputs", []):
         name = inp["name"]
         dtype = inp["dtype"]
         if dtype in ("tensor", "complex_tensor"):
-            # Default shape (B, S, D) = (1, 16, 256)
-            inputs[name] = torch.randn(1, 16, 256)
+            shape_syms = inp.get("shape")
+            if shape_syms and all(isinstance(s, str) for s in shape_syms):
+                shape = tuple(sym_dims.get(s, 256) for s in shape_syms)
+            else:
+                shape = (1, 16, 256)
+            inputs[name] = torch.randn(*shape)
         elif dtype == "index":
             # Random indices
             inputs[name] = torch.randint(0, 16, (1, 16))
@@ -60,7 +71,7 @@ def test_component_contract(comp_path):
         else:
             # Fallback for unknown types
             inputs[name] = torch.randn(1, 16, 256)
-            
+
     # 5. Run forward pass
     config = {}
     params = manifest.get("params_schema") or manifest.get("params", {})
@@ -69,13 +80,17 @@ def test_component_contract(comp_path):
             config[k] = v["default"]
         elif v["type"] == "integer":
             config[k] = 256
-            
+
     # Create dummy files for IO components to avoid FileNotFoundError
     if manifest["id"] in ("binary_file_reader", "file_loader", "csv_reader"):
-        dummy_file = Path("data.bin") if manifest["id"] == "binary_file_reader" else Path("data.csv")
+        dummy_file = (
+            Path("data.bin")
+            if manifest["id"] == "binary_file_reader"
+            else Path("data.csv")
+        )
         if not dummy_file.exists():
             dummy_file.write_text("0,0,0\n0,0,0")
-            
+
     try:
         outputs = handler.forward(inputs, config)
     except Exception as e:
@@ -84,12 +99,16 @@ def test_component_contract(comp_path):
         # Cleanup dummy files
         for f in ["data.bin", "data.csv"]:
             if Path(f).exists():
-                try: os.remove(f)
-                except Exception: pass
-        
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
     # 6. Verify outputs
     for out in manifest.get("outputs", []):
         assert out["name"] in outputs, f"Missing output '{out['name']}'"
         val = outputs[out["name"]]
         if out["dtype"] == "tensor" and isinstance(val, torch.Tensor):
-            assert torch.isfinite(val).all(), f"NaN/Inf detected in output of {manifest['id']}"
+            assert torch.isfinite(val).all(), (
+                f"NaN/Inf detected in output of {manifest['id']}"
+            )

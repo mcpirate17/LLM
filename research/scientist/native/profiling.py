@@ -6,6 +6,7 @@ from .core import _try_import_rust_scheduler
 logger = logging.getLogger(__name__)
 _last_profile_data: Optional[Dict[str, Any]] = None
 
+
 def enable_native_profiling(enable: bool = True) -> bool:
     """Enable or disable native kernel profiling.
 
@@ -23,6 +24,7 @@ def enable_native_profiling(enable: bool = True) -> bool:
         return False
     rust.profiler_enable(enable)
     return bool(rust.profiler_enabled())
+
 
 def get_native_profile() -> Optional[Dict[str, Any]]:
     """Return profiling data from the most recent ``dispatch_graph_native()`` call.

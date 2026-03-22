@@ -1,4 +1,5 @@
 """Contract tests for maximum."""
+
 import yaml
 from pathlib import Path
 

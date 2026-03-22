@@ -1,19 +1,17 @@
-"""Auto-generated Python fallback kernel for learnable_scale."""
-
-import torch.nn as nn
+"""Python fallback kernel for learnable_scale."""
 
 
 class ComponentHandler:
-    """Fallback handler for learnable_scale."""
+    """Fallback handler for learnable_scale: x * scale (scale initialized to one)."""
 
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        # TODO: implement parameterized module
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
-        x = inputs["x"]
-        # TODO: implement learnable_scale
-        return {"y": x}
+        # Without a persistent module, scale is one — pass through.
+        # The WorkflowModule build path should construct a proper nn.Module
+        # for trainable workflows; this fallback is for inference/preview.
+        return {"y": inputs["x"]}

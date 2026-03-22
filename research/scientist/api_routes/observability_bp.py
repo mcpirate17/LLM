@@ -1,15 +1,23 @@
-"""Observability API routes — component health, alerts, training SSE stream."""
+"""Observability API routes — component health, alerts, training SSE stream,
+error log, experiment lifecycle, throughput, op analytics, resource utilization,
+grammar evolution, failure patterns, leaderboard dynamics, insight effectiveness,
+DB health, and API health."""
 
 from __future__ import annotations
 
+import json as _json
 import logging
+import math as _math
+import os
+import statistics
 import time
-from typing import Any, Dict, List, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 from flask import Response, jsonify, request
-from ..notebook import LabNotebook
 from ..json_utils import fast_dumps as _json_dumps
 from ._helpers import get_runner
-from .deps import ApiRouteContext
+from ._utils import with_notebook_context
+from .deps import ApiRouteContext, get_notebook
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +36,223 @@ _health_cache: Dict[str, Any] = {}
 _health_cache_ts: float = 0.0
 _HEALTH_CACHE_TTL = 120.0  # 2 minutes
 
+# ── OpIndex cache (5-minute TTL, keyed by window label) ──
+_op_index_caches: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_OP_INDEX_TTL = 300.0  # 5 minutes
 
-def _get_component_health(notebook_path: str) -> Dict[str, Any]:
+# Window label → seconds mapping (reused across endpoints)
+_WINDOW_SECONDS: Dict[str, Optional[int]] = {
+    "1h": 3600,
+    "6h": 21600,
+    "24h": 86400,
+    "7d": 604800,
+    "all": None,
+}
+
+# ── Throughput cache (60s TTL) ──
+_throughput_cache: Optional[Dict[str, Any]] = None
+_throughput_cache_ts: float = 0.0
+_THROUGHPUT_TTL = 60.0
+
+
+def _build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
+    """Parse graph_json, build op co-occurrence and loss data.
+
+    Args:
+        window: Time window label ("1h", "6h", "24h", "7d", "all").
+
+    Returns dict with:
+      pair_counts: {(op_a, op_b): {n, s0, s1}}
+      loss_by_op: {op_name: [loss_ratio, ...]}
+      failure_groups: {error_type: {ops: Counter, count: int}}
+      stored_rates: {op_name: {n, s0, s1}}
+      corrected_rates: {op_name: {n, s0, s1, excluded}} — excludes non-op-specific errors
+    """
+    now = time.monotonic()
+    cached = _op_index_caches.get(window)
+    if cached and (now - cached[0]) < _OP_INDEX_TTL:
+        return cached[1]
+
+    # Error types that are NOT the fault of individual ops:
+    #   RuntimeError — implementation bug (dtype mismatch, shape error in compiler)
+    #   causality_violation — graph-level constraint, not op-specific
+    _NON_OP_ERRORS = frozenset({"RuntimeError", "causality_violation"})
+
+    pair_counts: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(
+        lambda: {"n": 0, "s0": 0, "s1": 0}
+    )
+    loss_by_op: Dict[str, List[float]] = defaultdict(list)
+    failure_groups: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"ops": defaultdict(int), "count": 0}
+    )
+    stored_rates: Dict[str, Dict[str, int]] = {}
+    # corrected_rates: same as stored_rates but excludes programs whose failure
+    # was caused by non-op-specific errors (implementation bugs, graph issues)
+    corrected_rates: Dict[str, Dict[str, int]] = {}
+
+    nb = get_notebook(notebook_path)
+    try:
+        window_seconds = _WINDOW_SECONDS.get(window)
+        if window_seconds is not None:
+            cutoff = time.time() - window_seconds
+            rows = nb.conn.execute(
+                "SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, error_type "
+                "FROM program_results WHERE graph_json IS NOT NULL AND timestamp > ?",
+                (cutoff,),
+            ).fetchall()
+        else:
+            rows = nb.conn.execute(
+                "SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, error_type "
+                "FROM program_results WHERE graph_json IS NOT NULL"
+            ).fetchall()
+    except Exception:
+        rows = []
+
+    for r in rows:
+        try:
+            g = _json.loads(r["graph_json"])
+        except Exception:
+            continue
+        ops = sorted(
+            {
+                n.get("op_name", n.get("op", ""))
+                for n in g.get("nodes", {}).values()
+                if isinstance(n, dict)
+            }
+            - {"", "input"}
+        )
+        s0 = bool(r["stage0_passed"])
+        s1 = bool(r["stage1_passed"])
+        lr = r["loss_ratio"]
+        et = r["error_type"] or ""
+
+        # Is this a non-op-specific failure?
+        is_non_op_failure = not s0 and et in _NON_OP_ERRORS
+
+        # Per-op stored rates (raw — shared with _get_component_health)
+        for op in ops:
+            s = stored_rates.setdefault(op, {"n": 0, "s0": 0, "s1": 0})
+            s["n"] += 1
+            if s0:
+                s["s0"] += 1
+            if s1:
+                s["s1"] += 1
+
+            # Corrected rates: exclude non-op-specific failures entirely
+            c = corrected_rates.setdefault(
+                op, {"n": 0, "s0": 0, "s1": 0, "excluded": 0}
+            )
+            if is_non_op_failure:
+                c["excluded"] += 1
+            else:
+                c["n"] += 1
+                if s0:
+                    c["s0"] += 1
+                if s1:
+                    c["s1"] += 1
+
+        # Pair co-occurrence
+        for i, a in enumerate(ops):
+            for b in ops[i + 1 :]:
+                key = (a, b)
+                pair_counts[key]["n"] += 1
+                if s0:
+                    pair_counts[key]["s0"] += 1
+                if s1:
+                    pair_counts[key]["s1"] += 1
+
+        # Loss by op
+        if lr is not None and s0:
+            for op in ops:
+                loss_by_op[op].append(float(lr))
+
+        # Failure grouping (S0 failures)
+        if not s0 and et:
+            failure_groups[et]["count"] += 1
+            for op in ops:
+                failure_groups[et]["ops"][op] += 1
+
+        # S1 failure grouping (passed S0 but failed S1)
+        if s0 and not s1 and et:
+            s1_et = "s1_" + et
+            failure_groups[s1_et]["count"] += 1
+            for op in ops:
+                failure_groups[s1_et]["ops"][op] += 1
+
+    result = {
+        "pair_counts": dict(pair_counts),
+        "loss_by_op": dict(loss_by_op),
+        "failure_groups": {
+            k: {"ops": dict(v["ops"]), "count": v["count"]}
+            for k, v in failure_groups.items()
+        },
+        "stored_rates": stored_rates,
+        "corrected_rates": corrected_rates,
+    }
+    _op_index_caches[window] = (now, result)
+    return result
+
+
+def _get_throughput(notebook_path: str) -> Dict[str, Any]:
+    """Compute throughput metrics with 60s TTL cache."""
+    global _throughput_cache, _throughput_cache_ts
+    now_mono = time.monotonic()
+    if _throughput_cache and (now_mono - _throughput_cache_ts) < _THROUGHPUT_TTL:
+        return _throughput_cache
+
+    now = time.time()
+    windows = {"1h": 3600, "6h": 21600, "24h": 86400}
+    result: Dict[str, Any] = {}
+
+    nb = get_notebook(notebook_path)
+    try:
+        for label, seconds in windows.items():
+            cutoff = now - seconds
+            row = nb.conn.execute(
+                "SELECT COUNT(*) as total, "
+                "SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) as s0, "
+                "SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1 "
+                "FROM program_results WHERE timestamp > ?",
+                (cutoff,),
+            ).fetchone()
+            result[label] = {
+                "total": row["total"] or 0,
+                "s0_passed": row["s0"] or 0,
+                "s1_passed": row["s1"] or 0,
+                "s0_rate": round((row["s0"] or 0) / max(row["total"] or 1, 1), 3),
+                "s1_rate": round((row["s1"] or 0) / max(row["s0"] or 1, 1), 3)
+                if (row["s0"] or 0) > 0
+                else 0.0,
+            }
+    except Exception as e:
+        logger.error("Throughput query error: %s", e)
+
+    result["computed_at"] = now
+    _throughput_cache = result
+    _throughput_cache_ts = now_mono
+    return result
+
+
+def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, Any]:
     """Build component health report from op_success_rates + profiling data."""
     global _health_cache, _health_cache_ts
     now = time.monotonic()
-    if _health_cache and (now - _health_cache_ts) < _HEALTH_CACHE_TTL:
+    # Cache is only valid for the same window
+    if (
+        _health_cache
+        and (now - _health_cache_ts) < _HEALTH_CACHE_TTL
+        and _health_cache.get("_window") == window
+    ):
         return _health_cache
 
-    nb = LabNotebook(notebook_path)
+    nb = get_notebook(notebook_path)
     try:
-        op_rates = nb.get_op_success_rates()
+        window_seconds = _WINDOW_SECONDS.get(window)
+        if window_seconds is not None:
+            since_ts = time.time() - window_seconds
+            op_rates = nb.get_op_success_rates_windowed(since_ts)
+        else:
+            op_rates = nb.get_op_success_rates()
     except Exception:
         op_rates = []
 
@@ -58,37 +272,16 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
     #       for TF-IDF because it captures the full population of generated
     #       graphs, not just the survivors stored in program_results.
     #   program_results  — only S0+ survivors.  Used for ground-truth S1 rate.
-    import json as _json
-    import math as _math
-
-    # Ground-truth S1 from stored program_results
+    # Ground-truth S1 from stored program_results — reuse op_index cache
+    # to avoid a second full-table scan of graph_json
     stored_rates: Dict[str, Dict[str, int]] = {}
+    corrected_rates: Dict[str, Dict[str, int]] = {}
     try:
-        rows = nb.conn.execute(
-            "SELECT graph_json, stage0_passed, stage1_passed "
-            "FROM program_results WHERE graph_json IS NOT NULL"
-        ).fetchall()
-        for r in rows:
-            try:
-                g = _json.loads(r[0])
-            except Exception:
-                continue
-            ops = {
-                n.get("op_name", n.get("op", ""))
-                for n in g.get("nodes", {}).values()
-                if isinstance(n, dict)
-            } - {"", "input"}
-            for op_name in ops:
-                s = stored_rates.setdefault(op_name, {"n": 0, "s0": 0, "s1": 0})
-                s["n"] += 1
-                if r[1]:
-                    s["s0"] += 1
-                if r[2]:
-                    s["s1"] += 1
+        idx = _build_op_index(notebook_path, window=window)
+        stored_rates = idx.get("stored_rates", {})
+        corrected_rates = idx.get("corrected_rates", {})
     except Exception:
         pass
-    finally:
-        nb.close()
 
     # Total generated graphs (from op_success_rates): sum of n_used is an
     # over-count (each graph has multiple ops), but the MAX n_used across
@@ -165,11 +358,23 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
     for row in op_rates:
         op = row["op_name"]
 
-        # TF-IDF uses the full op_success_rates (includes co-occurrence counts
-        # from failed graphs) to compute blame — that's the signal we need.
+        # TF-IDF blame: use corrected rates that exclude non-op-specific errors
+        # (RuntimeError = dtype/shape bugs, causality_violation = graph-level).
+        # This prevents ops from being blamed for failures they didn't cause.
+        cr = corrected_rates.get(op)
+        if cr and cr["n"] > 0:
+            blame, tf, idf = _compute_blame(op, cr["n"], cr["s0"])
+        else:
+            # Fallback to raw op_success_rates if no corrected data
+            raw_n = row.get("n_used") or 0
+            raw_s0 = row.get("n_stage0_passed") or 0
+            blame, tf, idf = _compute_blame(op, raw_n, raw_s0)
+
+        # Raw blame for transparency (includes all errors)
         raw_n = row.get("n_used") or 0
         raw_s0 = row.get("n_stage0_passed") or 0
-        blame, tf, idf = _compute_blame(op, raw_n, raw_s0)
+        raw_blame, raw_tf, _ = _compute_blame(op, raw_n, raw_s0)
+        n_excluded = cr["excluded"] if cr else 0
 
         # For display (s0_rate, s1_rate), prefer ground-truth from stored
         # program_results so the pass rates reflect actual outcomes.
@@ -192,6 +397,36 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         has_nan = prof.get("has_nan", False)
         lipschitz = prof.get("lipschitz") or 0.0
 
+        # ── Structural ops: exempt from S1 blame ──
+        # Ops with no learnable parameters (splits, masks, reduce ops)
+        # should not be blamed for low S1 — they are scaffolding.
+        from research.synthesis.context_rules import S1_EXEMPT_OPS
+
+        if op in S1_EXEMPT_OPS:
+            status = "structural"
+            reasons = ["scaffolding op — not a standalone learner"]
+            total_healthy += 1
+            components.append(
+                {
+                    "op": op,
+                    "status": status,
+                    "reasons": reasons,
+                    "n_used": n_used,
+                    "n_s0": n_s0,
+                    "n_s05": n_s05,
+                    "n_s1": n_s1,
+                    "s0_rate": round(s0_rate, 4),
+                    "s1_rate": round(s1_rate, 4),
+                    "blame": round(blame, 3),
+                    "raw_blame": round(raw_blame, 3),
+                    "n_excluded": n_excluded,
+                    "grad_norm": grad_norm,
+                    "lipschitz": lipschitz,
+                    "data_source": "search+profiling" if prof else "search",
+                }
+            )
+            continue
+
         # ── Classify health using TF-IDF blame ──
         #
         # blame = TF * IDF measures failure-specificity:
@@ -202,13 +437,33 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         # it clearly works when composed correctly — blame is from bad
         # pairings, not the op itself.  s1_rate > 50% redeems any blame.
         #
-        # Thresholds (require n >= 5 to avoid noise from small samples):
-        #   broken:   blame > 2.0 AND n >= 5 AND NOT redeemed
-        #   degraded: blame > 1.0 AND n >= 5 AND NOT redeemed
+        # Sample-size scaling: rare ops with few samples get inflated IDF,
+        # so we require proportionally higher blame to classify as broken.
+        # At n=50+ the thresholds are baseline; below that they scale up
+        # to avoid false positives on under-sampled ops.
+        #
+        # Thresholds:
+        #   broken:   blame > scaled_threshold AND n >= 20 AND NOT redeemed
+        #   degraded: blame > scaled_threshold/2 AND n >= 10 AND NOT redeemed
         #             OR lipschitz > 2.0   (gradient amplifier)
         #             OR grad_norm > 50000 (extreme gradient)
         #             OR NaN/Inf in profiling (always broken)
-        redeemed = s1_rate > 0.5  # works well when composed correctly
+        # Redeem if high S1 rate OR if profiling shows the op is clean
+        # (no NaN, reasonable gradient, lipschitz <= 1.0 means the op
+        # itself is fine — blame comes from bad graph composition)
+        _profile_clean = (
+            bool(prof)
+            and not has_nan
+            and not prof.get("has_inf", False)
+            and not prof.get("profile_error")
+            and (grad_norm is None or grad_norm < 5000)
+            and lipschitz <= 1.01
+        )
+        redeemed = s1_rate > 0.5 or _profile_clean
+        # Scale blame thresholds: base 2.0 at n>=50, up to 4.0 at n=20
+        _confidence = min(raw_n / 50.0, 1.0)
+        _broken_threshold = 2.0 + 2.0 * (1.0 - _confidence)
+        _degraded_threshold = _broken_threshold / 2.0
         status = "healthy"
         reasons: List[str] = []
 
@@ -218,7 +473,7 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         elif prof.get("profile_error"):
             status = "broken"
             reasons.append(f"profile error: {prof['profile_error'][:60]}")
-        elif blame > 2.0 and raw_n >= 5 and not redeemed:
+        elif blame > _broken_threshold and raw_n >= 20 and not redeemed:
             status = "broken"
             reasons.append(
                 f"TF-IDF blame={blame:.2f} "
@@ -227,7 +482,7 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         elif grad_norm is not None and grad_norm > 50000:
             status = "degraded"
             reasons.append(f"grad_norm={grad_norm:.0f}")
-        elif blame > 1.0 and raw_n >= 5 and not redeemed:
+        elif blame > _degraded_threshold and raw_n >= 10 and not redeemed:
             status = "degraded"
             reasons.append(
                 f"TF-IDF blame={blame:.2f} "
@@ -247,6 +502,7 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         else:
             total_broken += 1
 
+        data_source = "search+profiling" if prof else "search"
         components.append(
             {
                 "op": op,
@@ -258,11 +514,15 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
                 "blame": round(blame, 3),
                 "fail_rate": round(tf, 3),
                 "rarity": round(idf, 3),
+                "raw_blame": round(raw_blame, 3),
+                "raw_fail_rate": round(raw_tf, 3),
+                "n_excluded": n_excluded,
                 "lipschitz": round(lipschitz, 2) if lipschitz else None,
                 "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,
                 "has_nan": has_nan,
                 "fwd_us": prof.get("fwd_us"),
                 "bwd_us": prof.get("bwd_us"),
+                "data_source": data_source,
             }
         )
 
@@ -303,12 +563,15 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
                 "has_nan": prof.get("has_nan", False),
                 "fwd_us": prof.get("fwd_us"),
                 "bwd_us": prof.get("bwd_us"),
+                "data_source": "profiling_only",
             }
         )
 
     components.sort(
         key=lambda c: (
-            {"broken": 0, "degraded": 1, "healthy": 2}[c["status"]],
+            {"broken": 0, "degraded": 1, "structural": 2, "healthy": 3}.get(
+                c["status"], 2
+            ),
             -(c["n_used"] or 0),
         )
     )
@@ -320,6 +583,8 @@ def _get_component_health(notebook_path: str) -> Dict[str, Any]:
         "degraded": total_degraded,
         "broken": total_broken,
         "cached_at": time.time(),
+        "window": window,
+        "_window": window,
     }
     _health_cache = result
     _health_cache_ts = now
@@ -333,11 +598,11 @@ def _evaluate_alerts(
     alerts: List[Dict[str, Any]] = []
     now = time.time()
 
-    nb = LabNotebook(notebook_path)
+    nb = get_notebook(notebook_path)
     try:
-        summary = nb.get_dashboard_summary()
+        nb.get_dashboard_summary()
     except Exception:
-        summary = {}
+        pass
 
     # Alert 1: S0 pass rate too low
     try:
@@ -457,19 +722,22 @@ def _evaluate_alerts(
     except Exception:
         pass
 
-    nb.close()
     alerts.sort(key=lambda a: {"critical": 0, "warning": 1, "info": 2}[a["severity"]])
     return alerts
 
 
 def register_observability_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
+    wnb = with_notebook_context(notebook_path)
 
     @app.route("/api/observability/health")
     def api_component_health():
         """Component health grid — all ops with status/metrics."""
         try:
-            health = _get_component_health(notebook_path)
+            window = request.args.get("window", "all")
+            if window not in _WINDOW_SECONDS:
+                window = "all"
+            health = _get_component_health(notebook_path, window=window)
             return jsonify(health)
         except Exception as e:
             logger.error("Error in /api/observability/health: %s", e)
@@ -477,9 +745,10 @@ def register_observability_routes(app, context: ApiRouteContext):
 
     @app.route("/api/observability/health/refresh", methods=["POST"])
     def api_component_health_refresh():
-        """Force-refresh component health cache."""
+        """Force-refresh component health + OpIndex caches."""
         global _health_cache_ts
         _health_cache_ts = 0.0
+        _op_index_caches.clear()
         health = _get_component_health(notebook_path)
         return jsonify(health)
 
@@ -565,23 +834,18 @@ def register_observability_routes(app, context: ApiRouteContext):
         )
 
     @app.route("/api/observability/failure-blocklist")
-    def api_failure_blocklist():
+    @wnb
+    def api_failure_blocklist(nb=None):
         """Op-pair failure signatures that should be auto-disabled."""
-        nb = LabNotebook(notebook_path)
-        try:
-            blocklist = nb.get_failure_signature_blocklist(
-                min_seen=int(request.args.get("min_seen", 10)),
-                max_fail_rate=float(request.args.get("max_fail_rate", 0.90)),
-            )
-            return jsonify({"blocklist": blocklist, "count": len(blocklist)})
-        except Exception as e:
-            logger.error("Error in /api/observability/failure-blocklist: %s", e)
-            return jsonify({"blocklist": {}, "error": str(e)}), 500
-        finally:
-            nb.close()
+        blocklist = nb.get_failure_signature_blocklist(
+            min_seen=int(request.args.get("min_seen", 10)),
+            max_fail_rate=float(request.args.get("max_fail_rate", 0.90)),
+        )
+        return jsonify({"blocklist": blocklist, "count": len(blocklist)})
 
     @app.route("/api/observability/monitor")
-    def api_monitor():
+    @wnb
+    def api_monitor(nb=None):
         """Compact CLI monitoring endpoint — single JSON with all key telemetry.
 
         Designed for: `curl -s .../api/observability/monitor | jq .`
@@ -651,7 +915,6 @@ def register_observability_routes(app, context: ApiRouteContext):
             pass
 
         # 5. Recent routing telemetry from last S1 result
-        nb = LabNotebook(notebook_path)
         try:
             row = nb.conn.execute(
                 "SELECT routing_mode, routing_confidence_mean, routing_drop_rate, "
@@ -678,8 +941,6 @@ def register_observability_routes(app, context: ApiRouteContext):
                 }
         except Exception:
             pass
-        finally:
-            nb.close()
 
         # Support text format for plain CLI: ?format=text
         fmt = request.args.get("format", "json")
@@ -718,5 +979,427 @@ def register_observability_routes(app, context: ApiRouteContext):
             if al:
                 lines.append(f"ALERTS: {', '.join(a['msg'] for a in al)}")
             return Response("\n".join(lines) + "\n", mimetype="text/plain")
+
+        return jsonify(result)
+
+    # ── P0: Error log ──────────────────────────────────────────────────
+
+    @app.route("/api/observability/error-log")
+    @wnb
+    def api_error_log(nb=None):
+        """Recent error events from learning_log."""
+        limit = int(request.args.get("limit", 50))
+        error_types = (
+            "error",
+            "compile_error",
+            "training_error",
+            "eval_error",
+            "runtime_error",
+            "stage0_fail",
+        )
+        placeholders = ",".join("?" for _ in error_types)
+        rows = nb.conn.execute(
+            f"SELECT id, timestamp, event_type, description, evidence "
+            f"FROM learning_log WHERE event_type IN ({placeholders}) "
+            f"ORDER BY timestamp DESC LIMIT ?",
+            (*error_types, limit),
+        ).fetchall()
+        entries = [
+            {
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "event_type": r["event_type"],
+                "description": r["description"],
+                "evidence": r["evidence"][:500] if r["evidence"] else None,
+            }
+            for r in rows
+        ]
+        return jsonify({"errors": entries, "count": len(entries)})
+
+    # ── P0: Experiment lifecycle ───────────────────────────────────────
+
+    @app.route("/api/observability/experiment-lifecycle")
+    @wnb
+    def api_experiment_lifecycle(nb=None):
+        """Recent experiments with orphan detection."""
+        limit = int(request.args.get("limit", 20))
+        now = time.time()
+        rows = nb.conn.execute(
+            "SELECT experiment_id, experiment_type, status, "
+            "started_at, completed_at, duration_seconds, "
+            "n_programs_generated, n_stage0_passed, n_stage1_passed, "
+            "best_loss_ratio "
+            "FROM experiments ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        exp_ids = [str(r["experiment_id"]) for r in rows if r["experiment_id"]]
+        persisted_by_exp = {}
+        if exp_ids:
+            placeholders = ",".join("?" for _ in exp_ids)
+            persisted_rows = nb.conn.execute(
+                f"""
+                SELECT
+                    experiment_id,
+                    COUNT(*) AS persisted_program_rows,
+                    SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) AS persisted_stage0_passed,
+                    SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) AS persisted_stage1_passed
+                FROM program_results
+                WHERE experiment_id IN ({placeholders})
+                GROUP BY experiment_id
+                """,
+                exp_ids,
+            ).fetchall()
+            persisted_by_exp = {
+                str(r["experiment_id"]): dict(r) for r in persisted_rows
+            }
+        experiments = []
+        for r in rows:
+            entry = dict(r)
+            persisted = persisted_by_exp.get(str(r["experiment_id"])) or {}
+            persisted_rows = int(persisted.get("persisted_program_rows") or 0)
+            persisted_s0 = int(persisted.get("persisted_stage0_passed") or 0)
+            persisted_s1 = int(persisted.get("persisted_stage1_passed") or 0)
+            stored_total = int(r["n_programs_generated"] or 0)
+            stored_s0 = int(r["n_stage0_passed"] or 0)
+            stored_s1 = int(r["n_stage1_passed"] or 0)
+            entry["persisted_program_rows"] = persisted_rows
+            entry["persisted_stage0_passed"] = persisted_s0
+            entry["persisted_stage1_passed"] = persisted_s1
+            entry["count_discrepancy"] = {
+                "programs": persisted_rows - stored_total,
+                "stage0": persisted_s0 - stored_s0,
+                "stage1": persisted_s1 - stored_s1,
+            }
+            entry["count_mismatch"] = any(
+                value != 0 for value in entry["count_discrepancy"].values()
+            )
+            # Flag orphans: running > 2 hours
+            if (
+                r["status"] == "running"
+                and r["started_at"]
+                and (now - r["started_at"]) > 7200
+            ):
+                entry["orphan"] = True
+                entry["running_hours"] = round((now - r["started_at"]) / 3600, 1)
+            else:
+                entry["orphan"] = False
+            experiments.append(entry)
+        return jsonify({"experiments": experiments, "count": len(experiments)})
+
+    @app.route("/api/observability/experiment-lifecycle/cleanup", methods=["POST"])
+    @wnb
+    def api_experiment_lifecycle_cleanup(nb=None):
+        """Mark stale running experiments as failed."""
+        timeout = int(request.args.get("timeout_minutes", 60))
+        cleaned = nb.cleanup_stale_experiments(timeout_minutes=timeout)
+        return jsonify({"cleaned": cleaned})
+
+    # ── P0: Throughput ─────────────────────────────────────────────────
+
+    @app.route("/api/observability/throughput")
+    def api_throughput():
+        """Program evaluation throughput by time window."""
+        try:
+            data = _get_throughput(notebook_path)
+            return jsonify(data)
+        except Exception as e:
+            logger.error("Error in /api/observability/throughput: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    # ── P1: Op pairs ───────────────────────────────────────────────────
+
+    @app.route("/api/observability/op-pairs")
+    def api_op_pairs():
+        """Top op pairs by co-occurrence with s0/s1 rates."""
+        top_n = int(request.args.get("top", 30))
+        try:
+            idx = _build_op_index(notebook_path)
+            pairs = []
+            for (a, b), counts in idx["pair_counts"].items():
+                if counts["n"] < 3:
+                    continue
+                pairs.append(
+                    {
+                        "op_a": a,
+                        "op_b": b,
+                        "n": counts["n"],
+                        "s0_rate": round(counts["s0"] / max(counts["n"], 1), 3),
+                        "s1_rate": round(counts["s1"] / max(counts["s0"], 1), 3)
+                        if counts["s0"] > 0
+                        else 0.0,
+                    }
+                )
+            pairs.sort(key=lambda p: p["n"], reverse=True)
+            return jsonify({"pairs": pairs[:top_n], "total_pairs": len(pairs)})
+        except Exception as e:
+            logger.error("Error in /api/observability/op-pairs: %s", e)
+            return jsonify({"pairs": [], "error": str(e)}), 500
+
+    # ── P1: Loss distribution ──────────────────────────────────────────
+
+    @app.route("/api/observability/loss-distribution")
+    def api_loss_distribution():
+        """Per-op loss ratio distribution (box plot data)."""
+        try:
+            idx = _build_op_index(notebook_path)
+            dist = []
+            for op, values in idx["loss_by_op"].items():
+                if len(values) < 3:
+                    continue
+                sv = sorted(values)
+                n = len(sv)
+                dist.append(
+                    {
+                        "op": op,
+                        "n": n,
+                        "min": round(sv[0], 4),
+                        "q1": round(sv[n // 4], 4),
+                        "median": round(statistics.median(sv), 4),
+                        "q3": round(sv[3 * n // 4], 4),
+                        "max": round(sv[-1], 4),
+                        "mean": round(statistics.mean(sv), 4),
+                    }
+                )
+            dist.sort(key=lambda d: d["median"])
+            return jsonify({"distributions": dist})
+        except Exception as e:
+            logger.error("Error in /api/observability/loss-distribution: %s", e)
+            return jsonify({"distributions": [], "error": str(e)}), 500
+
+    # ── P1: Resource utilization ───────────────────────────────────────
+
+    @app.route("/api/observability/resource-utilization")
+    def api_resource_utilization():
+        """Live CPU%, RAM%, GPU allocation."""
+        result: Dict[str, Any] = {}
+        try:
+            import psutil
+
+            result["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory()
+            result["ram_percent"] = mem.percent
+            result["ram_used_gb"] = round(mem.used / (1024**3), 2)
+            result["ram_total_gb"] = round(mem.total / (1024**3), 2)
+        except ImportError:
+            result["cpu_percent"] = None
+            result["ram_percent"] = None
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                result["gpu_allocated_gb"] = round(
+                    torch.cuda.memory_allocated() / (1024**3), 3
+                )
+                result["gpu_reserved_gb"] = round(
+                    torch.cuda.memory_reserved() / (1024**3), 3
+                )
+                result["gpu_name"] = torch.cuda.get_device_name(0)
+            else:
+                result["gpu_allocated_gb"] = None
+                result["gpu_reserved_gb"] = None
+        except Exception:
+            result["gpu_allocated_gb"] = None
+            result["gpu_reserved_gb"] = None
+
+        return jsonify(result)
+
+    # ── P1: API health ─────────────────────────────────────────────────
+
+    @app.route("/api/observability/api-health")
+    def api_api_health():
+        """API request counters by endpoint × status bucket."""
+        try:
+            from ..api import _api_health_counters, _api_health_lock
+
+            with _api_health_lock:
+                snapshot = dict(_api_health_counters)
+            return jsonify({"counters": snapshot})
+        except ImportError:
+            return jsonify({"counters": {}, "note": "counters not available"})
+
+    # ── P2: Grammar evolution ──────────────────────────────────────────
+
+    @app.route("/api/observability/grammar-evolution")
+    @wnb
+    def api_grammar_evolution(nb=None):
+        """Timeline of grammar weight changes from learning_log."""
+        limit = int(request.args.get("limit", 30))
+        rows = nb.conn.execute(
+            "SELECT id, timestamp, description, old_weights, new_weights, evidence "
+            "FROM learning_log "
+            "WHERE event_type IN ('grammar_weights_applied', 'chat_grammar_overrides_applied') "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        entries = []
+        for r in rows:
+            entry: Dict[str, Any] = {
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "description": r["description"],
+            }
+            # Parse weight diffs
+            try:
+                old_w = _json.loads(r["old_weights"]) if r["old_weights"] else None
+                new_w = _json.loads(r["new_weights"]) if r["new_weights"] else None
+                if (
+                    old_w
+                    and new_w
+                    and isinstance(old_w, dict)
+                    and isinstance(new_w, dict)
+                ):
+                    changes = {}
+                    for k in set(old_w) | set(new_w):
+                        ov = old_w.get(k, 1.0)
+                        nv = new_w.get(k, 1.0)
+                        if ov != nv:
+                            changes[k] = {"old": ov, "new": nv}
+                    entry["changes"] = changes
+                else:
+                    entry["changes"] = {}
+            except Exception:
+                entry["changes"] = {}
+            entries.append(entry)
+        return jsonify({"events": entries, "count": len(entries)})
+
+    # ── P2: Failure patterns ───────────────────────────────────────────
+
+    @app.route("/api/observability/failure-patterns")
+    def api_obs_failure_patterns():
+        """Failed graphs grouped by error_type with top co-occurring ops."""
+        top_ops = int(request.args.get("top_ops", 5))
+        try:
+            idx = _build_op_index(notebook_path)
+            patterns = []
+            for error_type, data in idx["failure_groups"].items():
+                sorted_ops = sorted(
+                    data["ops"].items(), key=lambda x: x[1], reverse=True
+                )[:top_ops]
+                patterns.append(
+                    {
+                        "error_type": error_type,
+                        "count": data["count"],
+                        "top_ops": [
+                            {"op": op, "occurrences": cnt} for op, cnt in sorted_ops
+                        ],
+                    }
+                )
+            patterns.sort(key=lambda p: p["count"], reverse=True)
+            return jsonify({"patterns": patterns})
+        except Exception as e:
+            logger.error("Error in /api/observability/failure-patterns: %s", e)
+            return jsonify({"patterns": [], "error": str(e)}), 500
+
+    # ── P2: Leaderboard dynamics ───────────────────────────────────────
+
+    @app.route("/api/observability/leaderboard-dynamics")
+    @wnb
+    def api_leaderboard_dynamics(nb=None):
+        """Tier counts per day + recent promotions."""
+        # Daily tier counts
+        rows = nb.conn.execute(
+            "SELECT date(timestamp, 'unixepoch') as day, tier, COUNT(*) as cnt "
+            "FROM leaderboard GROUP BY day, tier ORDER BY day"
+        ).fetchall()
+        daily: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for r in rows:
+            day = r["day"]
+            if day is None:
+                continue
+            daily[day][r["tier"]] = r["cnt"]
+
+        # Recent promotions (last 20)
+        promos = nb.conn.execute(
+            "SELECT entry_id, result_id, tier, timestamp, "
+            "screening_loss_ratio, investigation_loss_ratio, composite_score "
+            "FROM leaderboard ORDER BY timestamp DESC LIMIT 20"
+        ).fetchall()
+
+        return jsonify(
+            {
+                "daily": {d: dict(tiers) for d, tiers in sorted(daily.items())},
+                "recent_promotions": [dict(r) for r in promos],
+            }
+        )
+
+    # ── P2: Insight effectiveness ──────────────────────────────────────
+
+    @app.route("/api/observability/insight-effectiveness")
+    @wnb
+    def api_insight_effectiveness(nb=None):
+        """Insights with prediction accuracy and Bayesian posterior mean."""
+        rows = nb.conn.execute(
+            "SELECT insight_id, category, insight_type, subject_key, "
+            "content, confidence, status, n_predictions, n_correct, "
+            "alpha, beta_ "
+            "FROM insights WHERE n_predictions > 0 "
+            "ORDER BY n_predictions DESC LIMIT 50"
+        ).fetchall()
+        entries = []
+        for r in rows:
+            n_pred = r["n_predictions"] or 0
+            n_corr = r["n_correct"] or 0
+            alpha = r["alpha"] or 1.0
+            beta = r["beta_"] or 1.0
+            entries.append(
+                {
+                    "insight_id": r["insight_id"],
+                    "category": r["category"],
+                    "insight_type": r["insight_type"],
+                    "subject_key": r["subject_key"],
+                    "content": (r["content"] or "")[:200],
+                    "confidence": r["confidence"],
+                    "status": r["status"],
+                    "n_predictions": n_pred,
+                    "n_correct": n_corr,
+                    "accuracy": round(n_corr / max(n_pred, 1), 3),
+                    "bayesian_mean": round(alpha / (alpha + beta), 3),
+                }
+            )
+        return jsonify({"insights": entries, "count": len(entries)})
+
+    # ── P3: DB health ──────────────────────────────────────────────────
+
+    @app.route("/api/observability/db-health")
+    @wnb
+    def api_db_health(nb=None):
+        """Database file size, table row counts, WAL size."""
+        result: Dict[str, Any] = {}
+        try:
+            db_path = notebook_path
+            result["db_size_mb"] = round(os.path.getsize(db_path) / (1024 * 1024), 2)
+            wal_path = db_path + "-wal"
+            if os.path.exists(wal_path):
+                result["wal_size_mb"] = round(
+                    os.path.getsize(wal_path) / (1024 * 1024), 2
+                )
+            else:
+                result["wal_size_mb"] = 0.0
+        except Exception:
+            result["db_size_mb"] = None
+            result["wal_size_mb"] = None
+
+        try:
+            tables = [
+                "program_results",
+                "experiments",
+                "leaderboard",
+                "learning_log",
+                "insights",
+                "training_curves",
+                "entries",
+            ]
+            row_counts = {}
+            for t in tables:
+                try:
+                    row = nb.conn.execute(f"SELECT COUNT(*) as c FROM {t}").fetchone()
+                    row_counts[t] = row["c"] if row else 0
+                except Exception:
+                    row_counts[t] = None
+            result["row_counts"] = row_counts
+        except Exception as e:
+            result["row_counts"] = {}
+            result["error"] = str(e)
 
         return jsonify(result)

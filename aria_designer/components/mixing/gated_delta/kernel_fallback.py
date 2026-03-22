@@ -1,4 +1,5 @@
 """Python fallback kernel for gated_delta."""
+
 import torch
 import torch.nn as nn
 
@@ -35,7 +36,9 @@ class ComponentHandler:
         outputs = []
         for t in range(S):
             vk = v[:, t, :].unsqueeze(-1) * k[:, t, :].unsqueeze(-2)
-            h = alpha[:, t, :].unsqueeze(-1) * h + beta[:, t, :].unsqueeze(-1) * (vk - h)
+            h = alpha[:, t, :].unsqueeze(-1) * h + beta[:, t, :].unsqueeze(-1) * (
+                vk - h
+            )
             out_t = (q[:, t, :].unsqueeze(-2) @ h).squeeze(-2)
             outputs.append(out_t)
 

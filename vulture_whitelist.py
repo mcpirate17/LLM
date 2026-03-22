@@ -26,3 +26,10 @@ designer_activity_hook  # api.py
 
 # Common SQLable attributes
 _.row_factory  # sqlite3
+
+# Function parameters prefixed with _ (unused but required by API/signature)
+_max_lr  # notebook_misc.py get_investigation_eligible
+_ref_lr_ceiling  # notebook_misc.py get_investigation_eligible
+_exc_type  # perf.py __exit__
+_config_device  # shared_utils.py resolve_device
+_use_adaptive_synthesis  # grammar.py generate_weighted_batch

@@ -9,6 +9,7 @@ from typing import List
 @dataclass
 class ConvergenceProfile:
     """Training curve convergence statistics for a category."""
+
     category: str  # fast_converge, slow_converge, plateau, divergent
     count: int = 0
     avg_final_loss: float = 0.0
@@ -21,6 +22,7 @@ class ConvergenceProfile:
 @dataclass
 class ArchitectureFamily:
     """Clustered architecture family based on op-set similarity."""
+
     family_id: int
     representative_ops: List[str] = field(default_factory=list)
     n_members: int = 0
@@ -33,6 +35,7 @@ class ArchitectureFamily:
 @dataclass
 class ConfigEffect:
     """Spearman correlation between a config parameter and outcomes."""
+
     param_name: str
     target: str  # s1_count, best_loss_ratio
     rho: float = 0.0  # Spearman r
@@ -44,6 +47,7 @@ class ConfigEffect:
 @dataclass
 class OpSynergy:
     """Op pair co-occurrence lift in S1 survivors."""
+
     op_a: str
     op_b: str
     lift: float = 1.0  # observed / expected co-occurrence
@@ -54,6 +58,7 @@ class OpSynergy:
 @dataclass
 class HypothesisOutcome:
     """Hypothesis closure status."""
+
     hypothesis: str
     experiment_id: str = ""
     outcome: str = "inconclusive"  # confirmed, refuted, inconclusive
@@ -64,6 +69,7 @@ class HypothesisOutcome:
 @dataclass
 class EfficiencyProfile:
     """Per-family FLOP and parameter efficiency metrics."""
+
     family_id: int
     avg_flops_per_token: float = 0.0
     avg_params: float = 0.0
@@ -74,6 +80,7 @@ class EfficiencyProfile:
 @dataclass
 class ExperimentDigest:
     """Top-level knowledge digest container."""
+
     timestamp: float = 0.0
     cycle_number: int = 0
     n_experiments_analyzed: int = 0
@@ -101,28 +108,18 @@ class ExperimentDigest:
             n_experiments_analyzed=d.get("n_experiments_analyzed", 0),
             n_curves_analyzed=d.get("n_curves_analyzed", 0),
             convergence_profiles=[
-                ConvergenceProfile(**p)
-                for p in d.get("convergence_profiles", [])
+                ConvergenceProfile(**p) for p in d.get("convergence_profiles", [])
             ],
             architecture_families=[
-                ArchitectureFamily(**f)
-                for f in d.get("architecture_families", [])
+                ArchitectureFamily(**f) for f in d.get("architecture_families", [])
             ],
-            config_effects=[
-                ConfigEffect(**e)
-                for e in d.get("config_effects", [])
-            ],
-            op_synergies=[
-                OpSynergy(**s)
-                for s in d.get("op_synergies", [])
-            ],
+            config_effects=[ConfigEffect(**e) for e in d.get("config_effects", [])],
+            op_synergies=[OpSynergy(**s) for s in d.get("op_synergies", [])],
             hypothesis_outcomes=[
-                HypothesisOutcome(**h)
-                for h in d.get("hypothesis_outcomes", [])
+                HypothesisOutcome(**h) for h in d.get("hypothesis_outcomes", [])
             ],
             efficiency_profiles=[
-                EfficiencyProfile(**e)
-                for e in d.get("efficiency_profiles", [])
+                EfficiencyProfile(**e) for e in d.get("efficiency_profiles", [])
             ],
             narrative=d.get("narrative", ""),
             recommendations=d.get("recommendations", []),

@@ -72,7 +72,9 @@ def backfill(args):
     dev = torch.device(args.device)
 
     rows = _select_rows(db.conn, args.tier, args.limit, args.min_composite)
-    print(f"Found {len(rows)} entries for long-context backfill (tier={args.tier}, min_composite={args.min_composite}).")
+    print(
+        f"Found {len(rows)} entries for long-context backfill (tier={args.tier}, min_composite={args.min_composite})."
+    )
     if not rows:
         return
 
@@ -80,8 +82,20 @@ def backfill(args):
     failed = 0
     t0 = time.time()
     for idx, row in enumerate(rows, start=1):
-        entry_id, result_id, tier, comp, old_score, graph_json, final_loss, existing_benchmarks_json, config_json = row
-        print(f"[{idx}/{len(rows)}] {result_id[:12]} tier={tier} composite={comp:.4f} old={old_score}")
+        (
+            entry_id,
+            result_id,
+            tier,
+            comp,
+            old_score,
+            graph_json,
+            final_loss,
+            existing_benchmarks_json,
+            config_json,
+        ) = row
+        print(
+            f"[{idx}/{len(rows)}] {result_id[:12]} tier={tier} composite={comp:.4f} old={old_score}"
+        )
         try:
             cfg = json.loads(config_json) if config_json else {}
             vocab_size = int(cfg.get("vocab_size", 32000))
@@ -119,9 +133,13 @@ def backfill(args):
                 torch.cuda.empty_cache()
 
             retrieval_score = float(
-                retr.get("retrieval_aggregate_score", retr.get("retrieval_score", 0.0)) or 0.0
+                retr.get("retrieval_aggregate_score", retr.get("retrieval_score", 0.0))
+                or 0.0
             )
-            assoc_score = float(retr.get("assoc_retrieval_score", retr.get("retrieval_score", 0.0)) or 0.0)
+            assoc_score = float(
+                retr.get("assoc_retrieval_score", retr.get("retrieval_score", 0.0))
+                or 0.0
+            )
             multi_hop_score = float(retr.get("multi_hop_score", 0.0) or 0.0)
             passkey_score = float(retr.get("passkey_score", 0.0) or 0.0)
             combined = (scaling_score * 0.5) + (retrieval_score * 0.5)
@@ -173,16 +191,26 @@ def backfill(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill long-context robustness scores")
-    parser.add_argument("--db", default=os.path.join(os.path.dirname(__file__), "..", "lab_notebook.db"))
-    parser.add_argument("--tier", default="validation", choices=["screening", "investigation", "validation", "all"])
+    parser = argparse.ArgumentParser(
+        description="Backfill long-context robustness scores"
+    )
+    parser.add_argument(
+        "--db", default=os.path.join(os.path.dirname(__file__), "..", "lab_notebook.db")
+    )
+    parser.add_argument(
+        "--tier",
+        default="validation",
+        choices=["screening", "investigation", "validation", "all"],
+    )
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--min-composite", type=float, default=20.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--n-steps", type=int, default=120)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--seq-lens", type=int, nargs="+", default=[512, 1024])
-    parser.add_argument("--retrieval-lengths", type=int, nargs="+", default=[256, 512, 1024])
+    parser.add_argument(
+        "--retrieval-lengths", type=int, nargs="+", default=[256, 512, 1024]
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     backfill(args)

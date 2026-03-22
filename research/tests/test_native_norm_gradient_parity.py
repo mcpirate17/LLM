@@ -6,6 +6,7 @@ Each test:
   2. Calls the C backward kernel
   3. Checks that C gradients match PyTorch within f32 tolerance
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -28,18 +29,31 @@ ATOL_NORM = 2e-4
 RTOL_NORM = 2e-4
 
 
-def _assert_close(actual: np.ndarray, expected: np.ndarray, label: str = "",
-                   atol: float = ATOL, rtol: float = RTOL):
+def _assert_close(
+    actual: np.ndarray,
+    expected: np.ndarray,
+    label: str = "",
+    atol: float = ATOL,
+    rtol: float = RTOL,
+):
     np.testing.assert_allclose(actual, expected, atol=atol, rtol=rtol, err_msg=label)
 
 
 # ── Softmax backward ──────────────────────────────────────────────────
 
-class TestSoftmaxBackward:
 
-    @pytest.mark.parametrize("batch,dim", [
-        (1, 8), (4, 16), (8, 64), (2, 128), (16, 256), (1, 3),
-    ])
+class TestSoftmaxBackward:
+    @pytest.mark.parametrize(
+        "batch,dim",
+        [
+            (1, 8),
+            (4, 16),
+            (8, 64),
+            (2, 128),
+            (16, 256),
+            (1, 3),
+        ],
+    )
     def test_softmax_backward_vs_torch(self, native_lib, batch, dim):
         np.random.seed(42)
         x_np = np.random.randn(batch, dim).astype(np.float32)
@@ -56,14 +70,19 @@ class TestSoftmaxBackward:
         grad_in = np.empty((batch, dim), dtype=np.float32)
 
         fn = native_lib.aria_softmax_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
-        fn(grad_out_np.ctypes.data, y_np.ctypes.data,
-           grad_in.ctypes.data, batch, dim)
+        fn(grad_out_np.ctypes.data, y_np.ctypes.data, grad_in.ctypes.data, batch, dim)
 
-        _assert_close(grad_in, expected_grad_in,
-                      f"softmax_backward batch={batch} dim={dim}")
+        _assert_close(
+            grad_in, expected_grad_in, f"softmax_backward batch={batch} dim={dim}"
+        )
 
     def test_softmax_backward_uniform_grad(self, native_lib):
         """When grad_out is uniform, softmax backward should produce zero gradients."""
@@ -73,7 +92,12 @@ class TestSoftmaxBackward:
 
         # Forward
         fwd = native_lib.aria_softmax_f32
-        fwd.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64]
+        fwd.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fwd.restype = None
         y_np = np.empty((batch, dim), dtype=np.float32)
         fwd(x_np.ctypes.data, y_np.ctypes.data, batch, dim)
@@ -83,24 +107,38 @@ class TestSoftmaxBackward:
         grad_in = np.empty((batch, dim), dtype=np.float32)
 
         fn = native_lib.aria_softmax_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(grad_out.ctypes.data, y_np.ctypes.data, grad_in.ctypes.data, batch, dim)
 
         # sum(y) = 1 per row, so dot = constant * 1 = constant
         # gi = y * (constant - constant) = 0
-        _assert_close(grad_in, np.zeros_like(grad_in),
-                      "softmax_backward uniform grad", atol=1e-6)
+        _assert_close(
+            grad_in, np.zeros_like(grad_in), "softmax_backward uniform grad", atol=1e-6
+        )
 
 
 # ── LayerNorm backward ────────────────────────────────────────────────
 
-class TestLayerNormBackward:
 
-    @pytest.mark.parametrize("batch,dim", [
-        (1, 8), (4, 16), (8, 64), (2, 128), (16, 256), (1, 3),
-    ])
+class TestLayerNormBackward:
+    @pytest.mark.parametrize(
+        "batch,dim",
+        [
+            (1, 8),
+            (4, 16),
+            (8, 64),
+            (2, 128),
+            (16, 256),
+            (1, 3),
+        ],
+    )
     def test_layernorm_backward_vs_torch(self, native_lib, batch, dim):
         np.random.seed(42)
         x_np = np.random.randn(batch, dim).astype(np.float32)
@@ -125,23 +163,51 @@ class TestLayerNormBackward:
         grad_beta = np.empty(dim, dtype=np.float32)
 
         fn = native_lib.aria_layernorm_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(grad_out_np.ctypes.data, x_np.ctypes.data, gamma_np.ctypes.data,
-           grad_in.ctypes.data, grad_gamma.ctypes.data, grad_beta.ctypes.data,
-           batch, dim, eps)
+        fn(
+            grad_out_np.ctypes.data,
+            x_np.ctypes.data,
+            gamma_np.ctypes.data,
+            grad_in.ctypes.data,
+            grad_gamma.ctypes.data,
+            grad_beta.ctypes.data,
+            batch,
+            dim,
+            eps,
+        )
 
-        _assert_close(grad_in, expected_grad_in,
-                      f"layernorm_backward grad_in batch={batch} dim={dim}",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
-        _assert_close(grad_gamma, expected_grad_gamma,
-                      f"layernorm_backward grad_gamma batch={batch} dim={dim}",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
-        _assert_close(grad_beta, expected_grad_beta,
-                      f"layernorm_backward grad_beta batch={batch} dim={dim}",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
+        _assert_close(
+            grad_in,
+            expected_grad_in,
+            f"layernorm_backward grad_in batch={batch} dim={dim}",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
+        _assert_close(
+            grad_gamma,
+            expected_grad_gamma,
+            f"layernorm_backward grad_gamma batch={batch} dim={dim}",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
+        _assert_close(
+            grad_beta,
+            expected_grad_beta,
+            f"layernorm_backward grad_beta batch={batch} dim={dim}",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
 
     def test_layernorm_backward_gamma_ones_beta_zeros(self, native_lib):
         """With gamma=1, beta=0, simplifies to plain normalization gradient."""
@@ -164,26 +230,54 @@ class TestLayerNormBackward:
         grad_beta = np.empty(dim, dtype=np.float32)
 
         fn = native_lib.aria_layernorm_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(grad_out_np.ctypes.data, x_np.ctypes.data, gamma_np.ctypes.data,
-           grad_in.ctypes.data, grad_gamma.ctypes.data, grad_beta.ctypes.data,
-           batch, dim, eps)
+        fn(
+            grad_out_np.ctypes.data,
+            x_np.ctypes.data,
+            gamma_np.ctypes.data,
+            grad_in.ctypes.data,
+            grad_gamma.ctypes.data,
+            grad_beta.ctypes.data,
+            batch,
+            dim,
+            eps,
+        )
 
-        _assert_close(grad_in, x_t.grad.numpy(),
-                      "layernorm_backward identity gamma",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
+        _assert_close(
+            grad_in,
+            x_t.grad.numpy(),
+            "layernorm_backward identity gamma",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
 
 
 # ── RMSNorm backward ──────────────────────────────────────────────────
 
-class TestRMSNormBackward:
 
-    @pytest.mark.parametrize("batch,dim", [
-        (1, 8), (4, 16), (8, 64), (2, 128), (16, 256), (1, 3),
-    ])
+class TestRMSNormBackward:
+    @pytest.mark.parametrize(
+        "batch,dim",
+        [
+            (1, 8),
+            (4, 16),
+            (8, 64),
+            (2, 128),
+            (16, 256),
+            (1, 3),
+        ],
+    )
     def test_rmsnorm_backward_vs_torch(self, native_lib, batch, dim):
         np.random.seed(42)
         x_np = np.random.randn(batch, dim).astype(np.float32)
@@ -193,7 +287,7 @@ class TestRMSNormBackward:
         # PyTorch reference: manual RMSNorm forward + autograd
         x_t = torch.tensor(x_np, requires_grad=True)
         gamma_t = torch.tensor(gamma_np, requires_grad=True)
-        rms = torch.sqrt(torch.mean(x_t ** 2, dim=-1, keepdim=True) + eps)
+        rms = torch.sqrt(torch.mean(x_t**2, dim=-1, keepdim=True) + eps)
         y_t = gamma_t * x_t / rms
 
         grad_out_np = np.random.randn(batch, dim).astype(np.float32)
@@ -206,20 +300,42 @@ class TestRMSNormBackward:
         grad_gamma = np.empty(dim, dtype=np.float32)
 
         fn = native_lib.aria_rmsnorm_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(grad_out_np.ctypes.data, x_np.ctypes.data, gamma_np.ctypes.data,
-           grad_in.ctypes.data, grad_gamma.ctypes.data,
-           batch, dim, eps)
+        fn(
+            grad_out_np.ctypes.data,
+            x_np.ctypes.data,
+            gamma_np.ctypes.data,
+            grad_in.ctypes.data,
+            grad_gamma.ctypes.data,
+            batch,
+            dim,
+            eps,
+        )
 
-        _assert_close(grad_in, expected_grad_in,
-                      f"rmsnorm_backward grad_in batch={batch} dim={dim}",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
-        _assert_close(grad_gamma, expected_grad_gamma,
-                      f"rmsnorm_backward grad_gamma batch={batch} dim={dim}",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
+        _assert_close(
+            grad_in,
+            expected_grad_in,
+            f"rmsnorm_backward grad_in batch={batch} dim={dim}",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
+        _assert_close(
+            grad_gamma,
+            expected_grad_gamma,
+            f"rmsnorm_backward grad_gamma batch={batch} dim={dim}",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
 
     def test_rmsnorm_backward_gamma_ones(self, native_lib):
         """With gamma=1, simplifies to x/rms normalization gradient."""
@@ -231,7 +347,7 @@ class TestRMSNormBackward:
 
         x_t = torch.tensor(x_np, requires_grad=True)
         gamma_t = torch.tensor(gamma_np, requires_grad=True)
-        rms = torch.sqrt(torch.mean(x_t ** 2, dim=-1, keepdim=True) + eps)
+        rms = torch.sqrt(torch.mean(x_t**2, dim=-1, keepdim=True) + eps)
         y_t = gamma_t * x_t / rms
 
         grad_out_np = np.random.randn(batch, dim).astype(np.float32)
@@ -241,20 +357,39 @@ class TestRMSNormBackward:
         grad_gamma = np.empty(dim, dtype=np.float32)
 
         fn = native_lib.aria_rmsnorm_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(grad_out_np.ctypes.data, x_np.ctypes.data, gamma_np.ctypes.data,
-           grad_in.ctypes.data, grad_gamma.ctypes.data,
-           batch, dim, eps)
+        fn(
+            grad_out_np.ctypes.data,
+            x_np.ctypes.data,
+            gamma_np.ctypes.data,
+            grad_in.ctypes.data,
+            grad_gamma.ctypes.data,
+            batch,
+            dim,
+            eps,
+        )
 
-        _assert_close(grad_in, x_t.grad.numpy(),
-                      "rmsnorm_backward identity gamma",
-                      atol=ATOL_NORM, rtol=RTOL_NORM)
+        _assert_close(
+            grad_in,
+            x_t.grad.numpy(),
+            "rmsnorm_backward identity gamma",
+            atol=ATOL_NORM,
+            rtol=RTOL_NORM,
+        )
 
 
 # ── Finite difference cross-check ─────────────────────────────────────
+
 
 class TestNumericalGradientCheck:
     """Cross-validate backward kernels against finite-difference approximation."""
@@ -268,15 +403,25 @@ class TestNumericalGradientCheck:
         # Forward
         y_np = np.empty((batch, dim), dtype=np.float32)
         fwd = native_lib.aria_softmax_f32
-        fwd.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64]
+        fwd.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fwd.restype = None
         fwd(x_np.ctypes.data, y_np.ctypes.data, batch, dim)
 
         # Backward
         grad_in = np.empty((batch, dim), dtype=np.float32)
         fn = native_lib.aria_softmax_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(grad_out.ctypes.data, y_np.ctypes.data, grad_in.ctypes.data, batch, dim)
 
@@ -285,8 +430,10 @@ class TestNumericalGradientCheck:
         num_grad = np.zeros_like(x_np)
         x_flat = x_np.ravel()
         for i in range(len(x_flat)):
-            x_plus = x_flat.copy(); x_plus[i] += eps
-            x_minus = x_flat.copy(); x_minus[i] -= eps
+            x_plus = x_flat.copy()
+            x_plus[i] += eps
+            x_minus = x_flat.copy()
+            x_minus[i] -= eps
             y_plus = np.empty_like(y_np)
             y_minus = np.empty_like(y_np)
             fwd(x_plus.ctypes.data, y_plus.ctypes.data, batch, dim)
@@ -309,32 +456,71 @@ class TestNumericalGradientCheck:
         grad_gamma = np.empty(dim, dtype=np.float32)
         grad_beta = np.empty(dim, dtype=np.float32)
         fn = native_lib.aria_layernorm_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(grad_out.ctypes.data, x_np.ctypes.data, gamma_np.ctypes.data,
-           grad_in.ctypes.data, grad_gamma.ctypes.data, grad_beta.ctypes.data,
-           batch, dim, eps)
+        fn(
+            grad_out.ctypes.data,
+            x_np.ctypes.data,
+            gamma_np.ctypes.data,
+            grad_in.ctypes.data,
+            grad_gamma.ctypes.data,
+            grad_beta.ctypes.data,
+            batch,
+            dim,
+            eps,
+        )
 
         # Numerical gradient w.r.t. input
         fwd = native_lib.aria_layernorm_f32
-        fwd.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                        ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fwd.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fwd.restype = None
 
         delta = 1e-3
         num_grad = np.zeros_like(x_np)
         x_flat = x_np.ravel()
         for i in range(len(x_flat)):
-            x_plus = x_flat.copy(); x_plus[i] += delta
-            x_minus = x_flat.copy(); x_minus[i] -= delta
+            x_plus = x_flat.copy()
+            x_plus[i] += delta
+            x_minus = x_flat.copy()
+            x_minus[i] -= delta
             y_plus = np.empty_like(x_np)
             y_minus = np.empty_like(x_np)
-            fwd(x_plus.ctypes.data, gamma_np.ctypes.data, bias_np.ctypes.data,
-                y_plus.ctypes.data, batch, dim, eps)
-            fwd(x_minus.ctypes.data, gamma_np.ctypes.data, bias_np.ctypes.data,
-                y_minus.ctypes.data, batch, dim, eps)
+            fwd(
+                x_plus.ctypes.data,
+                gamma_np.ctypes.data,
+                bias_np.ctypes.data,
+                y_plus.ctypes.data,
+                batch,
+                dim,
+                eps,
+            )
+            fwd(
+                x_minus.ctypes.data,
+                gamma_np.ctypes.data,
+                bias_np.ctypes.data,
+                y_minus.ctypes.data,
+                batch,
+                dim,
+                eps,
+            )
             num_grad.ravel()[i] = (y_plus.sum() - y_minus.sum()) / (2 * delta)
 
         _assert_close(grad_in, num_grad, "layernorm numerical", atol=1e-3, rtol=1e-3)
@@ -351,32 +537,66 @@ class TestNumericalGradientCheck:
         grad_in = np.empty((batch, dim), dtype=np.float32)
         grad_gamma = np.empty(dim, dtype=np.float32)
         fn = native_lib.aria_rmsnorm_backward_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(grad_out.ctypes.data, x_np.ctypes.data, gamma_np.ctypes.data,
-           grad_in.ctypes.data, grad_gamma.ctypes.data,
-           batch, dim, eps)
+        fn(
+            grad_out.ctypes.data,
+            x_np.ctypes.data,
+            gamma_np.ctypes.data,
+            grad_in.ctypes.data,
+            grad_gamma.ctypes.data,
+            batch,
+            dim,
+            eps,
+        )
 
         # Numerical gradient w.r.t. input
         fwd = native_lib.aria_rmsnorm_f32
-        fwd.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                        ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fwd.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fwd.restype = None
 
         delta = 1e-3
         num_grad = np.zeros_like(x_np)
         x_flat = x_np.ravel()
         for i in range(len(x_flat)):
-            x_plus = x_flat.copy(); x_plus[i] += delta
-            x_minus = x_flat.copy(); x_minus[i] -= delta
+            x_plus = x_flat.copy()
+            x_plus[i] += delta
+            x_minus = x_flat.copy()
+            x_minus[i] -= delta
             y_plus = np.empty_like(x_np)
             y_minus = np.empty_like(x_np)
-            fwd(x_plus.ctypes.data, gamma_np.ctypes.data,
-                y_plus.ctypes.data, batch, dim, eps)
-            fwd(x_minus.ctypes.data, gamma_np.ctypes.data,
-                y_minus.ctypes.data, batch, dim, eps)
+            fwd(
+                x_plus.ctypes.data,
+                gamma_np.ctypes.data,
+                y_plus.ctypes.data,
+                batch,
+                dim,
+                eps,
+            )
+            fwd(
+                x_minus.ctypes.data,
+                gamma_np.ctypes.data,
+                y_minus.ctypes.data,
+                batch,
+                dim,
+                eps,
+            )
             num_grad.ravel()[i] = (y_plus.sum() - y_minus.sum()) / (2 * delta)
 
         _assert_close(grad_in, num_grad, "rmsnorm numerical", atol=1e-3, rtol=1e-3)

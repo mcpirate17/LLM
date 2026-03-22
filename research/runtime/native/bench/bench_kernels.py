@@ -11,6 +11,7 @@ Usage:
     python bench_kernels.py              # full suite
     python bench_kernels.py --quick      # reduced iterations for CI
 """
+
 import ctypes
 import os
 import sys
@@ -21,12 +22,15 @@ import numpy as np
 
 _LIB_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "..", "build", "libaria_native_runtime.so",
+    "..",
+    "build",
+    "libaria_native_runtime.so",
 )
 
 # ---------------------------------------------------------------------------
 # Timing utility
 # ---------------------------------------------------------------------------
+
 
 def bench_fn(fn, *args, iterations=100):
     """Benchmark a callable, return median time in microseconds."""
@@ -46,6 +50,7 @@ def bench_fn(fn, *args, iterations=100):
 # ---------------------------------------------------------------------------
 # Library loader + typed wrapper helpers
 # ---------------------------------------------------------------------------
+
 
 def load_library(path):
     """Load the native shared library and return the ctypes handle."""
@@ -83,6 +88,7 @@ def _setup_binary(lib, name):
 # Benchmark runners
 # ---------------------------------------------------------------------------
 
+
 def bench_unary(lib, op_name, np_fn, sizes, iterations, torch_fn=None):
     """Benchmark a unary elementwise kernel at various sizes."""
     results = []
@@ -106,23 +112,26 @@ def bench_unary(lib, op_name, np_fn, sizes, iterations, torch_fn=None):
         if torch_fn is not None:
             try:
                 import torch
+
                 xt = torch.from_numpy(x)
                 torch_us = bench_fn(lambda _xt=xt: torch_fn(_xt), iterations=iterations)
             except ImportError:
                 pass
 
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
-        speedup_pt = (torch_us / native_us if torch_us and native_us > 0 else None)
+        speedup_pt = torch_us / native_us if torch_us and native_us > 0 else None
 
-        results.append({
-            "op": op_name,
-            "size": n,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": torch_us,
-            "speedup_np": speedup_np,
-            "speedup_pt": speedup_pt,
-        })
+        results.append(
+            {
+                "op": op_name,
+                "size": n,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": torch_us,
+                "speedup_np": speedup_np,
+                "speedup_pt": speedup_pt,
+            }
+        )
     return results
 
 
@@ -147,24 +156,29 @@ def bench_binary(lib, op_name, np_fn, sizes, iterations, torch_fn=None):
         if torch_fn is not None:
             try:
                 import torch
+
                 at = torch.from_numpy(a)
                 bt = torch.from_numpy(b)
-                torch_us = bench_fn(lambda _at=at, _bt=bt: torch_fn(_at, _bt), iterations=iterations)
+                torch_us = bench_fn(
+                    lambda _at=at, _bt=bt: torch_fn(_at, _bt), iterations=iterations
+                )
             except ImportError:
                 pass
 
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
-        speedup_pt = (torch_us / native_us if torch_us and native_us > 0 else None)
+        speedup_pt = torch_us / native_us if torch_us and native_us > 0 else None
 
-        results.append({
-            "op": op_name,
-            "size": n,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": torch_us,
-            "speedup_np": speedup_np,
-            "speedup_pt": speedup_pt,
-        })
+        results.append(
+            {
+                "op": op_name,
+                "size": n,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": torch_us,
+                "speedup_np": speedup_np,
+                "speedup_pt": speedup_pt,
+            }
+        )
     return results
 
 
@@ -172,8 +186,12 @@ def bench_matmul(lib, sizes_mat, iterations):
     """Benchmark dense matmul: C[M,N] = A[M,K] @ B[K,N]."""
     fn = lib.aria_matmul_f32
     fn.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int64,
+        ctypes.c_int64,
+        ctypes.c_int64,
     ]
     fn.restype = None
 
@@ -195,25 +213,30 @@ def bench_matmul(lib, sizes_mat, iterations):
         torch_us = None
         try:
             import torch
+
             At = torch.from_numpy(A)
             Bt = torch.from_numpy(B)
-            torch_us = bench_fn(lambda _At=At, _Bt=Bt: torch.mm(_At, _Bt), iterations=iterations)
+            torch_us = bench_fn(
+                lambda _At=At, _Bt=Bt: torch.mm(_At, _Bt), iterations=iterations
+            )
         except ImportError:
             pass
 
         size_str = f"{M}x{K}x{N}"
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
-        speedup_pt = (torch_us / native_us if torch_us and native_us > 0 else None)
+        speedup_pt = torch_us / native_us if torch_us and native_us > 0 else None
 
-        results.append({
-            "op": "matmul",
-            "size": size_str,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": torch_us,
-            "speedup_np": speedup_np,
-            "speedup_pt": speedup_pt,
-        })
+        results.append(
+            {
+                "op": "matmul",
+                "size": size_str,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": torch_us,
+                "speedup_np": speedup_np,
+                "speedup_pt": speedup_pt,
+            }
+        )
     return results
 
 
@@ -221,8 +244,13 @@ def bench_linear(lib, sizes_linear, iterations):
     """Benchmark linear projection: y = x @ W^T + bias."""
     fn = lib.aria_linear_f32
     fn.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int64,
+        ctypes.c_int64,
+        ctypes.c_int64,
     ]
     fn.restype = None
 
@@ -248,11 +276,14 @@ def bench_linear(lib, sizes_linear, iterations):
         torch_us = None
         try:
             import torch
+
             xt = torch.from_numpy(x)
             Wt = torch.from_numpy(W)
             bt = torch.from_numpy(bias)
             torch_us = bench_fn(
-                lambda _xt=xt, _Wt=Wt, _bt=bt: torch.nn.functional.linear(_xt, _Wt, _bt),
+                lambda _xt=xt, _Wt=Wt, _bt=bt: torch.nn.functional.linear(
+                    _xt, _Wt, _bt
+                ),
                 iterations=iterations,
             )
         except ImportError:
@@ -260,17 +291,19 @@ def bench_linear(lib, sizes_linear, iterations):
 
         size_str = f"{batch}x{dim_in}x{dim_out}"
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
-        speedup_pt = (torch_us / native_us if torch_us and native_us > 0 else None)
+        speedup_pt = torch_us / native_us if torch_us and native_us > 0 else None
 
-        results.append({
-            "op": "linear",
-            "size": size_str,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": torch_us,
-            "speedup_np": speedup_np,
-            "speedup_pt": speedup_pt,
-        })
+        results.append(
+            {
+                "op": "linear",
+                "size": size_str,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": torch_us,
+                "speedup_np": speedup_np,
+                "speedup_pt": speedup_pt,
+            }
+        )
     return results
 
 
@@ -278,8 +311,12 @@ def bench_rmsnorm(lib, sizes_norm, iterations):
     """Benchmark RMSNorm: y = x / rms(x) * weight."""
     fn = lib.aria_rmsnorm_f32
     fn.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int64, ctypes.c_int64, ctypes.c_float,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int64,
+        ctypes.c_int64,
+        ctypes.c_float,
     ]
     fn.restype = None
 
@@ -306,15 +343,17 @@ def bench_rmsnorm(lib, sizes_norm, iterations):
         size_str = f"{batch}x{dim}"
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
 
-        results.append({
-            "op": "rmsnorm",
-            "size": size_str,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": None,
-            "speedup_np": speedup_np,
-            "speedup_pt": None,
-        })
+        results.append(
+            {
+                "op": "rmsnorm",
+                "size": size_str,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": None,
+                "speedup_np": speedup_np,
+                "speedup_pt": None,
+            }
+        )
     return results
 
 
@@ -322,8 +361,10 @@ def bench_softmax(lib, sizes_sm, iterations):
     """Benchmark softmax: y = exp(x - max) / sum(exp(x - max))."""
     fn = lib.aria_softmax_f32
     fn.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int64, ctypes.c_int64,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int64,
+        ctypes.c_int64,
     ]
     fn.restype = None
 
@@ -347,6 +388,7 @@ def bench_softmax(lib, sizes_sm, iterations):
         torch_us = None
         try:
             import torch
+
             xt = torch.from_numpy(x)
             torch_us = bench_fn(
                 lambda _xt=xt: torch.nn.functional.softmax(_xt, dim=-1),
@@ -357,17 +399,19 @@ def bench_softmax(lib, sizes_sm, iterations):
 
         size_str = f"{batch}x{dim}"
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
-        speedup_pt = (torch_us / native_us if torch_us and native_us > 0 else None)
+        speedup_pt = torch_us / native_us if torch_us and native_us > 0 else None
 
-        results.append({
-            "op": "softmax",
-            "size": size_str,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": torch_us,
-            "speedup_np": speedup_np,
-            "speedup_pt": speedup_pt,
-        })
+        results.append(
+            {
+                "op": "softmax",
+                "size": size_str,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": torch_us,
+                "speedup_np": speedup_np,
+                "speedup_pt": speedup_pt,
+            }
+        )
     return results
 
 
@@ -375,8 +419,13 @@ def bench_layernorm(lib, sizes_ln, iterations):
     """Benchmark LayerNorm: y = (x - mean) / sqrt(var + eps) * weight + bias."""
     fn = lib.aria_layernorm_f32
     fn.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int64, ctypes.c_int64, ctypes.c_float,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int64,
+        ctypes.c_int64,
+        ctypes.c_float,
     ]
     fn.restype = None
 
@@ -405,6 +454,7 @@ def bench_layernorm(lib, sizes_ln, iterations):
         torch_us = None
         try:
             import torch
+
             xt = torch.from_numpy(x)
             wt = torch.from_numpy(w)
             bt = torch.from_numpy(b)
@@ -419,23 +469,26 @@ def bench_layernorm(lib, sizes_ln, iterations):
 
         size_str = f"{batch}x{dim}"
         speedup_np = numpy_us / native_us if native_us > 0 else float("inf")
-        speedup_pt = (torch_us / native_us if torch_us and native_us > 0 else None)
+        speedup_pt = torch_us / native_us if torch_us and native_us > 0 else None
 
-        results.append({
-            "op": "layernorm",
-            "size": size_str,
-            "native_us": native_us,
-            "numpy_us": numpy_us,
-            "torch_us": torch_us,
-            "speedup_np": speedup_np,
-            "speedup_pt": speedup_pt,
-        })
+        results.append(
+            {
+                "op": "layernorm",
+                "size": size_str,
+                "native_us": native_us,
+                "numpy_us": numpy_us,
+                "torch_us": torch_us,
+                "speedup_np": speedup_np,
+                "speedup_pt": speedup_pt,
+            }
+        )
     return results
 
 
 # ---------------------------------------------------------------------------
 # Report printer
 # ---------------------------------------------------------------------------
+
 
 def print_report(all_results):
     """Print a formatted table of benchmark results and return gate failure count."""
@@ -465,8 +518,16 @@ def print_report(all_results):
 
         size_str = str(r["size"])
         if has_torch:
-            torch_str = f"{r['torch_us']:<12.1f}" if r["torch_us"] is not None else f"{'n/a':<12}"
-            pt_str = f"{r['speedup_pt']:<10.2f}" if r["speedup_pt"] is not None else f"{'n/a':<10}"
+            torch_str = (
+                f"{r['torch_us']:<12.1f}"
+                if r["torch_us"] is not None
+                else f"{'n/a':<12}"
+            )
+            pt_str = (
+                f"{r['speedup_pt']:<10.2f}"
+                if r["speedup_pt"] is not None
+                else f"{'n/a':<10}"
+            )
             print(
                 f"{r['op']:<12} {size_str:<14} {r['native_us']:<12.1f} "
                 f"{r['numpy_us']:<12.1f} {torch_str} {r['speedup_np']:<10.2f} "
@@ -490,6 +551,7 @@ def print_report(all_results):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark native C kernels")
@@ -543,6 +605,7 @@ def main():
     # ---- PyTorch function imports (optional) ----
     try:
         import torch
+
         torch_relu = torch.relu
         torch_sigmoid = torch.sigmoid
         torch_exp = torch.exp
@@ -565,7 +628,9 @@ def main():
         ("relu", lambda x: np.maximum(x, 0), torch_relu),
         (
             "gelu",
-            lambda x: 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3))),
+            lambda x: (
+                0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
+            ),
             torch_gelu,
         ),
         ("silu", lambda x: x / (1 + np.exp(-x)), torch_silu),
@@ -573,12 +638,15 @@ def main():
         ("exp", np.exp, torch_exp),
     ]
     for op_name, np_fn, torch_fn in unary_ops:
-        all_results.extend(bench_unary(lib, op_name, np_fn, sizes_elem, iterations, torch_fn))
+        all_results.extend(
+            bench_unary(lib, op_name, np_fn, sizes_elem, iterations, torch_fn)
+        )
 
     # ---- Binary ops ----
     print("Benchmarking binary elementwise ops...")
     try:
         import torch as _t
+
         torch_add = _t.add
         torch_mul = _t.mul
         torch_sub = _t.sub
@@ -591,7 +659,9 @@ def main():
         ("sub", lambda a, b: a - b, torch_sub),
     ]
     for op_name, np_fn, torch_fn in binary_ops:
-        all_results.extend(bench_binary(lib, op_name, np_fn, sizes_elem, iterations, torch_fn))
+        all_results.extend(
+            bench_binary(lib, op_name, np_fn, sizes_elem, iterations, torch_fn)
+        )
 
     # ---- Matmul ----
     print("Benchmarking matmul...")

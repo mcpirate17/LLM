@@ -27,7 +27,9 @@ def graph_to_native_ir(graph: ComputationGraph) -> dict:
     reachable = graph.get_reachable_nodes()
     if len(reachable) != len(graph.nodes):
         dead_count = len(graph.nodes) - len(reachable)
-        raise ValueError(f"Graph contains {dead_count} unreachable nodes (dead branches)")
+        raise ValueError(
+            f"Graph contains {dead_count} unreachable nodes (dead branches)"
+        )
 
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []

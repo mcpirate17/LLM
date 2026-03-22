@@ -55,11 +55,15 @@ def run_long_context_sweep(
             for step in range(n_steps):
                 torch.manual_seed(42 + step)
                 input_ids = torch.randint(
-                    0, vocab_size, (batch_size, seq_len), device=device,
+                    0,
+                    vocab_size,
+                    (batch_size, seq_len),
+                    device=device,
                 )
                 try:
                     with torch.amp.autocast(
-                        device_type=device.type, dtype=torch.bfloat16,
+                        device_type=device.type,
+                        dtype=torch.bfloat16,
                         enabled=(device.type == "cuda"),
                     ):
                         logits = model(input_ids)
@@ -82,7 +86,9 @@ def run_long_context_sweep(
                 optimizer.step()
                 final_loss = loss.item()
 
-            loss_ratio = final_loss / max(base_loss, 1e-8) if base_loss > 0 else float("inf")
+            loss_ratio = (
+                final_loss / max(base_loss, 1e-8) if base_loss > 0 else float("inf")
+            )
             scaling_results[seq_len] = {
                 "final_loss": round(final_loss, 6),
                 "loss_ratio": round(loss_ratio, 4),
@@ -125,7 +131,9 @@ def run_long_context_sweep(
         if lr_ratio is None:
             continue
         per_len_scores.append(max(0.0, min(1.0, 2.0 - float(lr_ratio))))
-    long_context_score = (sum(per_len_scores) / len(per_len_scores)) if per_len_scores else 0.0
+    long_context_score = (
+        (sum(per_len_scores) / len(per_len_scores)) if per_len_scores else 0.0
+    )
 
     return {
         "scaling_results": scaling_results,

@@ -81,7 +81,7 @@ def test_tropical_moe_large_experts():
 
     moe = TropicalMoE(dim=32, n_experts=64, top_k=2)
     assert moe.experts is None
-    assert hasattr(moe, 'expert_weights')
+    assert hasattr(moe, "expert_weights")
     x = torch.randn(1, 4, 32)
     out = moe(x)
     assert out.shape == (1, 4, 32)

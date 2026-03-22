@@ -1,9 +1,9 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { bestLoss, percentOfReference, TIER_ORDER, TIER_COLORS, TIER_LABELS } from '../utils/scoringEngine';
 import { compressionSummary } from './report/reportUtils';
-
+import { useAriaData } from '../hooks/useAriaData';
 import { LEADERBOARD_PREFS_KEY, COLUMNS } from './leaderboard/leaderboardConfig';
 import { candidateEligibility, toRetentionPercent } from './leaderboard/leaderboardUtils';
 import LeaderboardRow from './leaderboard/LeaderboardRow';
@@ -108,14 +108,17 @@ function Leaderboard({
     }
   }, [highlightResultId, onHighlightClear]);
 
-  const handleSort = (key) => {
+  const handleSort = useCallback((key) => {
     if (key === '_actions') return;
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
+    setSortKey(prev => {
+      if (prev === key) { setSortDesc(d => !d); return prev; }
+      setSortDesc(true);
+      return key;
+    });
+  }, []);
 
-  const handleInvestigate = (resultIds) => {
-    if (onInvestigate) { setActionError(null); onInvestigate(resultIds); } 
+  const handleInvestigate = useCallback((resultIds) => {
+    if (onInvestigate) { setActionError(null); onInvestigate(resultIds); }
     else {
       apiCall(`/api/experiments/start`, {
         method: 'POST',
@@ -123,9 +126,9 @@ function Leaderboard({
         body: JSON.stringify({ mode: 'investigation', result_ids: resultIds }),
       }).then(() => fetchLeaderboard()).catch(e => setActionError('Failed: ' + e.message));
     }
-  };
+  }, [onInvestigate, fetchLeaderboard]);
 
-  const handleValidate = (resultIds) => {
+  const handleValidate = useCallback((resultIds) => {
     if (onValidate) { setActionError(null); onValidate(resultIds); }
     else {
       apiCall(`/api/experiments/start`, {
@@ -134,9 +137,9 @@ function Leaderboard({
         body: JSON.stringify({ mode: 'validation', result_ids: resultIds }),
       }).then(() => fetchLeaderboard()).catch(e => setActionError('Failed: ' + e.message));
     }
-  };
+  }, [onValidate, fetchLeaderboard]);
 
-  const togglePin = async (entryId, currentPinned) => {
+  const togglePin = useCallback(async (entryId, currentPinned) => {
     try {
       const res = await apiCall(`/api/leaderboard/pin`, {
         method: 'POST',
@@ -145,9 +148,9 @@ function Leaderboard({
       });
       if (res.ok) fetchLeaderboard();
     } catch (e) { console.error(e); }
-  };
+  }, [fetchLeaderboard]);
 
-  const handleDelete = async (entryId) => {
+  const handleDelete = useCallback(async (entryId) => {
     try {
       const res = await apiCall(`/api/leaderboard/${entryId}`, { method: 'DELETE' });
       if (!res.ok) {
@@ -159,7 +162,7 @@ function Leaderboard({
     } catch (e) {
       setActionError('Delete failed: ' + e.message);
     }
-  };
+  }, [fetchLeaderboard]);
 
   const referenceEntries = useMemo(() => rawEntries.filter(e => e.is_reference), [rawEntries]);
   const referenceByFamily = useMemo(() => {

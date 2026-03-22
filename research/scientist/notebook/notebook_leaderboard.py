@@ -412,12 +412,27 @@ class _LeaderboardMixin:
             "WHERE 1=1"
         )
         params: List[Any] = []
+        # Stage-based filtering: show entries that *reached* a stage, not just
+        # entries whose tier column is that exact value.  Entries move through
+        # tiers quickly (screening → investigation → validation in one run) so
+        # the tier column is often already promoted past the requested stage.
+        _STAGE_FILTER = {
+            "investigation": "l.investigation_passed = 1",
+            "validation": "l.validation_passed = 1",
+        }
         if tier:
-            if include_references:
+            stage_clause = _STAGE_FILTER.get(tier)
+            if stage_clause:
+                if include_references:
+                    query += f" AND ({stage_clause} OR COALESCE(l.is_reference, 0) = 1)"
+                else:
+                    query += f" AND {stage_clause} AND COALESCE(l.is_reference, 0) = 0"
+            elif include_references:
                 query += " AND (l.tier = ? OR COALESCE(l.is_reference, 0) = 1)"
+                params.append(tier)
             else:
                 query += " AND l.tier = ? AND COALESCE(l.is_reference, 0) = 0"
-            params.append(tier)
+                params.append(tier)
         elif not include_references:
             query += " AND COALESCE(l.is_reference, 0) = 0"
         oversample = max(limit * 6, 200)
@@ -457,6 +472,10 @@ class _LeaderboardMixin:
                     graph_json=d.get("_graph_json"),
                     routing_mode=d.get("_routing_mode"),
                 )
+                if d.get("architecture_family") == "Unknown" and d.get("is_reference"):
+                    d["architecture_family"] = self._reference_family_fallback(
+                        d.get("reference_name")
+                    )
             d.pop("_graph_json", None)
             d["routing_mode"] = d.pop("_routing_mode", None)
             d["arch_spec_json"] = d.pop("_arch_spec_json", None)
@@ -583,8 +602,6 @@ class _LeaderboardMixin:
             # Only update with non-None values from kwargs
             d.update(dict(update_items))
             # Look up novelty_confidence from linked program_results
-            nov_conf = None
-            structural_counts = {"routing": None}
             if d.get("result_id"):
                 pr = self.conn.execute(
                     "SELECT novelty_confidence, behavioral_novelty, structural_novelty, "

@@ -1,4 +1,5 @@
 """Contract tests for semi_structured_2_4_linear."""
+
 import yaml
 from pathlib import Path
 

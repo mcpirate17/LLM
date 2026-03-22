@@ -1,4 +1,5 @@
 """Contract tests for rotor_transform."""
+
 import yaml
 from pathlib import Path
 

@@ -18,6 +18,7 @@ from ..synthesis.primitives import get_primitive, OpCategory
 @dataclass
 class FLOPEstimate:
     """FLOP estimation result."""
+
     flops_forward: int = 0
     flops_per_param: float = 0.0
     flops_per_token: float = 0.0
@@ -37,8 +38,9 @@ class FLOPEstimate:
 
 # FLOP estimates per op category/type
 # Expressed as functions of (seq_len S, dim D, input_dim)
-def _estimate_op_flops(op_name: str, seq_len: int, d_model: int,
-                       input_dim: int, config: dict = None) -> int:
+def _estimate_op_flops(
+    op_name: str, seq_len: int, d_model: int, input_dim: int, config: dict = None
+) -> int:
     """Estimate FLOPs for a single op invocation on (B=1, S, D) tensor."""
     S, D = seq_len, input_dim
     if config is None:
@@ -197,8 +199,9 @@ def estimate_flops(
             continue
 
         input_dim = node.output_shape.dim or d_model
-        flops = _estimate_op_flops(node.op_name, seq_len, d_model, input_dim,
-                                    config=node.config)
+        flops = _estimate_op_flops(
+            node.op_name, seq_len, d_model, input_dim, config=node.config
+        )
         total_flops += flops
         breakdown[node.op_name] = breakdown.get(node.op_name, 0) + flops
 

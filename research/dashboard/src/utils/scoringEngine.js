@@ -846,11 +846,6 @@ export function candidateScore(entry) {
   return Math.round(Math.max(0, utility));
 }
 
-// Backward-compatible aliases
-export const programScore = candidateScore;
-export const programScoreBreakdown = candidateScoreBreakdown;
-export const leaderboardEntryScore = candidateScore;
-export const leaderboardEntryScoreBreakdown = candidateScoreBreakdown;
 
 // ── Discovery score (ResearchReport) ────────────────────────────────
 

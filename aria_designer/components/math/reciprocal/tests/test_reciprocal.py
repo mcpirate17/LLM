@@ -1,4 +1,5 @@
 """Contract tests for reciprocal."""
+
 import yaml
 from pathlib import Path
 

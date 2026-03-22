@@ -28,10 +28,13 @@ def _designer_is_up() -> bool:
         return False
 
 
-pytestmark = [pytest.mark.designer, pytest.mark.skipif(
-    not _designer_is_up(),
-    reason="aria_designer backend is not running on 127.0.0.1:8091",
-)]
+pytestmark = [
+    pytest.mark.designer,
+    pytest.mark.skipif(
+        not _designer_is_up(),
+        reason="aria_designer backend is not running on 127.0.0.1:8091",
+    ),
+]
 
 
 def _sample_workflow() -> dict:
@@ -42,11 +45,28 @@ def _sample_workflow() -> dict:
         "nodes": [
             {"id": "n0", "component_type": "io/input", "params": {}, "ui_meta": {}},
             {"id": "n1", "component_type": "math/relu", "params": {}, "ui_meta": {}},
-            {"id": "n2", "component_type": "io/output_head", "params": {}, "ui_meta": {}},
+            {
+                "id": "n2",
+                "component_type": "io/output_head",
+                "params": {},
+                "ui_meta": {},
+            },
         ],
         "edges": [
-            {"id": "e0", "source": "n0", "source_port": "y", "target": "n1", "target_port": "x"},
-            {"id": "e1", "source": "n1", "source_port": "y", "target": "n2", "target_port": "x"},
+            {
+                "id": "e0",
+                "source": "n0",
+                "source_port": "y",
+                "target": "n1",
+                "target_port": "x",
+            },
+            {
+                "id": "e1",
+                "source": "n1",
+                "source_port": "y",
+                "target": "n2",
+                "target_port": "x",
+            },
         ],
     }
 
@@ -63,7 +83,9 @@ def test_validate_uses_live_designer_proxy(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(api_mod, "_DESIGNER_PROXY_BASE", "http://127.0.0.1:8091")
 
         def _unexpected_fallback(*args, **kwargs):
-            raise AssertionError("Fallback validate_designer_graph should not be called")
+            raise AssertionError(
+                "Fallback validate_designer_graph should not be called"
+            )
 
         monkeypatch.setattr(api_mod, "validate_designer_graph", _unexpected_fallback)
 

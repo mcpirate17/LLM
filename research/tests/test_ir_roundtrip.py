@@ -79,9 +79,11 @@ def test_ir_serialization_roundtrip():
     model = compile_model([g2], use_ir=True)
     assert model is not None
 
-    input_ids = torch.randint(0, 32000, (1, 16))
+    from research.defaults import VOCAB_SIZE
+
+    input_ids = torch.randint(0, VOCAB_SIZE, (1, 16))
     out = model(input_ids)
-    assert out.shape == (1, 16, 32000)
+    assert out.shape == (1, 16, VOCAB_SIZE)
 
 
 if __name__ == "__main__":

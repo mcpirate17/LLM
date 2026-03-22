@@ -1,0 +1,12 @@
+[lint]
+# Only enforce rules that are auto-fixable or represent real bugs.
+# E402 (import order) is structural in this codebase — many files need
+# sys.path manipulation or mixin _shared imports before other imports.
+# F821 (undefined name) flags forward references in TYPE_CHECKING blocks.
+# F403 (star import) is used in native/__init__.py for re-export.
+ignore = [
+    "E402",   # module import not at top — structural, can't fix without redesign
+    "E741",   # ambiguous variable name — `l` in loops is idiomatic Python
+    "F821",   # undefined name — forward references in string annotations
+    "F403",   # star import — used for native re-exports
+]

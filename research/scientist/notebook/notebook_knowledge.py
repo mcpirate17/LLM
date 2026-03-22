@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -13,6 +14,7 @@ from ._shared import infer_insight_identity
 
 class _KnowledgeMixin:
     """Knowledge operations for the Lab Notebook."""
+
     __slots__ = ()
 
     # ── Insights ──
@@ -43,7 +45,9 @@ class _KnowledgeMixin:
         )
         insight_type = str(insight_type or inferred_type).strip() or inferred_type
         subject_key = str(subject_key or inferred_subject).strip() or inferred_subject
-        semantic_key = str(semantic_key or inferred_semantic).strip() or inferred_semantic
+        semantic_key = (
+            str(semantic_key or inferred_semantic).strip() or inferred_semantic
+        )
 
         # Hard gate: failure_mode insights are always display-only
         if category == "failure_mode":
@@ -112,7 +116,6 @@ class _KnowledgeMixin:
         self._maybe_commit()
         return insight_id
 
-
     def supersede_insight(self, insight_id: str) -> None:
         """Mark an insight as superseded (replaced by a newer version)."""
         self.conn.execute(
@@ -120,7 +123,6 @@ class _KnowledgeMixin:
             (insight_id,),
         )
         self._maybe_commit()
-
 
     def get_insights(
         self,
@@ -155,7 +157,6 @@ class _KnowledgeMixin:
             results.append(d)
         return results
 
-
     def update_insight_bayesian(self, insight_id: str, success: bool) -> None:
         """Increment alpha (success) or beta_ (failure). Recompute confidence.
 
@@ -186,12 +187,12 @@ class _KnowledgeMixin:
         """Record one insight-bundle trial tied to a selection decision."""
         trial_id = str(uuid.uuid4())[:12]
         now = time.time()
-        cleaned_insights = sorted({
-            str(i).strip() for i in (insight_ids or []) if str(i).strip()
-        })
-        cleaned_results = sorted({
-            str(r).strip() for r in (chosen_result_ids or []) if str(r).strip()
-        })
+        cleaned_insights = sorted(
+            {str(i).strip() for i in (insight_ids or []) if str(i).strip()}
+        )
+        cleaned_results = sorted(
+            {str(r).strip() for r in (chosen_result_ids or []) if str(r).strip()}
+        )
         self.conn.execute(
             """INSERT INTO selection_insight_trials
                (trial_id, decision_id, timestamp, context, source_experiment_id,
@@ -209,7 +210,6 @@ class _KnowledgeMixin:
         )
         self._maybe_commit()
         return trial_id
-
 
     def get_pending_selection_insight_trials(
         self,
@@ -236,7 +236,6 @@ class _KnowledgeMixin:
                     pass
             out.append(item)
         return out
-
 
     def resolve_selection_insight_trial(
         self,
@@ -279,9 +278,9 @@ class _KnowledgeMixin:
             insight_ids = json.loads(trial.get("insight_ids_json") or "[]")
         except (TypeError, json.JSONDecodeError):
             insight_ids = []
-        cleaned = sorted({
-            str(i).strip() for i in (insight_ids or []) if str(i).strip()
-        })
+        cleaned = sorted(
+            {str(i).strip() for i in (insight_ids or []) if str(i).strip()}
+        )
         if not cleaned:
             self._maybe_commit()
             return
@@ -328,7 +327,6 @@ class _KnowledgeMixin:
             )
         self._maybe_commit()
 
-
     def get_selection_insight_interactions(
         self,
         limit: int = 100,
@@ -342,12 +340,16 @@ class _KnowledgeMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
-
     # ── Knowledge Base ──
 
-    def add_knowledge(self, category: str, title: str, content: str,
-                      evidence: Optional[List[str]] = None,
-                      confidence: float = 0.5) -> str:
+    def add_knowledge(
+        self,
+        category: str,
+        title: str,
+        content: str,
+        evidence: Optional[List[str]] = None,
+        confidence: float = 0.5,
+    ) -> str:
         """Add a knowledge base entry. Returns entry_id."""
         entry_id = str(uuid.uuid4())[:12]
         now = time.time()
@@ -356,12 +358,19 @@ class _KnowledgeMixin:
             (entry_id, timestamp, category, title, content, confidence,
              supporting_evidence, times_validated, last_validated, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'active')""",
-            (entry_id, now, category, title, content, confidence,
-             json.dumps(evidence) if evidence else None, now),
+            (
+                entry_id,
+                now,
+                category,
+                title,
+                content,
+                confidence,
+                json.dumps(evidence) if evidence else None,
+                now,
+            ),
         )
         self._maybe_commit()
         return entry_id
-
 
     def get_knowledge(self, category: Optional[str] = None) -> List[Dict]:
         """Get knowledge base entries, optionally filtered by category."""
@@ -399,7 +408,6 @@ class _KnowledgeMixin:
         )
         return results
 
-
     def validate_knowledge(self, entry_id: str) -> None:
         """Increment times_validated and update last_validated."""
         now = time.time()
@@ -411,7 +419,6 @@ class _KnowledgeMixin:
             (now, entry_id),
         )
         self._maybe_commit()
-
 
     def search_knowledge(self, query: str) -> List[Dict]:
         """Simple LIKE search on title + content."""
@@ -448,4 +455,3 @@ class _KnowledgeMixin:
             reverse=True,
         )
         return results
-

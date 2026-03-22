@@ -1,4 +1,5 @@
 """Contract tests for rwkv_channel."""
+
 import yaml
 from pathlib import Path
 

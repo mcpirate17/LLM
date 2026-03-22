@@ -34,4 +34,4 @@ export function StagePipeline({ program }) {
   );
 }
 
-export default StagePipeline;
+export default React.memo(StagePipeline);

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import gc
 import json
 import time
 import traceback
 from typing import List
 
-import torch
+from ..json_utils import json_safe
+
 
 from ..native_runner import compile_model_native_first as compile_model
 from ...synthesis.serializer import graph_to_json, graph_from_json
@@ -19,6 +19,7 @@ from ...training.checkpointing import CheckpointManager
 from ..notebook import ExperimentEntry
 from ..llm.context_experiment import build_validation_context
 from ..shared_utils import coerce_dict_payload, resolve_device
+from ._helpers import clear_gpu_memory, compute_seed_metrics
 
 import logging
 
@@ -63,16 +64,17 @@ class _ExecutionValidationMixin:
                 if self._stop_event.is_set():
                     break
 
-                with self._lock:
-                    self._progress.current_program = prog_idx + 1
-                    self._progress.status = "validating"
-                    self._progress.aria_message = (
+                self._update_progress(
+                    current_program=prog_idx + 1,
+                    status="validating",
+                    aria_message=(
                         f"Validating {prog_idx + 1}/{len(result_ids)}: "
                         f"{source_result_id[:8]}... "
                         f"({config.validation_n_seeds} seeds, "
                         f"{config.validation_steps} steps)"
-                    )
-                    self._progress.elapsed_seconds = time.time() - t_start
+                    ),
+                    elapsed_seconds=time.time() - t_start,
+                )
 
                 self._emit_event(
                     "validation_progress",
@@ -125,135 +127,85 @@ class _ExecutionValidationMixin:
                     continue
 
                 # Compute validation metrics
-                passed_seeds = [r for r in seed_results if r.get("passed")]
-                loss_ratios = [
-                    r["loss_ratio"]
-                    for r in seed_results
-                    if r.get("loss_ratio") is not None
-                ]
-
-                val_loss_ratio = (
-                    sum(loss_ratios) / len(loss_ratios) if loss_ratios else None
-                )
-                multi_seed_std = 0.0
-                robustness_score = 1.0
-                is_unstable = False
-
-                if len(loss_ratios) > 1:
-                    mean_lr = sum(loss_ratios) / len(loss_ratios)
-                    variance = sum((lr - mean_lr) ** 2 for lr in loss_ratios) / len(
-                        loss_ratios
-                    )
-                    multi_seed_std = variance**0.5
-
-                    # Task 3G: Check for instability and compute robustness_score
-                    if variance > 0.15:
-                        is_unstable = True
-                    if mean_lr > 1e-6:
-                        robustness_score = max(0.0, 1.0 - (multi_seed_std / mean_lr))
-
-                # Init sensitivity: std between default and xavier seeds
-                init_sensitivity_std = None
-                default_losses = [
-                    r["loss_ratio"]
-                    for r in seed_results
-                    if r.get("init_scheme") == "default"
-                    and r.get("loss_ratio") is not None
-                ]
-                xavier_losses = [
-                    r["loss_ratio"]
-                    for r in seed_results
-                    if r.get("init_scheme") == "xavier_uniform"
-                    and r.get("loss_ratio") is not None
-                ]
-                if default_losses and xavier_losses:
-                    default_mean = sum(default_losses) / len(default_losses)
-                    xavier_mean = sum(xavier_losses) / len(xavier_losses)
-                    init_sensitivity_std = abs(default_mean - xavier_mean)
+                _sm = compute_seed_metrics(seed_results)
+                passed_seeds = _sm["passed_seeds"]
+                loss_ratios = _sm["loss_ratios"]
+                val_loss_ratio = _sm["val_loss_ratio"]
+                multi_seed_std = _sm["multi_seed_std"]
+                robustness_score = _sm["robustness_score"]
+                is_unstable = _sm["is_unstable"]
+                init_sensitivity_std = _sm["init_sensitivity_std"]
+                best_seed = _sm["best_seed"]
 
                 # Baseline comparison at validation scale
                 val_baseline_ratio = None
-                best_seed = None
-                if loss_ratios:
-                    best_seed = min(
-                        (r for r in seed_results if r.get("final_loss") is not None),
-                        key=lambda r: r["final_loss"],
-                        default=None,
-                    )
-                    if best_seed is not None:
-                        try:
-                            baseline = self._get_baseline()
-                            baseline_steps = int(
-                                best_seed.get("n_train_steps")
-                                or config.validation_steps
-                            )
-                            baseline_recipe = self._resolve_baseline_recipe(
-                                best_seed, default_lr=config.stage1_lr
-                            )
-                            bl_data_fn, bl_data_tag, bl_cache = (
-                                self._make_baseline_data_fn(config)
-                            )
-                            val_baseline_ratio = baseline.compare(
-                                best_seed["final_loss"],
-                                d_model=config.model_dim,
-                                seq_len=min(128, config.validation_seq_len),
-                                n_steps=max(1, baseline_steps),
-                                vocab_size=config.vocab_size,
-                                batch_size=config.validation_batch_size,
-                                lr=baseline_recipe["lr"],
-                                device=dev_str,
-                                n_layers=config.n_layers,
-                                optimizer_name=baseline_recipe["optimizer_name"],
-                                weight_decay=baseline_recipe["weight_decay"],
-                                momentum=baseline_recipe["momentum"],
-                                betas=baseline_recipe["betas"],
-                                data_fn=bl_data_fn,
-                                data_tag=bl_data_tag,
-                                cache_data_fn=bl_cache,
-                            )
-                            # Optional: Validation baseline comparison (using val split)
-                            v_loss = best_seed.get("validation_loss")
-                            if v_loss is not None:
-                                try:
-                                    v_data_fn, v_data_tag, v_cache = (
-                                        self._make_baseline_data_fn(config, split="val")
-                                    )
-                                    v_baseline_ratio = baseline.compare(
-                                        v_loss,
-                                        d_model=config.model_dim,
-                                        seq_len=min(
-                                            128,
-                                            int(
-                                                getattr(
-                                                    config, "validation_seq_len", 128
-                                                )
-                                            ),
-                                        ),
-                                        n_steps=max(1, baseline_steps),
-                                        vocab_size=config.vocab_size,
-                                        batch_size=int(
-                                            getattr(config, "validation_batch_size", 4)
-                                        ),
-                                        lr=baseline_recipe["lr"],
-                                        device=dev_str,
-                                        n_layers=config.n_layers,
-                                        optimizer_name=baseline_recipe[
-                                            "optimizer_name"
-                                        ],
-                                        weight_decay=baseline_recipe["weight_decay"],
-                                        momentum=baseline_recipe["momentum"],
-                                        betas=baseline_recipe["betas"],
-                                        data_fn=v_data_fn,
-                                        data_tag=v_data_tag,
-                                        cache_data_fn=v_cache,
-                                    )
-                                    program_metrics[
-                                        "validation_baseline_loss_ratio"
-                                    ] = v_baseline_ratio
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                if best_seed is not None:
+                    try:
+                        baseline = self._get_baseline()
+                        baseline_steps = int(
+                            best_seed.get("n_train_steps") or config.validation_steps
+                        )
+                        baseline_recipe = self._resolve_baseline_recipe(
+                            best_seed, default_lr=config.stage1_lr
+                        )
+                        bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(
+                            config
+                        )
+                        val_baseline_ratio = baseline.compare(
+                            best_seed["final_loss"],
+                            d_model=config.model_dim,
+                            seq_len=min(128, config.validation_seq_len),
+                            n_steps=max(1, baseline_steps),
+                            vocab_size=config.vocab_size,
+                            batch_size=config.validation_batch_size,
+                            lr=baseline_recipe["lr"],
+                            device=dev_str,
+                            n_layers=config.n_layers,
+                            optimizer_name=baseline_recipe["optimizer_name"],
+                            weight_decay=baseline_recipe["weight_decay"],
+                            momentum=baseline_recipe["momentum"],
+                            betas=baseline_recipe["betas"],
+                            data_fn=bl_data_fn,
+                            data_tag=bl_data_tag,
+                            cache_data_fn=bl_cache,
+                        )
+                        # Optional: Validation baseline comparison (using val split)
+                        v_loss = best_seed.get("validation_loss")
+                        if v_loss is not None:
+                            try:
+                                v_data_fn, v_data_tag, v_cache = (
+                                    self._make_baseline_data_fn(config, split="val")
+                                )
+                                v_baseline_ratio = baseline.compare(
+                                    v_loss,
+                                    d_model=config.model_dim,
+                                    seq_len=min(
+                                        128,
+                                        int(getattr(config, "validation_seq_len", 128)),
+                                    ),
+                                    n_steps=max(1, baseline_steps),
+                                    vocab_size=config.vocab_size,
+                                    batch_size=int(
+                                        getattr(config, "validation_batch_size", 4)
+                                    ),
+                                    lr=baseline_recipe["lr"],
+                                    device=dev_str,
+                                    n_layers=config.n_layers,
+                                    optimizer_name=baseline_recipe["optimizer_name"],
+                                    weight_decay=baseline_recipe["weight_decay"],
+                                    momentum=baseline_recipe["momentum"],
+                                    betas=baseline_recipe["betas"],
+                                    data_fn=v_data_fn,
+                                    data_tag=v_data_tag,
+                                    cache_data_fn=v_cache,
+                                )
+                                program_metrics["validation_baseline_loss_ratio"] = (
+                                    v_baseline_ratio
+                                )
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
                 # Parameter-normalized baseline comparison
                 val_normalized_ratio = None
@@ -488,8 +440,7 @@ class _ExecutionValidationMixin:
                             seq_len=128,
                         )
                         del traj_model
-                        if dev.type == "cuda":
-                            torch.cuda.empty_cache()
+                        clear_gpu_memory()
 
                         traj_peak_ppl = traj_result.get("peak_ppl")
                         traj_steps_div = traj_result.get("steps_to_divergence")
@@ -547,6 +498,8 @@ class _ExecutionValidationMixin:
 
                 # Trajectory-aware breakthrough: composite > 300 or
                 # never-diverging with frontier-quality PPL
+                # [CALIBRATION] source: judgment — 300.0 hardcoded; no config key
+                #   last reviewed: unknown — flag for calibration sweep
                 if not is_breakthrough and trajectory_composite is not None:
                     if trajectory_composite > 300.0:
                         is_breakthrough = True
@@ -656,12 +609,13 @@ class _ExecutionValidationMixin:
                 except Exception:
                     pass
 
-            with self._lock:
-                self._progress.status = "completed"
-                self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = (
-                    summary.split("\n")[-1] if summary else "Validation complete."
-                )
+            self._update_progress(
+                status="completed",
+                elapsed_seconds=time.time() - t_start,
+                aria_message=summary.split("\n")[-1]
+                if summary
+                else "Validation complete.",
+            )
 
             self._emit_event(
                 "validation_completed",
@@ -689,10 +643,11 @@ class _ExecutionValidationMixin:
                 trigger_payload={"mode": "validation", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
-            with self._lock:
-                self._progress.status = "failed"
-                self._progress.error = str(e)
-                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
             self._emit_event(
                 "experiment_failed",
                 {
@@ -739,15 +694,16 @@ class _ExecutionValidationMixin:
                 if self._stop_event.is_set():
                     break
 
-                with self._lock:
-                    self._progress.current_program = prog_idx + 1
-                    self._progress.status = "training"
-                    self._progress.aria_message = (
+                self._update_progress(
+                    current_program=prog_idx + 1,
+                    status="training",
+                    aria_message=(
                         f"Scale-up {prog_idx + 1}/{len(result_ids)}: "
                         f"training {source_result_id[:8]}... "
                         f"({config.scale_up_steps} steps, batch={config.scale_up_batch_size})"
-                    )
-                    self._progress.elapsed_seconds = time.time() - t_start
+                    ),
+                    elapsed_seconds=time.time() - t_start,
+                )
 
                 self._emit_event(
                     "scale_up_progress",
@@ -936,7 +892,7 @@ class _ExecutionValidationMixin:
                     try:
                         diag = run_diagnostic_suite(model, device=dev_str)
                         program_metrics["diagnostic_tasks_json"] = json.dumps(
-                            diag.to_dict()
+                            json_safe(diag.to_dict())
                         )
                         program_metrics["diagnostic_score"] = diag.diagnostic_score
                     except Exception:
@@ -1110,9 +1066,7 @@ class _ExecutionValidationMixin:
 
                 # Cleanup
                 del model
-                if dev.type == "cuda":
-                    torch.cuda.empty_cache()
-                gc.collect()
+                clear_gpu_memory()
 
             # Guard: if no programs were processed at all, fail with clear reason
             if results["stage0_passed"] == 0 and results["total"] > 0:
@@ -1123,10 +1077,11 @@ class _ExecutionValidationMixin:
                 )
                 logger.warning("Scale-up produced no results: %s", reason)
                 nb.fail_experiment(exp_id, reason)
-                with self._lock:
-                    self._progress.status = "failed"
-                    self._progress.error = reason
-                    self._progress.aria_message = self.aria.react_to_failure(reason)
+                self._update_progress(
+                    status="failed",
+                    error=reason,
+                    aria_message=self.aria.react_to_failure(reason),
+                )
                 self._emit_event(
                     "experiment_failed",
                     {
@@ -1155,12 +1110,13 @@ class _ExecutionValidationMixin:
 
             self._auto_recommend(results, config, hypothesis, nb)
 
-            with self._lock:
-                self._progress.status = "completed"
-                self._progress.elapsed_seconds = time.time() - t_start
-                self._progress.aria_message = (
-                    summary.split("\n")[-1] if summary else "Scale-up complete."
-                )
+            self._update_progress(
+                status="completed",
+                elapsed_seconds=time.time() - t_start,
+                aria_message=summary.split("\n")[-1]
+                if summary
+                else "Scale-up complete.",
+            )
 
             self._emit_event(
                 "scale_up_completed",
@@ -1188,10 +1144,11 @@ class _ExecutionValidationMixin:
                 trigger_payload={"mode": "scale_up", "error": str(e)},
             )
             nb.fail_experiment(exp_id, str(e))
-            with self._lock:
-                self._progress.status = "failed"
-                self._progress.error = str(e)
-                self._progress.aria_message = self.aria.react_to_failure(str(e))
+            self._update_progress(
+                status="failed",
+                error=str(e),
+                aria_message=self.aria.react_to_failure(str(e)),
+            )
             self._emit_event(
                 "experiment_failed",
                 {

@@ -71,4 +71,4 @@ export function FingerprintRadar({ program, size = 240 }) {
   );
 }
 
-export default FingerprintRadar;
+export default React.memo(FingerprintRadar);

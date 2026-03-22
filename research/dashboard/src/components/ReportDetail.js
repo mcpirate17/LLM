@@ -22,7 +22,7 @@ import MirroredOpsChart from './report/MirroredOpsChart';
 import TemplatePerformance from './report/TemplatePerformance';
 
 
-export default function ReportDetail({
+function ReportDetail({
   scope,
   onBack,
   onSelectProgram,
@@ -132,7 +132,7 @@ export default function ReportDetail({
     } else {
       fetchScopedReport(scope.params);
     }
-  }, []);
+  }, [isAllTime, scope?.params]); // fetchReport/fetchScopedReport are stable mount-only fetchers
 
   const handleExport = () => {
     if (!data) return;
@@ -1010,3 +1010,5 @@ export default function ReportDetail({
     </div>
   );
 }
+
+export default React.memo(ReportDetail);

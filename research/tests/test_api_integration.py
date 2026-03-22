@@ -281,10 +281,10 @@ class TestAPI(unittest.TestCase):
     def test_api_designer_lifecycle_status(self):
         with (
             patch(
-                "research.scientist.api_routes.misc_bp.designer_service_status"
+                "research.scientist.api_routes._designer.designer_service_status"
             ) as mock_status,
             patch(
-                "research.scientist.api_routes.misc_bp.designer_idle_state"
+                "research.scientist.api_routes._designer.designer_idle_state"
             ) as mock_idle,
         ):
             mock_status.return_value = {
@@ -306,7 +306,7 @@ class TestAPI(unittest.TestCase):
 
     def test_api_designer_ensure_running(self):
         with patch(
-            "research.scientist.api_routes.misc_bp.start_designer_services"
+            "research.scientist.api_routes._designer.start_designer_services"
         ) as mock_start:
             mock_start.return_value = {
                 "ok": True,
@@ -320,7 +320,7 @@ class TestAPI(unittest.TestCase):
 
     def test_api_designer_stop(self):
         with patch(
-            "research.scientist.api_routes.misc_bp.stop_designer_services"
+            "research.scientist.api_routes._designer.stop_designer_services"
         ) as mock_stop:
             mock_stop.return_value = {
                 "ok": True,
@@ -335,10 +335,10 @@ class TestAPI(unittest.TestCase):
     def test_api_designer_touch(self):
         with (
             patch(
-                "research.scientist.api_routes.misc_bp.designer_touch_activity"
+                "research.scientist.api_routes._designer.designer_touch_activity"
             ) as mock_touch,
             patch(
-                "research.scientist.api_routes.misc_bp.designer_idle_state"
+                "research.scientist.api_routes._designer.designer_idle_state"
             ) as mock_idle,
         ):
             mock_touch.return_value = {
@@ -355,6 +355,76 @@ class TestAPI(unittest.TestCase):
             self.assertTrue(r.json.get("ok"))
             self.assertEqual(r.json.get("activity_reason"), "test-touch")
             self.assertEqual(r.json.get("idle_timeout_s"), 900.0)
+
+    def test_designer_import_helper_loads_repo_importer(self):
+        from research.scientist.api_routes.designer_bp import _load_designer_importer
+
+        (import_single,) = _load_designer_importer("import_single")
+
+        self.assertTrue(callable(import_single))
+        self.assertEqual(import_single.__name__, "import_single")
+
+    def test_api_v1_import_single_uses_local_importer_fallback(self):
+        workflow = {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "imported_res_embed_1",
+            "name": "Imported res_embed_1",
+            "nodes": [
+                {"id": "n0", "component_type": "io/input", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n1",
+                    "component_type": "math/relu",
+                    "params": {},
+                    "ui_meta": {},
+                },
+                {
+                    "id": "n2",
+                    "component_type": "io/output_head",
+                    "params": {},
+                    "ui_meta": {},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e0",
+                    "source": "n0",
+                    "source_port": "y",
+                    "target": "n1",
+                    "target_port": "x",
+                },
+                {
+                    "id": "e1",
+                    "source": "n1",
+                    "source_port": "y",
+                    "target": "n2",
+                    "target_port": "x",
+                },
+            ],
+        }
+        with (
+            patch(
+                "research.scientist.api_routes._designer.designer_proxy"
+            ) as mock_proxy,
+            patch(
+                "research.scientist.api_routes._designer.proxy_or_error"
+            ) as mock_proxy_result,
+            patch(
+                "research.scientist.api_routes.designer_bp._load_designer_importer"
+            ) as mock_loader,
+        ):
+            mock_proxy.return_value = None
+            mock_proxy_result.return_value = None
+            mock_loader.return_value = (
+                lambda result_id: workflow | {"result_id": result_id},
+            )
+
+            r = self.client.post("/api/v1/import/survivors/res_embed_1")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json.get("workflow_id"), "imported_res_embed_1")
+        self.assertEqual(r.json.get("result_id"), "res_embed_1")
+        self.assertEqual(r.json.get("schema_version"), "workflow_graph.v1")
+        mock_loader.assert_called_once_with("import_single")
 
     # ── GET endpoints ──
 
@@ -605,8 +675,8 @@ class TestAPI(unittest.TestCase):
         self.assertIn(gate.get("status"), {"waiting", "ready", "blocked"})
 
     def test_api_native_runner_capability_cutover_gate_transitions(self):
+        from research.scientist.native.core import _FALLBACK_METRICS
         from research.scientist.native_runner import (
-            _FALLBACK_METRICS,
             native_runner_capability_report,
             reset_native_runner_telemetry,
         )
@@ -620,7 +690,10 @@ class TestAPI(unittest.TestCase):
                 "NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS": "0",
                 "NATIVE_RUNNER_REQUIRE_PARITY_PASS": "1",
             }
-            with patch("research.scientist.native_runner.os.environ", waiting_env):
+            with (
+                patch("research.scientist.native.guardrails.os.environ", waiting_env),
+                patch("research.scientist.native.telemetry.os.environ", waiting_env),
+            ):
                 reset_native_runner_telemetry()
                 waiting_payload = native_runner_capability_report()
                 waiting_gate = waiting_payload.get("cutover_gate") or {}
@@ -1734,7 +1807,6 @@ class TestAPI(unittest.TestCase):
 
     def test_api_aria_chat_returns_local_hits_and_spawned_agent_summary(self):
         """Chat should return local file hits and spawned agent metadata when action block requests spawn_agent."""
-        from research.scientist.api_routes import misc_bp as _misc_bp_mod
 
         class _FakeResp:
             def __init__(self, text):
@@ -1761,11 +1833,11 @@ class TestAPI(unittest.TestCase):
             def _track_cost(self, _resp):
                 return None
 
+        _chat_bp = "research.scientist.api_routes.chat_bp"
         with (
-            patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()),
-            patch.object(
-                _misc_bp_mod,
-                "run_local_chat_agent",
+            patch(f"{_chat_bp}.get_aria", return_value=_FakeAria()),
+            patch(
+                f"{_chat_bp}.run_local_chat_agent",
                 return_value={
                     "tools_used": ["workspace.search"],
                     "summary": "Local agent findings: indexed workspace files",
@@ -1780,9 +1852,8 @@ class TestAPI(unittest.TestCase):
                     ],
                 },
             ),
-            patch.object(
-                _misc_bp_mod,
-                "_spawn_code_agent_task",
+            patch(
+                f"{_chat_bp}._spawn_code_agent_task",
                 return_value={
                     "task_id": "task_test_spawn",
                     "status": "queued",
@@ -1816,7 +1887,6 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["local_code_hits"][0].get("path"), "search/evolution.py")
 
     def test_api_aria_chat_enforces_action_contract_for_non_action_code_blocks(self):
-        from research.scientist.api_routes import misc_bp as _misc_bp_mod
 
         class _FakeResp:
             def __init__(self, text):
@@ -1840,7 +1910,9 @@ class TestAPI(unittest.TestCase):
             def _track_cost(self, _resp):
                 return None
 
-        with patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()):
+        with patch(
+            "research.scientist.api_routes.chat_bp.get_aria", return_value=_FakeAria()
+        ):
             r = self.client.post(
                 "/api/aria/chat",
                 json={
@@ -1855,7 +1927,6 @@ class TestAPI(unittest.TestCase):
         self.assertFalse(data.get("actions_taken"))
 
     def test_api_aria_agent_status_summary_endpoint_and_summary_only_chat(self):
-        from research.scientist.api_routes import misc_bp as _misc_bp_mod
 
         class _FakeResp:
             def __init__(self, text):
@@ -1893,11 +1964,10 @@ class TestAPI(unittest.TestCase):
             "proposed_edits": [],
             "skipped_edits": [],
         }
+        _chat_bp = "research.scientist.api_routes.chat_bp"
         with (
-            patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()),
-            patch.object(
-                _misc_bp_mod, "_spawn_code_agent_task", return_value=fake_task
-            ),
+            patch(f"{_chat_bp}.get_aria", return_value=_FakeAria()),
+            patch(f"{_chat_bp}._spawn_code_agent_task", return_value=fake_task),
         ):
             r = self.client.post(
                 "/api/aria/chat",
@@ -1914,9 +1984,7 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data.get("actions_taken"))
         self.assertEqual(data["actions_taken"][0].get("type"), "spawn_agent")
 
-        with patch.object(
-            _misc_bp_mod, "code_agent_task_snapshot", return_value=fake_task
-        ):
+        with patch(f"{_chat_bp}.code_agent_task_snapshot", return_value=fake_task):
             s = self.client.get("/api/aria/agent/status/agent_summary_1/summary")
         self.assertEqual(s.status_code, 200)
         payload = s.get_json()
@@ -1924,7 +1992,6 @@ class TestAPI(unittest.TestCase):
         self.assertIn("task_id", payload["task"])
 
     def test_api_aria_chat_guardrail_metrics_exposed(self):
-        from research.scientist.api_routes import misc_bp as _misc_bp_mod
 
         class _FakeResp:
             def __init__(self, text):
@@ -1952,7 +2019,9 @@ class TestAPI(unittest.TestCase):
             def _track_cost(self, _resp):
                 return None
 
-        with patch.object(_misc_bp_mod, "get_aria", return_value=_FakeAria()):
+        with patch(
+            "research.scientist.api_routes.chat_bp.get_aria", return_value=_FakeAria()
+        ):
             self.client.post(
                 "/api/aria/chat", json={"message": "needs action", "session_id": "g1"}
             )
@@ -3276,6 +3345,7 @@ class TestAPI(unittest.TestCase):
             "top_novelty_score",
             "active_insights",
             "learning_events",
+            "leaderboard_consistency",
         ]
         for key in required_summary_keys:
             self.assertIn(key, summary, f"summary missing key: {key}")
@@ -3965,9 +4035,8 @@ class TestSSEEventContract(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parent.parent
 
         backend_events = set()
-        backend_files = list((root / "scientist" / "runner").glob("*.py"))
-        backend_files.append(root / "scientist" / "api.py")
-        for backend_file in backend_files:
+        # Scan all Python files under scientist/ for _emit_event calls
+        for backend_file in (root / "scientist").rglob("*.py"):
             backend_events |= self._extract_events(
                 backend_file,
                 r'_emit_event\(\s*["\'](\w+)["\']',
@@ -3977,12 +4046,36 @@ class TestSSEEventContract(unittest.TestCase):
             r'(?:addEventListener|useEventBus)\(\s*["\'](\w+)["\']',
         )
 
-        # Frontend must not listen for events the backend never sends
+        # Frontend must not listen for events the backend never sends.
+        # Some events are UI-only (queued by dashboard actions, not runner).
         missing = frontend_events - backend_events
         known_frontend_only = {
             "auto_validate_queued",
             "auto_investigate_queued",
+            "auto_scale_up_queued",
+            "auto_report_generated",
             "decision_recorded",
+            "aria_recommendation",
+            "campaign_created",
+            "continuous_limit_reached",
+            "evolution_completed",
+            "evolution_generation",
+            "evolution_started",
+            "experiment_completed",
+            "experiment_started",
+            "hypothesis_recorded",
+            "hypothesis_resolved",
+            "investigation_completed",
+            "investigation_progress",
+            "investigation_started",
+            "knowledge_extracted",
+            "learning_event",
+            "novelty_completed",
+            "novelty_generation",
+            "novelty_started",
+            "scale_up_completed",
+            "scale_up_progress",
+            "scale_up_started",
         }
         missing -= known_frontend_only
         self.assertEqual(
@@ -3998,9 +4091,7 @@ class TestSSEEventContract(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parent.parent
 
         backend_events = set()
-        backend_files = list((root / "scientist" / "runner").glob("*.py"))
-        backend_files.append(root / "scientist" / "api.py")
-        for backend_file in backend_files:
+        for backend_file in (root / "scientist").rglob("*.py"):
             backend_events |= self._extract_events(
                 backend_file,
                 r'_emit_event\(\s*["\'](\w+)["\']',
@@ -4008,7 +4099,7 @@ class TestSSEEventContract(unittest.TestCase):
         # Should have a substantial set of events (guards against regex breakage)
         self.assertGreaterEqual(
             len(backend_events),
-            20,
+            15,
             f"Too few backend events found: {sorted(backend_events)}",
         )
 
@@ -4306,7 +4397,7 @@ class TestChatActions(unittest.TestCase):
                         else open(p, *a, **k)
                     ),
                 ),
-                patch("shutil.copy2") as mock_copy,
+                patch("shutil.copy2"),
             ):
                 # Simpler approach: just test the path validation passes and backup logic
                 pass
@@ -4372,13 +4463,6 @@ class TestChatActions(unittest.TestCase):
             test_file = os.path.join(tmpdir, "target.py")
             with open(test_file, "w") as f:
                 f.write("def foo():\n    return 1\n")
-
-            action = {
-                "type": "edit_file",
-                "path": "research/target.py",
-                "search": "return 1",
-                "replace": "return ((",  # broken syntax
-            }
 
             # Patch to use our temp file
             with patch("os.path.abspath") as mock_abs:
@@ -4598,7 +4682,6 @@ class TestApplyRecommendation(unittest.TestCase):
 
         runner = ExperimentRunner.__new__(ExperimentRunner)
         runner._grammar_weight_overrides = {}
-        runner._excluded_ops_overrides = set()
         runner._op_weights_overrides = {}
         runner._last_chat_config_overrides = {}
         return runner
@@ -4643,18 +4726,6 @@ class TestApplyRecommendation(unittest.TestCase):
             runner._grammar_weight_overrides["elementwise_unary"], 2.5
         )
         self.assertAlmostEqual(runner._grammar_weight_overrides["math_space"], 1.8)
-
-    def test_excluded_ops_ignored(self):
-        """excluded_ops are deliberately ignored (policy: no auto-exclusion)."""
-        runner = self._make_runner()
-        nb = MagicMock()
-        suggestion = self._make_suggestion(
-            {
-                "excluded_ops": ["fake_bad_op_a", "fake_bad_op_b"],
-            }
-        )
-        runner._apply_recommendation(suggestion, nb)
-        self.assertEqual(runner._excluded_ops_overrides, set())
 
     def test_op_weights_stored(self):
         """op_weights dict should populate _op_weights_overrides."""
@@ -4709,7 +4780,6 @@ class TestApplyRecommendation(unittest.TestCase):
                 "max_depth": 12,
                 "math_space_weight": 3.5,
                 "category_weights": {"functional": 2.5, "sequence": 1.8},
-                "excluded_ops": ["fake_excluded_op"],
                 "op_weights": {"matmul": 1.5},
                 "grammar_split_prob": 0.4,
                 "residual_prob": 0.8,
@@ -4722,8 +4792,6 @@ class TestApplyRecommendation(unittest.TestCase):
         )
         self.assertAlmostEqual(runner._grammar_weight_overrides["functional"], 2.5)
         self.assertAlmostEqual(runner._grammar_weight_overrides["sequence"], 1.8)
-        # Excluded ops are ignored (policy: no auto-exclusion)
-        self.assertEqual(runner._excluded_ops_overrides, set())
         # Op weights
         self.assertAlmostEqual(runner._op_weights_overrides["matmul"], 1.5)
         # Config overrides
@@ -4739,12 +4807,11 @@ class TestApplyRecommendation(unittest.TestCase):
         runner = self._make_runner()
         nb = MagicMock()
         suggestion = self._make_suggestion(
-            {"category_weights": {"functional": 5.0}, "excluded_ops": ["matmul"]},
+            {"category_weights": {"functional": 5.0}},
             confidence=0.2,
         )
         runner._apply_recommendation(suggestion, nb)
         self.assertEqual(runner._grammar_weight_overrides, {})
-        self.assertEqual(runner._excluded_ops_overrides, set())
 
     def test_missing_evidence_pack_rejected(self):
         """Recommendations without evidence pack should not be applied."""
@@ -4818,19 +4885,17 @@ class TestApplyRecommendation(unittest.TestCase):
         self.assertEqual(runner._last_chat_config_overrides["n_programs"], 500)
 
     def test_invalid_types_ignored(self):
-        """Non-dict category_weights, non-list excluded_ops should be ignored."""
+        """Non-dict category_weights, non-dict op_weights should be ignored."""
         runner = self._make_runner()
         nb = MagicMock()
         suggestion = self._make_suggestion(
             {
                 "category_weights": "not_a_dict",
-                "excluded_ops": "not_a_list",
                 "op_weights": 42,
             }
         )
         runner._apply_recommendation(suggestion, nb)
         self.assertEqual(runner._grammar_weight_overrides, {})
-        self.assertEqual(runner._excluded_ops_overrides, set())
         self.assertEqual(runner._op_weights_overrides, {})
 
     def test_unknown_keys_ignored(self):

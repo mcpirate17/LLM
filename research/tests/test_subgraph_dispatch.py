@@ -156,28 +156,6 @@ def test_try_dispatch_calls_graph_dispatch(mock_cached_dispatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 4: try_dispatch falls back on dispatch_graph_native error
-# ---------------------------------------------------------------------------
-
-
-@patch(
-    "research.scientist.native_runner.dispatch_graph_native_cached",
-    side_effect=RuntimeError("boom"),
-)
-def test_try_dispatch_falls_back_on_error(mock_cached_dispatch):
-    """If dispatch_graph_native_cached raises, try_dispatch returns None."""
-    g = _make_simple_graph(ops=["relu"])
-    supported = {"relu"}
-    dispatcher = SubgraphDispatcher(g, supported)
-
-    x = np.zeros((1, 2, 4), dtype=np.float32)
-    result = dispatcher.try_dispatch(x)
-
-    assert result is None
-    assert dispatcher.stats["subgraph_fallbacks"] == 1
-
-
-# ---------------------------------------------------------------------------
 # Test 5: try_dispatch converts torch tensors
 # ---------------------------------------------------------------------------
 

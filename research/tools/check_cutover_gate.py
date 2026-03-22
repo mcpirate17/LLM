@@ -84,8 +84,12 @@ def _generate_compile_sample() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate /api/native-runner/capability cutover gate")
-    parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="Aria API base URL")
+    parser = argparse.ArgumentParser(
+        description="Validate /api/native-runner/capability cutover gate"
+    )
+    parser.add_argument(
+        "--base-url", default="http://127.0.0.1:5000", help="Aria API base URL"
+    )
     parser.add_argument(
         "--offline",
         action="store_true",
@@ -112,13 +116,19 @@ def main() -> int:
         try:
             _generate_deterministic_parity_sample()
         except Exception as exc:
-            print(f"[cutover-gate] ERROR parity sample generation failed: {exc}", file=sys.stderr)
+            print(
+                f"[cutover-gate] ERROR parity sample generation failed: {exc}",
+                file=sys.stderr,
+            )
             return 2
     if args.generate_compile_sample:
         try:
             _generate_compile_sample()
         except Exception as exc:
-            print(f"[cutover-gate] ERROR compile sample generation failed: {exc}", file=sys.stderr)
+            print(
+                f"[cutover-gate] ERROR compile sample generation failed: {exc}",
+                file=sys.stderr,
+            )
             return 2
 
     if args.offline:

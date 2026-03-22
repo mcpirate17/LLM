@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LLMResponse:
     """Response from an LLM backend."""
+
     text: str
     model: str
     tokens_used: int = 0
@@ -36,8 +37,13 @@ class LLMBackend(ABC):
         ...
 
     @abstractmethod
-    def generate(self, prompt: str, system: str = "",
-                 max_tokens: int = 1024, temperature: float = 0.7) -> LLMResponse:
+    def generate(
+        self,
+        prompt: str,
+        system: str = "",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         """Generate a completion from the LLM."""
         ...
 
@@ -55,6 +61,7 @@ def _auto_discover_primary_model(probe) -> Optional[str]:
     """
     try:
         import requests
+
         r = requests.get(f"{probe.host}/api/tags", timeout=3)
         if r.status_code != 200:
             return None
@@ -101,6 +108,7 @@ def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
         is_analyst and os.environ.get("ARIA_ANALYST_BACKEND")
     ):
         from .ollama import OllamaBackend
+
         probe = OllamaBackend()
         if probe.is_available():
             if is_analyst:
@@ -128,15 +136,22 @@ def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
 
     if not backend_name:
         if not is_analyst:
-            logger.info("No ARIA_LLM_BACKEND set and no Ollama detected — using rule-based fallback")
+            logger.info(
+                "No ARIA_LLM_BACKEND set and no Ollama detected — using rule-based fallback"
+            )
         return None
 
     if backend_name == "ollama":
         from .ollama import OllamaBackend
+
         b = OllamaBackend()
-        
+
         # Determine model
-        model_override = os.environ.get("ARIA_ANALYST_MODEL") if is_analyst else os.environ.get("ARIA_LLM_MODEL")
+        model_override = (
+            os.environ.get("ARIA_ANALYST_MODEL")
+            if is_analyst
+            else os.environ.get("ARIA_LLM_MODEL")
+        )
         if model_override:
             b.model = model_override
         elif is_analyst:
@@ -144,25 +159,31 @@ def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
             discovered = b.auto_discover_analyst_model()
             if discovered:
                 b.model = discovered
-                logger.info(f"Analyst backend set to Ollama, auto-discovered model: {discovered}")
-        
+                logger.info(
+                    f"Analyst backend set to Ollama, auto-discovered model: {discovered}"
+                )
+
         if is_analyst:
-            b.keep_alive = 0 # Immediate unload for analyst tasks
+            b.keep_alive = 0  # Immediate unload for analyst tasks
         return b
     elif backend_name == "anthropic":
         from .anthropic import AnthropicBackend
+
         b = AnthropicBackend()
         if is_analyst and os.environ.get("ARIA_ANALYST_MODEL"):
             b.model = os.environ.get("ARIA_ANALYST_MODEL")
         return b
     elif backend_name == "openai":
         from .openai_backend import OpenAIBackend
+
         b = OpenAIBackend()
         if is_analyst and os.environ.get("ARIA_ANALYST_MODEL"):
             b.model = os.environ.get("ARIA_ANALYST_MODEL")
         return b
     else:
-        logger.warning(f"Unknown ARIA_LLM_BACKEND={backend_name!r}, using rule-based fallback")
+        logger.warning(
+            f"Unknown ARIA_LLM_BACKEND={backend_name!r}, using rule-based fallback"
+        )
         return None
 
 
@@ -187,6 +208,7 @@ def create_backend_from_config(
     try:
         if backend_name == "ollama":
             from .ollama import OllamaBackend
+
             b = OllamaBackend()
             if host:
                 b.host = host
@@ -195,6 +217,7 @@ def create_backend_from_config(
             return b
         elif backend_name == "anthropic":
             from .anthropic import AnthropicBackend
+
             b = AnthropicBackend()
             if api_key:
                 b.api_key = api_key
@@ -204,6 +227,7 @@ def create_backend_from_config(
             return b
         elif backend_name == "openai":
             from .openai_backend import OpenAIBackend
+
             b = OpenAIBackend()
             if api_key:
                 b.api_key = api_key

@@ -10,15 +10,98 @@ logger = logging.getLogger(__name__)
 
 class _PersonaHypothesisMixin:
     _HYPOTHESIS_STOPWORDS = {
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has",
-        "had", "do", "does", "did", "will", "would", "could", "should", "may", "might",
-        "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-        "into", "through", "during", "before", "after", "that", "this", "these", "those",
-        "it", "its", "and", "or", "but", "not", "no", "if", "then", "than", "so", "very",
-        "just", "about", "also", "more", "most", "some", "any", "each", "all", "both",
-        "such", "only", "own", "same", "other", "new", "old", "high", "low", "good", "bad",
-        "best", "worst", "we", "our", "they", "their", "use", "using", "used", "based",
-        "whether", "when", "which", "what", "how", "where",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "that",
+        "this",
+        "these",
+        "those",
+        "it",
+        "its",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "so",
+        "very",
+        "just",
+        "about",
+        "also",
+        "more",
+        "most",
+        "some",
+        "any",
+        "each",
+        "all",
+        "both",
+        "such",
+        "only",
+        "own",
+        "same",
+        "other",
+        "new",
+        "old",
+        "high",
+        "low",
+        "good",
+        "bad",
+        "best",
+        "worst",
+        "we",
+        "our",
+        "they",
+        "their",
+        "use",
+        "using",
+        "used",
+        "based",
+        "whether",
+        "when",
+        "which",
+        "what",
+        "how",
+        "where",
     }
 
     def formulate_hypothesis(
@@ -38,10 +121,15 @@ class _PersonaHypothesisMixin:
                 from .llm.prompts import HYPOTHESIS_SYSTEM_PROMPT, HYPOTHESIS_PROMPT
 
                 prompt = HYPOTHESIS_PROMPT.format(context=context)
-                resp = llm.generate(prompt, system=HYPOTHESIS_SYSTEM_PROMPT, max_tokens=256)
+                resp = llm.generate(
+                    prompt, system=HYPOTHESIS_SYSTEM_PROMPT, max_tokens=256
+                )
                 self._track_cost(resp)
                 if resp.text.strip():
-                    hyp = self._sanitize_hypothesis(resp.text.strip()) or resp.text.strip()
+                    hyp = (
+                        self._sanitize_hypothesis(resp.text.strip())
+                        or resp.text.strip()
+                    )
                     self.state.current_hypothesis = hyp
                     if return_metadata:
                         return hyp, {
@@ -70,7 +158,9 @@ class _PersonaHypothesisMixin:
             }
         return hyp
 
-    def validate_hypothesis(self, hypothesis: str, results: Dict, context: str = "") -> Dict:
+    def validate_hypothesis(
+        self, hypothesis: str, results: Dict, context: str = ""
+    ) -> Dict:
         """Validate whether a hypothesis was confirmed or refuted.
 
         Returns {validated: bool, explanation: str}.
@@ -81,13 +171,16 @@ class _PersonaHypothesisMixin:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, VALIDATION_PROMPT
 
-                prompt = VALIDATION_PROMPT.format(hypothesis=hypothesis, context=context)
+                prompt = VALIDATION_PROMPT.format(
+                    hypothesis=hypothesis, context=context
+                )
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
                 if resp.text.strip():
                     text = resp.text.strip()
                     confirmed = any(
-                        w in text.lower() for w in ["confirmed", "supported", "validated"]
+                        w in text.lower()
+                        for w in ["confirmed", "supported", "validated"]
                     )
                     return {"validated": confirmed, "explanation": text}
             except Exception as e:
@@ -230,7 +323,9 @@ class _PersonaHypothesisMixin:
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
                 if resp.text.strip():
-                    parsed = self._parse_critique_response(resp.text.strip(), hypothesis)
+                    parsed = self._parse_critique_response(
+                        resp.text.strip(), hypothesis
+                    )
                     return self._normalize_preflight_critique(hypothesis, parsed)
             except Exception as e:
                 logger.warning(f"LLM hypothesis critique failed: {e}")
@@ -252,7 +347,11 @@ class _PersonaHypothesisMixin:
             "caution": "warn",
             "revise": "fail",
         }
-        gate = str(base.get("gate") or gate_by_verdict.get(verdict, "warn")).strip().lower()
+        gate = (
+            str(base.get("gate") or gate_by_verdict.get(verdict, "warn"))
+            .strip()
+            .lower()
+        )
         if gate not in {"pass", "warn", "fail"}:
             gate = gate_by_verdict.get(verdict, "warn")
 
@@ -337,7 +436,11 @@ class _PersonaHypothesisMixin:
         if "refine" in h_lower or "fingerprint refinement" in h_lower:
             if not any(
                 token in h_lower
-                for token in ["source_selection_rule", "result_ids(", "source_result_id"]
+                for token in [
+                    "source_selection_rule",
+                    "result_ids(",
+                    "source_result_id",
+                ]
             ):
                 _add("source_selection_rule")
             if not any(
@@ -380,7 +483,9 @@ class _PersonaHypothesisMixin:
 
         return checklist
 
-    def _derive_preflight_checks(self, hypothesis: str, concerns: List[str]) -> List[Dict]:
+    def _derive_preflight_checks(
+        self, hypothesis: str, concerns: List[str]
+    ) -> List[Dict]:
         """Derive pass/warn/fail statuses for preflight review criteria."""
         flags = self._preflight_flags(hypothesis, concerns)
 
@@ -403,7 +508,10 @@ class _PersonaHypothesisMixin:
             {
                 "key": "measurable_metric",
                 "label": "Measurable Metric",
-                "status": _status(flags["has_metric"] and flags["has_success_criteria"], flags["has_metric"]),
+                "status": _status(
+                    flags["has_metric"] and flags["has_success_criteria"],
+                    flags["has_metric"],
+                ),
             },
             {
                 "key": "confound_risk",
@@ -429,30 +537,106 @@ class _PersonaHypothesisMixin:
         h_lower = (hypothesis or "").lower()
         concern_text = " ".join(c.lower() for c in concerns)
 
-        metric_words = ["loss", "novelty", "rate", "ratio", "pass", "survive", "accuracy", "faster", "slower", "better", "worse", "increase", "decrease", "improve", "%"]
+        metric_words = [
+            "loss",
+            "novelty",
+            "rate",
+            "ratio",
+            "pass",
+            "survive",
+            "accuracy",
+            "faster",
+            "slower",
+            "better",
+            "worse",
+            "increase",
+            "decrease",
+            "improve",
+            "%",
+        ]
         has_metric = any(w in h_lower for w in metric_words)
 
-        testability_words = ["if", "then", "because", "compared", "versus", "vs", "should", "will", "than", "predict"]
+        testability_words = [
+            "if",
+            "then",
+            "because",
+            "compared",
+            "versus",
+            "vs",
+            "should",
+            "will",
+            "than",
+            "predict",
+        ]
         has_testability = has_metric and any(w in h_lower for w in testability_words)
 
-        fallback_words = ["fallback", "fallback_plan", "backup", "otherwise", "if not", "if this fails", "ablation", "control", "next step", "alternative", "revert"]
+        fallback_words = [
+            "fallback",
+            "fallback_plan",
+            "backup",
+            "otherwise",
+            "if not",
+            "if this fails",
+            "ablation",
+            "control",
+            "next step",
+            "alternative",
+            "revert",
+        ]
         has_fallback = any(w in h_lower for w in fallback_words)
         has_success_criteria = any(
             token in h_lower
-            for token in ["success_criteria", "success_metric", "primary_metric", "threshold", ">=", "<=", "delta_", "baseline", "vs_recent"]
+            for token in [
+                "success_criteria",
+                "success_metric",
+                "primary_metric",
+                "threshold",
+                ">=",
+                "<=",
+                "delta_",
+                "baseline",
+                "vs_recent",
+            ]
         )
         has_mutation_mechanism = any(
             token in h_lower
-            for token in ["mutation_mechanism", "operator", "mutation_rate", "neighborhood", "max_edits", "radius"]
+            for token in [
+                "mutation_mechanism",
+                "operator",
+                "mutation_rate",
+                "neighborhood",
+                "max_edits",
+                "radius",
+            ]
         )
-        has_source_rule = any(token in h_lower for token in ["source_selection_rule", "result_ids(", "stage1_survivor_sources"])
+        has_source_rule = any(
+            token in h_lower
+            for token in [
+                "source_selection_rule",
+                "result_ids(",
+                "stage1_survivor_sources",
+            ]
+        )
         has_intent_spec = (
-            ("intent=" in h_lower and ("weights=" in h_lower or "score=" in h_lower))
-            or ("intent_weights" in h_lower)
-        )
+            "intent=" in h_lower and ("weights=" in h_lower or "score=" in h_lower)
+        ) or ("intent_weights" in h_lower)
 
-        confound_signal = any(token in concern_text for token in ["vague", "specific", "architectural", "measurable", "confound", "undefined", "no mechanism"])
-        has_confounders = any(token in h_lower for token in ["confounders_checklist", "confounders", "confound"])
+        confound_signal = any(
+            token in concern_text
+            for token in [
+                "vague",
+                "specific",
+                "architectural",
+                "measurable",
+                "confound",
+                "undefined",
+                "no mechanism",
+            ]
+        )
+        has_confounders = any(
+            token in h_lower
+            for token in ["confounders_checklist", "confounders", "confound"]
+        )
         if has_confounders:
             confound_signal = False
 
@@ -541,7 +725,9 @@ class _PersonaHypothesisMixin:
         union = len(a | b)
         return intersection / union if union > 0 else 0.0
 
-    def _check_refuted_overlap(self, hypothesis: str, threshold: float = 0.45) -> List[Dict]:
+    def _check_refuted_overlap(
+        self, hypothesis: str, threshold: float = 0.45
+    ) -> List[Dict]:
         """Check if a hypothesis is too similar to any refuted hypothesis.
 
         Returns a list of matches with similarity scores above threshold.
@@ -574,7 +760,9 @@ class _PersonaHypothesisMixin:
 
         return sorted(matches, key=lambda m: -m["similarity"])
 
-    def _extract_breakthrough_metrics_from_context(self, context: str) -> Dict[str, float]:
+    def _extract_breakthrough_metrics_from_context(
+        self, context: str
+    ) -> Dict[str, float]:
         """Best-effort parse of validation metrics from free-form context text."""
         parsed: Dict[str, float] = {}
         if not context:
@@ -635,7 +823,12 @@ class _PersonaHypothesisMixin:
                     continue
 
         keys_present = set(merged.keys())
-        required = {"seeds_passed", "total_seeds", "val_baseline_ratio", "multi_seed_std"}
+        required = {
+            "seeds_passed",
+            "total_seeds",
+            "val_baseline_ratio",
+            "multi_seed_std",
+        }
         if not required.issubset(keys_present):
             return {
                 "label": "underspecified",
@@ -686,7 +879,9 @@ class _PersonaHypothesisMixin:
             "reasons": reasons,
         }
 
-    def announce_breakthrough(self, context: str = "", metrics: Optional[Dict] = None) -> str:
+    def announce_breakthrough(
+        self, context: str = "", metrics: Optional[Dict] = None
+    ) -> str:
         """Generate breakthrough announcement."""
         llm = self._get_llm()
         if llm and context:
@@ -714,7 +909,10 @@ class _PersonaHypothesisMixin:
                 f"Confidence band: {evidence['confidence_band']}."
             )
         if evidence["label"] == "provisional":
-            reasons = ", ".join(evidence.get("reasons", [])[:3]) or "replication criteria unmet"
+            reasons = (
+                ", ".join(evidence.get("reasons", [])[:3])
+                or "replication criteria unmet"
+            )
             return (
                 "BREAKTHROUGH SIGNAL DETECTED (PROVISIONAL). The candidate is "
                 "promising, but publication-grade replication criteria are not fully met yet "
@@ -800,7 +998,9 @@ class _PersonaHypothesisMixin:
 
         return result
 
-    def validate_structured_hypothesis(self, hypothesis: Dict, results: Dict, context: str = "") -> Dict:
+    def validate_structured_hypothesis(
+        self, hypothesis: Dict, results: Dict, context: str = ""
+    ) -> Dict:
         """Validate a structured hypothesis against results.
 
         Returns {status, evidence, explanation, follow_up, confidence_after}.

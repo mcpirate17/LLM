@@ -21,18 +21,26 @@ router = APIRouter(prefix="/api/v1", tags=["blocks", "constraints"])
 
 
 @router.get("/blocks/builtin")
-def get_builtin_blocks(model_dim: int = Query(256, ge=1, le=65536)) -> List[Dict[str, Any]]:
+def get_builtin_blocks(
+    model_dim: int = Query(256, ge=1, le=65536),
+) -> List[Dict[str, Any]]:
     """List all built-in block templates."""
     if not HAS_SUBGRAPH:
-        raise HTTPException(status_code=501, detail="Subgraph composition not available")
+        raise HTTPException(
+            status_code=501, detail="Subgraph composition not available"
+        )
     return list_builtin_blocks(model_dim=model_dim)
 
 
 @router.get("/blocks/builtin/{block_key}")
-def get_builtin_block(block_key: str, model_dim: int = Query(256, ge=1, le=65536)) -> Dict[str, Any]:
+def get_builtin_block(
+    block_key: str, model_dim: int = Query(256, ge=1, le=65536)
+) -> Dict[str, Any]:
     """Get a specific built-in block template by key."""
     if not HAS_SUBGRAPH:
-        raise HTTPException(status_code=501, detail="Subgraph composition not available")
+        raise HTTPException(
+            status_code=501, detail="Subgraph composition not available"
+        )
     factory = BUILTIN_BLOCKS.get(block_key)
     if factory is None:
         raise HTTPException(status_code=404, detail=f"Block '{block_key}' not found")
@@ -47,7 +55,9 @@ def extract_block_endpoint(
 ) -> Dict[str, Any]:
     """Extract a set of nodes from a workflow as a reusable block."""
     if not HAS_SUBGRAPH:
-        raise HTTPException(status_code=501, detail="Subgraph composition not available")
+        raise HTTPException(
+            status_code=501, detail="Subgraph composition not available"
+        )
     wf = workflow.model_dump()
     block, modified_wf = extract_block(wf, set(node_ids), block_name)
     return {"block": block, "modified_workflow": modified_wf}
@@ -61,7 +71,9 @@ def expand_block_endpoint(
 ) -> Dict[str, Any]:
     """Expand a block node back into its constituent nodes."""
     if not HAS_SUBGRAPH:
-        raise HTTPException(status_code=501, detail="Subgraph composition not available")
+        raise HTTPException(
+            status_code=501, detail="Subgraph composition not available"
+        )
     wf = workflow.model_dump()
     try:
         expanded = expand_block(wf, block_node_id, block)
@@ -83,7 +95,9 @@ def check_constraints_endpoint(
 
 
 @router.post("/constraints/palette")
-def palette_constraints_endpoint(req: ValidateWorkflowRequest) -> Dict[str, Dict[str, Any]]:
+def palette_constraints_endpoint(
+    req: ValidateWorkflowRequest,
+) -> Dict[str, Dict[str, Any]]:
     """Compute compatibility for all palette components against the current workflow."""
     if not HAS_CONSTRAINTS:
         raise HTTPException(status_code=501, detail="Constraints module not available")
@@ -91,4 +105,6 @@ def palette_constraints_endpoint(req: ValidateWorkflowRequest) -> Dict[str, Dict
     # Get all approved component IDs
     all_components = db.list_components(status="approved")
     component_ids = [c["id"] for c in all_components]
-    return compute_palette_constraints(wf, component_ids, selected_node_id=req.selected_node_id)
+    return compute_palette_constraints(
+        wf, component_ids, selected_node_id=req.selected_node_id
+    )

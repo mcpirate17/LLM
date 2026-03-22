@@ -43,7 +43,9 @@ def test_compute_graph_ncd_with_params():
     """compute_graph_ncd with n_params should compute per-param description length."""
     from research.eval.ncd import compute_graph_ncd
 
-    result = compute_graph_ncd('{"ops":["linear","relu"]}', [2.0, 1.5, 1.0, 0.8], n_params=1000)
+    result = compute_graph_ncd(
+        '{"ops":["linear","relu"]}', [2.0, 1.5, 1.0, 0.8], n_params=1000
+    )
     assert result["description_length_per_param"] is not None
     assert result["description_length_per_param"] > 0
 
@@ -52,31 +54,13 @@ def test_compute_graph_ncd_dict_curve():
     """Loss curve as list of dicts (training_curve format)."""
     from research.eval.ncd import compute_graph_ncd
 
-    curve = [{"loss": 2.0, "step": 0}, {"loss": 1.5, "step": 1}, {"loss": 1.0, "step": 2}]
+    curve = [
+        {"loss": 2.0, "step": 0},
+        {"loss": 1.5, "step": 1},
+        {"loss": 1.0, "step": 2},
+    ]
     result = compute_graph_ncd('{"ops":[]}', curve)
     assert 0 <= result["ncd_score"] <= 1
-
-
-def test_composite_score_with_ncd():
-    """Composite score should increase when NCD is provided."""
-    from research.scientist.notebook import LabNotebook
-
-    # Without NCD
-    score_no_ncd = LabNotebook.compute_composite_score(
-        screening_lr=0.5,
-        screening_nov=0.7,
-    )
-
-    # With good NCD (low = compact description)
-    score_with_ncd = LabNotebook.compute_composite_score(
-        screening_lr=0.5,
-        screening_nov=0.7,
-        ncd_score=0.2,
-    )
-
-    assert score_with_ncd > score_no_ncd
-    # NCD bonus should be 15 * (1 - 0.2) = 12
-    assert abs(score_with_ncd - score_no_ncd - 12.0) < 0.01
 
 
 def test_composite_score_backwards_compat():

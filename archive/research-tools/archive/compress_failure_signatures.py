@@ -13,6 +13,7 @@ Usage:
   python -m research.tools.compress_failure_signatures --db research/lab_notebook.db
   python -m research.tools.compress_failure_signatures --db research/lab_notebook.db --delete-low-support
 """
+
 from __future__ import annotations
 
 import argparse
@@ -141,7 +142,9 @@ def compress_failure_signatures(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compress failure_signatures into Bayesian priors")
+    parser = argparse.ArgumentParser(
+        description="Compress failure_signatures into Bayesian priors"
+    )
     parser.add_argument("--db", default="research/lab_notebook.db")
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=3.0)

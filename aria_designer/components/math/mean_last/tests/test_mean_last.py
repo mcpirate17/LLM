@@ -1,4 +1,5 @@
 """Contract tests for mean_last."""
+
 import yaml
 from pathlib import Path
 

@@ -1,4 +1,5 @@
 """Contract tests for speculative."""
+
 import yaml
 from pathlib import Path
 

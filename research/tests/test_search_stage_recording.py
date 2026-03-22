@@ -31,7 +31,6 @@ def test_s0_passed_when_s1_fails():
 def test_s0_failed_when_no_s1_result_and_no_stability():
     """A program that truly failed at S0 (no training, no stability data)
     should have stage0_passed=False."""
-    fitness = 0.0
     s1_result = None
     graph_metrics = {}
 
@@ -42,7 +41,6 @@ def test_s0_failed_when_no_s1_result_and_no_stability():
 def test_s0_passed_when_stability_data_exists():
     """A program with stability data (forward pass ran) but no s1_result
     (e.g. fitness_fn threw before training) should still have S0=True."""
-    fitness = 0.0
     s1_result = None
     graph_metrics = {"stability_score": 0.83}
 

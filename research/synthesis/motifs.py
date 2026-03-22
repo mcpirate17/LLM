@@ -122,7 +122,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Fused Linear+GELU → contract (Triton-accelerated)",
         support=40,
         avg_loss_ratio=0.089,
-        lift=1.2,
+        lift=2.5,
     ),
     # ── Attention cores (2.2-2.4x lift) ────────────────────────────
     Motif(
@@ -159,7 +159,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Graph attention with learned adjacency → projection",
         support=12,
         avg_loss_ratio=0.120,
-        lift=2.19,
+        lift=3.5,
     ),
     Motif(
         name="attn_local_window",
@@ -171,7 +171,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Local windowed causal attention → projection",
         support=15,
         avg_loss_ratio=0.062,
-        lift=1.5,
+        lift=3.0,
     ),
     Motif(
         name="attn_latent_compress",
@@ -209,7 +209,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="State-space block: rmsnorm bounds input → state_space → projection",
         support=20,
         avg_loss_ratio=0.180,
-        lift=1.3,
+        lift=3.0,
     ),
     Motif(
         name="ssm_ternary_scan",
@@ -407,7 +407,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Integral kernel mixing → projection",
         support=10,
         avg_loss_ratio=0.200,
-        lift=1.0,
+        lift=2.5,
     ),
     Motif(
         name="mix_fixed_point",
@@ -419,7 +419,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Fixed-point iteration → projection",
         support=5,
         avg_loss_ratio=0.250,
-        lift=0.8,
+        lift=2.0,
     ),
     Motif(
         name="mix_basis_expansion",
@@ -445,7 +445,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Leaderboard-seeded hyperbolic bridge block: exp_map → hyp_linear → tangent nonlinearity → log_map",
         support=2,
         avg_loss_ratio=0.010,
-        lift=1.9,
+        lift=3.0,
     ),
     Motif(
         name="tropical_attention_gate",
@@ -619,7 +619,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Gated delta rule recurrence → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.5,
     ),
     Motif(
         name="conv_only_block",
@@ -631,7 +631,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Pure conv stack (local + dilated) → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.5,
     ),
     # ── Missing routing ops (catalog byte_safe, no motif) ────────────
     Motif(
@@ -699,7 +699,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Bottleneck projection → activation",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="proj_low_rank",
@@ -711,7 +711,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Low-rank projection → activation",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="proj_grouped",
@@ -752,6 +752,18 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     # ── Recently-added ops: motifs for grammar reachability ─────
     # These ops have dispatch handlers but no motifs, making them unreachable.
     Motif(
+        name="codebook_proj",
+        motif_class=MOTIF_CLASS_EFFICIENT_PROJ,
+        steps=(
+            MotifStep("embedding_lookup", OpRole.PROJECT),
+            MotifStep("gelu", OpRole.ACTIVATE, substitutable=True),
+        ),
+        description="Soft codebook projection → activation (learnable VQ discretization)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=1.0,
+    ),
+    Motif(
         name="kronecker_proj",
         motif_class=MOTIF_CLASS_EFFICIENT_PROJ,
         steps=(
@@ -785,7 +797,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="N-way sparse routing → normalize",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.5,
     ),
     Motif(
         name="spectral_filter_block",
@@ -915,7 +927,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="rmsnorm → exp → proj (norm bounds input to safe range)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="act_log_sigmoid",
@@ -944,6 +956,18 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         lift=1.0,
     ),
     Motif(
+        name="act_log_safe",
+        motif_class=MOTIF_CLASS_GUARDED_ACT,
+        steps=(
+            MotifStep("log", OpRole.ACTIVATE),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="log (softplus-guarded internally) → proj",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.0,
+    ),
+    Motif(
         name="act_sqrt_square",
         motif_class=MOTIF_CLASS_GUARDED_ACT,
         steps=(
@@ -954,7 +978,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="square → sqrt → proj (square guarantees x ≥ 0)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="act_sqrt_abs",
@@ -967,7 +991,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="abs → sqrt → proj (abs guarantees x ≥ 0)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="act_square_proj",
@@ -1023,14 +1047,13 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         motif_class=MOTIF_CLASS_GUARDED_ACT,
         steps=(
             MotifStep("rmsnorm", OpRole.NORMALIZE),
-            MotifStep("abs", OpRole.ACTIVATE),
             MotifStep("reciprocal", OpRole.ACTIVATE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="rmsnorm → abs → reciprocal → proj (bounded away from 0)",
+        description="rmsnorm → reciprocal → proj (reciprocal impl is 1/(1+sigmoid(x)), always [0.5,1.0])",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="act_sin_proj",
@@ -1115,9 +1138,27 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         lift=0.5,
     ),
     # ── D. Routing/Control motifs ─────────────────────────────────
-    # NOTE: cascade and early_exit require residual bypass (REQUIRES_RESIDUAL_BYPASS)
-    # so they are only safe inside dedicated templates (tpl_cascaded_early_exit),
-    # not generic motifs.
+    # cascade and early_exit require residual bypass (REQUIRES_RESIDUAL_BYPASS).
+    # _instantiate_motif auto-wraps these with add(input, gated) to satisfy
+    # the bypass constraint, so they are safe in any template slot.
+    Motif(
+        name="route_early_exit",
+        motif_class=MOTIF_CLASS_GATE,
+        steps=(MotifStep("early_exit", OpRole.ROUTE, config={"threshold": 0.5}),),
+        description="Early-exit confidence gate (auto-bypassed)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
+    Motif(
+        name="route_cascade",
+        motif_class=MOTIF_CLASS_GATE,
+        steps=(MotifStep("cascade", OpRole.ROUTE, config={"threshold": 0.5}),),
+        description="Cascade difficulty gate (auto-bypassed)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
     Motif(
         name="route_adaptive_recursion",
         motif_class=MOTIF_CLASS_GATE,
@@ -1128,7 +1169,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Adaptive recursion → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.5,
     ),
     # ── E. Position + Attention motifs ────────────────────────────
     Motif(
@@ -1155,7 +1196,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Causal mask → softmax attention → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.5,
+        lift=0.05,  # Near-zero: softmax_attention already handles causality internally
     ),
     Motif(
         name="attn_sliding_window",
@@ -1168,7 +1209,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Sliding window mask → linear attention → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.5,
+        lift=3.0,
     ),
     # ── F. Reduction motifs ───────────────────────────────────────
     Motif(
@@ -1181,7 +1222,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="sum_last → linear_proj_up (restore collapsed dim)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="reduce_mean",
@@ -1193,7 +1234,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="mean_last → linear_proj_up (restore collapsed dim)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="reduce_max",
@@ -1205,7 +1246,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="max_last → linear_proj_up (restore collapsed dim)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="reduce_norm",
@@ -1217,7 +1258,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="norm_last → linear_proj_up (restore collapsed dim)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     Motif(
         name="reduce_cumsum",
@@ -1229,7 +1270,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="cumsum → projection (running sum along sequence)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=2.0,
     ),
     # ── G. Math-Space motifs (algebraic bridges) ──────────────────
     Motif(
@@ -1280,20 +1321,62 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="lif_neuron → spike_rate_code → proj (spiking bridge)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=2.0,
+        lift=3.0,
     ),
     Motif(
         name="spiking_threshold_stdp",
         motif_class=MOTIF_CLASS_MATH_SPACE,
         steps=(
+            MotifStep("lif_neuron", OpRole.ACTIVATE),
             MotifStep("sparse_threshold", OpRole.ACTIVATE),
             MotifStep("stdp_attention", OpRole.MIX),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="sparse_threshold → stdp_attention → proj (spiking attn)",
+        description="lif_neuron → sparse_threshold → stdp_attention → proj (spiking attn)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=2.0,
+        lift=3.0,
+    ),
+    # ── Spiking + tropical routing (proven lr=0.007 pattern) ────────
+    Motif(
+        name="spiking_tropical_gate",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("lif_neuron", OpRole.ACTIVATE),
+            MotifStep("tropical_gate", OpRole.GATE),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="lif_neuron → tropical_gate → proj (spike encoding + tropical routing, lr=0.007)",
+        support=2,
+        avg_loss_ratio=0.007,
+        lift=5.0,
+    ),
+    Motif(
+        name="spiking_rate_tropical_gate",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("spike_rate_code", OpRole.ACTIVATE),
+            MotifStep("tropical_gate", OpRole.GATE),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="spike_rate_code → tropical_gate → proj (rate coding + tropical routing, lr=0.007)",
+        support=2,
+        avg_loss_ratio=0.007,
+        lift=5.0,
+    ),
+    Motif(
+        name="spiking_threshold_tropical_gate",
+        motif_class=MOTIF_CLASS_MATH_SPACE,
+        steps=(
+            MotifStep("lif_neuron", OpRole.ACTIVATE),
+            MotifStep("sparse_threshold", OpRole.ACTIVATE),
+            MotifStep("tropical_gate", OpRole.GATE),
+            MotifStep("linear_proj", OpRole.PROJECT),
+        ),
+        description="lif_neuron → sparse_threshold → tropical_gate → proj (spiking + sparsification + routing)",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=4.0,
     ),
     Motif(
         name="padic_gate_proj",
@@ -1350,7 +1433,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         motif_class=MOTIF_CLASS_GUARDED_ACT,
         steps=(
             MotifStep("sigmoid", OpRole.ACTIVATE),
-            MotifStep("cumprod_safe", OpRole.UNSAFE),
+            MotifStep("cumprod_safe", OpRole.REDUCE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
         description="sigmoid → cumprod_safe → proj (sigmoid ∈ (0,1) ⇒ decays)",
@@ -1408,20 +1491,41 @@ ACTIVATION_RULES: Dict[str, Dict] = {
         "after": {OpRole.NORMALIZE, "tanh", "sigmoid", "rmsnorm", "layernorm"},
         "before": None,
     },
-    # Bounded [-1,1]: broadly safe (83% success rate empirically)
-    "tanh": {"after": None, "before": None},
-    # Gating: sigmoid → [0,1], only useful before multiplicative ops
+    # Bounded [-1,1]: safe after up-projections, but kills signal after
+    # down-projections (0% S1 with linear_proj_down across 60 entries).
+    # Restrict: must feed into a projection or merge, not stand alone.
+    "tanh": {"after": None, "before": {"linear_proj", "linear_proj_up", "mul", "add"}},
+    # Gating: sigmoid → [0,1], useful before multiplicative/decay ops and residual add
     "sigmoid": {
         "after": None,
-        "before": {"mul", "outer_product", "matmul", "cosine_similarity"},
+        "before": {
+            "mul",
+            "outer_product",
+            "matmul",
+            "cosine_similarity",
+            "cumprod_safe",
+            "add",
+            "reciprocal",
+            "log",
+            "moe_topk",
+            "moe_2expert",
+        },
     },
-    # Periodic: learnable frequency features, best after projections/norms
-    "sin": {"after": {OpRole.PROJECT, OpRole.NORMALIZE}, "before": None},
-    "cos": {"after": {OpRole.PROJECT, OpRole.NORMALIZE}, "before": None},
+    # Periodic: learnable frequency features, best after projections/norms.
+    # Must feed into projection/merge — periodic output in compressed space
+    # is noise without a learned transform to interpret it (0% S1 after down-proj).
+    "sin": {
+        "after": {OpRole.PROJECT, OpRole.NORMALIZE},
+        "before": {"linear_proj", "linear_proj_up", "mul", "add"},
+    },
+    "cos": {
+        "after": {OpRole.PROJECT, OpRole.NORMALIZE},
+        "before": {"linear_proj", "linear_proj_up", "mul", "add"},
+    },
     # Magnitude: loses sign info, must feed into gating/scaling
     "abs": {
         "after": {OpRole.PROJECT, OpRole.MIX},
-        "before": {"mul", "learnable_scale", "topk_gate"},
+        "before": {"mul", "learnable_scale", "topk_gate", "add"},
     },
     # Inversion: -x, works broadly but not after sign-flipping ops
     "neg": {
@@ -1436,7 +1540,14 @@ ACTIVATION_RULES: Dict[str, Dict] = {
     # Attention-norm: only before matmul-like ops that use weights
     "softmax_last": {
         "after": {OpRole.PROJECT, OpRole.MIX},
-        "before": {"matmul", "outer_product", "mul", "cosine_similarity", "div_safe"},
+        "before": {
+            "matmul",
+            "outer_product",
+            "mul",
+            "cosine_similarity",
+            "div_safe",
+            "add",
+        },
     },
     # Reciprocal: bounded [0.5, 1.0] via 1/(1+sigmoid(x)), safe after norm/bounded
     "reciprocal": {
@@ -1495,21 +1606,57 @@ def _get_valid_activations(
 MATH_SPACE_RULES: Dict[str, Dict] = {
     # Tropical ops: input must be bounded (they use min/max/softmax internally).
     # tropical_gate: min-based routing produces sparse gradients. Must be
-    # followed by a parameterized projection to restore gradient density.
-    # (Diagnosis 2026-03-20: 5.7% S1 rate — works, but fragile without proj.)
+    # preceded by norm, tropical_attention, or spiking ops (which normalize
+    # internally via firing rate encoding). The proven chains:
+    #   layernorm → tropical_attention → tropical_gate → tropical_center (8/11 S1, lr=0.079)
+    #   spike_rate_code → tropical_gate → linear_proj (2 S1, lr=0.007)
     "tropical_gate": {
-        "must_precede": {"rmsnorm", "layernorm"},
-        "must_follow_with": {"linear_proj", "linear_proj_down", "gated_linear"},
+        "must_precede": {
+            "rmsnorm",
+            "layernorm",
+            "tropical_attention",
+            "lif_neuron",
+            "spike_rate_code",
+            "sparse_threshold",
+        },
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "gated_linear",
+            "tropical_center",
+        },
     },
     # tropical_attention: sequential min ops compound gradient sparsity.
-    # Must be followed by a projection to re-densify gradients. Additionally,
-    # the full tropical attention has 0% S1 rate — require norm after it too.
-    # (Diagnosis 2026-03-20: 0% S1 across 49 attempts, all high-init-loss.)
+    # Must be followed by a projection, tropical_center, or tropical_gate.
+    # The proven architecture (8/11 S1 passes, best lr=0.079) chains:
+    #   tropical_attention → tropical_gate → tropical_center → linear_proj
+    # (Updated 2026-03-22: added tropical_gate as valid successor per DB evidence.)
     "tropical_attention": {
         "must_precede": {"rmsnorm", "layernorm"},
-        "must_follow_with": {"linear_proj", "linear_proj_down", "gated_linear"},
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "gated_linear",
+            "tropical_center",
+            "tropical_gate",
+        },
     },
-    "tropical_center": {"must_precede": {"rmsnorm", "layernorm"}},
+    # tropical_center: structural centerer inside tropical motifs. Must follow
+    # a tropical mixer (tropical_attention or tropical_gate) and must be
+    # followed by a projection to return gradient density.
+    # (Volta audit 2026-03-21: 0% S1 in freeform context, passes in
+    # valid tropical_core context with loss_ratio=0.52.)
+    "tropical_center": {
+        "must_follow": {"tropical_attention", "tropical_gate"},
+        "must_follow_with": {"linear_proj", "linear_proj_down", "tropical_gate"},
+    },
+    # tropical_matmul: binary min-based matmul. Needs gradient re-densification
+    # via projection after the matmul. The norm requirement is satisfied by the
+    # template structure (norm → proj → tropical_matmul), not by must_precede
+    # which only checks direct parents (binary ops take projections as inputs).
+    "tropical_matmul": {
+        "must_follow_with": {"linear_proj", "linear_proj_down"},
+    },
     # Clifford ops: input must be bounded (geometric product can amplify)
     "clifford_attention": {"must_precede": {"rmsnorm", "layernorm"}},
     "grade_mix": {
@@ -1543,6 +1690,39 @@ MATH_SPACE_RULES: Dict[str, Dict] = {
     },
     # Spectral filter: always inside residual (handled by grammar.py fix)
     "spectral_filter": {"must_precede": {"rmsnorm", "layernorm"}},
+    # Spiking ops: AlgebraicType("spiking", "real", "real") is compatible
+    # with euclidean, so algebraic_types_compatible() does NOT prevent
+    # placement in non-spiking contexts. These rules enforce spiking-only
+    # predecessor chains.
+    # (Volta audit 2026-03-21: sparse_threshold and stdp_attention both have
+    # 8% compile rate when placed in non-spiking contexts. 92% failure from
+    # forward_error and nan_forward.)
+    "lif_neuron": {
+        "must_follow_with": {
+            "spike_rate_code",
+            "sparse_threshold",
+            "stdp_attention",
+            "tropical_gate",
+        },
+    },
+    "sparse_threshold": {
+        "must_follow": {"lif_neuron", "spike_rate_code"},
+    },
+    "stdp_attention": {
+        "must_follow": {"sparse_threshold", "spike_rate_code", "lif_neuron"},
+    },
+    # Hyperbolic ops: require exp_map → op → log_map bridge for Poincaré
+    # ball operations. Algebraic type provides partial protection but does
+    # not enforce the bridge chain.
+    # (Volta audit 2026-03-21: hyp_linear valid context loss_ratio=0.165,
+    # default context loss_ratio=0.43. 18/74 init_poisoned, 43/74 s1_fail.)
+    "hyp_linear": {
+        "must_follow": {"exp_map"},
+    },
+    "hyp_tangent_nonlinear": {
+        "must_follow": {"hyp_linear"},
+        "must_follow_with": {"log_map", "linear_proj"},
+    },
 }
 
 
@@ -1582,14 +1762,20 @@ def resolve_step(
     *,
     prev_op: Optional[str] = None,
     next_op: Optional[str] = None,
+    op_weights: Optional[Dict[str, float]] = None,
 ) -> Tuple[str, Dict]:
     """Resolve a motif step to a concrete (op_name, config) pair.
 
     Handles context-aware activation substitution for substitutable steps.
+    When op_weights is provided, biases selection toward higher-weighted ops.
     """
     if step.substitutable and step.role == OpRole.ACTIVATE:
         candidates = _get_valid_activations(prev_op=prev_op, next_op=next_op)
-        op_name = rng.choice(candidates)
+        if op_weights and len(candidates) > 1:
+            weights = [op_weights.get(c, 1.0) for c in candidates]
+            op_name = rng.choices(candidates, weights=weights, k=1)[0]
+        else:
+            op_name = rng.choice(candidates)
     else:
         op_name = step.op_name
     return op_name, dict(step.config)

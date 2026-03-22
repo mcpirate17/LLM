@@ -15,6 +15,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
 from ..synthesis.primitives import get_primitive
@@ -23,9 +25,10 @@ from ..scientist.shared_utils import clamp
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(slots=True)
 class Individual:
     """An individual in the evolutionary population."""
+
     graph: ComputationGraph
     fitness: float = 0.0
     novelty: float = 0.0
@@ -34,10 +37,13 @@ class Individual:
     metadata: Dict = field(default_factory=dict)
     pareto_rank: int = 0
     crowding_dist: float = 0.0
+    _cached_fingerprint: Optional[str] = field(default=None, repr=False)
 
     @property
     def fingerprint(self) -> str:
-        return self.graph.fingerprint()
+        if self._cached_fingerprint is None:
+            self._cached_fingerprint = self.graph.fingerprint()
+        return self._cached_fingerprint
 
     @property
     def lineage_hash(self) -> str:
@@ -46,14 +52,14 @@ class Individual:
         lh = self.metadata.get("lineage_hash")
         if lh:
             return lh
-        
+
         if not self.parent_fingerprint:
             # Root individual (gen 0)
             res = f"root:{self.fingerprint[:16]}"
         else:
             # Derived individual
             res = f"gen{self.generation}:{self.parent_fingerprint[:32]}"
-        
+
         self.metadata["lineage_hash"] = res
         return res
 
@@ -61,6 +67,7 @@ class Individual:
 @dataclass
 class EvolutionConfig:
     """Configuration for evolutionary search."""
+
     population_size: int = 50
     n_generations: int = 20
     tournament_size: int = 5
@@ -74,9 +81,28 @@ class EvolutionConfig:
     grammar_config: Optional[GrammarConfig] = None
 
 
+def _generate_context_valid_graph(
+    grammar: GrammarConfig,
+    rng: random.Random,
+    max_attempts: int = 4,
+) -> ComputationGraph:
+    """Retry generation a few times under stricter context validation."""
+    last_error: Exception | None = None
+    for _ in range(max_attempts):
+        try:
+            return generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
+        except (ValueError, RuntimeError) as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise ValueError("graph generation failed without an explicit error")
+
+
 def evolutionary_search(
     fitness_fn: Callable[[ComputationGraph], float],
-    novelty_fn: Optional[Callable[[ComputationGraph, List[ComputationGraph]], float]] = None,
+    novelty_fn: Optional[
+        Callable[[ComputationGraph, List[ComputationGraph]], float]
+    ] = None,
     config: Optional[EvolutionConfig] = None,
     seed: int = 42,
     callback: Optional[Callable[[int, List[Individual]], None]] = None,
@@ -117,14 +143,17 @@ def evolutionary_search(
     if not population:
         logger.error(
             "Evolution aborted: failed to generate any initial individuals "
-            "(%d attempts all failed)", config.population_size,
+            "(%d attempts all failed)",
+            config.population_size,
         )
         return []
 
     if init_failures > 0:
         logger.info(
             "Initial population: %d/%d succeeded (%d failures)",
-            len(population), config.population_size, init_failures,
+            len(population),
+            config.population_size,
+            init_failures,
         )
 
     # Evaluate initial population
@@ -150,7 +179,7 @@ def evolutionary_search(
 
         # Elitism: keep top individuals
         population.sort(key=lambda x: _combined_score(x, config), reverse=True)
-        new_population.extend(population[:config.elitism])
+        new_population.extend(population[: config.elitism])
 
         # Fill rest with offspring (with max attempts to prevent infinite loop)
         max_fill_attempts = config.population_size * 10
@@ -164,15 +193,22 @@ def evolutionary_search(
                 logger.warning(
                     "Gen %d: hit max fill attempts (%d) with %d/%d individuals "
                     "(%d failures). Proceeding with smaller population.",
-                    gen, max_fill_attempts, len(new_population),
-                    config.population_size, fill_failures,
+                    gen,
+                    max_fill_attempts,
+                    len(new_population),
+                    config.population_size,
+                    fill_failures,
                 )
                 break
 
             reproduction_mode = _choose_reproduction_mode(config, rng)
             mode_handlers = {
-                "crossover": lambda: _spawn_crossover_individual(population, config, grammar, rng, gen + 1),
-                "mutation": lambda: _spawn_mutation_individual(population, config, grammar, rng, gen + 1),
+                "crossover": lambda: _spawn_crossover_individual(
+                    population, config, grammar, rng, gen + 1
+                ),
+                "mutation": lambda: _spawn_mutation_individual(
+                    population, config, grammar, rng, gen + 1
+                ),
                 "fresh": lambda: _spawn_fresh_individual(grammar, rng, gen + 1),
             }
             try:
@@ -181,7 +217,9 @@ def evolutionary_search(
             except (ValueError, RuntimeError):
                 if reproduction_mode != "fresh":
                     try:
-                        new_population.append(_spawn_fresh_individual(grammar, rng, gen + 1))
+                        new_population.append(
+                            _spawn_fresh_individual(grammar, rng, gen + 1)
+                        )
                     except (ValueError, RuntimeError):
                         fill_failures += 1
                 else:
@@ -190,7 +228,9 @@ def evolutionary_search(
         if not new_population:
             logger.error(
                 "Gen %d: produced 0 individuals after %d attempts. "
-                "Aborting evolution early.", gen, fill_attempts,
+                "Aborting evolution early.",
+                gen,
+                fill_attempts,
             )
             break
 
@@ -214,14 +254,17 @@ def evolutionary_search(
             best_fit = f"{best.fitness:.4f}" if best else "N/A"
             logger.info(
                 "Evolution gen %d/%d: pop=%d, best_fitness=%s",
-                gen + 1, config.n_generations, len(population), best_fit,
+                gen + 1,
+                config.n_generations,
+                len(population),
+                best_fit,
             )
 
             # Update grammar weights from Pareto front every 5 generations
             front_weights = pareto_front_op_weights(population)
             if front_weights:
                 for op_name, w in front_weights.items():
-                    grammar.op_weights[op_name] = grammar.op_weights.get(op_name, 1.0) * w
+                    grammar.op_weights[op_name] = max(0.1, w)
 
         if callback:
             callback(gen, population)
@@ -289,7 +332,7 @@ def _enforce_population_diversity(
         return _combined_score(ind, config)
 
     ranked = sorted(population, key=score, reverse=True)
-    
+
     # Fast-path: use lineage_hash for structural identity check without IR lowering
     seen_hashes = set()
     seen_fingerprints = set()
@@ -301,13 +344,13 @@ def _enforce_population_diversity(
         if lh in seen_hashes:
             duplicates += 1
             continue
-        
+
         # Fallback to fingerprint for potential convergence/root collisions
         fp = ind.fingerprint
         if fp in seen_fingerprints:
             duplicates += 1
             continue
-            
+
         seen_hashes.add(lh)
         seen_fingerprints.add(fp)
         deduped.append(ind)
@@ -319,10 +362,13 @@ def _enforce_population_diversity(
     new_replacements: List[Individual] = []
     max_attempts = max(10, config.population_size * 5)
     attempts = 0
-    while len(deduped) + len(new_replacements) < config.population_size and attempts < max_attempts:
+    while (
+        len(deduped) + len(new_replacements) < config.population_size
+        and attempts < max_attempts
+    ):
         attempts += 1
         try:
-            graph = generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
+            graph = _generate_context_valid_graph(grammar, rng)
             fp = graph.fingerprint()
             if fp in seen_fingerprints:
                 continue
@@ -349,11 +395,12 @@ def _enforce_population_diversity(
                 continue
             deduped.append(ind)
 
-    deduped = deduped[:config.population_size]
+    deduped = deduped[: config.population_size]
 
     # Recompute novelty for everyone now that population composition changed.
     if novelty_fn:
         from ..eval.metrics import batch_novelty_scores
+
         all_graphs = [ind.graph for ind in deduped]
         novelty_metrics = batch_novelty_scores(all_graphs)
         for ind, metrics in zip(deduped, novelty_metrics):
@@ -393,6 +440,8 @@ def fast_non_dominated_sort(
 ) -> List[List[Individual]]:
     """NSGA-II fast non-dominated sort.
 
+    Uses NumPy broadcasting for vectorized dominance comparison.
+
     Args:
         population: Individuals to rank.
         objectives: List of ``(attr_name, "min"|"max")`` tuples.
@@ -404,56 +453,53 @@ def fast_non_dominated_sort(
     if n == 0:
         return []
 
-    # Pre-extract objective values for O(1) access in inner loop.
-    obj_vals: List[List[float]] = []
-    signs = [1.0 if d == "max" else -1.0 for _, d in objectives]
-    for ind in population:
-        obj_vals.append([getattr(ind, attr) * s for attr, (_, s) in zip(
-            [o[0] for o in objectives], zip(objectives, signs)
-        )])
+    # Stack all objective values into (n, m) array, sign-flipped so higher=better.
+    signs = np.array(
+        [1.0 if d == "max" else -1.0 for _, d in objectives], dtype=np.float64
+    )
+    attr_names = [o[0] for o in objectives]
+    vals = (
+        np.array(
+            [[getattr(ind, a) for a in attr_names] for ind in population],
+            dtype=np.float64,
+        )
+        * signs
+    )  # (n, m)
 
-    # domination_count[i] = how many individuals dominate i
-    domination_count = [0] * n
-    # dominated_set[i] = indices dominated by i
-    dominated_set: List[List[int]] = [[] for _ in range(n)]
+    # Vectorized dominance: i dominates j iff all(vals[i] >= vals[j]) and any(vals[i] > vals[j])
+    # Compare every pair via broadcasting: (n, 1, m) vs (1, n, m)
+    diff = vals[:, np.newaxis, :] - vals[np.newaxis, :, :]  # (n, n, m)
+    ge_all = np.all(diff >= 0, axis=2)  # (n, n) — i >= j on all objectives
+    gt_any = np.any(diff > 0, axis=2)  # (n, n) — i > j on at least one
+    dominates = ge_all & gt_any  # (n, n) — i dominates j
 
-    for i in range(n):
-        vi = obj_vals[i]
-        for j in range(i + 1, n):
-            vj = obj_vals[j]
-            i_dom_j = True
-            j_dom_i = True
-            for k in range(len(objectives)):
-                if vi[k] < vj[k]:
-                    i_dom_j = False
-                if vj[k] < vi[k]:
-                    j_dom_i = False
-                if not i_dom_j and not j_dom_i:
-                    break
-            if i_dom_j:
-                dominated_set[i].append(j)
-                domination_count[j] += 1
-            elif j_dom_i:
-                dominated_set[j].append(i)
-                domination_count[i] += 1
+    # domination_count[j] = number of individuals that dominate j
+    domination_count = dominates.sum(axis=0)  # sum over i dimension
 
-    # Build fronts
+    # Build fronts iteratively
     fronts: List[List[Individual]] = []
-    current_front_idx: List[int] = [i for i in range(n) if domination_count[i] == 0]
-
     rank = 1
-    while current_front_idx:
-        front = [population[i] for i in current_front_idx]
-        for ind in front:
-            ind.pareto_rank = rank
+    remaining = np.ones(n, dtype=bool)
+
+    while True:
+        # Current front: individuals with domination_count == 0 among remaining
+        front_mask = remaining & (domination_count == 0)
+        front_indices = np.where(front_mask)[0]
+        if len(front_indices) == 0:
+            break
+
+        front = []
+        for i in front_indices:
+            population[i].pareto_rank = rank
+            front.append(population[i])
         fronts.append(front)
-        next_front_idx: List[int] = []
-        for i in current_front_idx:
-            for j in dominated_set[i]:
-                domination_count[j] -= 1
-                if domination_count[j] == 0:
-                    next_front_idx.append(j)
-        current_front_idx = next_front_idx
+
+        # Remove front members and decrement counts for those they dominated
+        remaining[front_indices] = False
+        for i in front_indices:
+            dominated_by_i = np.where(dominates[i] & remaining)[0]
+            domination_count[dominated_by_i] -= 1
+
         rank += 1
 
     return fronts
@@ -484,7 +530,9 @@ def assign_crowding_distance(
             continue
         inv_span = 1.0 / span
         for i in range(1, n - 1):
-            diff = getattr(sorted_front[i + 1], attr) - getattr(sorted_front[i - 1], attr)
+            diff = getattr(sorted_front[i + 1], attr) - getattr(
+                sorted_front[i - 1], attr
+            )
             sorted_front[i].crowding_dist += diff * inv_span
 
 
@@ -600,7 +648,7 @@ def _spawn_fresh_individual(
     generation: int,
 ) -> Individual:
     """Generate a fresh individual directly from the grammar."""
-    graph = generate_layer_graph(grammar, seed=rng.randint(0, 2**32))
+    graph = _generate_context_valid_graph(grammar, rng)
     child = Individual(graph=graph, generation=generation)
     child.metadata["fresh_injection"] = True
     return child
@@ -673,7 +721,7 @@ def _mutate_graph(
 
     # Try more than once to avoid trivially reproducing parent structure.
     for _ in range(3):
-        new_graph = generate_layer_graph(mut_grammar, seed=rng.randint(0, 2**32))
+        new_graph = _generate_context_valid_graph(mut_grammar, rng)
         if new_graph.fingerprint() != parent_fp:
             break
 
@@ -699,7 +747,7 @@ def _crossover_graphs(
     p2_fp = g2.fingerprint()
     cross_grammar = _derive_crossover_grammar(g1, g2, grammar, rng)
 
-    child = generate_layer_graph(cross_grammar, seed=rng.randint(0, 2**32))
+    child = _generate_context_valid_graph(cross_grammar, rng)
     child.prune_unreachable_nodes()
     child.metadata["lineage"] = {
         "type": "crossover",
@@ -731,7 +779,9 @@ def _derive_mutation_grammar(
     min_depth = max(2, min(base.min_depth, parent_depth))
     max_depth = min(
         HARD_MAX_DEPTH,
-        max(min_depth + 1, min(max(base.max_depth, parent_depth + 2), parent_depth + 4)),
+        max(
+            min_depth + 1, min(max(base.max_depth, parent_depth + 2), parent_depth + 4)
+        ),
     )
     max_ops = min(
         HARD_MAX_OPS,
@@ -744,21 +794,29 @@ def _derive_mutation_grammar(
             category_weights[cat_name] = category_weights[cat_name] * 1.25
         else:
             category_weights[cat_name] = max(0.1, category_weights[cat_name] * 0.9)
-        category_weights[cat_name] = max(0.1, category_weights[cat_name] * rng.uniform(0.9, 1.1))
+        category_weights[cat_name] = max(
+            0.1, category_weights[cat_name] * rng.uniform(0.9, 1.1)
+        )
 
     # Propagate template/motif weights from parent grammar
     template_weights = dict(base.template_weights) if base.template_weights else {}
     motif_weights = dict(base.motif_weights) if base.motif_weights else {}
 
     # If parent has sparse/routing ops, bias child toward efficiency
-    _SPARSE_ROUTING_OPS = frozenset({
-        "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
-        "ternary_projection", "entropy_score", "moe_topk", "moe_2expert",
-        "token_merge",
-    })
+    _SPARSE_ROUTING_OPS = frozenset(
+        {
+            "nm_sparse_linear",
+            "block_sparse_linear",
+            "semi_structured_2_4_linear",
+            "ternary_projection",
+            "entropy_score",
+            "moe_topk",
+            "moe_2expert",
+            "token_merge",
+        }
+    )
     parent_has_efficiency = any(
-        n.op_name in _SPARSE_ROUTING_OPS
-        for n in graph.nodes.values() if not n.is_input
+        n.op_name in _SPARSE_ROUTING_OPS for n in graph.nodes.values() if not n.is_input
     )
     sparsity_bias = base.structured_sparsity_bias
     if parent_has_efficiency:
@@ -770,14 +828,14 @@ def _derive_mutation_grammar(
         max_depth=max_depth,
         max_width=base.max_width,
         max_ops=max_ops,
-        max_params_ratio=base.max_params_ratio,
         residual_prob=clamp(base.residual_prob + rng.uniform(-0.1, 0.1), 0.0, 1.0),
         split_prob=clamp(base.split_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
         merge_prob=clamp(base.merge_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
         risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
-        freq_domain_prob=clamp(base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
+        freq_domain_prob=clamp(
+            base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0
+        ),
         category_weights=category_weights,
-        excluded_ops=set(base.excluded_ops),
         template_weights=template_weights,
         motif_weights=motif_weights,
         structured_sparsity_bias=sparsity_bias,
@@ -806,7 +864,9 @@ def _derive_crossover_grammar(
     min_depth = max(2, min(base.min_depth, target_depth))
     max_depth = min(
         HARD_MAX_DEPTH,
-        max(min_depth + 1, min(max(base.max_depth, target_depth + 2), target_depth + 4)),
+        max(
+            min_depth + 1, min(max(base.max_depth, target_depth + 2), target_depth + 4)
+        ),
     )
     max_ops = min(
         HARD_MAX_OPS,
@@ -822,21 +882,32 @@ def _derive_crossover_grammar(
             category_weights[cat_name] = max(0.1, weight * 1.2)
         else:
             category_weights[cat_name] = max(0.1, weight * 0.85)
-        category_weights[cat_name] = max(0.1, category_weights[cat_name] * rng.uniform(0.92, 1.08))
+        category_weights[cat_name] = max(
+            0.1, category_weights[cat_name] * rng.uniform(0.92, 1.08)
+        )
 
     # Propagate template/motif weights from parent grammar
     template_weights = dict(base.template_weights) if base.template_weights else {}
     motif_weights = dict(base.motif_weights) if base.motif_weights else {}
 
     # If either parent has sparse/routing ops, bias child toward efficiency
-    _SPARSE_ROUTING_OPS = frozenset({
-        "nm_sparse_linear", "block_sparse_linear", "semi_structured_2_4_linear",
-        "ternary_projection", "entropy_score", "moe_topk", "moe_2expert",
-        "token_merge",
-    })
+    _SPARSE_ROUTING_OPS = frozenset(
+        {
+            "nm_sparse_linear",
+            "block_sparse_linear",
+            "semi_structured_2_4_linear",
+            "ternary_projection",
+            "entropy_score",
+            "moe_topk",
+            "moe_2expert",
+            "token_merge",
+        }
+    )
     sparsity_bias = base.structured_sparsity_bias
     for g in (g1, g2):
-        if any(n.op_name in _SPARSE_ROUTING_OPS for n in g.nodes.values() if not n.is_input):
+        if any(
+            n.op_name in _SPARSE_ROUTING_OPS for n in g.nodes.values() if not n.is_input
+        ):
             sparsity_bias = max(sparsity_bias, 0.6)
             break
 
@@ -846,14 +917,20 @@ def _derive_crossover_grammar(
         max_depth=max_depth,
         max_width=max(base.max_width, 2),
         max_ops=max_ops,
-        max_params_ratio=base.max_params_ratio,
-        residual_prob=clamp((base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        split_prob=clamp((base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
-        merge_prob=clamp((base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
+        residual_prob=clamp(
+            (base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0
+        ),
+        split_prob=clamp(
+            (base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0
+        ),
+        merge_prob=clamp(
+            (base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0
+        ),
         risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
-        freq_domain_prob=clamp(base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
+        freq_domain_prob=clamp(
+            base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0
+        ),
         category_weights=category_weights,
-        excluded_ops=set(base.excluded_ops),
         template_weights=template_weights,
         motif_weights=motif_weights,
         structured_sparsity_bias=sparsity_bias,
@@ -871,4 +948,3 @@ def _category_histogram(graph: ComputationGraph) -> Dict[str, int]:
             continue
         hist[cat] = hist.get(cat, 0) + 1
     return hist
-

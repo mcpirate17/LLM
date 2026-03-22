@@ -1,4 +1,5 @@
 """Contract tests for minimum."""
+
 import yaml
 from pathlib import Path
 

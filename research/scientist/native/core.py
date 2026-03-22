@@ -47,10 +47,13 @@ _FALLBACK_METRICS = {
     "selective_mode_activation_failures": 0,
 }
 
+
 def _env_flag(name: str, default: bool) -> bool:
     # Backward-compat shim for callers importing this helper directly.
     from ..native_runner_adapter import _env_flag as _adapter_env_flag
+
     return _adapter_env_flag(name, default)
+
 
 @dataclass
 class NativeRunnerState:
@@ -58,6 +61,7 @@ class NativeRunnerState:
     strict: bool
     designer_runtime_available: bool
     reason: str
+
 
 def detect_native_state() -> NativeRunnerState:
     adapter_state = detect_adapter_state()
@@ -67,6 +71,7 @@ def detect_native_state() -> NativeRunnerState:
         designer_runtime_available=adapter_state.designer_runtime_available,
         reason=adapter_state.reason,
     )
+
 
 def _try_import_cython_bridge() -> Any:
     """Try to import the Cython bridge module (aria_bridge).
@@ -83,6 +88,7 @@ def _try_import_cython_bridge() -> Any:
     # Try direct import first (may already be on sys.path).
     try:
         import aria_bridge  # type: ignore[import-untyped]
+
         _cython_bridge_cache = aria_bridge
         logger.info("Loaded Cython bridge (aria_bridge) via direct import")
         return _cython_bridge_cache
@@ -97,6 +103,7 @@ def _try_import_cython_bridge() -> Any:
         sys.path.insert(0, cython_dir)
     try:
         import aria_bridge  # type: ignore[import-untyped]
+
         _cython_bridge_cache = aria_bridge
         logger.info("Loaded Cython bridge (aria_bridge) from %s", cython_dir)
         return _cython_bridge_cache
@@ -105,10 +112,12 @@ def _try_import_cython_bridge() -> Any:
         _cython_bridge_cache = None
         return None
 
+
 def _reset_cython_bridge_cache() -> None:
     """Reset the Cython bridge cache (used in tests)."""
     global _cython_bridge_cache
     _cython_bridge_cache = False
+
 
 def _try_import_rust_scheduler() -> Any:
     """Try to import the Rust scheduler module (aria_scheduler)."""
@@ -118,6 +127,7 @@ def _try_import_rust_scheduler() -> Any:
 
     try:
         from . import aria_scheduler
+
         _rust_scheduler_cache = aria_scheduler
         logger.info("Loaded Rust scheduler (aria_scheduler)")
         return _rust_scheduler_cache

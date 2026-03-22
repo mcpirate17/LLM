@@ -39,4 +39,4 @@ export function RecommendationCard({ recommendation }) {
   );
 }
 
-export default RecommendationCard;
+export default React.memo(RecommendationCard);

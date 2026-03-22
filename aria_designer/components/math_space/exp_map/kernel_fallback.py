@@ -1,6 +1,8 @@
 """Kernel handler for exp_map — dispatches to aria_core.exp_map_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "exp_map"
@@ -15,6 +17,6 @@ class ComponentHandler(NativeComponentHandler):
         x = inputs["x"]
         v = inputs.get("v", x)
         c = config.get("curvature", 1.0)
-        sqrt_c = c ** 0.5
+        sqrt_c = c**0.5
         v_norm = torch.clamp(torch.norm(v, dim=-1, keepdim=True), min=1e-8)
         return {"y": x + torch.tanh(sqrt_c * v_norm) * v / (sqrt_c * v_norm)}

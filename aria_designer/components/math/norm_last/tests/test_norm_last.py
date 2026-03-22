@@ -1,4 +1,5 @@
 """Contract tests for norm_last."""
+
 import yaml
 from pathlib import Path
 

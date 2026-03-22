@@ -51,9 +51,8 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "semi_structured_2_4_linear": OpRole.PROJECT,
     "ternary_projection": OpRole.PROJECT,
     "conv1d_seq": OpRole.PROJECT,
-    "conv_only": OpRole.PROJECT,
     "basis_expansion": OpRole.PROJECT,
-    "embedding_lookup": OpRole.PROJECT,
+    "embedding_lookup": OpRole.PROJECT,  # learnable codebook projection (soft VQ)
     # ── NORMALIZE: stabilize activations ────────────────────────────
     "rmsnorm": OpRole.NORMALIZE,
     "layernorm": OpRole.NORMALIZE,
@@ -102,6 +101,7 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "routing_conditioned_compression": OpRole.ROUTE,
     "compression_mixture_experts": OpRole.ROUTE,
     "gather_topk": OpRole.ROUTE,
+    "n_way_sparse_router": OpRole.ROUTE,
     # ── GATE: multiplicative modulation ─────────────────────────────
     "gated_linear": OpRole.GATE,
     "swiglu_mlp": OpRole.GATE,
@@ -144,7 +144,6 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "shared_basis_proj": OpRole.PROJECT,
     "tied_proj": OpRole.PROJECT,
     # ── Context-safe mixing ───────────────────────────────────────
-    "sort_seq": OpRole.MIX,
     "rotor_transform": OpRole.MIX,
     "grade_select": OpRole.MIX,
     "transpose_sd": OpRole.MIX,
@@ -161,9 +160,29 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     # ── Context-safe residual ─────────────────────────────────────
     "identity": OpRole.RESIDUAL,
     "poincare_add": OpRole.RESIDUAL,
+    # ── Math-space: tropical ─────────────────────────────────────
+    "tropical_attention": OpRole.MIX,
+    "tropical_gate": OpRole.GATE,
+    "tropical_center": OpRole.NORMALIZE,
+    "tropical_add": OpRole.RESIDUAL,
+    "tropical_matmul": OpRole.MIX,
+    # ── Math-space: clifford ─────────────────────────────────────
+    "clifford_attention": OpRole.MIX,
+    "grade_mix": OpRole.MIX,
+    # ── Math-space: hyperbolic ─────────────────────────────────
+    "hyp_distance": OpRole.REDUCE,
+    "hyp_linear": OpRole.PROJECT,
+    "exp_map": OpRole.MIX,
+    "log_map": OpRole.MIX,
+    # ── Math-space: p-adic ───────────────────────────────────────
+    "padic_expand": OpRole.PROJECT,
+    "padic_residual": OpRole.RESIDUAL,
+    "ultrametric_attention": OpRole.MIX,
+    # ── Frequency ────────────────────────────────────────────────
+    "spectral_filter": OpRole.MIX,
     # ── UNSAFE: binary ops needing template-level input routing ───
     "div_safe": OpRole.UNSAFE,
-    "cumprod_safe": OpRole.UNSAFE,
+    "cumprod_safe": OpRole.REDUCE,  # safe within motif (sigmoid predecessor)
     "matmul": OpRole.UNSAFE,
     "outer_product": OpRole.UNSAFE,
     "cosine_similarity": OpRole.UNSAFE,

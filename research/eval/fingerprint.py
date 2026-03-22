@@ -17,7 +17,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, fields
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -73,33 +73,40 @@ def get_sensitivity_skip_stats(reset: bool = False) -> Dict[str, object]:
 class BehavioralFingerprint:
     """Characterizes how a model behaves, not what it computes."""
 
-    # Token interaction pattern
-    interaction_locality: float = 0.0  # 0=global, 1=purely local
-    interaction_sparsity: float = 0.0  # 0=dense, 1=sparse attention
-    interaction_symmetry: float = 0.0  # 0=asymmetric, 1=symmetric
-    interaction_hierarchy: float = 0.0  # how hierarchical the interaction pattern is
+    # Token interaction pattern (None when behavioral probes deferred)
+    interaction_locality: Optional[float] = 0.0  # 0=global, 1=purely local
+    interaction_sparsity: Optional[float] = 0.0  # 0=dense, 1=sparse attention
+    interaction_symmetry: Optional[float] = 0.0  # 0=asymmetric, 1=symmetric
+    interaction_hierarchy: Optional[float] = (
+        0.0  # how hierarchical the interaction pattern is
+    )
 
-    # Representation geometry
-    intrinsic_dim: float = 0.0  # estimated intrinsic dimensionality
-    isotropy: float = (
+    # Representation geometry (None when behavioral probes deferred)
+    intrinsic_dim: Optional[float] = 0.0  # estimated intrinsic dimensionality
+    isotropy: Optional[float] = (
         0.0  # how uniformly directions are used (0=collapsed, 1=isotropic)
     )
-    rank_ratio: float = 0.0  # effective rank / full rank
+    rank_ratio: Optional[float] = 0.0  # effective rank / full rank
 
-    # Input sensitivity
-    jacobian_spectral_norm: float = 0.0
-    jacobian_effective_rank: float = 0.0
-    sensitivity_uniformity: float = 0.0  # how uniformly sensitive to each input token
+    # Input sensitivity (None when behavioral probes deferred)
+    jacobian_spectral_norm: Optional[float] = 0.0
+    jacobian_effective_rank: Optional[float] = 0.0
+    sensitivity_uniformity: Optional[float] = (
+        0.0  # how uniformly sensitive to each input token
+    )
 
     # Routing-specific dimensions (Task 2H)
     routing_selectivity: float = 0.0  # std of difficulty scores
     routing_compute_ratio: float = 0.0  # slow/fast FLOP ratio
     routing_lane_correlation: float = 0.0  # position/content correlation
+    routing_telemetry_present: Optional[bool] = (
+        None  # None=unknown, True/False=explicit
+    )
 
-    # Similarity to known architectures (CKA)
-    cka_vs_transformer: float = 0.0
-    cka_vs_ssm: float = 0.0
-    cka_vs_conv: float = 0.0
+    # Similarity to known architectures (CKA) — None when deferred
+    cka_vs_transformer: Optional[float] = 0.0
+    cka_vs_ssm: Optional[float] = 0.0
+    cka_vs_conv: Optional[float] = 0.0
 
     # Hierarchy detection (Gromov delta-hyperbolicity)
     hierarchy_fitness: float = 0.0  # 0=flat/Euclidean, 1=very tree-like
@@ -118,6 +125,10 @@ class BehavioralFingerprint:
     novelty_reference_version: Optional[str] = None
     novelty_valid_for_promotion: bool = False
     novelty_validity_reason: str = "missing_reference"
+
+    # Post-investigation fingerprint completion tracking
+    fingerprint_completed_post_investigation: bool = False
+    fingerprint_completion_timestamp: Optional[str] = None
 
     # Quality tracking: how many of the 4 sub-analyses succeeded
     analyses_succeeded: int = 0  # 0–4
@@ -149,8 +160,18 @@ def compute_fingerprint(
     vocab_size: int = VOCAB_SIZE,
     device: str = "cuda",
     n_probes: int = 32,
+    *,
+    include_cka: bool = True,
+    include_behavioral_probes: bool = True,
 ) -> BehavioralFingerprint:
-    """Compute behavioral fingerprint for a model."""
+    """Compute behavioral fingerprint for a model.
+
+    Args:
+        include_cka: When False, CKA fields are set to None and
+            novelty_valid_for_promotion=False with cka_source="deferred".
+        include_behavioral_probes: When False, Jacobian/perturbation/SVD
+            probes are skipped; affected fields are set to None.
+    """
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
     model = model.to(dev).eval()
     fp = BehavioralFingerprint()
@@ -165,26 +186,37 @@ def compute_fingerprint(
         reps = _get_representations(model, probe_ids, dev)
 
         if reps is not None and len(reps) > 0:
-            # Token interaction pattern
-            interaction = _analyze_interactions(
-                model, probe_ids, dev, seq_len, vocab_size
-            )
-            fp.interaction_locality = interaction["locality"]
-            fp.interaction_sparsity = interaction["sparsity"]
-            fp.interaction_symmetry = interaction["symmetry"]
-            fp.interaction_hierarchy = interaction["hierarchy"]
-            if interaction.get("_succeeded"):
-                n_succeeded += 1
+            if include_behavioral_probes:
+                # Token interaction pattern
+                interaction = _analyze_interactions(
+                    model, probe_ids, dev, seq_len, vocab_size
+                )
+                fp.interaction_locality = interaction["locality"]
+                fp.interaction_sparsity = interaction["sparsity"]
+                fp.interaction_symmetry = interaction["symmetry"]
+                fp.interaction_hierarchy = interaction["hierarchy"]
+                if interaction.get("_succeeded"):
+                    n_succeeded += 1
 
-            # Representation geometry
-            geometry = _analyze_geometry(reps)
-            fp.intrinsic_dim = geometry["intrinsic_dim"]
-            fp.isotropy = geometry["isotropy"]
-            fp.rank_ratio = geometry["rank_ratio"]
-            if geometry.get("_succeeded"):
-                n_succeeded += 1
+                # Representation geometry
+                geometry = _analyze_geometry(reps)
+                fp.intrinsic_dim = geometry["intrinsic_dim"]
+                fp.isotropy = geometry["isotropy"]
+                fp.rank_ratio = geometry["rank_ratio"]
+                if geometry.get("_succeeded"):
+                    n_succeeded += 1
+            else:
+                # Behavioral probes deferred — set fields to None
+                fp.interaction_locality = None
+                fp.interaction_sparsity = None
+                fp.interaction_symmetry = None
+                fp.interaction_hierarchy = None
+                fp.intrinsic_dim = None
+                fp.isotropy = None
+                fp.rank_ratio = None
 
             # Hierarchy detection (Gromov delta-hyperbolicity)
+            # Structural — always computed when reps available
             try:
                 from .hierarchy_probe import hierarchy_fitness as _hf
 
@@ -194,13 +226,18 @@ def compute_fingerprint(
             except Exception:
                 pass
 
-        # Input sensitivity (Jacobian analysis)
-        sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
-        fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
-        fp.jacobian_effective_rank = sensitivity["effective_rank"]
-        fp.sensitivity_uniformity = sensitivity["uniformity"]
-        if sensitivity.get("_succeeded"):
-            n_succeeded += 1
+        if include_behavioral_probes:
+            # Input sensitivity (Jacobian analysis)
+            sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
+            fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
+            fp.jacobian_effective_rank = sensitivity["effective_rank"]
+            fp.sensitivity_uniformity = sensitivity["uniformity"]
+            if sensitivity.get("_succeeded"):
+                n_succeeded += 1
+        else:
+            fp.jacobian_spectral_norm = None
+            fp.jacobian_effective_rank = None
+            fp.sensitivity_uniformity = None
 
         # Routing-aware analysis (Task 2H)
         try:
@@ -208,62 +245,116 @@ def compute_fingerprint(
             fp.routing_selectivity = routing_data["selectivity"]
             fp.routing_compute_ratio = routing_data["compute_ratio"]
             fp.routing_lane_correlation = routing_data["lane_correlation"]
+            # _analyze_routing returns all-zero defaults when model has no routing ops
+            fp.routing_telemetry_present = routing_data.get("_has_routing", False)
         except Exception as e_route:
             logger.debug("Routing analysis skipped: %s", e_route)
+            fp.routing_telemetry_present = False
 
-        # CKA similarity to reference architectures
-        # Try artifact-backed CKA first, fall back to heuristic
-        from .cka_references import get_default_store
+        cka_all_zero = False
 
-        store = get_default_store()
-        ref_activations = store.get_references()
-        cka_meta = store.get_metadata()
+        if include_cka:
+            # CKA similarity to reference architectures
+            # Try artifact-backed CKA first, fall back to heuristic
+            from .cka_references import get_default_store
 
-        cka = _compute_reference_cka(reps, ref_activations=ref_activations)
-        fp.cka_vs_transformer = cka.get("transformer", 0.0)
-        fp.cka_vs_ssm = cka.get("ssm", 0.0)
-        fp.cka_vs_conv = cka.get("conv", 0.0)
-        fp.cka_source = cka_meta.get("cka_source", "none")
-        fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
-        fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
-        fp.similarity_path = cka_meta.get(
-            "cka_similarity_path", "_compute_reference_cka"
-        )
-        # Sanity gate: if all CKA scores are near-zero, the computation
-        # likely failed (e.g. device mismatch, degenerate reps). Mark as
-        # low-quality rather than trusting the manifest blindly.
-        all_near_zero = (
-            fp.cka_vs_transformer < 0.01
-            and fp.cka_vs_ssm < 0.01
-            and fp.cka_vs_conv < 0.01
-        )
-        if all_near_zero and cka.get("_succeeded"):
-            logger.warning(
-                "CKA sanity gate: all three scores < 0.01 — marking "
-                "cka_reference_quality as false"
+            store = get_default_store()
+            ref_activations = store.get_references()
+            cka_meta = store.get_metadata()
+
+            cka = _compute_reference_cka(reps, ref_activations=ref_activations)
+            fp.cka_vs_transformer = cka.get("transformer", 0.0)
+            fp.cka_vs_ssm = cka.get("ssm", 0.0)
+            fp.cka_vs_conv = cka.get("conv", 0.0)
+            fp.cka_source = cka_meta.get("cka_source", "none")
+            fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
+            fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
+            fp.similarity_path = cka_meta.get(
+                "cka_similarity_path", "_compute_reference_cka"
             )
-            fp.cka_reference_quality = False
+            # Sanity gate: if all CKA scores are near-zero, the computation
+            # likely failed (e.g. device mismatch, degenerate reps). Mark as
+            # low-quality rather than trusting the manifest blindly.
+            all_near_zero = (
+                fp.cka_vs_transformer < 0.01
+                and fp.cka_vs_ssm < 0.01
+                and fp.cka_vs_conv < 0.01
+            )
+            if all_near_zero and cka.get("_succeeded"):
+                logger.warning(
+                    "CKA sanity gate: all three scores < 0.01 — marking "
+                    "cka_reference_quality as false"
+                )
+                fp.cka_reference_quality = False
+            else:
+                fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
+            fp.novelty_reference_version = build_novelty_reference_version(
+                fp.cka_source,
+                fp.cka_artifact_version,
+                fp.cka_probe_protocol_hash,
+            )
+            if fp.cka_source == "artifact":
+                fp.novelty_valid_for_promotion = True
+                fp.novelty_validity_reason = "artifact_reference"
+            elif fp.cka_source == "heuristic_fallback":
+                fp.novelty_valid_for_promotion = False
+                fp.novelty_validity_reason = "heuristic_fallback_reference"
+            else:
+                fp.novelty_valid_for_promotion = False
+                fp.novelty_validity_reason = "no_reference_available"
+
+            # Degenerate CKA: all three scores near zero means the CKA computation
+            # produced no usable signal. Invalidate regardless of cka_source or
+            # _succeeded — arithmetic would yield novelty_score ≈ 1.0 from
+            # _cka_distance_novelty = 1.0 - max(0,0,0,0.01) = 0.99.
+            cka_scores = [fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv]
+            cka_all_zero = all(abs(s) < 1e-6 for s in cka_scores)
+            if cka_all_zero:
+                fp.novelty_valid_for_promotion = False
+                fp.novelty_validity_reason = "cka_degenerate_zeros"
+                logger.warning(
+                    "cka_degenerate_zeros: cka_scores=%s cka_source=%s quality=%s",
+                    cka_scores,
+                    fp.cka_source,
+                    fp.quality,
+                )
+
+            # Kernel fallback invalidates promotion — C++ probes may have produced
+            # degraded results that inflate or deflate novelty.
+            from research.synthesis.compiler_op_utils import (
+                kernel_fallback_occurred as _kf,
+            )
+
+            if _kf():
+                fp.novelty_valid_for_promotion = False
+                fp.novelty_validity_reason = (
+                    fp.novelty_validity_reason + "|kernel_fallback"
+                )
+                logger.warning(
+                    "novelty_invalidated_kernel_fallback: cka_source=%s quality=%s",
+                    fp.cka_source,
+                    fp.quality,
+                )
+
+            if cka.get("_succeeded"):
+                n_succeeded += 1
         else:
-            fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
-        fp.novelty_reference_version = build_novelty_reference_version(
-            fp.cka_source,
-            fp.cka_artifact_version,
-            fp.cka_probe_protocol_hash,
-        )
-        if fp.cka_source == "artifact":
-            fp.novelty_valid_for_promotion = True
-            fp.novelty_validity_reason = "artifact_reference"
-        elif fp.cka_source == "heuristic_fallback":
+            # CKA deferred — set fields to None, mark invalid for promotion
+            fp.cka_vs_transformer = None
+            fp.cka_vs_ssm = None
+            fp.cka_vs_conv = None
+            fp.cka_source = "deferred"
             fp.novelty_valid_for_promotion = False
-            fp.novelty_validity_reason = "heuristic_fallback_reference"
-        else:
-            fp.novelty_valid_for_promotion = False
-            fp.novelty_validity_reason = "no_reference_available"
-        if cka.get("_succeeded"):
-            n_succeeded += 1
+            fp.novelty_validity_reason = "cka_deferred_post_investigation"
 
         fp.behavior_signature_score = _behavior_signature_score(fp)
         fp.novelty_score = _blend_behavioral_novelty(fp)
+
+        # When CKA is degenerate, the blend formula produces ~0.99 from the
+        # CKA distance term. Replace with behavior_signature_score alone so
+        # novelty reflects only what was actually measured.
+        if cka_all_zero:
+            fp.novelty_score = fp.behavior_signature_score
 
     # Record analysis quality
     fp.analyses_succeeded = n_succeeded
@@ -278,63 +369,78 @@ def compute_fingerprint(
     return fp
 
 
+def compute_structural_novelty_only(
+    graph: "ComputationGraph",
+) -> float:
+    """Compute structural novelty score without behavioral probes or CKA.
+
+    Reuses the existing structural analysis from metrics._novelty_score_from_ir.
+    Returns a 0–1 score based on op diversity, category spread, and evenness.
+    """
+    from .metrics import _novelty_score_from_ir
+
+    ir = graph.lower_to_ir()
+    metrics = _novelty_score_from_ir(graph, ir, fingerprint=None)
+    return float(metrics.structural_novelty)
+
+
 def compute_lightning_fingerprint(
     model: nn.Module,
     seq_len: int = 64,
     model_dim: int = 256,
     device: str = "cpu",
     n_probes: int = 8,
+    *,
+    graph: Optional["ComputationGraph"] = None,
+    structural_floor: float = 0.10,
 ) -> BehavioralFingerprint:
-    """
-    Lightning-fast behavioral fingerprint for pre-experiment gating.
-    Uses fixed-seed initialization and minimal probes on CPU to estimate novelty.
+    """Lightning-fast structural-only fingerprint for pre-experiment gating.
+
+    CKA is no longer computed at screening time — cold models produce
+    degenerate CKA scores. Instead, the lightning gate uses structural
+    novelty (op diversity, category spread, evenness) to reject obvious
+    duplicates before investigation.
+
+    If a ComputationGraph is provided, structural_novelty is computed
+    directly from the graph IR (no forward pass needed for the gate
+    decision). The forward pass still runs for hierarchy detection.
     """
     dev = torch.device(device)
     model = model.to(dev).eval()
     fp = BehavioralFingerprint()
 
+    # Structural novelty from graph IR (if available)
+    if graph is not None:
+        fp.novelty_score = compute_structural_novelty_only(graph)
+    else:
+        fp.novelty_score = 0.0
+
     with torch.no_grad():
-        # 1. Minimal probe with fixed seed for reproducibility
         torch.manual_seed(42)
         probe_ids = torch.randint(0, 32000, (n_probes, seq_len), device=dev)
-
-        # 2. Forward pass (Lightning reps)
         reps = _get_representations(model, probe_ids, dev)
 
         if reps is not None:
-            # 3. CKA vs Reference (The critical novelty gate)
-            from .cka_references import get_default_store
+            # Hierarchy detection — structural, does not require convergence
+            try:
+                from .hierarchy_probe import hierarchy_fitness as _hf
 
-            store = get_default_store()
-            ref_activations = store.get_references()
+                hf_result = _hf(reps, max_tokens=100)
+                fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
+                fp.gromov_delta = hf_result["gromov_delta"]
+            except Exception:
+                pass
 
-            # Move to CPU for native aria_core.linear_cka_f32
-            reps_cpu = reps.cpu()
-
-            cka = _compute_reference_cka(reps_cpu, ref_activations=ref_activations)
-            fp.cka_vs_transformer = cka.get("transformer", 0.0)
-            fp.cka_vs_ssm = cka.get("ssm", 0.0)
-            fp.cka_vs_conv = cka.get("conv", 0.0)
-
-            fp.behavior_signature_score = _behavior_signature_score(fp)
-            fp.novelty_score = _blend_behavioral_novelty(fp)
-            fp.cka_source = "lightning_dry_run"
-            fp.quality = "partial"
-            fp.analyses_succeeded = 1
-
-            # Set validity from store metadata — lightning still has valid
-            # CKA references even if the full probe is skipped.
-            cka_meta = store.get_metadata()
-            src = cka_meta.get("cka_source", "none")
-            if src == "artifact":
-                fp.novelty_valid_for_promotion = True
-                fp.novelty_validity_reason = "artifact_reference"
-            elif src == "heuristic_fallback":
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "heuristic_lightning"
-            else:
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "lightning_computed"
+    # CKA deferred — not valid at screening time on cold models
+    fp.cka_vs_transformer = None
+    fp.cka_vs_ssm = None
+    fp.cka_vs_conv = None
+    fp.cka_source = "deferred"
+    fp.novelty_valid_for_promotion = False
+    fp.novelty_validity_reason = "cka_deferred_post_investigation"
+    fp.behavior_signature_score = _behavior_signature_score(fp)
+    fp.quality = "partial"
+    fp.analyses_succeeded = 0
 
     return fp
 
@@ -347,10 +453,17 @@ def compute_gated_fingerprint(
     vocab_size: int = VOCAB_SIZE,
     device: str = "cpu",
     full_gate_enabled: bool = True,
-    lightning_novelty_threshold: float = 0.15,
+    _lightning_novelty_threshold: float = 0.15,
     force_lightning_only: bool = False,
+    graph: Optional["ComputationGraph"] = None,
+    structural_floor: float = 0.10,
 ) -> Tuple[BehavioralFingerprint, bool]:
-    """Run lightning novelty gating before the full fingerprint when enabled."""
+    """Run structural gating before the deferred fingerprint.
+
+    With CKA and behavioral probes moved to post-investigation, the
+    screening fingerprint only computes structural fields. The lightning
+    gate rejects graphs with structural_novelty < structural_floor.
+    """
     if not full_gate_enabled:
         return (
             compute_fingerprint(
@@ -359,6 +472,8 @@ def compute_gated_fingerprint(
                 model_dim=model_dim,
                 vocab_size=vocab_size,
                 device=device,
+                include_cka=False,
+                include_behavioral_probes=False,
             ),
             True,
         )
@@ -368,12 +483,13 @@ def compute_gated_fingerprint(
         seq_len=seq_len,
         model_dim=model_dim,
         device=device,
+        graph=graph,
+        structural_floor=structural_floor,
     )
 
-    # Task 4I: If force_lightning_only is set (e.g. for poor performers),
-    # skip the full fingerprint regardless of novelty score.
+    # Reject below structural floor or when forced to lightning-only
     if force_lightning_only or float(lightning_fp.novelty_score or 0.0) < float(
-        lightning_novelty_threshold
+        structural_floor
     ):
         return lightning_fp, False
 
@@ -384,9 +500,164 @@ def compute_gated_fingerprint(
             model_dim=model_dim,
             vocab_size=vocab_size,
             device=device,
+            include_cka=False,
+            include_behavioral_probes=False,
         ),
         True,
     )
+
+
+def complete_fingerprint_post_investigation(
+    fp: BehavioralFingerprint,
+    model: nn.Module,
+    seq_len: int = 64,
+    model_dim: int = 256,
+    vocab_size: int = VOCAB_SIZE,
+    device: str = "cuda",
+    n_probes: int = 32,
+) -> BehavioralFingerprint:
+    """Complete a deferred fingerprint after investigation training.
+
+    Takes a fingerprint built with include_cka=False, include_behavioral_probes=False
+    and fills in the missing behavioral probes and CKA measurements using the
+    post-investigation model that has converged representations.
+
+    Idempotent: if fp.fingerprint_completed_post_investigation is already True,
+    returns fp unchanged.
+    """
+    if fp.fingerprint_completed_post_investigation:
+        return fp
+
+    from datetime import datetime
+
+    dev = torch.device(device if torch.cuda.is_available() else "cpu")
+    model = model.to(dev).eval()
+
+    with torch.no_grad():
+        probe_ids = torch.randint(0, vocab_size, (n_probes, seq_len), device=dev)
+        reps = _get_representations(model, probe_ids, dev)
+
+    # Step 1 — Run behavioral probes
+    if reps is not None and len(reps) > 0:
+        # Token interaction pattern
+        try:
+            interaction = _analyze_interactions(
+                model, probe_ids, dev, seq_len, vocab_size
+            )
+            fp.interaction_locality = interaction["locality"]
+            fp.interaction_sparsity = interaction["sparsity"]
+            fp.interaction_symmetry = interaction["symmetry"]
+            fp.interaction_hierarchy = interaction["hierarchy"]
+        except (ImportError, RuntimeError, AttributeError) as e:
+            logger.warning("post_inv_interaction_probe_failed: %s", e)
+
+        # Representation geometry
+        try:
+            geometry = _analyze_geometry(reps)
+            fp.intrinsic_dim = geometry["intrinsic_dim"]
+            fp.isotropy = geometry["isotropy"]
+            fp.rank_ratio = geometry["rank_ratio"]
+        except (ImportError, RuntimeError, AttributeError) as e:
+            logger.warning("post_inv_geometry_probe_failed: %s", e)
+
+    # Input sensitivity (Jacobian analysis)
+    try:
+        sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
+        fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
+        fp.jacobian_effective_rank = sensitivity["effective_rank"]
+        fp.sensitivity_uniformity = sensitivity["uniformity"]
+    except (ImportError, RuntimeError, AttributeError) as e:
+        logger.warning("post_inv_sensitivity_probe_failed: %s", e)
+
+    # Step 2 — Run CKA
+    with torch.no_grad():
+        from .cka_references import get_default_store
+
+        store = get_default_store()
+        ref_activations = store.get_references()
+        cka_meta = store.get_metadata()
+
+        cka = _compute_reference_cka(reps, ref_activations=ref_activations)
+        cka_t = cka.get("transformer", 0.0)
+        cka_s = cka.get("ssm", 0.0)
+        cka_c = cka.get("conv", 0.0)
+
+        # Degenerate CKA check
+        if all(abs(s) < 1e-6 for s in [cka_t, cka_s, cka_c]):
+            fp.cka_vs_transformer = None
+            fp.cka_vs_ssm = None
+            fp.cka_vs_conv = None
+            fp.cka_source = "degenerate"
+            fp.novelty_valid_for_promotion = False
+            fp.novelty_validity_reason = "cka_degenerate_zeros"
+            logger.warning(
+                "cka_degenerate_zeros_post_investigation: cka_scores=[%.6f,%.6f,%.6f]",
+                cka_t,
+                cka_s,
+                cka_c,
+            )
+        else:
+            fp.cka_vs_transformer = cka_t
+            fp.cka_vs_ssm = cka_s
+            fp.cka_vs_conv = cka_c
+            fp.cka_source = cka_meta.get("cka_source", "artifact")
+            fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
+            fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
+            fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
+            fp.similarity_path = cka_meta.get(
+                "cka_similarity_path", "_compute_reference_cka"
+            )
+            fp.novelty_reference_version = build_novelty_reference_version(
+                fp.cka_source,
+                fp.cka_artifact_version,
+                fp.cka_probe_protocol_hash,
+            )
+            if fp.cka_source == "artifact":
+                fp.novelty_valid_for_promotion = True
+                fp.novelty_validity_reason = "artifact_reference_post_investigation"
+            elif fp.cka_source == "heuristic_fallback":
+                fp.novelty_valid_for_promotion = False
+                fp.novelty_validity_reason = "heuristic_fallback_reference"
+            else:
+                fp.novelty_valid_for_promotion = False
+                fp.novelty_validity_reason = "no_reference_available"
+
+    # Step 3 — Recompute novelty blend with real values
+    fp.behavior_signature_score = _behavior_signature_score(fp)
+    if fp.cka_vs_transformer is not None:
+        cka_distance = 1.0 - max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv)
+        fp.novelty_score = (
+            CKA_NOVELTY_WEIGHT * cka_distance
+            + BEHAVIOR_SIGNATURE_WEIGHT * fp.behavior_signature_score
+        )
+    else:
+        # CKA degenerate — use behavior_signature_score alone
+        fp.novelty_score = fp.behavior_signature_score
+
+    # Step 4 — Mark completion
+    fp.fingerprint_completed_post_investigation = True
+    fp.fingerprint_completion_timestamp = datetime.utcnow().isoformat()
+
+    # Update quality tracking
+    n_succeeded = 0
+    if fp.interaction_locality is not None and fp.interaction_locality != 0.0:
+        n_succeeded += 1
+    if fp.intrinsic_dim is not None and fp.intrinsic_dim != 0.0:
+        n_succeeded += 1
+    if fp.jacobian_spectral_norm is not None and fp.jacobian_spectral_norm != 0.0:
+        n_succeeded += 1
+    if fp.cka_vs_transformer is not None:
+        n_succeeded += 1
+    fp.analyses_succeeded = n_succeeded
+    if n_succeeded == 4:
+        fp.quality = "full"
+    elif n_succeeded > 0:
+        fp.quality = "partial"
+    else:
+        fp.quality = "none"
+
+    model.train()
+    return fp
 
 
 def build_novelty_reference_version(
@@ -412,8 +683,15 @@ def _sanitize_unit_feature(value: float) -> float:
 
 
 def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
-    """Bounded non-CKA distinctiveness signal from behavioral probes."""
-    features = [
+    """Bounded non-CKA distinctiveness signal from behavioral probes.
+
+    Routing dimensions are excluded when routing telemetry is absent to avoid
+    inflating novelty for non-routing architectures (default 0.0 maps to
+    maximum distinctiveness under the abs(v-0.5)*2 formula).
+
+    Fields set to None (deferred probes) are excluded from the average.
+    """
+    candidates = [
         fp.interaction_locality,
         fp.interaction_sparsity,
         fp.interaction_symmetry,
@@ -421,10 +699,19 @@ def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
         fp.isotropy,
         fp.rank_ratio,
         fp.sensitivity_uniformity,
-        fp.routing_selectivity,
-        fp.routing_lane_correlation,
         fp.hierarchy_fitness,
     ]
+    # Only include routing dims when telemetry was actually collected
+    if fp.routing_telemetry_present:
+        candidates.extend(
+            [
+                fp.routing_selectivity,
+                fp.routing_compute_ratio,
+                fp.routing_lane_correlation,
+            ]
+        )
+    # Filter out None (deferred behavioral probes)
+    features = [v for v in candidates if v is not None]
     if not features:
         return 0.0
     sanitized = [_sanitize_unit_feature(v) for v in features]
@@ -432,11 +719,18 @@ def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
 
 
 def _cka_distance_novelty(fp: BehavioralFingerprint) -> float:
-    max_cka = max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv, 0.01)
+    cka_t = fp.cka_vs_transformer if fp.cka_vs_transformer is not None else 0.0
+    cka_s = fp.cka_vs_ssm if fp.cka_vs_ssm is not None else 0.0
+    cka_c = fp.cka_vs_conv if fp.cka_vs_conv is not None else 0.0
+    max_cka = max(cka_t, cka_s, cka_c, 0.01)
     return 1.0 - max_cka
 
 
 def _blend_behavioral_novelty(fp: BehavioralFingerprint) -> float:
+    # When CKA is deferred or degenerate, use behavior_signature_score alone
+    # to avoid inflating novelty from the 1.0 - max(0,0,0) = 0.99 artifact.
+    if fp.cka_source in ("deferred", "degenerate") or fp.cka_vs_transformer is None:
+        return _behavior_signature_score(fp)
     return CKA_NOVELTY_WEIGHT * _cka_distance_novelty(
         fp
     ) + BEHAVIOR_SIGNATURE_WEIGHT * _behavior_signature_score(fp)
@@ -471,7 +765,7 @@ def _analyze_interactions(
     }
 
     try:
-        B = input_ids.shape[0]
+        input_ids.shape[0]
         # Compute per-token influence by masking
         # Use a single sample for efficiency
         ids = input_ids[:1]
@@ -513,9 +807,15 @@ def _interaction_metrics(
     positions: torch.Tensor,
 ) -> Dict[str, float]:
     """Compute interaction metrics via native C++ kernel."""
+    inf_det = influence_matrix.detach()
+    pos_det = positions.detach()
+    if inf_det.device.type != "cpu":
+        inf_det = inf_det.cpu()
+    if pos_det.device.type != "cpu":
+        pos_det = pos_det.cpu()
     native = aria_core.interaction_metrics_f32(
-        influence_matrix.detach().cpu().contiguous(),
-        positions.detach().cpu().contiguous(),
+        inf_det.contiguous(),
+        pos_det.contiguous(),
     )
     return {
         "locality": float(native[0].item()),
@@ -531,7 +831,12 @@ def _analyze_routing(
     dev: torch.device,
 ) -> Dict[str, float]:
     """Analyze routing-specific behavior (Task 2H)."""
-    result = {"selectivity": 0.0, "compute_ratio": 0.0, "lane_correlation": 0.0}
+    result = {
+        "selectivity": 0.0,
+        "compute_ratio": 0.0,
+        "lane_correlation": 0.0,
+        "_has_routing": False,
+    }
 
     # Identify if model has routing ops via its graph (if accessible)
     has_routing = False
@@ -546,6 +851,7 @@ def _analyze_routing(
     if not has_routing:
         return result
 
+    result["_has_routing"] = True
     try:
         # Extract routing telemetry from the model
         # Most routing models in Aria expose 'routing_stats' or similar after a forward pass
@@ -690,9 +996,9 @@ def _analyze_sensitivity(
             # Get embedding and make it require grad
             embed = model.embed(ids).detach().requires_grad_(True)
 
-            forward_from_embed = lambda embed_in: _forward_model_from_embed(
-                model, embed_in
-            )
+            def forward_from_embed(embed_in):
+                return _forward_model_from_embed(model, embed_in)
+
             x = forward_from_embed(embed)
 
             if not x.requires_grad:
@@ -736,8 +1042,9 @@ def _collect_position_sensitivities(
         x = x_or_forward
         try:
             grad_outputs = torch.zeros(n_pos, *x.shape, device=x.device, dtype=x.dtype)
-            for i, pos in enumerate(positions.tolist()):
-                grad_outputs[i, :, pos, :] = 1.0
+            grad_outputs[
+                torch.arange(n_pos, device=positions.device), :, positions, :
+            ] = 1.0
             batched_grads = torch.autograd.grad(
                 x,
                 embed,
@@ -748,7 +1055,9 @@ def _collect_position_sensitivities(
             )[0]
             return batched_grads.norm(dim=-1).squeeze(1)
         except RuntimeError:
-            forward_from_embed = lambda _: x
+
+            def forward_from_embed(_):
+                return x
 
     try:
         from torch.func import grad, vmap
@@ -765,25 +1074,36 @@ def _collect_position_sensitivities(
     except (ImportError, RuntimeError):
         pass
 
-    rows: List[torch.Tensor] = []
-    pos_values = positions.tolist()
-    last_idx = len(pos_values) - 1
-    for idx, pos in enumerate(pos_values):
-        grad_out = torch.autograd.grad(
-            forward_from_embed(embed)[:, pos, :].sum(),
-            embed,
-            retain_graph=idx < last_idx,
-            create_graph=False,
-            allow_unused=True,
-        )[0]
-        if grad_out is not None:
-            rows.append(grad_out.norm(dim=-1).squeeze(0))
-    return torch.stack(rows) if rows else None
+    # Batched fallback: stack all position variants on the batch dim in a single
+    # forward pass instead of N sequential passes.  vmap is unavailable here
+    # (failed above), and the model may not be purely functional, so we replicate
+    # the embedding along batch and run one forward call.
+    n_pos = len(positions)
+    embed_expanded = embed.expand(n_pos, *embed.shape[1:]).contiguous()
+    embed_expanded.requires_grad_(True)
+    out = forward_from_embed(embed_expanded)  # (n_pos, seq, hidden)
+    # Select each position's output for the corresponding batch element
+    selected = out[
+        torch.arange(n_pos, device=positions.device), positions, :
+    ]  # (n_pos, hidden)
+    grad_out = torch.autograd.grad(
+        selected.sum(),
+        embed_expanded,
+        retain_graph=False,
+        create_graph=False,
+        allow_unused=True,
+    )[0]
+    if grad_out is None:
+        return None
+    return grad_out.norm(dim=-1).squeeze(1)
 
 
 def _sensitivity_metrics(sens_matrix: torch.Tensor) -> Dict[str, float]:
     """Compute sensitivity metrics via native C++ kernel."""
-    native = aria_core.sensitivity_metrics_f32(sens_matrix.detach().cpu().contiguous())
+    sens_det = sens_matrix.detach()
+    if sens_det.device.type != "cpu":
+        sens_det = sens_det.cpu()
+    native = aria_core.sensitivity_metrics_f32(sens_det.contiguous())
     return {
         "spectral_norm": float(native[0].item()),
         "uniformity": float(native[1].item()),

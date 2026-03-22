@@ -24,11 +24,47 @@ def infer_tier_for_program(nb: LabNotebook, program: dict) -> str:
 
 
 def count_discovery_tiers(nb: LabNotebook) -> dict:
-    """Count unique fingerprints per tier + total S1 survivors."""
+    """Count discovery rows by tier, excluding references from stage buckets.
+
+    Uses stage-based counting: entries that *passed* a stage count for that
+    stage, even if their tier column has since been promoted further.
+    """
+    _NON_REF = "COALESCE(is_reference, 0) = 0"
     rows = nb.conn.execute(
-        "SELECT tier, COUNT(*) AS cnt FROM leaderboard GROUP BY tier"
+        f"SELECT tier, COUNT(*) AS cnt FROM leaderboard WHERE {_NON_REF} GROUP BY tier"
     ).fetchall()
-    counts = {r["tier"]: r["cnt"] for r in rows}
+    tier_counts = {r["tier"]: r["cnt"] for r in rows}
+    # Stage-based counts: investigation/validation count entries that *reached*
+    # and *passed* each stage, regardless of current tier value.
+    inv_row = nb.conn.execute(
+        f"SELECT COUNT(*) AS cnt FROM leaderboard "
+        f"WHERE {_NON_REF} AND investigation_passed = 1"
+    ).fetchone()
+    val_row = nb.conn.execute(
+        f"SELECT COUNT(*) AS cnt FROM leaderboard "
+        f"WHERE {_NON_REF} AND validation_passed = 1"
+    ).fetchone()
+    counts = {
+        "screening": int(tier_counts.get("screening", 0) or 0),
+        "screened_out": int(tier_counts.get("screened_out", 0) or 0),
+        "investigation": int(inv_row["cnt"] if inv_row else 0),
+        "validation": int(val_row["cnt"] if val_row else 0),
+        "breakthrough": int(tier_counts.get("breakthrough", 0) or 0),
+    }
+    ref_row = nb.conn.execute(
+        "SELECT COUNT(*) AS cnt FROM leaderboard WHERE COALESCE(is_reference, 0) = 1"
+    ).fetchone()
+    counts["references"] = int(ref_row["cnt"] if ref_row else 0)
+    counts["all"] = sum(
+        int(tier_counts.get(tier, 0) or 0)
+        for tier in (
+            "screening",
+            "screened_out",
+            "investigation",
+            "validation",
+            "breakthrough",
+        )
+    )
     total_s1 = nb.conn.execute(
         "SELECT COUNT(*) AS cnt FROM program_results WHERE stage1_passed = 1"
     ).fetchone()
@@ -730,29 +766,6 @@ def _append_healer_actions(actions: List[Dict[str, Any]], nb: LabNotebook) -> No
         )
 
 
-def _log_diagnosis_placeholder(nb: LabNotebook, analytics: Any = None) -> None:
-    if analytics:
-        _ = (
-            analytics.get_analytics_data()
-            if hasattr(analytics, "get_analytics_data")
-            else {}
-        )
-    else:
-        from ..analytics import ExperimentAnalytics
-
-        analytics_obj = ExperimentAnalytics(nb)
-        _ = (
-            analytics_obj.get_analytics_data()
-            if hasattr(analytics_obj, "get_analytics_data")
-            else {}
-        )
-    import logging as _log
-
-    _log.getLogger(__name__).debug(
-        "Diagnosis issues require blueprint-local _diagnose_research_issues"
-    )
-
-
 def _append_first_run_strategy(actions: List[Dict[str, Any]], nb: LabNotebook) -> None:
     summary = nb.get_dashboard_summary()
     if summary.get("total_experiments", 0) != 0:
@@ -797,11 +810,6 @@ def compute_action_queue(nb, analytics=None) -> List[Dict[str, Any]]:
 
     try:
         _append_healer_actions(actions, nb)
-    except Exception:
-        pass
-
-    try:
-        _log_diagnosis_placeholder(nb, analytics)
     except Exception:
         pass
 

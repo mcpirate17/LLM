@@ -112,6 +112,7 @@ class SafeJSONEncoder(json.JSONEncoder):
 
 # ── Fast JSON (orjson when available) ──────────────────────────────────
 
+
 def fast_dumps(obj: Any, *, safe: bool = False) -> str:
     """Serialize *obj* to a JSON string using orjson if available.
 

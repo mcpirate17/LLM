@@ -5,7 +5,11 @@ import tempfile
 
 from research.scientist.analytics import ExperimentAnalytics
 from research.scientist.notebook import LabNotebook
-from research.scientist.runner import ExperimentRunner, RunConfig, propose_ablation_suite
+from research.scientist.runner import (
+    ExperimentRunner,
+    RunConfig,
+    propose_ablation_suite,
+)
 from research.synthesis.compiler import compile_model
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.validator import validate_graph
@@ -26,7 +30,9 @@ def _make_notebook_with_fixed_programs() -> LabNotebook:
     tmpdir = tempfile.mkdtemp()
     db_path = os.path.join(tmpdir, "attr.db")
     nb = LabNotebook(db_path)
-    exp_id = nb.start_experiment("synthesis", {"n_programs": 40}, "attribution determinism")
+    exp_id = nb.start_experiment(
+        "synthesis", {"n_programs": 40}, "attribution determinism"
+    )
 
     for i in range(20):
         nb.record_program_result(
@@ -47,14 +53,17 @@ def _make_notebook_with_fixed_programs() -> LabNotebook:
             graph_uses_math_spaces=0,
         )
 
-    nb.complete_experiment(exp_id, {
-        "total": 40,
-        "stage0_passed": 40,
-        "stage05_passed": 40,
-        "stage1_passed": 18,
-        "best_loss_ratio": 0.2,
-        "best_novelty_score": 0.5,
-    })
+    nb.complete_experiment(
+        exp_id,
+        {
+            "total": 40,
+            "stage0_passed": 40,
+            "stage05_passed": 40,
+            "stage1_passed": 18,
+            "best_loss_ratio": 0.2,
+            "best_novelty_score": 0.5,
+        },
+    )
     return nb
 
 
@@ -93,7 +102,9 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
     tmpdir = tempfile.mkdtemp()
     db_path = os.path.join(tmpdir, "unknown_depth.db")
     nb = LabNotebook(db_path)
-    exp_id = nb.start_experiment("synthesis", {"n_programs": 60}, "unknown-depth signal quality")
+    exp_id = nb.start_experiment(
+        "synthesis", {"n_programs": 60}, "unknown-depth signal quality"
+    )
 
     shared_graph = _graph_json_for_ops(["linear_proj", "gelu", "tanh"])
     for i in range(30):
@@ -123,7 +134,10 @@ def test_attribution_filters_unknown_depth_bucket_as_top_signal():
     assert top_signal is None
     assert report.get("strong_correlational_evidence") is False
     assert report.get("uncertainty", {}).get("correlational_signal_count", 0) >= 1
-    assert report.get("uncertainty", {}).get("interpretable_correlational_signal_count", 0) == 0
+    assert (
+        report.get("uncertainty", {}).get("interpretable_correlational_signal_count", 0)
+        == 0
+    )
     nb.close()
 
 

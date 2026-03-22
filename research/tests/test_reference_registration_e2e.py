@@ -91,8 +91,11 @@ def test_pinned_reference_visible_in_tier_filtered_endpoints(tmp_path):
 
     discoveries = client.get("/api/discoveries?view=ranked&tier=validation&limit=50")
     assert discoveries.status_code == 200
-    disc_entries = discoveries.get_json().get("entries", [])
-    assert any(e.get("entry_id") == ref_entry_id for e in disc_entries)
+    payload = discoveries.get_json()
+    disc_entries = payload.get("entries", [])
+    disc_refs = payload.get("references", [])
+    assert not any(e.get("entry_id") == ref_entry_id for e in disc_entries)
+    assert any(e.get("entry_id") == ref_entry_id for e in disc_refs)
 
 
 def test_register_reference_full_pipeline(tmp_path):
@@ -185,7 +188,9 @@ def test_reference_causality_gate(arch_key):
         # First half of logits should be identical for causal models.
         # SSM-based models (mamba) have recurrent state that can amplify
         # numerical differences with random weights, so use looser tolerance.
-        diff = torch.abs(out_base[:, :midpoint, :] - out_mod[:, :midpoint, :]).max().item()
+        diff = (
+            torch.abs(out_base[:, :midpoint, :] - out_mod[:, :midpoint, :]).max().item()
+        )
         tol = 0.5 if arch_key == "mamba" else 1e-3
         assert diff < tol, (
             f"{arch_key} failed causality gate: max diff {diff:.6f} at midpoint {midpoint}"
@@ -275,7 +280,7 @@ def test_reference_comparison_metrics(tmp_path):
 
 
 def test_reference_survives_tier_filter(tmp_path):
-    """Pinned references appear in API responses even when filtering by a tier they haven't reached."""
+    """Pinned references survive tier filters on leaderboard/discoveries surfaces."""
     db_path = str(tmp_path / "tier_filter.db")
     nb = LabNotebook(db_path)
 
@@ -315,13 +320,20 @@ def test_reference_survives_tier_filter(tmp_path):
     app = create_app(notebook_path=db_path)
     client = app.test_client()
 
-    # Filter by validation tier — reference is only at screening, but should still appear
-    for endpoint in ["/api/leaderboard", "/api/discoveries"]:
-        resp = client.get(f"{endpoint}?tier=validation&limit=50")
-        assert resp.status_code == 200
-        entries = resp.get_json().get("entries", [])
-        ref_found = any(e.get("entry_id") == ref_entry_id for e in entries)
-        assert ref_found, f"Pinned reference missing from {endpoint}?tier=validation"
+    leaderboard = client.get("/api/leaderboard?tier=validation&limit=50")
+    assert leaderboard.status_code == 200
+    assert any(
+        e.get("entry_id") == ref_entry_id
+        for e in leaderboard.get_json().get("entries", [])
+    )
+
+    discoveries = client.get("/api/discoveries?tier=validation&limit=50")
+    assert discoveries.status_code == 200
+    payload = discoveries.get_json()
+    assert not any(
+        e.get("entry_id") == ref_entry_id for e in payload.get("entries", [])
+    )
+    assert any(e.get("entry_id") == ref_entry_id for e in payload.get("references", []))
 
     # Filter by investigation tier — same check
     resp = client.get("/api/leaderboard?tier=investigation&limit=50")

@@ -28,9 +28,11 @@ from research.synthesis.primitives import PRIMITIVE_REGISTRY, safe_eval_formula
 
 # ── Static Analysis ──────────────────────────────────────────────────
 
+
 @dataclass(slots=True)
 class OpProfile:
     """Per-op performance profile."""
+
     node_id: int
     op_name: str
     params: int = 0
@@ -42,6 +44,7 @@ class OpProfile:
 @dataclass(slots=True)
 class ProfileReport:
     """Complete performance profile for a workflow."""
+
     # Graph-level static analysis
     total_params: int = 0
     total_flops_per_token: int = 0
@@ -88,11 +91,15 @@ class ProfileReport:
         }
         duplicate_work = build_duplicate_work_report(
             repeated_keys={},
-            avoided_keys={"workflow_to_graph": int(d.get("avoided_duplicate_conversions", 0) or 0)},
+            avoided_keys={
+                "workflow_to_graph": int(d.get("avoided_duplicate_conversions", 0) or 0)
+            },
         )
         contract = build_perf_contract(
             component="aria_designer",
-            workload="workflow_profile_runtime" if metrics["forward_time_ms"] else "workflow_profile_static",
+            workload="workflow_profile_runtime"
+            if metrics["forward_time_ms"]
+            else "workflow_profile_static",
             identity={},
             metrics=metrics,
             budget_profile="designer_interactive",
@@ -144,10 +151,12 @@ def _estimate_op_flops(op_name: str, model_dim: int, config: Dict) -> int:
     elif op.shape_rule == "rfft":
         # FFT: O(D log D)
         import math
+
         return int(D * math.log2(max(D, 2))) * 5
 
     elif op.shape_rule == "irfft":
         import math
+
         return int(D * math.log2(max(D, 2))) * 5
 
     elif op.shape_rule == "concat":
@@ -180,7 +189,9 @@ def _estimate_op_params(op_name: str, model_dim: int, config: Dict) -> int:
         return D * D  # conservative fallback
 
 
-def _estimate_op_memory(op_name: str, model_dim: int, config: Dict, batch_size: int, seq_len: int) -> int:
+def _estimate_op_memory(
+    op_name: str, model_dim: int, config: Dict, batch_size: int, seq_len: int
+) -> int:
     """Estimate memory in bytes for activations of a single op."""
     D = model_dim
     B = batch_size
@@ -206,8 +217,16 @@ def _estimate_op_memory(op_name: str, model_dim: int, config: Dict, batch_size: 
 
 # Native kernel availability check
 _NATIVE_KERNELS = {
-    "relu", "gelu", "silu", "sin", "cos",
-    "add", "mul", "matmul", "linear", "rmsnorm",
+    "relu",
+    "gelu",
+    "silu",
+    "sin",
+    "cos",
+    "add",
+    "mul",
+    "matmul",
+    "linear",
+    "rmsnorm",
 }
 
 
@@ -219,6 +238,7 @@ def _has_native_kernel(op_name: str) -> bool:
 
 
 # ── Main Profiling Functions ─────────────────────────────────────────
+
 
 def profile_static(
     workflow_json: Dict[str, Any],
@@ -232,7 +252,9 @@ def profile_static(
     identify bottleneck operations.
     """
     graph = workflow_to_graph(workflow_json, model_dim=model_dim)
-    return profile_static_graph(graph, model_dim=model_dim, batch_size=batch_size, seq_len=seq_len)
+    return profile_static_graph(
+        graph, model_dim=model_dim, batch_size=batch_size, seq_len=seq_len
+    )
 
 
 def profile_static_graph(
@@ -281,14 +303,20 @@ def profile_static_graph(
         if op_name in PRIMITIVE_REGISTRY:
             cat = PRIMITIVE_REGISTRY[op_name].category
             cat_name = cat.value if hasattr(cat, "value") else str(cat)
-            report.flops_by_category[cat_name] = report.flops_by_category.get(cat_name, 0) + flops
-            report.params_by_category[cat_name] = report.params_by_category.get(cat_name, 0) + params
+            report.flops_by_category[cat_name] = (
+                report.flops_by_category.get(cat_name, 0) + flops
+            )
+            report.params_by_category[cat_name] = (
+                report.params_by_category.get(cat_name, 0) + params
+            )
 
     report.native_coverage = native_count / max(total_ops, 1)
 
     # Identify bottleneck ops (top 3 by FLOPs)
     sorted_ops = sorted(report.op_profiles, key=lambda p: p.flops, reverse=True)
-    report.bottleneck_ops = [f"{p.op_name} (node {p.node_id}, {p.flops} FLOPs)" for p in sorted_ops[:3]]
+    report.bottleneck_ops = [
+        f"{p.op_name} (node {p.node_id}, {p.flops} FLOPs)" for p in sorted_ops[:3]
+    ]
 
     return report
 
@@ -319,6 +347,7 @@ def profile_runtime(
     # Compile
     try:
         from research.synthesis.compiler import compile_model
+
         compile_started = time.perf_counter()
         model = compile_model([graph], vocab_size=vocab_size)
         report.compile_time_ms = (time.perf_counter() - compile_started) * 1000.0
@@ -389,8 +418,11 @@ def profile_workflow(
 ) -> ProfileReport:
     """Convenience function: static + optional runtime profiling."""
     if runtime:
-        return profile_runtime(workflow_json, model_dim=model_dim, device=device, **kwargs)
+        return profile_runtime(
+            workflow_json, model_dim=model_dim, device=device, **kwargs
+        )
     else:
-        static_kwargs = {k: v for k, v in kwargs.items()
-                         if k in ("batch_size", "seq_len")}
+        static_kwargs = {
+            k: v for k, v in kwargs.items() if k in ("batch_size", "seq_len")
+        }
         return profile_static(workflow_json, model_dim=model_dim, **static_kwargs)

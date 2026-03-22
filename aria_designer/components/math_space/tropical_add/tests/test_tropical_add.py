@@ -1,4 +1,5 @@
 """Contract tests for tropical_add."""
+
 import yaml
 from pathlib import Path
 

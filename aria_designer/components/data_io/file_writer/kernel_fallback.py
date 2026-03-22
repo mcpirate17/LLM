@@ -1,4 +1,5 @@
 """Python fallback for file_writer."""
+
 from pathlib import Path
 import csv
 import json
@@ -47,7 +48,11 @@ class ComponentHandler:
                     for row in arr.reshape(arr.shape[0], -1).tolist():
                         writer.writerow(row)
         elif fmt == "json":
-            payload = {"shape": list(arr.shape), "data": arr.tolist()} if bool(config.get("include_shape", True)) else arr.tolist()
+            payload = (
+                {"shape": list(arr.shape), "data": arr.tolist()}
+                if bool(config.get("include_shape", True))
+                else arr.tolist()
+            )
             with out_path.open("w", encoding="utf-8") as f:
                 json.dump(payload, f)
         elif fmt == "npy":

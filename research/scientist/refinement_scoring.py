@@ -51,7 +51,11 @@ def oscillation_risk_score(graph: Any) -> Tuple[float, Dict[str, float]]:
     ]
     n_ops = max(1, len(ops))
     depth = max(1, int(graph.depth()))
-    has_residual = bool(graph.has_residual_path()) if hasattr(graph, "has_residual_path") else False
+    has_residual = (
+        bool(graph.has_residual_path())
+        if hasattr(graph, "has_residual_path")
+        else False
+    )
 
     norm_count = sum(1 for op in ops if op in _NORM_OPS)
     risky_count = 0
@@ -65,9 +69,15 @@ def oscillation_risk_score(graph: Any) -> Tuple[float, Dict[str, float]]:
 
     risky_density = min(1.0, risky_count / n_ops)
     routing_density = min(1.0, routing_count / n_ops)
-    no_residual_risk = 1.0 if n_ops >= 3 and risky_density >= 0.34 and not has_residual else 0.0
-    no_norm_risk = 1.0 if n_ops >= 3 and risky_density >= 0.34 and norm_count == 0 else 0.0
-    serial_depth_risk = min(1.0, max(0.0, depth - 4.0) / 6.0) * (0.5 if has_residual else 1.0)
+    no_residual_risk = (
+        1.0 if n_ops >= 3 and risky_density >= 0.34 and not has_residual else 0.0
+    )
+    no_norm_risk = (
+        1.0 if n_ops >= 3 and risky_density >= 0.34 and norm_count == 0 else 0.0
+    )
+    serial_depth_risk = min(1.0, max(0.0, depth - 4.0) / 6.0) * (
+        0.5 if has_residual else 1.0
+    )
 
     risk = min(
         1.0,
@@ -94,12 +104,14 @@ def rank_synthesis_candidates_by_stability(graphs: Iterable[Any]) -> List[Any]:
     decorated = []
     for idx, graph in enumerate(graphs):
         risk, details = oscillation_risk_score(graph)
-        decorated.append((
-            risk,
-            -float(details.get("has_residual", 0.0)),
-            float(details.get("norm_count", 0.0) == 0.0),
-            idx,
-            graph,
-        ))
+        decorated.append(
+            (
+                risk,
+                -float(details.get("has_residual", 0.0)),
+                float(details.get("norm_count", 0.0) == 0.0),
+                idx,
+                graph,
+            )
+        )
     decorated.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
     return [graph for *_rest, graph in decorated]

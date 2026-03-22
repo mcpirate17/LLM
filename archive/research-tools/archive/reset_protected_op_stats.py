@@ -7,6 +7,7 @@ before root-cause bug fixes were applied.
 Usage:
     python -m research.tools.reset_protected_op_stats [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -117,8 +118,14 @@ def reset_protected_op_stats(dry_run: bool = False) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Reset failure stats for protected ops")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be reset without writing")
+    parser = argparse.ArgumentParser(
+        description="Reset failure stats for protected ops"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be reset without writing",
+    )
     args = parser.parse_args()
     reset_protected_op_stats(dry_run=args.dry_run)
 

@@ -83,7 +83,6 @@ cdef extern from "kernels.h":
 
     # Tier 2 ops
     void aria_sliding_window_mask_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim, int64_t window_size)
-    void aria_sort_seq_f32(const float* x, float* y, int64_t* indices, int64_t batch, int64_t seq, int64_t dim)
     void aria_argsort_seq_f32(const float* x, int64_t* indices, int64_t batch, int64_t seq, int64_t dim)
     void aria_conv1d_seq_f32(const float* x, const float* weight, const float* bias, float* y, int64_t batch, int64_t seq, int64_t dim)
     void aria_fused_linear_gelu_f32(const float* x, const float* W, const float* bias, float* y, int64_t batch, int64_t dim_in, int64_t dim_out)
@@ -218,7 +217,7 @@ _BINARY_OPS = {
 # Extended ops that need 3D dispatch (batch, seq, dim)
 _EXTENDED_OPS = {
     'causal_mask', 'softmax_seq', 'sliding_window_mask',
-    'sort_seq', 'argsort_seq', 'conv1d_seq', 'fused_linear_gelu',
+    'argsort_seq', 'conv1d_seq', 'fused_linear_gelu',
     'swiglu', 'token_pool_restore', 'selective_scan', 'topk_gate',
     'basis_expansion', 'sparse_threshold',
     # Reference architecture ops

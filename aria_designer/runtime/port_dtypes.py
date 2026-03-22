@@ -38,11 +38,19 @@ def find_unsupported_edge_dtype_pairings(
             continue
 
         src_port = next(
-            (p for p in src_comp.get("outputs", []) if isinstance(p, dict) and p.get("name") == source_port_name),
+            (
+                p
+                for p in src_comp.get("outputs", [])
+                if isinstance(p, dict) and p.get("name") == source_port_name
+            ),
             None,
         )
         tgt_port = next(
-            (p for p in tgt_comp.get("inputs", []) if isinstance(p, dict) and p.get("name") == target_port_name),
+            (
+                p
+                for p in tgt_comp.get("inputs", [])
+                if isinstance(p, dict) and p.get("name") == target_port_name
+            ),
             None,
         )
         if src_port is None or tgt_port is None:
@@ -55,9 +63,9 @@ def find_unsupported_edge_dtype_pairings(
 
         # Implicitly compatible pairings (warning, not error)
         _IMPLICIT_COMPAT = {
-            ("complex_tensor", "tensor"),   # runtime takes .real
-            ("tensor", "complex_tensor"),   # runtime zero-fills imaginary
-            ("mask", "tensor"),             # mask is a tensor
+            ("complex_tensor", "tensor"),  # runtime takes .real
+            ("tensor", "complex_tensor"),  # runtime zero-fills imaginary
+            ("mask", "tensor"),  # mask is a tensor
         }
         if (src_dtype, tgt_dtype) in _IMPLICIT_COMPAT:
             continue

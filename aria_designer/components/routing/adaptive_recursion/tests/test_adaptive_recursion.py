@@ -1,4 +1,5 @@
 """Contract tests for adaptive_recursion."""
+
 import yaml
 from pathlib import Path
 

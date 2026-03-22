@@ -13,12 +13,12 @@ residual template in one branch.
 
 from __future__ import annotations
 
-import contextvars
 import random
 from typing import Callable, Dict, Optional, Tuple
 
 from .graph import ComputationGraph
 from .motifs import (
+    MATH_SPACE_RULES,
     MOTIFS_BY_CLASS,
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CHANNEL,
@@ -46,12 +46,6 @@ from .primitives import (
 # Type alias for motif weight dicts passed from judgment engine
 MotifWeights = Optional[Dict[str, float]]
 
-# Thread-safe context for excluded ops — set by apply_template, read by motif pickers
-_excluded_ops_ctx: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
-    "_excluded_ops_ctx",
-    default=frozenset(),
-)
-
 # ── Motif class groupings for slot constraints ──────────────────────
 
 # Slots that accept any sequence mixer
@@ -60,6 +54,7 @@ _MIXER_CLASSES: Tuple[str, ...] = (
     MOTIF_CLASS_SSM,
     MOTIF_CLASS_CONV,
     MOTIF_CLASS_CHANNEL,
+    MOTIF_CLASS_MATH_SPACE,
 )
 
 # Slots that accept any FFN-like transform
@@ -68,6 +63,9 @@ _FFN_CLASSES: Tuple[str, ...] = (
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_SPARSE,
     MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_MOE,
+    MOTIF_CLASS_GUARDED_ACT,
+    MOTIF_CLASS_REDUCE,
 )
 
 # All motif classes
@@ -87,6 +85,12 @@ _ALL_CLASSES: Tuple[str, ...] = (
 )
 
 
+# ── Context-policy imports (canonical owner: context_rules.py) ────
+from .context_rules import (
+    motif_allowed_in_template as _motif_allowed_in_template,
+)
+
+
 # ── Helper: instantiate a motif into a graph ────────────────────────
 
 
@@ -99,13 +103,31 @@ def _instantiate_motif(
     """Add a motif's ops to the graph starting from node_id.
 
     Returns the output node ID. On shape mismatch, returns input node_id.
+    Reads op_weights from graph.metadata["_op_weights"] if present.
     """
     current = node_id
     D = graph.model_dim
-    for step in motif.steps:
-        op_name, config = resolve_step(step, rng)
+    _op_weights = graph.metadata.get("_op_weights")
+    prev_op = (
+        graph.nodes[current].op_name if not graph.nodes[current].is_input else None
+    )
+    for i, step in enumerate(motif.steps):
+        # Peek at next step's op to inform "before" constraint
+        next_step_op = motif.steps[i + 1].op_name if i + 1 < len(motif.steps) else None
+        op_name, config = resolve_step(
+            step, rng, prev_op=prev_op, next_op=next_step_op, op_weights=_op_weights
+        )
         if not _step_is_compatible(graph, current, op_name):
             return node_id
+        # Math-space safety: auto-insert rmsnorm if must_precede is unsatisfied
+        ms_rules = MATH_SPACE_RULES.get(op_name)
+        if ms_rules and "must_precede" in ms_rules:
+            if prev_op not in ms_rules["must_precede"]:
+                try:
+                    current = graph.add_op("rmsnorm", [current])
+                    prev_op = "rmsnorm"
+                except (ValueError, KeyError):
+                    return node_id
         # Auto-fix dim=1 outputs (from reduce_last ops like entropy_router):
         # if the current node reduced to dim=1 and the next op is parameterized,
         # insert a linear_proj to restore model_dim before the next op.
@@ -150,7 +172,10 @@ def _instantiate_motif(
         elif op_name == "multi_head_mix":
             config.setdefault("n_heads", rng.choice([2, 4, 8]))
         elif op_name == "local_window_attn":
-            config.setdefault("window_size", rng.choice([8, 16, 32]))
+            # Cap window_size to avoid Triton shared memory overflow.
+            # At D>=256, W=32 exceeds GPU shared memory (151KB > 100KB).
+            choices = [8, 16] if cur_dim >= 256 else [8, 16, 32]
+            config.setdefault("window_size", rng.choice(choices))
         elif op_name == "sliding_window_mask":
             config.setdefault("window_size", rng.choice([8, 16, 32]))
         elif op_name == "tropical_moe":
@@ -159,10 +184,18 @@ def _instantiate_motif(
             config.setdefault("k", rng.choice([4, 8, 16]))
         elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
             config.setdefault("mlp_ratio", rng.choice([2.0, 3.0, 4.0]))
+        pre_op = current
         try:
             current = graph.add_op(op_name, [current], config=config)
         except (ValueError, KeyError):
             return node_id  # Bail on shape error
+        # Auto-wrap REQUIRES_RESIDUAL_BYPASS ops with add(input, gated)
+        if op_name in REQUIRES_RESIDUAL_BYPASS:
+            current = graph.add_op("add", [pre_op, current])
+        prev_op = op_name
+    # Record motif usage for analytics feedback loop
+    if current != node_id:
+        graph.metadata.setdefault("motifs_used", []).append(motif.name)
     return current
 
 
@@ -186,19 +219,26 @@ def _step_is_compatible(graph: ComputationGraph, node_id: int, op_name: str) -> 
 
 def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) -> bool:
     current_type = _node_output_type(graph, node_id)
+    # Approximate depth of node_id for min_layer_depth check
+    depth = 0
+    nid = node_id
+    while nid in graph.nodes:
+        node = graph.nodes[nid]
+        if node.is_input or not node.input_ids:
+            break
+        nid = node.input_ids[0]
+        depth += 1
     for step in motif.steps:
         step_op = PRIMITIVE_REGISTRY.get(step.op_name)
         if step_op is None or not algebraic_types_compatible(
             current_type, step_op.algebraic_type
         ):
             return False
+        # Reject motif if op requires deeper placement than current position
+        if step_op.min_layer_depth > 0 and depth < step_op.min_layer_depth:
+            return False
         current_type = step_op.algebraic_type
     return True
-
-
-def _motif_has_bypass_op(motif: Motif) -> bool:
-    """Check if any step in motif uses an op that requires residual bypass."""
-    return any(s.op_name in REQUIRES_RESIDUAL_BYPASS for s in motif.steps)
 
 
 def _pick_compatible_motif(
@@ -208,13 +248,13 @@ def _pick_compatible_motif(
     motif_class: str,
     weights: MotifWeights = None,
 ) -> Optional[Motif]:
-    excluded = _excluded_ops_ctx.get()
+    # _instantiate_motif auto-wraps REQUIRES_RESIDUAL_BYPASS ops with add,
+    # so bypass motifs are safe — no need to filter them out.
     candidates = [
         m
         for m in MOTIFS_BY_CLASS.get(motif_class, [])
         if _motif_is_compatible(graph, node_id, m)
-        and not (excluded and any(s.op_name in excluded for s in m.steps))
-        and not _motif_has_bypass_op(m)
+        and _motif_allowed_in_template(m, graph.metadata.get("_active_template"))
     ]
     if not candidates:
         return None
@@ -233,7 +273,6 @@ def _pick_compatible_motif_from_classes(
     classes: Tuple[str, ...] | list[str],
     weights: MotifWeights = None,
 ) -> Optional[Motif]:
-    excluded = _excluded_ops_ctx.get()
     pool = []
     for cls in classes:
         pool.extend(MOTIFS_BY_CLASS.get(cls, []))
@@ -241,8 +280,7 @@ def _pick_compatible_motif_from_classes(
         m
         for m in pool
         if _motif_is_compatible(graph, node_id, m)
-        and not (excluded and any(s.op_name in excluded for s in m.steps))
-        and not _motif_has_bypass_op(m)
+        and _motif_allowed_in_template(m, graph.metadata.get("_active_template"))
     ]
     if not candidates:
         return None
@@ -260,7 +298,7 @@ def _fix_dim(graph: ComputationGraph, node_id: int) -> int:
                 "linear_proj", [node_id], config={"out_dim": graph.model_dim}
             )
         except ValueError:
-            pass
+            return node_id
     return node_id
 
 
@@ -414,6 +452,79 @@ def tpl_parallel_split(
         return path_a
 
     return _fix_dim(graph, merged)
+
+
+def tpl_gated_maximum(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """proj_a → proj_b → maximum(a,b) → linear_proj → residual.
+
+    Element-wise maximum for winner-take-all feature selection.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        maxed = graph.add_op("maximum", [proj_a, proj_b])
+        out = graph.add_op("linear_proj", [maxed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, out])
+    except ValueError:
+        return out
+
+
+def tpl_three_way_split(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → route_lanes(3) → split3 → proj_up → residual_add.
+
+    Routed feature split: route_lanes provides 3-lane difficulty-based
+    routing (learned gate → per-lane transforms), then split3 selects a
+    feature slice from the routed output, and proj_up re-expands to D.
+    The routing decision gives split3 meaningful structure to partition.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        # 3-lane routing: learned gate scores tokens, per-lane transforms
+        routed = graph.add_op("route_lanes", [normed], config={"n_lanes": 3})
+
+        # Ensure 3-divisible for split3
+        shape = graph.nodes[routed].output_shape
+        if shape.dim % 3 != 0:
+            target_dim = max(24, (shape.dim // 3) * 3)
+            routed = graph.add_op(
+                "linear_proj", [routed], config={"out_dim": target_dim}
+            )
+
+        # split3 selects a feature slice — each slice captures one lane's
+        # contribution since route_lanes organizes features by lane
+        split_out = graph.add_op("split3", [routed])
+
+        # Project slice back to full dim and merge with full routed signal
+        expanded = graph.add_op("linear_proj_up", [split_out], config={"out_dim": D})
+        merged = graph.add_op("add", [normed, expanded])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, merged])
+    except ValueError:
+        return merged
 
 
 def tpl_bottleneck(
@@ -582,7 +693,7 @@ def tpl_dense_cascade(
             try:
                 processed = graph.add_op("add", [outputs[0], processed])
             except ValueError:
-                pass
+                processed = processed
         outputs.append(processed)
 
     return outputs[-1]
@@ -913,64 +1024,53 @@ def tpl_cascaded_early_exit(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """motif_1 → early_exit → motif_2 → cascade → residual.
+    """norm → difficulty_scorer → mixer → early_exit(difficulty-weighted) → FFN → residual.
 
-    Progressive depth: easy tokens exit after first motif, medium tokens
-    exit after second, hard tokens go through both. Uses early_exit and
-    cascade ops which apply learned threshold gating.
+    Difficulty-aware early exit following the proven routing pattern:
+    1. token_type_classifier → entropy_score produces per-token difficulty
+    2. Mixer processes the input (attention/linear)
+    3. Difficulty signal is multiplied into mixer output so early_exit's
+       confidence_proj can detect easy vs hard tokens from the signal itself
+    4. early_exit gates easy tokens, FFN processes survivors
+
+    Follows the architecture of difficulty_routed_block (14% S1) rather than
+    the previous 2-stage cascade pattern (0% S1).
     """
-    # Stage 1: first motif block
-    norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    mixer1 = _pick_compatible_motif_from_classes(
-        graph, normed1, rng, _MIXER_CLASSES, weights
-    )
-    if mixer1:
-        stage1 = _instantiate_motif(graph, normed1, mixer1, rng)
-    else:
-        stage1 = normed1
-    stage1 = _fix_dim(graph, stage1)
-
-    # Early exit gate: easy tokens attenuated after stage 1
-    # Residual bypass required: add(stage1, early_exit(stage1)) satisfies
-    # the REQUIRES_RESIDUAL_BYPASS constraint for early_exit.
     try:
-        exit_out = graph.add_op(
-            "early_exit", [stage1], config={"threshold": rng.uniform(0.3, 0.6)}
+        # Difficulty scoring: token_type_classifier → entropy_score
+        classified = graph.add_op(
+            "token_type_classifier", [normed], config={"n_classes": 4}
         )
-        gated1 = graph.add_op("add", [stage1, exit_out])
+        difficulty = graph.add_op("entropy_score", [classified])
+
+        # Mixer: process input with difficulty weighting
+        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        weighted = graph.add_op("mul", [proj, difficulty])
+        mixed = graph.add_op("linear_proj", [weighted], config={"out_dim": D})
+
+        # Early exit gate with residual bypass: add(mixed, early_exit(mixed))
+        # Both add and early_exit share input 'mixed' to satisfy
+        # REQUIRES_RESIDUAL_BYPASS check.
+        exited = graph.add_op("early_exit", [mixed], config={"threshold": 0.5})
+        gated = graph.add_op("add", [mixed, exited])
     except (ValueError, KeyError):
-        gated1 = stage1
+        return tpl_residual_block(graph, input_id, rng, weights)
 
-    # Stage 2: second (deeper) motif block
-    norm2 = _pick_compatible_motif(graph, gated1, rng, MOTIF_CLASS_NORM, weights)
-    normed2 = _instantiate_motif(graph, gated1, norm2, rng) if norm2 else gated1
-
+    # FFN to process the gated output
     ffn = _pick_compatible_motif_from_classes(
-        graph, normed2, rng, _FFN_CLASSES, weights
+        graph, gated, rng, list(_FFN_CLASSES), weights
     )
-    if ffn:
-        stage2 = _instantiate_motif(graph, normed2, ffn, rng)
-    else:
-        stage2 = normed2
-    stage2 = _fix_dim(graph, stage2)
+    processed = _instantiate_motif(graph, gated, ffn, rng) if ffn else gated
+    processed = _fix_dim(graph, processed)
 
-    # Cascade gate: medium tokens attenuated after stage 2
-    # Residual bypass required: add(stage2, cascade(stage2))
     try:
-        cascade_out = graph.add_op(
-            "cascade", [stage2], config={"threshold": rng.uniform(0.4, 0.7)}
-        )
-        gated2 = graph.add_op("add", [stage2, cascade_out])
-    except (ValueError, KeyError):
-        gated2 = stage2
-
-    # Outer residual
-    try:
-        return graph.add_op("add", [input_id, gated2])
+        return graph.add_op("add", [input_id, processed])
     except ValueError:
-        return gated2
+        return processed
 
 
 def tpl_recursive_depth_router(
@@ -1415,19 +1515,63 @@ def tpl_decay_sequence(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """sigmoid → cumprod_safe → linear_proj → residual.
+    """norm → value_proj → decay_weights(sigmoid→cumprod) → mul(value, decay) → proj → [FFN] → residual.
 
-    sigmoid ∈ (0,1) ⇒ cumprod produces monotonically decaying sequence.
+    Exponential decay weighting: cumprod(sigmoid(x)) produces monotonically
+    decaying weights along the sequence. These weights are applied to projected
+    values via element-wise multiply — similar to RWKV time-decay mixing.
+    Previous pattern fed signal directly through cumprod, which decayed to zero.
     """
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        gated = graph.add_op("sigmoid", [proj])
-        decayed = graph.add_op("cumprod_safe", [gated])
-        out = graph.add_op("linear_proj", [decayed], config={"out_dim": D})
+        # Value branch: what to weight
+        value = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        # Decay branch: how to weight (sigmoid bounds to (0,1), cumprod decays)
+        decay_proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        decay_gate = graph.add_op("sigmoid", [decay_proj])
+        decay_weights = graph.add_op("cumprod_safe", [decay_gate])
+        # Apply decay weighting to values
+        weighted = graph.add_op("mul", [value, decay_weights])
+        projected = graph.add_op("linear_proj", [weighted], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_hyp_distance_scoring(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """exp_map(a) → exp_map(b) → hyp_distance(a,b) → linear_proj_up → residual.
+
+    Hyperbolic distance scoring: two projections into Poincaré ball, distance
+    reduces to dim=1, linear_proj_up restores to model_dim.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        map_a = graph.add_op("exp_map", [proj_a])
+        map_b = graph.add_op("exp_map", [proj_b])
+        dist = graph.add_op("hyp_distance", [map_a, map_b])
+        out = graph.add_op("linear_proj_up", [dist], config={"out_dim": D})
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
@@ -1435,6 +1579,1072 @@ def tpl_decay_sequence(
         return graph.add_op("add", [input_id, out])
     except ValueError:
         return out
+
+
+def tpl_tropical_residual(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """rmsnorm → proj_a → proj_b → tropical_add(a,b) → linear_proj → residual.
+
+    Tropical semiring addition (element-wise min) over two projections.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        tadd = graph.add_op("tropical_add", [proj_a, proj_b])
+        out = graph.add_op("linear_proj", [tadd], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, out])
+    except ValueError:
+        return out
+
+
+def tpl_tropical_center_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """layernorm → tropical_attention → tropical_gate → tropical_center → residual.
+
+    Full tropical stack: the proven architecture from 11 S1-passing programs
+    (best lr=0.079). tropical_attention provides min-plus sequence mixing,
+    tropical_gate does shortest-path routing, tropical_center removes the
+    running minimum baseline. All three are needed for learning.
+
+    Satisfies MATH_SPACE_RULES:
+      tropical_attention.must_precede = {rmsnorm, layernorm}  ✓
+      tropical_attention.must_follow_with includes tropical_center  ✓
+      tropical_gate.must_precede = {rmsnorm, layernorm}  ✓ (via tropical_attention)
+      tropical_gate.must_follow_with includes tropical_center  ✓
+      tropical_center.must_follow = {tropical_attention, tropical_gate}  ✓
+      tropical_center.must_follow_with includes linear_proj  ✓
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        attended = graph.add_op("tropical_attention", [normed])
+        gated = graph.add_op("tropical_gate", [attended])
+        centered = graph.add_op("tropical_center", [gated])
+        out = graph.add_op("linear_proj", [centered], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, out])
+    except ValueError:
+        return out
+
+
+def tpl_geometric_product_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → rotor_a → rotor_b → geometric_product(a,b) → grade_select → proj → [FFN] → residual.
+
+    Clifford geometric product: rotor_transform bridges euclidean→multivector.
+    FFN motif provides capacity to interpret the multivector output.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        rotor_a = graph.add_op("rotor_transform", [proj_a])
+        rotor_b = graph.add_op("rotor_transform", [proj_b])
+        product = graph.add_op("geometric_product", [rotor_a, rotor_b])
+        selected = graph.add_op("grade_select", [product])
+        projected = graph.add_op("linear_proj", [selected], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_residual_difference(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj_a → proj_b → sub(a,b) → proj → [FFN] → residual.
+
+    Difference-based feature extraction (contrastive representation).
+    FFN motif provides capacity to learn from the contrastive signal.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        diff = graph.add_op("sub", [proj_a, proj_b])
+        projected = graph.add_op("linear_proj", [diff], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_tropical_matmul(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj_a → proj_b → tropical_matmul(a,b) → proj → [FFN] → residual.
+
+    Tropical (min,+) matmul computes shortest-path distances.
+    FFN motif re-densifies gradients after sparse min-plus operation.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        result = graph.add_op("tropical_matmul", [proj_a, proj_b])
+        projected = graph.add_op("linear_proj", [result], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_gated_minimum(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj_a → proj_b → minimum(a,b) → proj → [FFN] → residual.
+
+    Element-wise minimum for competitive feature selection.
+    FFN motif provides downstream capacity to interpret min-selected features.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        minned = graph.add_op("minimum", [proj_a, proj_b])
+        projected = graph.add_op("linear_proj", [minned], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+# ── Phase 3: Component research templates ────────────────────────────
+# Dedicated templates for 24 underperforming ops. Each template
+# provides a guaranteed path for ops that otherwise never get selected.
+# Built from debug harness profiling (2026-03-21): all ops verified
+# compile+forward+backward in these contexts.
+
+_SPIKING_OPS = frozenset(
+    {"lif_neuron", "spike_rate_code", "sparse_threshold", "stdp_attention"}
+)
+_HYPERBOLIC_OPS = frozenset(
+    {"exp_map", "hyp_linear", "hyp_tangent_nonlinear", "log_map"}
+)
+
+
+def tpl_spiking_residual_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → [spiking motif] → linear_proj → residual_add.
+
+    Forces selection of spiking motifs (lif_neuron → spike_rate_code or
+    lif_neuron → sparse_threshold → stdp_attention chains).
+    """
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Filter to spiking motifs only
+    spiking_motifs = [
+        m
+        for m in MOTIFS_BY_CLASS.get(MOTIF_CLASS_MATH_SPACE, [])
+        if any(s.op_name in _SPIKING_OPS for s in m.steps)
+        and _motif_is_compatible(graph, normed, m)
+    ]
+    if spiking_motifs:
+        motif = rng.choice(spiking_motifs)
+        processed = _instantiate_motif(graph, normed, motif, rng)
+    else:
+        processed = normed
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_spiking_moe_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """[spiking_op] → tropical_gate → linear_proj → residual_add.
+
+    Proven pattern: spiking encoding → tropical routing → projection.
+    spike_rate_code + tropical_moe achieved lr=0.007 (best spiking result).
+    Spiking ops normalize internally via firing rate, so no norm needed.
+    """
+    # Pick a spiking+tropical motif
+    spiking_tropical_motifs = [
+        m
+        for m in MOTIFS_BY_CLASS.get(MOTIF_CLASS_MATH_SPACE, [])
+        if m.name
+        in {
+            "spiking_tropical_gate",
+            "spiking_rate_tropical_gate",
+            "spiking_threshold_tropical_gate",
+        }
+        and _motif_is_compatible(graph, input_id, m)
+    ]
+    if spiking_tropical_motifs:
+        motif = rng.choice(spiking_tropical_motifs)
+        processed = _instantiate_motif(graph, input_id, motif, rng)
+    else:
+        # Fallback: manual construction
+        spiking_ops = ["lif_neuron", "spike_rate_code"]
+        spike_op = rng.choice(spiking_ops)
+        try:
+            spiked = graph.add_op(spike_op, [input_id])
+            gated = graph.add_op("tropical_gate", [spiked])
+            D = graph.model_dim
+            processed = graph.add_op("linear_proj", [gated], config={"out_dim": D})
+        except (ValueError, KeyError):
+            return tpl_residual_block(graph, input_id, rng, weights)
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_hyperbolic_bridge_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → exp_map → hyp_linear → hyp_tangent_nonlinear → log_map → proj → residual.
+
+    Forces the full Poincaré ball round-trip via hyperbolic_residual_bridge motif.
+    """
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Filter to hyperbolic motifs
+    hyp_motifs = [
+        m
+        for m in MOTIFS_BY_CLASS.get(MOTIF_CLASS_SSM, [])
+        if any(s.op_name in _HYPERBOLIC_OPS for s in m.steps)
+        and _motif_is_compatible(graph, normed, m)
+    ]
+    if not hyp_motifs:
+        # Also check math_space class
+        hyp_motifs = [
+            m
+            for m in MOTIFS_BY_CLASS.get(MOTIF_CLASS_MATH_SPACE, [])
+            if any(s.op_name in _HYPERBOLIC_OPS for s in m.steps)
+            and _motif_is_compatible(graph, normed, m)
+        ]
+    if hyp_motifs:
+        motif = rng.choice(hyp_motifs)
+        processed = _instantiate_motif(graph, normed, motif, rng)
+    else:
+        processed = normed
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_n_way_moe_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → n_way_sparse_router → norm → [FFN motif] → residual_add.
+
+    N-way sparse routing with bottleneck experts. Ensures n_ways divides
+    model_dim by choosing from safe divisors.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Pick n_ways that divides D
+    safe_n_ways = [n for n in [2, 4, 8] if D % n == 0]
+    if not safe_n_ways:
+        safe_n_ways = [2]
+    n_ways = rng.choice(safe_n_ways)
+
+    try:
+        routed = graph.add_op(
+            "n_way_sparse_router",
+            [normed],
+            config={"n_ways": n_ways, "top_k": min(2, n_ways)},
+        )
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Post-routing norm + FFN
+    norm2 = _pick_compatible_motif(graph, routed, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, routed, norm2, rng) if norm2 else routed
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, normed2, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, normed2, ffn, rng)
+    else:
+        processed = normed2
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_conv_residual_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → conv_only → [FFN motif] → residual_add.
+
+    Local depthwise conv for short-range mixing + FFN for learning.
+    Satisfies conv_only MATH_SPACE_RULES (must_precede norm, must_follow_with proj).
+    """
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        conved = graph.add_op("conv_only", [normed])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, conved, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, conved, ffn, rng)
+    else:
+        processed = conved
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_causal_mix_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → causal_mask → proj → [FFN motif] → residual_add.
+
+    Causal cumulative average as a lightweight O(S*D) causal mixer.
+    Each token becomes the running mean of itself and all predecessors.
+    FFN after the mixer provides the actual learning capacity.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        mixed = graph.add_op("causal_mask", [normed])
+        projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_iterative_refinement(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → fixed_point_iter → linear_proj → residual_add.
+
+    Damped fixed-point iteration: z = (1-d)*z + d*tanh(z@W+b), repeated n_iters times.
+    Inherently stable due to tanh bounding and damping ∈ [0,1].
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        refined = graph.add_op(
+            "fixed_point_iter",
+            [normed],
+            config={
+                "n_iters": rng.choice([2, 3]),
+                "damping": round(rng.uniform(0.3, 0.7), 2),
+            },
+        )
+        projected = graph.add_op("linear_proj", [refined], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, projected])
+    except ValueError:
+        return projected
+
+
+def tpl_recurrent_delta_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → gated_delta → proj → [FFN motif] → residual_add.
+
+    GatedDeltaNet: recurrent outer-product state with gated decay/update.
+    6D² params — high capacity recurrent mixing + feedforward.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        recurrent = graph.add_op("gated_delta", [normed])
+        projected = graph.add_op("linear_proj", [recurrent], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Optional FFN after recurrence
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+# ── 0% S1 fix: dedicated templates for ops that work in isolation ────
+# but fail in production search. Each template provides the specific
+# architectural context where these ops contribute to learning.
+
+
+def tpl_cumulative_sequence(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → cumsum → norm → proj → residual_add.
+
+    Cumulative sum creates position-aware running statistics. Must be
+    followed by normalization to prevent unbounded growth, then projection
+    to learn from the accumulated signal.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        accumulated = graph.add_op("cumsum", [normed])
+        # Norm after cumsum to bound the growing sum
+        renormed = graph.add_op("rmsnorm", [accumulated])
+        projected = graph.add_op("linear_proj", [renormed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, projected])
+    except ValueError:
+        return projected
+
+
+def tpl_sqrt_gated_ffn(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj_up → sqrt → gate(sigmoid) → proj_down → residual_add.
+
+    Sqrt as a bounded activation: compresses positive values (via abs→sqrt)
+    while sigmoid provides a learned gate. The combination acts as a
+    soft-magnitude attention over features.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        up = graph.add_op("linear_proj_up", [normed], config={"out_dim": D * 2})
+        # abs ensures non-negative input for sqrt
+        abs_val = graph.add_op("abs", [up])
+        sqrted = graph.add_op("sqrt", [abs_val])
+        # Gate branch
+        gate = graph.add_op("sigmoid", [up])
+        gated = graph.add_op("mul", [sqrted, gate])
+        down = graph.add_op("linear_proj_down", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, down])
+    except ValueError:
+        return down
+
+
+def tpl_reduce_attend(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → FFN_path ⊗ reduce_gate → proj → residual_add.
+
+    Squeeze-and-excite style: reduce ops compute per-token feature summary
+    as a side-channel gate, applied to a proper FFN path that carries the
+    actual learning. Without the FFN, the reduce-gate alone has insufficient
+    capacity (scalar → broadcast creates uniform per-feature scaling).
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    reduce_op = rng.choice(["norm_last", "mean_last", "max_last", "sum_last"])
+
+    try:
+        # Primary path: FFN with learned transform (the actual learner)
+        up = graph.add_op("linear_proj_up", [normed], config={"out_dim": D * 4})
+        activated = graph.add_op("gelu", [up])
+        down = graph.add_op("linear_proj_down", [activated], config={"out_dim": D})
+
+        # Side channel: reduce → expand → sigmoid gate
+        reduced = graph.add_op(reduce_op, [normed])  # (B, S, 1)
+        gate_proj = graph.add_op("linear_proj_up", [reduced], config={"out_dim": D})
+        gate = graph.add_op("sigmoid", [gate_proj])
+
+        # Gate modulates FFN output: features scaled by their summary
+        gated = graph.add_op("mul", [down, gate])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, gated])
+    except ValueError:
+        return gated
+
+
+# ── 0% S1 fix round 2: attention, SSM, activation, and structural ops ──
+
+
+def tpl_fused_gelu_ffn(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → fused_linear_gelu ⊗ sigmoid(linear_proj) → proj_down → residual_add.
+
+    Gated FFN: fused_linear_gelu provides GELU-activated up-projection,
+    a parallel linear_proj with sigmoid provides the gate. The element-wise
+    product lets the network selectively suppress features (SwiGLU-style).
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        fused = graph.add_op("fused_linear_gelu", [normed], config={"out_dim": D})
+        gate = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        gate = graph.add_op("sigmoid", [gate])
+        gated = graph.add_op("mul", [fused, gate])
+        down = graph.add_op("linear_proj_down", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, down])
+    except ValueError:
+        return down
+
+
+def tpl_exp_gated_residual(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → exp → rmsnorm → sigmoid_gate → proj → residual_add.
+
+    Exp as a soft attention mechanism: exp amplifies positive features,
+    rmsnorm after exp controls magnitude (prevents explosion during training),
+    sigmoid gate selects which amplified features pass through.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        exped = graph.add_op("exp", [normed])
+        # rmsnorm after exp prevents magnitude explosion
+        stabilized = graph.add_op("rmsnorm", [exped])
+        gate = graph.add_op("sigmoid", [normed])
+        gated = graph.add_op("mul", [stabilized, gate])
+        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, projected])
+    except ValueError:
+        return projected
+
+
+def tpl_integral_kernel_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → integral_kernel → proj → [FFN motif] → residual_add.
+
+    Integral transform kernel: continuous-domain convolution via learned
+    kernel functions. Similar to SSM but with integral operator semantics.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        mixed = graph.add_op("integral_kernel", [normed])
+        projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    # Optional FFN after
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_windowed_attention(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → sliding_window_mask → proj → [FFN motif] → residual_add.
+
+    Sliding window applies local context mixing via exponential-decay
+    weighted sum. The mask has zero learnable params, so an FFN motif
+    provides the downstream learning capacity (same pattern as
+    local_attention_block).
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        windowed = graph.add_op(
+            "sliding_window_mask",
+            [normed],
+            config={"window_size": rng.choice([8, 16, 32])},
+        )
+        projected = graph.add_op("linear_proj", [windowed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_local_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → local_window_attn → proj → [FFN motif] → residual_add.
+
+    Local window attention: efficient O(n*w) attention within sliding windows.
+    Caps window_size to avoid Triton shared memory overflow.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Cap window_size based on dim to avoid shared memory overflow
+    choices = [8, 16] if D >= 256 else [8, 16, 32]
+    try:
+        attended = graph.add_op(
+            "local_window_attn",
+            [normed],
+            config={"window_size": rng.choice(choices)},
+        )
+        projected = graph.add_op("linear_proj", [attended], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_state_space_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → state_space → proj → [FFN motif] → residual_add.
+
+    State-space model (selective scan): linear recurrence with gated updates.
+    Efficient O(n log n) via parallel scan. Norm predecessor bounds scan input.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        ssm_out = graph.add_op("state_space", [normed])
+        projected = graph.add_op("linear_proj", [ssm_out], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_rwkv_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → rwkv_time_mixing → proj → [FFN motif] → residual_add.
+
+    RWKV time-mixing: WKV attention with exponential decay and learned bonus.
+    4D² + 2D params (W_k, W_v, W_r, W_o, w_decay, u_bonus).
+    Similar to state_space but with receptance gating.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        rwkv_out = graph.add_op("rwkv_time_mixing", [normed])
+        projected = graph.add_op("linear_proj", [rwkv_out], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_reciprocal_gated(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → sigmoid → reciprocal → gate(mul) → proj → residual_add.
+
+    Reciprocal as inverse-attention: 1/(1+exp(-x)) → 1/sigmoid(x) maps
+    confident features to ~1.0 and uncertain features to ~2.0, inverting
+    the attention distribution. Sigmoid predecessor bounds reciprocal input.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        sig = graph.add_op("sigmoid", [normed])
+        recip = graph.add_op("reciprocal", [sig])
+        gated = graph.add_op("mul", [normed, recip])
+        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, projected])
+    except ValueError:
+        return projected
+
+
+def tpl_log_gated(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → sigmoid → log → gate(mul) → proj → residual_add.
+
+    Log-compression: sigmoid guarantees positive input (range (0,1)),
+    log compresses to (-inf, 0). Gate controls which log-compressed
+    features pass through, preventing unbounded negative values from
+    dominating the representation.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        bounded = graph.add_op("sigmoid", [normed])
+        logged = graph.add_op("log", [bounded])
+        gate = graph.add_op("sigmoid", [normed])
+        gated = graph.add_op("mul", [logged, gate])
+        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, projected])
+    except ValueError:
+        return projected
+
+
+def tpl_sign_ste_gated(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj → sign_ste → gate(sigmoid) → mul → proj → residual_add.
+
+    Binary quantization via STE: sign binarizes activations while
+    straight-through estimator passes gradients. Sigmoid gate controls
+    which binarized features contribute, preventing sign from zeroing
+    gradient signal entirely.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        projected = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        signed = graph.add_op("sign_ste", [projected])
+        gate = graph.add_op("sigmoid", [projected])
+        gated = graph.add_op("mul", [signed, gate])
+        out = graph.add_op("linear_proj", [gated], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    try:
+        return graph.add_op("add", [input_id, out])
+    except ValueError:
+        return out
+
+
+def tpl_diff_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → diff_attention → proj → [FFN motif] → residual_add.
+
+    Differential attention (Microsoft, ICLR 2025): two softmax maps
+    subtracted to cancel noise. The op handles Q/K/V projection and
+    dual-softmax internally. Template provides normalized input, FFN
+    capacity, and residual connection.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        attended = graph.add_op("diff_attention", [normed])
+        projected = graph.add_op("linear_proj", [attended], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def tpl_graph_attention_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → graph_attention → proj → [FFN motif] → residual_add.
+
+    Graph attention: attention where edge weights are learned per node pair.
+    Higher capacity than softmax attention (2.19x lift in top performers).
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        attended = graph.add_op("graph_attention", [normed])
+        projected = graph.add_op("linear_proj", [attended], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, list(_FFN_CLASSES), weights
+    )
+    if ffn:
+        processed = _instantiate_motif(graph, projected, ffn, rng)
+    else:
+        processed = projected
+
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
 
 
 # ── Template Registry ───────────────────────────────────────────────
@@ -1477,6 +2687,40 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "safe_division": tpl_safe_division,
     "cosine_scoring": tpl_cosine_scoring,
     "decay_sequence": tpl_decay_sequence,
+    "residual_difference": tpl_residual_difference,
+    "gated_minimum": tpl_gated_minimum,
+    "hyp_distance_scoring": tpl_hyp_distance_scoring,
+    "tropical_residual": tpl_tropical_residual,
+    "tropical_matmul_block": tpl_tropical_matmul,
+    "geometric_product_block": tpl_geometric_product_block,
+    "gated_maximum": tpl_gated_maximum,
+    "three_way_split": tpl_three_way_split,
+    # Phase 3: Component research templates (dedicated paths for underperforming ops)
+    "cumulative_sequence": tpl_cumulative_sequence,
+    "sqrt_gated_ffn": tpl_sqrt_gated_ffn,
+    "reduce_attend": tpl_reduce_attend,
+    # 0% S1 fix round 2: attention, SSM, activation, structural
+    "fused_gelu_ffn": tpl_fused_gelu_ffn,
+    "exp_gated_residual": tpl_exp_gated_residual,
+    "integral_kernel_block": tpl_integral_kernel_block,
+    "windowed_attention": tpl_windowed_attention,
+    "local_attention_block": tpl_local_attention_block,
+    "state_space_block": tpl_state_space_block,
+    "rwkv_block": tpl_rwkv_block,
+    "reciprocal_gated": tpl_reciprocal_gated,
+    "diff_attention_block": tpl_diff_attention_block,
+    "graph_attention_block": tpl_graph_attention_block,
+    "spiking_residual_block": tpl_spiking_residual_block,
+    "spiking_moe_block": tpl_spiking_moe_block,
+    "hyperbolic_bridge_block": tpl_hyperbolic_bridge_block,
+    "n_way_moe_block": tpl_n_way_moe_block,
+    "conv_residual_block": tpl_conv_residual_block,
+    "causal_mix_block": tpl_causal_mix_block,
+    "iterative_refinement": tpl_iterative_refinement,
+    "recurrent_delta_block": tpl_recurrent_delta_block,
+    "sign_ste_gated": tpl_sign_ste_gated,
+    "log_gated": tpl_log_gated,
+    "tropical_center_block": tpl_tropical_center_block,
 }
 
 # Default weights — uniform, can be overridden by judgment engine priors
@@ -1512,7 +2756,42 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "gated_product": 2.0,  # Sigmoid-bounded outer product
     "safe_division": 1.5,  # Softmax-denominator division
     "cosine_scoring": 2.0,  # Cosine similarity scoring
-    "decay_sequence": 2.0,  # Sigmoid cumprod decay
+    "decay_sequence": 3.0,  # Sigmoid cumprod decay (only path to cumprod_safe)
+    "residual_difference": 2.5,  # Contrastive sub(a,b)
+    "gated_minimum": 2.5,  # Competitive minimum(a,b)
+    "hyp_distance_scoring": 1.5,  # Hyperbolic distance scoring
+    "tropical_residual": 2.5,  # Tropical semiring add
+    "tropical_matmul_block": 2.5,  # Tropical (min,+) matmul
+    "geometric_product_block": 1.5,  # Clifford geometric product
+    "gated_maximum": 1.5,  # Winner-take-all maximum(a,b)
+    "three_way_split": 2.5,  # 3-way parallel (split3, now auto-projects to 3-divisible dim)
+    # 0% S1 fix: dedicated contexts for ops that need specific surroundings
+    "cumulative_sequence": 2.5,  # cumsum → norm → proj (position-aware running stats)
+    "sqrt_gated_ffn": 2.5,  # abs → sqrt gated by sigmoid (soft magnitude attention)
+    "reduce_attend": 3.0,  # reduce → expand → gate input (feature summary attention)
+    # Phase 3: Component research templates
+    # 0% S1 fix round 2
+    "fused_gelu_ffn": 3.0,  # Fused proj+GELU as FFN (faster than separate)
+    "exp_gated_residual": 2.5,  # Exp amplification gated by sigmoid
+    "integral_kernel_block": 3.0,  # Integral transform kernel (continuous conv)
+    "windowed_attention": 3.0,  # Sliding window mask + attention
+    "local_attention_block": 3.0,  # Local window attention (O(n*w))
+    "state_space_block": 3.5,  # State-space model (parallel scan)
+    "rwkv_block": 3.5,  # RWKV WKV attention (receptance gating, 4D²+2D params)
+    "reciprocal_gated": 2.5,  # Inverse-attention via 1/sigmoid
+    "sign_ste_gated": 2.5,  # Binary quantization via STE + sigmoid gate
+    "log_gated": 2.5,  # Log-compression with sigmoid bounding
+    "tropical_center_block": 2.5,  # Tropical gate → center → proj
+    "diff_attention_block": 3.5,  # Differential attention (Microsoft ICLR 2025)
+    "graph_attention_block": 3.5,  # Graph attention (2.19x lift in top performers)
+    "spiking_residual_block": 3.0,  # Spiking neuromorphic (LIF + STDP chains)
+    "spiking_moe_block": 4.0,  # Spiking + tropical routing (proven lr=0.007)
+    "hyperbolic_bridge_block": 3.0,  # Poincaré ball round-trip (exp→hyp→log)
+    "n_way_moe_block": 3.5,  # N-way sparse routing with bottleneck experts
+    "conv_residual_block": 3.0,  # Depthwise causal conv + FFN
+    "causal_mix_block": 2.5,  # Causal cumulative average + FFN (O(S*D) mixer)
+    "iterative_refinement": 2.5,  # Damped fixed-point iteration
+    "recurrent_delta_block": 3.5,  # GatedDeltaNet recurrence (6D² params)
 }
 
 
@@ -1536,34 +2815,29 @@ def apply_template(
     template_name: Optional[str] = None,
     template_weights: Optional[Dict[str, float]] = None,
     motif_weights: MotifWeights = None,
-    excluded_ops: frozenset = frozenset(),
+    op_weights: Optional[Dict[str, float]] = None,
 ) -> int:
     """Apply a template to the graph. Main entry point for grammar.
 
     If template_name is None, picks one randomly weighted by priors.
-    excluded_ops: ops to filter out of motif selection (e.g. byte-unsafe ops).
+    op_weights biases activation substitution in resolve_step.
     """
-    token = _excluded_ops_ctx.set(excluded_ops)
+    if template_name and template_name in TEMPLATES:
+        name = template_name
+        fn = TEMPLATES[name]
+    else:
+        name, fn = pick_template(rng, template_weights)
+    # Stash op_weights for _instantiate_motif to read
+    if op_weights:
+        graph.metadata["_op_weights"] = op_weights
+    # Tag template usage for analytics feedback loop
+    graph.metadata.setdefault("templates_used", []).append(name)
+    prev_template = graph.metadata.get("_active_template")
+    graph.metadata["_active_template"] = name
     try:
-        if template_name and template_name in TEMPLATES:
-            fn = TEMPLATES[template_name]
-        else:
-            _, fn = pick_template(rng, template_weights)
         return fn(graph, input_id, rng, motif_weights)
     finally:
-        _excluded_ops_ctx.reset(token)
-
-
-# ── Legacy compatibility ────────────────────────────────────────────
-# The old grammar called apply_random_template(graph, node_id, rng, excluded_ops)
-# Keep the signature for any external callers during transition.
-
-
-def apply_random_template(
-    graph: ComputationGraph,
-    node_id: int,
-    rng: random.Random,
-    excluded_ops: set = None,
-) -> int:
-    """Legacy wrapper. Delegates to the new template system."""
-    return apply_template(graph, node_id, rng)
+        if prev_template is None:
+            graph.metadata.pop("_active_template", None)
+        else:
+            graph.metadata["_active_template"] = prev_template

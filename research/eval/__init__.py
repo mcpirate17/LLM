@@ -5,8 +5,8 @@ Sandbox execution, behavioral fingerprinting, and novelty metrics
 for synthesized programs.
 """
 
-from .sandbox import safe_eval, SandboxResult
-from .metrics import novelty_score, NoveltyMetrics
+from .sandbox import safe_eval as safe_eval, SandboxResult as SandboxResult
+from .metrics import novelty_score as novelty_score, NoveltyMetrics as NoveltyMetrics
 
 # Fingerprinting depends on optional native bindings (aria_core). Keep eval package
 # importable for sandbox-only paths even when those bindings are unavailable.

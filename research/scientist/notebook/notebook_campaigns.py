@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -7,29 +8,37 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 
-
 class _CampaignsMixin:
     """Campaigns operations for the Lab Notebook."""
+
     __slots__ = ()
 
     # ── Metrics ──
 
-    def log_metric(self, metric_name: str, value: float,
-                   experiment_id: Optional[str] = None,
-                   metadata: Optional[Dict] = None):
+    def log_metric(
+        self,
+        metric_name: str,
+        value: float,
+        experiment_id: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+    ):
         """Log a time-series metric."""
         self._submit_write(
             """INSERT INTO metrics_log
             (timestamp, experiment_id, metric_name, metric_value, metadata_json)
             VALUES (?, ?, ?, ?, ?)""",
-            (time.time(), experiment_id, metric_name, value,
-             json.dumps(metadata) if metadata else None),
+            (
+                time.time(),
+                experiment_id,
+                metric_name,
+                value,
+                json.dumps(metadata) if metadata else None,
+            ),
         )
 
-
-    def get_metrics(self, metric_name: str,
-                    experiment_id: Optional[str] = None,
-                    limit: int = 1000) -> List[Dict]:
+    def get_metrics(
+        self, metric_name: str, experiment_id: Optional[str] = None, limit: int = 1000
+    ) -> List[Dict]:
         query = "SELECT * FROM metrics_log WHERE metric_name = ?"
         params = [metric_name]
         if experiment_id:
@@ -40,12 +49,15 @@ class _CampaignsMixin:
         rows = self.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
-
     # ── Campaigns ──
 
-    def create_campaign(self, title: str, objective: str,
-                        success_criteria: str,
-                        parent_id: Optional[str] = None) -> str:
+    def create_campaign(
+        self,
+        title: str,
+        objective: str,
+        success_criteria: str,
+        parent_id: Optional[str] = None,
+    ) -> str:
         """Create a new research campaign. Returns campaign_id."""
         campaign_id = str(uuid.uuid4())[:12]
         now = time.time()
@@ -54,12 +66,10 @@ class _CampaignsMixin:
             (campaign_id, timestamp, title, objective, success_criteria,
              status, parent_campaign_id, started_at)
             VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
-            (campaign_id, now, title, objective, success_criteria,
-             parent_id, now),
+            (campaign_id, now, title, objective, success_criteria, parent_id, now),
         )
         self._maybe_commit()
         return campaign_id
-
 
     def get_campaign(self, campaign_id: str) -> Optional[Dict]:
         """Get a campaign by ID."""
@@ -69,7 +79,6 @@ class _CampaignsMixin:
         ).fetchone()
         return dict(row) if row else None
 
-
     def get_active_campaigns(self) -> List[Dict]:
         """Get all active campaigns."""
         rows = self.conn.execute(
@@ -77,12 +86,18 @@ class _CampaignsMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
-
     def update_campaign(self, campaign_id: str, **kwargs) -> None:
         """Update campaign fields."""
-        allowed = {"title", "objective", "success_criteria", "status",
-                    "findings_summary", "completed_at",
-                    "completion_reason", "successor_campaign_id"}
+        allowed = {
+            "title",
+            "objective",
+            "success_criteria",
+            "status",
+            "findings_summary",
+            "completed_at",
+            "completion_reason",
+            "successor_campaign_id",
+        }
         sets = []
         params: List[Any] = []
         for k, v in kwargs.items():
@@ -97,7 +112,6 @@ class _CampaignsMixin:
             params,
         )
         self._maybe_commit()
-
 
     def get_campaign_hypotheses(self, campaign_id: str) -> List[Dict]:
         """Get all hypotheses for a campaign."""
@@ -121,7 +135,6 @@ class _CampaignsMixin:
             hypotheses.append(hypothesis)
         return hypotheses
 
-
     def get_campaign_decisions(self, campaign_id: str) -> List[Dict]:
         """Get all decisions for a campaign."""
         rows = self.conn.execute(
@@ -130,7 +143,6 @@ class _CampaignsMixin:
             (campaign_id,),
         ).fetchall()
         return [dict(r) for r in rows]
-
 
     def evaluate_campaign_criteria(self, campaign_id: str) -> Dict:
         """Evaluate campaign success criteria against measured data.
@@ -149,9 +161,15 @@ class _CampaignsMixin:
 
         campaign = self.get_campaign(campaign_id)
         if not campaign:
-            return {"all_met": False, "n_criteria": 0, "n_passing": 0,
-                    "n_at_risk": 0, "n_not_yet": 0, "stale": False,
-                    "tracker": []}
+            return {
+                "all_met": False,
+                "n_criteria": 0,
+                "n_passing": 0,
+                "n_at_risk": 0,
+                "n_not_yet": 0,
+                "stale": False,
+                "tracker": [],
+            }
 
         experiments = self.get_campaign_experiments(campaign_id)
         hypotheses = self.get_campaign_hypotheses(campaign_id)
@@ -159,7 +177,10 @@ class _CampaignsMixin:
 
         analytics = ExperimentAnalytics(self)
         tracker = analytics.campaign_success_criteria_tracker(
-            campaign, experiments, hypotheses, decisions,
+            campaign,
+            experiments,
+            hypotheses,
+            decisions,
         )
 
         n_passing = sum(1 for t in tracker if t.get("status") == "pass")
@@ -182,4 +203,3 @@ class _CampaignsMixin:
             "stale": stale,
             "tracker": tracker,
         }
-

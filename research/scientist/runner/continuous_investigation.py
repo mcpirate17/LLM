@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-import gc
 import json
 from typing import List, Optional
 
-import torch
+from ..json_utils import json_safe
+
 
 from ...eval.perf_budget import evaluate_perf_budget_gate
 from ...training.training_program import synthesize_training_program_batch
 from ..notebook import LabNotebook
 from ._helpers import (
+    _build_source_map,
     _record_investigation_result,
     _submit_benchmark_eval,
+    clear_gpu_memory,
 )
 from ..llm.context_experiment import (
     build_investigation_context,
@@ -58,7 +60,7 @@ class _ContinuousInvestigationMixin:
             probe_config.n_programs = 1
 
             dev = resolve_device(config.device)
-            dev_str = str(dev)
+            str(dev)
 
             from research.synthesis.compiler import compile_model
 
@@ -117,12 +119,12 @@ class _ContinuousInvestigationMixin:
         # with strong efficiency/novelty/stability deserve investigation
         # even if loss is only moderate.
         eligible = nb.get_investigation_eligible(
-            max_lr=config.pre_inv_max_lr,
+            _max_lr=config.pre_inv_max_lr,
             min_stability=config.pre_inv_min_stability,
             min_spectral_norm=config.pre_inv_min_spectral_norm,
             max_spectral_norm=config.pre_inv_max_spectral_norm,
             min_improvement_rate=config.pre_inv_min_improvement_rate,
-            ref_lr_ceiling=self._reference_margin_ceiling(config, nb),
+            _ref_lr_ceiling=self._reference_margin_ceiling(config, nb),
         )
 
         # Filter out already-investigated fingerprints
@@ -142,11 +144,71 @@ class _ContinuousInvestigationMixin:
 
         if not eligible:
             logger.info("Pre-inv gate Stage A: no eligible candidates")
-            return []
+            # Even with zero eligible, reprieve candidates may exist
+            if not config.slope_reprieve_enabled:
+                return []
+            # Fall through to reprieve check below
 
         logger.info(
             "Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible)
         )
+
+        # ── Slope reprieve: rescue high-slope candidates that failed Stage A ──
+        cycle_reprieve_count = 0
+        if config.slope_reprieve_enabled:
+            eligible_ids = {r["result_id"] for r in eligible}
+            reprieve_candidates = self._get_slope_reprieve_candidates(
+                config,
+                nb,
+                investigated_fps,
+                eligible_ids,
+            )
+            for rc in reprieve_candidates:
+                if cycle_reprieve_count >= config.slope_reprieve_max_per_cycle:
+                    break
+                loss_ratio = (
+                    rc.get("loss_ratio") or rc.get("screening_loss_ratio") or 1.0
+                )
+                slope = rc.get("screening_slope") or 0.0
+                consistent = bool(rc.get("screening_slope_consistent"))
+                reprieve_eligible = (
+                    float(loss_ratio) < config.slope_reprieve_loss_floor
+                    and float(slope) >= config.slope_reprieve_threshold
+                    and (not config.slope_reprieve_consistent_required or consistent)
+                )
+                if reprieve_eligible:
+                    rc["_screening_reprieve"] = True
+                    rc["_reprieve_reason"] = (
+                        f"slope={slope:.4f}"
+                        f"_consistent={consistent}"
+                        f"_loss={float(loss_ratio):.4f}"
+                    )
+                    cycle_reprieve_count += 1
+                    eligible.append(rc)
+                    logger.info(
+                        "screening_reprieve_granted result_id=%s loss_ratio=%.4f "
+                        "slope=%.4f consistent=%s cycle_reprieve_count=%d",
+                        rc["result_id"][:8],
+                        float(loss_ratio),
+                        float(slope),
+                        consistent,
+                        cycle_reprieve_count,
+                    )
+                else:
+                    logger.info(
+                        "screening_reprieve_denied result_id=%s loss_ratio=%.4f "
+                        "slope=%s consistent=%s reason=%s",
+                        rc["result_id"][:8],
+                        float(loss_ratio),
+                        slope,
+                        consistent,
+                        "above_floor"
+                        if float(loss_ratio) >= config.slope_reprieve_loss_floor
+                        else "slope_insufficient",
+                    )
+
+        if not eligible:
+            return []
 
         # ── Stage B: Composite score + rank ──
         ref_lr = self._get_reference_baseline_lr(nb)
@@ -157,8 +219,15 @@ class _ContinuousInvestigationMixin:
             if j is not None and isinstance(j, (int, float)) and j > 0.5:
                 base *= 1.0 + 0.15 * min(1.0, (j - 0.5) * 2.0)
             row["_pre_inv_score"] = base
+            # Apply reprieve score multiplier
+            multiplier = (
+                config.slope_reprieve_score_multiplier
+                if row.get("_screening_reprieve")
+                else 1.0
+            )
+            row["_pre_inv_effective_score"] = base * multiplier
 
-        eligible.sort(key=lambda r: r.get("_pre_inv_score", 0), reverse=True)
+        eligible.sort(key=lambda r: r.get("_pre_inv_effective_score", 0), reverse=True)
         top_n = eligible[: config.pre_inv_top_n]
 
         # Persist scores to leaderboard
@@ -178,10 +247,14 @@ class _ContinuousInvestigationMixin:
         logger.info(
             "Pre-inv gate Stage B: top %d scored [%s]",
             len(top_n),
-            ", ".join(f"{r['result_id'][:8]}={r['_pre_inv_score']:.1f}" for r in top_n),
+            ", ".join(
+                f"{r['result_id'][:8]}={r.get('_pre_inv_effective_score', 0):.1f}"
+                f"{'(R)' if r.get('_screening_reprieve') else ''}"
+                for r in top_n
+            ),
         )
 
-        # ── Stage C: Optional probe ──
+        # ── Stage C: Optional probe + reprieve eval ──
         if config.pre_inv_probe_enabled:
             probed = []
             for row in top_n:
@@ -196,6 +269,34 @@ class _ContinuousInvestigationMixin:
                     continue
                 probed.append(row)
             top_n = probed
+
+        # Reprieve eval: 150-step extended screening for reprieve candidates
+        if config.slope_reprieve_enabled:
+            reprieve_passed = []
+            for row in top_n:
+                if not row.get("_screening_reprieve"):
+                    reprieve_passed.append(row)
+                    continue
+                reprieve_lr = self._run_reprieve_eval(config, nb, row)
+                if reprieve_lr is None or reprieve_lr >= 0.40:
+                    logger.info(
+                        "reprieve_eval_failed result_id=%s reprieve_loss_ratio=%s "
+                        "original_loss_ratio=%s",
+                        row["result_id"][:8],
+                        f"{reprieve_lr:.4f}" if reprieve_lr is not None else "None",
+                        row.get("loss_ratio"),
+                    )
+                    continue
+                logger.info(
+                    "reprieve_eval_passed result_id=%s reprieve_loss_ratio=%.4f "
+                    "original_loss_ratio=%s",
+                    row["result_id"][:8],
+                    reprieve_lr,
+                    row.get("loss_ratio"),
+                )
+                row["_reprieve_eval_loss_ratio"] = reprieve_lr
+                reprieve_passed.append(row)
+            top_n = reprieve_passed
 
         result_ids = [r["result_id"] for r in top_n if r.get("result_id")]
 
@@ -284,6 +385,99 @@ class _ContinuousInvestigationMixin:
 
         return candidates
 
+    def _get_slope_reprieve_candidates(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        investigated_fps: set,
+        already_eligible_ids: set,
+    ) -> list:
+        """Query for screening candidates with high loss_ratio but good slope.
+
+        Returns rows that passed health checks but have loss_ratio >= 0.40
+        and screening_slope data available. Caller filters by threshold/consistency.
+        """
+        try:
+            rows = nb.conn.execute(
+                """SELECT pr.*, l.entry_id, l.tier, l.composite_score,
+                          l.screening_loss_ratio, l.screening_novelty,
+                          l.pre_inv_score, l.is_reference, l.reference_name
+                   FROM program_results pr
+                   JOIN leaderboard l ON l.result_id = pr.result_id
+                   WHERE l.tier = 'screening'
+                     AND COALESCE(l.is_reference, 0) = 0
+                     AND pr.stage1_passed = 1
+                     AND COALESCE(pr.has_nan_grad, 0) = 0
+                     AND COALESCE(pr.has_nan_output, 0) = 0
+                     AND COALESCE(pr.has_inf_output, 0) = 0
+                     AND COALESCE(pr.has_zero_grad, 0) = 0
+                     AND COALESCE(pr.graph_has_gradient_path, 1) = 1
+                     AND pr.loss_ratio >= 0.40
+                     AND pr.screening_slope IS NOT NULL
+                   ORDER BY pr.screening_slope DESC
+                   LIMIT ?""",
+                (config.slope_reprieve_max_per_cycle * 3,),
+            ).fetchall()
+        except Exception as e:
+            logger.debug("Slope reprieve query failed: %s", e)
+            return []
+
+        candidates = []
+        for r in rows:
+            row = dict(r)
+            rid = row.get("result_id")
+            fp = row.get("graph_fingerprint")
+            if not rid or rid in already_eligible_ids:
+                continue
+            if investigated_fps and fp in investigated_fps:
+                continue
+            candidates.append(row)
+        return candidates
+
+    def _run_reprieve_eval(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        row: dict,
+    ) -> Optional[float]:
+        """Run extended screening eval for a reprieve candidate.
+
+        Returns loss_ratio from the extended eval, or None on failure.
+        """
+        from ..shared_utils import resolve_device
+
+        result_id = row["result_id"]
+        try:
+            details = nb.get_program_details([result_id])
+            if not details or not details[0]:
+                return None
+            source = details[0]
+            graph_json = source.get("graph_json")
+            if not graph_json:
+                return None
+
+            reprieve_config = RunConfig.from_dict(config.to_dict())
+            reprieve_config.stage1_steps = config.slope_reprieve_eval_steps
+            reprieve_config.stage1_batch_size = config.stage1_batch_size
+            reprieve_config.n_programs = 1
+
+            dev = resolve_device(config.device)
+
+            from research.synthesis.compiler import compile_model
+
+            model = compile_model(graph_json, reprieve_config, device=dev)
+            if model is None:
+                return None
+
+            from research.evaluator import evaluate_stage1
+
+            result = evaluate_stage1(model, reprieve_config, device=dev)
+            lr = result.get("loss_ratio") if result else None
+            return float(lr) if lr is not None else None
+        except Exception as e:
+            logger.warning("Reprieve eval failed for %s: %s", result_id[:8], e)
+            return None
+
     def _reference_margin_ceiling(
         self, config: RunConfig, nb: LabNotebook
     ) -> Optional[float]:
@@ -313,9 +507,8 @@ class _ContinuousInvestigationMixin:
             return
 
         # Build context for hypothesis formulation
-        inv_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-        inv_map = {d.get("result_id"): d for d in inv_details if d.get("result_id")}
-        inv_context = build_investigation_context(inv_details, leaderboard)
+        inv_map = _build_source_map(nb, result_ids)
+        inv_context = build_investigation_context(list(inv_map.values()), leaderboard)
         hypothesis = self.aria.formulate_investigation_hypothesis(context=inv_context)
         exp_id = self._start_preregistered_experiment(
             nb=nb,
@@ -367,19 +560,22 @@ class _ContinuousInvestigationMixin:
             }
 
             dev = resolve_device(config.device)
-            dev_str = str(dev)
+            str(dev)
 
             inv_config = RunConfig.from_dict(config.to_dict())
             inv_config.stage1_steps = config.investigation_steps
             inv_config.stage1_batch_size = config.investigation_batch_size
+            # Scale early stopping for longer investigation runs.
+            step_ratio = config.investigation_steps / max(config.stage1_steps, 1)
+            inv_config.early_stop_patience = int(
+                config.early_stop_patience * step_ratio
+            )
+            inv_config.early_stop_min_steps = int(
+                config.early_stop_min_steps * step_ratio
+            )
 
             # Fetch all sources at once to avoid N+1 queries
-            program_details = [
-                d or {} for d in (nb.get_program_details(result_ids) or [])
-            ]
-            source_map = {
-                d.get("result_id"): d for d in program_details if d.get("result_id")
-            }
+            _build_source_map(nb, result_ids)
 
             for prog_idx, source_result_id in enumerate(result_ids):
                 if self._stop_event.is_set():
@@ -393,14 +589,15 @@ class _ContinuousInvestigationMixin:
                     logger.info("Cost limit reached during investigation")
                     break
 
-                with self._lock:
-                    self._progress.current_program = prog_idx + 1
-                    self._progress.status = "investigating"
-                    self._progress.aria_message = (
+                self._update_progress(
+                    current_program=prog_idx + 1,
+                    status="investigating",
+                    aria_message=(
                         f"Investigating {prog_idx + 1}/{len(result_ids)}: "
                         f"{source_result_id[:8]}... "
                         f"({config.n_training_programs} training programs)"
-                    )
+                    ),
+                )
 
                 self._emit_event(
                     "investigation_progress",
@@ -438,6 +635,8 @@ class _ContinuousInvestigationMixin:
 
                 # Test each (model x training_program) pair
                 tp_results = []
+                _best_inv_model = None
+                _best_inv_model_lr = float("inf")
                 for tp_i, tp in enumerate(training_programs):
                     if self._stop_event.is_set():
                         break
@@ -488,10 +687,19 @@ class _ContinuousInvestigationMixin:
                         }
                     )
 
-                    del model
-                    if dev.type == "cuda":
-                        torch.cuda.empty_cache()
-                    gc.collect()
+                    # Retain the best-performing model for post-investigation
+                    # fingerprint completion (needs converged representations).
+                    _this_lr = tp_result.get("loss_ratio")
+                    if _this_lr is not None and (
+                        _best_inv_model is None or _this_lr < _best_inv_model_lr
+                    ):
+                        if _best_inv_model is not None:
+                            del _best_inv_model
+                        _best_inv_model = model
+                        _best_inv_model_lr = _this_lr
+                    else:
+                        del model
+                    clear_gpu_memory()
 
                 # Skip candidates where no training program could reconstruct the model
                 if not tp_results:
@@ -527,6 +735,65 @@ class _ContinuousInvestigationMixin:
                 investigation_passed_early = (best_lr or 1.0) < 0.5 and (
                     not brittle_risk or (best_lr is not None and best_lr < 0.3)
                 )
+
+                # Post-investigation fingerprint completion
+                _fp_dict = source.get("_behavioral_fingerprint")
+                if _best_inv_model is not None and _fp_dict is not None:
+                    try:
+                        from ...eval.fingerprint import (
+                            BehavioralFingerprint,
+                            complete_fingerprint_post_investigation,
+                        )
+
+                        _fp = BehavioralFingerprint(
+                            **{
+                                k: v
+                                for k, v in _fp_dict.items()
+                                if k
+                                in {
+                                    f.name
+                                    for f in BehavioralFingerprint.__dataclass_fields__.values()
+                                }
+                            }
+                        )
+                        if not _fp.fingerprint_completed_post_investigation:
+                            _fp = complete_fingerprint_post_investigation(
+                                _fp,
+                                _best_inv_model,
+                                seq_len=min(64, config.max_seq_len),
+                                model_dim=config.model_dim,
+                                vocab_size=config.vocab_size,
+                                device=str(dev),
+                            )
+                            source["_behavioral_fingerprint"] = _fp.to_dict()
+                            source["novelty_confidence"] = (
+                                0.9
+                                if _fp.quality == "full"
+                                else 0.4 + (_fp.analyses_succeeded * 0.1)
+                                if _fp.quality == "partial"
+                                else 0.3
+                            )
+                            logger.info(
+                                "post_investigation_fingerprint_completed: "
+                                "result_id=%s novelty_score=%.4f "
+                                "novelty_valid=%s cka_source=%s",
+                                source_result_id[:12],
+                                _fp.novelty_score,
+                                _fp.novelty_valid_for_promotion,
+                                _fp.cka_source,
+                            )
+                    except Exception as e:
+                        logger.error(
+                            "post_investigation_fingerprint_failed: "
+                            "result_id=%s error=%s",
+                            source_result_id[:12],
+                            str(e),
+                        )
+
+                if _best_inv_model is not None:
+                    del _best_inv_model
+                    _best_inv_model = None
+                    clear_gpu_memory()
 
                 investigation_entry = {
                     "result_id": source_result_id,
@@ -569,7 +836,7 @@ class _ContinuousInvestigationMixin:
                 if best_tp and best_tp.get("training_program"):
                     for tp in training_programs:
                         if tp.name == best_tp["training_program"]:
-                            best_tp_json = json.dumps(tp.to_dict())
+                            best_tp_json = json.dumps(json_safe(tp.to_dict()))
                             break
 
                 # Brittle risk override: if the investigation LR is good on

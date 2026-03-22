@@ -33,10 +33,15 @@ def _env(**values):
 def test_safe_eval_stage_default_probe_enabled_primary_disabled():
     runner = ExperimentRunner.__new__(ExperimentRunner)
 
-    with _env(
-        NATIVE_RUNNER_ABI_PRIMARY_STAGES="",
-        NATIVE_RUNNER_ABI_PROBE_STAGES="",
-    ), patch("research.scientist.runner.screening.safe_eval", return_value=object()) as mocked:
+    with (
+        _env(
+            NATIVE_RUNNER_ABI_PRIMARY_STAGES="",
+            NATIVE_RUNNER_ABI_PROBE_STAGES="",
+        ),
+        patch(
+            "research.scientist.runner.screening.safe_eval", return_value=object()
+        ) as mocked,
+    ):
         runner._safe_eval_for_stage(
             object(),
             stage_tag="candidate_screening",
@@ -53,10 +58,15 @@ def test_safe_eval_stage_default_probe_enabled_primary_disabled():
 def test_safe_eval_stage_primary_routing_for_selected_stage():
     runner = ExperimentRunner.__new__(ExperimentRunner)
 
-    with _env(
-        NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening,evolution_fitness",
-        NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
-    ), patch("research.scientist.runner.screening.safe_eval", return_value=object()) as mocked:
+    with (
+        _env(
+            NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening,evolution_fitness",
+            NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
+        ),
+        patch(
+            "research.scientist.runner.screening.safe_eval", return_value=object()
+        ) as mocked,
+    ):
         runner._safe_eval_for_stage(
             object(),
             stage_tag="candidate_screening",
@@ -73,10 +83,15 @@ def test_safe_eval_stage_primary_routing_for_selected_stage():
 def test_safe_eval_stage_probe_can_be_disabled_per_stage():
     runner = ExperimentRunner.__new__(ExperimentRunner)
 
-    with _env(
-        NATIVE_RUNNER_ABI_PRIMARY_STAGES="*",
-        NATIVE_RUNNER_ABI_PROBE_STAGES="ablation",
-    ), patch("research.scientist.runner.screening.safe_eval", return_value=object()) as mocked:
+    with (
+        _env(
+            NATIVE_RUNNER_ABI_PRIMARY_STAGES="*",
+            NATIVE_RUNNER_ABI_PROBE_STAGES="ablation",
+        ),
+        patch(
+            "research.scientist.runner.screening.safe_eval", return_value=object()
+        ) as mocked,
+    ):
         runner._safe_eval_for_stage(
             object(),
             stage_tag="graph_candidate_gen",
@@ -98,10 +113,13 @@ def test_safe_eval_stage_updates_progress_with_abi_probe_payload():
     class _Res:
         native_abi_probe = {"attempted": True, "succeeded": True, "parity_pass": True}
 
-    with _env(
-        NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening",
-        NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
-    ), patch("research.scientist.runner.screening.safe_eval", return_value=_Res()):
+    with (
+        _env(
+            NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening",
+            NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
+        ),
+        patch("research.scientist.runner.screening.safe_eval", return_value=_Res()),
+    ):
         runner._safe_eval_for_stage(
             object(),
             stage_tag="candidate_screening",
@@ -122,14 +140,22 @@ def test_safe_eval_stage_records_parity_result_when_sampled():
     runner._progress = LiveProgress()
 
     class _Res:
-        native_abi_probe = {"attempted": True, "parity_attempted": True, "parity_pass": False}
+        native_abi_probe = {
+            "attempted": True,
+            "parity_attempted": True,
+            "parity_pass": False,
+        }
 
-    with _env(
-        NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening",
-        NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
-    ), patch("research.scientist.runner.screening.safe_eval", return_value=_Res()), patch(
-        "research.scientist.runner.screening.record_native_abi_parity_result"
-    ) as mock_record:
+    with (
+        _env(
+            NATIVE_RUNNER_ABI_PRIMARY_STAGES="candidate_screening",
+            NATIVE_RUNNER_ABI_PROBE_STAGES="candidate_screening",
+        ),
+        patch("research.scientist.runner.screening.safe_eval", return_value=_Res()),
+        patch(
+            "research.scientist.runner.screening.record_native_abi_parity_result"
+        ) as mock_record,
+    ):
         runner._safe_eval_for_stage(
             object(),
             stage_tag="candidate_screening",

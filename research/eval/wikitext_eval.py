@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 _WIKITEXT_CACHE_DIR = Path.home() / ".cache" / "aria" / "wikitext"
 
 # Subset sizes (chars) to keep evaluation fast
-_DEFAULT_MAX_CHARS_TRAIN = 500_000   # ~500KB of WikiText for micro-training
-_DEFAULT_MAX_CHARS_VAL = 50_000      # ~50KB for validation perplexity
+_DEFAULT_MAX_CHARS_TRAIN = 500_000  # ~500KB of WikiText for micro-training
+_DEFAULT_MAX_CHARS_VAL = 50_000  # ~50KB for validation perplexity
 
 # Screening defaults — smaller budget for fast turnaround
 _SCREENING_MAX_CHARS_TRAIN = 100_000
@@ -49,7 +49,7 @@ _SCREENING_METRIC_VERSION = "screening_wikitext_v1"
 # ~103M tokens train, ~250K tokens val — 50x larger than WikiText-2.
 WIKITEXT_103_VARIANT = "wikitext-103-raw-v1"
 _WIKITEXT_103_MAX_CHARS_TRAIN = 20_000_000  # 20MB — enough for 4000 unique batches
-_WIKITEXT_103_MAX_CHARS_VAL = 200_000       # 200KB val for reliable PPL
+_WIKITEXT_103_MAX_CHARS_VAL = 200_000  # 200KB val for reliable PPL
 
 
 def screening_wikitext_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -204,12 +204,26 @@ def _prepare_batches(
 ) -> Tuple[Optional[List[torch.Tensor]], Optional[List[torch.Tensor]], int, int]:
     """Prepare train/val batches with caching. Returns (train, val, n_train_tok, n_val_tok)."""
     train = _get_cached_batches(
-        variant, vocab_size, seq_len, train_batch_size,
-        n_train_batches, max_chars_train, device, "train", 42,
+        variant,
+        vocab_size,
+        seq_len,
+        train_batch_size,
+        n_train_batches,
+        max_chars_train,
+        device,
+        "train",
+        42,
     )
     val = _get_cached_batches(
-        variant, vocab_size, seq_len, eval_batch_size,
-        n_eval_batches, max_chars_val, device, "validation", 123,
+        variant,
+        vocab_size,
+        seq_len,
+        eval_batch_size,
+        n_eval_batches,
+        max_chars_val,
+        device,
+        "validation",
+        123,
     )
     if train is not None and val is not None:
         return train, val, -1, -1  # -1 = cached, counts unknown
@@ -222,18 +236,36 @@ def _prepare_batches(
         return None, None, len(train_tokens), len(val_tokens)
 
     if train is None:
-        train = make_batches(train_tokens, train_batch_size, seq_len, n_train_batches, device, seed=42)
+        train = make_batches(
+            train_tokens, train_batch_size, seq_len, n_train_batches, device, seed=42
+        )
         if train:
             _put_cached_batches(
-                variant, vocab_size, seq_len, train_batch_size,
-                n_train_batches, max_chars_train, "train", 42, train,
+                variant,
+                vocab_size,
+                seq_len,
+                train_batch_size,
+                n_train_batches,
+                max_chars_train,
+                "train",
+                42,
+                train,
             )
     if val is None:
-        val = make_batches(val_tokens, eval_batch_size, seq_len, n_eval_batches, device, seed=123)
+        val = make_batches(
+            val_tokens, eval_batch_size, seq_len, n_eval_batches, device, seed=123
+        )
         if val:
             _put_cached_batches(
-                variant, vocab_size, seq_len, eval_batch_size,
-                n_eval_batches, max_chars_val, "validation", 123, val,
+                variant,
+                vocab_size,
+                seq_len,
+                eval_batch_size,
+                n_eval_batches,
+                max_chars_val,
+                "validation",
+                123,
+                val,
             )
 
     return train, val, len(train_tokens), len(val_tokens)
@@ -241,7 +273,10 @@ def _prepare_batches(
 
 # ── Score helper ─────────────────────────────────────────────────────────
 
-def wikitext_score_from_ppl(ppl: Optional[float], vocab_size: int = VOCAB_SIZE) -> Optional[float]:
+
+def wikitext_score_from_ppl(
+    ppl: Optional[float], vocab_size: int = VOCAB_SIZE
+) -> Optional[float]:
     """log(vocab/ppl) / log(vocab) — 1.0 for perfect, 0.0 for random."""
     if ppl is None or ppl <= 0:
         return None
@@ -252,6 +287,7 @@ def wikitext_score_from_ppl(ppl: Optional[float], vocab_size: int = VOCAB_SIZE) 
 
 
 # ── Screening evaluation (non-invasive) ─────────────────────────────────
+
 
 def screening_wikitext_eval(
     model: nn.Module,
@@ -292,9 +328,15 @@ def screening_wikitext_eval(
     # Prepare batches (cached across candidates within one process)
     try:
         train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
-            variant, vocab_size, seq_len, batch_size, batch_size,
-            n_train_batches, n_eval_batches,
-            _SCREENING_MAX_CHARS_TRAIN, _SCREENING_MAX_CHARS_VAL,
+            variant,
+            vocab_size,
+            seq_len,
+            batch_size,
+            batch_size,
+            n_train_batches,
+            n_eval_batches,
+            _SCREENING_MAX_CHARS_TRAIN,
+            _SCREENING_MAX_CHARS_VAL,
             device,
         )
     except Exception as exc:
@@ -303,7 +345,12 @@ def screening_wikitext_eval(
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return meta
 
-    if train_batches is None or val_batches is None or not train_batches or not val_batches:
+    if (
+        train_batches is None
+        or val_batches is None
+        or not train_batches
+        or not val_batches
+    ):
         meta["screening_wikitext_status"] = "insufficient_tokens"
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return meta
@@ -322,10 +369,15 @@ def screening_wikitext_eval(
         # Pre-training perplexity (eval mode on clone)
         pre_ppl = compute_perplexity(clone, val_batches, vocab_size)
 
-        # Micro-train the clone
+        # Micro-train the clone, recording per-step loss trajectory
+        loss_trajectory: dict = {}
         train_final_loss = micro_train_loop(
-            clone, train_batches, vocab_size,
-            n_steps=n_train_steps, lr=lr,
+            clone,
+            train_batches,
+            vocab_size,
+            n_steps=n_train_steps,
+            lr=lr,
+            loss_trajectory=loss_trajectory,
         )
 
         # Post-training perplexity
@@ -335,12 +387,37 @@ def screening_wikitext_eval(
         if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
             ppl_improvement = round(post_ppl / pre_ppl, 4)
 
-        meta["wikitext_perplexity"] = round(post_ppl, 2) if post_ppl is not None else None
-        meta["wikitext_pre_perplexity"] = round(pre_ppl, 2) if pre_ppl is not None else None
+        meta["wikitext_perplexity"] = (
+            round(post_ppl, 2) if post_ppl is not None else None
+        )
+        meta["wikitext_pre_perplexity"] = (
+            round(pre_ppl, 2) if pre_ppl is not None else None
+        )
         meta["wikitext_score"] = wikitext_score_from_ppl(post_ppl, vocab_size)
         meta["wikitext_ppl_improvement"] = ppl_improvement
         meta["train_final_loss"] = round(train_final_loss, 6)
         meta["screening_wikitext_status"] = "ok"
+
+        # Slope trajectory: sample at steps 10, 25, and final (50)
+        sl_10 = loss_trajectory.get(10)
+        sl_25 = loss_trajectory.get(25)
+        sl_50 = loss_trajectory.get(n_train_steps)
+        meta["screening_loss_10"] = round(sl_10, 6) if sl_10 is not None else None
+        meta["screening_loss_25"] = round(sl_25, 6) if sl_25 is not None else None
+        meta["screening_loss_50"] = round(sl_50, 6) if sl_50 is not None else None
+
+        if sl_10 is not None and sl_50 is not None:
+            # positive = improving, negative = diverging
+            meta["screening_slope"] = round((sl_10 - sl_50) / 40.0, 6)
+        else:
+            meta["screening_slope"] = None
+
+        if sl_10 is not None and sl_25 is not None and sl_50 is not None:
+            interval_1 = (sl_10 - sl_25) / 15.0
+            interval_2 = (sl_25 - sl_50) / 25.0
+            meta["screening_slope_consistent"] = bool(interval_1 > 0 and interval_2 > 0)
+        else:
+            meta["screening_slope_consistent"] = None
     except Exception as exc:
         meta["screening_wikitext_status"] = "eval_failed"
         meta["error"] = str(exc)
@@ -355,6 +432,7 @@ def screening_wikitext_eval(
 
 
 # ── Full evaluation (investigation/validation) ──────────────────────────
+
 
 def evaluate_wikitext_perplexity(
     model: nn.Module,
@@ -381,16 +459,27 @@ def evaluate_wikitext_perplexity(
 
     try:
         train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
-            variant, vocab_size, seq_len, train_batch_size, eval_batch_size,
-            n_train_batches, n_eval_batches,
-            max_chars_train, max_chars_val,
+            variant,
+            vocab_size,
+            seq_len,
+            train_batch_size,
+            eval_batch_size,
+            n_train_batches,
+            n_eval_batches,
+            max_chars_train,
+            max_chars_val,
             device,
         )
     except Exception as e:
         logger.warning("WikiText data preparation failed: %s", e)
         return {"wikitext_perplexity": None, "error": f"data_failed: {e}"}
 
-    if train_batches is None or val_batches is None or not train_batches or not val_batches:
+    if (
+        train_batches is None
+        or val_batches is None
+        or not train_batches
+        or not val_batches
+    ):
         return {
             "wikitext_perplexity": None,
             "error": "insufficient_tokens",
@@ -401,8 +490,11 @@ def evaluate_wikitext_perplexity(
     pre_ppl = compute_perplexity(model, val_batches, vocab_size)
 
     train_final_loss = micro_train_loop(
-        model, train_batches, vocab_size,
-        n_steps=n_train_steps, lr=lr,
+        model,
+        train_batches,
+        vocab_size,
+        n_steps=n_train_steps,
+        lr=lr,
     )
 
     post_ppl = compute_perplexity(model, val_batches, vocab_size)
@@ -469,9 +561,15 @@ def evaluate_wikitext_trajectory(
 
     try:
         train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
-            variant, vocab_size, seq_len, train_batch_size, eval_batch_size,
-            n_train_batches, n_eval_batches,
-            max_chars_train, max_chars_val,
+            variant,
+            vocab_size,
+            seq_len,
+            train_batch_size,
+            eval_batch_size,
+            n_train_batches,
+            n_eval_batches,
+            max_chars_train,
+            max_chars_val,
             device,
         )
     except Exception as e:
@@ -497,7 +595,9 @@ def evaluate_wikitext_trajectory(
     lr_warmup = lr * 10.0
     opt = torch.optim.AdamW(model.parameters(), lr=lr_warmup)
     scheduler = torch.optim.lr_scheduler.LinearLR(
-        opt, start_factor=1.0, end_factor=lr / lr_warmup,
+        opt,
+        start_factor=1.0,
+        end_factor=lr / lr_warmup,
         total_iters=warmup_steps,
     )
     step = 0
@@ -507,7 +607,9 @@ def evaluate_wikitext_trajectory(
         if diverged:
             # Still record the checkpoint but skip training
             trajectory[ckpt_steps] = {
-                "ppl": None, "score": None, "loss": None,
+                "ppl": None,
+                "score": None,
+                "loss": None,
                 "early_stopped": True,
             }
             continue
@@ -539,7 +641,9 @@ def evaluate_wikitext_trajectory(
         # Measure PPL at this checkpoint
         ppl = compute_perplexity(model, val_batches, vocab_size)
         score = wikitext_score_from_ppl(ppl, vocab_size)
-        loss_val = loss.item() if torch.is_tensor(loss) and torch.isfinite(loss) else None
+        loss_val = (
+            loss.item() if torch.is_tensor(loss) and torch.isfinite(loss) else None
+        )
         trajectory[ckpt_steps] = {
             "ppl": round(ppl, 2) if ppl is not None else None,
             "score": score,
@@ -547,7 +651,9 @@ def evaluate_wikitext_trajectory(
         }
         logger.info(
             "Trajectory checkpoint %d: ppl=%.1f score=%.3f",
-            ckpt_steps, ppl or 0.0, score or 0.0,
+            ckpt_steps,
+            ppl or 0.0,
+            score or 0.0,
         )
 
         # Track best/peak PPL and check for divergence
@@ -560,7 +666,10 @@ def evaluate_wikitext_trajectory(
             elif early_stop_factor > 0 and ppl > best_ppl * early_stop_factor:
                 logger.info(
                     "Early stopping: ppl %.1f > %.1f * %.1f (best=%.1f at earlier checkpoint)",
-                    ppl, best_ppl, early_stop_factor, best_ppl,
+                    ppl,
+                    best_ppl,
+                    early_stop_factor,
+                    best_ppl,
                 )
                 steps_to_divergence = ckpt_steps
                 diverged = True
@@ -593,8 +702,8 @@ def evaluate_wikitext_trajectory(
 
 
 # WikiText-103 defaults — 50x more data than WikiText-2
-_WIKITEXT103_MAX_CHARS_TRAIN = 20_000_000   # ~20MB, covers most of train split
-_WIKITEXT103_MAX_CHARS_VAL = 200_000        # ~200KB validation
+_WIKITEXT103_MAX_CHARS_TRAIN = 20_000_000  # ~20MB, covers most of train split
+_WIKITEXT103_MAX_CHARS_VAL = 200_000  # ~200KB validation
 
 
 def evaluate_wikitext103_validation(
@@ -628,10 +737,15 @@ def evaluate_wikitext103_validation(
 
     try:
         train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
-            "wikitext-103-raw-v1", vocab_size, seq_len,
-            train_batch_size, eval_batch_size,
-            n_train_batches, n_eval_batches,
-            max_chars_train, max_chars_val,
+            "wikitext-103-raw-v1",
+            vocab_size,
+            seq_len,
+            train_batch_size,
+            eval_batch_size,
+            n_train_batches,
+            n_eval_batches,
+            max_chars_train,
+            max_chars_val,
             device,
         )
     except Exception as e:
@@ -644,8 +758,11 @@ def evaluate_wikitext103_validation(
     pre_ppl = compute_perplexity(model, val_batches, vocab_size)
 
     train_final_loss = micro_train_loop(
-        model, train_batches, vocab_size,
-        n_steps=n_train_steps, lr=lr,
+        model,
+        train_batches,
+        vocab_size,
+        n_steps=n_train_steps,
+        lr=lr,
     )
 
     post_ppl = compute_perplexity(model, val_batches, vocab_size)
@@ -653,7 +770,9 @@ def evaluate_wikitext103_validation(
 
     return {
         "wikitext103_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
-        "wikitext103_pre_perplexity": round(pre_ppl, 2) if pre_ppl is not None else None,
+        "wikitext103_pre_perplexity": round(pre_ppl, 2)
+        if pre_ppl is not None
+        else None,
         "wikitext103_score": wikitext_score_from_ppl(post_ppl, vocab_size),
         "train_final_loss": round(train_final_loss, 6),
         "variant": "wikitext-103-raw-v1",

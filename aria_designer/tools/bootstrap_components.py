@@ -492,7 +492,7 @@ def main():
         if name == "input":
             continue
         manifest = build_primitive_manifest(op)
-        path = write_component(manifest, dry_run=args.dry_run)
+        write_component(manifest, dry_run=args.dry_run)
         prim_count += 1
         print(f"  [{manifest['category']:>16s}] {name}")
 
@@ -508,7 +508,7 @@ def main():
                 continue
             seen_ids.add(option.name)
             manifest = build_morph_manifest(dim.name, option)
-            path = write_component(manifest, dry_run=args.dry_run)
+            write_component(manifest, dry_run=args.dry_run)
             morph_count += 1
             print(f"    [{manifest['category']:>16s}] {option.name}")
 

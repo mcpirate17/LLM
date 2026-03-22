@@ -7,6 +7,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..json_utils import json_safe
+
 from ..notebook import LabNotebook
 from ..llm.context_experiment import (
     build_mode_selection_context,
@@ -304,7 +306,9 @@ class _ControlStartMixin:
                             "rationale": recipe.get("primary_target", ""),
                             "evidence": recipe.get("grammar_hints", {}),
                         }
-                        refine_config.refine_analysis_json = json.dumps(analysis)
+                        refine_config.refine_analysis_json = json.dumps(
+                            json_safe(analysis)
+                        )
                     except Exception as e:
                         logger.warning("RefinementAnalyzer failed, falling back: %s", e)
                         resolved_intent, recommendation = (

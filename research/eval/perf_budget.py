@@ -50,7 +50,9 @@ def _nested_get(payload: Dict[str, Any], dotted_key: str) -> Optional[float]:
         return None
 
 
-def _resolve_observed_value(payload: Dict[str, Any], dotted_key: str) -> Optional[float]:
+def _resolve_observed_value(
+    payload: Dict[str, Any], dotted_key: str
+) -> Optional[float]:
     observed = _nested_get(payload, dotted_key)
     if observed is not None:
         return observed
@@ -85,24 +87,28 @@ def evaluate_perf_budget_gate(
     for key, limit in active_budgets.items():
         observed = _resolve_observed_value(report, key)
         if observed is None:
-            checks.append({
-                "metric": key,
-                "limit": float(limit),
-                "observed": None,
-                "passed": False,
-                "reason": "missing_metric",
-            })
+            checks.append(
+                {
+                    "metric": key,
+                    "limit": float(limit),
+                    "observed": None,
+                    "passed": False,
+                    "reason": "missing_metric",
+                }
+            )
             all_passed = False
             continue
         passed = observed <= float(limit)
         if key.endswith("native_coverage"):
             passed = observed >= float(limit)
-        checks.append({
-            "metric": key,
-            "limit": float(limit),
-            "observed": float(observed),
-            "passed": passed,
-        })
+        checks.append(
+            {
+                "metric": key,
+                "limit": float(limit),
+                "observed": float(observed),
+                "passed": passed,
+            }
+        )
         if not passed:
             all_passed = False
 

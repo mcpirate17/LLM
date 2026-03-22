@@ -1,19 +1,17 @@
-"""Auto-generated Python fallback kernel for layernorm_pre."""
+"""Python fallback kernel for layernorm."""
 
-import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ComponentHandler:
-    """Fallback handler for layernorm_pre."""
+    """Fallback handler for layernorm."""
 
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        # TODO: implement parameterized module
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
         x = inputs["x"]
-        # TODO: implement layernorm_pre
-        return {"y": x}
+        return {"y": F.layer_norm(x, [x.shape[-1]])}

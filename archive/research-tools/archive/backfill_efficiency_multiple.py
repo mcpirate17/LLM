@@ -61,8 +61,10 @@ def main():
         updated += 1
 
     nb.conn.commit()
-    print(f"Backfilled {updated} entries, skipped {skipped} (already set), "
-          f"{insufficient} had insufficient data")
+    print(
+        f"Backfilled {updated} entries, skipped {skipped} (already set), "
+        f"{insufficient} had insufficient data"
+    )
 
 
 if __name__ == "__main__":

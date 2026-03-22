@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -7,9 +8,9 @@ import uuid
 from typing import Dict, List, Optional
 
 
-
 class _ChatMixin:
     """Chat operations for the Lab Notebook."""
+
     __slots__ = ()
 
     # ── Aria Chat Persistence ──────────────────────────────────────
@@ -29,12 +30,18 @@ class _ChatMixin:
             """INSERT OR REPLACE INTO aria_chat
                (message_id, session_id, timestamp, role, text, label, metadata_json)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (mid, session_id, time.time(), role, text, label,
-             json.dumps(metadata) if metadata else None),
+            (
+                mid,
+                session_id,
+                time.time(),
+                role,
+                text,
+                label,
+                json.dumps(metadata) if metadata else None,
+            ),
         )
         self._maybe_commit()
         return mid
-
 
     def get_chat_history(
         self,
@@ -59,7 +66,6 @@ class _ChatMixin:
             ).fetchall()
         return [dict(r) for r in rows]
 
-
     def mark_messages_compacted(
         self, message_ids: List[str], summary_message_id: str
     ) -> None:
@@ -77,7 +83,6 @@ class _ChatMixin:
             (json.dumps(message_ids), summary_message_id),
         )
         self._maybe_commit()
-
 
     def compact_old_chat(self, max_chars: int = 160) -> int:
         """Truncate and purge old chat messages to keep the DB lean.
@@ -100,4 +105,3 @@ class _ChatMixin:
         )
         self._maybe_commit()
         return n1
-

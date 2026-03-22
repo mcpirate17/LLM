@@ -3,6 +3,7 @@
 Contains message classification, guardrail tracking, local agent execution,
 action parsing, and text utility helpers.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,34 +20,80 @@ logger = logging.getLogger(__name__)
 
 # ── Message classification ─────────────────────────────────────────────
 
+
 def chat_requests_detailed_response(question: str) -> bool:
     """Check if the user's question requests a detailed/verbose response."""
     q = question.lower().strip()
-    return any(kw in q for kw in ("detail", "explain in detail", "verbose", "thorough", "comprehensive", "in depth"))
+    return any(
+        kw in q
+        for kw in (
+            "detail",
+            "explain in detail",
+            "verbose",
+            "thorough",
+            "comprehensive",
+            "in depth",
+        )
+    )
 
 
 def chat_requests_summary_response(question: str) -> bool:
     """Check if the user's question requests a summary."""
     q = question.lower().strip()
-    return any(kw in q for kw in ("summarize", "summary", "overview", "what happened", "status update", "progress report"))
+    return any(
+        kw in q
+        for kw in (
+            "summarize",
+            "summary",
+            "overview",
+            "what happened",
+            "status update",
+            "progress report",
+        )
+    )
 
 
 def chat_requests_brief_response(question: str) -> bool:
     """Check if the user wants a brief/concise response."""
     q = question.lower().strip()
-    return any(kw in q for kw in ("brief", "short", "concise", "quick", "tl;dr", "tldr", "one line"))
+    return any(
+        kw in q
+        for kw in ("brief", "short", "concise", "quick", "tl;dr", "tldr", "one line")
+    )
 
 
 def chat_requests_self_fix_now(question: str) -> bool:
     """Check if the user is asking Aria to fix itself."""
     q = question.lower().strip()
-    return any(kw in q for kw in ("fix yourself", "fix what's wrong", "self-repair", "self repair", "heal yourself", "fix it yourself"))
+    return any(
+        kw in q
+        for kw in (
+            "fix yourself",
+            "fix what's wrong",
+            "self-repair",
+            "self repair",
+            "heal yourself",
+            "fix it yourself",
+        )
+    )
 
 
 def chat_requests_codebase_fix(question: str) -> bool:
     """Check if the user is requesting a codebase/code fix."""
     q = question.lower().strip()
-    return any(kw in q for kw in ("fix the", "fix this", "fix bug", "patch", "repair", "debug this", "fix code", "fix error"))
+    return any(
+        kw in q
+        for kw in (
+            "fix the",
+            "fix this",
+            "fix bug",
+            "patch",
+            "repair",
+            "debug this",
+            "fix code",
+            "fix error",
+        )
+    )
 
 
 # ── Guardrail tracking ─────────────────────────────────────────────────
@@ -92,12 +139,14 @@ def chat_guardrail_snapshot(*, window: int = 200) -> Dict[str, Any]:
 
 # ── Code agent task helpers ─────────────────────────────────────────────
 
+
 def code_agent_task_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
     """Get a snapshot of a code agent task by ID.
 
     Looks up the task in the shared _CODE_AGENT_TASKS dict from _helpers.
     """
     from ._helpers import _CODE_AGENT_TASKS, _CODE_AGENT_TASKS_LOCK
+
     with _CODE_AGENT_TASKS_LOCK:
         task = _CODE_AGENT_TASKS.get(task_id)
     if task is None:
@@ -129,6 +178,7 @@ def summarize_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── Local chat agent ────────────────────────────────────────────────────
 
+
 def run_local_chat_agent(
     *,
     question: str,
@@ -149,7 +199,16 @@ def run_local_chat_agent(
     q_lower = question.lower()
 
     # Search workspace for relevant code if the question mentions code/files
-    code_keywords = ("code", "file", "function", "class", "error", "bug", "fix", "module")
+    code_keywords = (
+        "code",
+        "file",
+        "function",
+        "class",
+        "error",
+        "bug",
+        "fix",
+        "module",
+    )
     if any(kw in q_lower for kw in code_keywords):
         result["tools_used"].append("workspace_search")
         try:
@@ -178,7 +237,11 @@ def query_file_index(
 
     Simple keyword-based file matching against the workspace.
     """
-    from ._helpers import _WORKSPACE_FILE_INDEX, _WORKSPACE_FILE_INDEX_LOCK, _WORKSPACE_FILE_INDEX_BUILT_AT
+    from ._helpers import (
+        _WORKSPACE_FILE_INDEX,
+        _WORKSPACE_FILE_INDEX_LOCK,
+        _WORKSPACE_FILE_INDEX_BUILT_AT,
+    )
 
     # Build index if stale (older than 5 minutes)
     now = time.time()
@@ -191,7 +254,7 @@ def query_file_index(
 
     with _WORKSPACE_FILE_INDEX_LOCK:
         items = list(_WORKSPACE_FILE_INDEX.items())
-        
+
     for rel_path, info in items:
         path_lower = rel_path.lower()
         score = sum(1 for t in terms if t in path_lower) * 10
@@ -207,7 +270,13 @@ def query_file_index(
 
     scored.sort(key=lambda x: -x[0])
     return [
-        {"rel_path": item[1], "path": item[1], "abs_path": str(workspace_root / item[1]), "score": item[0], "line": 0}
+        {
+            "rel_path": item[1],
+            "path": item[1],
+            "abs_path": str(workspace_root / item[1]),
+            "score": item[0],
+            "line": 0,
+        }
         for item in scored[:max_results]
     ]
 
@@ -223,8 +292,15 @@ def _rebuild_file_index(workspace_root: Path) -> None:
 
     include_ext = {".py", ".js", ".ts", ".tsx", ".md", ".json"}
     skip_dirs = {
-        ".git", "node_modules", "__pycache__", "build", "dist",
-        ".venv", "venv", ".mypy_cache", ".pytest_cache",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "build",
+        "dist",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
     }
 
     index: Dict[str, Dict[str, Any]] = {}
@@ -250,6 +326,7 @@ def _rebuild_file_index(workspace_root: Path) -> None:
 
 # ── Action response parsing ────────────────────────────────────────────
 
+
 def parse_action_contract_response(text: str) -> Dict[str, Any]:
     """Parse an LLM response following the action contract format.
 
@@ -260,7 +337,7 @@ def parse_action_contract_response(text: str) -> Dict[str, Any]:
     summary_parts: List[str] = []
 
     # Extract ```action blocks
-    pattern = r'```action\s*\n(.*?)\n```'
+    pattern = r"```action\s*\n(.*?)\n```"
     matches = re.findall(pattern, text, re.DOTALL)
 
     for match in matches:
@@ -272,7 +349,7 @@ def parse_action_contract_response(text: str) -> Dict[str, Any]:
             continue
 
     # Everything outside action blocks is summary
-    cleaned = re.sub(pattern, '', text, flags=re.DOTALL).strip()
+    cleaned = re.sub(pattern, "", text, flags=re.DOTALL).strip()
     if cleaned:
         summary_parts.append(cleaned)
 
@@ -284,6 +361,7 @@ def parse_action_contract_response(text: str) -> Dict[str, Any]:
 
 
 # ── Text utilities ─────────────────────────────────────────────────────
+
 
 def truncate_summary(text: str, max_len: int = 200) -> str:
     """Truncate text to max_len, appending '...' if truncated."""
@@ -300,11 +378,13 @@ def estimate_tokens(text: str) -> int:
 
 # ── Ollama helpers ─────────────────────────────────────────────────────
 
+
 def get_local_ollama_settings() -> Dict[str, Any]:
     """Get local Ollama helper settings from environment."""
     return {
         "host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-        "enabled": os.environ.get("ARIA_OLLAMA_ENABLED", "0").lower() in ("1", "true", "yes"),
+        "enabled": os.environ.get("ARIA_OLLAMA_ENABLED", "0").lower()
+        in ("1", "true", "yes"),
         "max_small_workers": int(os.environ.get("ARIA_OLLAMA_MAX_SMALL_WORKERS", "3")),
         "model_3b": os.environ.get("ARIA_OLLAMA_MODEL_3B", "phi3:3b"),
         "model_7b": os.environ.get("ARIA_OLLAMA_MODEL_7B", "codellama:7b"),
@@ -320,6 +400,7 @@ def local_ollama_helper_status(llm) -> Dict[str, Any]:
     host = settings.get("host", "http://localhost:11434")
     try:
         import requests as _requests
+
         resp = _requests.get(f"{host}/api/tags", timeout=2)
         if resp.status_code == 200:
             models = resp.json().get("models", [])

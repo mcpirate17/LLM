@@ -1,4 +1,5 @@
 """Help and component tips API router."""
+
 from __future__ import annotations
 
 from typing import Any, Dict

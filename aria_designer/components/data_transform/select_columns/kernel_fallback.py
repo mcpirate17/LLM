@@ -28,7 +28,9 @@ class ComponentHandler:
 
         if mode == "indices":
             tokens = self._split_csv(config.get("selected_indices", ""))
-            if tokens and len(self._parse_indices(config.get("selected_indices", ""))) != len(tokens):
+            if tokens and len(
+                self._parse_indices(config.get("selected_indices", ""))
+            ) != len(tokens):
                 errors.append("selected_indices must be comma-separated integers")
 
         return errors
@@ -65,9 +67,13 @@ class ComponentHandler:
             if missing and strict and not drop_invalid:
                 raise ValueError(f"Unknown selected_columns: {missing}")
 
-            picked = [name_to_idx[name] for name in selected_names if name in name_to_idx]
+            picked = [
+                name_to_idx[name] for name in selected_names if name in name_to_idx
+            ]
             if strict and not schema_cols:
-                raise ValueError("schema_columns is required for strict name-based selection")
+                raise ValueError(
+                    "schema_columns is required for strict name-based selection"
+                )
         else:
             picked = self._parse_indices(config.get("selected_indices", ""))
             if not picked:

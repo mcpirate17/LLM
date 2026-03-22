@@ -39,7 +39,9 @@ except ImportError:
 # Over a chain of tropical ops, gradient info is multiplicatively lost.
 # Smooth min via log-sum-exp preserves gradient flow to both branches.
 
-_SMOOTH_TAU: float = 0.1  # Temperature for smooth min/max
+_SMOOTH_TAU: float = (
+    1.0  # Temperature for smooth min/max (was 0.1 — too small, recreated hard min)
+)
 _SMOOTH_S_REF: float = 128.0
 
 
@@ -83,6 +85,8 @@ def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         and x.is_contiguous()
         and y.is_contiguous()
         and x.device.type == "cpu"
+        and not x.requires_grad
+        and not y.requires_grad
     ):
         return aria_core.tropical_add_f32(x, y)
     return _smooth_min(x, y)
@@ -133,9 +137,24 @@ class _TropicalMatmulFn(torch.autograd.Function):
         a, b_val = ctx.saved_tensors
         chunk_size = ctx.chunk_size
         B, S1, D = a.shape
-        S2 = b_val.shape[1]
+        b_val.shape[1]
 
         adaptive_tau = _adaptive_temperature(ctx.tau, D)
+
+        if (
+            _HAS_ARIA_CORE
+            and a.device.type == "cpu"
+            and hasattr(aria_core, "tropical_matmul_batched_backward_f32")
+        ):
+            # grad_output is (B, M, N)
+            grad_a, grad_b = aria_core.tropical_matmul_batched_backward_f32(
+                grad_output.contiguous(),
+                a.contiguous(),
+                b_val.contiguous(),
+                float(adaptive_tau),
+            )
+            return grad_a, grad_b, None, None
+
         inv_tau = 1.0 / adaptive_tau
 
         grad_a = torch.zeros_like(a)
@@ -182,8 +201,10 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     if _HAS_TRITON_KERNELS and a.is_cuda and b.is_cuda:
         try:
             return triton_tropical_matmul(a, b)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).debug("triton_tropical_matmul fallback: %s", e)
 
     # CPU fast path: native C kernel (inference only — no autograd support)
     if (
@@ -201,7 +222,12 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         elif b.shape[2] == D:
             native_b = b.transpose(1, 2).contiguous()
         if native_b is not None:
-            return aria_core.tropical_matmul_batched_f32(a, native_b)
+            result = aria_core.tropical_matmul_batched_f32(a, native_b)
+            # Validate shape: expect (B, S, S2) where S2 = native_b cols
+            S2 = native_b.shape[2] if native_b.shape[1] == D else native_b.shape[1]
+            if result.shape == (B, S, S2):
+                return result
+            # C kernel returned wrong shape; fall through to Python path
 
     # Normalize b to (B, S2, D) layout
     B, S1, D1 = a.shape
@@ -265,6 +291,20 @@ def execute_tropical_matmul(
 ) -> torch.Tensor:
     """Tropical matmul then project back to D dim."""
     B, S, D = x.shape
+    # Ensure y matches x's shape for valid tropical matmul
+    if y.shape != x.shape:
+        if y.shape[-1] != D:
+            # Project y to match D via truncation/padding
+            y = (
+                y[..., :D]
+                if y.shape[-1] > D
+                else torch.nn.functional.pad(y, (0, D - y.shape[-1]))
+            )
+        if y.shape[1] != S:
+            y = y[:, :S] if y.shape[1] > S else y
+    x = x.contiguous()
+    y = y.contiguous()
+
     scores = tropical_matmul(x, y)  # (B, S, S)
 
     # Apply causal mask if S > 1
@@ -304,7 +344,13 @@ def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     preceding tokens, not just the argmin position.
     τ=1.0 keeps gradients healthy while preserving tropical semantics.
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and x.ndim == 3
+        and x.device.type == "cpu"
+        and not x.requires_grad
+    ):
         return aria_core.tropical_center_f32(x)
     B, S, D = x.shape
     tau = 1.0  # Higher τ for gradient flow (was _SMOOTH_TAU=0.1)
@@ -329,7 +375,8 @@ def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """
     B, S, D = x.shape
     # Tropical distance scores: pairwise min-plus distances
-    distances = tropical_matmul(x, x)  # (B, S, S)
+    # Transpose second arg so matmul produces (B, S, S) attention map
+    distances = tropical_matmul(x, x.transpose(1, 2))  # (B, S, S)
 
     # Apply causal mask if S > 1
     if S > 1:

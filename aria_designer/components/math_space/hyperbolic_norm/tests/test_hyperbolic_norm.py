@@ -1,4 +1,5 @@
 """Contract tests for hyperbolic_norm."""
+
 import yaml
 from pathlib import Path
 

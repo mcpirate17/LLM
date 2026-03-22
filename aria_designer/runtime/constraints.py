@@ -16,7 +16,9 @@ from typing import Any, Dict, List, Optional, Set
 def _load_manifest(component_id: str, components_dir: str) -> Optional[Dict]:
     """Load a component's manifest.yaml."""
     for category in os.listdir(components_dir):
-        candidate = os.path.join(components_dir, category, component_id, "manifest.yaml")
+        candidate = os.path.join(
+            components_dir, category, component_id, "manifest.yaml"
+        )
         if os.path.isfile(candidate):
             with open(candidate, "r") as f:
                 return yaml.safe_load(f)
@@ -58,8 +60,12 @@ def check_compatibility(
     if candidate_manifest is None:
         return {"compatible": True, "reasons": [], "severity": "ok"}
 
-    candidate_incompat = set(candidate_manifest.get("constraints", {}).get("incompatible_with", []))
-    candidate_requires = set(candidate_manifest.get("constraints", {}).get("requires", []))
+    candidate_incompat = set(
+        candidate_manifest.get("constraints", {}).get("incompatible_with", [])
+    )
+    candidate_requires = set(
+        candidate_manifest.get("constraints", {}).get("requires", [])
+    )
     candidate_tags = _collect_tags(candidate_manifest)
 
     # Collect all existing component types and their tags
@@ -79,7 +85,9 @@ def check_compatibility(
     # Check: candidate declares incompatibility with existing tags
     for tag in candidate_incompat:
         if tag in existing_tags or tag in existing_types:
-            reasons.append(f"'{candidate_id}' is incompatible with '{tag}' (already in graph)")
+            reasons.append(
+                f"'{candidate_id}' is incompatible with '{tag}' (already in graph)"
+            )
 
     # Check: existing components declare incompatibility with candidate tags
     for node in workflow.get("nodes", []):
@@ -89,7 +97,9 @@ def check_compatibility(
         manifest = _load_manifest(ct, components_dir)
         if not manifest:
             continue
-        node_incompat = set(manifest.get("constraints", {}).get("incompatible_with", []))
+        node_incompat = set(
+            manifest.get("constraints", {}).get("incompatible_with", [])
+        )
         for tag in node_incompat:
             if tag in candidate_tags or tag == candidate_id:
                 reasons.append(f"Existing '{ct}' is incompatible with '{candidate_id}'")
@@ -100,7 +110,9 @@ def check_compatibility(
             reasons.append(f"'{candidate_id}' requires '{req}' (not in graph)")
 
     # Structural constraints (hard-coded common knowledge)
-    reasons.extend(_check_structural_constraints(existing_types, candidate_id, candidate_manifest))
+    reasons.extend(
+        _check_structural_constraints(existing_types, candidate_id, candidate_manifest)
+    )
 
     # Wiring constraints from OP_WIRING_RULES
     reasons.extend(_check_wiring_constraints(existing_types, candidate_id))
@@ -179,7 +191,7 @@ def compute_palette_constraints(
 ) -> Dict[str, Dict[str, Any]]:
     """Compute compatibility status for every component in the palette."""
     result = {}
-    
+
     # 1. Base compatibility for all
     for cid in component_ids:
         result[cid] = check_compatibility(workflow, cid, components_dir)
@@ -187,10 +199,12 @@ def compute_palette_constraints(
 
     # 2. Context-aware suggestions if a node is selected
     if selected_node_id:
-        selected_node = next((n for n in workflow.get("nodes", []) if n["id"] == selected_node_id), None)
+        selected_node = next(
+            (n for n in workflow.get("nodes", []) if n["id"] == selected_node_id), None
+        )
         if selected_node:
             ctype = selected_node.get("component_type", "").split("/")[-1]
-            
+
             # Heuristic suggestions for "likely next" nodes
             suggestions = []
             if "linear" in ctype or "proj" in ctype:
@@ -203,11 +217,12 @@ def compute_palette_constraints(
                 suggestions = ["linear_proj", "add"]
             elif "norm" in ctype:
                 suggestions = ["linear_proj", "softmax_attention", "state_space"]
-            
+
             # Wiring-aware suggestions: if selected node is a signal producer,
             # suggest its valid consumers; if it needs a signal, suggest producers
             try:
                 from research.synthesis.primitives import OP_WIRING_RULES
+
                 rule = OP_WIRING_RULES.get(ctype)
                 if rule:
                     # Signal producer → suggest consumers
@@ -215,7 +230,7 @@ def compute_palette_constraints(
                         suggestions.append(consumer)
                     # 2-input consumer → suggest signal producers
                     for idx, constraint in rule.get("input_signals", {}).items():
-                        for producer in (constraint.get("from_ops") or []):
+                        for producer in constraint.get("from_ops") or []:
                             suggestions.append(producer)
             except ImportError:
                 pass

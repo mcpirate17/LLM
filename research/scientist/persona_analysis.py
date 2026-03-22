@@ -43,7 +43,9 @@ class _PersonaAnalysisMixin:
             resp = llm.generate(prompt, max_tokens=800, temperature=0.1)
             self._track_cost(resp)
             if resp.text.strip():
-                return f"SITUATION REPORT (pre-digested by Analyst):\n{resp.text.strip()}"
+                return (
+                    f"SITUATION REPORT (pre-digested by Analyst):\n{resp.text.strip()}"
+                )
         except Exception as e:
             logger.warning(f"Situation report generation failed: {e}")
 
@@ -57,6 +59,7 @@ class _PersonaAnalysisMixin:
         if llm and context and not self._continuous_mode:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, SUMMARY_PROMPT
+
                 prompt = SUMMARY_PROMPT.format(context=context)
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
@@ -66,7 +69,13 @@ class _PersonaAnalysisMixin:
             except Exception as e:
                 logger.warning(f"LLM summary failed, falling back: {e}")
         else:
-            reason = "no_llm" if not llm else "no_context" if not context else "continuous_mode"
+            reason = (
+                "no_llm"
+                if not llm
+                else "no_context"
+                if not context
+                else "continuous_mode"
+            )
             logger.debug(f"Skipping LLM summary (reason={reason})")
 
         return self._rule_based_summary(results)
@@ -85,6 +94,7 @@ class _PersonaAnalysisMixin:
 
         try:
             from .llm.prompts import BRIEFING_SYSTEM_PROMPT, ANALYSIS_PROMPT
+
             prompt = ANALYSIS_PROMPT.format(context=context)
             resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
             self._track_cost(resp)
@@ -100,7 +110,11 @@ class _PersonaAnalysisMixin:
             return None
 
         try:
-            from .llm.prompts import BRIEFING_SYSTEM_PROMPT, FINGERPRINT_EXPLANATION_PROMPT
+            from .llm.prompts import (
+                BRIEFING_SYSTEM_PROMPT,
+                FINGERPRINT_EXPLANATION_PROMPT,
+            )
+
             prompt = FINGERPRINT_EXPLANATION_PROMPT.format(context=context)
             resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=512)
             self._track_cost(resp)
@@ -131,6 +145,7 @@ class _PersonaAnalysisMixin:
 
         try:
             from .llm.prompts import BRIEFING_SYSTEM_PROMPT, BRIEFING_PROMPT
+
             prompt = BRIEFING_PROMPT.format(context=context)
             resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=512)
             self._track_cost(resp)
@@ -139,7 +154,11 @@ class _PersonaAnalysisMixin:
                 result = self._parse_briefing(raw_text)
                 if not result.get("briefing_text"):
                     suggested = result.get("suggested_action") or {}
-                    reasoning = suggested.get("reasoning") if isinstance(suggested, dict) else None
+                    reasoning = (
+                        suggested.get("reasoning")
+                        if isinstance(suggested, dict)
+                        else None
+                    )
                     if reasoning:
                         result["briefing_text"] = str(reasoning).strip()
                     else:
@@ -164,7 +183,9 @@ class _PersonaAnalysisMixin:
             "confidence": 0.5,
         }
 
-        briefing_match = re.search(r"BRIEFING:\s*(.+?)(?=SUGGESTED_ACTION:|$)", text, re.DOTALL)
+        briefing_match = re.search(
+            r"BRIEFING:\s*(.+?)(?=SUGGESTED_ACTION:|$)", text, re.DOTALL
+        )
         if briefing_match:
             result["briefing_text"] = briefing_match.group(1).strip()
         else:
@@ -219,7 +240,9 @@ class _PersonaAnalysisMixin:
         if not result.get("briefing_text") and action.get("reasoning"):
             result["briefing_text"] = action["reasoning"]
 
-        result["briefing_text"] = self._strip_code_blocks(result.get("briefing_text") or "")
+        result["briefing_text"] = self._strip_code_blocks(
+            result.get("briefing_text") or ""
+        )
         if action.get("hypothesis"):
             action["hypothesis"] = self._strip_code_blocks(action["hypothesis"])
         if action.get("reasoning"):
@@ -244,7 +267,7 @@ class _PersonaAnalysisMixin:
 
     def explain_learning(self, analytics_summary: Dict) -> str:
         """Aria explains what the system has learned from experiments."""
-        lines = [f"{'='*50}", f"Learning Report — {self.NAME}", f"{'='*50}", ""]
+        lines = [f"{'=' * 50}", f"Learning Report — {self.NAME}", f"{'=' * 50}", ""]
 
         weights = analytics_summary.get("grammar_weights")
         defaults = analytics_summary.get("default_weights", {})
@@ -266,7 +289,9 @@ class _PersonaAnalysisMixin:
 
         frontier = analytics_summary.get("frontier_size", 0)
         if frontier > 0:
-            lines.append(f"Efficiency frontier: {frontier} Pareto-optimal programs found.")
+            lines.append(
+                f"Efficiency frontier: {frontier} Pareto-optimal programs found."
+            )
             lines.append("")
 
         if not weights and not insights:
@@ -303,15 +328,16 @@ class _PersonaAnalysisMixin:
                 prompt = (
                     "Summarize these grammar-weight updates for an ML engineer in 3 short sentences. "
                     "Explain which operation categories are being rewarded or penalized and why that "
-                    "matters for architecture search.\n\n"
-                    + "\n".join(deltas)
+                    "matters for architecture search.\n\n" + "\n".join(deltas)
                 )
                 resp = llm.generate(prompt, max_tokens=180)
                 self._track_cost(resp)
                 if resp.text and resp.text.strip():
                     return resp.text.strip()
             except Exception as e:
-                logger.warning("LLM grammar-weight explanation failed, falling back: %s", e)
+                logger.warning(
+                    "LLM grammar-weight explanation failed, falling back: %s", e
+                )
 
         return self._rule_based_grammar_weight_explanation(default_weights, learned)
 
@@ -497,14 +523,18 @@ class _PersonaAnalysisMixin:
             parts = []
             if increased:
                 parts.append(
-                    "rewarding " + ", ".join(
-                        f"{name.replace('_', ' ')} ({delta:+.2f})" for name, delta in increased
+                    "rewarding "
+                    + ", ".join(
+                        f"{name.replace('_', ' ')} ({delta:+.2f})"
+                        for name, delta in increased
                     )
                 )
             if decreased:
                 parts.append(
-                    "downweighting " + ", ".join(
-                        f"{name.replace('_', ' ')} ({delta:+.2f})" for name, delta in decreased
+                    "downweighting "
+                    + ", ".join(
+                        f"{name.replace('_', ' ')} ({delta:+.2f})"
+                        for name, delta in decreased
                     )
                 )
             bullets.append("Grammar adaptation is " + " while ".join(parts) + ".")
@@ -515,7 +545,9 @@ class _PersonaAnalysisMixin:
             )
 
         if clusters:
-            best_cluster = max(clusters, key=lambda c: float(c.get("avg_s1_rate") or 0.0))
+            best_cluster = max(
+                clusters, key=lambda c: float(c.get("avg_s1_rate") or 0.0)
+            )
             bullets.append(
                 f"Cluster {best_cluster.get('cluster_id', '?')} is the most productive cohort at {float(best_cluster.get('avg_s1_rate') or 0.0) * 100:.1f}% average S1 pass, suggesting a repeatable design regime."
             )
@@ -545,6 +577,7 @@ class _PersonaAnalysisMixin:
         if llm:
             try:
                 from .llm.prompts import SYSTEM_PROMPT, REPORT_PROMPT
+
                 context_parts = []
                 summary = report_data.get("summary", {})
                 if summary:
@@ -567,7 +600,7 @@ class _PersonaAnalysisMixin:
                 op_rates = report_data.get("op_success_rates", [])
                 if op_rates:
                     context_parts.append("Op success rates (top 10):")
-                    for op in (op_rates[:10] if isinstance(op_rates, list) else []):
+                    for op in op_rates[:10] if isinstance(op_rates, list) else []:
                         context_parts.append(
                             f"  - {op.get('op_name', '?')}: "
                             f"s1_rate={op.get('s1_rate', '?')}"
@@ -578,7 +611,7 @@ class _PersonaAnalysisMixin:
                 dedup = summary.get("latest_dedup")
                 if dedup:
                     context_parts.append(
-                        f"Grammar diversity: {dedup.get('dedup_rate', 0)*100:.0f}% dedup rate "
+                        f"Grammar diversity: {dedup.get('dedup_rate', 0) * 100:.0f}% dedup rate "
                         f"(last experiment), {summary.get('unique_fingerprints', '?')} unique "
                         f"fingerprints in DB, {dedup.get('known_fingerprints', '?')} known at eval time"
                     )
@@ -612,7 +645,9 @@ class _PersonaAnalysisMixin:
             "energy": self.state.energy,
             "experiments_today": self.state.experiments_today,
             "discoveries_today": self.state.discoveries_today,
-            "current_hypothesis": self._sanitize_hypothesis(self.state.current_hypothesis),
+            "current_hypothesis": self._sanitize_hypothesis(
+                self.state.current_hypothesis
+            ),
             "research_focus": self.state.research_focus,
             "recent_insights": self.state.insights[-5:] if self.state.insights else [],
             "llm_enabled": self._get_llm() is not None,

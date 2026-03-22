@@ -18,7 +18,7 @@ import torch.nn.functional as F
 
 from .primitives import get_primitive, PrimitiveOp, _ALGEBRAIC_SPACE_TAGS
 from .graph import ComputationGraph, ShapeInfo
-from .compiler_op_utils import record_kernel_fallback
+from .compiler_op_utils import record_kernel_fallback, _safe_linear
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ try:
 except ImportError:
     HAS_CPU_OPS = False
 
-from research.defaults import VOCAB_SIZE, MODEL_DIM, VALIDATION_SEQ_LEN, ROPE_THETA_BASE
+from research.defaults import VOCAB_SIZE, MODEL_DIM, VALIDATION_SEQ_LEN
 from research.env import aria_core, HAS_ARIA_CORE
 
 
@@ -281,7 +281,9 @@ def _build_block_sparse_mask(
     weight: torch.Tensor, block_size: int, block_density: float
 ) -> torch.Tensor:
     block_size = max(1, int(block_size))
-    block_density = float(max(0.05, min(1.0, block_density)))
+    # Floor at 0.25: below 25% density, too many gradient paths are dead
+    # and convergence fails 41% of the time. Old floor was 0.05.
+    block_density = float(max(0.25, min(1.0, block_density)))
 
     rows, cols = weight.shape
     row_blocks = rows // block_size
@@ -484,6 +486,10 @@ def _op_state_space(module, inputs, _):
 
     # Reshape back: (B, D, N, S) -> (B, S, D, N) -> (B, S, D*N)
     h = h_t.permute(0, 3, 1, 2).reshape(B, S, D * N)
+    # Clamp scan output: the parallel scan accumulates through O(log S)
+    # multiplicative steps, amplifying gradients.  Bounding h prevents
+    # one SSM op from dominating the global gradient norm.
+    h = torch.clamp(h, min=-50.0, max=50.0)
 
     y = module.ssm_C(h) * (
         1.0 / math.sqrt(N)
@@ -507,9 +513,15 @@ def _op_gated_delta(module, inputs, _):
     """Gated delta rule: linear recurrence with decay + update gates.
 
     h[t] = alpha[t] * h[t-1] + beta[t] * (v[t] ⊗ k[t] - h[t-1])
+         = (alpha[t] - beta[t]) * h[t-1] + beta[t] * v[t] ⊗ k[t]
     where alpha = sigmoid(decay gate), beta = sigmoid(update gate).
-    The delta term (v⊗k - h) does targeted overwrites, not just accumulation.
     (NVIDIA GatedDeltaNet, ICLR 2025)
+
+    Optimized via multi-head decomposition + parallel associative scan:
+    1. Split D into H heads of dimension d — state is (B,H,d,d) not (B,D,D)
+    2. Decompose state recurrence into B*H*d*d independent scalar scans
+    3. Solve all scans in O(log S) parallel steps via Kogge-Stone
+    No Python loop over sequence positions.
     """
     x = inputs[0]
     if not hasattr(module, "q_proj"):
@@ -523,19 +535,70 @@ def _op_gated_delta(module, inputs, _):
     alpha = torch.sigmoid(module.alpha_proj(x))  # (B, S, D) decay gate
     beta = torch.sigmoid(module.beta_proj(x))  # (B, S, D) update gate
 
-    # Sequential recurrence (parallel scan possible but sequential is correct)
-    h = torch.zeros(B, D, D, device=x.device, dtype=x.dtype)  # state: (B, D, D)
-    outputs = []
-    for t in range(S):
-        # Outer product: v[t] ⊗ k[t] → (B, D, D)
-        vk = v[:, t, :].unsqueeze(-1) * k[:, t, :].unsqueeze(-2)
-        # Delta update: targeted write via (vk - h)
-        h = alpha[:, t, :].unsqueeze(-1) * h + beta[:, t, :].unsqueeze(-1) * (vk - h)
-        # Read: q[t] @ h → (B, D)
-        out_t = (q[:, t, :].unsqueeze(-2) @ h).squeeze(-2)
-        outputs.append(out_t)
+    # Effective decay: alpha - beta (absorb delta into one coefficient)
+    # Range: (-1, 1) since both alpha, beta ∈ (0, 1)
+    eff_decay = alpha - beta  # (B, S, D)
 
-    out = torch.stack(outputs, dim=1)  # (B, S, D)
+    # ── Multi-head chunked scan ──
+    # Split D into H heads of dimension d. State per head: (d, d) instead
+    # of (D, D). Cross-head interaction is restored by the output projection.
+    # This matches the GatedDeltaNet paper's multi-head formulation.
+    # Per-step work: H*d² = D*d (vs D² for full state). With H=8: 8x speedup.
+    H = getattr(module, "_gated_delta_heads", min(8, D))
+    if D % H != 0:
+        H = 1
+    d = D // H
+
+    # Reshape to heads: (B, S, D) → (B, S, H, d) → (B, H, S, d)
+    q_h = q.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    k_h = k.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    v_h = v.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    decay_h = eff_decay.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    beta_h = beta.reshape(B, S, H, d).permute(0, 2, 1, 3)
+
+    # Chunked scan over sequence — state is (B, H, d, d) per chunk boundary
+    CHUNK = min(32, S)
+    # State: (B*H, d, d) for efficient bmm
+    BH = B * H
+    h = torch.zeros(BH, d, d, device=x.device, dtype=x.dtype)
+    outputs = []
+
+    # Flatten batch and head dims: (B, H, S, d) → (B*H, S, d)
+    q_f = q_h.reshape(BH, S, d)
+    k_f = k_h.reshape(BH, S, d)
+    v_f = v_h.reshape(BH, S, d)
+    decay_f = decay_h.reshape(BH, S, d)
+    beta_f = beta_h.reshape(BH, S, d)
+
+    for c_start in range(0, S, CHUNK):
+        c_end = min(c_start + CHUNK, S)
+        c_len = c_end - c_start
+
+        # Slice chunk: (BH, C, d)
+        q_c = q_f[:, c_start:c_end]
+        k_c = k_f[:, c_start:c_end]
+        v_c = v_f[:, c_start:c_end]
+        decay_c = decay_f[:, c_start:c_end]
+        beta_c = beta_f[:, c_start:c_end]
+
+        # Precompute scaled outer products: (BH, C, d, d)
+        bvk_c = beta_c.unsqueeze(-1) * (v_c.unsqueeze(-1) * k_c.unsqueeze(-2))
+
+        # Sequential scan within chunk
+        chunk_outs = torch.empty(BH, c_len, d, device=x.device, dtype=x.dtype)
+        for t in range(c_len):
+            h = decay_c[:, t, :].unsqueeze(-1) * h + bvk_c[:, t]
+            chunk_outs[:, t] = torch.bmm(q_c[:, t : t + 1, :], h).squeeze(1)
+
+        outputs.append(chunk_outs)
+
+    # (BH, S, d) → (B, H, S, d) → (B, S, H, d) → (B, S, D)
+    out = (
+        torch.cat(outputs, dim=1)
+        .reshape(B, H, S, d)
+        .permute(0, 2, 1, 3)
+        .reshape(B, S, D)
+    )
     return module.o_proj(out)
 
 
@@ -549,7 +612,7 @@ def _op_nm_sparse_linear(module, inputs, config):
         _record_sparse_telemetry(
             module, "nm_sparse_linear", 1.0, "invalid_nm_configuration"
         )
-        return F.linear(inputs[0], module.weight)
+        return _safe_linear(inputs[0], module.weight)
 
     if (
         HAS_ARIA_CORE
@@ -560,11 +623,11 @@ def _op_nm_sparse_linear(module, inputs, config):
         _record_sparse_telemetry(
             module, "nm_sparse_linear", float(mask.float().mean().item())
         )
-        return F.linear(inputs[0], module.weight * mask.float())
+        return _safe_linear(inputs[0], module.weight * mask.float())
 
     mask = _build_nm_mask(module.weight, n=n, m=m)
     _record_sparse_telemetry(module, "nm_sparse_linear", float(mask.mean().item()))
-    return F.linear(inputs[0], module.weight * mask)
+    return _safe_linear(inputs[0], module.weight * mask)
 
 
 @register_op("block_sparse_linear")
@@ -610,7 +673,7 @@ def _op_block_sparse_linear(module, inputs, config):
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("triton_block_sparse_linear", e)
 
-    return F.linear(inputs[0], module.weight * mask)
+    return _safe_linear(inputs[0], module.weight * mask)
 
 
 @register_op("low_rank_proj")
@@ -627,7 +690,7 @@ def _op_low_rank_proj(module, inputs, _):
         )
         return _unflatten_from_kernel(out, orig_shape)
     # PyTorch fallback
-    out = F.linear(F.linear(inputs[0], module.U.t()), module.V.t())
+    out = _safe_linear(_safe_linear(inputs[0], module.U.t()), module.V.t())
     if hasattr(module, "bias"):
         out = out + module.bias
     return out
@@ -667,8 +730,8 @@ def _op_bottleneck_proj(module, inputs, _):
         out = aria_core.linear_bottleneck_f32(x, module.down, module.up, b_down, b_up)
         return _unflatten_from_kernel(out, orig_shape)
     # PyTorch fallback
-    hidden = F.gelu(F.linear(inputs[0], module.down))
-    return F.linear(hidden, module.up)
+    hidden = F.gelu(_safe_linear(inputs[0], module.down))
+    return _safe_linear(hidden, module.up)
 
 
 @register_op("shared_basis_proj")
@@ -697,8 +760,8 @@ def _op_tied_proj(module, inputs, _):
         out = aria_core.linear_tied_f32(x, module.tied_weight, b_down, b_up)
         return _unflatten_from_kernel(out, orig_shape)
     # PyTorch fallback
-    hidden = F.gelu(F.linear(inputs[0], module.tied_weight))
-    return F.linear(hidden, module.tied_weight.t())
+    hidden = F.gelu(_safe_linear(inputs[0], module.tied_weight))
+    return _safe_linear(hidden, module.tied_weight.t())
 
 
 @register_op("semi_structured_2_4_linear")
@@ -709,12 +772,12 @@ def _op_semi_structured_2_4_linear(module, inputs, config):
         _record_sparse_telemetry(
             module, "semi_structured_2_4_linear", 1.0, "kernel_unavailable"
         )
-        return F.linear(inputs[0], module.weight)
+        return _safe_linear(inputs[0], module.weight)
     mask = _build_nm_mask(module.weight, n=2, m=4)
     _record_sparse_telemetry(
         module, "semi_structured_2_4_linear", float(mask.mean().item())
     )
-    return F.linear(inputs[0], module.weight * mask)
+    return _safe_linear(inputs[0], module.weight * mask)
 
 
 @register_op("rwkv_time_mixing")
@@ -736,12 +799,12 @@ def _op_rwkv_time_mixing(module, inputs, _):
             module.W_v,
             module.W_r,
         )
-        return F.linear(out_native, module.W_o)
+        return _safe_linear(out_native, module.W_o)
     B, S, D = x.shape
 
-    k = F.linear(x, module.W_k)
-    v = F.linear(x, module.W_v)
-    r_raw = F.linear(x, module.W_r)
+    k = _safe_linear(x, module.W_k)
+    v = _safe_linear(x, module.W_v)
+    r_raw = _safe_linear(x, module.W_r)
 
     # C kernel fast path: fused WKV scan (handles sigmoid internally)
     if _c(k) and hasattr(aria_core, "rwkv_wkv_scan_f32") and not k.requires_grad:
@@ -752,7 +815,7 @@ def _op_rwkv_time_mixing(module, inputs, _):
             module.w_decay,
             module.u_bonus,
         )
-        return F.linear(out, module.W_o)
+        return _safe_linear(out, module.W_o)
 
     r = torch.sigmoid(r_raw)
     w = -torch.exp(module.w_decay)  # (D,) — negative log-decay
@@ -789,7 +852,7 @@ def _op_rwkv_time_mixing(module, inputs, _):
     p = torch.exp((u + k).clamp(-20, 20))  # (B, S, D)
     out = r * (wkv_before + p * v) / (den_before + p).clamp(min=1e-8)
 
-    return F.linear(out, module.W_o)
+    return _safe_linear(out, module.W_o)
 
 
 @register_op("kronecker_linear")
@@ -846,25 +909,43 @@ def _op_n_way_sparse_router(module, inputs, config):
     expert_weights = torch.zeros(B, S, n_ways, device=x.device, dtype=x.dtype)
     for k_idx in range(top_k):
         idx = topk_idx[:, :, k_idx].unsqueeze(-1)  # (B, S, 1)
-        expert_weights.scatter_add_(2, idx, gate_weights[:, :, k_idx].unsqueeze(-1))
+        # Under CUDA autocast, softmax/topk can promote weights while the
+        # accumulator tensor stays at the input dtype. scatter_add_ requires
+        # exact dtype match, so normalize the source explicitly.
+        src = gate_weights[:, :, k_idx].unsqueeze(-1).to(expert_weights.dtype)
+        expert_weights.scatter_add_(2, idx, src)
 
-    output = torch.zeros_like(x)
+    # Collect all expert weights, then batch compute
+    W_downs = []
+    W_ups = []
     for i in range(n_ways):
         if hasattr(module, f"expert_down_{i}"):
-            W_down = getattr(module, f"expert_down_{i}")
-            W_up = getattr(module, f"expert_up_{i}")
+            W_downs.append(getattr(module, f"expert_down_{i}"))
+            W_ups.append(getattr(module, f"expert_up_{i}"))
         else:
             gen_e = torch.Generator(device="cpu")
             gen_e.manual_seed(D * 1000 + i * 100 + 1)
-            W_down = (torch.randn(D, hidden, generator=gen_e) * (D**-0.5)).to(
-                device=x.device, dtype=x.dtype
+            W_downs.append(
+                (torch.randn(D, hidden, generator=gen_e) * (D**-0.5)).to(
+                    device=x.device, dtype=x.dtype
+                )
             )
-            W_up = (torch.randn(hidden, D, generator=gen_e) * (hidden**-0.5)).to(
-                device=x.device, dtype=x.dtype
+            W_ups.append(
+                (torch.randn(hidden, D, generator=gen_e) * (hidden**-0.5)).to(
+                    device=x.device, dtype=x.dtype
+                )
             )
-        expert_out = F.gelu(x @ W_down) @ W_up
-        weight = expert_weights[:, :, i].unsqueeze(-1)  # (B, S, 1)
-        output = output + expert_out * weight
+    # Stack: (n_ways, D, hidden), (n_ways, hidden, D)
+    W_down_all = torch.stack(W_downs)  # (E, D, H)
+    W_up_all = torch.stack(W_ups)  # (E, H, D)
+    # Batched expert forward: x @ W_down → gelu → @ W_up for all experts at once
+    # (B, S, D) @ (E, D, H)^T → (B, S, E, H)
+    hidden_all = torch.einsum("bsd,edh->bseh", x, W_down_all)
+    hidden_all = F.gelu(hidden_all)
+    # (B, S, E, H) @ (E, H, D)^T → (B, S, E, D)
+    expert_outs = torch.einsum("bseh,ehd->bsed", hidden_all, W_up_all)
+    # Weight by expert_weights: (B, S, E, 1) * (B, S, E, D) → sum over E
+    output = (expert_weights.unsqueeze(-1) * expert_outs).sum(dim=2)
     return output
 
 
@@ -908,9 +989,9 @@ def _op_latent_attention_compressor(module, inputs, config):
     if not hasattr(module, "kv_compress"):
         return x
     # Compress: (B, S, D) -> (B, S, latent_dim)
-    latent = F.linear(x, module.kv_compress)
+    latent = F.linear(x, module.kv_compress.to(x.dtype))
     # Decompress: (B, S, latent_dim) -> (B, S, D*2) -> split to K, V
-    kv = F.linear(latent, module.kv_up)
+    kv = F.linear(latent, module.kv_up.to(x.dtype))
     D = x.shape[-1]
     k, v = kv[..., :D], kv[..., D:]
     # Simple attention-free compression: gate k against v
@@ -931,10 +1012,10 @@ def _op_routing_conditioned_compression(module, inputs, config):
     else:
         s = torch.sigmoid(routing_signal)
 
-    full = F.linear(x, module.weight_full)
+    full = _safe_linear(x, module.weight_full)
 
     if hasattr(module, "U_comp"):
-        comp = F.linear(F.linear(x, module.U_comp), module.V_comp)
+        comp = _safe_linear(_safe_linear(x, module.U_comp), module.V_comp)
         return s * full + (1 - s) * comp
 
     return full
@@ -949,11 +1030,11 @@ def _op_token_type_classifier(module, inputs, config):
     if x.shape[-1] != module.classifier_weight.shape[1]:
         return x
     # (B, S, D) → (B, S, n_classes) with GELU for nonlinear class boundaries
-    scores = F.gelu(F.linear(x, module.classifier_weight))
+    scores = F.gelu(_safe_linear(x, module.classifier_weight))
     # Stash classification scores for telemetry / downstream routing
     module._class_scores = scores.detach()
     # Project back to model dim
-    return F.linear(scores, module.classifier_proj_back)
+    return _safe_linear(scores, module.classifier_proj_back)
 
 
 @register_op("progressive_compression_gate")
@@ -988,11 +1069,11 @@ def _op_compression_mixture_experts(module, inputs, config):
     weights = F.softmax(routing_signal, dim=-1)  # [B, S, 2]
 
     # Expert 0: Low-Rank
-    out0 = F.linear(F.linear(x, module.U_lr), module.V_lr)
+    out0 = _safe_linear(_safe_linear(x, module.U_lr), module.V_lr)
 
     # Expert 1: Bottleneck
-    hidden1 = F.gelu(F.linear(x, module.W_down))
-    out1 = F.linear(hidden1, module.W_up)
+    hidden1 = F.gelu(_safe_linear(x, module.W_down))
+    out1 = _safe_linear(hidden1, module.W_up)
 
     return out0 * weights[..., 0:1] + out1 * weights[..., 1:2]
 
@@ -1245,7 +1326,7 @@ class CompiledOp(nn.Module):
                 setattr(
                     self,
                     "block_density",
-                    float(max(0.05, min(1.0, config.get("block_density", 0.25)))),
+                    float(max(0.25, min(1.0, config.get("block_density", 0.25)))),
                 ),
             ),
             "rmsnorm": lambda: setattr(self, "weight", nn.Parameter(torch.ones(D_in))),
@@ -1270,10 +1351,20 @@ class CompiledOp(nn.Module):
                 setattr(self, "W_o", self._make_param((D_in, D_in), std=0.02)),
                 setattr(self, "_rwkv_kernel_ready", True),
             ),
-            "embedding_lookup": lambda: setattr(
-                self,
-                "embed_table",
-                nn.Embedding(int(config.get("vocab_size", 32000)), D_in),
+            "embedding_lookup": lambda: (
+                setattr(
+                    self,
+                    "codebook",
+                    nn.Parameter(
+                        torch.randn(min(int(config.get("vocab_size", 64)), 256), D_in)
+                        * 0.02
+                    ),
+                ),
+                setattr(
+                    self,
+                    "codebook_proj",
+                    nn.Parameter(torch.randn(D_in, D_in) * (D_in**-0.5)),
+                ),
             ),
             "rope_rotate": lambda: None,
             "cosine_similarity": lambda: None,
@@ -1347,6 +1438,10 @@ class CompiledOp(nn.Module):
             "routing_conditioned_compression": lambda: (
                 self._init_routing_conditioned_compression(D_in)
             ),
+            "chebyshev_spectral_mix": lambda: self._init_chebyshev_spectral_mix(
+                config, D_in
+            ),
+            "n_way_sparse_router": lambda: self._init_n_way_sparse_router(config, D_in),
         }
 
         handler = dispatch.get(op.name)
@@ -1487,15 +1582,24 @@ class CompiledOp(nn.Module):
     def _init_state_space(self, d_in: int) -> None:
         state_dim = 16
         self.ssm_state_dim = state_dim
-        self.ssm_A = nn.Parameter(torch.randn(d_in, state_dim) * 0.01)
+        # HiPPO-style A: negative integers create multi-timescale memory
+        # A[d,n] = -(n+1) so log_a spans different decay rates
+        A_init = (
+            -torch.arange(1, state_dim + 1, dtype=torch.float32)
+            .unsqueeze(0)
+            .expand(d_in, -1)
+        )
+        self.ssm_A = nn.Parameter(A_init)
         self.ssm_B = nn.Linear(d_in, d_in * state_dim, bias=False)
         self.ssm_C = nn.Linear(d_in * state_dim, d_in, bias=False)
         self.ssm_D = nn.Parameter(torch.ones(d_in))
         self.ssm_dt = nn.Linear(d_in, d_in)
-        # Scale init by 1/(D*N) to prevent gradient explosion through D*N expansion
-        self.ssm_B.weight.data.normal_(std=1.0 / (d_in * state_dim))
-        self.ssm_C.weight.data.normal_(std=1.0 / (d_in * state_dim))
+        # B/C at 0.02 std (same as gated_delta) — 1/(D*N) was too small to learn
+        self.ssm_B.weight.data.normal_(std=0.02)
+        self.ssm_C.weight.data.normal_(std=0.02)
+        # dt bias: small positive init so softplus(dt) starts near ln(2) ≈ 0.69
         self.ssm_dt.weight.data.normal_(std=0.02)
+        self.ssm_dt.bias.data.fill_(0.0)
 
     def _init_conv_only(self, d_in: int) -> None:
         self.conv_dw = nn.Conv1d(d_in, d_in, 3, padding=2, groups=d_in)
@@ -1589,14 +1693,36 @@ class CompiledOp(nn.Module):
         self.U_comp = self._make_param((rank, d_in), std=0.02)
         self.V_comp = self._make_param((d_in, rank), std=0.02)
 
+    def _init_chebyshev_spectral_mix(self, config: Dict, d_in: int) -> None:
+        K = max(2, min(config.get("chebyshev_order", 6), 16))
+        for k in range(K):
+            std = K**-0.5
+            p = self._make_param((d_in,), std=std)
+            if k == 1:
+                p.data.add_(1.0)
+            setattr(self, f"cheb_c{k}", p)
+
+    def _init_n_way_sparse_router(self, config: Dict, d_in: int) -> None:
+        n_ways = max(2, min(config.get("n_ways", 4), 16))
+        hidden = d_in // n_ways
+        self.gate_weight = self._make_param((d_in, n_ways), std=0.02)
+        for i in range(n_ways):
+            setattr(
+                self, f"expert_down_{i}", self._make_param((d_in, hidden), std=0.02)
+            )
+            setattr(self, f"expert_up_{i}", self._make_param((hidden, d_in), std=0.02))
+
     def _cast_params_to(self, dtype: torch.dtype) -> None:
         """Cast raw parameters to match input dtype (bf16 autocast safety).
 
         Covers direct params and ParameterList children (e.g. step_projs).
         Skips nn.Linear/nn.Sequential submodules which handle autocast internally.
+
+        Must cast in BOTH directions (f32→bf16 and bf16→f32) so that params
+        match the current input dtype. Without the f32 path, running under
+        autocast permanently converts params to bf16 and subsequent non-autocast
+        forward passes crash with dtype mismatch.
         """
-        if dtype == torch.float32:
-            return
         # Direct parameters (raw nn.Parameter attrs used with F.linear)
         for param in self._parameters.values():
             if param is not None and param.dtype != dtype:

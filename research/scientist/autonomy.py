@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 class TrustLevel(enum.Enum):
     """How much latitude Aria has to act without user approval."""
+
     FULL = "full"
     SUPERVISED = "supervised"
     ADVISORY = "advisory"
@@ -29,13 +30,15 @@ class TrustLevel(enum.Enum):
 
 class ActionBehavior(enum.Enum):
     """Per-decision-type behavior at the current trust level."""
-    AUTO = "auto"        # Execute immediately, log in activity feed
-    NOTIFY = "notify"    # Execute immediately, show prominent card to user
-    ASK = "ask"          # Queue as pending, wait for user approval
+
+    AUTO = "auto"  # Execute immediately, log in activity feed
+    NOTIFY = "notify"  # Execute immediately, show prominent card to user
+    ASK = "ask"  # Queue as pending, wait for user approval
 
 
 class DecisionType(enum.Enum):
     """Types of autonomous decisions Aria can make."""
+
     GRAMMAR_WEIGHT_ADJUSTMENT = "grammar_weight_adjustment"
     KILL_STALLED_EXPERIMENT = "kill_stalled_experiment"
     RESTART_WITH_NEW_PARAMS = "restart_with_new_params"
@@ -82,6 +85,7 @@ UNDO_WINDOW_SECONDS = 300  # 5 minutes
 @dataclass
 class AutonomousAction:
     """A single autonomous decision that Aria made or is proposing."""
+
     action_id: str
     decision_type: str
     behavior: str  # auto / notify / ask
@@ -148,9 +152,14 @@ class AutonomousAction:
 
 class AriaAutonomy:
     """Manages Aria's autonomous operation loop and decision dispatch."""
+
     __slots__ = (
-        "_trust_level", "_overrides", "_actions",
-        "_undo_handlers", "_notebook", "_max_stored_actions"
+        "_trust_level",
+        "_overrides",
+        "_actions",
+        "_undo_handlers",
+        "_notebook",
+        "_max_stored_actions",
     )
 
     def __init__(self, notebook=None):
@@ -276,7 +285,9 @@ class AriaAutonomy:
         self._store_action(action)
         return action
 
-    def approve(self, action_id: str, execute_fn: Optional[Callable] = None) -> Optional[AutonomousAction]:
+    def approve(
+        self, action_id: str, execute_fn: Optional[Callable] = None
+    ) -> Optional[AutonomousAction]:
         """User approves a pending action."""
         action = self._find_action(action_id)
         if not action or action.status != "pending":
@@ -402,7 +413,7 @@ class AriaAutonomy:
         self._actions.append(action)
         # Trim old actions
         if len(self._actions) > self._max_stored_actions:
-            self._actions = self._actions[-self._max_stored_actions:]
+            self._actions = self._actions[-self._max_stored_actions :]
 
     def _find_action(self, action_id: str) -> Optional[AutonomousAction]:
         for action in self._actions:
@@ -410,7 +421,9 @@ class AriaAutonomy:
                 return action
         return None
 
-    def _log_to_notebook(self, event_type: str, description: str, detail: Optional[Dict] = None) -> None:
+    def _log_to_notebook(
+        self, event_type: str, description: str, detail: Optional[Dict] = None
+    ) -> None:
         if not self._notebook:
             return
         try:

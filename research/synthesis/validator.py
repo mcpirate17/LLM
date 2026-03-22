@@ -18,9 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
+import numpy as np
+
+from .context_rules import find_graph_context_violations
 from .primitives import get_primitive, REVERSE_OPCODE_MAP
 from .graph import ComputationGraph, ComputationGraphIR
-import numpy as np
 from collections import deque
 
 
@@ -132,6 +134,9 @@ def validate_graph(
             result.n_risky_ops += 1
         if op.has_params:
             result.n_parameterized_ops += 1
+
+    for violation in find_graph_context_violations(graph):
+        result.add_error(violation)
 
     # Warnings for risky patterns
     if result.n_risky_ops > 3:
@@ -276,7 +281,7 @@ def validate_ir(
             if op.has_params:
                 result.n_parameterized_ops += 1
         except KeyError:
-            pass
+            result.add_warning(f"IR contains unknown op '{op_name}'")
 
     # Warnings
     if result.n_risky_ops > 3:

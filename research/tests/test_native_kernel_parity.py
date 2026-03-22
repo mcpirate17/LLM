@@ -3,6 +3,7 @@
 Tests every kernel in libaria_native_runtime.so against a reference implementation.
 Tolerance: atol=1e-5, rtol=1e-5 for f32 operations.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -21,14 +22,16 @@ ATOL_APPROX = 2e-5
 RTOL_APPROX = 2e-5
 
 
-def _assert_close(actual: np.ndarray, expected: np.ndarray, label: str = "",
-                   approx: bool = False):
+def _assert_close(
+    actual: np.ndarray, expected: np.ndarray, label: str = "", approx: bool = False
+):
     atol = ATOL_APPROX if approx else ATOL
     rtol = RTOL_APPROX if approx else RTOL
     np.testing.assert_allclose(actual, expected, atol=atol, rtol=rtol, err_msg=label)
 
 
 # ── Unary ops ─────────────────────────────────────────────────────────
+
 
 class TestUnaryOps:
     @pytest.fixture(autouse=True)
@@ -40,24 +43,24 @@ class TestUnaryOps:
         self.y = np.empty(n, dtype=np.float32)
 
     def _call_unary(self, name):
-        fn = getattr(self.lib, f'aria_{name}_f32')
+        fn = getattr(self.lib, f"aria_{name}_f32")
         fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
         fn.restype = None
         fn(self.x.ctypes.data, self.y.ctypes.data, self.n)
         return self.y.copy()
 
     def test_relu(self):
-        result = self._call_unary('relu')
+        result = self._call_unary("relu")
         expected = np.maximum(self.x, 0.0)
         _assert_close(result, expected, "relu")
 
     def test_sigmoid(self):
-        result = self._call_unary('sigmoid')
+        result = self._call_unary("sigmoid")
         expected = 1.0 / (1.0 + np.exp(-self.x))
         _assert_close(result, expected, "sigmoid", approx=True)
 
     def test_tanh(self):
-        result = self._call_unary('tanh')
+        result = self._call_unary("tanh")
         expected = np.tanh(self.x)
         _assert_close(result, expected, "tanh")
 
@@ -72,15 +75,15 @@ class TestUnaryOps:
         _assert_close(self.y, expected, "exp", approx=True)
 
     def test_silu(self):
-        result = self._call_unary('silu')
+        result = self._call_unary("silu")
         expected = self.x / (1.0 + np.exp(-self.x))
         _assert_close(result, expected, "silu", approx=True)
 
     def test_gelu(self):
-        result = self._call_unary('gelu')
+        result = self._call_unary("gelu")
         # GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
         coeff = np.sqrt(2.0 / np.pi).astype(np.float32)
-        inner = coeff * (self.x + 0.044715 * self.x ** 3)
+        inner = coeff * (self.x + 0.044715 * self.x**3)
         expected = 0.5 * self.x * (1.0 + np.tanh(inner))
         _assert_close(result, expected.astype(np.float32), "gelu")
 
@@ -103,6 +106,7 @@ class TestUnaryOps:
 
 # ── Binary ops ────────────────────────────────────────────────────────
 
+
 class TestBinaryOps:
     @pytest.fixture(autouse=True)
     def setup(self, native_lib, array_size):
@@ -114,26 +118,32 @@ class TestBinaryOps:
         self.y = np.empty(n, dtype=np.float32)
 
     def _call_binary(self, name):
-        fn = getattr(self.lib, f'aria_{name}_f32')
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+        fn = getattr(self.lib, f"aria_{name}_f32")
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(self.a.ctypes.data, self.b.ctypes.data, self.y.ctypes.data, self.n)
         return self.y.copy()
 
     def test_add(self):
-        result = self._call_binary('add')
+        result = self._call_binary("add")
         _assert_close(result, self.a + self.b, "add")
 
     def test_mul(self):
-        result = self._call_binary('mul')
+        result = self._call_binary("mul")
         _assert_close(result, self.a * self.b, "mul")
 
     def test_sub(self):
-        result = self._call_binary('sub')
+        result = self._call_binary("sub")
         _assert_close(result, self.a - self.b, "sub")
 
 
 # ── Reductions ────────────────────────────────────────────────────────
+
 
 class TestReductions:
     @pytest.fixture(autouse=True)
@@ -149,7 +159,9 @@ class TestReductions:
         fn.restype = ctypes.c_float
         result = fn(self.x.ctypes.data, self.n)
         expected = np.sum(self.x, dtype=np.float64)  # Higher precision ref
-        assert abs(result - expected) < max(ATOL, abs(expected) * 0.001), f"sum: {result} vs {expected}"
+        assert abs(result - expected) < max(ATOL, abs(expected) * 0.001), (
+            f"sum: {result} vs {expected}"
+        )
 
     def test_mean(self):
         fn = self.lib.aria_mean_f32
@@ -157,25 +169,36 @@ class TestReductions:
         fn.restype = ctypes.c_float
         result = fn(self.x.ctypes.data, self.n)
         expected = np.mean(self.x, dtype=np.float64)
-        assert abs(result - expected) < max(ATOL, abs(expected) * 0.001), f"mean: {result} vs {expected}"
+        assert abs(result - expected) < max(ATOL, abs(expected) * 0.001), (
+            f"mean: {result} vs {expected}"
+        )
 
 
 # ── Matmul ────────────────────────────────────────────────────────────
+
 
 class TestMatmul:
     @pytest.fixture(autouse=True)
     def setup(self, native_lib):
         self.lib = native_lib
 
-    @pytest.mark.parametrize("M,K,N", [(2, 3, 2), (16, 32, 16), (64, 64, 64), (1, 128, 1)])
+    @pytest.mark.parametrize(
+        "M,K,N", [(2, 3, 2), (16, 32, 16), (64, 64, 64), (1, 128, 1)]
+    )
     def test_matmul(self, M, K, N):
         np.random.seed(42)
         A = np.random.randn(M, K).astype(np.float32)
         B = np.random.randn(K, N).astype(np.float32)
         C = np.zeros((M, N), dtype=np.float32)
         fn = self.lib.aria_matmul_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
         fn(A.ctypes.data, B.ctypes.data, C.ctypes.data, M, K, N)
         expected = A @ B
@@ -183,6 +206,7 @@ class TestMatmul:
 
 
 # ── Linear ────────────────────────────────────────────────────────────
+
 
 class TestLinear:
     @pytest.fixture(autouse=True)
@@ -197,11 +221,25 @@ class TestLinear:
         bias = np.random.randn(dout).astype(np.float32)
         y = np.empty((batch, dout), dtype=np.float32)
         fn = self.lib.aria_linear_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
-        fn(x.ctypes.data, W.ctypes.data, bias.ctypes.data,
-           y.ctypes.data, batch, din, dout)
+        fn(
+            x.ctypes.data,
+            W.ctypes.data,
+            bias.ctypes.data,
+            y.ctypes.data,
+            batch,
+            din,
+            dout,
+        )
         expected = x @ W.T + bias
         _assert_close(y, expected, f"linear {batch}x{din}x{dout}")
 
@@ -212,16 +250,23 @@ class TestLinear:
         W = np.random.randn(dout, din).astype(np.float32)
         y = np.empty((batch, dout), dtype=np.float32)
         fn = self.lib.aria_linear_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_int64,
+        ]
         fn.restype = None
-        fn(x.ctypes.data, W.ctypes.data, None,
-           y.ctypes.data, batch, din, dout)
+        fn(x.ctypes.data, W.ctypes.data, None, y.ctypes.data, batch, din, dout)
         expected = x @ W.T
         _assert_close(y, expected, "linear no bias")
 
 
 # ── RMSNorm ───────────────────────────────────────────────────────────
+
 
 class TestRMSNorm:
     @pytest.fixture(autouse=True)
@@ -236,17 +281,24 @@ class TestRMSNorm:
         y = np.empty((batch, dim), dtype=np.float32)
         eps = 1e-5
         fn = self.lib.aria_rmsnorm_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
         fn(x.ctypes.data, w.ctypes.data, y.ctypes.data, batch, dim, eps)
         # Reference: y = x / rms(x) * weight
-        rms = np.sqrt(np.mean(x ** 2, axis=1, keepdims=True) + eps)
+        rms = np.sqrt(np.mean(x**2, axis=1, keepdims=True) + eps)
         expected = (x / rms) * w
         _assert_close(y, expected, f"rmsnorm {batch}x{dim}")
 
 
 # ── Softmax ───────────────────────────────────────────────────────────
+
 
 class TestSoftmax:
     @pytest.fixture(autouse=True)
@@ -283,6 +335,7 @@ class TestSoftmax:
 
 # ── LayerNorm ─────────────────────────────────────────────────────────
 
+
 class TestLayerNorm:
     @pytest.fixture(autouse=True)
     def setup(self, native_lib):
@@ -297,11 +350,17 @@ class TestLayerNorm:
         y = np.empty((batch, dim), dtype=np.float32)
         eps = 1e-5
         fn = self.lib.aria_layernorm_f32
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-                       ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_float]
+        fn.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int64,
+            ctypes.c_int64,
+            ctypes.c_float,
+        ]
         fn.restype = None
-        fn(x.ctypes.data, w.ctypes.data, b.ctypes.data,
-           y.ctypes.data, batch, dim, eps)
+        fn(x.ctypes.data, w.ctypes.data, b.ctypes.data, y.ctypes.data, batch, dim, eps)
         mean = np.mean(x, axis=1, keepdims=True)
         var = np.var(x, axis=1, keepdims=True)
         normed = (x - mean) / np.sqrt(var + eps)
@@ -310,6 +369,7 @@ class TestLayerNorm:
 
 
 # ── Transpose ─────────────────────────────────────────────────────────
+
 
 class TestTranspose:
     @pytest.fixture(autouse=True)
@@ -330,6 +390,7 @@ class TestTranspose:
 
 # ── Concat/Split round-trip ───────────────────────────────────────────
 
+
 class TestConcatSplit:
     @pytest.fixture(autouse=True)
     def setup(self, native_lib):
@@ -346,7 +407,12 @@ class TestConcatSplit:
         sizes = (ctypes.c_int64 * 3)(100, 200, 50)
         output = np.empty(350, dtype=np.float32)
         fn_concat = self.lib.aria_concat_f32
-        fn_concat.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p]
+        fn_concat.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int32,
+            ctypes.c_void_p,
+        ]
         fn_concat.restype = None
         fn_concat(inputs, sizes, 3, output.ctypes.data)
         expected = np.concatenate([a, b, c])
@@ -356,9 +422,16 @@ class TestConcatSplit:
         out_a = np.empty(100, dtype=np.float32)
         out_b = np.empty(200, dtype=np.float32)
         out_c = np.empty(50, dtype=np.float32)
-        outputs = (ctypes.c_void_p * 3)(out_a.ctypes.data, out_b.ctypes.data, out_c.ctypes.data)
+        outputs = (ctypes.c_void_p * 3)(
+            out_a.ctypes.data, out_b.ctypes.data, out_c.ctypes.data
+        )
         fn_split = self.lib.aria_split_f32
-        fn_split.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32]
+        fn_split.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int32,
+        ]
         fn_split.restype = None
         fn_split(output.ctypes.data, outputs, sizes, 3)
         _assert_close(out_a, a, "split[0]")
@@ -367,6 +440,7 @@ class TestConcatSplit:
 
 
 # ── Registry ──────────────────────────────────────────────────────────
+
 
 class TestRegistry:
     @pytest.fixture(autouse=True)
@@ -380,7 +454,9 @@ class TestRegistry:
         count = fn()
         assert count >= 9, f"Expected >= 9 registered kernels, got {count}"
 
-    @pytest.mark.parametrize("op", ["relu", "gelu", "silu", "sigmoid", "tanh", "exp", "add", "mul", "sub"])
+    @pytest.mark.parametrize(
+        "op", ["relu", "gelu", "silu", "sigmoid", "tanh", "exp", "add", "mul", "sub"]
+    )
     def test_registry_has_builtin(self, op):
         self.lib.aria_registry_init()
         fn = self.lib.aria_registry_is_native

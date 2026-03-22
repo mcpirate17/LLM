@@ -19,9 +19,7 @@ def build_op_reference(
     *compression_coverage*: output of analytics.compression_coverage(), used
     to add quality retention and compression ratio per technique.
     """
-    lines = [
-        "VALID OP NAMES — you MUST only use these exact names in op_weights and excluded_ops:"
-    ]
+    lines = ["VALID OP NAMES — you MUST only use these exact names in op_weights:"]
 
     # Registry by category
     try:
@@ -136,7 +134,7 @@ def _build_op_registry_section() -> str:
             )
             by_cat.setdefault(cat, []).append(name)
         lines = [
-            f"Available Ops ({len(PRIMITIVE_REGISTRY)} total, use excluded_ops/op_weights to control):"
+            f"Available Ops ({len(PRIMITIVE_REGISTRY)} total, use op_weights to control selection):"
         ]
         for cat in sorted(by_cat):
             ops = by_cat[cat]
@@ -517,7 +515,7 @@ def _build_rich_negative_results_section(analytics_data: Dict) -> Optional[str]:
                 f"uses, fails at {op.get('failure_stage', '?')} "
                 f"(confidence={op.get('confidence', 0):.2f})"
             )
-        neg_lines.append("  (Use excluded_ops in CONFIG to ban these)")
+        neg_lines.append("  (Use op_weights with values <1.0 to penalize these)")
     anti_patterns = neg.get("anti_patterns", [])
     if anti_patterns:
         neg_lines.append(

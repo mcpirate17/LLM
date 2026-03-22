@@ -1,4 +1,5 @@
 """Contract tests for selective_scan."""
+
 import yaml
 from pathlib import Path
 

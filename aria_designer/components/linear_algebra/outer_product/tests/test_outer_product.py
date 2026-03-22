@@ -1,4 +1,5 @@
 """Contract tests for outer_product."""
+
 import yaml
 from pathlib import Path
 

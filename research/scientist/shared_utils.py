@@ -76,10 +76,14 @@ def coerce_dict_payload(payload: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_device(config_device: Optional[str]) -> "torch.device":
-    """Resolve the runtime device with CUDA availability fallback."""
+def resolve_device(_config_device: Optional[str]) -> "torch.device":
+    """Resolve the runtime device.  Always prefer CUDA when available.
+
+    Training on CPU is orders of magnitude slower and wastes experiment
+    budget producing no useful results in any reasonable time.
+    """
     import torch
 
-    requested = config_device or "cpu"
-    device_str = requested if torch.cuda.is_available() else "cpu"
-    return torch.device(device_str)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")

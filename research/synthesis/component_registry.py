@@ -13,6 +13,7 @@ _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent.parent
 _MAPPING_FILE = _PROJECT_ROOT / "aria_designer" / "runtime" / "component_mapping.yaml"
 
+
 class ComponentRegistry:
     """Registry for mapping frontend components to backend primitives."""
 
@@ -41,14 +42,19 @@ class ComponentRegistry:
             return
 
         self.category_execution_class = self.config.get("category_execution_class", {})
-        self.component_execution_class = self.config.get("component_execution_class", {})
+        self.component_execution_class = self.config.get(
+            "component_execution_class", {}
+        )
         self.passthrough_components = set(self.config.get("passthrough_components", []))
         self.source_components = set(self.config.get("source_components", []))
-        self.template_lowered_components = set(self.config.get("template_lowered_components", []))
+        self.template_lowered_components = set(
+            self.config.get("template_lowered_components", [])
+        )
 
     def _set_defaults(self):
         """Minimal fallback — YAML should always be present at runtime."""
         import warnings
+
         warnings.warn(
             f"component_mapping.yaml not found at {self.mapping_file}; "
             "component mappings will be unavailable",
@@ -71,8 +77,10 @@ class ComponentRegistry:
         leaf_id = component_type.split("/")[-1]
         return leaf_id in self.source_components
 
+
 # Global instance
 registry = ComponentRegistry()
+
 
 def fe_type_to_op_name(fe_type: str) -> str:
     """Compatibility helper for existing code."""

@@ -22,41 +22,33 @@ _CANONICAL_MAP: Dict[str, str] = {
     "log": "math/log",
     "sqrt": "math/sqrt",
     "square": "math/square",
-
     "rmsnorm": "linear_algebra/rmsnorm",
     "layernorm": "normalization/layernorm",
-
     "linear_proj": "linear_algebra/linear_proj",
     "linear_proj_up": "linear_algebra/linear_proj_up",
     "linear_proj_down": "linear_algebra/linear_proj_down",
-
     "low_rank_proj": "math_space/low_rank_proj",
     "bottleneck_proj": "math_space/bottleneck_proj",
-
     "softmax_attention": "mixing/softmax_attention",
     "linear_attention": "mixing/linear_attention",
     "graph_attention": "mixing/graph_attention",
     "local_window_attn": "sequence/local_window_attn",
     "ultrametric_attention": "math_space/ultrametric_attention",
     "tropical_attention": "math_space/tropical_attention",
-
     "selective_scan": "linear_algebra/selective_scan",
     "conv1d_seq": "linear_algebra/conv1d_seq",
-
     "moe_topk": "channel_mixing/moe_topk",
     "difficulty_scorer": "routing/difficulty_scorer",
-
     "split2": "structural/split2",
     "split3": "structural/split3",
     "concat": "structural/concat",
     "conditional_dispatch": "structural/conditional_dispatch",
     "conditional_gather": "structural/conditional_gather",
-
     "input": "io/input",
     "graph_input": "io/input",
     "output": "io/output_head",
     "output_head": "io/output_head",
-    "graph_output": "io/output_head",
+    "graph_output": "io/output",
     # ── Additional on-disk components ─────────────────────────────
     "conv_only": "mixing/conv_only",
     "swiglu_mlp": "channel_mixing/swiglu_mlp",
@@ -66,11 +58,14 @@ _CANONICAL_MAP: Dict[str, str] = {
     "rope_rotate": "positional/rope_rotate",
 }
 
+
 def _normalize_token(raw_id: str | None) -> str:
     return str(raw_id or "").strip().lower()
 
 
-def _build_registry_maps(registry_ids: Iterable[str] | None) -> tuple[Set[str], Dict[str, str]]:
+def _build_registry_maps(
+    registry_ids: Iterable[str] | None,
+) -> tuple[Set[str], Dict[str, str]]:
     registry_set = {
         _normalize_token(component_type)
         for component_type in (registry_ids or [])
@@ -83,7 +78,9 @@ def _build_registry_maps(registry_ids: Iterable[str] | None) -> tuple[Set[str], 
     return registry_set, leaf_to_canonical
 
 
-def canonicalize_component_id(raw_id: str, registry_ids: Iterable[str] | None = None) -> str:
+def canonicalize_component_id(
+    raw_id: str, registry_ids: Iterable[str] | None = None
+) -> str:
     """Resolve a leaf name to a canonical category/id string."""
     token = _normalize_token(raw_id)
     if not token:
@@ -152,7 +149,9 @@ def canonicalize_workflow(
     )
 
 
-def collect_unresolved_component_ids(workflow: Dict[str, Any], registry_ids: Iterable[str]) -> List[str]:
+def collect_unresolved_component_ids(
+    workflow: Dict[str, Any], registry_ids: Iterable[str]
+) -> List[str]:
     """Find component_types that are not present in the live registry."""
     registry_set, _ = _build_registry_maps(registry_ids)
     unresolved = []
@@ -161,6 +160,7 @@ def collect_unresolved_component_ids(workflow: Dict[str, Any], registry_ids: Ite
         if ct and ct not in registry_set:
             unresolved.append(ct)
     return unresolved
+
 
 def component_leaf(component_type: str) -> str:
     """Extract the leaf portion of a component type string, lowercased."""

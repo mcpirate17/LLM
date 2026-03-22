@@ -56,12 +56,15 @@ def main() -> int:
 
     reset_native_runner_telemetry()
 
-    with patch(
-        "research.scientist.native_runner._maybe_prepare_runner_abi_session",
-        return_value=abi_report,
-    ), patch(
-        "research.scientist.native_runner._legacy_compile_model",
-        side_effect=RuntimeError("legacy compile invoked"),
+    with (
+        patch(
+            "research.scientist.native_runner._maybe_prepare_runner_abi_session",
+            return_value=abi_report,
+        ),
+        patch(
+            "research.scientist.native_runner._legacy_compile_model",
+            side_effect=RuntimeError("legacy compile invoked"),
+        ),
     ):
         model = compile_model_native_first([g], vocab_size=8, max_seq_len=4)
 

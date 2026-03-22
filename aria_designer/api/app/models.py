@@ -93,6 +93,7 @@ class ApplyPatchRequest(BaseModel):
     proposal_id: str
     approved_by: str
 
+
 class RecordOutcomeRequest(BaseModel):
     suggestion_id: str
     outcome: Literal["applied", "rejected"]
@@ -100,6 +101,7 @@ class RecordOutcomeRequest(BaseModel):
     intent: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
+
 
 class AskAriaPromptRequest(BaseModel):
     workflow: WorkflowGraphModel
@@ -132,8 +134,8 @@ class HistoricalInsightsResponse(BaseModel):
 
 # ── Chat models ───────────────────────────────────────────────────────
 
+
 class ChatMessageRequest(BaseModel):
     message: str
     workflow: Optional[WorkflowGraphModel] = None
     session_id: Optional[str] = None
-

@@ -7,20 +7,24 @@ from typing import Any, Dict, List, Tuple
 from ..llm.context_experiment import build_validation_context
 from ..notebook import LabNotebook
 from ..shared_utils import resolve_device
+from ._helpers import _build_source_map
 from ._types import LiveProgress, RunConfig
 
 
 class _ContinuousInlineValidationPhase7Mixin:
     """Split helpers for continuous inline validation orchestration."""
 
-    def _inline_validation_candidate_ids(self, config: RunConfig, leaderboard: List[Dict[str, Any]]) -> List[str]:
+    def _inline_validation_candidate_ids(
+        self, config: RunConfig, leaderboard: List[Dict[str, Any]]
+    ) -> List[str]:
         # Primary: investigation-tier entries ready for validation
         candidates = [
             e
             for e in leaderboard
             if e.get("tier") == "investigation"
             and e.get("investigation_robustness") is not None
-            and e["investigation_robustness"] >= config.investigation_robustness_threshold
+            and e["investigation_robustness"]
+            >= config.investigation_robustness_threshold
         ]
         # Recovery: validation-tier entries that were promoted but never fully
         # validated (stuck at PROBED with validation_passed=0).  This handles
@@ -37,7 +41,11 @@ class _ContinuousInlineValidationPhase7Mixin:
             candidates.extend(stuck)
         if not candidates:
             return []
-        return [c["result_id"] for c in candidates[: config.auto_validate_top_n] if c.get("result_id")]
+        return [
+            c["result_id"]
+            for c in candidates[: config.auto_validate_top_n]
+            if c.get("result_id")
+        ]
 
     def _inline_validation_bootstrap(
         self,
@@ -47,15 +55,18 @@ class _ContinuousInlineValidationPhase7Mixin:
         result_ids: List[str],
         limit_str: str,
     ) -> Tuple[str, str]:
-        val_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
+        val_map = _build_source_map(nb, result_ids)
         val_context = build_validation_context(
-            val_details, [e for e in leaderboard if e.get("result_id") in result_ids]
+            list(val_map.values()),
+            [e for e in leaderboard if e.get("result_id") in result_ids],
         )
         hypothesis = self.aria.formulate_validation_hypothesis(context=val_context)
         exp_id = self._start_preregistered_experiment(
             nb=nb,
             experiment_type="validation",
-            config=self._validation_config_with_result_ids(config, result_ids, "continuous_auto"),
+            config=self._validation_config_with_result_ids(
+                config, result_ids, "continuous_auto"
+            ),
             hypothesis=hypothesis,
             hypothesis_metadata=self._build_hypothesis_metadata(
                 source="llm_context",
@@ -77,7 +88,10 @@ class _ContinuousInlineValidationPhase7Mixin:
                 aria_message=f"[{limit_str}|validation] Validating {len(result_ids)} candidates",
             )
 
-        self._emit_event("validation_started", {"experiment_id": exp_id, "n_candidates": len(result_ids)})
+        self._emit_event(
+            "validation_started",
+            {"experiment_id": exp_id, "n_candidates": len(result_ids)},
+        )
         entry_by_result = {
             e.get("result_id"): e.get("entry_id")
             for e in leaderboard
@@ -116,6 +130,9 @@ class _ContinuousInlineValidationPhase7Mixin:
         val_config.stage1_steps = config.validation_steps
         val_config.stage1_batch_size = config.validation_batch_size
         val_config.max_seq_len = config.validation_seq_len
-        program_details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-        source_map = {d.get("result_id"): d for d in program_details if d.get("result_id")}
+        # Scale early stopping for longer validation runs.
+        step_ratio = config.validation_steps / max(config.stage1_steps, 1)
+        val_config.early_stop_patience = int(config.early_stop_patience * step_ratio)
+        val_config.early_stop_min_steps = int(config.early_stop_min_steps * step_ratio)
+        source_map = _build_source_map(nb, result_ids)
         return results, dev, dev_str, val_config, source_map

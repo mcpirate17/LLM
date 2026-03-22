@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 
 # Detect available dependencies
 try:
-    import torch
+    import torch  # noqa: F401
 
     HAS_TORCH = True
 except ImportError:
@@ -397,28 +397,6 @@ class TestNotebook(unittest.TestCase):
 
         entries = self.nb.get_leaderboard()
         self.assertEqual(entries[0]["tier"], "investigation")
-
-    def test_composite_score_increases_with_phases(self):
-        """Composite score should increase as candidates pass more phases with good results."""
-        score_screening = self.nb.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.7
-        )
-        score_investigation = self.nb.compute_composite_score(
-            screening_lr=0.5, screening_nov=0.7, inv_lr=0.4, inv_robust=0.6
-        )
-        # Validation values represent a strong candidate: 30% of baseline
-        # loss with low variance (std=0.1)
-        score_validation = self.nb.compute_composite_score(
-            screening_lr=0.5,
-            screening_nov=0.7,
-            inv_lr=0.4,
-            inv_robust=0.6,
-            val_baseline=0.3,
-            val_std=0.1,
-        )
-
-        self.assertGreater(score_investigation, score_screening)
-        self.assertGreater(score_validation, score_investigation)
 
     def test_upsert_leaderboard_uses_wikitext_and_investigation_flags(self):
         """Leaderboard scoring should incorporate real-token quality and failed investigation evidence."""
@@ -1410,6 +1388,96 @@ class TestLeaderboardDedup(unittest.TestCase):
         self.assertIn("fp_investigated", fps)
         self.assertIn("fp_validated", fps)
         self.assertEqual(len(fps), 2)
+
+    def test_leaderboard_consistency_report_distinguishes_descendants(self):
+        exp_screen = self.nb.start_experiment("synthesis", {}, "screen")
+        exp_inv = self.nb.start_experiment("investigation", {}, "inv")
+
+        screening_rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_shared",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.2,
+        )
+        descendant_rid = self.nb.record_program_result(
+            experiment_id=exp_inv,
+            graph_fingerprint="fp_shared",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.1,
+        )
+        missing_screening_rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_uncovered",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.3,
+        )
+        self.nb.flush_writes()
+        self.nb.upsert_leaderboard(
+            result_id=screening_rid,
+            model_source="test",
+            screening_loss_ratio=0.2,
+            screening_passed=True,
+            tier="screening",
+        )
+
+        report = self.nb.get_leaderboard_consistency_report()
+        self.assertEqual(report["stage1_program_rows"], 3)
+        self.assertEqual(report["direct_stage1_leaderboard_rows"], 1)
+        self.assertEqual(report["descendant_stage1_rows_without_direct_entry"], 1)
+        self.assertEqual(report["missing_screening_leaderboard_rows"], 1)
+        self.assertIn(
+            missing_screening_rid, report["samples"]["missing_screening_result_ids"]
+        )
+        self.assertIn(descendant_rid, report["samples"]["descendant_result_ids"])
+
+    def test_backfill_missing_screening_leaderboard_entries_only_fills_uncovered_screening(
+        self,
+    ):
+        exp_screen = self.nb.start_experiment("synthesis", {}, "screen")
+        exp_inv = self.nb.start_experiment("investigation", {}, "inv")
+
+        covered_rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_covered",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.2,
+            novelty_score=0.6,
+        )
+        descendant_rid = self.nb.record_program_result(
+            experiment_id=exp_inv,
+            graph_fingerprint="fp_covered",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.15,
+            novelty_score=0.7,
+        )
+        missing_rid = self.nb.record_program_result(
+            experiment_id=exp_screen,
+            graph_fingerprint="fp_missing",
+            graph_json="{}",
+            stage1_passed=True,
+            loss_ratio=0.25,
+            novelty_score=0.8,
+        )
+        self.nb.flush_writes()
+        self.nb.upsert_leaderboard(
+            result_id=covered_rid,
+            model_source="test",
+            screening_loss_ratio=0.2,
+            screening_novelty=0.6,
+            screening_passed=True,
+            tier="screening",
+        )
+
+        result = self.nb.backfill_missing_screening_leaderboard_entries()
+        self.assertEqual(result["created_entries"], 1)
+        self.assertEqual(result["result_ids"], [missing_rid])
+        self.assertIsNotNone(self.nb.get_leaderboard_entry(missing_rid))
+        self.assertIsNone(self.nb.get_leaderboard_entry(descendant_rid))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 """Kernel handler for ternary_projection — 1.58-bit ternary simulated projection."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,8 +21,12 @@ class ComponentHandler:
         D = x.shape[-1]
 
         if self._weight is None or self._weight.shape[0] != D:
-            self._weight = nn.Parameter(torch.randn(D, D, device=x.device, dtype=x.dtype) * 0.02)
-            self._threshold = nn.Parameter(torch.tensor(0.5, device=x.device, dtype=x.dtype))
+            self._weight = nn.Parameter(
+                torch.randn(D, D, device=x.device, dtype=x.dtype) * 0.02
+            )
+            self._threshold = nn.Parameter(
+                torch.tensor(0.5, device=x.device, dtype=x.dtype)
+            )
 
         # Ternary quantization: sign(w) * (|w| > threshold) with STE
         abs_w = self._weight.abs()

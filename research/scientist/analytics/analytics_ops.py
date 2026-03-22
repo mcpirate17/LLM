@@ -7,30 +7,48 @@ from ...eval.utils import safe_parse_float
 
 class _OpsMixin:
     """Op extraction, compression analysis, and efficiency frontiers."""
+
     __slots__ = ()
 
     _OP_NAME_PATTERN = re.compile(r'"op_name"\s*:\s*"([^"]+)"')
     _OP_KEY_PATTERN = re.compile(r'"op"\s*:\s*"([^"]+)"')
 
     _FULL_QKV_TOKEN_MIXERS: Set[str] = {
-        "softmax_attention", "linear_attention", "graph_attention",
-        "random_feature_attention", "compressed_attention", "cross_attention_pool",
+        "softmax_attention",
+        "linear_attention",
+        "graph_attention",
+        "random_feature_attention",
+        "compressed_attention",
+        "cross_attention_pool",
     }
     _Q_EQ_K_EQ_V_TOKEN_MIXERS: Set[str] = {"shared_qk_attention"}
     _QKV_FREE_TOKEN_MIXERS: Set[str] = {
-        "conv_only", "state_space", "fourier_mixing",
-        "differentiable_sort", "integral_kernel_mixing",
+        "conv_only",
+        "state_space",
+        "fourier_mixing",
+        "differentiable_sort",
+        "integral_kernel_mixing",
     }
     _COMPRESSION_FACTORS: Dict[str, float] = {
-        "low_rank": 0.55, "shared_basis": 0.5, "hash_trick": 0.35,
-        "structured_sparse": 0.4, "kronecker": 0.5, "polynomial": 0.6,
-        "residual_quantized": 0.3, "compressed_attention": 0.7,
-        "bottleneck": 0.55, "grouped_linear": 0.3, "tied_proj": 0.3,
+        "low_rank": 0.55,
+        "shared_basis": 0.5,
+        "hash_trick": 0.35,
+        "structured_sparse": 0.4,
+        "kronecker": 0.5,
+        "polynomial": 0.6,
+        "residual_quantized": 0.3,
+        "compressed_attention": 0.7,
+        "bottleneck": 0.55,
+        "grouped_linear": 0.3,
+        "tied_proj": 0.3,
     }
     _OP_TO_COMPRESSION: Dict[str, str] = {
-        "low_rank_proj": "low_rank", "grouped_linear": "grouped_linear",
-        "bottleneck_proj": "bottleneck", "shared_basis_proj": "shared_basis",
-        "tied_proj": "tied_proj", "nm_sparse_linear": "structured_sparse",
+        "low_rank_proj": "low_rank",
+        "grouped_linear": "grouped_linear",
+        "bottleneck_proj": "bottleneck",
+        "shared_basis_proj": "shared_basis",
+        "tied_proj": "tied_proj",
+        "nm_sparse_linear": "structured_sparse",
         "block_sparse_linear": "structured_sparse",
         "semi_structured_2_4_linear": "structured_sparse",
     }
@@ -47,8 +65,14 @@ class _OpsMixin:
         if '"op_name"' not in graph_json and '"op"' not in graph_json:
             return []
         ops = set()
-        ops.update(op for op in cls._OP_NAME_PATTERN.findall(graph_json) if op and op != "input")
-        ops.update(op for op in cls._OP_KEY_PATTERN.findall(graph_json) if op and op != "input")
+        ops.update(
+            op
+            for op in cls._OP_NAME_PATTERN.findall(graph_json)
+            if op and op != "input"
+        )
+        ops.update(
+            op for op in cls._OP_KEY_PATTERN.findall(graph_json) if op and op != "input"
+        )
         return sorted(ops)
 
     @staticmethod
@@ -57,13 +81,15 @@ class _OpsMixin:
         try:
             graph_data = json.loads(graph_json)
             nodes = graph_data.get("nodes", {}) if isinstance(graph_data, dict) else {}
-            return sorted({
-                nd.get("op_name") or nd.get("op")
-                for nd in nodes.values()
-                if isinstance(nd, dict)
-                and (nd.get("op_name") or nd.get("op"))
-                and (nd.get("op_name") or nd.get("op")) != "input"
-            })
+            return sorted(
+                {
+                    nd.get("op_name") or nd.get("op")
+                    for nd in nodes.values()
+                    if isinstance(nd, dict)
+                    and (nd.get("op_name") or nd.get("op"))
+                    and (nd.get("op_name") or nd.get("op")) != "input"
+                }
+            )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return None
 
@@ -94,25 +120,28 @@ class _OpsMixin:
             WHERE (loss_ratio IS NOT NULL OR validation_loss_ratio IS NOT NULL)
               AND (param_count IS NOT NULL OR graph_n_params_estimate IS NOT NULL)
         """).fetchall()
-        
+
         programs = []
         for r in rows:
             p = dict(r)
             # Use real params if available, else estimate
-            p["params"] = p.get("param_count") or p.get("graph_n_params_estimate") or 1e9
+            p["params"] = (
+                p.get("param_count") or p.get("graph_n_params_estimate") or 1e9
+            )
             # Use validation loss if available, else standard loss
             p["loss"] = p.get("validation_loss_ratio") or p.get("loss_ratio") or 2.0
             programs.append(p)
-            
+
         if not programs:
             return []
-            
+
         # Simple Pareto Sort: O(N^2) but N is usually small (< 5000)
         frontier = []
         for i, p1 in enumerate(programs):
             is_dominated = False
             for j, p2 in enumerate(programs):
-                if i == j: continue
+                if i == j:
+                    continue
                 # p2 dominates p1 if it's better in both and strictly better in one
                 if p2["params"] <= p1["params"] and p2["loss"] <= p1["loss"]:
                     if p2["params"] < p1["params"] or p2["loss"] < p1["loss"]:
@@ -120,7 +149,7 @@ class _OpsMixin:
                         break
             if not is_dominated:
                 frontier.append(p1)
-                
+
         return sorted(frontier, key=lambda x: x["params"])
 
     def qkv_usage_enum(self, program: Dict) -> str:
@@ -250,9 +279,7 @@ class _OpsMixin:
             else None
         )
         dense_memory_mb = (
-            (raw_params * 4) / (1024 * 1024)
-            if raw_params is not None
-            else None
+            (raw_params * 4) / (1024 * 1024) if raw_params is not None else None
         )
 
         return {
@@ -299,17 +326,20 @@ class _OpsMixin:
                 else record.get("graph_n_params_estimate")
             )
             for op_name in ops:
-                bucket = per_op.setdefault(op_name, {
-                    "op_name": op_name,
-                    "mechanism": self._OP_TO_COMPRESSION.get(op_name, "unknown"),
-                    "n_tested": 0,
-                    "n_survived": 0,
-                    "sum_loss": 0.0,
-                    "n_loss": 0,
-                    "best_loss": None,
-                    "sum_params": 0.0,
-                    "n_params": 0,
-                })
+                bucket = per_op.setdefault(
+                    op_name,
+                    {
+                        "op_name": op_name,
+                        "mechanism": self._OP_TO_COMPRESSION.get(op_name, "unknown"),
+                        "n_tested": 0,
+                        "n_survived": 0,
+                        "sum_loss": 0.0,
+                        "n_loss": 0,
+                        "best_loss": None,
+                        "sum_params": 0.0,
+                        "n_params": 0,
+                    },
+                )
                 bucket["n_tested"] += 1
                 if passed:
                     bucket["n_survived"] += 1
@@ -327,26 +357,36 @@ class _OpsMixin:
             per_op.items(), key=lambda kv: kv[1]["n_tested"], reverse=True
         ):
             n = bucket["n_tested"]
-            primitives.append({
-                "op_name": op_name,
-                "mechanism": bucket["mechanism"],
-                "n_tested": n,
-                "n_survived": bucket["n_survived"],
-                "survival_rate": round(bucket["n_survived"] / n, 4) if n > 0 else 0.0,
-                "avg_loss_ratio": (
-                    round(bucket["sum_loss"] / bucket["n_loss"], 4)
-                    if bucket["n_loss"] > 0 else None
-                ),
-                "best_loss_ratio": (
-                    round(bucket["best_loss"], 4)
-                    if bucket["best_loss"] is not None else None
-                ),
-                "avg_param_count": (
-                    int(bucket["sum_params"] / bucket["n_params"])
-                    if bucket["n_params"] > 0 else None
-                ),
-            })
-        return {"primitives": primitives, "n_programs_with_compression": sum(1 for _ in primitives)}
+            primitives.append(
+                {
+                    "op_name": op_name,
+                    "mechanism": bucket["mechanism"],
+                    "n_tested": n,
+                    "n_survived": bucket["n_survived"],
+                    "survival_rate": round(bucket["n_survived"] / n, 4)
+                    if n > 0
+                    else 0.0,
+                    "avg_loss_ratio": (
+                        round(bucket["sum_loss"] / bucket["n_loss"], 4)
+                        if bucket["n_loss"] > 0
+                        else None
+                    ),
+                    "best_loss_ratio": (
+                        round(bucket["best_loss"], 4)
+                        if bucket["best_loss"] is not None
+                        else None
+                    ),
+                    "avg_param_count": (
+                        int(bucket["sum_params"] / bucket["n_params"])
+                        if bucket["n_params"] > 0
+                        else None
+                    ),
+                }
+            )
+        return {
+            "primitives": primitives,
+            "n_programs_with_compression": sum(1 for _ in primitives),
+        }
 
     def compression_coverage(self) -> Dict:
         """Summarize compression-technique coverage across tested and surviving programs."""
@@ -427,19 +467,43 @@ class _OpsMixin:
         ):
             n_tested = bucket["n_tested"]
             n_survived = bucket["n_survived"]
-            techniques.append({
-                "technique": mechanism,
-                "n_tested": n_tested,
-                "n_survived": n_survived,
-                "survival_rate": round(n_survived / n_tested, 4) if n_tested > 0 else 0.0,
-                "tested_share": round(n_tested / total_tested, 4) if total_tested > 0 else 0.0,
-                "survivor_share": round(n_survived / total_survived, 4) if total_survived > 0 else 0.0,
-                "avg_loss_ratio": round(bucket["sum_loss"] / bucket["n_loss"], 4) if bucket["n_loss"] > 0 else None,
-                "best_loss_ratio": round(bucket["best_loss"], 4) if bucket["best_loss"] is not None else None,
-                "avg_quality_retention": round(bucket["sum_quality"] / bucket["n_quality"], 4) if bucket["n_quality"] > 0 else None,
-                "avg_compression_ratio": round(bucket["sum_ratio"] / bucket["n_ratio"], 4) if bucket["n_ratio"] > 0 else None,
-                "avg_estimated_memory_mb": round(bucket["sum_memory_mb"] / bucket["n_memory"], 4) if bucket["n_memory"] > 0 else None,
-            })
+            techniques.append(
+                {
+                    "technique": mechanism,
+                    "n_tested": n_tested,
+                    "n_survived": n_survived,
+                    "survival_rate": round(n_survived / n_tested, 4)
+                    if n_tested > 0
+                    else 0.0,
+                    "tested_share": round(n_tested / total_tested, 4)
+                    if total_tested > 0
+                    else 0.0,
+                    "survivor_share": round(n_survived / total_survived, 4)
+                    if total_survived > 0
+                    else 0.0,
+                    "avg_loss_ratio": round(bucket["sum_loss"] / bucket["n_loss"], 4)
+                    if bucket["n_loss"] > 0
+                    else None,
+                    "best_loss_ratio": round(bucket["best_loss"], 4)
+                    if bucket["best_loss"] is not None
+                    else None,
+                    "avg_quality_retention": round(
+                        bucket["sum_quality"] / bucket["n_quality"], 4
+                    )
+                    if bucket["n_quality"] > 0
+                    else None,
+                    "avg_compression_ratio": round(
+                        bucket["sum_ratio"] / bucket["n_ratio"], 4
+                    )
+                    if bucket["n_ratio"] > 0
+                    else None,
+                    "avg_estimated_memory_mb": round(
+                        bucket["sum_memory_mb"] / bucket["n_memory"], 4
+                    )
+                    if bucket["n_memory"] > 0
+                    else None,
+                }
+            )
 
         return {
             "techniques": techniques,
@@ -581,8 +645,12 @@ class _OpsMixin:
         """).fetchall()
 
         if not rows:
-            return {"frontier": [], "total_candidates": 0,
-                    "frontier_count": 0, "dominated_count": 0}
+            return {
+                "frontier": [],
+                "total_candidates": 0,
+                "frontier_count": 0,
+                "dominated_count": 0,
+            }
 
         programs = [dict(r) for r in rows]
 
@@ -599,15 +667,19 @@ class _OpsMixin:
         for i in range(n):
             if dominated[i]:
                 continue
-            li, fi, ei = (programs[i]["final_loss"],
-                          programs[i]["flops_forward"],
-                          programs[i]["effective_params"])
+            li, fi, ei = (
+                programs[i]["final_loss"],
+                programs[i]["flops_forward"],
+                programs[i]["effective_params"],
+            )
             for j in range(n):
                 if i == j or dominated[j]:
                     continue
-                lj, fj, ej = (programs[j]["final_loss"],
-                              programs[j]["flops_forward"],
-                              programs[j]["effective_params"])
+                lj, fj, ej = (
+                    programs[j]["final_loss"],
+                    programs[j]["flops_forward"],
+                    programs[j]["effective_params"],
+                )
                 # j dominates i if j <= i on all and j < i on at least one
                 if lj <= li and fj <= fi and ej <= ei:
                     if lj < li or fj < fi or ej < ei:
@@ -640,4 +712,3 @@ class _OpsMixin:
             "frontier_count": len(frontier),
             "dominated_count": dominated_count,
         }
-

@@ -1,4 +1,5 @@
 """Contract tests for rmsnorm."""
+
 import yaml
 from pathlib import Path
 

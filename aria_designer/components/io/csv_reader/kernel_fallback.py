@@ -2,6 +2,7 @@ import torch
 import csv
 import numpy as np
 
+
 class ComponentHandler:
     def validate_config(self, config):
         return []
@@ -12,12 +13,12 @@ class ComponentHandler:
     def forward(self, inputs, config):
         filepath = config.get("filepath", "data.csv")
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath, "r") as f:
                 reader = csv.reader(f, delimiter=config.get("delimiter", ","))
                 rows = list(reader)
                 if config.get("has_header", True):
                     rows = rows[1:]
-                
+
                 # Convert to float tensor if possible
                 data = np.array(rows, dtype=np.float32)
                 return {"data": torch.from_numpy(data)}

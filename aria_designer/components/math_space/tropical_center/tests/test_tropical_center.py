@@ -1,4 +1,5 @@
 """Contract tests for tropical_center."""
+
 import yaml
 from pathlib import Path
 

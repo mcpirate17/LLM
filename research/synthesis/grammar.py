@@ -17,11 +17,10 @@ gradient flows, bounded depth/params) but not necessarily USEFUL.
 
 from __future__ import annotations
 
-import copy
 import logging
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, FrozenSet, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,7 @@ from .primitives import (
 from .templates import (
     apply_template,
 )
+from .context_rules import apply_context_rule_priors, validate_context_rules
 from .validator import validate_graph
 
 
@@ -160,6 +160,16 @@ class GrammarConfig:
     motif_weights: Dict[str, float] = field(default_factory=dict)
     # Number of templates to compose per graph (1-3)
     composition_depth: int = 2  # Minimum template blocks per graph
+
+    # ── Under-observed component exploration ──────────────────────────
+    # Op names to boost during graph generation (under-observed ops).
+    # Each op's containing motif gets weight multiplied by boost_factor.
+    exploration_targets: FrozenSet[str] = field(default_factory=frozenset)
+    exploration_boost_factor: float = 4.0  # Weight multiplier for target motifs
+
+    # ── Context-rule search-mode control ─────────────────────────────
+    allow_niche_ops: bool = False  # Allow niche-mode ops in generation
+    restricted_op_weight: float = 0.3  # Weight penalty for restricted-use ops
 
     # ── Routing-First Config (Phase 2) ────────────────────────────────
     routing_mandatory: bool = False  # Force routing structure in every graph
@@ -369,6 +379,31 @@ class GrammarConfig:
             },
         )
 
+    @classmethod
+    def exploration(
+        cls,
+        target_ops: FrozenSet[str],
+        model_dim: int = 256,
+        boost_factor: float = 4.0,
+    ) -> "GrammarConfig":
+        """Config that heavily boosts under-observed ops for evidence collection.
+
+        Args:
+            target_ops: Op names to boost (e.g. from DB query for <20 observations)
+            boost_factor: Weight multiplier for motifs/templates containing targets
+        """
+        return cls(
+            model_dim=model_dim,
+            min_depth=3,
+            max_depth=12,
+            max_ops=18,
+            residual_prob=0.6,
+            split_prob=0.4,
+            risky_op_prob=0.7,
+            exploration_targets=target_ops,
+            exploration_boost_factor=boost_factor,
+        )
+
 
 class EfficiencyPrior:
     """Uses historical Pareto frontier data to bias synthesis."""
@@ -430,23 +465,98 @@ def generate_layer_graph(
     tpl_weights = dict(config.template_weights) if config.template_weights else None
     motif_weights = dict(config.motif_weights) if config.motif_weights else {}
 
-    # Bridge op_weights → motif_weights: boost motifs that contain high-weight ops.
-    # This fixes the dead-code path where API-supplied op_weights were ignored
-    # because the motif-based grammar only looked at motif_weights.
-    if config.op_weights:
+    # Bridge op_weights → motif_weights: geometric mean of constituent op weights.
+    # Always applied (not just boosts) so penalties propagate through motifs.
+    if config.op_weights or config.exploration_targets:
+        import math as _math
         from .motifs import ALL_MOTIFS
 
+    if config.op_weights:
+        for motif in ALL_MOTIFS:
+            motif_ops = [step.op_name for step in motif.steps]
+            factors = [config.op_weights.get(op, 1.0) for op in motif_ops]
+            factor = _math.exp(
+                sum(_math.log(max(f, 0.01)) for f in factors) / len(factors)
+            )
+            factor = max(0.1, min(8.0, factor))
+            current = motif_weights.get(motif.name, motif.lift)
+            motif_weights[motif.name] = current * factor
+
+    # Boost motifs containing under-observed ops (exploration targets)
+    if config.exploration_targets:
         for motif in ALL_MOTIFS:
             motif_ops = {step.op_name for step in motif.steps}
-            boost = max(
-                (config.op_weights.get(op, 1.0) for op in motif_ops),
-                default=1.0,
-            )
-            if boost > 1.0:
+            if motif_ops & config.exploration_targets:
                 current = motif_weights.get(motif.name, motif.lift)
-                motif_weights[motif.name] = current * (boost / 1.0)
+                motif_weights[motif.name] = current * config.exploration_boost_factor
+
+        # Also boost templates that serve target ops (binary-op templates)
+        _OP_TO_TEMPLATE = {
+            "div_safe": "safe_division",
+            "maximum": "gated_maximum",
+            "minimum": "gated_minimum",
+            "sub": "residual_difference",
+            "split3": "three_way_split",
+            "outer_product": "gated_product",
+            "geometric_product": "geometric_product_block",
+            "tropical_matmul": "tropical_matmul_block",
+            "hyp_distance": "hyp_distance_scoring",
+            "cumprod_safe": "decay_sequence",
+            # Phase 3: dedicated paths for underperforming ops
+            "lif_neuron": "spiking_moe_block",
+            "sparse_threshold": "spiking_moe_block",
+            "stdp_attention": "spiking_residual_block",  # needs spiking predecessor chain
+            "spike_rate_code": "spiking_moe_block",
+            "hyp_linear": "hyperbolic_bridge_block",
+            "hyp_tangent_nonlinear": "hyperbolic_bridge_block",
+            "n_way_sparse_router": "n_way_moe_block",
+            "conv_only": "conv_residual_block",
+            "fixed_point_iter": "iterative_refinement",
+            "gated_delta": "recurrent_delta_block",
+            "bottleneck_proj": "bottleneck",
+            "low_rank_proj": "bottleneck",
+            "early_exit": "cascaded_early_exit",
+            "adaptive_recursion": "recursive_depth_router",
+            "tropical_center": "tropical_center_block",
+            "tropical_attention": "tropical_center_block",
+            "tropical_add": "tropical_residual",
+            # 0% S1 fix: dedicated template paths
+            "cumsum": "cumulative_sequence",
+            "sqrt": "sqrt_gated_ffn",
+            "norm_last": "reduce_attend",
+            "mean_last": "reduce_attend",
+            "max_last": "reduce_attend",
+            "sum_last": "reduce_attend",
+            # 0% S1 fix round 2
+            "diff_attention": "diff_attention_block",
+            "causal_mask": "causal_mix_block",
+            "fused_linear_gelu": "fused_gelu_ffn",
+            "exp": "exp_gated_residual",
+            "integral_kernel": "integral_kernel_block",
+            "sliding_window_mask": "windowed_attention",
+            "local_window_attn": "local_attention_block",
+            "state_space": "state_space_block",
+            "rwkv_time_mixing": "rwkv_block",
+            "reciprocal": "reciprocal_gated",
+            "sign_ste": "sign_ste_gated",
+            "log": "log_gated",
+            "graph_attention": "graph_attention_block",
+        }
+        if tpl_weights is None:
+            from .templates import DEFAULT_TEMPLATE_WEIGHTS
+
+            tpl_weights = dict(DEFAULT_TEMPLATE_WEIGHTS)
+        for op_name in config.exploration_targets:
+            tpl_name = _OP_TO_TEMPLATE.get(op_name)
+            if tpl_name and tpl_name in tpl_weights:
+                tpl_weights[tpl_name] *= config.exploration_boost_factor
 
     motif_weights = motif_weights or None
+    motif_weights = apply_context_rule_priors(
+        motif_weights,
+        exploration_targets=config.exploration_targets,
+    )
+    graph.metadata["context_rules_version"] = "low_s1_v1"
 
     # High sparsity bias → force first template from efficiency pool
     _EFFICIENCY_TEMPLATES = {
@@ -486,6 +596,7 @@ def generate_layer_graph(
             rng,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
+            op_weights=config.op_weights or None,
         )
 
         if _graph_exceeds_final_budget(trial_graph, config):
@@ -502,12 +613,16 @@ def generate_layer_graph(
         and not _graph_exceeds_final_budget(graph, config)
     ):
         pre_spectral = current
-        current = graph.add_op("rmsnorm", [current])
-        current = graph.add_op("spectral_filter", [current])
         try:
-            current = graph.add_op("add", [pre_spectral, current])
+            norm_id = graph.add_op("rmsnorm", [current])
+            sf_id = graph.add_op("spectral_filter", [norm_id])
+            current = graph.add_op("add", [pre_spectral, sf_id])
         except ValueError:
-            pass  # shape mismatch — keep bare spectral_filter
+            # Shape mismatch in residual wrap — revert to pre-spectral state.
+            # Bare spectral_filter without residual bypass causes unrecoverable
+            # numerical drift, so we must not keep it.
+            graph.prune_unreachable_nodes()
+            current = pre_spectral
 
     # Ensure output shape is (B, S, D)
     result_shape = graph.nodes[current].output_shape
@@ -528,7 +643,9 @@ def generate_layer_graph(
         try:
             current = graph.add_op("add", [input_id, current])
         except ValueError:
-            pass
+            # Shape mismatch on optional outer residual — keep the non-residual
+            # path explicitly rather than swallowing the failure.
+            current = current
 
     graph.set_output(current)
 
@@ -650,7 +767,7 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     #   "before" — which ops may consume this activation's output
     #   "after"  — which ops must precede this activation (predecessor check)
     from .motifs import ACTIVATION_RULES, MATH_SPACE_RULES
-    from .op_roles import get_role, OpRole
+    from .op_roles import get_role
 
     for nid in sorted(graph.nodes):
         node = graph.nodes[nid]
@@ -750,6 +867,10 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
                     f"must be followed by one of {must_follow_with}"
                 )
 
+    ctx_err = validate_context_rules(graph)
+    if ctx_err is not None:
+        raise ValueError(ctx_err)
+
 
 def _graph_exceeds_final_budget(
     graph: ComputationGraph,
@@ -764,7 +885,7 @@ def batch_generate(
     n: int,
     config: Optional[GrammarConfig] = None,
     base_seed: int = 42,
-    use_adaptive_synthesis: bool = False,
+    _use_adaptive_synthesis: bool = False,
     prior: Optional[EfficiencyPrior] = None,
 ) -> BatchGenerateResult:
     """Generate N unique computation graphs.

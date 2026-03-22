@@ -20,6 +20,7 @@ from uuid import uuid4
 
 # ── Block Schema ─────────────────────────────────────────────────────
 
+
 def create_block(
     name: str,
     nodes: List[Dict[str, Any]],
@@ -78,7 +79,7 @@ def extract_block(
 
     # Partition nodes
     inner_nodes = [all_nodes[nid] for nid in node_ids if nid in all_nodes]
-    outer_node_ids = set(all_nodes.keys()) - node_ids
+    set(all_nodes.keys()) - node_ids
 
     # Classify edges
     inner_edges = []
@@ -101,19 +102,23 @@ def extract_block(
     # Build input/output port specs
     input_ports = []
     for i, e in enumerate(incoming_edges):
-        input_ports.append({
-            "name": f"in_{i}",
-            "target_node": e["target"],
-            "target_port": e.get("target_port", "in"),
-        })
+        input_ports.append(
+            {
+                "name": f"in_{i}",
+                "target_node": e["target"],
+                "target_port": e.get("target_port", "in"),
+            }
+        )
 
     output_ports = []
     for i, e in enumerate(outgoing_edges):
-        output_ports.append({
-            "name": f"out_{i}",
-            "source_node": e["source"],
-            "source_port": e.get("source_port", "out"),
-        })
+        output_ports.append(
+            {
+                "name": f"out_{i}",
+                "source_node": e["source"],
+                "source_port": e.get("source_port", "out"),
+            }
+        )
 
     block = create_block(
         name=block_name,
@@ -136,21 +141,25 @@ def extract_block(
     # Rewire edges: incoming → block node, block node → outgoing
     rewired_edges = list(outer_edges)
     for i, e in enumerate(incoming_edges):
-        rewired_edges.append({
-            "id": e["id"],
-            "source": e["source"],
-            "source_port": e.get("source_port", "out"),
-            "target": block_node_id,
-            "target_port": f"in_{i}",
-        })
+        rewired_edges.append(
+            {
+                "id": e["id"],
+                "source": e["source"],
+                "source_port": e.get("source_port", "out"),
+                "target": block_node_id,
+                "target_port": f"in_{i}",
+            }
+        )
     for i, e in enumerate(outgoing_edges):
-        rewired_edges.append({
-            "id": e["id"],
-            "source": block_node_id,
-            "source_port": f"out_{i}",
-            "target": e["target"],
-            "target_port": e.get("target_port", "in"),
-        })
+        rewired_edges.append(
+            {
+                "id": e["id"],
+                "source": block_node_id,
+                "source_port": f"out_{i}",
+                "target": e["target"],
+                "target_port": e.get("target_port", "in"),
+            }
+        )
 
     # Build modified workflow
     remaining_nodes = [n for n in workflow["nodes"] if n["id"] not in node_ids]
@@ -217,7 +226,9 @@ def expand_block(
             for ip in block["input_ports"]:
                 if ip["name"] == port_name:
                     new_edge = copy.deepcopy(e)
-                    new_edge["target"] = id_map.get(ip["target_node"], ip["target_node"])
+                    new_edge["target"] = id_map.get(
+                        ip["target_node"], ip["target_node"]
+                    )
                     new_edge["target_port"] = ip["target_port"]
                     new_workflow_edges.append(new_edge)
                     break
@@ -228,7 +239,9 @@ def expand_block(
             for op in block["output_ports"]:
                 if op["name"] == port_name:
                     new_edge = copy.deepcopy(e)
-                    new_edge["source"] = id_map.get(op["source_node"], op["source_node"])
+                    new_edge["source"] = id_map.get(
+                        op["source_node"], op["source_node"]
+                    )
                     new_edge["source_port"] = op["source_port"]
                     new_workflow_edges.append(new_edge)
                     break
@@ -255,15 +268,24 @@ def _centroid(nodes: List[Dict]) -> Dict[str, Any]:
 
 # ── Built-in Block Templates ────────────────────────────────────────
 
+
 def _make_ffn_block(model_dim: int = 256, expansion: int = 4) -> Dict[str, Any]:
     """Standard FFN: Linear(D→4D) → GELU → Linear(4D→D)."""
     inner_dim = model_dim * expansion
     return create_block(
         name=f"FFN Block ({model_dim}→{inner_dim}→{model_dim})",
         nodes=[
-            {"id": "up", "component_type": "linear_proj_up", "params": {"out_dim": inner_dim}},
+            {
+                "id": "up",
+                "component_type": "linear_proj_up",
+                "params": {"out_dim": inner_dim},
+            },
             {"id": "act", "component_type": "gelu", "params": {}},
-            {"id": "down", "component_type": "linear_proj_down", "params": {"out_dim": model_dim}},
+            {
+                "id": "down",
+                "component_type": "linear_proj_down",
+                "params": {"out_dim": model_dim},
+            },
         ],
         edges=[
             {"id": "e0", "source": "up", "target": "act"},
@@ -272,7 +294,10 @@ def _make_ffn_block(model_dim: int = 256, expansion: int = 4) -> Dict[str, Any]:
         input_ports=[{"name": "in_0", "target_node": "up", "target_port": "in"}],
         output_ports=[{"name": "out_0", "source_node": "down", "source_port": "out"}],
         params={"model_dim": model_dim, "expansion": expansion},
-        metadata={"category": "blocks", "description": "Standard Feed-Forward Network block"},
+        metadata={
+            "category": "blocks",
+            "description": "Standard Feed-Forward Network block",
+        },
     )
 
 
@@ -281,13 +306,29 @@ def _make_attention_block(model_dim: int = 256) -> Dict[str, Any]:
     return create_block(
         name=f"Self-Attention ({model_dim}d)",
         nodes=[
-            {"id": "q", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
-            {"id": "k", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
-            {"id": "v", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "q",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "k",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "v",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "qk", "component_type": "matmul", "params": {}},
             {"id": "sm", "component_type": "softmax_last", "params": {}},
             {"id": "av", "component_type": "matmul", "params": {}},
-            {"id": "proj", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "proj",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
         ],
         edges=[
             {"id": "e_qk0", "source": "q", "target": "qk"},
@@ -314,18 +355,42 @@ def _make_transformer_layer(model_dim: int = 256) -> Dict[str, Any]:
         name=f"Transformer Layer ({model_dim}d)",
         nodes=[
             {"id": "ln1", "component_type": "rmsnorm", "params": {}},
-            {"id": "q", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
-            {"id": "k", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
-            {"id": "v", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "q",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "k",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "v",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "qk", "component_type": "matmul", "params": {}},
             {"id": "sm", "component_type": "softmax_last", "params": {}},
             {"id": "av", "component_type": "matmul", "params": {}},
-            {"id": "attn_proj", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "attn_proj",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "res1", "component_type": "add", "params": {}},
             {"id": "ln2", "component_type": "rmsnorm", "params": {}},
-            {"id": "ffn_up", "component_type": "linear_proj_up", "params": {"out_dim": model_dim * 4}},
+            {
+                "id": "ffn_up",
+                "component_type": "linear_proj_up",
+                "params": {"out_dim": model_dim * 4},
+            },
             {"id": "ffn_act", "component_type": "gelu", "params": {}},
-            {"id": "ffn_down", "component_type": "linear_proj_down", "params": {"out_dim": model_dim}},
+            {
+                "id": "ffn_down",
+                "component_type": "linear_proj_down",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "res2", "component_type": "add", "params": {}},
         ],
         edges=[
@@ -354,7 +419,10 @@ def _make_transformer_layer(model_dim: int = 256) -> Dict[str, Any]:
         ],
         output_ports=[{"name": "out_0", "source_node": "res2", "source_port": "out"}],
         params={"model_dim": model_dim},
-        metadata={"category": "blocks", "description": "Full pre-norm transformer layer"},
+        metadata={
+            "category": "blocks",
+            "description": "Full pre-norm transformer layer",
+        },
     )
 
 
@@ -363,18 +431,31 @@ def _make_ssm_block(model_dim: int = 256) -> Dict[str, Any]:
     return create_block(
         name=f"SSM Block ({model_dim}d)",
         nodes=[
-            {"id": "proj_in", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "proj_in",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "scan", "component_type": "selective_scan", "params": {}},
-            {"id": "proj_out", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "proj_out",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
         ],
         edges=[
             {"id": "e0", "source": "proj_in", "target": "scan"},
             {"id": "e1", "source": "scan", "target": "proj_out"},
         ],
         input_ports=[{"name": "in_0", "target_node": "proj_in", "target_port": "in"}],
-        output_ports=[{"name": "out_0", "source_node": "proj_out", "source_port": "out"}],
+        output_ports=[
+            {"name": "out_0", "source_node": "proj_out", "source_port": "out"}
+        ],
         params={"model_dim": model_dim},
-        metadata={"category": "blocks", "description": "Selective State Space Model block (Mamba-style)"},
+        metadata={
+            "category": "blocks",
+            "description": "Selective State Space Model block (Mamba-style)",
+        },
     )
 
 
@@ -385,17 +466,41 @@ def _make_hybrid_layer(model_dim: int = 256) -> Dict[str, Any]:
         nodes=[
             {"id": "ln", "component_type": "rmsnorm", "params": {}},
             # Attention path
-            {"id": "q", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
-            {"id": "k", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
-            {"id": "v", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "q",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "k",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
+            {
+                "id": "v",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "qk", "component_type": "matmul", "params": {}},
             {"id": "sm", "component_type": "softmax_last", "params": {}},
             {"id": "av", "component_type": "matmul", "params": {}},
-            {"id": "attn_proj", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "attn_proj",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             # SSM path
-            {"id": "ssm_in", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "ssm_in",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             {"id": "ssm", "component_type": "selective_scan", "params": {}},
-            {"id": "ssm_out", "component_type": "linear_proj", "params": {"out_dim": model_dim}},
+            {
+                "id": "ssm_out",
+                "component_type": "linear_proj",
+                "params": {"out_dim": model_dim},
+            },
             # Merge
             {"id": "merge", "component_type": "add", "params": {}},
             # Residual

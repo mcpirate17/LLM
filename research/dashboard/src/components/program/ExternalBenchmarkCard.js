@@ -43,4 +43,4 @@ export function ExternalBenchmarkCard({ program }) {
   );
 }
 
-export default ExternalBenchmarkCard;
+export default React.memo(ExternalBenchmarkCard);

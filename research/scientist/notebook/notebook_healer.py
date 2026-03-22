@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -7,9 +8,9 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 
-
 class _HealerMixin:
     """Healer operations for the Lab Notebook."""
+
     __slots__ = ()
 
     # ── Code Healer ──
@@ -49,7 +50,6 @@ class _HealerMixin:
         self._maybe_commit()
         return task_id
 
-
     def update_healer_task(
         self,
         task_id: str,
@@ -85,7 +85,6 @@ class _HealerMixin:
         )
         self._maybe_commit()
 
-
     def add_healer_event(
         self,
         task_id: str,
@@ -110,7 +109,6 @@ class _HealerMixin:
         self._maybe_commit()
         return event_id
 
-
     def get_healer_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM healer_tasks WHERE task_id = ?",
@@ -133,7 +131,6 @@ class _HealerMixin:
                 except (TypeError, json.JSONDecodeError):
                     pass
         return out
-
 
     def get_recent_healer_tasks(self, limit: int = 20) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
@@ -161,7 +158,6 @@ class _HealerMixin:
             out.append(item)
         return out
 
-
     def get_healer_events(self, task_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT * FROM healer_task_events
@@ -181,4 +177,3 @@ class _HealerMixin:
                     pass
             out.append(item)
         return out
-

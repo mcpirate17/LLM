@@ -72,8 +72,11 @@ class CheckpointManager:
             return None
         try:
             state = torch.load(str(path), map_location="cpu", weights_only=False)
-            logger.info("Loaded continuous checkpoint: %s (n_experiments=%d)",
-                        path, state.get("n_experiments", 0))
+            logger.info(
+                "Loaded continuous checkpoint: %s (n_experiments=%d)",
+                path,
+                state.get("n_experiments", 0),
+            )
             return state
         except Exception as e:
             logger.warning("Failed to load continuous checkpoint %s: %s", path, e)
@@ -121,8 +124,9 @@ class CheckpointManager:
             return None
         try:
             state = torch.load(str(path), map_location="cpu", weights_only=False)
-            logger.info("Loaded phase checkpoint: %s (step=%d)",
-                        path, state.get("step", 0))
+            logger.info(
+                "Loaded phase checkpoint: %s (step=%d)", path, state.get("step", 0)
+            )
             return state
         except Exception as e:
             logger.warning("Failed to load phase checkpoint %s: %s", path, e)

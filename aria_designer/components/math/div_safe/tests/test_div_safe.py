@@ -1,4 +1,5 @@
 """Contract tests for div_safe."""
+
 import yaml
 from pathlib import Path
 

@@ -16,8 +16,11 @@ _PROJECT_ROOT = _HERE.parent.parent
 _COMPONENTS_ROOT = _HERE.parent / "components"
 _MAPPING_FILE = _HERE / "component_mapping.yaml"
 
+
 class ComponentRegistry:
-    def __init__(self, components_dir: Optional[Path] = None, mapping_file: Optional[Path] = None):
+    def __init__(
+        self, components_dir: Optional[Path] = None, mapping_file: Optional[Path] = None
+    ):
         self.components_dir = components_dir or _COMPONENTS_ROOT
         self.mapping_file = mapping_file or _MAPPING_FILE
         self.handlers = {}
@@ -41,13 +44,21 @@ class ComponentRegistry:
             with open(self.mapping_file, "r", encoding="utf-8") as f:
                 self.mapping_config = yaml.safe_load(f) or {}
         except Exception:
-            logger.warning("Failed to parse manifest YAML: %s", self.mapping_file, exc_info=True)
+            logger.warning(
+                "Failed to parse manifest YAML: %s", self.mapping_file, exc_info=True
+            )
             return
 
-        self.passthrough_components = set(self.mapping_config.get("passthrough_components", []))
+        self.passthrough_components = set(
+            self.mapping_config.get("passthrough_components", [])
+        )
         self.source_components = set(self.mapping_config.get("source_components", []))
-        self.template_lowered_components = set(self.mapping_config.get("template_lowered_components", []))
-        self.category_execution_class = self.mapping_config.get("category_execution_class", {})
+        self.template_lowered_components = set(
+            self.mapping_config.get("template_lowered_components", [])
+        )
+        self.category_execution_class = self.mapping_config.get(
+            "category_execution_class", {}
+        )
 
     def _resolve_component_dir(self, component_type: str) -> Optional[Path]:
         """Resolve component type to its directory on disk."""
@@ -89,7 +100,9 @@ class ComponentRegistry:
             self.manifests[component_type] = manifest
             return manifest
         except Exception:
-            logger.warning("Failed to import component manifest: %s", component_type, exc_info=True)
+            logger.warning(
+                "Failed to import component manifest: %s", component_type, exc_info=True
+            )
             return None
 
     def get_handler(self, component_type: str):
@@ -125,6 +138,7 @@ class ComponentRegistry:
     def is_source(self, component_type: str) -> bool:
         leaf_id = component_type.split("/")[-1]
         return leaf_id in self.source_components
+
 
 # Default instance
 registry = ComponentRegistry()

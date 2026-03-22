@@ -37,7 +37,6 @@ def make_native_temperature_handler(component_type: str, native_op_name: str):
     from components.base import NativeComponentHandler
 
     class ComponentHandler(NativeComponentHandler):  # noqa: D401
-
         def _get_native_args(self, inputs, config):
             x = inputs["x"].detach().contiguous().float()
             temperature = config.get("temperature", 0.1)
@@ -73,7 +72,9 @@ def make_embedding_lookup_handler(component_type: str):
             indices = indices.to(dtype=torch.long)
             d_model = 256
             device = indices.device
-            base = torch.arange(d_model, device=device, dtype=torch.float32).view(1, 1, -1)
+            base = torch.arange(d_model, device=device, dtype=torch.float32).view(
+                1, 1, -1
+            )
             y = (indices.unsqueeze(-1).float() + base).remainder(97.0) / 97.0
             return {"y": y}
 

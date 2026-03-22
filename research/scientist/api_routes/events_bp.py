@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 from flask import jsonify, request, Response
-from ..notebook import LabNotebook
 from ..json_utils import fast_dumps as _json_dumps, fast_loads as _json_loads
 from ._helpers import get_runner, get_sse_timeout_seconds
+from ._utils import with_notebook_context
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
@@ -14,50 +14,45 @@ logger = logging.getLogger(__name__)
 
 def register_events_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
+    wnb = with_notebook_context(notebook_path)
 
     @app.route("/api/live-feed")
-    def api_live_feed():
+    @wnb
+    def api_live_feed(nb=None):
         """List persisted live-feed events for replay in the dashboard."""
         exp_id = request.args.get("experiment_id")
         n = request.args.get("n", 100, type=int)
-        nb = LabNotebook(notebook_path)
-        try:
-            query_limit = max(n, 1000)
-            entries = nb.get_entries(
-                experiment_id=exp_id,
-                entry_type="live_feed",
-                limit=query_limit,
+        query_limit = max(n, 1000)
+        entries = nb.get_entries(
+            experiment_id=exp_id,
+            entry_type="live_feed",
+            limit=query_limit,
+        )
+
+        if not exp_id:
+            latest_exp_id = next(
+                (
+                    entry.get("experiment_id")
+                    for entry in entries
+                    if entry.get("experiment_id")
+                ),
+                None,
             )
+            if latest_exp_id:
+                entries = [
+                    entry
+                    for entry in entries
+                    if entry.get("experiment_id") == latest_exp_id
+                ]
 
-            if not exp_id:
-                latest_exp_id = next(
-                    (
-                        entry.get("experiment_id")
-                        for entry in entries
-                        if entry.get("experiment_id")
-                    ),
-                    None,
-                )
-                if latest_exp_id:
-                    entries = [
-                        entry
-                        for entry in entries
-                        if entry.get("experiment_id") == latest_exp_id
-                    ]
-
-            events = []
-            for entry in reversed(entries):
-                evt = _entry_to_live_feed_event(entry)
-                if evt is not None:
-                    events.append(evt)
-            if len(events) > n:
-                events = events[-n:]
-            return jsonify(events)
-        except Exception as e:
-            logger.error(f"Error in /api/live-feed: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
+        events = []
+        for entry in reversed(entries):
+            evt = _entry_to_live_feed_event(entry)
+            if evt is not None:
+                events.append(evt)
+        if len(events) > n:
+            events = events[-n:]
+        return jsonify(events)
 
     @app.route("/api/live-loss-curve")
     def api_live_loss_curve():

@@ -84,8 +84,9 @@ class TestReferenceCompilation:
         output = model(input_ids)
         loss = output.sum()
         loss.backward()
-        has_grad = any(p.grad is not None and p.grad.abs().sum() > 0
-                       for p in model.parameters())
+        has_grad = any(
+            p.grad is not None and p.grad.abs().sum() > 0 for p in model.parameters()
+        )
         assert has_grad, f"{arch_key} has no gradients flowing"
 
     def test_multi_layer_model(self, arch_key):
@@ -144,7 +145,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
         # Create .pt files
         shape = manifest["activation_shape"]
-        for family in (families or ["transformer", "ssm", "conv"]):
+        for family in families or ["transformer", "ssm", "conv"]:
             data = {
                 "activations": torch.randn(shape[0], shape[1]),
                 "config": {"family": family},
@@ -157,6 +158,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_valid(self):
         """Valid manifest loads without error."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             m = load_manifest(Path(art_dir))
@@ -168,6 +170,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_missing_file(self):
         """Missing manifest.json raises ValueError."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(ValueError, msg="No manifest.json"):
                 load_manifest(Path(d))
@@ -175,6 +178,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_malformed_json(self):
         """Malformed JSON raises ValueError."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "manifest.json")
             with open(p, "w") as f:
@@ -185,6 +189,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_missing_fields(self):
         """Manifest missing required fields raises ValueError."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "manifest.json")
             with open(p, "w") as f:
@@ -195,6 +200,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_unsupported_schema(self):
         """Unsupported schema version raises ValueError."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d, {"schema_version": "99"})
             with self.assertRaises(ValueError, msg="Unsupported schema"):
@@ -203,6 +209,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_missing_family(self):
         """Manifest with incomplete families raises ValueError."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(
                 d, {"reference_families": ["transformer"]}
@@ -213,6 +220,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_load_manifest_bad_activation_shape(self):
         """Invalid activation_shape raises ValueError."""
         from research.eval.cka_references import load_manifest
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d, {"activation_shape": [0, 32]})
             with self.assertRaises(ValueError):
@@ -220,7 +228,11 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_load_reference_activations_valid(self):
         """Valid .pt files load as tensors with correct shape."""
-        from research.eval.cka_references import load_manifest, load_reference_activations
+        from research.eval.cka_references import (
+            load_manifest,
+            load_reference_activations,
+        )
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             m = load_manifest(Path(art_dir))
@@ -231,7 +243,11 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_load_reference_activations_missing_file(self):
         """Missing .pt file raises ValueError."""
-        from research.eval.cka_references import load_manifest, load_reference_activations
+        from research.eval.cka_references import (
+            load_manifest,
+            load_reference_activations,
+        )
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             os.remove(os.path.join(art_dir, "ssm.pt"))
@@ -241,7 +257,11 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_load_reference_activations_shape_mismatch(self):
         """Tensor with wrong shape raises ValueError."""
-        from research.eval.cka_references import load_manifest, load_reference_activations
+        from research.eval.cka_references import (
+            load_manifest,
+            load_reference_activations,
+        )
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             # Overwrite one file with wrong shape
@@ -256,6 +276,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_store_no_artifacts_returns_none(self):
         """ReferenceCkaStore with no artifacts returns None references."""
         from research.eval.cka_references import ReferenceCkaStore
+
         with tempfile.TemporaryDirectory() as d:
             store = ReferenceCkaStore(artifact_dir=os.path.join(d, "nonexistent"))
             self.assertIsNone(store.get_references())
@@ -266,6 +287,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_store_with_valid_artifacts(self):
         """ReferenceCkaStore loads valid artifacts successfully."""
         from research.eval.cka_references import ReferenceCkaStore
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             store = ReferenceCkaStore(artifact_dir=art_dir)
@@ -280,6 +302,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_store_reset_clears_cache(self):
         """reset() clears loaded state so next access reloads."""
         from research.eval.cka_references import ReferenceCkaStore
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             store = ReferenceCkaStore(artifact_dir=art_dir)
@@ -292,6 +315,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_store_metadata_provenance_fields(self):
         """Metadata includes all expected provenance fields."""
         from research.eval.cka_references import ReferenceCkaStore
+
         with tempfile.TemporaryDirectory() as d:
             art_dir = self._make_artifact_dir(d)
             store = ReferenceCkaStore(artifact_dir=art_dir)
@@ -341,8 +365,8 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         reps = torch.randn(1, 16, 32)  # seq_len=16
         ref_activations = {
             "transformer": torch.randn(24, 32),  # seq_len=24 (longer)
-            "ssm": torch.randn(8, 32),           # seq_len=8 (shorter)
-            "conv": torch.randn(16, 32),          # seq_len=16 (same)
+            "ssm": torch.randn(8, 32),  # seq_len=8 (shorter)
+            "conv": torch.randn(16, 32),  # seq_len=16 (same)
         }
         result = _compute_reference_cka(reps, ref_activations=ref_activations)
         self.assertTrue(result["_succeeded"])
@@ -350,6 +374,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
     def test_fingerprint_records_cka_source(self):
         """Fingerprint records cka_source provenance."""
         from research.eval.cka_references import reset_default_store
+
         reset_default_store()  # ensure clean state
 
         fp = self._make_fingerprint()
@@ -365,10 +390,15 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         reset_default_store()
         # Force a store pointing to nonexistent dir
         fake_store = ReferenceCkaStore(artifact_dir="/nonexistent/path")
-        with patch.object(cka_references, '_default_store', fake_store):
-            with patch.object(cka_references, '_default_lock', cka_references.threading.Lock()):
+        with patch.object(cka_references, "_default_store", fake_store):
+            with patch.object(
+                cka_references, "_default_lock", cka_references.threading.Lock()
+            ):
                 # Override get_default_store to return our fake store
-                with patch('research.eval.cka_references.get_default_store', return_value=fake_store):
+                with patch(
+                    "research.eval.cka_references.get_default_store",
+                    return_value=fake_store,
+                ):
                     fp = self._make_fingerprint()
         self.assertIn(fp.cka_source, ("heuristic_fallback",))
         reset_default_store()
@@ -383,12 +413,14 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
                 super().__init__()
                 self.embed = nn.Embedding(100, 32)
                 self.linear = nn.Linear(32, 100)
+
             def forward(self, x):
                 return self.linear(self.embed(x))
 
         model = TinyModel()
-        return compute_fingerprint(model, seq_len=8, model_dim=32,
-                                   vocab_size=100, device="cpu", n_probes=4)
+        return compute_fingerprint(
+            model, seq_len=8, model_dim=32, vocab_size=100, device="cpu", n_probes=4
+        )
 
     def test_fingerprint_cka_provenance_fields_exist(self):
         """BehavioralFingerprint has cka_source and cka_artifact_version fields."""
@@ -409,7 +441,10 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             art_dir = str(Path(d) / "refs" / "v1")
             export_artifacts(
-                output_dir=art_dir, seed=123, n_steps=10, device="cpu",
+                output_dir=art_dir,
+                seed=123,
+                n_steps=10,
+                device="cpu",
             )
             store = ReferenceCkaStore(artifact_dir=art_dir)
             refs = store.get_references()
@@ -434,7 +469,5 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
                 m1 = json.load(f)
             with open(Path(d2) / "manifest.json") as f:
                 m2 = json.load(f)
-            self.assertEqual(
-                m1["probe_protocol_hash"], m2["probe_protocol_hash"]
-            )
+            self.assertEqual(m1["probe_protocol_hash"], m2["probe_protocol_hash"])
             self.assertEqual(m1["activation_shape"], m2["activation_shape"])

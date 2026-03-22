@@ -14,7 +14,9 @@ def _has_legacy_compile(paths: dict) -> bool:
 
 
 def main() -> int:
-    from research.scientist.native_runner_canary import run_selective_canary_latency_benchmark
+    from research.scientist.native_runner_canary import (
+        run_selective_canary_latency_benchmark,
+    )
 
     result = run_selective_canary_latency_benchmark(iterations=6, seed=1337)
     probe_paths = result.probe_execution_paths or {}

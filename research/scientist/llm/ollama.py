@@ -20,6 +20,7 @@ class OllamaBackend(LLMBackend):
 
     def __init__(self):
         from research.defaults import OLLAMA_BASE
+
         self.host = os.environ.get("OLLAMA_HOST", OLLAMA_BASE)
         self.model = os.environ.get("OLLAMA_MODEL", "llama3")
         self.keep_alive = int(os.environ.get("OLLAMA_KEEP_ALIVE", "300"))
@@ -37,34 +38,39 @@ class OllamaBackend(LLMBackend):
             r = requests.get(f"{self.host}/api/tags", timeout=3)
             if r.status_code != 200:
                 return None
-            
+
             data = r.json()
             models = data.get("models", [])
-            
+
             # Candidates: size < 4GB, name doesn't contain 'coder'
             candidates = []
             for m in models:
                 name = m.get("name", "")
                 size_bytes = m.get("size", 0)
                 size_gb = size_bytes / (1024**3)
-                
+
                 if size_gb < 4.0 and "coder" not in name.lower():
                     # Prefer gemma if available
                     if "gemma" in name.lower():
                         return name
                     candidates.append((name, size_gb))
-            
+
             if candidates:
                 # Sort by size and return smallest
                 candidates.sort(key=lambda x: x[1])
                 return candidates[0][0]
-                
+
             return None
         except Exception:
             return None
 
-    def generate(self, prompt: str, system: str = "",
-                 max_tokens: int = 1024, temperature: float = 0.7) -> LLMResponse:
+    def generate(
+        self,
+        prompt: str,
+        system: str = "",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         payload = {
             "model": self.model,
             "prompt": prompt,

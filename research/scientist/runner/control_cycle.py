@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, Optional
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +56,10 @@ class _ControlCycleMixin:
                 payload["continuous_active"] = bool(continuous_active)
             if phase == "running" and selected_mode is not None:
                 payload["last_completed_mode"] = None
-            if phase in {"analyzing", "completed", "failed"} and selected_mode is not None:
+            if (
+                phase in {"analyzing", "completed", "failed"}
+                and selected_mode is not None
+            ):
                 payload["last_completed_mode"] = str(selected_mode)
 
             self._aria_cycle_status.update(payload)
@@ -69,7 +73,9 @@ class _ControlCycleMixin:
         with self._lock:
             cycle = dict(self._aria_cycle_status)
             progress = self._progress.to_dict()
-            last_cycle = dict(self._last_cycle_summary) if self._last_cycle_summary else None
+            last_cycle = (
+                dict(self._last_cycle_summary) if self._last_cycle_summary else None
+            )
             cycle_history = [dict(item) for item in self._aria_cycle_history[-10:]]
             cycle_paused = bool(self._aria_cycle_paused)
         cycle["is_running"] = self.is_running

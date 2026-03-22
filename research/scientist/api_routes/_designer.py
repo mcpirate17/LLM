@@ -3,6 +3,7 @@
 Manages the aria_designer backend/frontend lifecycle: start, stop, idle
 watchdog, health probing, and HTTP proxy for designer API routes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,8 +18,12 @@ import requests as _requests
 from flask import jsonify, Response
 
 from research.defaults import (
-    DESIGNER_API_BASE, DESIGNER_UI_BASE, DESIGNER_API_HEALTH,
-    DESIGNER_PROXY_TIMEOUT, DESIGNER_BOOT_TIMEOUT, DESIGNER_IDLE_TIMEOUT,
+    DESIGNER_API_BASE,
+    DESIGNER_UI_BASE,
+    DESIGNER_API_HEALTH,
+    DESIGNER_PROXY_TIMEOUT,
+    DESIGNER_BOOT_TIMEOUT,
+    DESIGNER_IDLE_TIMEOUT,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,7 +31,9 @@ logger = logging.getLogger(__name__)
 # ── Designer proxy configuration ────────────────────────────────────────
 _DESIGNER_PROXY_BASE = os.environ.get("ARIA_DESIGNER_PROXY_BASE", DESIGNER_API_BASE)
 _DESIGNER_PROXY_ENABLED = os.environ.get("ARIA_DESIGNER_PROXY_ENABLED", "1") != "0"
-_DESIGNER_PROXY_TIMEOUT = float(os.environ.get("ARIA_DESIGNER_PROXY_TIMEOUT", str(DESIGNER_PROXY_TIMEOUT)))
+_DESIGNER_PROXY_TIMEOUT = float(
+    os.environ.get("ARIA_DESIGNER_PROXY_TIMEOUT", str(DESIGNER_PROXY_TIMEOUT))
+)
 
 # ── Designer lifecycle orchestration ────────────────────────────────────
 _ARIA_DESIGNER_ROOT = Path(
@@ -35,10 +42,16 @@ _ARIA_DESIGNER_ROOT = Path(
         str(Path(__file__).resolve().parents[3] / "aria_designer"),
     )
 )
-_ARIA_DESIGNER_API_HEALTH = os.environ.get("ARIA_DESIGNER_API_HEALTH", DESIGNER_API_HEALTH)
+_ARIA_DESIGNER_API_HEALTH = os.environ.get(
+    "ARIA_DESIGNER_API_HEALTH", DESIGNER_API_HEALTH
+)
 _ARIA_DESIGNER_UI_HEALTH = os.environ.get("ARIA_DESIGNER_UI_HEALTH", DESIGNER_UI_BASE)
-_ARIA_DESIGNER_BOOT_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_BOOT_TIMEOUT_S", str(DESIGNER_BOOT_TIMEOUT)))
-_ARIA_DESIGNER_IDLE_TIMEOUT_S = float(os.environ.get("ARIA_DESIGNER_IDLE_TIMEOUT_S", str(DESIGNER_IDLE_TIMEOUT)))
+_ARIA_DESIGNER_BOOT_TIMEOUT_S = float(
+    os.environ.get("ARIA_DESIGNER_BOOT_TIMEOUT_S", str(DESIGNER_BOOT_TIMEOUT))
+)
+_ARIA_DESIGNER_IDLE_TIMEOUT_S = float(
+    os.environ.get("ARIA_DESIGNER_IDLE_TIMEOUT_S", str(DESIGNER_IDLE_TIMEOUT))
+)
 _DESIGNER_LIFECYCLE_LOCK = threading.Lock()
 _DESIGNER_ACTIVITY_LOCK = threading.Lock()
 _DESIGNER_LAST_ACTIVITY_TS = time.time()
@@ -234,13 +247,23 @@ def stop_designer_services() -> Dict[str, Any]:
         while time.time() < deadline:
             latest = designer_service_status()
             if not latest["api_up"] and not latest["ui_up"]:
-                return {"ok": True, "status_before": status_before, "status_after": latest}
+                return {
+                    "ok": True,
+                    "status_before": status_before,
+                    "status_after": latest,
+                }
             time.sleep(0.3)
         return {"ok": True, "status_before": status_before, "status_after": latest}
 
 
-def designer_proxy(method: str, path: str, *, json_body=None, params=None,
-                    timeout: Optional[float] = None) -> Optional[_requests.Response]:
+def designer_proxy(
+    method: str,
+    path: str,
+    *,
+    json_body=None,
+    params=None,
+    timeout: Optional[float] = None,
+) -> Optional[_requests.Response]:
     """Try to proxy a request to the aria_designer API.
 
     Returns the Response on success, or None if proxy is disabled/unavailable
@@ -252,14 +275,20 @@ def designer_proxy(method: str, path: str, *, json_body=None, params=None,
     _timeout = timeout or _DESIGNER_PROXY_TIMEOUT
     try:
         resp = _requests.request(
-            method, url, json=json_body, params=params, timeout=_timeout,
+            method,
+            url,
+            json=json_body,
+            params=params,
+            timeout=_timeout,
         )
         return resp
     except _requests.ConnectionError:
         logger.debug("Designer proxy unavailable at %s", _DESIGNER_PROXY_BASE)
         return None
     except _requests.Timeout:
-        logger.warning("Designer proxy timeout after %.1fs for %s %s", _timeout, method, path)
+        logger.warning(
+            "Designer proxy timeout after %.1fs for %s %s", _timeout, method, path
+        )
         return None
     except Exception:
         logger.exception("Designer proxy unexpected error for %s %s", method, path)
@@ -286,8 +315,12 @@ def proxy_stream(method: str, path: str, *, json_body=None, params=None):
     url = f"{_DESIGNER_PROXY_BASE.rstrip('/')}{path}"
     try:
         upstream = _requests.request(
-            method, url, json=json_body, params=params,
-            stream=True, timeout=120,
+            method,
+            url,
+            json=json_body,
+            params=params,
+            stream=True,
+            timeout=120,
         )
 
         def generate():
@@ -299,8 +332,9 @@ def proxy_stream(method: str, path: str, *, json_body=None, params=None):
                 upstream.close()
 
         content_type = upstream.headers.get("content-type", "text/event-stream")
-        return Response(generate(), status=upstream.status_code,
-                        content_type=content_type)
+        return Response(
+            generate(), status=upstream.status_code, content_type=content_type
+        )
     except _requests.ConnectionError:
         return jsonify({"error": "Designer backend unavailable"}), 502
     except _requests.Timeout:

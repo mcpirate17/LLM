@@ -30,6 +30,7 @@ from .evolution import Individual, EvolutionConfig, evolutionary_search
 @dataclass
 class NoveltySearchConfig:
     """Configuration for novelty search."""
+
     archive_size: int = 200
     k_nearest: int = 15  # compare to K nearest neighbors in archive
     archive_threshold: float = 0.3  # min novelty to enter archive
@@ -47,6 +48,7 @@ class NoveltySearchConfig:
     adaptation_step: float = 0.05
     max_fresh_injection_rate: float = 0.35
     max_novelty_weight: float = 0.92
+    debug: bool = False
 
 
 class BehaviorArchive:
@@ -54,42 +56,63 @@ class BehaviorArchive:
 
     Uses NumPy for vectorized distance computation and reservoir sampling
     for eviction to maintain historical diversity without recency bias.
+
+    The feature matrix uses pre-allocated storage with exponential growth
+    (doubling) to achieve O(1) amortized appends instead of O(N) copies
+    from np.vstack on every insert.
     """
+
+    _INITIAL_CAPACITY = 256
+    _FEATURE_DIM = 10  # length of _behavior_vector output
 
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
         self.entries: List[Tuple[str, BehavioralFingerprint]] = []
-        # Cached feature matrix for vectorized distance
-        self._feature_matrix: Optional[np.ndarray] = None
+        # Pre-allocated feature matrix with exponential growth
+        self._feature_buf: np.ndarray = np.empty(
+            (self._INITIAL_CAPACITY, self._FEATURE_DIM), dtype=np.float32
+        )
+        self._capacity: int = self._INITIAL_CAPACITY
+        self._size: int = 0
         self._total_seen = 0
         self._rng = _random_module.Random(42)
 
-    def _update_cache(self):
-        """Update the internal NumPy feature matrix."""
-        if not self.entries:
-            self._feature_matrix = None
+    @property
+    def _feature_matrix(self) -> Optional[np.ndarray]:
+        """Live slice of the pre-allocated buffer."""
+        if self._size == 0:
+            return None
+        return self._feature_buf[: self._size]
+
+    def _ensure_capacity(self, needed: int) -> None:
+        """Double buffer capacity if needed."""
+        if needed <= self._capacity:
             return
-        vectors = [_behavior_vector(fp) for _, fp in self.entries]
-        self._feature_matrix = np.array(vectors, dtype=np.float32)
+        new_cap = self._capacity
+        while new_cap < needed:
+            new_cap *= 2
+        new_buf = np.empty((new_cap, self._FEATURE_DIM), dtype=np.float32)
+        new_buf[: self._size] = self._feature_buf[: self._size]
+        self._feature_buf = new_buf
+        self._capacity = new_cap
 
     def _append_to_cache(self, behavior: BehavioralFingerprint) -> None:
-        """Append a single vector to the feature matrix (avoids full rebuild)."""
-        vec = np.array(_behavior_vector(behavior), dtype=np.float32).reshape(1, -1)
-        if self._feature_matrix is None:
-            self._feature_matrix = vec
-        else:
-            self._feature_matrix = np.vstack([self._feature_matrix, vec])
+        """Append a single vector to the feature buffer (O(1) amortized)."""
+        self._ensure_capacity(self._size + 1)
+        self._feature_buf[self._size] = _behavior_vector(behavior)
+        self._size += 1
 
     def _replace_in_cache(self, idx: int, behavior: BehavioralFingerprint) -> None:
-        """Replace a single row in the feature matrix (avoids full rebuild)."""
-        if self._feature_matrix is None:
-            self._update_cache()
-            return
-        vec = np.array(_behavior_vector(behavior), dtype=np.float32)
-        self._feature_matrix[idx] = vec
+        """Replace a single row in the feature buffer."""
+        self._feature_buf[idx] = _behavior_vector(behavior)
 
     def add(self, graph_hash: str, behavior: BehavioralFingerprint):
-        """Add a behavior to the archive using reservoir sampling."""
+        """Add a behavior to the archive using reservoir sampling.
+
+        Skips fingerprints with no behavioral data (all probes deferred).
+        """
+        if _behavior_vector(behavior) is None:
+            return
         self._total_seen += 1
         if len(self.entries) < self.max_size:
             self.entries.append((graph_hash, behavior))
@@ -106,28 +129,30 @@ class BehaviorArchive:
         Novelty = mean distance to K nearest neighbors in archive.
         Vectorized via NumPy for high-performance orchestration.
         """
-        if not self.entries or self._feature_matrix is None:
+        fm = self._feature_matrix
+        if fm is None:
             return 1.0
 
-        target = np.array(_behavior_vector(behavior), dtype=np.float32)
-        
-        # Vectorized Euclidean distance across entire archive
-        # d(x, y) = sqrt(1/N * sum((x-y)^2))
-        diff = self._feature_matrix - target
-        dist_sq = np.mean(np.square(diff), axis=1)
-        distances = np.sqrt(dist_sq)
+        vec = _behavior_vector(behavior)
+        if vec is None:
+            return None  # caller should fall back to structural novelty
+        target = np.array(vec, dtype=np.float32)
+
+        # Vectorized RMS distance across entire archive
+        diff = fm - target
+        distances = np.sqrt(np.mean(np.square(diff), axis=1))
 
         # Get K nearest neighbors
         k = min(k, len(distances))
         if k == 0:
             return 1.0
-        
+
         # partition is O(N) compared to sort O(N log N)
         if len(distances) > k:
-            k_nearest = np.partition(distances, k-1)[:k]
+            k_nearest = np.partition(distances, k - 1)[:k]
         else:
             k_nearest = distances
-            
+
         return float(np.mean(k_nearest))
 
     def size(self) -> int:
@@ -136,37 +161,62 @@ class BehaviorArchive:
 
 def _behavior_distance(a: BehavioralFingerprint, b: BehavioralFingerprint) -> float:
     """RMS distance between sanitized behavior vectors (stable range: [0, 1])."""
-    fa = np.array(_behavior_vector(a), dtype=np.float32)
-    fb = np.array(_behavior_vector(b), dtype=np.float32)
+    va = _behavior_vector(a)
+    vb = _behavior_vector(b)
+    if va is None or vb is None:
+        return 1.0  # maximally distant when behavioral data unavailable
+    fa = np.array(va, dtype=np.float32)
+    fb = np.array(vb, dtype=np.float32)
     return float(np.sqrt(np.mean(np.square(fa - fb))))
 
 
-def _behavior_vector(fp: BehavioralFingerprint) -> List[float]:
-    """Extract novelty features with robust sanitization for outliers/NaNs."""
+def _behavior_vector(fp: BehavioralFingerprint) -> List[float] | None:
+    """Extract novelty features with robust sanitization for outliers/NaNs.
+
+    Returns None if the fingerprint has no usable behavioral data
+    (e.g. computed with include_cka=False, include_behavioral_probes=False).
+    """
     raw_features = [
-        fp.interaction_locality, fp.interaction_sparsity,
-        fp.interaction_symmetry, fp.interaction_hierarchy,
-        fp.isotropy, fp.rank_ratio,
+        fp.interaction_locality,
+        fp.interaction_sparsity,
+        fp.interaction_symmetry,
+        fp.interaction_hierarchy,
+        fp.isotropy,
+        fp.rank_ratio,
         fp.sensitivity_uniformity,
-        fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv,
+        fp.cka_vs_transformer,
+        fp.cka_vs_ssm,
+        fp.cka_vs_conv,
     ]
+    # If all features are None, the fingerprint has no behavioral signal
+    if all(v is None for v in raw_features):
+        return None
     return [_sanitize_unit_feature(v) for v in raw_features]
 
 
-def _sanitize_unit_feature(value: float) -> float:
-    """Clip expected unit-scale features to [0, 1], replacing invalid values."""
+def _sanitize_unit_feature(value: float | None) -> float:
+    """Clip expected unit-scale features to [0, 1], replacing invalid values.
+
+    None means the probe was deferred (include_cka=False or
+    include_behavioral_probes=False).  Map to 0.0 so deferred fields
+    don't dominate the distance metric — 0.5 would make every
+    deferred fingerprint look identical and collapse archive diversity.
+    """
+    if value is None:
+        return 0.0
     try:
         v = float(value)
     except Exception:
-        return 0.5
+        return 0.0
     if not math.isfinite(v):
-        return 0.5
+        return 0.0
     return min(1.0, max(0.0, v))
 
 
 @dataclass
 class NoveltySearchResult:
     """Result of a novelty search run."""
+
     best_individuals: List[Individual] = field(default_factory=list)
     archive_size: int = 0
     generations_run: int = 0
@@ -192,7 +242,9 @@ class NoveltySearchResult:
 
 def novelty_search(
     fitness_fn: Callable[[ComputationGraph], float],
-    fingerprint_fn: Optional[Callable[[ComputationGraph], BehavioralFingerprint]] = None,
+    fingerprint_fn: Optional[
+        Callable[[ComputationGraph], BehavioralFingerprint]
+    ] = None,
     config: Optional[NoveltySearchConfig] = None,
     seed: int = 42,
     callback: Optional[Callable[[int, List[Individual], BehaviorArchive], None]] = None,
@@ -216,12 +268,14 @@ def novelty_search(
         "last_best_fitness": 0.0,
     }
 
-    def novelty_fn(graph: ComputationGraph,
-                   population: List[ComputationGraph]) -> float:
+    def novelty_fn(
+        graph: ComputationGraph, population: List[ComputationGraph]
+    ) -> float:
         """Compute novelty score for a graph."""
         if fingerprint_fn is None:
             # Structural novelty only
             from ..eval.metrics import novelty_score as struct_novelty
+
             m = struct_novelty(graph)
             return m.structural_novelty
 
@@ -229,20 +283,58 @@ def novelty_search(
             behavior = fingerprint_fn(graph)
             # fingerprint_fn may return None on failure — fall back to structural novelty
             if behavior is None:
+                if config.debug:
+                    logger.info(
+                        "DEBUG novelty: fingerprint_fn returned None for %s, falling back to structural",
+                        graph.fingerprint()[:16],
+                    )
                 from ..eval.metrics import novelty_score as struct_novelty
+
                 m = struct_novelty(graph)
                 return m.structural_novelty
 
             novelty = archive.novelty_of(behavior, k=config.k_nearest)
 
+            # None means fingerprint had no behavioral data (probes deferred)
+            if novelty is None:
+                if config.debug:
+                    logger.info(
+                        "DEBUG novelty: behavior_vector returned None (all probes deferred) for %s",
+                        graph.fingerprint()[:16],
+                    )
+                from ..eval.metrics import novelty_score as struct_novelty
+
+                m = struct_novelty(graph)
+                return m.structural_novelty
+
             # Add to archive if novel enough
             if novelty >= config.archive_threshold:
                 archive.add(graph.fingerprint(), behavior)
+                if config.debug:
+                    logger.info(
+                        "DEBUG novelty: archived %s (novelty=%.3f >= threshold=%.3f, archive_size=%d)",
+                        graph.fingerprint()[:16],
+                        novelty,
+                        config.archive_threshold,
+                        archive.size(),
+                    )
+            elif config.debug:
+                logger.info(
+                    "DEBUG novelty: rejected %s (novelty=%.3f < threshold=%.3f)",
+                    graph.fingerprint()[:16],
+                    novelty,
+                    config.archive_threshold,
+                )
 
             result.novelty_scores.append(novelty)
             return novelty
         except Exception as e:
-            logger.warning("Novelty computation failed: %s", e)
+            if config.debug:
+                logger.exception(
+                    "DEBUG novelty: computation failed for %s", graph.fingerprint()[:16]
+                )
+            else:
+                logger.warning("Novelty computation failed: %s", e)
             return 0.0
 
     def gen_callback(gen: int, population: List[Individual]):
@@ -315,7 +407,9 @@ def _update_adaptive_novelty_policy(
     improved = best_fitness > float(state["last_best_fitness"]) + 1e-6
     state["last_best_fitness"] = max(float(state["last_best_fitness"]), best_fitness)
     archive_stalled = len(recent_growth) >= window and sum(recent_growth) <= 0
-    state["stall_count"] = int(state["stall_count"]) + 1 if archive_stalled and not improved else 0
+    state["stall_count"] = (
+        int(state["stall_count"]) + 1 if archive_stalled and not improved else 0
+    )
     if int(state["stall_count"]) < max(1, int(ns_config.archive_stall_patience)):
         return
 

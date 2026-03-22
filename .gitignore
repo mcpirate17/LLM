@@ -42,6 +42,14 @@ research/dashboard/build/
 # PID files
 *.pid
 
+# aria_core build artifacts
+aria_core/aria_core/*.so
+aria_core/build/
+aria_core/*.egg-info/
+
+# aria_designer build artifacts
+aria_designer/*.egg-info/
+
 # Separate projects (managed independently)
 AbstractMoE/
 HYDRA/

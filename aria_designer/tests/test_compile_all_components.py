@@ -77,7 +77,7 @@ def _build_workflow(
     # Create source nodes + edges for each input
     for inp in inputs:
         port_name = inp["name"]
-        dtype = inp.get("dtype", "tensor")
+        inp.get("dtype", "tensor")
         src_id = f"src_{port_name}"
 
         nodes.append(
@@ -212,11 +212,19 @@ def test_component_compiles_and_runs(component_type: str, manifest: Dict[str, An
     inputs_spec = manifest.get("inputs", [])
     source_inputs: Dict[str, torch.Tensor] = {}
 
+    # Map symbolic dimension names to concrete sizes
+    _DIM_MAP = {"B": 1, "S": 16, "D": 256, "K": 64, "V": 100}
+
     if inputs_spec:
         for inp in inputs_spec:
             src_id = f"src_{inp['name']}"
             dtype = inp.get("dtype", "tensor")
-            source_inputs[src_id] = _make_input_tensor(dtype)
+            sym_shape = inp.get("shape")
+            if sym_shape:
+                shape = tuple(_DIM_MAP.get(s, 256) for s in sym_shape)
+            else:
+                shape = (1, 16, 256)
+            source_inputs[src_id] = _make_input_tensor(dtype, shape)
     else:
         source_inputs["src_x"] = torch.randn(1, 16, 256)
 

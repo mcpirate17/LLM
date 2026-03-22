@@ -31,13 +31,15 @@ logger = logging.getLogger(__name__)
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ScalingCurvePoint:
     """A single (param_count, loss) measurement."""
+
     param_count: int
-    loss: float             # cross-entropy (nats)
-    dataset: str            # "webtext", "pile", "local", "random"
-    source: str             # "kaplan2020", "gu2023", "local_train"
+    loss: float  # cross-entropy (nats)
+    dataset: str  # "webtext", "pile", "local", "random"
+    source: str  # "kaplan2020", "gu2023", "local_train"
 
 
 @dataclass
@@ -46,6 +48,7 @@ class ScalingCurve:
 
     Fits power law: L(N) = A * N^(-alpha)
     """
+
     family: str
     points: List[ScalingCurvePoint] = field(default_factory=list)
     A: float = 0.0
@@ -121,17 +124,20 @@ class ScalingCurve:
 @dataclass
 class FamilyComparison:
     """Comparison result for a single reference family."""
+
     family: str
     reference_loss_at_candidate_params: float
     reference_params_for_candidate_loss: int
-    param_efficiency_ratio: float       # ref_params / candidate_params
-    flop_efficiency_ratio: float        # ref_flops / candidate_flops
-    curve_source: str                   # "published" | "local"
+    param_efficiency_ratio: float  # ref_params / candidate_params
+    flop_efficiency_ratio: float  # ref_flops / candidate_flops
+    curve_source: str  # "published" | "local"
 
     def to_dict(self) -> dict:
         return {
             "family": self.family,
-            "reference_loss_at_candidate_params": round(self.reference_loss_at_candidate_params, 6),
+            "reference_loss_at_candidate_params": round(
+                self.reference_loss_at_candidate_params, 6
+            ),
             "reference_params_for_candidate_loss": self.reference_params_for_candidate_loss,
             "param_efficiency_ratio": round(self.param_efficiency_ratio, 4),
             "flop_efficiency_ratio": round(self.flop_efficiency_ratio, 4),
@@ -142,6 +148,7 @@ class FamilyComparison:
 @dataclass
 class ScalingComparisonResult:
     """Full scaling comparison output."""
+
     family_comparisons: Dict[str, FamilyComparison] = field(default_factory=dict)
     best_param_efficiency: float = 0.0
     best_param_efficiency_family: str = ""
@@ -189,6 +196,7 @@ class ScalingComparisonResult:
 # Published scaling curves
 # ---------------------------------------------------------------------------
 
+
 def _build_published_curves() -> Dict[str, ScalingCurve]:
     """Hardcoded reference data from published scaling law papers.
 
@@ -203,15 +211,15 @@ def _build_published_curves() -> Dict[str, ScalingCurve]:
     """
     gpt2_curve = ScalingCurve(
         family="gpt2",
-        A=11.94,       # fit from data points below
+        A=11.94,  # fit from data points below
         alpha=0.0696,
         fit_r2=0.98,
         points=[
-            ScalingCurvePoint(768_000,     4.80, "webtext", "kaplan2020"),
-            ScalingCurvePoint(3_000_000,   4.20, "webtext", "kaplan2020"),
-            ScalingCurvePoint(6_000_000,   3.95, "webtext", "kaplan2020"),
-            ScalingCurvePoint(13_000_000,  3.75, "webtext", "kaplan2020"),
-            ScalingCurvePoint(42_000_000,  3.50, "webtext", "kaplan2020"),
+            ScalingCurvePoint(768_000, 4.80, "webtext", "kaplan2020"),
+            ScalingCurvePoint(3_000_000, 4.20, "webtext", "kaplan2020"),
+            ScalingCurvePoint(6_000_000, 3.95, "webtext", "kaplan2020"),
+            ScalingCurvePoint(13_000_000, 3.75, "webtext", "kaplan2020"),
+            ScalingCurvePoint(42_000_000, 3.50, "webtext", "kaplan2020"),
             ScalingCurvePoint(117_000_000, 3.29, "webtext", "kaplan2020"),
             ScalingCurvePoint(345_000_000, 3.10, "webtext", "kaplan2020"),
         ],
@@ -221,13 +229,13 @@ def _build_published_curves() -> Dict[str, ScalingCurve]:
     # Similar scaling exponent, slightly steeper.
     mamba_curve = ScalingCurve(
         family="mamba",
-        A=12.0,        # fit from data points below
+        A=12.0,  # fit from data points below
         alpha=0.0741,
         fit_r2=0.998,
         points=[
-            ScalingCurvePoint(3_000_000,   4.00, "pile", "gu2023"),
-            ScalingCurvePoint(13_000_000,  3.55, "pile", "gu2023"),
-            ScalingCurvePoint(42_000_000,  3.25, "pile", "gu2023"),
+            ScalingCurvePoint(3_000_000, 4.00, "pile", "gu2023"),
+            ScalingCurvePoint(13_000_000, 3.55, "pile", "gu2023"),
+            ScalingCurvePoint(42_000_000, 3.25, "pile", "gu2023"),
             ScalingCurvePoint(130_000_000, 3.00, "pile", "gu2023"),
             ScalingCurvePoint(370_000_000, 2.80, "pile", "gu2023"),
         ],
@@ -243,8 +251,10 @@ PUBLISHED_CURVES = _build_published_curves()
 # Power law fitting
 # ---------------------------------------------------------------------------
 
-def fit_power_law(params: Sequence[int], losses: Sequence[float]
-                  ) -> Tuple[float, float, float]:
+
+def fit_power_law(
+    params: Sequence[int], losses: Sequence[float]
+) -> Tuple[float, float, float]:
     """Fit L(N) = A * N^(-alpha) via log-log linear regression.
 
     Returns (A, alpha, r_squared).
@@ -266,13 +276,13 @@ def fit_power_law(params: Sequence[int], losses: Sequence[float]
     if ss_xx < 1e-15:
         return 0.0, 0.0, 0.0
 
-    slope = ss_xy / ss_xx          # -alpha
+    slope = ss_xy / ss_xx  # -alpha
     intercept = mean_y - slope * mean_x  # log(A)
     alpha = -slope
     A = math.exp(intercept)
 
     # R² for goodness of fit
-    r2 = (ss_xy ** 2) / max(ss_xx * ss_yy, 1e-15) if ss_yy > 1e-15 else 0.0
+    r2 = (ss_xy**2) / max(ss_xx * ss_yy, 1e-15) if ss_yy > 1e-15 else 0.0
 
     return A, alpha, r2
 
@@ -284,6 +294,7 @@ def fit_power_law(params: Sequence[int], losses: Sequence[float]
 # ---------------------------------------------------------------------------
 # ScalingReferenceManager
 # ---------------------------------------------------------------------------
+
 
 class ScalingReferenceManager:
     """Trains and caches reference models, computes scaling comparisons.
@@ -333,13 +344,23 @@ class ScalingReferenceManager:
 
     # ── Cache helpers ──
 
-    def _config_key(self, family: str, d_model: int, n_layers: int,
-                    seq_len: int, n_steps: int, vocab_size: int,
-                    data_tag: str) -> str:
-        return f"{family}_{d_model}_{n_layers}_{seq_len}_{n_steps}_{vocab_size}_{data_tag}"
+    def _config_key(
+        self,
+        family: str,
+        d_model: int,
+        n_layers: int,
+        seq_len: int,
+        n_steps: int,
+        vocab_size: int,
+        data_tag: str,
+    ) -> str:
+        return (
+            f"{family}_{d_model}_{n_layers}_{seq_len}_{n_steps}_{vocab_size}_{data_tag}"
+        )
 
-    def _curve_key(self, family: str, d_model: int, n_steps: int,
-                   seq_len: int, data_tag: str) -> str:
+    def _curve_key(
+        self, family: str, d_model: int, n_steps: int, seq_len: int, data_tag: str
+    ) -> str:
         return f"{family}_{d_model}_{n_steps}_{seq_len}_{data_tag}"
 
     def _get_cached_loss(self, config_key: str) -> Optional[float]:
@@ -351,51 +372,74 @@ class ScalingReferenceManager:
         conn.close()
         return row[0] if row else None
 
-    def _save_result(self, config_key: str, family: str, d_model: int,
-                     n_layers: int, param_count: int, final_loss: float,
-                     initial_loss: float, n_steps: int, seq_len: int,
-                     data_tag: str):
+    def _save_result(
+        self,
+        config_key: str,
+        family: str,
+        d_model: int,
+        n_layers: int,
+        param_count: int,
+        final_loss: float,
+        initial_loss: float,
+        n_steps: int,
+        seq_len: int,
+        data_tag: str,
+    ):
         conn = sqlite3.connect(str(self.cache_path))
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO reference_results
             (config_key, family, d_model, n_layers, param_count,
              final_loss, initial_loss, n_steps, seq_len, data_tag, trained_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (config_key, family, d_model, n_layers, param_count,
-              final_loss, initial_loss, n_steps, seq_len, data_tag, time.time()))
+        """,
+            (
+                config_key,
+                family,
+                d_model,
+                n_layers,
+                param_count,
+                final_loss,
+                initial_loss,
+                n_steps,
+                seq_len,
+                data_tag,
+                time.time(),
+            ),
+        )
         conn.commit()
         conn.close()
 
-    def _get_cached_curve(self, curve_key: str) -> Optional[ScalingCurve]:
+    def _save_curve(
+        self,
+        curve_key: str,
+        family: str,
+        d_model: int,
+        data_tag: str,
+        A: float,
+        alpha: float,
+        fit_r2: float,
+        n_points: int,
+    ):
         conn = sqlite3.connect(str(self.cache_path))
-        row = conn.execute(
-            "SELECT family, A, alpha, fit_r2 FROM fitted_curves WHERE curve_key = ?",
-            (curve_key,),
-        ).fetchone()
-        if not row:
-            conn.close()
-            return None
-        # Also load the points for this curve
-        points_rows = conn.execute("""
-            SELECT param_count, final_loss, data_tag
-            FROM reference_results
-            WHERE family = ? AND d_model = ?
-            AND curve_key_prefix(config_key, ?) = 1
-        """, (row[0], 0, curve_key)).fetchall()  # This won't work with custom SQL
-        conn.close()
-        curve = ScalingCurve(family=row[0], A=row[1], alpha=row[2], fit_r2=row[3])
-        return curve
-
-    def _save_curve(self, curve_key: str, family: str, d_model: int,
-                    data_tag: str, A: float, alpha: float, fit_r2: float,
-                    n_points: int):
-        conn = sqlite3.connect(str(self.cache_path))
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO fitted_curves
             (curve_key, family, d_model, data_tag, A, alpha, fit_r2, n_points, fitted_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (curve_key, family, d_model, data_tag, A, alpha, fit_r2,
-              n_points, time.time()))
+        """,
+            (
+                curve_key,
+                family,
+                d_model,
+                data_tag,
+                A,
+                alpha,
+                fit_r2,
+                n_points,
+                time.time(),
+            ),
+        )
         conn.commit()
         conn.close()
 
@@ -424,7 +468,8 @@ class ScalingReferenceManager:
         from .baseline import _BaselineTransformer
 
         config_key = self._config_key(
-            family, d_model, n_layers, seq_len, n_steps, vocab_size, data_tag)
+            family, d_model, n_layers, seq_len, n_steps, vocab_size, data_tag
+        )
 
         # Check cache (skip for real data — data_fn is stateful)
         if data_fn is None:
@@ -460,10 +505,12 @@ class ScalingReferenceManager:
                         input_ids = data_fn(batch_size, seq_len, dev)
                     else:
                         input_ids = torch.randint(
-                            0, vocab_size, (batch_size, seq_len), device=dev)
+                            0, vocab_size, (batch_size, seq_len), device=dev
+                        )
 
                     with torch.amp.autocast(
-                        device_type=dev.type, dtype=torch.bfloat16,
+                        device_type=dev.type,
+                        dtype=torch.bfloat16,
                         enabled=(dev.type == "cuda"),
                     ):
                         logits = model(input_ids)
@@ -493,9 +540,17 @@ class ScalingReferenceManager:
 
         if math.isfinite(avg_loss):
             self._save_result(
-                config_key, family, d_model, n_layers, param_count,
-                avg_loss, losses[0] if losses else float("inf"),
-                n_steps, seq_len, data_tag)
+                config_key,
+                family,
+                d_model,
+                n_layers,
+                param_count,
+                avg_loss,
+                losses[0] if losses else float("inf"),
+                n_steps,
+                seq_len,
+                data_tag,
+            )
 
         return avg_loss, param_count
 
@@ -525,39 +580,61 @@ class ScalingReferenceManager:
 
         for n_layers in layer_counts:
             loss, params = self._train_reference(
-                family, d_model, n_layers, n_steps, seq_len,
-                vocab_size, batch_size, lr, device,
-                data_fn=data_fn, data_tag=data_tag,
+                family,
+                d_model,
+                n_layers,
+                n_steps,
+                seq_len,
+                vocab_size,
+                batch_size,
+                lr,
+                device,
+                data_fn=data_fn,
+                data_tag=data_tag,
             )
             # Include any point where training produced finite loss.
             # On random data, models barely beat ln(vocab) but there IS
             # differentiation between sizes that's meaningful for curve fitting.
             if math.isfinite(loss) and loss < random_chance * 1.05:
-                points.append(ScalingCurvePoint(
-                    params, loss, "local", "local_train"))
+                points.append(ScalingCurvePoint(params, loss, "local", "local_train"))
                 param_counts.append(params)
                 final_losses.append(loss)
                 logger.debug(
                     "Reference %s d=%d L=%d: params=%d loss=%.4f",
-                    family, d_model, n_layers, params, loss)
+                    family,
+                    d_model,
+                    n_layers,
+                    params,
+                    loss,
+                )
 
         if len(param_counts) < 2:
             logger.warning(
                 "Insufficient reference points for %s d=%d (%d/%d learned)",
-                family, d_model, len(param_counts), len(layer_counts))
+                family,
+                d_model,
+                len(param_counts),
+                len(layer_counts),
+            )
             # Return curve with just points, no fit
             return ScalingCurve(family=family, points=points)
 
         A, alpha, r2 = fit_power_law(param_counts, final_losses)
-        curve = ScalingCurve(
-            family=family, points=points, A=A, alpha=alpha, fit_r2=r2)
+        curve = ScalingCurve(family=family, points=points, A=A, alpha=alpha, fit_r2=r2)
 
-        self._save_curve(curve_key, family, d_model, data_tag, A, alpha, r2,
-                         len(points))
+        self._save_curve(
+            curve_key, family, d_model, data_tag, A, alpha, r2, len(points)
+        )
 
         logger.info(
             "Fitted %s scaling curve d=%d: L(N)=%.3f*N^(-%.4f) R²=%.3f (%d points)",
-            family, d_model, A, alpha, r2, len(points))
+            family,
+            d_model,
+            A,
+            alpha,
+            r2,
+            len(points),
+        )
 
         return curve
 
@@ -616,10 +693,19 @@ class ScalingReferenceManager:
 
             try:
                 comparison = self._compare_single_family(
-                    family_name, candidate_loss, candidate_params,
-                    candidate_flops, d_model, n_steps, seq_len,
-                    vocab_size, batch_size, lr, device,
-                    data_fn, data_tag,
+                    family_name,
+                    candidate_loss,
+                    candidate_params,
+                    candidate_flops,
+                    d_model,
+                    n_steps,
+                    seq_len,
+                    vocab_size,
+                    batch_size,
+                    lr,
+                    device,
+                    data_fn,
+                    data_tag,
                 )
             except Exception as e:
                 logger.debug("Family %s comparison failed: %s", family_name, e)
@@ -640,10 +726,13 @@ class ScalingReferenceManager:
         result.flop_efficiency = best_flop_eff
         result.flop_gate_passed = best_flop_eff >= (1.0 / flop_ceiling)
         result.scaling_gate_passed = (
-            best_param_eff >= param_efficiency_target
-            and result.flop_gate_passed
+            best_param_eff >= param_efficiency_target and result.flop_gate_passed
         )
-        result.confidence = "local_reference" if data_fn is not None or data_tag != "random" else "random_data"
+        result.confidence = (
+            "local_reference"
+            if data_fn is not None or data_tag != "random"
+            else "random_data"
+        )
 
         return result
 
@@ -666,9 +755,16 @@ class ScalingReferenceManager:
         """Compare candidate against one reference family."""
         # Build local scaling curve (trains references if needed)
         curve = self.build_local_scaling_curve(
-            family, d_model, n_steps, seq_len, vocab_size,
-            batch_size, lr, device,
-            data_fn=data_fn, data_tag=data_tag,
+            family,
+            d_model,
+            n_steps,
+            seq_len,
+            vocab_size,
+            batch_size,
+            lr,
+            device,
+            data_fn=data_fn,
+            data_tag=data_tag,
         )
 
         if not curve.points and curve.A <= 0:

@@ -39,13 +39,15 @@ class _FakeNotebook:
     def get_recent_experiments(self, _n=10):
         rows = []
         for _ in range(10):
-            rows.append({
-                "experiment_type": "synthesis",
-                "status": "completed",
-                "n_stage1_passed": 1,
-                "n_programs_generated": 40,
-                "best_novelty_score": 0.3,
-            })
+            rows.append(
+                {
+                    "experiment_type": "synthesis",
+                    "status": "completed",
+                    "n_stage1_passed": 1,
+                    "n_programs_generated": 40,
+                    "best_novelty_score": 0.3,
+                }
+            )
         return rows
 
     def get_leaderboard(self, limit=50):
@@ -68,12 +70,21 @@ class TestRunnerModeSelection(unittest.TestCase):
             captured["n_programs"] = cfg.n_programs
             captured["max_depth"] = cfg.max_depth
 
-        with patch.object(runner, "_select_next_mode", return_value={
-            "mode": "synthesis",
-            "reasoning": "test compact override",
-            "confidence": 0.8,
-            "config": {"n_programs": 77, "max_depth": 5},
-        }), patch.object(runner, "_run_continuous_synthesis", side_effect=_capture_synthesis):
+        with (
+            patch.object(
+                runner,
+                "_select_next_mode",
+                return_value={
+                    "mode": "synthesis",
+                    "reasoning": "test compact override",
+                    "confidence": 0.8,
+                    "config": {"n_programs": 77, "max_depth": 5},
+                },
+            ),
+            patch.object(
+                runner, "_run_continuous_synthesis", side_effect=_capture_synthesis
+            ),
+        ):
             runner.run_aria_cycle(
                 RunConfig(device="cpu", n_programs=20, max_depth=10),
                 nb,
@@ -88,7 +99,9 @@ class TestRunnerModeSelection(unittest.TestCase):
         self.assertEqual(captured.get("max_depth"), 10)
 
     def test_select_next_mode_forces_compression_examination_when_undercovered(self):
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "compression_override.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "compression_override.db")
+        )
         nb = _FakeNotebook()
 
         analytics_data = {
@@ -107,13 +120,19 @@ class TestRunnerModeSelection(unittest.TestCase):
             },
         }
 
-        with patch.object(runner, "_gather_analytics_data", return_value=analytics_data), \
-                patch.object(runner.aria, "recommend_next_mode", return_value={
+        with (
+            patch.object(runner, "_gather_analytics_data", return_value=analytics_data),
+            patch.object(
+                runner.aria,
+                "recommend_next_mode",
+                return_value={
                     "mode": "evolution",
                     "reasoning": "base recommendation",
                     "confidence": 0.6,
                     "config": {},
-                }):
+                },
+            ),
+        ):
             rec = runner._select_next_mode(
                 RunConfig(device="cpu", n_programs=40),
                 nb,
@@ -145,12 +164,24 @@ class TestRunnerModeSelection(unittest.TestCase):
             called["model_source"] = cfg.model_source
             called["source_ids"] = cfg.refine_source_result_ids
 
-        with patch.object(runner, "_select_next_mode", return_value={
-            "mode": "refinement",
-            "reasoning": "recursive local tweaks",
-            "confidence": 0.8,
-            "config": {"model_source": "fingerprint_refine", "refine_source_result_ids": "r1,r2"},
-        }), patch.object(runner, "_run_continuous_refinement", side_effect=_capture_refinement):
+        with (
+            patch.object(
+                runner,
+                "_select_next_mode",
+                return_value={
+                    "mode": "refinement",
+                    "reasoning": "recursive local tweaks",
+                    "confidence": 0.8,
+                    "config": {
+                        "model_source": "fingerprint_refine",
+                        "refine_source_result_ids": "r1,r2",
+                    },
+                },
+            ),
+            patch.object(
+                runner, "_run_continuous_refinement", side_effect=_capture_refinement
+            ),
+        ):
             runner.run_aria_cycle(
                 RunConfig(device="cpu", n_programs=20, max_depth=10),
                 nb,
@@ -165,6 +196,7 @@ class TestRunnerModeSelection(unittest.TestCase):
 
 try:
     from research.scientist.persona import Aria
+
     HAS_PERSONA = True
 except Exception:
     HAS_PERSONA = False
@@ -179,78 +211,94 @@ class TestAriaModeSelecion(unittest.TestCase):
 
     def test_no_survivors_recommends_synthesis(self):
         """With no S1 survivors, should recommend synthesis."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 1,
-        })
+        rec = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 0,
+                "avg_novelty": 0,
+                "n_experiments_in_session": 1,
+            }
+        )
         self.assertEqual(rec["mode"], "synthesis")
 
     def test_long_zero_survivor_streak_rotates_recovery(self):
         """After many zero-survivor runs, recommendation should rotate strategies."""
         # n_experiments=10 -> recovery_idx=0 -> conservative config
-        rec0 = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 10,
-        })
+        rec0 = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 0,
+                "avg_novelty": 0,
+                "n_experiments_in_session": 10,
+            }
+        )
         self.assertEqual(rec0["mode"], "synthesis")
         self.assertEqual(rec0["config"]["residual_prob"], 0.85)
 
         # n_experiments=11 -> recovery_idx=1 -> sparse config
-        rec1 = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 11,
-        })
+        rec1 = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 0,
+                "avg_novelty": 0,
+                "n_experiments_in_session": 11,
+            }
+        )
         self.assertEqual(rec1["mode"], "synthesis")
         self.assertIn("op_weights", rec1["config"])
 
         # n_experiments=14 -> recovery_idx=4 -> evolution
-        rec4 = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 0,
-            "avg_novelty": 0,
-            "n_experiments_in_session": 14,
-        })
+        rec4 = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 0,
+                "avg_novelty": 0,
+                "n_experiments_in_session": 14,
+            }
+        )
         self.assertEqual(rec4["mode"], "evolution")
 
     def test_low_novelty_recommends_novelty_search(self):
         """With survivors but low novelty, should recommend novelty."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 5,
-            "avg_novelty": 0.2,
-            "n_experiments_in_session": 2,
-        })
+        rec = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 5,
+                "avg_novelty": 0.2,
+                "n_experiments_in_session": 2,
+            }
+        )
         self.assertIn(rec["mode"], {"novelty", "synthesis"})
 
     def test_good_survivors_recommends_evolution(self):
         """With 3+ diverse survivors, should recommend evolution."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 5,
-            "avg_novelty": 0.6,
-            "n_experiments_in_session": 2,
-        })
+        rec = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 5,
+                "avg_novelty": 0.6,
+                "n_experiments_in_session": 2,
+            }
+        )
         self.assertIn(rec["mode"], {"evolution", "synthesis"})
 
     def test_investigation_ready_recommends_investigation(self):
         """With investigation-ready candidates, should recommend investigation."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 3,
-            "avg_novelty": 0.5,
-            "n_experiments_in_session": 5,
-            "investigation_ready": 3,
-        })
+        rec = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 3,
+                "avg_novelty": 0.5,
+                "n_experiments_in_session": 5,
+                "investigation_ready": 3,
+            }
+        )
         self.assertIn(rec["mode"], {"investigation", "synthesis"})
 
     def test_validation_ready_recommends_validation(self):
         """Validation candidates take highest priority."""
-        rec = self.aria._rule_based_mode_recommendation({
-            "total_s1_survivors": 5,
-            "avg_novelty": 0.6,
-            "n_experiments_in_session": 10,
-            "investigation_ready": 3,
-            "validation_ready": 2,
-        })
+        rec = self.aria._rule_based_mode_recommendation(
+            {
+                "total_s1_survivors": 5,
+                "avg_novelty": 0.6,
+                "n_experiments_in_session": 10,
+                "investigation_ready": 3,
+                "validation_ready": 2,
+            }
+        )
         self.assertIn(rec["mode"], {"validation", "synthesis"})
 
     def test_recommendation_has_required_fields(self):
@@ -260,9 +308,10 @@ class TestAriaModeSelecion(unittest.TestCase):
         self.assertIn("reasoning", rec)
         self.assertIn("confidence", rec)
         self.assertIn("config", rec)
-        self.assertIn(rec["mode"],
-                      {"synthesis", "evolution", "novelty",
-                       "investigation", "validation"})
+        self.assertIn(
+            rec["mode"],
+            {"synthesis", "evolution", "novelty", "investigation", "validation"},
+        )
 
     def test_parse_briefing_uses_reasoning_when_briefing_missing(self):
         parsed = self.aria._parse_briefing(
@@ -272,7 +321,9 @@ class TestAriaModeSelecion(unittest.TestCase):
             "CONFIDENCE: 0.78\n"
         )
         self.assertTrue(parsed.get("briefing_text"))
-        self.assertIn("Evolution remains the best next step", parsed.get("briefing_text", ""))
+        self.assertIn(
+            "Evolution remains the best next step", parsed.get("briefing_text", "")
+        )
 
     def test_parse_briefing_accepts_summary_prefix(self):
         parsed = self.aria._parse_briefing(
@@ -280,7 +331,9 @@ class TestAriaModeSelecion(unittest.TestCase):
             "MODE: novelty\n"
             "REASONING: Diversification is needed to escape local minima."
         )
-        self.assertIn("Recent S1 hit rate is flattening", parsed.get("briefing_text", ""))
+        self.assertIn(
+            "Recent S1 hit rate is flattening", parsed.get("briefing_text", "")
+        )
 
     def test_parse_mode_recommendation(self):
         """Parse LLM mode recommendation text."""

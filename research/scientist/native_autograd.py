@@ -27,6 +27,7 @@ from .native_runner import dispatch_op_native, dispatch_op_backward_native
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+
 def _to_np(t: torch.Tensor) -> np.ndarray:
     """Detach a torch tensor and return a contiguous float32 numpy array."""
     return t.detach().cpu().contiguous().numpy().astype(np.float32)
@@ -49,6 +50,7 @@ def _to_tensor(arr: np.ndarray, *, device: torch.device) -> torch.Tensor:
 
 
 # ── Unary ops that save the forward *input* ─────────────────────────
+
 
 class NativeRelu(torch.autograd.Function):
     @staticmethod
@@ -109,6 +111,7 @@ class NativeSilu(torch.autograd.Function):
 
 # ── Unary ops that save the forward *output* ─────────────────────────
 
+
 class NativeSigmoid(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
@@ -151,6 +154,7 @@ class NativeTanh(torch.autograd.Function):
 
 # ── Binary ops ──────────────────────────────────────────────────────
 
+
 class NativeAdd(torch.autograd.Function):
     @staticmethod
     def forward(ctx, a, b):
@@ -171,7 +175,9 @@ class NativeAdd(torch.autograd.Function):
         b_np = _to_np_flat(b)
         grad_a_np, grad_b_np = dispatch_op_backward_native("add", grad_np, a_np, b_np)
         dev = grad_output.device
-        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(
+            grad_b_np, device=dev
+        ).reshape(shape)
 
 
 class NativeMul(torch.autograd.Function):
@@ -193,7 +199,9 @@ class NativeMul(torch.autograd.Function):
         b_np = _to_np_flat(b)
         grad_a_np, grad_b_np = dispatch_op_backward_native("mul", grad_np, a_np, b_np)
         dev = grad_output.device
-        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(
+            grad_b_np, device=dev
+        ).reshape(shape)
 
 
 class NativeSub(torch.autograd.Function):
@@ -215,10 +223,13 @@ class NativeSub(torch.autograd.Function):
         b_np = _to_np_flat(b)
         grad_a_np, grad_b_np = dispatch_op_backward_native("sub", grad_np, a_np, b_np)
         dev = grad_output.device
-        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(
+            grad_b_np, device=dev
+        ).reshape(shape)
 
 
 # ── Matmul ──────────────────────────────────────────────────────────
+
 
 class NativeMatmul(torch.autograd.Function):
     @staticmethod
@@ -235,12 +246,15 @@ class NativeMatmul(torch.autograd.Function):
         grad_np = _to_np(grad_output)
         A_np = _to_np(A)
         B_np = _to_np(B)
-        grad_A_np, grad_B_np = dispatch_op_backward_native("matmul", grad_np, A_np, B_np)
+        grad_A_np, grad_B_np = dispatch_op_backward_native(
+            "matmul", grad_np, A_np, B_np
+        )
         dev = grad_output.device
         return _to_tensor(grad_A_np, device=dev), _to_tensor(grad_B_np, device=dev)
 
 
 # ── Normalization / Softmax ops ──────────────────────────────────────
+
 
 class NativeSoftmax(torch.autograd.Function):
     @staticmethod
@@ -316,6 +330,7 @@ class NativeRmsnorm(torch.autograd.Function):
 
 # ── New Tier 1 binary ops ────────────────────────────────────────────
 
+
 class NativeMaximum(torch.autograd.Function):
     @staticmethod
     def forward(ctx, a, b):
@@ -333,9 +348,13 @@ class NativeMaximum(torch.autograd.Function):
         grad_np = _to_np_flat(grad_output)
         a_np = _to_np_flat(a)
         b_np = _to_np_flat(b)
-        grad_a_np, grad_b_np = dispatch_op_backward_native("maximum", grad_np, a_np, b_np)
+        grad_a_np, grad_b_np = dispatch_op_backward_native(
+            "maximum", grad_np, a_np, b_np
+        )
         dev = grad_output.device
-        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(
+            grad_b_np, device=dev
+        ).reshape(shape)
 
 
 class NativeMinimum(torch.autograd.Function):
@@ -355,9 +374,13 @@ class NativeMinimum(torch.autograd.Function):
         grad_np = _to_np_flat(grad_output)
         a_np = _to_np_flat(a)
         b_np = _to_np_flat(b)
-        grad_a_np, grad_b_np = dispatch_op_backward_native("minimum", grad_np, a_np, b_np)
+        grad_a_np, grad_b_np = dispatch_op_backward_native(
+            "minimum", grad_np, a_np, b_np
+        )
         dev = grad_output.device
-        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(
+            grad_b_np, device=dev
+        ).reshape(shape)
 
 
 class NativeDivSafe(torch.autograd.Function):
@@ -377,13 +400,18 @@ class NativeDivSafe(torch.autograd.Function):
         grad_np = _to_np_flat(grad_output)
         a_np = _to_np_flat(a)
         b_np = _to_np_flat(b)
-        grad_a_np, grad_b_np = dispatch_op_backward_native("div_safe", grad_np, a_np, b_np)
+        grad_a_np, grad_b_np = dispatch_op_backward_native(
+            "div_safe", grad_np, a_np, b_np
+        )
         dev = grad_output.device
-        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(grad_b_np, device=dev).reshape(shape)
+        return _to_tensor(grad_a_np, device=dev).reshape(shape), _to_tensor(
+            grad_b_np, device=dev
+        ).reshape(shape)
 
 
 class NativeSignSte(torch.autograd.Function):
     """Sign with straight-through estimator: forward = sign, backward = identity."""
+
     @staticmethod
     def forward(ctx, x):
         shape = x.shape

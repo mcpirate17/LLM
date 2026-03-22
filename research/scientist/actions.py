@@ -76,19 +76,31 @@ class ActionStore:
                 experiment_id, result_id, source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                action_id, decision_type, behavior, title, summary,
+                action_id,
+                decision_type,
+                behavior,
+                title,
+                summary,
                 json.dumps(detail) if detail else None,
-                status, time.time(), executed_at,
+                status,
+                time.time(),
+                executed_at,
                 json.dumps(undo_snapshot) if undo_snapshot else None,
-                experiment_id, result_id, source,
+                experiment_id,
+                result_id,
+                source,
             ),
         )
         self.conn.commit()
         return action_id
 
-    def update_status(self, action_id: str, status: str,
-                      executed_at: Optional[float] = None,
-                      undo_snapshot: Optional[Dict] = None) -> bool:
+    def update_status(
+        self,
+        action_id: str,
+        status: str,
+        executed_at: Optional[float] = None,
+        undo_snapshot: Optional[Dict] = None,
+    ) -> bool:
         """Update an action's status. Returns True if a row was updated."""
         fields = ["status = ?"]
         params: list = [status]

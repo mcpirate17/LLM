@@ -103,7 +103,7 @@ class TestNonInvasiveEval:
 
                 mock_dl.return_value = (Path(train_p), Path(val_p))
 
-                result = screening_wikitext_eval(
+                screening_wikitext_eval(
                     tiny_model,
                     vocab_size=256,
                     device="cpu",

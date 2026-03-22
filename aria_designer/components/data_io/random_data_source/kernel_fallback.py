@@ -1,4 +1,5 @@
 """Python fallback for random_data_source."""
+
 import torch
 
 

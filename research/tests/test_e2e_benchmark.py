@@ -12,6 +12,7 @@ Run:
     cd /home/tim/Projects/LLM/research
     python -m pytest tests/test_e2e_benchmark.py -v
 """
+
 from __future__ import annotations
 
 import os
@@ -29,11 +30,20 @@ pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 # ---------------------------------------------------------------------------
 
 _CYTHON_BUILD_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "runtime", "native", "cython", "build",
+    os.path.dirname(__file__),
+    "..",
+    "runtime",
+    "native",
+    "cython",
+    "build",
     "lib.linux-x86_64-cpython-312",
 )
 _CYTHON_SRC_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "runtime", "native", "cython",
+    os.path.dirname(__file__),
+    "..",
+    "runtime",
+    "native",
+    "cython",
 )
 
 for _p in (_CYTHON_BUILD_DIR, _CYTHON_SRC_DIR):
@@ -45,6 +55,7 @@ for _p in (_CYTHON_BUILD_DIR, _CYTHON_SRC_DIR):
 def _try_import_bridge():
     try:
         import aria_bridge  # type: ignore[import-untyped]
+
         return aria_bridge
     except ImportError:
         return None
@@ -53,6 +64,7 @@ def _try_import_bridge():
 def _try_import_torch():
     try:
         import torch
+
         return torch
     except ImportError:
         return None
@@ -87,6 +99,7 @@ requires_torch = pytest.mark.skipif(torch is None, reason="torch not available")
 # Tests
 # ---------------------------------------------------------------------------
 
+
 @requires_bridge
 @requires_torch
 def test_native_relu_faster_than_pytorch():
@@ -102,7 +115,9 @@ def test_native_relu_faster_than_pytorch():
     torch_us = _median_us(lambda: torch.relu(xt))
 
     ratio = native_us / torch_us
-    print(f"\nrelu: native={native_us:.1f}us  torch={torch_us:.1f}us  ratio={ratio:.2f}x")
+    print(
+        f"\nrelu: native={native_us:.1f}us  torch={torch_us:.1f}us  ratio={ratio:.2f}x"
+    )
 
     # native must be at least 0.5x PyTorch speed => native_time <= 2x torch_time
     assert ratio <= 2.0, (
@@ -128,7 +143,9 @@ def test_native_gelu_faster_than_pytorch():
     torch_us = _median_us(lambda: torch.nn.functional.gelu(xt))
 
     ratio = native_us / torch_us
-    print(f"\ngelu: native={native_us:.1f}us  torch={torch_us:.1f}us  ratio={ratio:.2f}x")
+    print(
+        f"\ngelu: native={native_us:.1f}us  torch={torch_us:.1f}us  ratio={ratio:.2f}x"
+    )
 
     assert ratio <= 10.0, (
         f"Native gelu is {ratio:.2f}x PyTorch time (threshold: <= 10.0x). "
@@ -154,7 +171,9 @@ def test_native_matmul_faster_than_pytorch():
     torch_us = _median_us(lambda: torch.mm(At, Bt))
 
     ratio = native_us / torch_us
-    print(f"\nmatmul(128x128): native={native_us:.1f}us  torch={torch_us:.1f}us  ratio={ratio:.2f}x")
+    print(
+        f"\nmatmul(128x128): native={native_us:.1f}us  torch={torch_us:.1f}us  ratio={ratio:.2f}x"
+    )
 
     # 0.3x speed => native_time <= 3.33x torch_time
     assert ratio <= 3.34, (
@@ -181,7 +200,11 @@ def test_cython_bridge_overhead_acceptable():
 
     # Raw ctypes time
     lib_path = os.path.join(
-        os.path.dirname(__file__), "..", "runtime", "native", "build",
+        os.path.dirname(__file__),
+        "..",
+        "runtime",
+        "native",
+        "build",
         "libaria_native_runtime.so",
     )
     lib_path = os.path.abspath(lib_path)

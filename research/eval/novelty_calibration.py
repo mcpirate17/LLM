@@ -54,7 +54,9 @@ def calibrate_baseline_transformer_novelty(
 
     for i in range(runs):
         torch.manual_seed(seed + i)
-        model = _BaselineTransformer(vocab_size=vocab_size, d_model=model_dim, n_layers=2)
+        model = _BaselineTransformer(
+            vocab_size=vocab_size, d_model=model_dim, n_layers=2
+        )
         fp = compute_fingerprint(
             model,
             seq_len=seq_len,
@@ -136,7 +138,9 @@ def novelty_stability_under_small_perturbations(
     drifts: List[float] = []
 
     for i in range(max(1, int(n_trials))):
-        model = _BaselineTransformer(vocab_size=vocab_size, d_model=model_dim, n_layers=2)
+        model = _BaselineTransformer(
+            vocab_size=vocab_size, d_model=model_dim, n_layers=2
+        )
         model.load_state_dict(base_model.state_dict())
         with torch.no_grad():
             torch.manual_seed(seed + i + 1)

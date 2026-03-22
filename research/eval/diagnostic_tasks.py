@@ -28,17 +28,18 @@ import torch.nn.functional as F
 # Constants
 # ---------------------------------------------------------------------------
 
-DIAG_SEP_TOKEN = 255        # separator token
-DIAG_MARK_TOKEN = 254       # marker for selective copy
-DIAG_STEPS = 100            # training steps per task
+DIAG_SEP_TOKEN = 255  # separator token
+DIAG_MARK_TOKEN = 254  # marker for selective copy
+DIAG_STEPS = 100  # training steps per task
 DIAG_BATCH_SIZE = 8
 DIAG_SEQ_LEN = 64
 DIAG_LR = 1e-3
-DIAG_EVAL_BATCHES = 4       # batches for eval pass
+DIAG_EVAL_BATCHES = 4  # batches for eval pass
 
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class DiagnosticTaskResult:
@@ -75,6 +76,7 @@ class DiagnosticSuiteResult:
 #   critical_targets:(B, S-1)   — same as input_ids[:, 1:] (shifted targets)
 # ---------------------------------------------------------------------------
 
+
 def generate_copy_task(
     batch_size: int = DIAG_BATCH_SIZE,
     seq_len: int = DIAG_SEQ_LEN,
@@ -90,8 +92,11 @@ def generate_copy_task(
     ids = torch.zeros(batch_size, seq_len, dtype=torch.long, device=dev)
 
     source = torch.randint(
-        0, DIAG_MARK_TOKEN, (batch_size, half),
-        device=dev, generator=rng,
+        0,
+        DIAG_MARK_TOKEN,
+        (batch_size, half),
+        device=dev,
+        generator=rng,
     )
     ids[:, :half] = source
     ids[:, half] = DIAG_SEP_TOKEN
@@ -122,8 +127,11 @@ def generate_induction_task(
     dev = torch.device(device)
     n_bigrams = 8
     ids = torch.randint(
-        0, DIAG_MARK_TOKEN, (batch_size, seq_len),
-        device=dev, generator=rng,
+        0,
+        DIAG_MARK_TOKEN,
+        (batch_size, seq_len),
+        device=dev,
+        generator=rng,
     )
     mask = torch.zeros(batch_size, seq_len - 1, dtype=torch.bool, device=dev)
 
@@ -137,10 +145,16 @@ def generate_induction_task(
         pos_first = pos_first[valid]
         pos_second = pos_second[valid]
         # Generate all bigram tokens at once: (batch_size, n_valid)
-        a_toks = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng)
-        b_toks = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng)
+        a_toks = torch.randint(
+            0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng
+        )
+        b_toks = torch.randint(
+            0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng
+        )
         # Scatter into ids using advanced indexing
-        batch_idx = torch.arange(batch_size, device=dev).unsqueeze(1).expand(-1, n_valid)
+        batch_idx = (
+            torch.arange(batch_size, device=dev).unsqueeze(1).expand(-1, n_valid)
+        )
         ids[batch_idx, pos_first.unsqueeze(0).expand(batch_size, -1)] = a_toks
         ids[batch_idx, (pos_first + 1).unsqueeze(0).expand(batch_size, -1)] = b_toks
         ids[batch_idx, pos_second.unsqueeze(0).expand(batch_size, -1)] = a_toks
@@ -169,13 +183,15 @@ def generate_periodic_task(
 
     # Generate all periods and patterns at once
     periods = torch.randint(3, 7, (batch_size,), device=dev, generator=rng)
-    patterns = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, max_period), device=dev, generator=rng)
+    patterns = torch.randint(
+        0, DIAG_MARK_TOKEN, (batch_size, max_period), device=dev, generator=rng
+    )
     pos_idx = torch.arange(seq_len, device=dev).unsqueeze(0)  # (1, S)
 
     for b in range(batch_size):
         p = periods[b].item()
         ids[b] = patterns[b, pos_idx[0] % p]
-        mask[b, p - 1:] = True
+        mask[b, p - 1 :] = True
 
     targets = ids[:, 1:]
     return ids, mask, targets
@@ -202,8 +218,11 @@ def generate_selective_copy_task(
         source_len = n_marks * 4
 
     ids = torch.randint(
-        0, DIAG_MARK_TOKEN, (batch_size, seq_len),
-        device=dev, generator=rng,
+        0,
+        DIAG_MARK_TOKEN,
+        (batch_size, seq_len),
+        device=dev,
+        generator=rng,
     )
     mask = torch.zeros(batch_size, seq_len - 1, dtype=torch.bool, device=dev)
 
@@ -216,7 +235,9 @@ def generate_selective_copy_task(
     n_valid = mark_positions.shape[0]
 
     # Generate all marked values at once
-    marked_vals = torch.randint(0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng)
+    marked_vals = torch.randint(
+        0, DIAG_MARK_TOKEN, (batch_size, n_valid), device=dev, generator=rng
+    )
 
     # Set mark tokens and values for all batches
     ids[:, mark_positions] = DIAG_MARK_TOKEN
@@ -230,7 +251,9 @@ def generate_selective_copy_task(
     copy_valid = copy_positions < seq_len
     if copy_valid.any():
         cp = copy_positions[copy_valid]
-        ids[batch_idx[:, :cp.shape[0]], cp.unsqueeze(0).expand(batch_size, -1)] = marked_vals[:, :cp.shape[0]]
+        ids[batch_idx[:, : cp.shape[0]], cp.unsqueeze(0).expand(batch_size, -1)] = (
+            marked_vals[:, : cp.shape[0]]
+        )
 
     # Critical: target positions for the copy region
     target_positions = sep_pos + torch.arange(n_valid, device=dev)
@@ -257,6 +280,7 @@ DIAGNOSTIC_TASKS = {
 # Training + eval loop
 # ---------------------------------------------------------------------------
 
+
 def _train_and_eval_task(
     model: nn.Module,
     task_fn,
@@ -266,21 +290,25 @@ def _train_and_eval_task(
     seed: int = 42,
 ) -> DiagnosticTaskResult:
     """Train a fresh copy of model on one diagnostic task, then eval."""
-    dev = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
+    dev = torch.device(
+        device if torch.cuda.is_available() or device == "cpu" else "cpu"
+    )
     result = DiagnosticTaskResult(task_name=task_name)
 
     try:
         torch.manual_seed(seed)
         if dev.type == "cuda":
             torch.cuda.manual_seed_all(seed)
-        
+
         # We assume model is already a fresh copy if we want to avoid deepcopy issues
         # Or we move it to device here
         task_model = model.to(dev)
         task_model.train()
 
         optimizer = torch.optim.AdamW(
-            task_model.parameters(), lr=DIAG_LR, weight_decay=0.01,
+            task_model.parameters(),
+            lr=DIAG_LR,
+            weight_decay=0.01,
         )
 
         # Determine vocab_size from model's embedding layer
@@ -298,11 +326,14 @@ def _train_and_eval_task(
         rng.manual_seed(seed)
         for step in range(n_steps):
             input_ids, _, _ = task_fn(
-                batch_size=DIAG_BATCH_SIZE, seq_len=DIAG_SEQ_LEN,
-                device=str(dev), rng=rng,
+                batch_size=DIAG_BATCH_SIZE,
+                seq_len=DIAG_SEQ_LEN,
+                device=str(dev),
+                rng=rng,
             )
             with torch.amp.autocast(
-                device_type=dev.type, dtype=torch.bfloat16,
+                device_type=dev.type,
+                dtype=torch.bfloat16,
                 enabled=(dev.type == "cuda"),
             ):
                 logits = task_model(input_ids)
@@ -334,11 +365,14 @@ def _train_and_eval_task(
         with torch.no_grad():
             for _ in range(DIAG_EVAL_BATCHES):
                 input_ids, crit_mask, crit_targets = task_fn(
-                    batch_size=DIAG_BATCH_SIZE, seq_len=DIAG_SEQ_LEN,
-                    device=str(dev), rng=eval_rng,
+                    batch_size=DIAG_BATCH_SIZE,
+                    seq_len=DIAG_SEQ_LEN,
+                    device=str(dev),
+                    rng=eval_rng,
                 )
                 with torch.amp.autocast(
-                    device_type=dev.type, dtype=torch.bfloat16,
+                    device_type=dev.type,
+                    dtype=torch.bfloat16,
                     enabled=(dev.type == "cuda"),
                 ):
                     logits = task_model(input_ids)
@@ -386,6 +420,7 @@ def _train_and_eval_task(
 # Suite runner
 # ---------------------------------------------------------------------------
 
+
 def run_diagnostic_suite(
     model_or_graph: Any,
     device: str = "cuda",
@@ -407,12 +442,17 @@ def run_diagnostic_suite(
             model = copy.deepcopy(model_or_graph)
 
         task_result = _train_and_eval_task(
-            model, task_fn, task_name,
-            device=device, n_steps=n_steps, seed=seed,
+            model,
+            task_fn,
+            task_name,
+            device=device,
+            n_steps=n_steps,
+            seed=seed,
         )
         suite.tasks.append(task_result)
         del model
-        if torch.cuda.is_available(): torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Compute mean accuracy across non-errored tasks
     accs = [t.accuracy for t in suite.tasks if t.error is None]

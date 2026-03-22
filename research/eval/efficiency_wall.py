@@ -52,7 +52,11 @@ def _measure_forward(
             try:
                 model(input_ids)
             except (RuntimeError, torch.cuda.OutOfMemoryError):
-                return {"error": "oom", "peak_mb": float("inf"), "time_ms": float("inf")}
+                return {
+                    "error": "oom",
+                    "peak_mb": float("inf"),
+                    "time_ms": float("inf"),
+                }
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             times.append((time.perf_counter() - t0) * 1000.0)
@@ -62,11 +66,11 @@ def _measure_forward(
         peak_mb = torch.cuda.max_memory_allocated(device) / (1024 * 1024)
     else:
         # CPU: estimate from tensor sizes in the model
-        peak_mb = sum(
-            p.nelement() * p.element_size() for p in model.parameters()
-        ) / (1024 * 1024)
+        peak_mb = sum(p.nelement() * p.element_size() for p in model.parameters()) / (
+            1024 * 1024
+        )
         # Add rough activation estimate: batch_size * seq_len * dim * 4 bytes * n_layers
-        n_params = sum(p.numel() for p in model.parameters())
+        sum(p.numel() for p in model.parameters())
         peak_mb += input_ids.numel() * 4 * 8 / (1024 * 1024)  # rough
 
     avg_time = sum(times) / len(times) if times else 0.0
@@ -81,8 +85,11 @@ def _detect_scaling_regime(
     measurements: List[Dict[str, Any]],
 ) -> str:
     """Detect whether memory scaling is linear, quadratic, or worse."""
-    valid = [(m["seq_len"], m["peak_mb"]) for m in measurements
-             if m.get("peak_mb", 0) > 0 and m.get("error") is None]
+    valid = [
+        (m["seq_len"], m["peak_mb"])
+        for m in measurements
+        if m.get("peak_mb", 0) > 0 and m.get("error") is None
+    ]
 
     if len(valid) < 3:
         return "insufficient_data"
@@ -96,6 +103,7 @@ def _detect_scaling_regime(
             # If memory grows proportionally to seq_len^k, then
             # log(mem_ratio) / log(len_ratio) ≈ k
             import math
+
             k = math.log(max(mem_ratio, 1e-6)) / math.log(len_ratio)
             ratios.append(k)
 
@@ -174,19 +182,25 @@ def evaluate_efficiency_wall(
             max_viable = m["seq_len"]
 
     # Efficiency wall score: fraction of tested seq_lens that are viable
-    viable_count = sum(1 for m in measurements
-                       if m.get("error") is None and m["peak_mb"] <= memory_budget_mb)
+    viable_count = sum(
+        1
+        for m in measurements
+        if m.get("error") is None and m["peak_mb"] <= memory_budget_mb
+    )
     total_tested = len(measurements) if measurements else 1
 
     # Bonus for linear scaling
     regime_bonus = {"linear": 0.2, "quadratic": 0.0, "super_quadratic": -0.2}
     base_score = viable_count / total_tested
-    efficiency_wall_score = max(0.0, min(1.0,
-        base_score + regime_bonus.get(scaling_regime, 0.0)))
+    efficiency_wall_score = max(
+        0.0, min(1.0, base_score + regime_bonus.get(scaling_regime, 0.0))
+    )
 
     # Compute time scaling factor (ratio of last to first forward time)
     time_scaling = None
-    valid_times = [m for m in measurements if m.get("error") is None and m["time_ms"] > 0]
+    valid_times = [
+        m for m in measurements if m.get("error") is None and m["time_ms"] > 0
+    ]
     if len(valid_times) >= 2:
         time_scaling = round(valid_times[-1]["time_ms"] / valid_times[0]["time_ms"], 2)
 

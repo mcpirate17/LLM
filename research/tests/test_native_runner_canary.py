@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from research.scientist.native_runner_canary import run_selective_canary_latency_benchmark
+from research.scientist.native_runner_canary import (
+    run_selective_canary_latency_benchmark,
+)
 
 pytestmark = pytest.mark.native
 

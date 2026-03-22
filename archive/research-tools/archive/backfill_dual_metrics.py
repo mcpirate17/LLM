@@ -16,6 +16,7 @@ Usage:
     # Status report only:
     python -m research.tools.backfill_dual_metrics --status
 """
+
 import argparse
 import json
 import os
@@ -61,9 +62,13 @@ def print_status(db: LabNotebook):
 
     print("=== Dual-Metric Backfill Status ===")
     print(f"Stage 1 survivors:        {total_s1}")
-    print(f"Missing discovery_loss:   {null_disc} ({null_disc*100//max(total_s1,1)}%)")
-    print(f"Missing generalization_gap: {null_gap} ({null_gap*100//max(total_s1,1)}%)")
-    print(f"Has all dual fields:      {has_all} ({has_all*100//max(total_s1,1)}%)")
+    print(
+        f"Missing discovery_loss:   {null_disc} ({null_disc * 100 // max(total_s1, 1)}%)"
+    )
+    print(
+        f"Missing generalization_gap: {null_gap} ({null_gap * 100 // max(total_s1, 1)}%)"
+    )
+    print(f"Has all dual fields:      {has_all} ({has_all * 100 // max(total_s1, 1)}%)")
     print(f"Meaningful gap (|gap|>0.01): {meaningful_gap}")
 
 
@@ -172,7 +177,12 @@ def backfill_discovery(
             losses = []
             with torch.no_grad():
                 for _ in range(discovery_batches):
-                    ids = torch.randint(0, config.vocab_size, (discovery_batch_size, seq_len), device=dev)
+                    ids = torch.randint(
+                        0,
+                        config.vocab_size,
+                        (discovery_batch_size, seq_len),
+                        device=dev,
+                    )
                     out = model(ids)
                     if hasattr(out, "logits"):
                         logits = out.logits
@@ -339,10 +349,18 @@ def backfill_retrain(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill dual-metric fields for legacy rows")
-    parser.add_argument("--phase", choices=["gap", "discovery", "retrain"], help="Backfill phase")
-    parser.add_argument("--status", action="store_true", help="Print status report only")
-    parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    parser = argparse.ArgumentParser(
+        description="Backfill dual-metric fields for legacy rows"
+    )
+    parser.add_argument(
+        "--phase", choices=["gap", "discovery", "retrain"], help="Backfill phase"
+    )
+    parser.add_argument(
+        "--status", action="store_true", help="Print status report only"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Preview without writing"
+    )
     parser.add_argument("--batch-size", type=int, default=50, help="Max rows per batch")
     parser.add_argument("--device", default="cpu", help="torch device")
     parser.add_argument("--db", default=DB_PATH, help="Path to lab_notebook.db")
@@ -358,9 +376,13 @@ def main():
     if args.phase == "gap":
         backfill_gap(db, dry_run=args.dry_run)
     elif args.phase == "discovery":
-        backfill_discovery(db, batch_size=args.batch_size, device=args.device, dry_run=args.dry_run)
+        backfill_discovery(
+            db, batch_size=args.batch_size, device=args.device, dry_run=args.dry_run
+        )
     elif args.phase == "retrain":
-        backfill_retrain(db, batch_size=args.batch_size, device=args.device, dry_run=args.dry_run)
+        backfill_retrain(
+            db, batch_size=args.batch_size, device=args.device, dry_run=args.dry_run
+        )
 
     elapsed = time.time() - t0
     print(f"\nElapsed: {elapsed:.1f}s")

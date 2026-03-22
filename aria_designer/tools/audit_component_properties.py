@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate component property coverage report."""
+
 from __future__ import annotations
 
 import argparse
@@ -46,7 +47,9 @@ def main() -> int:
         md_lines.append(f"- category: {row['category']}")
         md_lines.append(f"- properties: {row['property_count']}")
         for issue in row["issues"]:
-            md_lines.append(f"- [{issue['severity']}] {issue['code']}: {issue['message']}")
+            md_lines.append(
+                f"- [{issue['severity']}] {issue['code']}: {issue['message']}"
+            )
         md_lines.append("")
 
     Path(args.md_out).write_text("\n".join(md_lines), encoding="utf-8")

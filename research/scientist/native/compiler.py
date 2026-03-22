@@ -43,6 +43,7 @@ from ...defaults import VOCAB_SIZE
 
 logger = logging.getLogger(__name__)
 
+
 def _legacy_compile_model(
     layer_graphs: List[Any],
     vocab_size: int = VOCAB_SIZE,
@@ -58,6 +59,7 @@ def _legacy_compile_model(
         max_seq_len=max_seq_len,
         **kwargs,
     )
+
 
 def compile_model_native_first(
     layer_graphs: List[Any],
@@ -97,7 +99,9 @@ def compile_model_native_first(
             )
         _FALLBACK_METRICS["total_compiles"] += 1
         _record_legacy_compile_invocation()
-        return _legacy_compile_model(layer_graphs, vocab_size=vocab_size, max_seq_len=max_seq_len, **kwargs)
+        return _legacy_compile_model(
+            layer_graphs, vocab_size=vocab_size, max_seq_len=max_seq_len, **kwargs
+        )
 
     state = detect_native_state()
     capability = native_runner_capability_report()
@@ -139,8 +143,7 @@ def compile_model_native_first(
             elif coverage >= PARTIAL_NATIVE_COVERAGE_THRESHOLD:
                 partial_native_coverage = True
                 logger.debug(
-                    "Partial native path: %.1f%% coverage (%d/%d ops). "
-                    "Unsupported: %s",
+                    "Partial native path: %.1f%% coverage (%d/%d ops). Unsupported: %s",
                     coverage * 100,
                     len(op_support["supported"]),
                     len(op_support["kernel_relevant_ops"]),
@@ -220,19 +223,27 @@ def compile_model_native_first(
     }
 
     try:
-        guardrail_threshold = int(str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5")))
+        guardrail_threshold = int(
+            str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5"))
+        )
     except Exception:
         guardrail_threshold = 5
     guardrail_threshold = max(1, guardrail_threshold)
 
     if requested_mode == "selective" and not selective_candidate:
-        _SELECTIVE_GUARDRAIL["consecutive_requested_not_candidate"] = int(
-            _SELECTIVE_GUARDRAIL.get("consecutive_requested_not_candidate") or 0
-        ) + 1
+        _SELECTIVE_GUARDRAIL["consecutive_requested_not_candidate"] = (
+            int(_SELECTIVE_GUARDRAIL.get("consecutive_requested_not_candidate") or 0)
+            + 1
+        )
         _SELECTIVE_GUARDRAIL["last_reason"] = selective_reason
-        if _SELECTIVE_GUARDRAIL["consecutive_requested_not_candidate"] >= guardrail_threshold:
+        if (
+            _SELECTIVE_GUARDRAIL["consecutive_requested_not_candidate"]
+            >= guardrail_threshold
+        ):
             if not bool(_SELECTIVE_GUARDRAIL.get("triggered")):
-                _SELECTIVE_GUARDRAIL["trigger_count"] = int(_SELECTIVE_GUARDRAIL.get("trigger_count") or 0) + 1
+                _SELECTIVE_GUARDRAIL["trigger_count"] = (
+                    int(_SELECTIVE_GUARDRAIL.get("trigger_count") or 0) + 1
+                )
                 _record_guardrail_event(
                     "triggered",
                     reason=selective_reason,
@@ -245,7 +256,11 @@ def compile_model_native_first(
         _SELECTIVE_GUARDRAIL["consecutive_requested_not_candidate"] = 0
         _SELECTIVE_GUARDRAIL["triggered"] = False
         if was_triggered:
-            cleared_reason = "candidate_ready" if requested_mode == "selective" else "mode_not_selective"
+            cleared_reason = (
+                "candidate_ready"
+                if requested_mode == "selective"
+                else "mode_not_selective"
+            )
             _record_guardrail_event(
                 "cleared",
                 reason=cleared_reason,
@@ -293,7 +308,10 @@ def compile_model_native_first(
 
     # --- Compile via legacy path (actual native execution dispatch is a future phase) ---
     _FALLBACK_METRICS["total_compiles"] += 1
-    if state.enabled and (op_support is None or op_support["native_coverage"] < PARTIAL_NATIVE_COVERAGE_THRESHOLD):
+    if state.enabled and (
+        op_support is None
+        or op_support["native_coverage"] < PARTIAL_NATIVE_COVERAGE_THRESHOLD
+    ):
         _FALLBACK_METRICS["fallback_compiles"] += 1
     if state.enabled and partial_native_coverage:
         _FALLBACK_METRICS["hybrid_compiles"] += 1
@@ -312,7 +330,11 @@ def compile_model_native_first(
         "reason": abi_report.get("reason"),
         "model_handle": abi_report.get("model_handle"),
     }
-    if state.strict and bool(abi_report.get("requested")) and not bool(abi_report.get("succeeded")):
+    if (
+        state.strict
+        and bool(abi_report.get("requested"))
+        and not bool(abi_report.get("succeeded"))
+    ):
         raise RuntimeError(
             f"NATIVE_RUNNER_STRICT=1 and runner ABI prepare failed: {abi_report.get('reason')}"
         )
@@ -357,7 +379,9 @@ def compile_model_native_first(
             capability["legacy_compile_used"] = False
             _maybe_fail_on_fallback_rate()
             _maybe_fail_on_legacy_compile_usage()
-            capability["fallback_metrics"] = native_runner_capability_report().get("fallback_metrics", {})
+            capability["fallback_metrics"] = native_runner_capability_report().get(
+                "fallback_metrics", {}
+            )
             try:
                 setattr(model, "_native_runner_report", capability)
             except Exception:
@@ -401,11 +425,11 @@ def compile_model_native_first(
             }
             # Propagate wrapper to individual CompiledOp instances
             try:
-                for layer in getattr(model, 'layers', []):
-                    ops = getattr(layer, 'ops', None)
+                for layer in getattr(model, "layers", []):
+                    ops = getattr(layer, "ops", None)
                     if ops is not None:
                         for op in ops.values():
-                            if hasattr(op, 'forward'):
+                            if hasattr(op, "forward"):
                                 op._native_wrapper = wrapper
                 capability["native_forward_wrapper"]["propagated"] = True
             except Exception as exc:
@@ -427,12 +451,12 @@ def compile_model_native_first(
             supported_set = set(op_support["supported"])
             dispatchers_attached = 0
             dispatchers_skipped = 0
-            layers = getattr(model, 'layers', [])
-            layer_graph_list = getattr(model, '_layer_graphs', layer_graphs)
+            layers = getattr(model, "layers", [])
+            layer_graph_list = getattr(model, "_layer_graphs", layer_graphs)
             for i, layer in enumerate(layers):
                 if i < len(layer_graph_list):
                     graph = layer_graph_list[i]
-                    if hasattr(graph, 'nodes'):
+                    if hasattr(graph, "nodes"):
                         dispatcher = SubgraphDispatcher(graph, supported_set)
                         if dispatcher.all_native:
                             layer._subgraph_dispatcher = dispatcher
@@ -447,7 +471,8 @@ def compile_model_native_first(
             if dispatchers_attached > 0:
                 logger.info(
                     "Subgraph dispatch: attached %d/%d layer dispatchers",
-                    dispatchers_attached, len(layers),
+                    dispatchers_attached,
+                    len(layers),
                 )
         except Exception as exc:
             logger.debug("Failed to attach subgraph dispatchers: %s", exc)
@@ -461,8 +486,13 @@ def compile_model_native_first(
         try:
             setattr(model, "_native_runner_abi_session", abi_session)
             capability["runner_abi"]["session_attached"] = True
-            if capability.get("execution_path") == "selective_native_active_legacy_compile":
-                capability["execution_path"] = "selective_native_abi_ready_legacy_compile"
+            if (
+                capability.get("execution_path")
+                == "selective_native_active_legacy_compile"
+            ):
+                capability["execution_path"] = (
+                    "selective_native_abi_ready_legacy_compile"
+                )
         except Exception as exc:
             logger.debug("Failed to attach runner ABI session: %s", exc)
             capability["runner_abi"]["session_attached"] = False
@@ -472,11 +502,19 @@ def compile_model_native_first(
             except Exception:
                 pass
 
-    selective_layer_exec_enabled = _env_flag("NATIVE_RUNNER_SELECTIVE_LAYER_EXEC", False)
+    selective_layer_exec_enabled = _env_flag(
+        "NATIVE_RUNNER_SELECTIVE_LAYER_EXEC", False
+    )
     selective_layer_strict = _env_flag("NATIVE_RUNNER_SELECTIVE_LAYER_STRICT", False)
-    capability["selective_execution"]["layer_exec_enabled"] = selective_layer_exec_enabled
+    capability["selective_execution"]["layer_exec_enabled"] = (
+        selective_layer_exec_enabled
+    )
     capability["selective_execution"]["layer_exec_strict"] = selective_layer_strict
-    if selective_candidate and bool(selective_activation.get("activated")) and selective_layer_exec_enabled:
+    if (
+        selective_candidate
+        and bool(selective_activation.get("activated"))
+        and selective_layer_exec_enabled
+    ):
         layer_build = build_designer_layer_modules(layer_graphs)
         capability["selective_execution"]["layer_build"] = {
             "attempted": bool(layer_build.get("attempted")),
@@ -507,42 +545,58 @@ def compile_model_native_first(
                         layer_idx = int(idx)
                         layer_result["layer_index"] = layer_idx
                     except Exception:
-                        capability["selective_execution"]["layer_build"]["skipped_layers"] += 1
+                        capability["selective_execution"]["layer_build"][
+                            "skipped_layers"
+                        ] += 1
                         reason = "invalid_layer_index"
-                        capability["selective_execution"]["layer_build"]["skip_reasons"].append(
-                            f"skip_layer_{idx}:{reason}"
-                        )
+                        capability["selective_execution"]["layer_build"][
+                            "skip_reasons"
+                        ].append(f"skip_layer_{idx}:{reason}")
                         layer_result["skip_reason"] = reason
-                        capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                        capability["selective_execution"]["layer_build"][
+                            "layer_results"
+                        ].append(layer_result)
                         continue
                     if layer_idx < 0 or layer_idx >= total_layers:
-                        capability["selective_execution"]["layer_build"]["skipped_layers"] += 1
+                        capability["selective_execution"]["layer_build"][
+                            "skipped_layers"
+                        ] += 1
                         reason = "layer_index_out_of_range"
-                        capability["selective_execution"]["layer_build"]["skip_reasons"].append(
-                            f"skip_layer_{layer_idx}:{reason}"
-                        )
+                        capability["selective_execution"]["layer_build"][
+                            "skip_reasons"
+                        ].append(f"skip_layer_{layer_idx}:{reason}")
                         layer_result["skip_reason"] = reason
-                        capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                        capability["selective_execution"]["layer_build"][
+                            "layer_results"
+                        ].append(layer_result)
                         continue
                     wm = payload.get("module")
                     in_id = str(payload.get("input_node_id") or "")
                     if wm is None:
-                        capability["selective_execution"]["layer_build"]["skipped_layers"] += 1
+                        capability["selective_execution"]["layer_build"][
+                            "skipped_layers"
+                        ] += 1
                         reason = "missing_workflow_module"
-                        capability["selective_execution"]["layer_build"]["skip_reasons"].append(
-                            f"skip_layer_{layer_idx}:{reason}"
-                        )
+                        capability["selective_execution"]["layer_build"][
+                            "skip_reasons"
+                        ].append(f"skip_layer_{layer_idx}:{reason}")
                         layer_result["skip_reason"] = reason
-                        capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                        capability["selective_execution"]["layer_build"][
+                            "layer_results"
+                        ].append(layer_result)
                         continue
                     if not in_id:
-                        capability["selective_execution"]["layer_build"]["skipped_layers"] += 1
+                        capability["selective_execution"]["layer_build"][
+                            "skipped_layers"
+                        ] += 1
                         reason = "missing_input_node_id"
-                        capability["selective_execution"]["layer_build"]["skip_reasons"].append(
-                            f"skip_layer_{layer_idx}:{reason}"
-                        )
+                        capability["selective_execution"]["layer_build"][
+                            "skip_reasons"
+                        ].append(f"skip_layer_{layer_idx}:{reason}")
                         layer_result["skip_reason"] = reason
-                        capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                        capability["selective_execution"]["layer_build"][
+                            "layer_results"
+                        ].append(layer_result)
                         continue
                     adapter = DesignerWorkflowLayerAdapter(wm, in_id).as_module()
                     contract_error = _validate_designer_layer_adapter_contract(
@@ -551,36 +605,50 @@ def compile_model_native_first(
                         max_seq_len=max_seq_len,
                     )
                     if contract_error:
-                        capability["selective_execution"]["layer_build"]["skipped_layers"] += 1
-                        capability["selective_execution"]["layer_build"]["skip_reasons"].append(
-                            f"skip_layer_{layer_idx}:{contract_error}"
-                        )
+                        capability["selective_execution"]["layer_build"][
+                            "skipped_layers"
+                        ] += 1
+                        capability["selective_execution"]["layer_build"][
+                            "skip_reasons"
+                        ].append(f"skip_layer_{layer_idx}:{contract_error}")
                         layer_result["skip_reason"] = contract_error
-                        capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                        capability["selective_execution"]["layer_build"][
+                            "layer_results"
+                        ].append(layer_result)
                         continue
                     model.layers[layer_idx] = adapter
-                    capability["selective_execution"]["layer_build"]["applied_layers"] += 1
+                    capability["selective_execution"]["layer_build"][
+                        "applied_layers"
+                    ] += 1
                     layer_result["applied"] = True
-                    capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                    capability["selective_execution"]["layer_build"][
+                        "layer_results"
+                    ].append(layer_result)
                 except Exception as exc:
                     layer_result["error"] = str(exc)
                     capability["selective_execution"]["layer_build"]["errors"].append(
                         f"apply_layer_{idx}:{exc}"
                     )
-                    capability["selective_execution"]["layer_build"]["layer_results"].append(layer_result)
+                    capability["selective_execution"]["layer_build"][
+                        "layer_results"
+                    ].append(layer_result)
             if capability["selective_execution"]["layer_build"]["applied_layers"] > 0:
                 capability["execution_path"] = "selective_designer_layers_active"
-            capability["selective_execution"]["layer_build"]["summary"] = _summarize_layer_build(
-                capability["selective_execution"]["layer_build"]
+            capability["selective_execution"]["layer_build"]["summary"] = (
+                _summarize_layer_build(capability["selective_execution"]["layer_build"])
             )
             if selective_layer_strict:
                 failed_layers = [
                     item
-                    for item in capability["selective_execution"]["layer_build"]["layer_results"]
+                    for item in capability["selective_execution"]["layer_build"][
+                        "layer_results"
+                    ]
                     if not bool(item.get("applied"))
                 ]
                 if failed_layers:
-                    capability["selective_execution"]["layer_build"]["summary"]["strict_failed"] = True
+                    capability["selective_execution"]["layer_build"]["summary"][
+                        "strict_failed"
+                    ] = True
                     details = ", ".join(
                         f"layer={item.get('layer_index')} reason={item.get('skip_reason') or item.get('error') or 'unknown'}"
                         for item in failed_layers[:3]
@@ -590,9 +658,11 @@ def compile_model_native_first(
                         f"{details}"
                     )
         else:
-            capability["selective_execution"]["layer_build"]["errors"].append("model_has_no_layers")
-            capability["selective_execution"]["layer_build"]["summary"] = _summarize_layer_build(
-                capability["selective_execution"]["layer_build"]
+            capability["selective_execution"]["layer_build"]["errors"].append(
+                "model_has_no_layers"
+            )
+            capability["selective_execution"]["layer_build"]["summary"] = (
+                _summarize_layer_build(capability["selective_execution"]["layer_build"])
             )
     elif selective_candidate and bool(selective_activation.get("activated")):
         capability["selective_execution"]["layer_build"] = {
@@ -606,14 +676,16 @@ def compile_model_native_first(
             "applied_layers": 0,
             "layer_results": [],
         }
-        capability["selective_execution"]["layer_build"]["summary"] = _summarize_layer_build(
-            capability["selective_execution"]["layer_build"]
+        capability["selective_execution"]["layer_build"]["summary"] = (
+            _summarize_layer_build(capability["selective_execution"]["layer_build"])
         )
 
     _maybe_fail_on_fallback_rate()
     _maybe_fail_on_legacy_compile_usage()
     # Refresh fallback telemetry after current compile increments.
-    capability["fallback_metrics"] = native_runner_capability_report().get("fallback_metrics", {})
+    capability["fallback_metrics"] = native_runner_capability_report().get(
+        "fallback_metrics", {}
+    )
 
     # Attach diagnostic metadata for observability.
     try:

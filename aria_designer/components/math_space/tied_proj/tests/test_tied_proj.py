@@ -1,4 +1,5 @@
 """Contract tests for tied_proj."""
+
 import yaml
 from pathlib import Path
 

@@ -1,4 +1,5 @@
 """Kernel handler for state_space — Mamba-style selective scan mixer."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,9 +23,15 @@ class ComponentHandler:
         B, S, D = x.shape
 
         if self._A_log is None or self._A_log.shape[0] != D:
-            self._A_log = nn.Parameter(torch.randn(D, device=x.device, dtype=x.dtype) * 0.1)
-            self._B_proj = nn.Parameter(torch.randn(D, device=x.device, dtype=x.dtype) * 0.02)
-            self._C_proj = nn.Parameter(torch.randn(D, device=x.device, dtype=x.dtype) * 0.02)
+            self._A_log = nn.Parameter(
+                torch.randn(D, device=x.device, dtype=x.dtype) * 0.1
+            )
+            self._B_proj = nn.Parameter(
+                torch.randn(D, device=x.device, dtype=x.dtype) * 0.02
+            )
+            self._C_proj = nn.Parameter(
+                torch.randn(D, device=x.device, dtype=x.dtype) * 0.02
+            )
             self._D = nn.Parameter(torch.ones(D, device=x.device, dtype=x.dtype))
 
         # Selective scan: exponential decay kernel

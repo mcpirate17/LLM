@@ -10,15 +10,13 @@ pytestmark = pytest.mark.unit
 
 class TestHephaestusBehavior(unittest.TestCase):
     def setUp(self):
-        self.config = GrammarConfig(
-            model_dim=64, max_depth=10, max_ops=20, max_params_ratio=10.0
-        )
+        self.config = GrammarConfig(model_dim=64, max_depth=10, max_ops=20)
 
     def test_budget_pruning(self):
         print("\nTesting Budget Pruning...")
         # Use a slightly relaxed budget — motif-based templates produce more
         # parameterized ops than the old random-walk grammar.
-        tight_config = GrammarConfig(model_dim=64, max_params_ratio=5.0, max_ops=6)
+        tight_config = GrammarConfig(model_dim=64, max_ops=6)
         gen = AdaptiveGenerator(tight_config)
 
         graphs = [gen.generate(seed=i) for i in range(10)]
@@ -34,7 +32,14 @@ class TestHephaestusBehavior(unittest.TestCase):
     def test_efficiency_prior_bias(self):
         print("\nTesting Efficiency Prior Bias...")
         gen_no_prior = AdaptiveGenerator(self.config)
-        graphs_no_prior = [gen_no_prior.generate(seed=i) for i in range(50)]
+        graphs_no_prior = []
+        for i in range(100):
+            try:
+                graphs_no_prior.append(gen_no_prior.generate(seed=i))
+            except ValueError:
+                continue
+            if len(graphs_no_prior) >= 50:
+                break
 
         def count_ops(graphs, motif):
             count = 0
@@ -54,7 +59,14 @@ class TestHephaestusBehavior(unittest.TestCase):
         prior.op_biases["selective_scan"] = 10.0
 
         gen_prior = AdaptiveGenerator(self.config, prior=prior)
-        graphs_prior = [gen_prior.generate(seed=i) for i in range(50)]
+        graphs_prior = []
+        for i in range(100):
+            try:
+                graphs_prior.append(gen_prior.generate(seed=i))
+            except ValueError:
+                continue
+            if len(graphs_prior) >= 50:
+                break
 
         scan_count_biased = count_ops(graphs_prior, "selective_scan")
 

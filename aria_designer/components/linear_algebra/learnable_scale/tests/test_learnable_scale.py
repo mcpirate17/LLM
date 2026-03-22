@@ -1,4 +1,5 @@
 """Contract tests for learnable_scale."""
+
 import yaml
 from pathlib import Path
 

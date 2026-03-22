@@ -32,7 +32,11 @@ def test_notebook_preregistration_round_trip_and_experiment_link():
         prereg = {
             "hypothesis": {
                 "statement": "A improves B",
-                "variables": {"independent": ["A"], "dependent": ["B"], "controls": ["C"]},
+                "variables": {
+                    "independent": ["A"],
+                    "dependent": ["B"],
+                    "controls": ["C"],
+                },
                 "expected_direction": {"B": "increase"},
                 "success_criteria": {"B": ">0"},
             },

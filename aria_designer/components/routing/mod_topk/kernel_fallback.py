@@ -1,4 +1,5 @@
 """Kernel handler for mod_topk — Mixture-of-Depths top-k token routing."""
+
 import torch
 import torch.nn as nn
 
@@ -20,7 +21,9 @@ class ComponentHandler:
         k = max(1, int(S * capacity_factor))
 
         if self._router_weight is None or self._router_weight.shape[-1] != D:
-            self._router_weight = nn.Parameter(torch.randn(1, D, device=x.device, dtype=x.dtype) * 0.02)
+            self._router_weight = nn.Parameter(
+                torch.randn(1, D, device=x.device, dtype=x.dtype) * 0.02
+            )
 
         scores = (x * self._router_weight).sum(dim=-1)  # (B, S)
         _, topk_idx = scores.topk(k, dim=-1)  # (B, k)

@@ -53,7 +53,14 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Input: a, b of shape (B, S, K, 8)
     Output: (B, S, K, 8)
     """
-    if _HAS_ARIA_CORE and a.is_contiguous() and b.is_contiguous() and a.device.type == "cpu":
+    if (
+        _HAS_ARIA_CORE
+        and a.is_contiguous()
+        and b.is_contiguous()
+        and a.device.type == "cpu"
+        and not a.requires_grad
+        and not b.requires_grad
+    ):
         return aria_core.clifford_geometric_product_cl30_f32(a, b)
 
     # Basis: {1, e1, e2, e3, e12, e13, e23, e123}
@@ -70,28 +77,92 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     b12, b13, b23, b123 = b[..., 4], b[..., 5], b[..., 6], b[..., 7]
 
     # Scalar part (grade 0)
-    r0 = (a0*b0 + a1*b1 + a2*b2 + a3*b3
-           - a12*b12 - a13*b13 - a23*b23 - a123*b123)
+    r0 = (
+        a0 * b0
+        + a1 * b1
+        + a2 * b2
+        + a3 * b3
+        - a12 * b12
+        - a13 * b13
+        - a23 * b23
+        - a123 * b123
+    )
 
     # Vector parts (grade 1)
-    r1 = (a0*b1 + a1*b0 - a2*b12 + a12*b2
-           - a3*b13 + a13*b3 + a23*b123 - a123*b23)
-    r2 = (a0*b2 + a1*b12 + a2*b0 - a12*b1
-           - a3*b23 - a13*b123 + a23*b3 + a123*b13)
-    r3 = (a0*b3 - a1*b13 + a2*b23 + a3*b0
-           + a12*b123 + a13*b1 - a23*b2 - a123*b12)
+    r1 = (
+        a0 * b1
+        + a1 * b0
+        - a2 * b12
+        + a12 * b2
+        - a3 * b13
+        + a13 * b3
+        + a23 * b123
+        - a123 * b23
+    )
+    r2 = (
+        a0 * b2
+        + a1 * b12
+        + a2 * b0
+        - a12 * b1
+        - a3 * b23
+        - a13 * b123
+        + a23 * b3
+        + a123 * b13
+    )
+    r3 = (
+        a0 * b3
+        - a1 * b13
+        + a2 * b23
+        + a3 * b0
+        + a12 * b123
+        + a13 * b1
+        - a23 * b2
+        - a123 * b12
+    )
 
     # Bivector parts (grade 2)
-    r12 = (a0*b12 + a1*b2 - a2*b1 + a12*b0
-            + a3*b123 - a13*b23 + a23*b13 + a123*b3)
-    r13 = (a0*b13 + a1*b3 - a3*b1 + a13*b0
-            - a2*b123 + a12*b23 - a23*b12 - a123*b2)
-    r23 = (a0*b23 + a2*b3 - a3*b2 + a23*b0
-            + a1*b123 - a12*b13 + a13*b12 + a123*b1)
+    r12 = (
+        a0 * b12
+        + a1 * b2
+        - a2 * b1
+        + a12 * b0
+        + a3 * b123
+        - a13 * b23
+        + a23 * b13
+        + a123 * b3
+    )
+    r13 = (
+        a0 * b13
+        + a1 * b3
+        - a3 * b1
+        + a13 * b0
+        - a2 * b123
+        + a12 * b23
+        - a23 * b12
+        - a123 * b2
+    )
+    r23 = (
+        a0 * b23
+        + a2 * b3
+        - a3 * b2
+        + a23 * b0
+        + a1 * b123
+        - a12 * b13
+        + a13 * b12
+        + a123 * b1
+    )
 
     # Pseudoscalar (grade 3)
-    r123 = (a0*b123 + a1*b23 - a2*b13 + a3*b12
-             + a12*b3 - a13*b2 + a23*b1 + a123*b0)
+    r123 = (
+        a0 * b123
+        + a1 * b23
+        - a2 * b13
+        + a3 * b12
+        + a12 * b3
+        - a13 * b2
+        + a23 * b1
+        + a123 * b0
+    )
 
     return torch.stack([r0, r1, r2, r3, r12, r13, r23, r123], dim=-1)
 
@@ -129,7 +200,15 @@ def rotor_transform(x: torch.Tensor, rotor: torch.Tensor) -> torch.Tensor:
     Much more parameter-efficient: a rotor in Cl(3,0) uses 4 numbers
     to encode a 3D rotation (like quaternions).
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and rotor.is_contiguous() and x.device.type == "cpu":
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and rotor.is_contiguous()
+        and x.device.type == "cpu"
+        and x.dtype == torch.float32
+        and not x.requires_grad
+        and not rotor.requires_grad
+    ):
         try:
             return aria_core.clifford_rotor_transform_cl30_f32(x, rotor)
         except TypeError:
@@ -147,8 +226,10 @@ def rotor_transform(x: torch.Tensor, rotor: torch.Tensor) -> torch.Tensor:
 
 # ── Primitive execution functions ─────────────────────────────────────
 
-def execute_geometric_product(module: nn.Module, x: torch.Tensor,
-                              y: torch.Tensor) -> torch.Tensor:
+
+def execute_geometric_product(
+    module: nn.Module, x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
     """Geometric product of two tensors interpreted as multivectors."""
     B, S, D = x.shape
     # Pad to multiple of 8 if needed
@@ -169,36 +250,40 @@ def execute_geometric_product(module: nn.Module, x: torch.Tensor,
 
 def execute_rotor_transform(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Apply learned rotor transformation."""
+    orig_dtype = x.dtype
     B, S, D = x.shape
     pad = (N_BASIS - D % N_BASIS) % N_BASIS
     if pad > 0:
         x = F.pad(x, (0, pad))
 
-    mv_x = _pack_multivector(x)
+    mv_x = _pack_multivector(x.float())
 
     # Learned rotor — param may be stored as 'rotor' or 'weight'
-    rotor_param = getattr(module, 'rotor', None)
+    rotor_param = getattr(module, "rotor", None)
     if rotor_param is None:
-        rotor_param = getattr(module, 'weight', None)
+        rotor_param = getattr(module, "weight", None)
     if rotor_param is not None:
         K = D // N_BASIS if pad == 0 else (D + pad) // N_BASIS
-        rotor_params = rotor_param[:N_BASIS].unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        rotor_params = (
+            rotor_param[:N_BASIS].float().unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        )
         rotor = rotor_params.expand(B, S, K, -1)
         # Normalize rotor
         rotor = rotor / clifford_norm(rotor).clamp(min=1e-6)
     else:
-        return _unpack_multivector(mv_x)[..., :D]
+        return _unpack_multivector(mv_x)[..., :D].to(orig_dtype)
 
     result = rotor_transform(mv_x, rotor)
     result = _unpack_multivector(result)
 
     if pad > 0:
         result = result[..., :D]
-    return result
+    return result.to(orig_dtype)
 
 
 def execute_grade_select(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Select grade-1 (vector) components from multivector."""
+    orig_dtype = x.dtype
     B, S, D = x.shape
     pad = (N_BASIS - D % N_BASIS) % N_BASIS
     if pad > 0:
@@ -208,11 +293,12 @@ def execute_grade_select(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     result = _unpack_multivector(selected)
     if pad > 0:
         result = result[..., :D]
-    return result
+    return result.to(orig_dtype)
 
 
 def execute_grade_mix(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Blend vector and bivector grades for richer geometric features."""
+    orig_dtype = x.dtype
     B, S, D = x.shape
     pad = (N_BASIS - D % N_BASIS) % N_BASIS
     if pad > 0:
@@ -224,15 +310,22 @@ def execute_grade_mix(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     result = _unpack_multivector(mixed)
     if pad > 0:
         result = result[..., :D]
-    return result
+    return result.to(orig_dtype)
 
 
 def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Attention using geometric product instead of dot product."""
-    if _HAS_ARIA_CORE and x.is_contiguous() and x.ndim == 3 and x.device.type == "cpu":
-        # Our native kernel currently doesn't take params, handles Q=K=V=x internally
+    orig_dtype = x.dtype
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and x.ndim == 3
+        and x.device.type == "cpu"
+        and x.dtype == torch.float32
+        and not x.requires_grad
+    ):
         return aria_core.clifford_attention_f32(x)
-        
+
     B, S, D = x.shape
     pad = (N_BASIS - D % N_BASIS) % N_BASIS
     if pad > 0:
@@ -243,7 +336,7 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     D_padded = x_padded.shape[-1]
 
     # QKV via learned weight or identity
-    if hasattr(module, 'weight'):
+    if hasattr(module, "weight"):
         # weight shape: (D*D,) — reshape to (D_padded, D_padded) for Q/K
         W = module.weight
         n = D_padded * D_padded
@@ -257,40 +350,40 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
         q = k = x_padded
 
     # Pack as multivectors
-    mv_q = _pack_multivector(q)   # (B, S, K, 8)
-    mv_k = _pack_multivector(k)   # (B, S, K, 8)
+    mv_q = _pack_multivector(q)  # (B, S, K, 8)
+    mv_k = _pack_multivector(k)  # (B, S, K, 8)
 
     # Geometric product scores: sum scalar component over K
     # For each pair (i, j): gp(q_i, k_j) scalar part → attention score
     # Efficient: compute scalar part of geometric product without full product
     # Scalar = sum over basis of a_b * b_b * sign_b
     # For Cl(3,0): signs are [+,+,+,+,-,-,-,-]
-    signs = torch.tensor([1, 1, 1, 1, -1, -1, -1, -1],
-                         device=x.device, dtype=x.dtype)
+    signs = torch.tensor([1, 1, 1, 1, -1, -1, -1, -1], device=x.device, dtype=x.dtype)
     # (B, S, K, 8) * signs -> (B, S, K, 8), then sum over 8 for scalar contribution
     q_signed = mv_q * signs  # (B, S, K, 8)
     # q_signed summed over basis -> (B, S, K)
     q_scalar = q_signed.sum(dim=-1)  # (B, S, K)
-    k_scalar = mv_k.sum(dim=-1)      # (B, S, K)
+    k_scalar = mv_k.sum(dim=-1)  # (B, S, K)
 
     # Attention scores via dot in the scalar-projected space
     scores = torch.bmm(q_scalar, k_scalar.transpose(1, 2))  # (B, S, S)
     scale = math.sqrt(D_padded)
-    
+
     # Apply causal mask if S > 1
     if S > 1:
         mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-        scores.masked_fill_(mask, float('-inf'))
-        
+        scores.masked_fill_(mask, float("-inf"))
+
     weights = torch.softmax(scores / scale, dim=-1)
     out = torch.bmm(weights, x_padded)  # (B, S, D_padded)
 
     if pad > 0:
         out = out[..., :D]
-    return out
+    return out.to(orig_dtype)
 
 
 # ── nn.Module wrappers ──────────────────────────────────────────────
+
 
 class CliffordLinear(nn.Module):
     """Clifford Algebra linear layer operating on Cl(3,0) multivectors.
@@ -309,14 +402,14 @@ class CliffordLinear(nn.Module):
         assert dim % N_BASIS == 0, f"dim must be divisible by {N_BASIS}"
         self.dim = dim
         k = dim // N_BASIS
-        self.weight = nn.Parameter(torch.randn(k, N_BASIS, N_BASIS) / (N_BASIS ** 0.5))
+        self.weight = nn.Parameter(torch.randn(k, N_BASIS, N_BASIS) / (N_BASIS**0.5))
         self.bias = nn.Parameter(torch.zeros(k, N_BASIS))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, S, D) -> (B, S, K, 8)
         mv = _pack_multivector(x)
         # Learned contraction: out[..., j] = sum_i W[k, j, i] * mv[..., k, i]
-        out = torch.einsum('bski,kij->bskj', mv, self.weight) + self.bias
+        out = torch.einsum("bski,kij->bskj", mv, self.weight) + self.bias
         return _unpack_multivector(out)
 
 
@@ -328,8 +421,10 @@ def execute_clifford_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
         x = F.pad(x, (0, pad))
     D_padded = x.shape[-1]
     layer = CliffordLinear(D_padded).to(x.device)
-    if hasattr(module, 'weight') and module.weight.numel() >= layer.weight.numel():
-        layer.weight.data = module.weight[:layer.weight.numel()].reshape(layer.weight.shape)
+    if hasattr(module, "weight") and module.weight.numel() >= layer.weight.numel():
+        layer.weight.data = module.weight[: layer.weight.numel()].reshape(
+            layer.weight.shape
+        )
     out = layer(x)
     if pad > 0:
         out = out[..., :D]

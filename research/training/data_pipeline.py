@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Protocol
 
+import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
@@ -104,9 +105,10 @@ class CorpusTokenBatcher:
     def ready(self) -> bool:
         return len(self._tokens) > 1
 
-    def _split_tokens(self, tokens: List[int]) -> tuple[List[int], List[int]]:
+    def _split_tokens(self, tokens: List[int]) -> tuple[np.ndarray, np.ndarray]:
         if not tokens:
-            return [], []
+            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+        arr = np.array(tokens, dtype=np.int64)
         train_frac = max(0.0, min(1.0, float(self.config.train_fraction or 0.0)))
         val_frac = max(0.0, min(1.0, float(self.config.val_fraction or 0.0)))
         # Normalize if sum > 1
@@ -118,10 +120,10 @@ class CorpusTokenBatcher:
             train_frac = train_frac / total
             val_frac = val_frac / total
 
-        split_idx = int(len(tokens) * train_frac)
-        split_idx = max(1, min(len(tokens), split_idx))
-        train_tokens = tokens[:split_idx]
-        val_tokens = tokens[split_idx:] if val_frac > 0 else []
+        split_idx = int(len(arr) * train_frac)
+        split_idx = max(1, min(len(arr), split_idx))
+        train_tokens = arr[:split_idx]
+        val_tokens = arr[split_idx:] if val_frac > 0 else np.array([], dtype=np.int64)
         return train_tokens, val_tokens
 
     def _build_tokenizer(
@@ -216,7 +218,7 @@ class CorpusTokenBatcher:
         else:
             tokens = self._train_tokens
 
-        if not tokens:
+        if tokens is None or len(tokens) == 0:
             return None
 
         max_start = len(tokens) - seq_len - 1
@@ -228,17 +230,16 @@ class CorpusTokenBatcher:
             max_start + 1,
             (batch_size,),
             generator=generator,
-            device=device,
+            device="cpu",
         )
 
-        rows: List[List[int]] = []
-        for value in starts:
-            start = int(value.item())
-            rows.append(tokens[start : start + seq_len])
+        # Vectorized batch extraction via NumPy advanced indexing.
+        # Build a (batch_size, seq_len) index array and gather in one shot —
+        # no Python loop, no intermediate list of lists.
+        starts_np = starts.numpy()
+        offsets = np.arange(seq_len, dtype=np.int64)
+        indices = starts_np[:, np.newaxis] + offsets  # (batch_size, seq_len)
+        batch_np = tokens[indices]  # single contiguous gather
 
-        if not rows:
-            return None
-
-        # Create on CPU with pin_memory for faster async transfer to GPU
-        batch = torch.tensor(rows, dtype=torch.long, device="cpu").pin_memory()
+        batch = torch.from_numpy(batch_np).pin_memory()
         return batch.to(device, non_blocking=True)

@@ -1,4 +1,5 @@
 """Contract tests for spike_rate_code."""
+
 import yaml
 from pathlib import Path
 

@@ -180,21 +180,33 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
-def _extract_observed(metrics: Dict[str, Any], external_observed: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+def _extract_observed(
+    metrics: Dict[str, Any], external_observed: Optional[Dict[str, Any]] = None
+) -> Dict[str, float]:
     profiling = metrics.get("profiling") or {}
     sandbox = metrics.get("sandbox") or {}
     compression = metrics.get("compression") or {}
     novelty = metrics.get("novelty") or {}
 
     observed = {
-        "param_count": _to_float(sandbox.get("param_count") or metrics.get("param_count")),
+        "param_count": _to_float(
+            sandbox.get("param_count") or metrics.get("param_count")
+        ),
         "total_flops_per_token": _to_float(
-            profiling.get("total_flops_per_token") or metrics.get("total_flops_per_token") or metrics.get("flops_per_token")
+            profiling.get("total_flops_per_token")
+            or metrics.get("total_flops_per_token")
+            or metrics.get("flops_per_token")
         ),
         "forward_ms": _to_float(sandbox.get("forward_ms") or metrics.get("forward_ms")),
-        "stability_score": _to_float(sandbox.get("stability_score") or metrics.get("stability_score")),
-        "efficiency_score": _to_float(compression.get("efficiency_score") or metrics.get("efficiency_score")),
-        "overall_novelty": _to_float(novelty.get("overall_novelty") or metrics.get("overall_novelty")),
+        "stability_score": _to_float(
+            sandbox.get("stability_score") or metrics.get("stability_score")
+        ),
+        "efficiency_score": _to_float(
+            compression.get("efficiency_score") or metrics.get("efficiency_score")
+        ),
+        "overall_novelty": _to_float(
+            novelty.get("overall_novelty") or metrics.get("overall_novelty")
+        ),
     }
     if external_observed:
         for k, v in external_observed.items():
@@ -204,7 +216,9 @@ def _extract_observed(metrics: Dict[str, Any], external_observed: Optional[Dict[
     return observed
 
 
-def _score_target(observed: Optional[float], target: float, direction: str) -> Dict[str, Any]:
+def _score_target(
+    observed: Optional[float], target: float, direction: str
+) -> Dict[str, Any]:
     if observed is None:
         return {
             "status": "not_measured",
@@ -219,7 +233,9 @@ def _score_target(observed: Optional[float], target: float, direction: str) -> D
     else:
         gap = target - observed
         on_target = observed <= target
-        progress = min(1.0, max(0.0, target / observed)) if observed and observed > 0 else 1.0
+        progress = (
+            min(1.0, max(0.0, target / observed)) if observed and observed > 0 else 1.0
+        )
 
     return {
         "status": "on_target" if on_target else "off_target",
@@ -257,7 +273,9 @@ def _project_mamba_avg_accuracy(param_count: Optional[float]) -> Optional[float]
     return y0 + (y1 - y0) * t
 
 
-def build_benchmark_analysis(metrics: Dict[str, Any], external_observed: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_benchmark_analysis(
+    metrics: Dict[str, Any], external_observed: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     observed = _extract_observed(metrics, external_observed)
     rows: List[Dict[str, Any]] = []
     on_target = 0
@@ -274,13 +292,15 @@ def build_benchmark_analysis(metrics: Dict[str, Any], external_observed: Optiona
             off_target += 1
         else:
             not_measured += 1
-        rows.append({
-            **spec,
-            "observed": observed_value,
-            "status": status,
-            "gap": result["gap"],
-            "progress": result["progress"],
-        })
+        rows.append(
+            {
+                **spec,
+                "observed": observed_value,
+                "status": status,
+                "gap": result["gap"],
+                "progress": result["progress"],
+            }
+        )
 
     measured_total = on_target + off_target
     score = (on_target / measured_total) if measured_total > 0 else 0.0

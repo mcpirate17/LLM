@@ -12,7 +12,9 @@ ROOT = Path("/home/tim/Projects/LLM/aria_designer")
 OUT_DIR = ROOT / "workflows" / "generated"
 
 
-def node(node_id: str, component_type: str, x: int, y: int, params: dict | None = None) -> dict:
+def node(
+    node_id: str, component_type: str, x: int, y: int, params: dict | None = None
+) -> dict:
     return {
         "id": node_id,
         "component_type": component_type,
@@ -31,7 +33,13 @@ def edge(src: str, src_port: str, dst: str, dst_port: str) -> dict:
     }
 
 
-def base_workflow(workflow_id: str, name: str, hard_lane_nodes: list[dict], hard_lane_edges: list[dict], metadata: dict) -> dict:
+def base_workflow(
+    workflow_id: str,
+    name: str,
+    hard_lane_nodes: list[dict],
+    hard_lane_edges: list[dict],
+    metadata: dict,
+) -> dict:
     nodes = [
         node(
             "input",
@@ -49,14 +57,38 @@ def base_workflow(workflow_id: str, name: str, hard_lane_nodes: list[dict], hard
             },
         ),
         node("difficulty", "routing/difficulty_scorer", 440, 120),
-        node("lane_router", "routing/lane_router", 440, 240, {"num_lanes": 2, "routing_mode": "threshold"}),
-        node("dispatch_fast", "structural/conditional_dispatch", 220, 380, {"num_lanes": 2, "lane": 0}),
-        node("dispatch_hard", "structural/conditional_dispatch", 660, 380, {"num_lanes": 2, "lane": 1}),
+        node(
+            "lane_router",
+            "routing/lane_router",
+            440,
+            240,
+            {"num_lanes": 2, "routing_mode": "threshold"},
+        ),
+        node(
+            "dispatch_fast",
+            "structural/conditional_dispatch",
+            220,
+            380,
+            {"num_lanes": 2, "lane": 0},
+        ),
+        node(
+            "dispatch_hard",
+            "structural/conditional_dispatch",
+            660,
+            380,
+            {"num_lanes": 2, "lane": 1},
+        ),
         node("fast_gelu", "math/gelu", 220, 500),
         *hard_lane_nodes,
         node("combine", "math/add", 440, 860),
         node("compress", "linear_algebra/linear_proj_down", 440, 980),
-        node("output", "io/output_head", 440, 1100, {"vocab_size": 32000, "tie_weights": True}),
+        node(
+            "output",
+            "io/output_head",
+            440,
+            1100,
+            {"vocab_size": 32000, "tie_weights": True},
+        ),
     ]
     edges = [
         edge("input", "y", "difficulty", "x"),
@@ -172,7 +204,9 @@ def main() -> None:
                 "variant": spec["metadata"]["variant"],
             }
         )
-    (OUT_DIR / "adaptive_lane_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (OUT_DIR / "adaptive_lane_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
     print(f"Wrote {len(manifest)} workflows to {OUT_DIR}")
 
 

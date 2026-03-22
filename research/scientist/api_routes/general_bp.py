@@ -8,7 +8,6 @@ import logging
 from typing import Any, Dict, List
 
 from flask import jsonify, request, Response
-from ..notebook import LabNotebook
 from ..runner import RunConfig
 from ..persona import get_aria
 from ..evidence import build_evidence_pack
@@ -27,53 +26,48 @@ from ._chat import (
     get_local_ollama_settings,
 )
 from .deps import ApiRouteContext
+from ._utils import with_notebook_context
 
 logger = logging.getLogger(__name__)
 
 
 def register_general_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
+    wnb = with_notebook_context(notebook_path)
     _dashboard_index_path = context.dashboard_index_path
     _dashboard_missing_response = context.dashboard_missing_response
     _is_asset_path = context.is_asset_path
 
     @app.route("/api/aria/cycle-status")
-    def api_aria_cycle_status():
+    @wnb
+    def api_aria_cycle_status(nb=None):
         """Get Aria continuous-cycle status (planning/running/analyzing)."""
         runner = get_runner(notebook_path)
-        nb = LabNotebook(notebook_path)
-        try:
-            cycle = runner.get_aria_cycle_status()
-            runner_state = resolve_runner_status(nb, runner)
-            external = runner_state.get("external_snapshot")
-            if external and not runner.is_running:
-                cycle.update(
-                    {
-                        "aria_message": runner_state["progress"].get(
-                            "aria_message", ""
-                        ),
-                        "continuous_active": True,
-                        "experiment_id": external["experiment_id"],
-                        "is_running": True,
-                        "last_note": (
-                            f"External {external['mode']} experiment detected via notebook activity."
-                        ),
-                        "phase": "running",
-                        "phase_label": "Running",
-                        "progress_status": "running",
-                        "selected_mode": external["mode"],
-                        "external_process": True,
-                    }
-                )
-            return jsonify(cycle)
-        except Exception as e:
-            logger.error(f"Error in /api/aria/cycle-status: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
+        cycle = runner.get_aria_cycle_status()
+        runner_state = resolve_runner_status(nb, runner)
+        external = runner_state.get("external_snapshot")
+        if external and not runner.is_running:
+            cycle.update(
+                {
+                    "aria_message": runner_state["progress"].get("aria_message", ""),
+                    "continuous_active": True,
+                    "experiment_id": external["experiment_id"],
+                    "is_running": True,
+                    "last_note": (
+                        f"External {external['mode']} experiment detected via notebook activity."
+                    ),
+                    "phase": "running",
+                    "phase_label": "Running",
+                    "progress_status": "running",
+                    "selected_mode": external["mode"],
+                    "external_process": True,
+                }
+            )
+        return jsonify(cycle)
 
     @app.route("/api/aria/cycle-history")
-    def api_aria_cycle_history():
+    @wnb
+    def api_aria_cycle_history(nb=None):
         """Get persisted Aria cycle summaries from notebook live-feed entries."""
         n = request.args.get("n", 100, type=int)
         mode_filter = str(request.args.get("mode") or "").strip().lower()
@@ -85,101 +79,92 @@ def register_general_routes(app, context: ApiRouteContext):
             "false",
             "no",
         }
-        nb = LabNotebook(notebook_path)
-        try:
-            entries = normalize_entries(
-                nb.get_entries(entry_type="live_feed", limit=n * 4)
+        entries = normalize_entries(nb.get_entries(entry_type="live_feed", limit=n * 4))
+        history: List[Dict[str, Any]] = []
+        for entry in reversed(entries):
+            metadata = entry.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("live_feed_type") != "aria_cycle":
+                continue
+            payload = metadata.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            row = dict(payload)
+            row["entry_id"] = entry.get("entry_id")
+            row["experiment_id"] = entry.get("experiment_id")
+            row["entry_timestamp"] = entry.get("timestamp")
+
+            row_mode = str(row.get("mode") or "").strip().lower()
+            row_status = str(row.get("status") or "").strip().lower()
+            if mode_filter and row_mode != mode_filter:
+                continue
+            if status_filter and row_status != status_filter:
+                continue
+            if query_text:
+                searchable = " ".join(
+                    [
+                        str(row.get("mode") or ""),
+                        str(row.get("status") or ""),
+                        str(row.get("reasoning") or ""),
+                        str(row.get("error") or ""),
+                    ]
+                ).lower()
+                if query_text not in searchable:
+                    continue
+
+            if compact:
+                reasoning = str(row.get("reasoning") or "").strip()
+                error = str(row.get("error") or "").strip()
+                row = {
+                    "cycle_index": row.get("cycle_index"),
+                    "mode": row.get("mode"),
+                    "status": row.get("status"),
+                    "timestamp": row.get("timestamp"),
+                    "delta_programs": row.get("delta_programs"),
+                    "delta_stage1_survivors": row.get("delta_stage1_survivors"),
+                    "stage1_survivors": row.get("stage1_survivors"),
+                    "confidence": row.get("confidence"),
+                    "entry_id": row.get("entry_id"),
+                    "experiment_id": row.get("experiment_id"),
+                    "entry_timestamp": row.get("entry_timestamp"),
+                    "reasoning": reasoning[:240],
+                    "error": error[:180],
+                }
+
+            history.append(row)
+            if len(history) >= n:
+                break
+
+        if output_format == "csv":
+            fieldnames = [
+                "cycle_index",
+                "mode",
+                "status",
+                "timestamp",
+                "delta_programs",
+                "delta_stage1_survivors",
+                "stage1_survivors",
+                "confidence",
+                "experiment_id",
+                "reasoning",
+                "error",
+            ]
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in history:
+                writer.writerow({k: row.get(k) for k in fieldnames})
+            csv_payload = buffer.getvalue()
+            return Response(
+                csv_payload,
+                mimetype="text/csv",
+                headers={
+                    "Content-Disposition": "attachment; filename=aria_cycle_history.csv",
+                },
             )
-            history: List[Dict[str, Any]] = []
-            for entry in reversed(entries):
-                metadata = entry.get("metadata") or {}
-                if not isinstance(metadata, dict):
-                    continue
-                if metadata.get("live_feed_type") != "aria_cycle":
-                    continue
-                payload = metadata.get("payload") or {}
-                if not isinstance(payload, dict):
-                    continue
-                row = dict(payload)
-                row["entry_id"] = entry.get("entry_id")
-                row["experiment_id"] = entry.get("experiment_id")
-                row["entry_timestamp"] = entry.get("timestamp")
 
-                row_mode = str(row.get("mode") or "").strip().lower()
-                row_status = str(row.get("status") or "").strip().lower()
-                if mode_filter and row_mode != mode_filter:
-                    continue
-                if status_filter and row_status != status_filter:
-                    continue
-                if query_text:
-                    searchable = " ".join(
-                        [
-                            str(row.get("mode") or ""),
-                            str(row.get("status") or ""),
-                            str(row.get("reasoning") or ""),
-                            str(row.get("error") or ""),
-                        ]
-                    ).lower()
-                    if query_text not in searchable:
-                        continue
-
-                if compact:
-                    reasoning = str(row.get("reasoning") or "").strip()
-                    error = str(row.get("error") or "").strip()
-                    row = {
-                        "cycle_index": row.get("cycle_index"),
-                        "mode": row.get("mode"),
-                        "status": row.get("status"),
-                        "timestamp": row.get("timestamp"),
-                        "delta_programs": row.get("delta_programs"),
-                        "delta_stage1_survivors": row.get("delta_stage1_survivors"),
-                        "stage1_survivors": row.get("stage1_survivors"),
-                        "confidence": row.get("confidence"),
-                        "entry_id": row.get("entry_id"),
-                        "experiment_id": row.get("experiment_id"),
-                        "entry_timestamp": row.get("entry_timestamp"),
-                        "reasoning": reasoning[:240],
-                        "error": error[:180],
-                    }
-
-                history.append(row)
-                if len(history) >= n:
-                    break
-
-            if output_format == "csv":
-                fieldnames = [
-                    "cycle_index",
-                    "mode",
-                    "status",
-                    "timestamp",
-                    "delta_programs",
-                    "delta_stage1_survivors",
-                    "stage1_survivors",
-                    "confidence",
-                    "experiment_id",
-                    "reasoning",
-                    "error",
-                ]
-                buffer = io.StringIO()
-                writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-                writer.writeheader()
-                for row in history:
-                    writer.writerow({k: row.get(k) for k in fieldnames})
-                csv_payload = buffer.getvalue()
-                return Response(
-                    csv_payload,
-                    mimetype="text/csv",
-                    headers={
-                        "Content-Disposition": "attachment; filename=aria_cycle_history.csv",
-                    },
-                )
-
-            return jsonify(history)
-        except Exception as e:
-            logger.error(f"Error in /api/aria/cycle-history: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
+        return jsonify(history)
 
     @app.route("/api/aria/cycle-control", methods=["POST"])
     def api_aria_cycle_control():
@@ -246,85 +231,73 @@ def register_general_routes(app, context: ApiRouteContext):
         return jsonify({"error": "action must be one of: start, pause, resume"}), 400
 
     @app.route("/api/aria/recommendation")
-    def api_aria_recommendation():
+    @wnb
+    def api_aria_recommendation(nb=None):
         """Get Aria's experiment recommendation based on all data."""
         runner = get_runner(notebook_path)
-        nb = LabNotebook(notebook_path)
         aria = get_aria()
-        try:
-            analytics_data = runner._gather_analytics_data(nb)
-            history = nb.get_recent_experiments(10)
-            past_hypotheses = runner._get_past_hypotheses(nb)
-            from ..llm.context_experiment import build_rich_context
+        analytics_data = runner._gather_analytics_data(nb)
+        history = nb.get_recent_experiments(10)
+        past_hypotheses = runner._get_past_hypotheses(nb)
+        from ..llm.context_experiment import build_rich_context
 
-            context = build_rich_context(
-                results={
-                    "total": 0,
-                    "stage0_passed": 0,
-                    "stage05_passed": 0,
-                    "stage1_passed": 0,
-                    "novel_count": 0,
-                },
-                analytics_data=analytics_data,
-                history=history,
-                past_hypotheses=past_hypotheses,
+        context = build_rich_context(
+            results={
+                "total": 0,
+                "stage0_passed": 0,
+                "stage05_passed": 0,
+                "stage1_passed": 0,
+                "novel_count": 0,
+            },
+            analytics_data=analytics_data,
+            history=history,
+            past_hypotheses=past_hypotheses,
+        )
+        suggestion = aria.suggest_experiment(
+            context,
+            op_success_rates=analytics_data.get("op_success_rates"),
+            compression_coverage=analytics_data.get("compression_coverage"),
+        )
+        if suggestion:
+            suggestion["evidence_pack"] = build_evidence_pack(
+                nb,
+                analytics=None,
+                recommendation=suggestion,
+                decision_type="api_recommendation",
+                recent_experiments=history,
             )
-            suggestion = aria.suggest_experiment(
-                context,
-                op_success_rates=analytics_data.get("op_success_rates"),
-                compression_coverage=analytics_data.get("compression_coverage"),
-            )
-            if suggestion:
-                suggestion["evidence_pack"] = build_evidence_pack(
-                    nb,
-                    analytics=None,
-                    recommendation=suggestion,
-                    decision_type="api_recommendation",
-                    recent_experiments=history,
-                )
-            return jsonify(suggestion)
-        except Exception as e:
-            logger.error(f"Error in /api/aria/recommendation: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
+        return jsonify(suggestion)
 
     @app.route("/api/aria/strategy")
-    def api_aria_strategy():
+    @wnb
+    def api_aria_strategy(nb=None):
         """Get Aria's research strategy recommendation."""
         runner = get_runner(notebook_path)
-        nb = LabNotebook(notebook_path)
         aria = get_aria()
-        try:
-            analytics_data = runner._gather_analytics_data(nb)
-            history = nb.get_recent_experiments(10)
-            past_hypotheses = runner._get_past_hypotheses(nb)
-            from ..llm.context_experiment import build_rich_context
+        analytics_data = runner._gather_analytics_data(nb)
+        history = nb.get_recent_experiments(10)
+        past_hypotheses = runner._get_past_hypotheses(nb)
+        from ..llm.context_experiment import build_rich_context
 
-            context = build_rich_context(
-                results={
-                    "total": 0,
-                    "stage0_passed": 0,
-                    "stage05_passed": 0,
-                    "stage1_passed": 0,
-                    "novel_count": 0,
-                },
-                analytics_data=analytics_data,
-                history=history,
-                past_hypotheses=past_hypotheses,
-            )
-            strategy = aria.plan_strategy(context)
-            return jsonify(
-                {
-                    "strategy": strategy,
-                    "available": strategy is not None,
-                }
-            )
-        except Exception as e:
-            logger.error(f"Error in /api/aria/strategy: {e}")
-            return jsonify({"error": str(e)}), 500
-        finally:
-            nb.close()
+        context = build_rich_context(
+            results={
+                "total": 0,
+                "stage0_passed": 0,
+                "stage05_passed": 0,
+                "stage1_passed": 0,
+                "novel_count": 0,
+            },
+            analytics_data=analytics_data,
+            history=history,
+            past_hypotheses=past_hypotheses,
+        )
+        strategy = aria.plan_strategy(context)
+        return jsonify(
+            {
+                "strategy": strategy,
+                "available": strategy is not None,
+            }
+        )
 
     @app.route("/api/aria/tools")
     def api_aria_tools():

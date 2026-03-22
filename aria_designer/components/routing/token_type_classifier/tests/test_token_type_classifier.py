@@ -1,6 +1,8 @@
 """Contract tests for token_type_classifier."""
+
 import yaml
 from pathlib import Path
+
 
 def test_manifest_valid():
     manifest_path = Path(__file__).parent.parent / "manifest.yaml"

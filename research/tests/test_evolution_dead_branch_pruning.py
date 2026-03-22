@@ -34,7 +34,10 @@ def test_mutate_graph_prunes_dead_branches_immediately():
 
     assert child_with_dead_branch.get_dead_nodes()
 
-    with patch("research.search.evolution.generate_layer_graph", return_value=child_with_dead_branch):
+    with patch(
+        "research.search.evolution.generate_layer_graph",
+        return_value=child_with_dead_branch,
+    ):
         child = _mutate_graph(parent, grammar, rng)
 
     assert child is child_with_dead_branch
@@ -50,7 +53,10 @@ def test_crossover_graph_prunes_dead_branches_immediately():
 
     assert child_with_dead_branch.get_dead_nodes()
 
-    with patch("research.search.evolution.generate_layer_graph", return_value=child_with_dead_branch):
+    with patch(
+        "research.search.evolution.generate_layer_graph",
+        return_value=child_with_dead_branch,
+    ):
         child = _crossover_graphs(parent_a, parent_b, grammar, rng)
 
     assert child is child_with_dead_branch

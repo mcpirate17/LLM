@@ -39,6 +39,7 @@ SUPPORTED_SCHEMA_VERSIONS = {"1"}
 @dataclass
 class ArtifactManifest:
     """Parsed and validated artifact manifest."""
+
     artifact_version: str
     schema_version: str
     created_at: str
@@ -69,8 +70,12 @@ def load_manifest(artifact_dir: Path) -> ArtifactManifest:
 
     # Required fields
     required = [
-        "artifact_version", "schema_version", "created_at",
-        "code_version", "reference_families", "probe_protocol_hash",
+        "artifact_version",
+        "schema_version",
+        "created_at",
+        "code_version",
+        "reference_families",
+        "probe_protocol_hash",
         "activation_shape",
     ]
     missing = [k for k in required if k not in raw]
@@ -96,9 +101,7 @@ def load_manifest(artifact_dir: Path) -> ArtifactManifest:
     # Validate activation shape
     shape = raw["activation_shape"]
     if not isinstance(shape, list) or len(shape) != 2:
-        raise ValueError(
-            f"activation_shape must be [seq_len, dim], got {shape}"
-        )
+        raise ValueError(f"activation_shape must be [seq_len, dim], got {shape}")
     if not all(isinstance(x, int) and x > 0 for x in shape):
         raise ValueError(f"activation_shape must be positive integers, got {shape}")
 
@@ -139,9 +142,7 @@ def load_reference_activations(
             raise ValueError(f"Cannot load {pt_path}: {e}")
 
         if not isinstance(data, dict) or "activations" not in data:
-            raise ValueError(
-                f"{pt_path} must contain a dict with 'activations' key"
-            )
+            raise ValueError(f"{pt_path} must contain a dict with 'activations' key")
 
         tensor = data["activations"]
         if not isinstance(tensor, torch.Tensor):
@@ -220,7 +221,9 @@ class ReferenceCkaStore:
         artifact_dir = self._resolve_dir()
         if artifact_dir is None:
             self._load_error = "Artifact directory not found"
-            logger.info("CKA reference artifacts not found, will use heuristic fallback")
+            logger.info(
+                "CKA reference artifacts not found, will use heuristic fallback"
+            )
             return
 
         try:

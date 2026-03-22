@@ -38,4 +38,4 @@ export function OutcomesByPhase({ outcomes }) {
   );
 }
 
-export default OutcomesByPhase;
+export default React.memo(OutcomesByPhase);

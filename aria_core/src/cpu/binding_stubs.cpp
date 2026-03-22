@@ -4,10 +4,66 @@
  *
  * These are full implementations (not stubs). They compose existing kernels
  * where possible and implement algorithms directly otherwise.
+ *
+ * ── Thread-local arena allocator ──────────────────────────────────────
+ * Replaces per-call malloc/free for temporary buffers that are allocated
+ * and freed within the same kernel call. arena_reset() is called at the
+ * top of each kernel entry point; all arena_alloc() memory is implicitly
+ * freed on the next reset.  Falls back to malloc when the arena is full.
+ *
+ * Kernels using arena_alloc (malloc/free removed):
+ *   aria_sort_seq_f32, aria_topk_gate_f32, aria_sparse_threshold_f32,
+ *   aria_gather_topk_f32, aria_rwkv_time_mixing_f32,
+ *   aria_bottleneck_proj_f32, aria_shared_basis_proj_f32,
+ *   aria_tied_proj_f32, aria_linear_low_rank_f32,
+ *   aria_linear_bottleneck_f32, aria_linear_shared_basis_f32,
+ *   aria_linear_tied_f32
+ * ──────────────────────────────────────────────────────────────────────
  */
 #include "kernels_common.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstddef>
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Thread-Local Arena Allocator
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static constexpr size_t ARENA_ALIGN = 16;  /* 16-byte alignment for SIMD */
+static constexpr size_t MAX_TEMP_BYTES = 4u * 1024u * 1024u; /* 4 MiB */
+
+struct ArenaState {
+    alignas(ARENA_ALIGN) char buf[MAX_TEMP_BYTES];
+    size_t offset;
+};
+
+static thread_local ArenaState tl_arena = {{}, 0};
+
+static inline void arena_reset() {
+    tl_arena.offset = 0;
+}
+
+static inline void *arena_alloc(size_t n) {
+    /* Round up to ARENA_ALIGN boundary */
+    size_t aligned = (n + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1);
+    size_t new_offset = tl_arena.offset + aligned;
+    if (new_offset <= MAX_TEMP_BYTES) {
+        void *ptr = tl_arena.buf + tl_arena.offset;
+        tl_arena.offset = new_offset;
+        return ptr;
+    }
+    /* Arena exhausted — fall back to heap */
+    return malloc(n);
+}
+
+/* Free only if the pointer came from the heap (outside the arena). */
+static inline void arena_free(void *ptr) {
+    char *p = static_cast<char *>(ptr);
+    if (p < tl_arena.buf || p >= tl_arena.buf + MAX_TEMP_BYTES) {
+        free(ptr);
+    }
+    /* Arena memory is freed by arena_reset() — nothing to do. */
+}
 
 /* ══════════════════════════════════════════════════════════════════════
  * Masking / Structural
@@ -56,12 +112,13 @@ void aria_sliding_window_mask_f32(const float *x, float *y,
 void aria_sort_seq_f32(const float *x, float *y, int64_t *indices,
                         int64_t batch, int64_t seq, int64_t dim) {
     /* Sort along sequence dim by L2 norm of each token. Stable insertion sort. */
-    float *norms = (float *)malloc(seq * sizeof(float));
-    int64_t *idx = (int64_t *)malloc(seq * sizeof(int64_t));
+    arena_reset();
+    float *norms = (float *)arena_alloc(seq * sizeof(float));
+    int64_t *idx = (int64_t *)arena_alloc(seq * sizeof(int64_t));
     if (!norms || !idx) {
         if (x != y) memcpy(y, x, batch * seq * dim * sizeof(float));
         if (indices) for (int64_t i = 0; i < batch * seq; i++) indices[i] = i % seq;
-        free(norms); free(idx);
+        arena_free(norms); arena_free(idx);
         return;
     }
     for (int64_t b = 0; b < batch; b++) {
@@ -93,8 +150,8 @@ void aria_sort_seq_f32(const float *x, float *y, int64_t *indices,
             if (indices) indices[b * seq + s] = idx[s];
         }
     }
-    free(norms);
-    free(idx);
+    arena_free(norms);
+    arena_free(idx);
 }
 
 void aria_conv1d_seq_f32(const float *x, const float *weight, const float *bias,
@@ -301,9 +358,11 @@ void aria_topk_gate_f32(const float *x, const float *W_gate, float *y,
                           int64_t batch, int64_t seq, int64_t dim, int64_t k) {
     /* Project x to scores via W_gate, keep top-k, zero rest.
      * W_gate: [dim, dim], scores per-dim. Output: sparse gated version of x. */
+    arena_reset();
     int64_t total = batch * seq;
-    float *scores = (float *)malloc(dim * sizeof(float));
-    if (!scores) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
+    float *scores = (float *)arena_alloc(dim * sizeof(float));
+    float *tmp = (float *)arena_alloc(dim * sizeof(float));
+    if (!scores || !tmp) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
 
     for (int64_t bs = 0; bs < total; bs++) {
         const float *xr = x + bs * dim;
@@ -319,19 +378,15 @@ void aria_topk_gate_f32(const float *x, const float *W_gate, float *y,
             memcpy(scores, xr, dim * sizeof(float));
         }
         /* Find k-th largest score via partial sort */
-        float *tmp = (float *)malloc(dim * sizeof(float));
-        if (!tmp) { memcpy(yr, xr, dim * sizeof(float)); continue; }
         memcpy(tmp, scores, dim * sizeof(float));
         int64_t kk = k < dim ? k : dim;
         std::partial_sort(tmp, tmp + kk, tmp + dim, std::greater<float>());
         float threshold = tmp[kk - 1];
-        free(tmp);
         /* Gate: keep values where score >= threshold */
         for (int64_t d = 0; d < dim; d++) {
             yr[d] = scores[d] >= threshold ? xr[d] : 0.0f;
         }
     }
-    free(scores);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -366,8 +421,9 @@ void aria_basis_expansion_f32(const float *x, const float *freqs, float *y,
 void aria_sparse_threshold_f32(const float *x, float *y,
                                  int64_t batch, int64_t seq, int64_t dim) {
     /* Zero values below adaptive per-token median of absolute values. */
+    arena_reset();
     int64_t total = batch * seq;
-    float *abs_vals = (float *)malloc(dim * sizeof(float));
+    float *abs_vals = (float *)arena_alloc(dim * sizeof(float));
     if (!abs_vals) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
 
     for (int64_t bs = 0; bs < total; bs++) {
@@ -380,7 +436,6 @@ void aria_sparse_threshold_f32(const float *x, float *y,
             yr[d] = fabsf(xr[d]) >= threshold ? xr[d] : 0.0f;
         }
     }
-    free(abs_vals);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -508,9 +563,10 @@ void aria_gather_topk_f32(const float *scores, const float *values,
                             float *out, int32_t *out_indices,
                             int64_t batch, int64_t n_items, int64_t dim,
                             int64_t k) {
+    arena_reset();
     int64_t kk = k < n_items ? k : n_items;
-    int64_t *idx = (int64_t *)malloc(n_items * sizeof(int64_t));
-    float *sc = (float *)malloc(n_items * sizeof(float));
+    int64_t *idx = (int64_t *)arena_alloc(n_items * sizeof(int64_t));
+    float *sc = (float *)arena_alloc(n_items * sizeof(float));
     if (!idx || !sc) {
         /* Fallback: first k */
         for (int64_t b = 0; b < batch; b++) {
@@ -519,7 +575,7 @@ void aria_gather_topk_f32(const float *scores, const float *values,
                 memcpy(out + (b * k + i) * dim, values + (b * n_items + i) * dim, dim * sizeof(float));
             }
         }
-        free(idx); free(sc);
+        arena_free(idx); arena_free(sc);
         return;
     }
     for (int64_t b = 0; b < batch; b++) {
@@ -546,8 +602,6 @@ void aria_gather_topk_f32(const float *scores, const float *values,
             memset(out + (b * k + i) * dim, 0, dim * sizeof(float));
         }
     }
-    free(idx);
-    free(sc);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -583,12 +637,13 @@ void aria_rwkv_time_mixing_f32(const float *x,
      *     b[t] = exp(-w[d]) * b[t-1] + exp(k[t,d])
      *   y[t] = r[t] * wkv[t]
      */
-    float *k_buf = (float *)malloc(seq * dim * sizeof(float));
-    float *v_buf = (float *)malloc(seq * dim * sizeof(float));
-    float *r_buf = (float *)malloc(seq * dim * sizeof(float));
+    arena_reset();
+    float *k_buf = (float *)arena_alloc(seq * dim * sizeof(float));
+    float *v_buf = (float *)arena_alloc(seq * dim * sizeof(float));
+    float *r_buf = (float *)arena_alloc(seq * dim * sizeof(float));
     if (!k_buf || !v_buf || !r_buf) {
         if (x != y) memcpy(y, x, batch * seq * dim * sizeof(float));
-        free(k_buf); free(v_buf); free(r_buf);
+        arena_free(k_buf); arena_free(v_buf); arena_free(r_buf);
         return;
     }
 
@@ -621,9 +676,9 @@ void aria_rwkv_time_mixing_f32(const float *x,
             }
         }
     }
-    free(k_buf);
-    free(v_buf);
-    free(r_buf);
+    arena_free(k_buf);
+    arena_free(v_buf);
+    arena_free(r_buf);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -662,37 +717,40 @@ void aria_bottleneck_proj_f32(const float *x, const float *down, const float *up
                                 int64_t batch, int64_t seq, int64_t dim, int64_t rank) {
     /* Bottleneck: y = GELU(x @ down^T) @ up^T
      * down: [rank, dim], up: [dim, rank] */
+    arena_reset();
     int64_t total = batch * seq;
-    float *tmp = (float *)malloc(total * rank * sizeof(float));
+    float *tmp = (float *)arena_alloc(total * rank * sizeof(float));
     if (!tmp) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
     aria_linear_f32(x, down, NULL, tmp, total, dim, rank);
     aria_gelu_f32(tmp, tmp, total * rank);
     aria_linear_f32(tmp, up, NULL, y, total, rank, dim);
-    free(tmp);
+    arena_free(tmp);
 }
 
 void aria_shared_basis_proj_f32(const float *x, const float *mixing, const float *basis, float *y,
                                   int64_t batch, int64_t seq, int64_t dim, int64_t k) {
     /* Shared basis: y = (x @ mixing^T) @ basis^T
      * mixing: [k, dim], basis: [dim, k] */
+    arena_reset();
     int64_t total = batch * seq;
-    float *tmp = (float *)malloc(total * k * sizeof(float));
+    float *tmp = (float *)arena_alloc(total * k * sizeof(float));
     if (!tmp) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
     aria_linear_f32(x, mixing, NULL, tmp, total, dim, k);
     aria_linear_f32(tmp, basis, NULL, y, total, k, dim);
-    free(tmp);
+    arena_free(tmp);
 }
 
 void aria_tied_proj_f32(const float *x, const float *W, float *y,
                           int64_t batch, int64_t seq, int64_t dim, int64_t rank) {
     /* Tied: y = GELU(x @ W^T) @ W
      * W: [rank, dim]. Down = W^T: [dim, rank], Up = W: [rank, dim] → need W transposed for up. */
+    arena_reset();
     int64_t total = batch * seq;
-    float *tmp = (float *)malloc(total * rank * sizeof(float));
-    float *WT = (float *)malloc(dim * rank * sizeof(float));
+    float *tmp = (float *)arena_alloc(total * rank * sizeof(float));
+    float *WT = (float *)arena_alloc(dim * rank * sizeof(float));
     if (!tmp || !WT) {
         if (x != y) memcpy(y, x, total * dim * sizeof(float));
-        free(tmp); free(WT);
+        arena_free(tmp); arena_free(WT);
         return;
     }
     /* W: [rank, dim] → down projection: x[total, dim] @ W^T[dim, rank] = tmp[total, rank] */
@@ -703,8 +761,8 @@ void aria_tied_proj_f32(const float *x, const float *W, float *y,
      * We want tmp @ W where W is [rank, dim]. So we need a transposed version. */
     aria_transpose2d_f32(W, WT, rank, dim); /* WT: [dim, rank] */
     aria_linear_f32(tmp, WT, NULL, y, total, rank, dim);
-    free(tmp);
-    free(WT);
+    arena_free(tmp);
+    arena_free(WT);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -717,11 +775,12 @@ void aria_linear_low_rank_f32(const float *x, const float *U, const float *V, co
      * U: [rank, dim_in], V: [dim_out, rank]
      * Step 1: tmp = x @ U^T (down-project to rank)
      * Step 2: y = tmp @ V^T + bias (up-project to dim_out) */
-    float *tmp = (float *)malloc(batch * rank * sizeof(float));
+    arena_reset();
+    float *tmp = (float *)arena_alloc(batch * rank * sizeof(float));
     if (!tmp) { memset(y, 0, batch * dim_out * sizeof(float)); return; }
     aria_linear_f32(x, U, NULL, tmp, batch, dim_in, rank);
     aria_linear_f32(tmp, V, bias, y, batch, rank, dim_out);
-    free(tmp);
+    arena_free(tmp);
 }
 
 void aria_linear_block_sparse_f32(const float *x, const float *W, const float *bias,
@@ -826,34 +885,37 @@ void aria_linear_bottleneck_f32(const float *x, const float *W_down, const float
                                   float *y, int64_t batch, int64_t dim_in, int64_t dim_out, int64_t rank) {
     /* Bottleneck: y = GELU(x @ W_down^T + b_down) @ W_up^T + b_up
      * W_down: [rank, dim_in], W_up: [dim_out, rank] */
-    float *tmp = (float *)malloc(batch * rank * sizeof(float));
+    arena_reset();
+    float *tmp = (float *)arena_alloc(batch * rank * sizeof(float));
     if (!tmp) { memset(y, 0, batch * dim_out * sizeof(float)); return; }
     aria_linear_f32(x, W_down, b_down, tmp, batch, dim_in, rank);
     aria_gelu_f32(tmp, tmp, batch * rank);
     aria_linear_f32(tmp, W_up, b_up, y, batch, rank, dim_out);
-    free(tmp);
+    arena_free(tmp);
 }
 
 void aria_linear_shared_basis_f32(const float *x, const float *Mixing, const float *Basis,
                                     float *y, int64_t batch, int64_t dim, int64_t k_basis) {
     /* Shared basis: y = (x @ Mixing^T) @ Basis^T
      * Mixing: [k_basis, dim], Basis: [dim, k_basis] */
-    float *tmp = (float *)malloc(batch * k_basis * sizeof(float));
+    arena_reset();
+    float *tmp = (float *)arena_alloc(batch * k_basis * sizeof(float));
     if (!tmp) { if (x != y) memcpy(y, x, batch * dim * sizeof(float)); return; }
     aria_linear_f32(x, Mixing, NULL, tmp, batch, dim, k_basis);
     aria_linear_f32(tmp, Basis, NULL, y, batch, k_basis, dim);
-    free(tmp);
+    arena_free(tmp);
 }
 
 void aria_linear_tied_f32(const float *x, const float *W, const float *b_down, const float *b_up,
                             float *y, int64_t batch, int64_t dim_in, int64_t rank) {
     /* Tied: y = GELU(x @ W^T + b_down) @ W + b_up
      * W: [rank, dim_in] */
-    float *tmp = (float *)malloc(batch * rank * sizeof(float));
-    float *WT = (float *)malloc(dim_in * rank * sizeof(float));
+    arena_reset();
+    float *tmp = (float *)arena_alloc(batch * rank * sizeof(float));
+    float *WT = (float *)arena_alloc(dim_in * rank * sizeof(float));
     if (!tmp || !WT) {
         memset(y, 0, batch * dim_in * sizeof(float));
-        free(tmp); free(WT);
+        arena_free(tmp); arena_free(WT);
         return;
     }
     aria_linear_f32(x, W, b_down, tmp, batch, dim_in, rank);
@@ -861,6 +923,6 @@ void aria_linear_tied_f32(const float *x, const float *W, const float *b_down, c
     /* tmp[batch, rank] @ W[rank, dim_in] — we need WT[dim_in, rank] */
     aria_transpose2d_f32(W, WT, rank, dim_in);
     aria_linear_f32(tmp, WT, b_up, y, batch, rank, dim_in);
-    free(tmp);
-    free(WT);
+    arena_free(tmp);
+    arena_free(WT);
 }

@@ -14,17 +14,18 @@ Supports background execution controlled from the dashboard.
 from __future__ import annotations
 
 import importlib
-import threading
-import torch
+import threading as threading  # noqa: F401 — re-exported for test patching
+import torch as torch  # noqa: F401 — re-exported for test patching
 
 from ._helpers import (
-    _native_proactive_gating,
-    _native_runner_progress_report,
-    _rebuild_graph_with_overrides,
-    propose_ablation_suite,
+    _native_proactive_gating as _native_proactive_gating,
+    _native_runner_progress_report as _native_runner_progress_report,
+    _rebuild_graph_with_overrides as _rebuild_graph_with_overrides,
+    clear_gpu_memory as clear_gpu_memory,
+    propose_ablation_suite as propose_ablation_suite,
 )
-from ._types import RunConfig, LiveProgress
-from ..native_runner import record_native_abi_parity_result
+from ._types import RunConfig as RunConfig, LiveProgress as LiveProgress
+
 
 # Core infrastructure
 from .core import _CoreMixin
@@ -118,10 +119,21 @@ def __getattr__(name: str):
     if name == "results":
         return importlib.import_module(".results_automation", __name__)
     # Allow accessing submodules by name for patching in tests.
-    _allowed = {"control", "control_start", "control_cycle", "control_actions",
-                "core", "screening", "cycle", "continuous",
-                "execution", "synthesis", "selection", "dashboard",
-                "results_auto_escalate_phase7"}
+    _allowed = {
+        "control",
+        "control_start",
+        "control_cycle",
+        "control_actions",
+        "core",
+        "screening",
+        "cycle",
+        "continuous",
+        "execution",
+        "synthesis",
+        "selection",
+        "dashboard",
+        "results_auto_escalate_phase7",
+    }
     if name in _allowed:
         return importlib.import_module(f".{name}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

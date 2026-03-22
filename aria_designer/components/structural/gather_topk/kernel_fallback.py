@@ -1,7 +1,9 @@
 """Kernel handler for gather_topk — dispatches to aria_core.gather_topk_f32."""
+
 import torch
 import torch.nn as nn
 from components.base import BaseComponentHandler, _try_native
+
 
 class ComponentHandler(BaseComponentHandler):
     def build(self, config):

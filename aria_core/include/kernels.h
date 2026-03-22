@@ -633,3 +633,13 @@ void aria_cumprod_safe_f32(const float *x, float *y, int64_t batch, int64_t dim,
 #endif
 
 #endif /* ARIA_KERNELS_H */
+
+void aria_tropical_matmul_batched_backward_f32(
+    const float *grad_out,
+    const float *a,
+    const float *b,
+    float *grad_a,
+    float *grad_b,
+    int64_t batch, int64_t M, int64_t K, int64_t N,
+    float tau
+);

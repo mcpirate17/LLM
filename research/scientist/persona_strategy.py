@@ -42,8 +42,12 @@ class _PersonaStrategyMixin:
                 from .llm.prompts import BRIEFING_SYSTEM_PROMPT, SUGGESTION_PROMPT
 
                 op_ref = build_op_reference(op_success_rates, compression_coverage)
-                prompt = SUGGESTION_PROMPT.format(context=situation_report, op_reference=op_ref)
-                resp = llm.generate(prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024)
+                prompt = SUGGESTION_PROMPT.format(
+                    context=situation_report, op_reference=op_ref
+                )
+                resp = llm.generate(
+                    prompt, system=BRIEFING_SYSTEM_PROMPT, max_tokens=1024
+                )
                 self._track_cost(resp)
                 if resp.text.strip():
                     return self._parse_suggestion(resp.text.strip())
@@ -120,7 +124,9 @@ class _PersonaStrategyMixin:
                 from .llm.prompts import MODE_SELECTION_PROMPT, SYSTEM_PROMPT
 
                 op_ref = build_op_reference(op_success_rates, compression_coverage)
-                prompt = MODE_SELECTION_PROMPT.format(context=situation_report, op_reference=op_ref)
+                prompt = MODE_SELECTION_PROMPT.format(
+                    context=situation_report, op_reference=op_ref
+                )
                 resp = llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=512)
                 self._track_cost(resp)
                 if resp.text.strip():
@@ -134,7 +140,9 @@ class _PersonaStrategyMixin:
         rec = self._apply_decision_feedback(rec, fallback_data)
         return self._apply_digest_overrides(rec, digest)
 
-    def _apply_decision_feedback(self, rec: Dict, fallback_data: Optional[Dict] = None) -> Dict:
+    def _apply_decision_feedback(
+        self, rec: Dict, fallback_data: Optional[Dict] = None
+    ) -> Dict:
         """Apply decision outcome feedback to a mode recommendation.
 
         Adjusts confidence based on the chosen mode's historical success rate.
@@ -166,7 +174,8 @@ class _PersonaStrategyMixin:
 
         if consec_failures >= 3:
             rec["reasoning"] = (
-                rec.get("reasoning", "") + f" [WARNING: {consec_failures} consecutive {mode} failures]"
+                rec.get("reasoning", "")
+                + f" [WARNING: {consec_failures} consecutive {mode} failures]"
             )
 
         rec["decision_feedback"] = {
@@ -233,7 +242,9 @@ class _PersonaStrategyMixin:
             for a, b in anti_pairs[:3]:
                 existing.append([a, b])
             config["excluded_combinations"] = existing
-            reasoning_additions.append(f"excluding {len(anti_pairs[:3])} anti-synergistic pairs")
+            reasoning_additions.append(
+                f"excluding {len(anti_pairs[:3])} anti-synergistic pairs"
+            )
 
         recs = getattr(digest, "recommendations", [])
         if recs:
@@ -243,21 +254,45 @@ class _PersonaStrategyMixin:
         for rec_text in recs[:3]:
             rec_lower = rec_text.lower()
             # Detect efficiency/compactness recommendations
-            if any(kw in rec_lower for kw in ("compact", "efficien", "sparse", "small",
-                                                "param", "lightweight", "pruning")):
+            if any(
+                kw in rec_lower
+                for kw in (
+                    "compact",
+                    "efficien",
+                    "sparse",
+                    "small",
+                    "param",
+                    "lightweight",
+                    "pruning",
+                )
+            ):
                 for _cat in ("structural", "parameterized"):
-                    base = float(op_weights.get(_cat, config.get("category_weights", {}).get(_cat, 1.0)))
-                    config.setdefault("category_weights", {})[_cat] = round(min(8.0, max(base, 2.0)), 2)
-                reasoning_additions.append("applied efficiency bias from digest recommendation")
+                    base = float(
+                        op_weights.get(
+                            _cat, config.get("category_weights", {}).get(_cat, 1.0)
+                        )
+                    )
+                    config.setdefault("category_weights", {})[_cat] = round(
+                        min(8.0, max(base, 2.0)), 2
+                    )
+                reasoning_additions.append(
+                    "applied efficiency bias from digest recommendation"
+                )
                 break
             # Detect diversity/exploration recommendations
             if any(kw in rec_lower for kw in ("divers", "explor", "novel", "exotic")):
                 config.setdefault("grammar_risky_op_prob", 0.2)
-                reasoning_additions.append("boosted risky_op_prob from digest recommendation")
+                reasoning_additions.append(
+                    "boosted risky_op_prob from digest recommendation"
+                )
                 break
 
         if reasoning_additions:
-            rec["reasoning"] = rec.get("reasoning", "") + " | Digest: " + "; ".join(reasoning_additions)
+            rec["reasoning"] = (
+                rec.get("reasoning", "")
+                + " | Digest: "
+                + "; ".join(reasoning_additions)
+            )
 
         return rec
 
@@ -354,7 +389,9 @@ class _PersonaStrategyMixin:
 
         return result
 
-    def extract_knowledge(self, results: List[Dict], hypotheses: List[Dict], context: str = "") -> List[Dict]:
+    def extract_knowledge(
+        self, results: List[Dict], hypotheses: List[Dict], context: str = ""
+    ) -> List[Dict]:
         """Extract reusable knowledge from results and hypotheses.
 
         Returns list of {category, title, content, confidence}.
@@ -429,7 +466,9 @@ class _PersonaStrategyMixin:
             except Exception as e:
                 logger.warning(f"LLM campaign report failed, falling back: {e}")
 
-        return self._rule_based_campaign_report(campaign, experiments, hypotheses, decisions, knowledge)
+        return self._rule_based_campaign_report(
+            campaign, experiments, hypotheses, decisions, knowledge
+        )
 
     def formulate_campaign(self, context: str = "") -> Dict:
         """Generate a new campaign title/objective/criteria.

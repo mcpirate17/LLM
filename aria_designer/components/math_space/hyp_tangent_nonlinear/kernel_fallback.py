@@ -1,6 +1,8 @@
 """Kernel handler for hyp_tangent_nonlinear — dispatches to aria_core.hyp_tangent_nonlinear_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "hyp_tangent_nonlinear"

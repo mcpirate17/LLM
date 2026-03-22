@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 
 from ...synthesis.grammar import GrammarConfig, batch_generate

@@ -39,6 +39,7 @@ from .fingerprint import BehavioralFingerprint
 @dataclass
 class NoveltyMetrics:
     """Comprehensive novelty assessment."""
+
     # Structural novelty
     graph_fingerprint: str = ""
     n_unique_ops: int = 0
@@ -90,11 +91,21 @@ def novelty_score(
 ) -> NoveltyMetrics:
     """Compute novelty metrics for a synthesized program."""
     ir = graph.lower_to_ir()
+    if ir.is_stale(graph):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "stale_ir_used: graph_version=%d ir_version=%d",
+            graph._ir_version,
+            ir.source_version,
+        )
     metrics = _novelty_score_from_ir(graph, ir, fingerprint)
 
     # Check against known fingerprints
     if known_fingerprints and metrics.graph_fingerprint in known_fingerprints:
-        metrics.overall_novelty *= DUPLICATE_PENALTY_MULTIPLIER  # Heavily penalize exact duplicates
+        metrics.overall_novelty *= (
+            DUPLICATE_PENALTY_MULTIPLIER  # Heavily penalize exact duplicates
+        )
 
     if calibration:
         mean = calibration.get("noise_floor_mean")
@@ -122,70 +133,96 @@ def batch_novelty_scores(
     if not graphs:
         return []
 
-    from ..synthesis.primitives import OPCODE_MAP, PRIMITIVE_REGISTRY, get_primitive, REVERSE_OPCODE_MAP
+    from ..synthesis.primitives import (
+        OPCODE_MAP,
+        PRIMITIVE_REGISTRY,
+        get_primitive,
+        REVERSE_OPCODE_MAP,
+    )
+
     n_opcodes = len(OPCODE_MAP)
-    
+
     # 1. Lower all graphs to IR once
     irs = [g.lower_to_ir() for g in graphs]
-    
+
     # 2. Vectorized opcode counts
     from ..synthesis.graph import ComputationGraphIR
+
     batch_counts = ComputationGraphIR.batch_op_distribution(irs, n_opcodes)
-    
+
     # 3. Vectorized structural metrics
     n_ops_per_graph = batch_counts.sum(axis=1)
     unique_ops_per_graph = (batch_counts > 0).sum(axis=1)
-    
+
     # Op diversity
     total_available = max(len(PRIMITIVE_REGISTRY), 1)
     diversity = np.clip(unique_ops_per_graph / total_available, 0, 1.0)
-    
+
     # Category spread and exotic flags
     # Pre-map opcodes to categories
     opcode_to_cat = {}
     for name, code in OPCODE_MAP.items():
-        if name == "input": continue
+        if name == "input":
+            continue
         try:
             opcode_to_cat[code] = get_primitive(name).category.value
         except Exception:
             pass
-            
+
     all_categories = sorted(list(set(opcode_to_cat.values())))
     cat_to_idx = {cat: i for i, cat in enumerate(all_categories)}
     n_cats = len(all_categories)
-    
+
     # Map batch_counts to category_counts: (batch, n_cats)
     cat_counts = np.zeros((len(graphs), n_cats), dtype=np.int32)
     for code, cat in opcode_to_cat.items():
         cat_counts[:, cat_to_idx[cat]] += batch_counts[:, code]
-        
+
     unique_cats_per_graph = (cat_counts > 0).sum(axis=1)
     category_spread = np.clip(unique_cats_per_graph / EXPECTED_CATEGORIES, 0, 1.0)
-    
+
     # Exotic flags
     math_space_idx = cat_to_idx.get("math_space")
     freq_idx = cat_to_idx.get("frequency")
-    uses_math = cat_counts[:, math_space_idx] > 0 if math_space_idx is not None else np.zeros(len(graphs), dtype=bool)
-    uses_freq = cat_counts[:, freq_idx] > 0 if freq_idx is not None else np.zeros(len(graphs), dtype=bool)
-    
+    uses_math = (
+        cat_counts[:, math_space_idx] > 0
+        if math_space_idx is not None
+        else np.zeros(len(graphs), dtype=bool)
+    )
+    uses_freq = (
+        cat_counts[:, freq_idx] > 0
+        if freq_idx is not None
+        else np.zeros(len(graphs), dtype=bool)
+    )
+
     # Op distribution entropy
-    probs = batch_counts.astype(np.float32) / np.maximum(n_ops_per_graph[:, None], 1e-10)
+    probs = batch_counts.astype(np.float32) / np.maximum(
+        n_ops_per_graph[:, None], 1e-10
+    )
     # Vectorized entropy calculation
     entropy = -np.sum(probs * np.log(np.clip(probs, 1e-10, 1.0)), axis=1)
-    
+
     max_entropy = np.log(np.maximum(unique_ops_per_graph, 1))
     evenness = np.where(max_entropy > 0, entropy / max_entropy, 0)
-    
-    structural_novelty = (WEIGHT_DIVERSITY * diversity + WEIGHT_SPREAD * category_spread + WEIGHT_EVENNESS * evenness)
-    
+
+    structural_novelty = (
+        WEIGHT_DIVERSITY * diversity
+        + WEIGHT_SPREAD * category_spread
+        + WEIGHT_EVENNESS * evenness
+    )
+
     # Multiplicative bonus for exotic
     exotic_count = uses_math.astype(np.int32) + uses_freq.astype(np.int32)
-    structural_novelty = np.clip(structural_novelty * (EXOTIC_BONUS_BASE + EXOTIC_BONUS_PER_FLAG * exotic_count), 0, 1.0)
-    
+    structural_novelty = np.clip(
+        structural_novelty * (EXOTIC_BONUS_BASE + EXOTIC_BONUS_PER_FLAG * exotic_count),
+        0,
+        1.0,
+    )
+
     # 4. Assembly
     results = []
     seen_fps = set()
-    
+
     for i, graph in enumerate(graphs):
         metrics = NoveltyMetrics()
         metrics.graph_fingerprint = graph.fingerprint()
@@ -193,7 +230,7 @@ def batch_novelty_scores(
         metrics.uses_math_spaces = bool(uses_math[i])
         metrics.uses_frequency_domain = bool(uses_freq[i])
         metrics.structural_novelty = float(structural_novelty[i])
-        
+
         # Populate histograms for completeness
         for code, count in enumerate(batch_counts[i]):
             if count > 0:
@@ -202,28 +239,50 @@ def batch_novelty_scores(
                     metrics.op_histogram[name] = int(count)
                     try:
                         cat = get_primitive(name).category.value
-                        metrics.category_histogram[cat] = metrics.category_histogram.get(cat, 0) + int(count)
-                    except Exception: pass
+                        metrics.category_histogram[cat] = (
+                            metrics.category_histogram.get(cat, 0) + int(count)
+                        )
+                    except Exception:
+                        pass
 
         # Behavioral
         fp_obj = fingerprints[i] if fingerprints and i < len(fingerprints) else None
         if fp_obj is not None:
             metrics.behavioral_novelty = fp_obj.novelty_score
+            cka_t = (
+                fp_obj.cka_vs_transformer
+                if fp_obj.cka_vs_transformer is not None
+                else 0.0
+            )
+            cka_s = fp_obj.cka_vs_ssm if fp_obj.cka_vs_ssm is not None else 0.0
+            cka_c = fp_obj.cka_vs_conv if fp_obj.cka_vs_conv is not None else 0.0
             similarities = {
-                "transformer": fp_obj.cka_vs_transformer,
-                "ssm": fp_obj.cka_vs_ssm,
-                "conv": fp_obj.cka_vs_conv,
+                "transformer": cka_t,
+                "ssm": cka_s,
+                "conv": cka_c,
             }
             metrics.most_similar_to = max(similarities, key=similarities.get)
             metrics.max_cka_similarity = max(similarities.values())
-            metrics.raw_novelty = (STRUCTURAL_BLEND_WEIGHT * metrics.structural_novelty + BEHAVIORAL_BLEND_WEIGHT * metrics.behavioral_novelty)
-            
+            metrics.raw_novelty = (
+                STRUCTURAL_BLEND_WEIGHT * metrics.structural_novelty
+                + BEHAVIORAL_BLEND_WEIGHT * metrics.behavioral_novelty
+            )
+
             metrics.novelty_reference_version = fp_obj.novelty_reference_version
-            metrics.novelty_valid_for_promotion = bool(getattr(fp_obj, "novelty_valid_for_promotion", False))
-            metrics.novelty_validity_reason = getattr(fp_obj, "novelty_validity_reason", "missing_reference")
-            if fp_obj.quality == "full": metrics.novelty_confidence = CONFIDENCE_FULL
-            elif fp_obj.quality == "partial": metrics.novelty_confidence = CONFIDENCE_PARTIAL_BASE + (fp_obj.analyses_succeeded * CONFIDENCE_PARTIAL_STEP)
-            else: metrics.novelty_confidence = CONFIDENCE_NONE
+            metrics.novelty_valid_for_promotion = bool(
+                getattr(fp_obj, "novelty_valid_for_promotion", False)
+            )
+            metrics.novelty_validity_reason = getattr(
+                fp_obj, "novelty_validity_reason", "missing_reference"
+            )
+            if fp_obj.quality == "full":
+                metrics.novelty_confidence = CONFIDENCE_FULL
+            elif fp_obj.quality == "partial":
+                metrics.novelty_confidence = CONFIDENCE_PARTIAL_BASE + (
+                    fp_obj.analyses_succeeded * CONFIDENCE_PARTIAL_STEP
+                )
+            else:
+                metrics.novelty_confidence = CONFIDENCE_NONE
         else:
             metrics.behavioral_novelty = 0.0
             metrics.raw_novelty = metrics.structural_novelty * STRUCTURAL_ONLY_WEIGHT
@@ -235,13 +294,15 @@ def batch_novelty_scores(
 
         # Down-weight reference-like candidates (high CKA to known families)
         if fp_obj is not None:
-            metrics.overall_novelty *= _reference_similarity_penalty(metrics.max_cka_similarity)
-        
+            metrics.overall_novelty *= _reference_similarity_penalty(
+                metrics.max_cka_similarity
+            )
+
         # Internal diversity penalty
         if metrics.graph_fingerprint in seen_fps:
             metrics.overall_novelty *= DUPLICATE_PENALTY_MULTIPLIER
         seen_fps.add(metrics.graph_fingerprint)
-        
+
         results.append(metrics)
 
     return results
@@ -268,7 +329,12 @@ def _novelty_score_from_ir(
 
         metrics.n_unique_ops = len(active_opcodes)
 
-        from ..synthesis.primitives import REVERSE_OPCODE_MAP, get_primitive, PRIMITIVE_REGISTRY
+        from ..synthesis.primitives import (
+            REVERSE_OPCODE_MAP,
+            get_primitive,
+            PRIMITIVE_REGISTRY,
+        )
+
         for opcode in active_opcodes:
             op_name = REVERSE_OPCODE_MAP.get(opcode)
             if not op_name:
@@ -279,7 +345,9 @@ def _novelty_score_from_ir(
             try:
                 op = get_primitive(op_name)
                 cat = op.category.value
-                metrics.category_histogram[cat] = metrics.category_histogram.get(cat, 0) + count
+                metrics.category_histogram[cat] = (
+                    metrics.category_histogram.get(cat, 0) + count
+                )
                 if cat == "math_space":
                     metrics.uses_math_spaces = True
                 if cat == "frequency":
@@ -310,23 +378,30 @@ def _novelty_score_from_ir(
 
         # Weighted combination
         metrics.structural_novelty = (
-            0.50 * diversity +
-            0.30 * category_spread +
-            0.20 * evenness
+            0.50 * diversity + 0.30 * category_spread + 0.20 * evenness
         )
 
         # Multiplicative bonus for exotic ops
         n_exotic = int(metrics.uses_math_spaces) + int(metrics.uses_frequency_domain)
         if n_exotic > 0:
-            metrics.structural_novelty = min(1.0, metrics.structural_novelty * (1 + 0.1 * n_exotic))
+            metrics.structural_novelty = min(
+                1.0, metrics.structural_novelty * (1 + 0.1 * n_exotic)
+            )
 
     # ── Behavioral Novelty ──
     if fingerprint is not None:
         metrics.behavioral_novelty = fingerprint.novelty_score
+        cka_t = (
+            fingerprint.cka_vs_transformer
+            if fingerprint.cka_vs_transformer is not None
+            else 0.0
+        )
+        cka_s = fingerprint.cka_vs_ssm if fingerprint.cka_vs_ssm is not None else 0.0
+        cka_c = fingerprint.cka_vs_conv if fingerprint.cka_vs_conv is not None else 0.0
         similarities = {
-            "transformer": fingerprint.cka_vs_transformer,
-            "ssm": fingerprint.cka_vs_ssm,
-            "conv": fingerprint.cka_vs_conv,
+            "transformer": cka_t,
+            "ssm": cka_s,
+            "conv": cka_c,
         }
         metrics.most_similar_to = max(similarities, key=similarities.get)
         metrics.max_cka_similarity = max(similarities.values())
@@ -334,8 +409,7 @@ def _novelty_score_from_ir(
     # ── Combined Score ──
     if fingerprint is not None:
         metrics.raw_novelty = (
-            0.3 * metrics.structural_novelty +
-            0.7 * metrics.behavioral_novelty
+            0.3 * metrics.structural_novelty + 0.7 * metrics.behavioral_novelty
         )
     else:
         metrics.raw_novelty = metrics.structural_novelty * STRUCTURAL_ONLY_WEIGHT
@@ -344,7 +418,9 @@ def _novelty_score_from_ir(
 
     # Down-weight reference-like candidates (high CKA to known families)
     if fingerprint is not None:
-        metrics.overall_novelty *= _reference_similarity_penalty(metrics.max_cka_similarity)
+        metrics.overall_novelty *= _reference_similarity_penalty(
+            metrics.max_cka_similarity
+        )
 
     # ── Confidence Score ──
     if fingerprint is not None:

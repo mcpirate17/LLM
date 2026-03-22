@@ -45,4 +45,4 @@ export function RoutingHeatmap({ data, nExperts }) {
   );
 }
 
-export default RoutingHeatmap;
+export default React.memo(RoutingHeatmap);

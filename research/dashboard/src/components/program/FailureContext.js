@@ -20,4 +20,4 @@ export function FailureContext({ context }) {
   );
 }
 
-export default FailureContext;
+export default React.memo(FailureContext);

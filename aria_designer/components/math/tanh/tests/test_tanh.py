@@ -1,4 +1,5 @@
 """Contract tests for tanh."""
+
 import yaml
 from pathlib import Path
 

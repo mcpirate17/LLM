@@ -1,4 +1,5 @@
 """Contract tests for block_sparse_linear."""
+
 import yaml
 from pathlib import Path
 

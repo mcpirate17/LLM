@@ -21,18 +21,23 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-_RESEARCH_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "research"))
+_RESEARCH_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "research")
+)
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.synthesis.workflow_converter import graph_to_workflow as _g2w
+
 try:
     from aria_designer.api.app.component_identity import canonicalize_workflow
 except ImportError:
     # Fallback for when running from within aria_designer/ as cwd
     import importlib
+
     _ci = importlib.import_module("api.app.component_identity")
     canonicalize_workflow = _ci.canonicalize_workflow
+
 
 def graph_to_workflow(
     graph: ComputationGraph,
@@ -43,11 +48,14 @@ def graph_to_workflow(
     wf = _g2w(graph, workflow_id, name, metadata)
     return canonicalize_workflow(wf)
 
+
 # ── Notebook access ──────────────────────────────────────────────────
+
 
 def _get_notebook():
     """Get a LabNotebook connection to the research database."""
     from research.scientist.notebook import LabNotebook
+
     db_path = os.path.join(_RESEARCH_ROOT, "lab_notebook.db")
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Lab notebook not found at {db_path}")
@@ -74,7 +82,9 @@ def import_survivors(
     """
     nb = _get_notebook()
 
-    survivors = nb.get_top_programs(n=n * 2, sort_by=sort_by)  # fetch extra for filtering
+    survivors = nb.get_top_programs(
+        n=n * 2, sort_by=sort_by
+    )  # fetch extra for filtering
 
     workflows = []
     seen_fingerprints = set()
@@ -101,9 +111,14 @@ def import_survivors(
 
         try:
             from research.synthesis.serializer import graph_from_json
+
             graph = graph_from_json(graph_json_str)
         except Exception:
-            logger.warning("Failed to parse graph for entry: %s", prog.get("result_id", "unknown"), exc_info=True)
+            logger.warning(
+                "Failed to parse graph for entry: %s",
+                prog.get("result_id", "unknown"),
+                exc_info=True,
+            )
             continue
 
         # Check if all ops are in PRIMITIVE_REGISTRY
@@ -159,6 +174,7 @@ def import_single(result_id: str) -> Dict[str, Any]:
         raise ValueError(f"Program '{result_id}' has no graph_json")
 
     from research.synthesis.serializer import graph_from_json
+
     graph = graph_from_json(graph_json_str)
 
     return graph_to_workflow(

@@ -10,23 +10,41 @@ from ...synthesis.primitives import get_primitive
 
 logger = logging.getLogger(__name__)
 
+
 class _GrammarMixin:
     """Grammar weight computation, statistical helpers, and attribution."""
+
     __slots__ = ()
 
     def _gather_category_stats(
-        self, op_rates: Dict[str, Dict],
+        self,
+        op_rates: Dict[str, Dict],
     ) -> Dict[str, Dict]:
-        """Group op success rates by category."""
-        cat_stats: Dict[str, Dict] = defaultdict(lambda: {
-            "total": 0, "s1_total": 0, "novelty_sum": 0.0, "count": 0,
-            "conf_sum": 0.0, "conf_count": 0,
-        })
+        """Group op success rates by category.
+
+        Structural ops (identity, splits, masks, reduce ops) are excluded
+        from S1 total aggregation — they have no learnable parameters and
+        should not drag down category weights as standalone learners.
+        """
+        from ...synthesis.context_rules import S1_EXEMPT_OPS
+
+        cat_stats: Dict[str, Dict] = defaultdict(
+            lambda: {
+                "total": 0,
+                "s1_total": 0,
+                "novelty_sum": 0.0,
+                "count": 0,
+                "conf_sum": 0.0,
+                "conf_count": 0,
+            }
+        )
         for op_name, stats in op_rates.items():
             try:
                 op = get_primitive(op_name)
                 cat = op.category.value
             except (KeyError, Exception):
+                continue
+            if op_name in S1_EXEMPT_OPS:
                 continue
             cat_stats[cat]["total"] += stats["n_used"]
             cat_stats[cat]["s1_total"] += int(stats["s1_rate"] * stats["n_used"])
@@ -34,12 +52,15 @@ class _GrammarMixin:
                 cat_stats[cat]["novelty_sum"] += stats["avg_novelty"] * stats["n_used"]
                 cat_stats[cat]["count"] += stats["n_used"]
             if stats.get("avg_novelty_confidence"):
-                cat_stats[cat]["conf_sum"] += stats["avg_novelty_confidence"] * stats["n_used"]
+                cat_stats[cat]["conf_sum"] += (
+                    stats["avg_novelty_confidence"] * stats["n_used"]
+                )
                 cat_stats[cat]["conf_count"] += stats["n_used"]
         return cat_stats
 
     def _compute_weights_from_stats(
-        self, cat_stats: Dict[str, Dict],
+        self,
+        cat_stats: Dict[str, Dict],
     ) -> Optional[Dict[str, float]]:
         """Compute grammar weights from per-category statistics."""
         default_weights = GrammarConfig().category_weights
@@ -51,10 +72,14 @@ class _GrammarMixin:
             if stats["total"] < 2:
                 continue
             cat_s1_rates[cat] = stats["s1_total"] / max(stats["total"], 1)
-            cat_novelties[cat] = (stats["novelty_sum"] / stats["count"]
-                                  if stats["count"] > 0 else 0.0)
-            cat_confidences[cat] = (stats["conf_sum"] / stats["conf_count"]
-                                    if stats["conf_count"] > 0 else 0.0)
+            cat_novelties[cat] = (
+                stats["novelty_sum"] / stats["count"] if stats["count"] > 0 else 0.0
+            )
+            cat_confidences[cat] = (
+                stats["conf_sum"] / stats["conf_count"]
+                if stats["conf_count"] > 0
+                else 0.0
+            )
 
         if not cat_s1_rates:
             return None
@@ -63,21 +88,25 @@ class _GrammarMixin:
 
         learned = {}
         stability_multipliers = self.instability_attribution()
-        
+
         for cat, s1_rate in cat_s1_rates.items():
             n = cat_stats[cat]["total"]
             relative = s1_rate / max(mean_s1, 0.01)
 
             # Statistical guard (#42): skip noisy differences
-            se = math.sqrt(s1_rate * (1 - s1_rate) / n) if n > 0 and 0 < s1_rate < 1 else 0.0
+            se = (
+                math.sqrt(s1_rate * (1 - s1_rate) / n)
+                if n > 0 and 0 < s1_rate < 1
+                else 0.0
+            )
             effect = abs(s1_rate - mean_s1)
             if se > 0 and effect < se:
                 default = default_weights.get(cat, 1.0)
-                tentative = default * (relative ** 2)
+                tentative = default * (relative**2)
                 learned[cat] = round(0.5 * tentative + 0.5 * default, 2)
                 continue
 
-            amplified = relative ** 2
+            amplified = relative**2
             # Discount novelty factor by average confidence for this category
             # Low-confidence novelty (e.g. structural-only at 0.2) contributes
             # much less than high-confidence (full behavioral at 0.9)
@@ -85,11 +114,11 @@ class _GrammarMixin:
             confidence = cat_confidences.get(cat, 0.0)
             novelty_factor = 1.0 + raw_novelty * confidence
             base = default_weights.get(cat, 1.0)
-            
+
             # Apply stability multiplier
             stab = stability_multipliers.get(cat, 1.0)
             weight = base * amplified * novelty_factor * stab
-            
+
             if cat == "frequency_domain":
                 learned[cat] = round(max(0.0, min(0.1, weight)), 2)
             else:
@@ -98,7 +127,7 @@ class _GrammarMixin:
         # EMA blending if last_applied exists (moved from compute_grammar_weights)
         # This function should just return the raw learned weights from stats.
         # Actually, the caller handles EMA blending.
-        
+
         # Hard cap: frequency_domain shows strong negative correlation with S1 (-0.33).
         # Cap at 0.1 to suppress generation of frequency-domain ops.
         _SUPPRESSED_CATEGORIES = {"frequency_domain": 0.1}
@@ -122,10 +151,10 @@ class _GrammarMixin:
 
         extracted_rows: List[Dict] = []
         fingerprint_counts: Dict[str, int] = defaultdict(int)
-        
+
         # Z13: Identify Pareto winners for weighting boost
         pareto_ids = set(self.pareto_optimal_programs())
-        
+
         for row in rows:
             graph_json = row["graph_json"]
             if not graph_json:
@@ -140,10 +169,10 @@ class _GrammarMixin:
             graph_fingerprint = str(row["graph_fingerprint"] or "").strip()
             fp_key = graph_fingerprint or f"result:{row['result_id']}"
             fingerprint_counts[fp_key] += 1
-            
+
             # Pareto boost: 5x weight for non-dominated models
             is_pareto = row["result_id"] in pareto_ids
-            
+
             extracted_rows.append(
                 {
                     "fingerprint": fp_key,
@@ -151,7 +180,7 @@ class _GrammarMixin:
                     "stage1_passed": bool(row["stage1_passed"]),
                     "novelty_score": self._as_float(row["novelty_score"]),
                     "novelty_confidence": self._as_float(row["novelty_confidence"]),
-                    "weight_multiplier": 5.0 if is_pareto else 1.0
+                    "weight_multiplier": 5.0 if is_pareto else 1.0,
                 }
             )
 
@@ -163,7 +192,7 @@ class _GrammarMixin:
             row_weight = min(1.0, max(per_fingerprint_cap, 0.1) / float(fp_count))
             # Apply Pareto multiplier
             row_weight *= extracted["weight_multiplier"]
-            
+
             effective_rows += row_weight
 
             for op_name in extracted["ops"]:
@@ -199,27 +228,37 @@ class _GrammarMixin:
                 "n_used": n_used,
                 "n_stage1_passed": stats["n_s1"],
                 "s1_rate": stats["n_s1"] / n_used,
-                "avg_novelty": (stats["nov_sum"] / stats["nov_n"]) if stats["nov_n"] > 0 else None,
-                "avg_novelty_confidence": (stats["conf_sum"] / stats["conf_n"]) if stats["conf_n"] > 0 else None,
+                "avg_novelty": (stats["nov_sum"] / stats["nov_n"])
+                if stats["nov_n"] > 0
+                else None,
+                "avg_novelty_confidence": (stats["conf_sum"] / stats["conf_n"])
+                if stats["conf_n"] > 0
+                else None,
             }
 
         total_rows = len(extracted_rows)
         unique_fingerprints = len(fingerprint_counts)
         repeat_rows = sum(max(0, count - 1) for count in fingerprint_counts.values())
-        top_fingerprint_count = max(fingerprint_counts.values()) if fingerprint_counts else 0
+        top_fingerprint_count = (
+            max(fingerprint_counts.values()) if fingerprint_counts else 0
+        )
         diagnostics: Dict[str, float] = {
             "total_rows": float(total_rows),
             "effective_rows": float(round(effective_rows, 4)),
             "unique_fingerprints": float(unique_fingerprints),
             "repeat_rows": float(repeat_rows),
             "rerun_ratio": (repeat_rows / total_rows) if total_rows > 0 else 0.0,
-            "top_fingerprint_concentration": (top_fingerprint_count / total_rows) if total_rows > 0 else 0.0,
+            "top_fingerprint_concentration": (top_fingerprint_count / total_rows)
+            if total_rows > 0
+            else 0.0,
             "fingerprint_cap": float(per_fingerprint_cap),
         }
         return op_rates, diagnostics
 
     @staticmethod
-    def _wilson_interval(successes: int, total: int, z: float = 1.96) -> Tuple[float, float]:
+    def _wilson_interval(
+        successes: int, total: int, z: float = 1.96
+    ) -> Tuple[float, float]:
         """Wilson score interval for Bernoulli proportion."""
         if total <= 0:
             return (0.0, 0.0)
@@ -231,8 +270,9 @@ class _GrammarMixin:
         return (max(0.0, center - margin), min(1.0, center + margin))
 
     @staticmethod
-    def _two_prop_pvalue(successes_a: int, total_a: int,
-                         successes_b: int, total_b: int) -> float:
+    def _two_prop_pvalue(
+        successes_a: int, total_a: int, successes_b: int, total_b: int
+    ) -> float:
         """Two-sided z-test p-value for proportion difference."""
         if total_a <= 0 or total_b <= 0:
             return 1.0
@@ -249,8 +289,9 @@ class _GrammarMixin:
         return min(1.0, max(0.0, math.erfc(z / math.sqrt(2.0))))
 
     @staticmethod
-    def _apply_fdr_bh(rows: List[Dict[str, Any]], p_key: str = "p_value",
-                      q_key: str = "q_value") -> List[Dict[str, Any]]:
+    def _apply_fdr_bh(
+        rows: List[Dict[str, Any]], p_key: str = "p_value", q_key: str = "q_value"
+    ) -> List[Dict[str, Any]]:
         """Apply Benjamini-Hochberg FDR correction in-place and return rows."""
         indexed = []
         for idx, row in enumerate(rows):
@@ -305,8 +346,16 @@ class _GrammarMixin:
         ids = []
         data = []
         for r in rows:
-            lr = r["validation_loss_ratio"] if r["validation_loss_ratio"] is not None else r["loss_ratio"]
-            params = r["param_count"] if r["param_count"] is not None else r["graph_n_params_estimate"]
+            lr = (
+                r["validation_loss_ratio"]
+                if r["validation_loss_ratio"] is not None
+                else r["loss_ratio"]
+            )
+            params = (
+                r["param_count"]
+                if r["param_count"] is not None
+                else r["graph_n_params_estimate"]
+            )
             if lr is not None and params is not None:
                 data.append((1.0 - lr, 1.0 / max(1, params)))
                 ids.append(r["result_id"])
@@ -358,15 +407,17 @@ class _GrammarMixin:
                     families.add(get_primitive(op_name).category.value)
                 except Exception:
                     continue
-            parsed.append({
-                "result_id": row["result_id"],
-                "experiment_id": row["experiment_id"],
-                "stage1_passed": int(bool(row["stage1_passed"])),
-                "ops": op_set,
-                "families": families,
-                "math_space": bool(row["graph_uses_math_spaces"]),
-                "depth_bucket": self._depth_bucket(row["graph_depth"]),
-            })
+            parsed.append(
+                {
+                    "result_id": row["result_id"],
+                    "experiment_id": row["experiment_id"],
+                    "stage1_passed": int(bool(row["stage1_passed"])),
+                    "ops": op_set,
+                    "families": families,
+                    "math_space": bool(row["graph_uses_math_spaces"]),
+                    "depth_bucket": self._depth_bucket(row["graph_depth"]),
+                }
+            )
         parsed.sort(key=lambda r: (str(r["experiment_id"]), str(r["result_id"])))
         return parsed
 
@@ -383,7 +434,9 @@ class _GrammarMixin:
                 factors[("op", op_name)].append(idx)
             for fam in row["families"]:
                 factors[("family", fam)].append(idx)
-            factors[("math_space", "enabled" if row["math_space"] else "disabled")].append(idx)
+            factors[
+                ("math_space", "enabled" if row["math_space"] else "disabled")
+            ].append(idx)
             factors[("depth_bucket", row["depth_bucket"])].append(idx)
 
         out: List[Dict[str, Any]] = []
@@ -398,25 +451,29 @@ class _GrammarMixin:
             without_rate = without_s / without_n
             ci_low, ci_high = self._wilson_interval(with_s, with_n)
             p_val = self._two_prop_pvalue(with_s, with_n, without_s, without_n)
-            out.append({
-                "factor_type": factor_type,
-                "factor_name": factor_name,
-                "n_with": with_n,
-                "n_without": without_n,
-                "success_with": with_s,
-                "success_without": without_s,
-                "rate_with": with_rate,
-                "rate_without": without_rate,
-                "delta_rate": with_rate - without_rate,
-                "ci_with_low": ci_low,
-                "ci_with_high": ci_high,
-                "p_value": p_val,
-            })
+            out.append(
+                {
+                    "factor_type": factor_type,
+                    "factor_name": factor_name,
+                    "n_with": with_n,
+                    "n_without": without_n,
+                    "success_with": with_s,
+                    "success_without": without_s,
+                    "rate_with": with_rate,
+                    "rate_without": without_rate,
+                    "delta_rate": with_rate - without_rate,
+                    "ci_with_low": ci_low,
+                    "ci_with_high": ci_high,
+                    "p_value": p_val,
+                }
+            )
         self._apply_fdr_bh(out, p_key="p_value", q_key="q_value")
         out.sort(key=lambda r: (r["factor_type"], r["factor_name"]))
         return out
 
-    def _matched_control_stats(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _matched_control_stats(
+        self, rows: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Matched-control comparisons for single-factor contrasts."""
         comparisons: List[Dict[str, Any]] = []
         if len(rows) < 4:
@@ -424,8 +481,12 @@ class _GrammarMixin:
 
         # Math-space effect, matched on depth bucket
         for bucket in sorted({r["depth_bucket"] for r in rows}):
-            group_a = [r for r in rows if r["depth_bucket"] == bucket and r["math_space"]]
-            group_b = [r for r in rows if r["depth_bucket"] == bucket and not r["math_space"]]
+            group_a = [
+                r for r in rows if r["depth_bucket"] == bucket and r["math_space"]
+            ]
+            group_b = [
+                r for r in rows if r["depth_bucket"] == bucket and not r["math_space"]
+            ]
             if not group_a or not group_b:
                 continue
             s_a = sum(r["stage1_passed"] for r in group_a)
@@ -434,17 +495,22 @@ class _GrammarMixin:
             n_b = len(group_b)
             p_val = self._two_prop_pvalue(s_a, n_a, s_b, n_b)
             delta = (s_a / n_a) - (s_b / n_b)
-            se = math.sqrt((s_a / n_a) * (1 - (s_a / n_a)) / n_a + (s_b / n_b) * (1 - (s_b / n_b)) / n_b)
-            comparisons.append({
-                "factor": "math_space",
-                "match_on": f"depth_bucket={bucket}",
-                "n_a": n_a,
-                "n_b": n_b,
-                "delta_rate": delta,
-                "ci_low": delta - 1.96 * se,
-                "ci_high": delta + 1.96 * se,
-                "p_value": p_val,
-            })
+            se = math.sqrt(
+                (s_a / n_a) * (1 - (s_a / n_a)) / n_a
+                + (s_b / n_b) * (1 - (s_b / n_b)) / n_b
+            )
+            comparisons.append(
+                {
+                    "factor": "math_space",
+                    "match_on": f"depth_bucket={bucket}",
+                    "n_a": n_a,
+                    "n_b": n_b,
+                    "delta_rate": delta,
+                    "ci_low": delta - 1.96 * se,
+                    "ci_high": delta + 1.96 * se,
+                    "p_value": p_val,
+                }
+            )
 
         # Op family effect, matched on depth bucket and math-space
         families = sorted({f for r in rows for f in r["families"]})
@@ -452,7 +518,12 @@ class _GrammarMixin:
         for family in families:
             total_a = total_b = succ_a = succ_b = 0
             for depth_bucket, math_space in strata_keys:
-                stratum = [r for r in rows if r["depth_bucket"] == depth_bucket and r["math_space"] == math_space]
+                stratum = [
+                    r
+                    for r in rows
+                    if r["depth_bucket"] == depth_bucket
+                    and r["math_space"] == math_space
+                ]
                 if not stratum:
                     continue
                 a = [r for r in stratum if family in r["families"]]
@@ -469,17 +540,21 @@ class _GrammarMixin:
             rate_b = succ_b / total_b
             delta = rate_a - rate_b
             p_val = self._two_prop_pvalue(succ_a, total_a, succ_b, total_b)
-            se = math.sqrt(rate_a * (1 - rate_a) / total_a + rate_b * (1 - rate_b) / total_b)
-            comparisons.append({
-                "factor": f"family:{family}",
-                "match_on": "depth_bucket,math_space",
-                "n_a": total_a,
-                "n_b": total_b,
-                "delta_rate": delta,
-                "ci_low": delta - 1.96 * se,
-                "ci_high": delta + 1.96 * se,
-                "p_value": p_val,
-            })
+            se = math.sqrt(
+                rate_a * (1 - rate_a) / total_a + rate_b * (1 - rate_b) / total_b
+            )
+            comparisons.append(
+                {
+                    "factor": f"family:{family}",
+                    "match_on": "depth_bucket,math_space",
+                    "n_a": total_a,
+                    "n_b": total_b,
+                    "delta_rate": delta,
+                    "ci_low": delta - 1.96 * se,
+                    "ci_high": delta + 1.96 * se,
+                    "p_value": p_val,
+                }
+            )
 
         self._apply_fdr_bh(comparisons, p_key="p_value", q_key="q_value")
         comparisons.sort(key=lambda r: (r["factor"], r["match_on"]))
@@ -493,10 +568,13 @@ class _GrammarMixin:
 
         def _is_interpretable_factor(signal: Dict[str, Any]) -> bool:
             factor_name = str(signal.get("factor_name") or "").strip().lower()
-            return bool(factor_name and factor_name not in {"unknown", "none", "null", "nan"})
+            return bool(
+                factor_name and factor_name not in {"unknown", "none", "null", "nan"}
+            )
 
         strong_correlational = [
-            s for s in factor_stats
+            s
+            for s in factor_stats
             if s["n_with"] >= 20
             and s["delta_rate"] > 0.05
             and s.get("q_value", 1.0) <= 0.10
@@ -506,7 +584,8 @@ class _GrammarMixin:
             s for s in strong_correlational if _is_interpretable_factor(s)
         ]
         matched_positive = [
-            m for m in matched_controls
+            m
+            for m in matched_controls
             if m["n_a"] >= 12
             and m["n_b"] >= 12
             and m["delta_rate"] > 0.05
@@ -533,7 +612,9 @@ class _GrammarMixin:
             "n_matched_tests": len(matched_controls),
             "fdr_method": "benjamini_hochberg",
             "correlational_signal_count": len(strong_correlational),
-            "interpretable_correlational_signal_count": len(strong_correlational_interpretable),
+            "interpretable_correlational_signal_count": len(
+                strong_correlational_interpretable
+            ),
             "matched_signal_count": len(matched_positive),
         }
 
@@ -591,19 +672,21 @@ class _GrammarMixin:
             return None
 
         learned = self._compute_weights_from_stats(cat_stats)
-        
+
         # Z13: Search Health Guard (Step 3)
         # If discovery and validation are uncorrelated, we are likely 'reward hacking'.
-        # In this case, we should revert towards uniform (default) weights to find 
+        # In this case, we should revert towards uniform (default) weights to find
         # a new region of the search space.
         gate_stats = self.gate_performance_summary()
         correlation = gate_stats.get("discovery_validation_correlation")
         n_samples = gate_stats.get("n_correlation_samples", 0)
         default_weights = self.get_current_grammar_weights() or {}
-        
+
         # If correlation is low (< 0.3) and we have enough data, dampen learned signal
         if learned and correlation is not None and n_samples > 10 and correlation < 0.3:
-            logger.info(f"Low discovery-validation correlation detected ({correlation:.2f}); dampening learned weights to increase diversity.")
+            logger.info(
+                f"Low discovery-validation correlation detected ({correlation:.2f}); dampening learned weights to increase diversity."
+            )
             for cat in learned:
                 default = default_weights.get(cat, 1.0)
                 # Blend 70% default, 30% learned
@@ -697,12 +780,15 @@ class _GrammarMixin:
             return None
 
         placeholders = ",".join("?" * len(holdout_ids))
-        row = self.nb.conn.execute(f"""
+        row = self.nb.conn.execute(
+            f"""
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1_passed
             FROM program_results
             WHERE experiment_id IN ({placeholders})
-        """, tuple(holdout_ids)).fetchone()
+        """,
+            tuple(holdout_ids),
+        ).fetchone()
 
         total = row["total"] or 0
         s1 = row["s1_passed"] or 0
@@ -715,7 +801,7 @@ class _GrammarMixin:
 
     def instability_attribution(self) -> Dict[str, float]:
         """Correlate architectural categories with high Jacobian spectral norm.
-        
+
         Returns a penalty multiplier [0.5, 1.0] for each category.
         Categories that frequently cause instability get lower multipliers.
         """
@@ -724,15 +810,17 @@ class _GrammarMixin:
             FROM program_results
             WHERE fp_jacobian_spectral_norm IS NOT NULL
         """).fetchall()
-        
-        if len(rows) < 10: return {}
-        
+
+        if len(rows) < 10:
+            return {}
+
         cat_norms = defaultdict(list)
         for r in rows:
             ops = self._extract_ops_fast(r["graph_json"])
             norm = float(r["fp_jacobian_spectral_norm"])
-            if not ops: continue
-            
+            if not ops:
+                continue
+
             seen_cats = set()
             for op in ops:
                 try:
@@ -740,11 +828,13 @@ class _GrammarMixin:
                     if cat not in seen_cats:
                         cat_norms[cat].append(norm)
                         seen_cats.add(cat)
-                except Exception: continue
-        
+                except Exception:
+                    continue
+
         penalties = {}
         for cat, norms in cat_norms.items():
-            if len(norms) < 5: continue
+            if len(norms) < 5:
+                continue
             avg_norm = np.mean(norms)
             # Threshold: > 15 is risky, > 50 is toxic
             if avg_norm > 15.0:
@@ -753,7 +843,7 @@ class _GrammarMixin:
                 penalties[cat] = round(float(penalty), 2)
             else:
                 penalties[cat] = 1.0
-                
+
         return penalties
 
     def get_current_grammar_weights(self) -> Dict[str, float]:

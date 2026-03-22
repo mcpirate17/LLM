@@ -62,7 +62,9 @@ def compute_graph_ncd(
 
     # Serialize loss curve
     if loss_curve and isinstance(loss_curve[0], dict):
-        losses = [float(d.get("loss", 0)) for d in loss_curve if d.get("loss") is not None]
+        losses = [
+            float(d.get("loss", 0)) for d in loss_curve if d.get("loss") is not None
+        ]
     else:
         losses = [float(v) for v in loss_curve]
 

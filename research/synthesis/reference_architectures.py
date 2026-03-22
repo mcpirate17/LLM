@@ -107,7 +107,9 @@ def build_rwkv_layer(d_model: int = 256) -> ComputationGraph:
     return g
 
 
-def build_retrieval_augmented_layer(d_model: int = 256, top_k: int = 4) -> ComputationGraph:
+def build_retrieval_augmented_layer(
+    d_model: int = 256, top_k: int = 4
+) -> ComputationGraph:
     """Retrieval-augmented transformer layer.
 
     Architecture: LN -> self_attn -> residual -> LN -> cross_attn(query, memory) -> residual -> LN -> FFN -> residual
@@ -129,9 +131,9 @@ def build_retrieval_augmented_layer(d_model: int = 256, top_k: int = 4) -> Compu
     sim = g.add_op("cosine_similarity", [query, query])
     retrieved = g.add_op("gather_topk", [query, sim], {"k": top_k})
     # Cross-attention over top-k retrieved items
-    cross_attn = g.add_op("softmax_attention", [retrieved])
-    # Note: softmax_attention on [B, k, D] returns [B, k, D]. 
-    # For a true RAG we'd project back to sequence length S, but for 
+    g.add_op("softmax_attention", [retrieved])
+    # Note: softmax_attention on [B, k, D] returns [B, k, D].
+    # For a true RAG we'd project back to sequence length S, but for
     # the baseline graph we'll approximate with linear attention on the original sequence.
     rag_out = g.add_op("linear_attention", [ln2])
     res2 = g.add_op("add", [res1, rag_out])
@@ -194,7 +196,11 @@ def build_reference(arch_key: str, d_model: int = 256) -> ComputationGraph:
 def list_references():
     """List available reference architectures."""
     return [
-        {"key": k, "name": v["name"], "description": v["description"],
-         "paradigm": v["paradigm"]}
+        {
+            "key": k,
+            "name": v["name"],
+            "description": v["description"],
+            "paradigm": v["paradigm"],
+        }
         for k, v in REFERENCE_ARCHITECTURES.items()
     ]

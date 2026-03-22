@@ -492,8 +492,6 @@ class _ExecutionTrainingMixin:
                     )
 
                     # Budget extension tracking
-                    extension_check_step = 500
-                    has_extended = False
 
                     step = 0
                     while step < total_steps:
@@ -537,7 +535,6 @@ class _ExecutionTrainingMixin:
                             )
                             if improvement_rate > 0 and total_steps < 1000:
                                 total_steps = 1000
-                                has_extended = True
                                 result["adaptive_budget_extension"] = True
                                 logger.debug(
                                     "    Step 500: improvement_rate=%.4f > 0. Extending budget to 1000 steps.",
@@ -1177,8 +1174,62 @@ class _ExecutionTrainingMixin:
                     except Exception as e_wt:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
+                # Post-S1 triage: cheap evals for composite score dimensions
+                if result.get("stage1_passed") and model is not None:
+                    try:
+                        from .execution_triage import run_triage
+
+                        _graph_for_triage = None
+                        if graph_json:
+                            try:
+                                from ...synthesis.serializer import graph_from_json
+
+                                _graph_for_triage = graph_from_json(graph_json)
+                            except Exception:
+                                pass
+                        triage = run_triage(
+                            model,
+                            _graph_for_triage,
+                            result,
+                            config.model_dim,
+                        )
+                        if triage:
+                            result.update(triage)
+                            _n_rt = triage.get("n_routing_ops", 0)
+                            _n_sp = triage.get("n_sparse_ops", 0)
+                            _n_mo = triage.get("n_moe_ops", 0)
+                            _qpp = triage.get("param_efficiency", 0)
+                            logger.info(
+                                "    Triage: %d fields (qpp=%.2f, route=%d sparse=%d moe=%d)",
+                                len(triage),
+                                _qpp,
+                                _n_rt,
+                                _n_sp,
+                                _n_mo,
+                            )
+                    except Exception as e_tri:
+                        logger.debug("Triage eval skipped: %s", e_tri)
+
         except Exception as e:
             result["error"] = str(e)
+            result["error_type"] = type(e).__name__
+            # Op attribution: parse the traceback for the failing op
+            import traceback as _tb
+            import re as _re
+
+            tb_lines = _tb.format_exc().strip().split("\n")
+            for line in reversed(tb_lines):
+                if "_op_" in line and "in _op_" in line:
+                    m = _re.search(r"in (_op_\w+)", line)
+                    if m:
+                        result["failure_op"] = m.group(1).removeprefix("_op_")
+                        break
+            if "failure_op" not in result:
+                err_str = str(e)
+                if "kv_compress" in err_str:
+                    result["failure_op"] = "latent_attention_compressor"
+                elif "conv_weight" in err_str:
+                    result["failure_op"] = "conv1d_seq"
 
         if result.get("final_loss") is not None and bool(
             getattr(config, "one_shot_pruning_baseline", False)
@@ -1579,9 +1630,20 @@ class _ExecutionTrainingMixin:
                 result["initial_loss"] = initial_loss
                 result["min_loss"] = min_loss
                 result["throughput"] = total_tokens / (total_time_ms / 1000)
-                # Use raw final/initial ratio for pass/fail, not normalized
+                # Adaptive S1 gate: use loss_ratio threshold but scale for
+                # graphs with low initial_loss (complex architectures start
+                # closer to the entropy floor, so loss_ratio is harder).
+                # Formula: threshold = base + (1 - base) * max(0, 1 - init_loss / 50)
+                # At init_loss=190: threshold = 0.4 (unchanged)
+                # At init_loss=50:  threshold = 0.4 (unchanged)
+                # At init_loss=20:  threshold = 0.76
+                # At init_loss=12:  threshold = 0.86
                 raw_ratio = _raw
-                result["passed"] = raw_ratio < config.stage1_loss_ratio_threshold
+                _base_thr = config.stage1_loss_ratio_threshold
+                _init = initial_loss if initial_loss and initial_loss > 0 else 100.0
+                _scale = max(0.0, 1.0 - _init / 50.0)
+                _adaptive_thr = _base_thr + (1.0 - _base_thr) * _scale
+                result["passed"] = raw_ratio < _adaptive_thr
                 # Validation loss gate
                 _vlr = result.get("validation_loss_ratio")
                 if result["passed"] and _vlr is not None and _vlr > 0.6:

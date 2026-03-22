@@ -16,9 +16,11 @@ pytestmark = pytest.mark.unit
 
 # ── Activation Sparsity ──────────────────────────────────────────────
 
+
 class TestActivationSparsity:
     def _make_simple_model(self, dim=32, vocab=128):
         """Build a minimal model with Linear layers for hook testing."""
+
         class SimpleModel(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -107,9 +109,11 @@ class TestActivationSparsity:
 
 # ── Routing Heatmap ──────────────────────────────────────────────────
 
+
 class TestRoutingHeatmap:
     def _make_model_with_routing(self, dim=32, vocab=128):
         """Build a model that has routing_telemetry attached."""
+
         class RoutedModel(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -126,22 +130,29 @@ class TestRoutingHeatmap:
 
                 # Record routing telemetry (mimicking compiler behavior)
                 import torch.nn.functional as F
-                rt = getattr(self, "routing_telemetry", {
-                    "tokens_total": 0,
-                    "tokens_processed": 0,
-                    "expert_counts": torch.zeros(4),
-                    "entropy_sum": 0.0,
-                    "count": 0,
-                    "heatmap": None,
-                })
+
+                rt = getattr(
+                    self,
+                    "routing_telemetry",
+                    {
+                        "tokens_total": 0,
+                        "tokens_processed": 0,
+                        "expert_counts": torch.zeros(4),
+                        "entropy_sum": 0.0,
+                        "count": 0,
+                        "heatmap": None,
+                    },
+                )
                 B, S = expert_idx.shape
                 rt["tokens_total"] += B * S
                 rt["tokens_processed"] += B * S
                 rt["expert_counts"] += torch.histc(
-                    expert_idx.float(), bins=4, min=0, max=3)
+                    expert_idx.float(), bins=4, min=0, max=3
+                )
                 probs = F.softmax(scores, dim=-1)
-                entropy = -torch.sum(
-                    probs * torch.log(probs + 1e-10), dim=-1).mean().item()
+                entropy = (
+                    -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
+                )
                 rt["entropy_sum"] += entropy
                 rt["count"] += 1
                 if getattr(self, "_capture_heatmap", False) and rt["heatmap"] is None:
@@ -156,6 +167,7 @@ class TestRoutingHeatmap:
 
     def _make_plain_model(self, dim=32, vocab=128):
         """Model with no routing."""
+
         class PlainModel(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -255,6 +267,7 @@ class TestRoutingHeatmap:
 
 # ── Gini Coefficient ─────────────────────────────────────────────────
 
+
 class TestGiniCoefficient:
     def test_uniform_distribution(self):
         from research.eval.routing_heatmap import _gini_coefficient
@@ -281,6 +294,7 @@ class TestGiniCoefficient:
 
 
 # ── WikiText Evaluation ───────────────────────────────────────────────
+
 
 class TestWikiTextEval:
     def _make_simple_model(self, dim=32, vocab=256):
@@ -312,16 +326,18 @@ class TestWikiTextEval:
         from research.eval.utils import make_batches
 
         tokens = list(range(1000))
-        batches = make_batches(tokens, batch_size=4, seq_len=32, n_batches=3,
-                               device=torch.device("cpu"))
+        batches = make_batches(
+            tokens, batch_size=4, seq_len=32, n_batches=3, device=torch.device("cpu")
+        )
         assert len(batches) == 3
         assert batches[0].shape == (4, 32)
 
     def test_make_batches_empty(self):
         from research.eval.utils import make_batches
 
-        batches = make_batches([1, 2], batch_size=4, seq_len=32, n_batches=3,
-                               device=torch.device("cpu"))
+        batches = make_batches(
+            [1, 2], batch_size=4, seq_len=32, n_batches=3, device=torch.device("cpu")
+        )
         assert len(batches) == 0
 
     def test_compute_perplexity(self):
@@ -349,7 +365,9 @@ class TestWikiTextEval:
             ).item()
 
         model.train()
-        final_loss = micro_train_loop(model, batches, vocab_size=256, n_steps=50, lr=1e-3)
+        final_loss = micro_train_loop(
+            model, batches, vocab_size=256, n_steps=50, lr=1e-3
+        )
         # Training should reduce loss (or at least not crash)
         assert final_loss < initial_loss * 1.5  # Allow some tolerance
 
@@ -359,10 +377,17 @@ class TestWikiTextEval:
 
         model = self._make_simple_model(dim=32, vocab=256)
         result = evaluate_wikitext_perplexity(
-            model, vocab_size=256, device=torch.device("cpu"),
-            n_train_steps=10, seq_len=32, n_train_batches=4, n_eval_batches=2,
-            train_batch_size=2, eval_batch_size=2,
-            max_chars_train=10000, max_chars_val=5000,
+            model,
+            vocab_size=256,
+            device=torch.device("cpu"),
+            n_train_steps=10,
+            seq_len=32,
+            n_train_batches=4,
+            n_eval_batches=2,
+            train_batch_size=2,
+            eval_batch_size=2,
+            max_chars_train=10000,
+            max_chars_val=5000,
         )
 
         assert "wikitext_perplexity" in result
@@ -376,6 +401,7 @@ class TestWikiTextEval:
 
 
 # ── Notebook Schema ──────────────────────────────────────────────────
+
 
 class TestNotebookSchema:
     def test_new_columns_in_schema(self):
@@ -395,10 +421,7 @@ class TestNotebookSchema:
 
         with tempfile.TemporaryDirectory() as tmp:
             nb = LabNotebook(f"{tmp}/test.db")
-            cols = {
-                row[1]
-                for row in nb.conn.execute("PRAGMA table_info(leaderboard)")
-            }
+            cols = {row[1] for row in nb.conn.execute("PRAGMA table_info(leaderboard)")}
             assert "activation_sparsity_score" in cols
             assert "dead_neuron_ratio" in cols
             assert "routing_collapse_score" in cols
@@ -414,6 +437,7 @@ class TestNotebookSchema:
 
 # ── TinyStories Eval ─────────────────────────────────────────────────
 
+
 class TestTinyStoriesEval:
     def _make_model(self, dim=32, vocab=256):
         class M(nn.Module):
@@ -422,17 +446,28 @@ class TestTinyStoriesEval:
                 self.embed = nn.Embedding(vocab, dim)
                 self.fc = nn.Linear(dim, dim)
                 self.head = nn.Linear(dim, vocab)
+
             def forward(self, x):
                 return self.head(self.fc(self.embed(x)))
+
         return M()
 
     def test_full_eval(self):
         from research.eval.tinystories_eval import evaluate_tinystories
+
         model = self._make_model()
         result = evaluate_tinystories(
-            model, vocab_size=256, device=torch.device("cpu"),
-            n_train_steps=5, seq_len=32, n_train_batches=4, n_eval_batches=2,
-            batch_size=2, max_chars_train=5000, max_chars_val=2000)
+            model,
+            vocab_size=256,
+            device=torch.device("cpu"),
+            n_train_steps=5,
+            seq_len=32,
+            n_train_batches=4,
+            n_eval_batches=2,
+            batch_size=2,
+            max_chars_train=5000,
+            max_chars_val=2000,
+        )
         assert "tinystories_perplexity" in result
         if result.get("error") is None:
             assert result["tinystories_perplexity"] is not None
@@ -441,6 +476,7 @@ class TestTinyStoriesEval:
 
 
 # ── Cross-Task Eval ──────────────────────────────────────────────────
+
 
 class TestCrossTaskEval:
     def _make_model_fn(self, dim=32, vocab=256):
@@ -451,14 +487,18 @@ class TestCrossTaskEval:
                     self.embed = nn.Embedding(vocab, dim)
                     self.fc = nn.Linear(dim, dim)
                     self.head = nn.Linear(dim, vocab)
+
                 def forward(self, x):
                     return self.head(self.fc(self.embed(x)))
+
             return M()
+
         return fn
 
     def test_synthetic_fallback(self):
         """Tests with synthetic code fallback (no heavy download needed)."""
         from research.eval.cross_task_eval import _generate_synthetic_python
+
         snippets = _generate_synthetic_python(10000)
         assert len(snippets) > 0
         total = sum(len(s) for s in snippets)
@@ -466,10 +506,18 @@ class TestCrossTaskEval:
 
     def test_full_eval(self):
         from research.eval.cross_task_eval import evaluate_cross_task_robustness
+
         result = evaluate_cross_task_robustness(
-            self._make_model_fn(), vocab_size=256, device=torch.device("cpu"),
-            n_train_steps=5, seq_len=32, n_train_batches=4, n_eval_batches=2,
-            batch_size=2, max_chars=5000)
+            self._make_model_fn(),
+            vocab_size=256,
+            device=torch.device("cpu"),
+            n_train_steps=5,
+            seq_len=32,
+            n_train_batches=4,
+            n_eval_batches=2,
+            batch_size=2,
+            max_chars=5000,
+        )
         assert "cross_task_score" in result
         if result.get("error") is None:
             assert result["cross_task_score"] is not None
@@ -480,6 +528,7 @@ class TestCrossTaskEval:
 
 # ── Efficiency Wall Eval ─────────────────────────────────────────────
 
+
 class TestEfficiencyWallEval:
     def _make_model(self, dim=32, vocab=256):
         class M(nn.Module):
@@ -488,16 +537,23 @@ class TestEfficiencyWallEval:
                 self.embed = nn.Embedding(vocab, dim)
                 self.fc = nn.Linear(dim, dim)
                 self.head = nn.Linear(dim, vocab)
+
             def forward(self, x):
                 return self.head(self.fc(self.embed(x)))
+
         return M()
 
     def test_basic_profiling(self):
         from research.eval.efficiency_wall import evaluate_efficiency_wall
+
         model = self._make_model()
         result = evaluate_efficiency_wall(
-            model, vocab_size=256, device=torch.device("cpu"),
-            seq_lens=(32, 64, 128), batch_size=2)
+            model,
+            vocab_size=256,
+            device=torch.device("cpu"),
+            seq_lens=(32, 64, 128),
+            batch_size=2,
+        )
         assert "efficiency_wall_score" in result
         assert result["efficiency_wall_score"] is not None
         assert 0.0 <= result["efficiency_wall_score"] <= 1.0
@@ -505,6 +561,7 @@ class TestEfficiencyWallEval:
 
     def test_scaling_regime_detected(self):
         from research.eval.efficiency_wall import _detect_scaling_regime
+
         # Linear scaling: memory doubles when seq_len doubles
         measurements = [
             {"seq_len": 64, "peak_mb": 10.0, "error": None},
@@ -515,6 +572,7 @@ class TestEfficiencyWallEval:
 
     def test_quadratic_regime_detected(self):
         from research.eval.efficiency_wall import _detect_scaling_regime
+
         # Quadratic: memory 4x when seq_len 2x
         measurements = [
             {"seq_len": 64, "peak_mb": 10.0, "error": None},
@@ -525,9 +583,15 @@ class TestEfficiencyWallEval:
 
     def test_max_viable_seq_len(self):
         from research.eval.efficiency_wall import evaluate_efficiency_wall
+
         model = self._make_model()
         result = evaluate_efficiency_wall(
-            model, vocab_size=256, device=torch.device("cpu"),
-            seq_lens=(32, 64), batch_size=2, memory_budget_mb=10000)
+            model,
+            vocab_size=256,
+            device=torch.device("cpu"),
+            seq_lens=(32, 64),
+            batch_size=2,
+            memory_budget_mb=10000,
+        )
 
         assert result["max_viable_seq_len"] >= 32

@@ -55,7 +55,14 @@ def _execution_class(cid: str, category: str, mapping: Dict[str, Any]) -> str:
 
 def main() -> int:
     mapping = _load_yaml(MAPPING_FILE)
-    allowed_classes = {"primitive", "primitive_candidate", "composite", "data_control", "control", "io"}
+    allowed_classes = {
+        "primitive",
+        "primitive_candidate",
+        "composite",
+        "data_control",
+        "control",
+        "io",
+    }
     passthrough = set(mapping.get("passthrough_components") or [])
     sources = set(mapping.get("source_components") or [])
     template_lowered = set(mapping.get("template_lowered_components") or [])

@@ -183,7 +183,7 @@ def register_reference(
             vocab_size=vocab_size,
             device=str(dev),
         )
-        fp_dict = bfp.to_dict()
+        bfp.to_dict()
         fp_novelty = bfp.novelty_score
         log.info(
             "  Fingerprint: novelty=%.4f, locality=%.4f, isotropy=%.4f",
@@ -194,7 +194,6 @@ def register_reference(
     except Exception as e:
         log.warning("  Fingerprint failed: %s", e)
         bfp = None
-        fp_dict = {}
         fp_novelty = 0.0
 
     log.info("  Computing novelty score...")

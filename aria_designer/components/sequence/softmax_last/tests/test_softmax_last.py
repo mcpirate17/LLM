@@ -1,4 +1,5 @@
 """Contract tests for softmax_last."""
+
 import yaml
 from pathlib import Path
 

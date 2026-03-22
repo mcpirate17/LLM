@@ -12,11 +12,13 @@ class _NotebookBreakthrough:
     def get_leaderboard(self, tier=None, limit=5, sort_by="composite_score", **kwargs):
         if tier != "breakthrough":
             return []
-        return [{
-            "result_id": "r1",
-            "composite_score": 0.93,
-            "novelty_confidence": 0.88,
-        }]
+        return [
+            {
+                "result_id": "r1",
+                "composite_score": 0.93,
+                "novelty_confidence": 0.88,
+            }
+        ]
 
 
 class _NotebookEmpty:
@@ -26,7 +28,9 @@ class _NotebookEmpty:
 
 class TestSwitchEpicGuardrails(unittest.TestCase):
     def test_switch_epic_triggers_on_qualified_breakthrough(self):
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "switch_epic_breakthrough.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "switch_epic_breakthrough.db")
+        )
         cfg = RunConfig(device="cpu", switch_epic_breakthrough_confidence_min=0.8)
         verdict = runner._evaluate_switch_epic_guardrails(
             config=cfg,
@@ -37,7 +41,9 @@ class TestSwitchEpicGuardrails(unittest.TestCase):
         self.assertIn("decision_ready_breakthrough_detected", verdict["reasons"])
 
     def test_switch_epic_triggers_on_stagnation_window(self):
-        runner = ExperimentRunner(os.path.join(tempfile.mkdtemp(), "switch_epic_stagnation.db"))
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "switch_epic_stagnation.db")
+        )
         runner._aria_cycle_history = [
             {"delta_stage1_survivors": 0},
             {"delta_stage1_survivors": 0},

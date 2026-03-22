@@ -1,6 +1,8 @@
 """Kernel handler for padic_gate — dispatches to aria_core.padic_gate_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "padic_gate"

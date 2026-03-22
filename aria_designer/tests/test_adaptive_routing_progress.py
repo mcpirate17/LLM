@@ -1,4 +1,5 @@
 """Progress tests for adaptive tri-lane routing bring-up."""
+
 from __future__ import annotations
 
 import json
@@ -49,8 +50,12 @@ def test_adaptive_manifests_have_python_fallback_paths():
             manifest = yaml.safe_load(fh)
 
         impl = manifest.get("implementation") or {}
-        assert impl.get("python") == "kernel_fallback.py", f"Missing fallback path in {manifest_path}"
-        assert (manifest_path.parent / "kernel_fallback.py").exists(), f"Missing kernel_fallback.py for {manifest_path}"
+        assert impl.get("python") == "kernel_fallback.py", (
+            f"Missing fallback path in {manifest_path}"
+        )
+        assert (manifest_path.parent / "kernel_fallback.py").exists(), (
+            f"Missing kernel_fallback.py for {manifest_path}"
+        )
 
 
 @pytest.mark.parametrize("manifest_relpath", ADAPTIVE_MANIFESTS)
@@ -61,7 +66,9 @@ def test_adaptive_component_handlers_forward_contract(manifest_relpath: Path):
         manifest = yaml.safe_load(fh)
 
     fallback_path = manifest_path.parent / "kernel_fallback.py"
-    spec = importlib.util.spec_from_file_location(f"handler_{manifest['id']}", str(fallback_path))
+    spec = importlib.util.spec_from_file_location(
+        f"handler_{manifest['id']}", str(fallback_path)
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -89,7 +96,9 @@ def test_adaptive_component_handlers_forward_contract(manifest_relpath: Path):
 
 
 @pytest.mark.parametrize("example_path", ADAPTIVE_EXAMPLES)
-@pytest.mark.skip(reason="Examples use unimplemented components (conditional_gather, load_balance_loss)")
+@pytest.mark.skip(
+    reason="Examples use unimplemented components (conditional_gather, load_balance_loss)"
+)
 def test_adaptive_trilane_examples_compile(client, example_path: Path):
     root = Path(__file__).resolve().parents[1]
     workflow_path = root / example_path
@@ -98,5 +107,7 @@ def test_adaptive_trilane_examples_compile(client, example_path: Path):
     response = client.post("/api/v1/workflows/compile", json={"workflow": workflow})
     assert response.status_code == 200
     payload = response.json()
-    assert payload.get("compiled") is True, f"Compile failed for {example_path}: {payload.get('error')}"
+    assert payload.get("compiled") is True, (
+        f"Compile failed for {example_path}: {payload.get('error')}"
+    )
     assert payload.get("node_count", 0) > 0

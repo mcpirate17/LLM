@@ -1,4 +1,5 @@
 """Contract tests for hyp_tangent_nonlinear."""
+
 import yaml
 from pathlib import Path
 

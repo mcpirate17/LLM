@@ -45,8 +45,12 @@ def _load_payload(args: argparse.Namespace) -> Any:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compute deterministic hash for probe protocol JSON")
-    parser.add_argument("--spec-file", help="Path to JSON file containing probe protocol spec")
+    parser = argparse.ArgumentParser(
+        description="Compute deterministic hash for probe protocol JSON"
+    )
+    parser.add_argument(
+        "--spec-file", help="Path to JSON file containing probe protocol spec"
+    )
     parser.add_argument("--spec-json", help="Inline probe protocol JSON string")
     parser.add_argument(
         "--algorithm",

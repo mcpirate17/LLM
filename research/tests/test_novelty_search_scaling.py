@@ -34,7 +34,9 @@ class TestNoveltySearchScaling(unittest.TestCase):
         archive.add("a", BehavioralFingerprint(interaction_locality=-9999))
         archive.add("b", BehavioralFingerprint(interaction_locality=9999))
 
-        novelty = archive.novelty_of(BehavioralFingerprint(interaction_locality=0.25), k=2)
+        novelty = archive.novelty_of(
+            BehavioralFingerprint(interaction_locality=0.25), k=2
+        )
 
         self.assertTrue(math.isfinite(novelty))
         self.assertGreaterEqual(novelty, 0.0)

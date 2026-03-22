@@ -4,6 +4,7 @@ Evidence Pack utilities.
 Enforces that recommendations and decisions are backed by measurable,
 queryable metrics from the lab notebook.
 """
+
 from __future__ import annotations
 
 import json
@@ -61,6 +62,7 @@ from .shared_utils import safe_float as _safe_float
 @dataclass(slots=True)
 class EvidencePack:
     """Structured evidence pack for a recommendation/decision."""
+
     hypothesis: str
     supporting_metrics: List[Dict[str, Any]] = field(default_factory=list)
     uncertainty: Dict[str, Any] = field(default_factory=dict)
@@ -86,19 +88,32 @@ def validate_evidence_pack(pack: Dict[str, Any]) -> None:
     if not isinstance(pack, dict):
         raise EvidencePackError("Evidence pack must be a dict.")
 
-    required = ["hypothesis", "supporting_metrics", "uncertainty", "confounders", "falsification"]
+    required = [
+        "hypothesis",
+        "supporting_metrics",
+        "uncertainty",
+        "confounders",
+        "falsification",
+    ]
     for field_name in required:
         if field_name not in pack:
             raise EvidencePackError(f"Missing evidence pack field: {field_name}")
 
-    if not isinstance(pack.get("supporting_metrics"), list) or not pack["supporting_metrics"]:
+    if (
+        not isinstance(pack.get("supporting_metrics"), list)
+        or not pack["supporting_metrics"]
+    ):
         raise EvidencePackError("Evidence pack must include supporting_metrics list.")
 
     for metric in pack["supporting_metrics"]:
         if "name" not in metric or "value" not in metric:
-            raise EvidencePackError("Each supporting metric must include name and value.")
+            raise EvidencePackError(
+                "Each supporting metric must include name and value."
+            )
         if "baseline" not in metric or "delta_vs_baseline" not in metric:
-            raise EvidencePackError("Each supporting metric must include baseline and delta_vs_baseline.")
+            raise EvidencePackError(
+                "Each supporting metric must include baseline and delta_vs_baseline."
+            )
 
     has_novelty_metric = any(
         isinstance(m, dict) and "novelty" in str(m.get("name", "")).lower()
@@ -194,21 +209,29 @@ def build_evidence_pack(
     if not hasattr(nb, "conn"):
         hypothesis = "Run the recommended experiment to gather measurable evidence."
         if recommendation:
-            mode = recommendation.get("mode") or recommendation.get("config", {}).get("mode")
+            mode = recommendation.get("mode") or recommendation.get("config", {}).get(
+                "mode"
+            )
             if mode:
                 hypothesis = f"Switch to {mode} to gather measurable evidence."
         pack = EvidencePack(
             hypothesis=hypothesis,
-            supporting_metrics=[{
-                "name": "evidence_unavailable",
-                "value": 0.0,
-                "baseline": 0.0,
-                "delta_vs_baseline": 0.0,
-                "source": "notebook_missing",
-            }],
-            uncertainty={"note": "Notebook connection unavailable; metrics not queried."},
+            supporting_metrics=[
+                {
+                    "name": "evidence_unavailable",
+                    "value": 0.0,
+                    "baseline": 0.0,
+                    "delta_vs_baseline": 0.0,
+                    "source": "notebook_missing",
+                }
+            ],
+            uncertainty={
+                "note": "Notebook connection unavailable; metrics not queried."
+            },
             confounders=["Notebook connection unavailable."],
-            falsification=["If metrics remain unavailable after next cycle, halt decisions."],
+            falsification=[
+                "If metrics remain unavailable after next cycle, halt decisions."
+            ],
             novelty_reference=None,
             audit_queries=[],
         ).to_dict()
@@ -217,7 +240,11 @@ def build_evidence_pack(
         recent_experiments = nb.get_recent_experiments(sample_size)
 
     completed = [e for e in recent_experiments if e.get("status") == "completed"]
-    latest = completed[0] if completed else (recent_experiments[0] if recent_experiments else {})
+    latest = (
+        completed[0]
+        if completed
+        else (recent_experiments[0] if recent_experiments else {})
+    )
     latest_id = latest.get("experiment_id")
 
     exp_ids = [e.get("experiment_id") for e in completed if e.get("experiment_id")]
@@ -261,7 +288,9 @@ def build_evidence_pack(
             "SELECT best_novelty_score FROM experiments WHERE best_novelty_score IS NOT NULL"
         ).fetchall()
     ]
-    overall_novelty_median = _median([v for v in overall_novelty_values if v is not None])
+    overall_novelty_median = _median(
+        [v for v in overall_novelty_values if v is not None]
+    )
 
     novelty_reference = None
     if latest_id:
@@ -289,38 +318,50 @@ def build_evidence_pack(
 
     supporting_metrics = []
     if recent_s1 is not None:
-        supporting_metrics.append({
-            "name": "s1_pass_rate",
-            "value": round(recent_s1, 4),
-            "baseline": round(overall_s1 or 0.0, 4),
-            "delta_vs_baseline": round(recent_s1 - (overall_s1 or 0.0), 4),
-            "source": "program_results.stage1_passed",
-        })
+        supporting_metrics.append(
+            {
+                "name": "s1_pass_rate",
+                "value": round(recent_s1, 4),
+                "baseline": round(overall_s1 or 0.0, 4),
+                "delta_vs_baseline": round(recent_s1 - (overall_s1 or 0.0), 4),
+                "source": "program_results.stage1_passed",
+            }
+        )
     if recent_best_loss is not None:
-        supporting_metrics.append({
-            "name": "best_loss_ratio",
-            "value": round(recent_best_loss, 6),
-            "baseline": round(overall_loss_median or 0.0, 6),
-            "delta_vs_baseline": round((recent_best_loss - (overall_loss_median or 0.0)), 6),
-            "source": "experiments.best_loss_ratio",
-        })
+        supporting_metrics.append(
+            {
+                "name": "best_loss_ratio",
+                "value": round(recent_best_loss, 6),
+                "baseline": round(overall_loss_median or 0.0, 6),
+                "delta_vs_baseline": round(
+                    (recent_best_loss - (overall_loss_median or 0.0)), 6
+                ),
+                "source": "experiments.best_loss_ratio",
+            }
+        )
     if recent_best_novelty is not None and novelty_reference:
-        supporting_metrics.append({
-            "name": "best_novelty_score",
-            "value": round(recent_best_novelty, 4),
-            "baseline": round(overall_novelty_median or 0.0, 4),
-            "delta_vs_baseline": round((recent_best_novelty - (overall_novelty_median or 0.0)), 4),
-            "source": "experiments.best_novelty_score",
-        })
+        supporting_metrics.append(
+            {
+                "name": "best_novelty_score",
+                "value": round(recent_best_novelty, 4),
+                "baseline": round(overall_novelty_median or 0.0, 4),
+                "delta_vs_baseline": round(
+                    (recent_best_novelty - (overall_novelty_median or 0.0)), 4
+                ),
+                "source": "experiments.best_novelty_score",
+            }
+        )
 
     uncertainty = {
         "sample_size_experiments": len(exp_ids),
         "sample_size_programs": _query_scalar(
             nb,
             f"SELECT COUNT(*) FROM program_results WHERE experiment_id IN ({placeholders})"
-            if placeholders else "SELECT COUNT(*) FROM program_results",
+            if placeholders
+            else "SELECT COUNT(*) FROM program_results",
             tuple(exp_ids) if exp_ids else None,
-        ) or 0,
+        )
+        or 0,
     }
     if analytics:
         try:
@@ -334,18 +375,24 @@ def build_evidence_pack(
     if uncertainty["sample_size_experiments"] < 3:
         confounders.append("Low experiment count; results may be noisy.")
     if novelty_reference and (novelty_reference.get("cka_source") in (None, "none")):
-        confounders.append("Novelty reference missing; novelty scores may be structural-only.")
+        confounders.append(
+            "Novelty reference missing; novelty scores may be structural-only."
+        )
 
     falsification = [
         "If the next experiment fails to match or exceed recent S1 pass rate.",
         "If best loss ratio regresses relative to the median baseline.",
     ]
     if recent_best_novelty is not None:
-        falsification.append("If novelty scores drop below recent median for the next cycle.")
+        falsification.append(
+            "If novelty scores drop below recent median for the next cycle."
+        )
 
     hypothesis = "Run the recommended experiment to improve S1 pass rate and novelty."
     if recommendation:
-        mode = recommendation.get("mode") or recommendation.get("config", {}).get("mode")
+        mode = recommendation.get("mode") or recommendation.get("config", {}).get(
+            "mode"
+        )
         if mode:
             hypothesis = f"Switch to {mode} to improve evidence-backed metrics."
 

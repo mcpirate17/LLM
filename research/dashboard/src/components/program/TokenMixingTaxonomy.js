@@ -75,4 +75,4 @@ export function TokenMixingTaxonomy({ graphJson }) {
   );
 }
 
-export default TokenMixingTaxonomy;
+export default React.memo(TokenMixingTaxonomy);

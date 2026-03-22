@@ -112,7 +112,6 @@ def _make_linear_graph() -> ComputationGraph:
 
 
 class TestDictRoundtrip:
-
     def test_graph_to_dict_roundtrip(self):
         """to_dict -> from_dict -> to_dict produces identical dict."""
         for factory in (_make_simple_graph, _make_binary_graph, _make_linear_graph):
@@ -124,12 +123,17 @@ class TestDictRoundtrip:
 
 
 class TestNativeIRStructure:
-
     def test_graph_to_native_ir_has_required_fields(self):
         """Converted IR has all fields required by the schema."""
         g = _make_simple_graph()
         ir = graph_to_native_ir(g)
-        for field in ("schema_version", "model_dim", "nodes", "edges", "output_node_id"):
+        for field in (
+            "schema_version",
+            "model_dim",
+            "nodes",
+            "edges",
+            "output_node_id",
+        ):
             assert field in ir, f"Missing required field: {field}"
 
     def test_graph_to_native_ir_node_count_matches(self):
@@ -172,7 +176,14 @@ class TestNativeIRStructure:
 
     def test_native_ir_no_extra_node_fields(self):
         """Converted nodes must not have 'output_shape' (schema forbids it via additionalProperties: false)."""
-        allowed_fields = {"id", "op_name", "input_ids", "config", "is_input", "is_output"}
+        allowed_fields = {
+            "id",
+            "op_name",
+            "input_ids",
+            "config",
+            "is_input",
+            "is_output",
+        }
         for factory in (_make_simple_graph, _make_binary_graph, _make_linear_graph):
             g = factory()
             ir = graph_to_native_ir(g)
@@ -197,7 +208,6 @@ class TestNativeIRStructure:
 
 
 class TestNativeIRValidation:
-
     def test_native_ir_validator_accepts_simple_graph(self):
         """validate_ir returns no errors for simple graph."""
         g = _make_simple_graph()
@@ -221,7 +231,6 @@ class TestNativeIRValidation:
 
 
 class TestTopologicalOrderConsistency:
-
     def test_graph_topological_order_matches_native_ir(self):
         """Topo order from ComputationGraph matches IR node ordering.
 

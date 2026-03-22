@@ -2,6 +2,7 @@
 
 import torch
 
+
 class ComponentHandler:
     """Fallback handler for route_topk."""
 

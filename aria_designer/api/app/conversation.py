@@ -784,7 +784,7 @@ def _respond_resolved_concepts(
 ) -> Dict[str, Any]:
     """Build a patch from individually resolved concepts."""
     nodes = (workflow_json or {}).get("nodes", [])
-    edges = (workflow_json or {}).get("edges", [])
+    (workflow_json or {}).get("edges", [])
     ops: list[Dict[str, Any]] = []
 
     input_node = next(

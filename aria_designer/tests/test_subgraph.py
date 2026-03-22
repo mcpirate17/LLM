@@ -18,11 +18,36 @@ SIMPLE_WORKFLOW = {
     "schema_version": "workflow_graph.v1",
     "name": "Test Workflow",
     "nodes": [
-        {"id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {"x": 100, "y": 100}},
-        {"id": "l1", "component_type": "linear_proj", "params": {"out_dim": 256}, "ui_meta": {"x": 200, "y": 100}},
-        {"id": "act", "component_type": "gelu", "params": {}, "ui_meta": {"x": 300, "y": 100}},
-        {"id": "l2", "component_type": "linear_proj", "params": {"out_dim": 256}, "ui_meta": {"x": 400, "y": 100}},
-        {"id": "out", "component_type": "graph_output", "params": {}, "ui_meta": {"x": 500, "y": 100}},
+        {
+            "id": "in",
+            "component_type": "graph_input",
+            "params": {},
+            "ui_meta": {"x": 100, "y": 100},
+        },
+        {
+            "id": "l1",
+            "component_type": "linear_proj",
+            "params": {"out_dim": 256},
+            "ui_meta": {"x": 200, "y": 100},
+        },
+        {
+            "id": "act",
+            "component_type": "gelu",
+            "params": {},
+            "ui_meta": {"x": 300, "y": 100},
+        },
+        {
+            "id": "l2",
+            "component_type": "linear_proj",
+            "params": {"out_dim": 256},
+            "ui_meta": {"x": 400, "y": 100},
+        },
+        {
+            "id": "out",
+            "component_type": "graph_output",
+            "params": {},
+            "ui_meta": {"x": 500, "y": 100},
+        },
     ],
     "edges": [
         {"id": "e0", "source": "in", "target": "l1"},
@@ -34,6 +59,7 @@ SIMPLE_WORKFLOW = {
 
 
 # ── create_block ─────────────────────────────────────────────────────
+
 
 def test_create_block_schema():
     block = create_block(
@@ -54,8 +80,10 @@ def test_create_block_schema():
 def test_create_block_with_params_and_metadata():
     block = create_block(
         name="Param Block",
-        nodes=[], edges=[],
-        input_ports=[], output_ports=[],
+        nodes=[],
+        edges=[],
+        input_ports=[],
+        output_ports=[],
         params={"dim": 512},
         metadata={"author": "test"},
     )
@@ -64,6 +92,7 @@ def test_create_block_with_params_and_metadata():
 
 
 # ── extract_block ────────────────────────────────────────────────────
+
 
 def test_extract_block_basic():
     """Extract l1+act as a block from simple workflow."""
@@ -122,6 +151,7 @@ def test_extract_single_node():
 
 # ── expand_block ─────────────────────────────────────────────────────
 
+
 def test_expand_block_roundtrip():
     """extract → expand should restore the graph structure."""
     block, modified_wf = extract_block(SIMPLE_WORKFLOW, {"l1", "act"}, "FFN Part")
@@ -163,6 +193,7 @@ def test_expand_nonexistent_block_raises():
 
 
 # ── Built-in blocks ──────────────────────────────────────────────────
+
 
 def test_builtin_block_registry():
     """All expected builtin blocks should be registered."""
@@ -240,6 +271,7 @@ def test_builtin_blocks_different_dims():
 
 # ── Edge cases ────────────────────────────────────────────────────────
 
+
 def test_extract_all_inner_nodes():
     """Extracting all non-IO nodes should work."""
     block, modified_wf = extract_block(
@@ -260,7 +292,9 @@ def test_double_extract_expand():
     restored_inner_ids = set()
     for n in restored1["nodes"]:
         if n["component_type"] in ("linear_proj", "gelu"):
-            if "act" in n["id"] or ("l1" in n["id"] and n["component_type"] == "linear_proj"):
+            if "act" in n["id"] or (
+                "l1" in n["id"] and n["component_type"] == "linear_proj"
+            ):
                 restored_inner_ids.add(n["id"])
 
     if len(restored_inner_ids) >= 2:

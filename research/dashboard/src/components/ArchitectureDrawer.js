@@ -35,6 +35,30 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   const loadResultSentRef = useRef(false);
   const prevResultIdRef = useRef(resultId);
   const [startingDesigner, setStartingDesigner] = useState(true);
+  const [drawerWidth, setDrawerWidth] = useState(70);
+  const resizeRef = useRef({ startX: 0, startWidth: 70 });
+  const resizingRef = useRef(false);
+  const [resizing, setResizing] = useState(false);
+
+  // Drag-to-resize from left edge
+  useEffect(() => {
+    if (!resizing) return undefined;
+    const onMove = (e) => {
+      const delta = resizeRef.current.startX - e.clientX;
+      const nextVw = resizeRef.current.startWidth + (delta / window.innerWidth) * 100;
+      setDrawerWidth(Math.max(35, Math.min(95, nextVw)));
+    };
+    const onUp = () => {
+      resizingRef.current = false;
+      setResizing(false);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [resizing]);
 
   // Reset load guard when resultId changes so a new graph gets loaded
   if (prevResultIdRef.current !== resultId) {
@@ -124,30 +148,32 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
 
   // Ensure designer services and fetch source graph in parallel.
   useEffect(() => {
-    let cancelled = false;
-    
+    const abortController = new AbortController();
+
     setBooting(true);
     setError(null);
-    setBridgeStep('starting-services');    
+    setBridgeStep('starting-services');
     setLoading(true);
 
     const checkDesigner = apiCall('/api/designer/ensure-running', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ force_restart: false }),
+      signal: abortController.signal,
+      timeoutMs: 60000,
     }).then(res => res.json().then(payload => {
       if (!res.ok || payload?.ok === false) {
         throw new Error(payload?.error || `HTTP ${res.status}`);
       }
     }));
 
-    const fetchSource = resultId 
-      ? apiCall(`/api/programs/${resultId}`).then(r => r.json())
+    const fetchSource = resultId
+      ? apiCall(`/api/programs/${resultId}`, { signal: abortController.signal }).then(r => r.json())
       : Promise.resolve(null);
 
     Promise.all([checkDesigner, fetchSource])
       .then(([_, sourceData]) => {
-        if (cancelled) return;
+        if (abortController.signal.aborted) return;
         setStartingDesigner(false);
         if (sourceData) {
           setGraphInfo(sourceData);
@@ -161,14 +187,14 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
         if (!sourceData) setLoading(false);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (abortController.signal.aborted) return;
         setStartingDesigner(false);
         setError(`Failed to initialize: ${err.message}`);
         setLoading(false);
         setBooting(false);
       });
 
-    return () => { cancelled = true; };
+    return () => { abortController.abort(); };
   }, [resultId]);
 
   useEffect(() => {
@@ -199,7 +225,36 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
   }, [resultId, readOnly]);
 
   return (
-    <div className={`arch-drawer${fullscreen ? ' arch-drawer-fullscreen' : ''}`}>
+    <>
+    <div className="arch-drawer-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }} />
+    <div
+      className={`arch-drawer${fullscreen ? ' arch-drawer-fullscreen' : ''}`}
+      style={fullscreen ? undefined : { width: `${drawerWidth}vw` }}
+    >
+      {!fullscreen && (
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resizeRef.current = { startX: e.clientX, startWidth: drawerWidth };
+            resizingRef.current = true;
+            setResizing(true);
+          }}
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: 8,
+            cursor: 'col-resize',
+            background: resizing ? 'rgba(88, 166, 255, 0.2)' : 'transparent',
+            borderLeft: '1px solid rgba(88, 166, 255, 0.35)',
+            zIndex: 2,
+          }}
+          title="Drag to resize"
+          aria-hidden="true"
+        />
+      )}
       <div className="arch-drawer-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div className="ux-stack">
@@ -305,6 +360,7 @@ function ArchitectureDrawer({ resultId, onClose, readOnly = true, onGraphLoaded,
         )}
       </div>
     </div>
+    </>
   );
 }
 

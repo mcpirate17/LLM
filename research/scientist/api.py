@@ -9,7 +9,9 @@ Uses Flask for simplicity, SSE for real-time streaming.
 from __future__ import annotations
 
 import logging
+import threading
 import traceback
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +22,10 @@ from research.defaults import LAB_NOTEBOOK_DB
 from .api_routes import _designer as _designer_mod
 
 logger = logging.getLogger(__name__)
+
+# ── API health counters (consumed by /api/observability/api-health) ──
+_api_health_counters: dict = defaultdict(int)
+_api_health_lock = threading.Lock()
 
 _requests = _designer_mod._requests
 _DESIGNER_PROXY_ENABLED = _designer_mod._DESIGNER_PROXY_ENABLED
@@ -57,31 +63,9 @@ def create_app(
     app = Flask(__name__, static_folder=static_folder, static_url_path="")
 
     # Custom JSON encoder to handle bytes/numpy types leaking from SQLite
-    import json as _json
+    from .json_utils import SafeJSONEncoder
 
-    class _SafeEncoder(_json.JSONEncoder):
-        def default(self, o):
-            if isinstance(o, bytes):
-                try:
-                    return o.decode("utf-8")
-                except UnicodeDecodeError:
-                    return None
-            if isinstance(o, (memoryview, bytearray)):
-                return None
-            # numpy scalar types
-            type_name = type(o).__name__
-            if type_name in (
-                "bool_",
-                "int64",
-                "int32",
-                "float64",
-                "float32",
-                "float16",
-            ):
-                return o.item()
-            return super().default(o)
-
-    app.json.default = _SafeEncoder().default
+    app.json.default = SafeJSONEncoder().default
 
     CORS(app)
 
@@ -148,8 +132,19 @@ def create_app(
 
     @app.after_request
     def log_response(response):
-        if request.path.startswith("/api/") and response.status_code >= 400:
-            logger.warning(f"{request.method} {request.path} -> {response.status_code}")
+        if request.path.startswith("/api/"):
+            code = response.status_code
+            if code < 400:
+                bucket = "2xx"
+            elif code < 500:
+                bucket = "4xx"
+            else:
+                bucket = "5xx"
+            key = f"{request.path}:{bucket}"
+            with _api_health_lock:
+                _api_health_counters[key] += 1
+            if code >= 400:
+                logger.warning(f"{request.method} {request.path} -> {code}")
         return response
 
     @app.before_request
@@ -192,6 +187,10 @@ def create_app(
     from .api_routes.designer_bp import register_designer_routes
     from .api_routes.observability_bp import register_observability_routes
     from .api_routes.misc_bp import register_misc_routes
+
+    from .api_routes.deps import register_notebook_teardown
+
+    register_notebook_teardown(app)
 
     register_analytics_routes(app, context)
     register_experiments_routes(app, context)

@@ -56,7 +56,12 @@ def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float = DEFAULT_C) -> torch.
 
     The hyperbolic analog of vector addition. Non-commutative!
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and y.is_contiguous()
+        and x.device.type == "cpu"
+    ):
         shape = x.shape
         x_flat = x.view(-1, shape[-1])
         y_flat = y.view(-1, shape[-1])
@@ -97,13 +102,19 @@ def log_map(y: torch.Tensor, c: float = DEFAULT_C) -> torch.Tensor:
     return torch.atanh(sqrt_c * y_norm).clamp(-10, 10) * y / (sqrt_c * y_norm)
 
 
-def hyperbolic_distance(x: torch.Tensor, y: torch.Tensor,
-                        c: float = DEFAULT_C) -> torch.Tensor:
+def hyperbolic_distance(
+    x: torch.Tensor, y: torch.Tensor, c: float = DEFAULT_C
+) -> torch.Tensor:
     """Poincare ball distance between two points.
 
     Returns per-element distances: (B, S, 1)
     """
-    if _HAS_ARIA_CORE and x.is_contiguous() and y.is_contiguous() and x.device.type == "cpu":
+    if (
+        _HAS_ARIA_CORE
+        and x.is_contiguous()
+        and y.is_contiguous()
+        and x.device.type == "cpu"
+    ):
         shape = x.shape
         x_flat = x.view(-1, shape[-1])
         y_flat = y.view(-1, shape[-1])
@@ -128,7 +139,9 @@ class HyperbolicLinear(nn.Module):
     def __init__(self, dim: int, c: float = DEFAULT_C):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(dim, dim) * (1.0 / math.sqrt(dim)))
-        self._c_raw = nn.Parameter(torch.tensor(_curvature_raw_init(c), dtype=torch.float32))
+        self._c_raw = nn.Parameter(
+            torch.tensor(_curvature_raw_init(c), dtype=torch.float32)
+        )
 
     @property
     def c(self) -> float:
@@ -144,11 +157,14 @@ class HyperbolicLinear(nn.Module):
 
 # ── Primitive execution functions ─────────────────────────────────────
 
+
 def execute_poincare_add(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Apply Mobius addition with a learnable bias in hyperbolic space."""
-    if not hasattr(module, 'hyp_bias'):
+    if not hasattr(module, "hyp_bias"):
         return x
-    return mobius_add(x, module.hyp_bias.unsqueeze(0).unsqueeze(0), c=_module_curvature(module))
+    return mobius_add(
+        x, module.hyp_bias.unsqueeze(0).unsqueeze(0), c=_module_curvature(module)
+    )
 
 
 def execute_exp_map(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -161,7 +177,9 @@ def execute_log_map(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return log_map(x, c=_module_curvature(module))
 
 
-def execute_hyp_distance(module: nn.Module, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+def execute_hyp_distance(
+    module: nn.Module, x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
     """Hyperbolic distance between two tensors."""
     return hyperbolic_distance(x, y, c=_module_curvature(module))
 
@@ -200,7 +218,9 @@ class PoincareDistanceRouting(nn.Module):
 
     def __init__(self, dim: int, n_heads: int = 8, c: float = DEFAULT_C):
         super().__init__()
-        self._c_raw = nn.Parameter(torch.tensor(_curvature_raw_init(c), dtype=torch.float32))
+        self._c_raw = nn.Parameter(
+            torch.tensor(_curvature_raw_init(c), dtype=torch.float32)
+        )
         self.n_heads = n_heads
         self.dim = dim
         # Initialize centroids near origin for stability
@@ -218,7 +238,7 @@ class PoincareDistanceRouting(nn.Module):
         # Compute hyperbolic distance from each token to each centroid
         # Use inline Mobius addition to avoid aria_core 2D restriction
         x_neg = -x_clamped  # (B, S, D)
-        x_exp = x_neg.unsqueeze(2)       # (B, S, 1, D)
+        x_exp = x_neg.unsqueeze(2)  # (B, S, 1, D)
         c_exp = centroids.unsqueeze(0).unsqueeze(0)  # (1, 1, H, D)
 
         # Inline Mobius add: (-x) +_M centroid
@@ -240,16 +260,18 @@ class PoincareDistanceRouting(nn.Module):
 
         # Weighted combination via head projections
         # routing_weights: (B, S, H), head_proj: (H, D)
-        out = torch.einsum('bsh,hd->bsd', routing_weights, self.head_proj)
+        out = torch.einsum("bsh,hd->bsd", routing_weights, self.head_proj)
         return x + out  # Residual connection
 
 
 def execute_poincare_routing(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Apply Poincare distance routing with learned centroids."""
     B, S, D = x.shape
-    n_heads = getattr(module, '_routing_heads', 8)
-    router = PoincareDistanceRouting(dim=D, n_heads=n_heads, c=_module_curvature(module)).to(x.device)
-    if hasattr(module, 'weight') and module.weight.numel() >= router.centroids.numel():
+    n_heads = getattr(module, "_routing_heads", 8)
+    router = PoincareDistanceRouting(
+        dim=D, n_heads=n_heads, c=_module_curvature(module)
+    ).to(x.device)
+    if hasattr(module, "weight") and module.weight.numel() >= router.centroids.numel():
         n = router.centroids.numel()
         router.centroids.data = module.weight[:n].reshape(router.centroids.shape)
     return router(x)
@@ -263,7 +285,7 @@ def execute_hyperbolic_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """
     c = _module_curvature(module)
     euclidean = log_map(x, c=c)
-    if hasattr(module, 'weight') and hasattr(module, 'bias'):
+    if hasattr(module, "weight") and hasattr(module, "bias"):
         D = euclidean.shape[-1]
         weight = module.weight[:D]
         bias = module.bias[:D]

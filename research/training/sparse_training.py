@@ -1,149 +1,223 @@
 """
 Dynamic Sparse Training — RigL-Style Mask Updates
 
-Implements sparse-from-scratch training where the model maintains a
-fixed parameter budget but periodically updates *which* parameters are
-active based on gradient magnitude. This is the RigL (Rigging the Lottery)
-approach: grow connections where gradients are large, prune connections
-where magnitudes are small.
-
-Key idea: total non-zero parameters stays constant throughout training,
-but the sparsity pattern evolves to find a better sparse topology.
-
-Usage:
-    scheduler = RigLScheduler(model, sparsity=0.8, update_freq=100)
-    for step in range(n_steps):
-        loss = model(x)
-        loss.backward()
-        optimizer.step()
-        scheduler.step()  # periodically updates masks
+Implementation of RigL (Rigging the Lottery) sparse-from-scratch training.
+The model maintains a fixed parameter budget but periodically updates
+*which* parameters are active based on gradient magnitude: grow connections
+where gradients are large, prune where magnitudes are small.
 """
 
 from __future__ import annotations
-
-from typing import Dict, Optional
-
+import math
 import torch
-import torch.nn as nn
+from typing import Dict
 
 
 class RigLScheduler:
-    """RigL-style dynamic sparse training scheduler.
-
-    AUDIT: Stub — body was never implemented. Callers (RigLOptimizer.step)
-    invoke .step() and .get_telemetry() which are no-ops until this is filled in.
     """
-
-    def __init__(
-        self,
-        model: nn.Module,
-        sparsity: float = 0.8,
-        update_freq: int = 100,
-        total_steps: int = 1000,
-    ):
-        self._model = model
-        self._sparsity = sparsity
-        self._update_freq = update_freq
-        self._total_steps = total_steps
-        self._step_count = 0
-
-    def step(self) -> None:
-        """Periodically update sparsity masks (NOT YET IMPLEMENTED)."""
-        self._step_count += 1
-        # TODO: Implement grow/prune mask update based on gradient magnitude
-
-    def get_telemetry(self) -> Dict:
-        """Return scheduler telemetry."""
-        return {
-            "step": self._step_count,
-            "sparsity": self._sparsity,
-            "implemented": False,
-        }
-
-
-class RigLOptimizer(torch.optim.Optimizer):
-    """AdamW optimizer with integrated RigL dynamic sparse mask updates.
-
-    Wraps standard AdamW with a RigL scheduler that periodically updates
-    the sparsity topology. The model trains sparse-from-scratch with a
-    fixed parameter budget.
+    Manages the RigL sparse topology update schedule and mask enforcement.
+    Operates on parameterized tensors passed to the optimizer.
     """
 
     def __init__(
         self,
         params,
-        lr: float = 3e-4,
-        weight_decay: float = 0.01,
-        sparsity: float = 0.8,
-        update_freq: int = 100,
-        total_steps: int = 1000,
+        optimizer: torch.optim.Optimizer,
+        dense_allocation: float = 0.2,
+        T_end: int = 1000,
+        delta: int = 100,
+        alpha: float = 0.3,
+        grad_accumulation_n: int = 1,
     ):
-        defaults = dict(lr=lr, weight_decay=weight_decay)
-        super().__init__(params, defaults)
-        self._sparsity = sparsity
-        self._update_freq = update_freq
-        self._total_steps = total_steps
-        self._rigl: Optional[RigLScheduler] = None
-        self._inner_step = 0
+        self.optimizer = optimizer
+        self.dense_allocation = dense_allocation
+        self.T_end = T_end
+        self.delta = delta
+        self.alpha = alpha  # initial proportion of weights to update
+        self.grad_accumulation_n = grad_accumulation_n
 
-    def _ensure_rigl(self) -> None:
-        """Lazily initialize RigL scheduler on first step."""
-        if self._rigl is not None:
+        self.step_count = 0
+        self.masks: Dict[int, torch.Tensor] = {}
+
+        # Identify params to sparsify (typically just 2D+ weights like Linear/Conv)
+        self.target_modules = {}
+        idx = 0
+
+        # Unpack param groups if necessary
+        if isinstance(params, dict):
+            p_list = params.get("params", [])
+        elif (
+            isinstance(params, list) and len(params) > 0 and isinstance(params[0], dict)
+        ):
+            p_list = [p for g in params for p in g["params"]]
+        else:
+            p_list = list(params)
+
+        for param in p_list:
+            # We only sparsify weights that are 2D or more (ignore bias and LayerNorm)
+            # and ignore embeddings usually handled sparsely by default, but checking dimension is easiest heuristics
+            if (
+                isinstance(param, torch.Tensor)
+                and param.requires_grad
+                and len(param.shape) >= 2
+            ):
+                self.target_modules[idx] = param
+                idx += 1
+
+        if len(self.target_modules) > 0:
+            self.init_masks()
+            self.apply_masks()
+            self._hook_handles = []
+            self._register_hooks()
+
+    def init_masks(self):
+        """Randomly initialize sparsity masks according to the dense_allocation."""
+        for name, param in self.target_modules.items():
+            k = int(self.dense_allocation * param.numel())
+            # Ensure at least 1 parameter is active
+            k = max(1, k)
+            # Random permutation to select active connections
+            perm = torch.randperm(param.numel(), device=param.device)
+            active_indices = perm[:k]
+            mask = torch.zeros_like(param, dtype=torch.bool)
+            mask.view(-1)[active_indices] = True
+            self.masks[name] = mask
+
+    def apply_masks(self):
+        """Ensure the disabled weights are exactly zero."""
+        with torch.no_grad():
+            for name, param in self.target_modules.items():
+                if name in self.masks:
+                    param.data.mul_(self.masks[name])
+
+    def _register_hooks(self):
+        """Register backward hooks to zero out gradients for pruned weights."""
+        for name, param in self.target_modules.items():
+            if param.requires_grad:
+
+                def get_hook(mask):
+                    def hook(grad):
+                        return grad * mask
+
+                    return hook
+
+                handle = param.register_hook(get_hook(self.masks[name]))
+                self._hook_handles.append(handle)
+
+    def _clear_hooks(self):
+        for handle in getattr(self, "_hook_handles", []):
+            handle.remove()
+        self._hook_handles = []
+
+    def cosine_annealing(self) -> float:
+        """Compute the fraction of active weights to drop/grow at the current step."""
+        if self.step_count >= self.T_end:
+            return 0.0
+        return self.alpha / 2 * (1 + math.cos(math.pi * self.step_count / self.T_end))
+
+    def update_topology(self):
+        """The core RigL update: prune lowest magnitude, grow highest gradient."""
+        drop_fraction = self.cosine_annealing()
+        if drop_fraction <= 0.0:
             return
-        # Build a temporary module to collect all parameters
-        all_params = []
-        for group in self.param_groups:
-            all_params.extend(group["params"])
-        # Create a wrapper module holding refs
-        wrapper = nn.Module()
-        for i, p in enumerate(all_params):
-            wrapper.register_parameter(f"p{i}", p)
-        self._rigl = RigLScheduler(
-            wrapper,
-            sparsity=self._sparsity,
-            update_freq=self._update_freq,
-            total_steps=self._total_steps,
+
+        with torch.no_grad():
+            for name, param in self.target_modules.items():
+                mask = self.masks[name]
+                num_active = mask.sum().item()
+                num_to_update = int(num_active * drop_fraction)
+
+                if num_to_update == 0:
+                    continue
+
+                # 1. Prune
+                # Mask out inactive weights
+                w_mag = param.abs()
+                w_mag[~mask] = -1.0  # inactive weights are ignored
+
+                keep_k = int(num_active) - num_to_update
+                if keep_k > 0:
+                    _, keep_indices = torch.topk(w_mag.view(-1), keep_k)
+                    new_mask = torch.zeros_like(mask).view(-1)
+                    new_mask[keep_indices] = True
+                else:
+                    new_mask = torch.zeros_like(mask).view(-1)
+
+                # 2. Grow
+                grad_mag = (
+                    param.grad.abs()
+                    if param.grad is not None
+                    else torch.zeros_like(param)
+                )
+                # Don't grow where we already kept weights
+                grad_mag.view(-1)[new_mask] = -1.0
+
+                if num_to_update > 0:
+                    _, grow_indices = torch.topk(grad_mag.view(-1), num_to_update)
+                    new_mask[grow_indices] = True
+
+                new_mask = new_mask.view(mask.shape)
+                self.masks[name] = new_mask
+
+                # Apply new mask
+                param.data.mul_(new_mask)
+
+                # Zero out optimizer momentum for the newly grown weights
+                state = self.optimizer.state[param]
+                if "exp_avg" in state:
+                    state["exp_avg"][~new_mask] = 0.0
+                if "exp_avg_sq" in state:
+                    state["exp_avg_sq"][~new_mask] = 0.0
+
+        # Replace hooks with new masks
+        self._clear_hooks()
+        self._register_hooks()
+
+    def step(self):
+        """Called every training step. Periodically updates topology."""
+        self.step_count += 1
+        if self.step_count % self.delta == 0 and self.step_count < self.T_end:
+            self.update_topology()
+
+
+class RigLOptimizer(torch.optim.Optimizer):
+    """
+    Wrapper optimizer for RigL algorithm. Use as a transparent replacement for AdamW.
+    """
+
+    def __init__(
+        self,
+        params,
+        base_optimizer_cls=torch.optim.AdamW,
+        dense_allocation=0.2,
+        T_end=1000,
+        delta=100,
+        **kwargs,
+    ):
+        # We must support normal optimizer initialization so extract param groups safely
+        if isinstance(params, torch.Tensor):
+            params = [params]
+        params_list = list(params)
+
+        self.base_optimizer = base_optimizer_cls(params_list, **kwargs)
+        # Expose defaults from base optimizer so wrap works properly
+        self.defaults = self.base_optimizer.defaults
+        self.param_groups = self.base_optimizer.param_groups
+        self.state = self.base_optimizer.state
+
+        self.scheduler = RigLScheduler(
+            params=params_list,
+            optimizer=self.base_optimizer,
+            dense_allocation=dense_allocation,
+            T_end=T_end,
+            delta=delta,
         )
 
-    @torch.no_grad()
     def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        # Standard AdamW update
-        for group in self.param_groups:
-            lr = group["lr"]
-            wd = group["weight_decay"]
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                grad = p.grad
-                state = self.state[p]
-                if len(state) == 0:
-                    state["step"] = 0
-                    state["m"] = torch.zeros_like(p.data)
-                    state["v"] = torch.zeros_like(p.data)
-                state["step"] += 1
-                m, v = state["m"], state["v"]
-                beta1, beta2 = 0.9, 0.999
-                m.mul_(beta1).add_(grad, alpha=1 - beta1)
-                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-                step = state["step"]
-                m_hat = m / (1 - beta1**step)
-                v_hat = v / (1 - beta2**step)
-                if wd > 0:
-                    p.data.mul_(1 - lr * wd)
-                p.data.addcdiv_(m_hat, v_hat.sqrt() + 1e-8, value=-lr)
-
-        # RigL mask update
-        self._ensure_rigl()
-        self._rigl.step()
+        loss = self.base_optimizer.step(closure)
+        if hasattr(self, "scheduler"):
+            self.scheduler.step()
         return loss
 
-    def get_rigl_telemetry(self) -> Dict:
-        """Return RigL scheduler telemetry if available."""
-        if self._rigl is not None:
-            return self._rigl.get_telemetry()
-        return {}
+    def zero_grad(self, set_to_none=False):
+        self.base_optimizer.zero_grad(set_to_none=set_to_none)

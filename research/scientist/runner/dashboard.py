@@ -13,7 +13,6 @@ Supports background execution controlled from the dashboard.
 
 from __future__ import annotations
 
-import gc
 import json
 import os
 import time
@@ -23,19 +22,27 @@ import torch
 
 from ..native_runner import compile_model_native_first as compile_model
 from ...synthesis.serializer import graph_to_json
+from ._helpers import clear_gpu_memory
 from ...eval.metrics import novelty_score
 from ...eval.fingerprint import BehavioralFingerprint
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...eval.perf_budget import evaluate_perf_budget_gate
-from ...perf_contract import build_duplicate_work_report, build_perf_contract, emit_perf_artifact
+from ...perf_contract import (
+    build_duplicate_work_report,
+    build_perf_contract,
+    emit_perf_artifact,
+)
+from ..json_utils import json_safe
 from ..notebook import LabNotebook
 from ..llm.context_experiment import build_rich_context
 from ..shared_utils import resolve_device
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig
+
 
 class _DashboardMixin:
     """Dashboard data, live loss curve, telemetry."""
@@ -56,6 +63,7 @@ class _DashboardMixin:
             }
         finally:
             nb.close()
+
     def get_live_loss_curve(self) -> List[Dict]:
         """Return the in-memory training loss curve for the current/last training run."""
         return list(self._live_loss_curve)
@@ -75,7 +83,9 @@ class _DashboardMixin:
         from ...arch_builder import build_model, BuildConfig
 
         requested_modes = modes or list(self._ROUTING_BENCHMARK_MODES)
-        supported_modes = [m for m in requested_modes if m in self._ROUTING_BENCHMARK_MODES]
+        supported_modes = [
+            m for m in requested_modes if m in self._ROUTING_BENCHMARK_MODES
+        ]
         seeds = seed_set or [101, 202, 303]
         if not supported_modes:
             return {
@@ -139,25 +149,30 @@ class _DashboardMixin:
                     )
 
                     seq_len = min(128, int(bench_config.max_seq_len))
-                    n_steps = int(train_result.get("n_train_steps") or bench_config.stage1_steps)
+                    n_steps = int(
+                        train_result.get("n_train_steps") or bench_config.stage1_steps
+                    )
                     batch_size = int(bench_config.stage1_batch_size)
                     tokens_total = batch_size * seq_len * n_steps
-                    eff_factor = float(self._ROUTING_EFFICIENCY_FACTOR.get(routing_mode, 1.0))
+                    eff_factor = float(
+                        self._ROUTING_EFFICIENCY_FACTOR.get(routing_mode, 1.0)
+                    )
 
-                    run_data.update({
-                        "validation_loss": train_result.get("final_loss"),
-                        "tokens_per_sec": train_result.get("throughput"),
-                        "routing_stability": self._routing_stability_from_curve(
-                            train_result.get("training_curve") or []
-                        ),
-                        "tokens_total": tokens_total,
-                        "effective_token_compute": tokens_total * eff_factor,
-                        "loss_ratio": train_result.get("loss_ratio"),
-                    })
+                    run_data.update(
+                        {
+                            "validation_loss": train_result.get("final_loss"),
+                            "tokens_per_sec": train_result.get("throughput"),
+                            "routing_stability": self._routing_stability_from_curve(
+                                train_result.get("training_curve") or []
+                            ),
+                            "tokens_total": tokens_total,
+                            "effective_token_compute": tokens_total * eff_factor,
+                            "loss_ratio": train_result.get("loss_ratio"),
+                        }
+                    )
 
                     del model
-                    if dev.type == "cuda":
-                        torch.cuda.empty_cache()
+                    clear_gpu_memory()
                 except Exception as exc:
                     run_data["status"] = "error"
                     run_data["error"] = str(exc)
@@ -167,7 +182,8 @@ class _DashboardMixin:
         points: List[Dict[str, Any]] = []
         for routing_mode in supported_modes:
             mode_runs = [
-                row for row in raw_runs
+                row
+                for row in raw_runs
                 if row.get("routing_mode") == routing_mode and row.get("status") == "ok"
             ]
             if not mode_runs:
@@ -177,14 +193,16 @@ class _DashboardMixin:
                 vals = [float(r[key]) for r in mode_runs if r.get(key) is not None]
                 return (sum(vals) / len(vals)) if vals else None
 
-            points.append({
-                "routing_mode": routing_mode,
-                "n_runs": len(mode_runs),
-                "validation_loss": _mean("validation_loss"),
-                "tokens_per_sec": _mean("tokens_per_sec"),
-                "effective_token_compute": _mean("effective_token_compute"),
-                "routing_stability": _mean("routing_stability"),
-            })
+            points.append(
+                {
+                    "routing_mode": routing_mode,
+                    "n_runs": len(mode_runs),
+                    "validation_loss": _mean("validation_loss"),
+                    "tokens_per_sec": _mean("tokens_per_sec"),
+                    "effective_token_compute": _mean("effective_token_compute"),
+                    "routing_stability": _mean("routing_stability"),
+                }
+            )
 
         return {
             "available": len(points) > 0,
@@ -238,7 +256,9 @@ class _DashboardMixin:
             for t in perf_traces
             if t.get("avg_throughput_tok_s") is not None
         ]
-        avg_throughput = sum(throughput_vals) / len(throughput_vals) if throughput_vals else 0.0
+        avg_throughput = (
+            sum(throughput_vals) / len(throughput_vals) if throughput_vals else 0.0
+        )
 
         starvation_count = 0
         starvation_total_ms = 0.0
@@ -248,26 +268,39 @@ class _DashboardMixin:
                 continue
             starvation_count += int(item.get("count", 0) or 0)
             starvation_total_ms += float(item.get("total_stall_ms", 0.0) or 0.0)
-            starvation_max_ms = max(starvation_max_ms, float(item.get("max_stall_ms", 0.0) or 0.0))
+            starvation_max_ms = max(
+                starvation_max_ms, float(item.get("max_stall_ms", 0.0) or 0.0)
+            )
 
         op_totals: Dict[str, Dict[str, float]] = {}
         for sample in kernel_samples:
             if not isinstance(sample, dict):
                 continue
-            
+
             # Handle new format: mod_name -> ms (float)
             if "top_ops" not in sample:
                 for op_name, ms in sample.items():
                     if isinstance(ms, (int, float)):
-                        slot = op_totals.setdefault(op_name, {"cpu_ms": 0.0, "cuda_ms": 0.0, "calls": 0.0, "samples": 0.0})
+                        slot = op_totals.setdefault(
+                            op_name,
+                            {
+                                "cpu_ms": 0.0,
+                                "cuda_ms": 0.0,
+                                "calls": 0.0,
+                                "samples": 0.0,
+                            },
+                        )
                         slot["cuda_ms"] += float(ms)
                         slot["samples"] += 1.0
                 continue
-                
+
             # Handle old format (top_ops)
             for op in sample.get("top_ops", []) or []:
                 op_name = str(op.get("op", "unknown"))
-                slot = op_totals.setdefault(op_name, {"cpu_ms": 0.0, "cuda_ms": 0.0, "calls": 0.0, "samples": 0.0})
+                slot = op_totals.setdefault(
+                    op_name,
+                    {"cpu_ms": 0.0, "cuda_ms": 0.0, "calls": 0.0, "samples": 0.0},
+                )
                 slot["cpu_ms"] += float(op.get("cpu_ms", 0.0) or 0.0)
                 slot["cuda_ms"] += float(op.get("cuda_ms", 0.0) or 0.0)
                 slot["calls"] += float(op.get("calls", 0.0) or 0.0)
@@ -276,20 +309,32 @@ class _DashboardMixin:
         hotspot_ops = []
         for op_name, agg in op_totals.items():
             samples = max(1.0, agg["samples"])
-            hotspot_ops.append({
-                "op": op_name,
-                "avg_cpu_ms": round(agg["cpu_ms"] / samples, 4),
-                "avg_cuda_ms": round(agg["cuda_ms"] / samples, 4),
-                "avg_calls": round(agg["calls"] / samples, 2),
-            })
-        hotspot_ops.sort(key=lambda row: max(row["avg_cuda_ms"], row["avg_cpu_ms"]), reverse=True)
+            hotspot_ops.append(
+                {
+                    "op": op_name,
+                    "avg_cpu_ms": round(agg["cpu_ms"] / samples, 4),
+                    "avg_cuda_ms": round(agg["cuda_ms"] / samples, 4),
+                    "avg_calls": round(agg["calls"] / samples, 2),
+                }
+            )
+        hotspot_ops.sort(
+            key=lambda row: max(row["avg_cuda_ms"], row["avg_cpu_ms"]), reverse=True
+        )
 
         tp_sched_rows = results.get("training_program_scheduling", []) or []
-        tp_avg_ms = [float(r.get("scheduling_avg_ms", 0.0) or 0.0) for r in tp_sched_rows]
-        tp_max_ms = [float(r.get("scheduling_max_ms", 0.0) or 0.0) for r in tp_sched_rows]
+        tp_avg_ms = [
+            float(r.get("scheduling_avg_ms", 0.0) or 0.0) for r in tp_sched_rows
+        ]
+        tp_max_ms = [
+            float(r.get("scheduling_max_ms", 0.0) or 0.0) for r in tp_sched_rows
+        ]
         duplicate_work = build_duplicate_work_report(
-            repeated_keys={"graph_fingerprint_dedup": int(results.get("skipped_dedup", 0) or 0)},
-            hints=["Large dedup counts indicate search-space waste rather than runtime overhead."],
+            repeated_keys={
+                "graph_fingerprint_dedup": int(results.get("skipped_dedup", 0) or 0)
+            },
+            hints=[
+                "Large dedup counts indicate search-space waste rather than runtime overhead."
+            ],
         )
         report = {
             "generated_at": time.time(),
@@ -305,12 +350,16 @@ class _DashboardMixin:
             "queue_telemetry": queue_telemetry or {},
             "training_program_scheduling": {
                 "n_sources": len(tp_sched_rows),
-                "avg_schedule_ms": round(sum(tp_avg_ms) / len(tp_avg_ms), 4) if tp_avg_ms else 0.0,
+                "avg_schedule_ms": round(sum(tp_avg_ms) / len(tp_avg_ms), 4)
+                if tp_avg_ms
+                else 0.0,
                 "max_schedule_ms": round(max(tp_max_ms), 4) if tp_max_ms else 0.0,
             },
         }
         report["duplicate_work"] = duplicate_work
-        budget_verdict = evaluate_perf_budget_gate(report, budget_profile="research_default")
+        budget_verdict = evaluate_perf_budget_gate(
+            report, budget_profile="research_default"
+        )
         contract = build_perf_contract(
             component="research",
             workload="experiment_screening",
@@ -320,22 +369,30 @@ class _DashboardMixin:
                 "stage1_passed": results.get("stage1_passed", 0),
             },
             metrics={
-                "total_time_ms": round(float(results.get("elapsed_seconds", 0.0) or 0.0) * 1000.0, 4),
+                "total_time_ms": round(
+                    float(results.get("elapsed_seconds", 0.0) or 0.0) * 1000.0, 4
+                ),
                 "avg_throughput_tok_s": report["avg_throughput_tok_s"],
                 "programs_profiled": report["programs_profiled"],
                 "compile_time_ms": trace_avg_ms.get("compile", 0.0),
                 "forward_pass_ms": trace_avg_ms.get("forward_pass", 0.0),
                 "backward_pass_ms": trace_avg_ms.get("backward_pass", 0.0),
                 "optimizer_step_ms": trace_avg_ms.get("optimizer_step", 0.0),
-                "queue_submit_wait_ms": float((queue_telemetry or {}).get("submit_wait_avg_ms", 0.0) or 0.0),
-                "queue_scheduling_wait_ms": float((queue_telemetry or {}).get("scheduling_wait_avg_ms", 0.0) or 0.0),
+                "queue_submit_wait_ms": float(
+                    (queue_telemetry or {}).get("submit_wait_avg_ms", 0.0) or 0.0
+                ),
+                "queue_scheduling_wait_ms": float(
+                    (queue_telemetry or {}).get("scheduling_wait_avg_ms", 0.0) or 0.0
+                ),
                 "gpu_starvation_max_ms": report["gpu_starvation"]["max_stall_ms"],
             },
             budget_profile="research_default",
             budget_verdict=budget_verdict,
             duplicate_work=duplicate_work,
         )
-        artifact_slug = str(results.get("experiment_id") or f"research_perf_{int(time.time())}")
+        artifact_slug = str(
+            results.get("experiment_id") or f"research_perf_{int(time.time())}"
+        )
         artifact_path = emit_perf_artifact(contract, slug=artifact_slug)
         contract["artifact_path"] = artifact_path
         report["perf_contract"] = contract
@@ -344,8 +401,11 @@ class _DashboardMixin:
         return report
 
     def _build_rich_context_for_experiment(
-        self, results: Dict, config: RunConfig,
-        hypothesis: str, nb: LabNotebook,
+        self,
+        results: Dict,
+        config: RunConfig,
+        hypothesis: str,
+        nb: LabNotebook,
     ) -> str:
         """Build rich context string for an experiment."""
         analytics_data = self._gather_analytics_data(nb)
@@ -409,25 +469,57 @@ class _DashboardMixin:
         stage1_rows.sort(
             key=lambda r: (
                 float(r.get("loss_ratio") if r.get("loss_ratio") is not None else 1.0),
-                -float(r.get("novelty_score") if r.get("novelty_score") is not None else 0.0),
+                -float(
+                    r.get("novelty_score")
+                    if r.get("novelty_score") is not None
+                    else 0.0
+                ),
             )
         )
-        top = [{
-            "result_id": row.get("result_id"),
-            "fingerprint": str(row.get("graph_fingerprint") or "")[:16],
-            "loss_ratio": row.get("loss_ratio"),
-            "novelty_score": row.get("novelty_score"),
-            "throughput_tok_s": row.get("throughput_tok_s"),
-            "avg_step_time_ms": row.get("avg_step_time_ms"),
-            "stability_score": row.get("stability_score"),
-        } for row in stage1_rows[:5]]
+        top = [
+            {
+                "result_id": row.get("result_id"),
+                "fingerprint": str(row.get("graph_fingerprint") or "")[:16],
+                "loss_ratio": row.get("loss_ratio"),
+                "novelty_score": row.get("novelty_score"),
+                "throughput_tok_s": row.get("throughput_tok_s"),
+                "avg_step_time_ms": row.get("avg_step_time_ms"),
+                "stability_score": row.get("stability_score"),
+            }
+            for row in stage1_rows[:5]
+        ]
 
-        eff_rows = [r for r in stage1_rows if isinstance(r.get("throughput_tok_s"), (int, float))]
-        stab_rows = [r for r in stage1_rows if isinstance(r.get("stability_score"), (int, float))]
-        avg_tp = (sum(float(r.get("throughput_tok_s")) for r in eff_rows) / len(eff_rows)) if eff_rows else None
-        avg_stability = (sum(float(r.get("stability_score")) for r in stab_rows) / len(stab_rows)) if stab_rows else None
-        novelty_vals = [float(r.get("novelty_score")) for r in stage1_rows if isinstance(r.get("novelty_score"), (int, float))]
-        best_loss = min((float(r.get("loss_ratio")) for r in stage1_rows if isinstance(r.get("loss_ratio"), (int, float))), default=None)
+        eff_rows = [
+            r
+            for r in stage1_rows
+            if isinstance(r.get("throughput_tok_s"), (int, float))
+        ]
+        stab_rows = [
+            r for r in stage1_rows if isinstance(r.get("stability_score"), (int, float))
+        ]
+        avg_tp = (
+            (sum(float(r.get("throughput_tok_s")) for r in eff_rows) / len(eff_rows))
+            if eff_rows
+            else None
+        )
+        avg_stability = (
+            (sum(float(r.get("stability_score")) for r in stab_rows) / len(stab_rows))
+            if stab_rows
+            else None
+        )
+        novelty_vals = [
+            float(r.get("novelty_score"))
+            for r in stage1_rows
+            if isinstance(r.get("novelty_score"), (int, float))
+        ]
+        best_loss = min(
+            (
+                float(r.get("loss_ratio"))
+                for r in stage1_rows
+                if isinstance(r.get("loss_ratio"), (int, float))
+            ),
+            default=None,
+        )
 
         return {
             "recent_experiment_id": recent_exp_id or None,
@@ -440,7 +532,9 @@ class _DashboardMixin:
             "stage1_survivors": int(len(stage1_rows)),
             "best_loss_ratio": best_loss,
             "best_novelty": max(novelty_vals) if novelty_vals else None,
-            "avg_novelty": (sum(novelty_vals) / len(novelty_vals)) if novelty_vals else None,
+            "avg_novelty": (sum(novelty_vals) / len(novelty_vals))
+            if novelty_vals
+            else None,
             "avg_throughput_tok_s": avg_tp,
             "avg_stability_score": avg_stability,
             "top_performers": top,
@@ -462,6 +556,7 @@ class _DashboardMixin:
         """Gather all analytics data for rich context."""
         try:
             from ..analytics import ExperimentAnalytics
+
             analytics = ExperimentAnalytics(nb)
             return {
                 "op_success_rates": analytics.op_success_rates(),
@@ -490,6 +585,7 @@ class _DashboardMixin:
         """Fetch telemetry from aria_designer if available."""
         import requests
         from research.defaults import DESIGNER_API_BASE
+
         base = os.environ.get("ARIA_DESIGNER_PROXY_BASE", DESIGNER_API_BASE)
         result: Dict = {}
         try:
@@ -499,10 +595,16 @@ class _DashboardMixin:
         except Exception:
             pass
         try:
-            r = requests.get(f"{base}/api/v1/blocks/builtin", params={"model_dim": 256}, timeout=3)
+            r = requests.get(
+                f"{base}/api/v1/blocks/builtin", params={"model_dim": 256}, timeout=3
+            )
             if r.ok:
                 blocks = r.json()
-                result["builtin_blocks"] = [b.get("name") for b in blocks if isinstance(b, dict) and b.get("name")]
+                result["builtin_blocks"] = [
+                    b.get("name")
+                    for b in blocks
+                    if isinstance(b, dict) and b.get("name")
+                ]
         except Exception:
             pass
         return result
@@ -571,13 +673,15 @@ class _DashboardMixin:
                 continue
             s1_count = exp.get("n_stage1_passed", 0)
             best_novelty = exp.get("best_novelty_score", 0)
-            past.append({
-                "hypothesis": hyp,
-                "confirmed": s1_count > 0,
-                "s1_count": s1_count,
-                "best_novelty": best_novelty or 0,
-                "experiment_id": exp.get("experiment_id"),
-            })
+            past.append(
+                {
+                    "hypothesis": hyp,
+                    "confirmed": s1_count > 0,
+                    "s1_count": s1_count,
+                    "best_novelty": best_novelty or 0,
+                    "experiment_id": exp.get("experiment_id"),
+                }
+            )
             seen_texts.add(hyp[:80].lower())
             if len(past) >= limit:
                 break
@@ -593,25 +697,27 @@ class _DashboardMixin:
                 # Skip duplicates already covered by experiment hypotheses
                 if content[:80].lower() in seen_texts:
                     continue
-                past.append({
-                    "hypothesis": content,
-                    "confirmed": False,
-                    "s1_count": 0,
-                    "best_novelty": 0,
-                    "experiment_id": None,
-                    "source": "refuted_insight",
-                    "confidence": ins.get("confidence", 0),
-                    "evidence": ins.get("supporting_evidence", ""),
-                })
+                past.append(
+                    {
+                        "hypothesis": content,
+                        "confirmed": False,
+                        "s1_count": 0,
+                        "best_novelty": 0,
+                        "experiment_id": None,
+                        "source": "refuted_insight",
+                        "confidence": ins.get("confidence", 0),
+                        "evidence": ins.get("supporting_evidence", ""),
+                    }
+                )
                 seen_texts.add(content[:80].lower())
         except Exception:
             pass  # insights table may not exist in older notebooks
 
         return past
 
-    def _make_fitness_fn(self, config: RunConfig, *,
-                         on_evaluate=None,
-                         fitness_cache=None):
+    def _make_fitness_fn(
+        self, config: RunConfig, *, on_evaluate=None, fitness_cache=None
+    ):
         """Create fitness function for evolution/novelty search.
 
         Args:
@@ -624,6 +730,15 @@ class _DashboardMixin:
         dev = resolve_device(config.device)
         dev_str = str(dev)
 
+        # Progressive screening: qualify at cheap vocab first
+        _use_progressive = (
+            config.progressive_screening
+            and config.vocab_size > config.qualifying_vocab_size
+        )
+        _phase1_vocab = (
+            config.qualifying_vocab_size if _use_progressive else config.vocab_size
+        )
+
         def fitness_fn(graph):
             fp = graph.fingerprint()
 
@@ -635,9 +750,11 @@ class _DashboardMixin:
             s1_result = None
             try:
                 layer_graphs = [graph] * config.n_layers
+
+                # Phase 1: compile at cheap qualifying vocab for sandbox check
                 model = compile_model(
                     layer_graphs,
-                    vocab_size=config.vocab_size,
+                    vocab_size=_phase1_vocab,
                     max_seq_len=config.max_seq_len,
                 )
                 sandbox_result = self._safe_eval_for_stage(
@@ -645,7 +762,7 @@ class _DashboardMixin:
                     stage_tag="evolution_fitness",
                     batch_size=2,
                     seq_len=min(128, config.max_seq_len),
-                    vocab_size=config.vocab_size,
+                    vocab_size=_phase1_vocab,
                     device=dev_str,
                 )
                 if not sandbox_result.passed:
@@ -657,7 +774,17 @@ class _DashboardMixin:
                         on_evaluate(graph, fitness, sandbox_result, s1_result)
                     return fitness
 
-                # Micro-train for fitness
+                # Phase 2: recompile at real vocab for micro-training
+                if _use_progressive:
+                    del model
+                    clear_gpu_memory()
+                    model = compile_model(
+                        layer_graphs,
+                        vocab_size=config.vocab_size,
+                        max_seq_len=config.max_seq_len,
+                    )
+
+                # Micro-train for fitness (at real vocab)
                 s1_result = self._micro_train(
                     model,
                     config,
@@ -665,15 +792,26 @@ class _DashboardMixin:
                     seed=self._stable_seed("fitness", fp),
                 )
                 del model
-                if dev.type == "cuda":
-                    torch.cuda.empty_cache()
-                gc.collect()
+                clear_gpu_memory()
 
-                if s1_result.get("passed"):
+                # Always compute real multi-objective fitness when training
+                # produced metrics.  Evolution needs uncapped fitness for
+                # selection pressure — capping kills the gradient signal.
+                # The accounting path (results_analysis.py) separately gates
+                # stage1_passed on s1_result["passed"], so false survivors
+                # are impossible regardless of fitness value.
+                _fl = s1_result.get("final_loss")
+                _lr = s1_result.get("loss_ratio")
+                if _fl is not None and _lr is not None and _lr < 0.95:
                     fitness, _components = self._compute_multi_objective_fitness(
-                        s1_result, sandbox_result, graph, config)
+                        s1_result, sandbox_result, graph, config
+                    )
+                elif s1_result.get("passed"):
+                    fitness, _components = self._compute_multi_objective_fitness(
+                        s1_result, sandbox_result, graph, config
+                    )
                 else:
-                    fitness = 0.1  # compiled and stable but didn't learn
+                    fitness = 0.1
             except Exception:
                 fitness = 0.0
 
@@ -688,12 +826,13 @@ class _DashboardMixin:
     def _maybe_spawn_agent_from_reasoning(self, reasoning: str, nb: LabNotebook):
         """If Aria's reasoning mentions code issues, spawn a repair agent."""
         import re as _re
+
         # Detect code-issue signals in reasoning text
         code_issue_patterns = [
-            r'\b(?:error|bug|crash|exception|traceback|broken|fails?|failing)\b.*\b(?:in|at|from)\s+\S+\.py\b',
-            r'\b(?:fix|repair|patch|update)\b.*\b(?:code|file|module|function|class)\b',
-            r'\bImportError\b|\bTypeError\b|\bAttributeError\b|\bNameError\b|\bSyntaxError\b',
-            r'\b(?:missing|undefined|unresolved)\s+(?:import|module|function|method|attribute)\b',
+            r"\b(?:error|bug|crash|exception|traceback|broken|fails?|failing)\b.*\b(?:in|at|from)\s+\S+\.py\b",
+            r"\b(?:fix|repair|patch|update)\b.*\b(?:code|file|module|function|class)\b",
+            r"\bImportError\b|\bTypeError\b|\bAttributeError\b|\bNameError\b|\bSyntaxError\b",
+            r"\b(?:missing|undefined|unresolved)\s+(?:import|module|function|method|attribute)\b",
         ]
         has_code_issue = any(
             _re.search(pat, reasoning, _re.IGNORECASE) for pat in code_issue_patterns
@@ -708,6 +847,7 @@ class _DashboardMixin:
         self._last_reasoning_agent_spawn = now
         try:
             from ..code_agent import _spawn_code_agent_task
+
             notebook_path = str(nb._db_path) if hasattr(nb, "_db_path") else ""
             task = _spawn_code_agent_task(
                 goal=(
@@ -742,7 +882,10 @@ class _DashboardMixin:
         program_metrics = jr.payload["metrics"]
         graph = jr.payload["graph"]
         i = jr.index
-        
+
+        funnel = results.setdefault("funnel_counts", {})
+        funnel["stage1_completed"] = int(funnel.get("stage1_completed", 0)) + 1
+
         s1_passed = s1_result.get("passed", False)
         loss_ratio = s1_result.get("loss_ratio")
         final_loss = s1_result.get("final_loss")
@@ -753,7 +896,9 @@ class _DashboardMixin:
         # Training metrics
         program_metrics["initial_loss"] = s1_result.get("initial_loss")
         program_metrics["min_loss"] = s1_result.get("min_loss")
-        program_metrics["loss_improvement_rate"] = s1_result.get("loss_improvement_rate")
+        program_metrics["loss_improvement_rate"] = s1_result.get(
+            "loss_improvement_rate"
+        )
         program_metrics["avg_step_time_ms"] = s1_result.get("avg_step_time_ms")
         program_metrics["total_train_time_ms"] = s1_result.get("total_train_time_ms")
         program_metrics["max_grad_norm"] = s1_result.get("max_grad_norm")
@@ -762,12 +907,16 @@ class _DashboardMixin:
         program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
         program_metrics["final_lr"] = s1_result.get("final_lr")
         program_metrics["validation_loss"] = s1_result.get("validation_loss")
-        program_metrics["validation_loss_ratio"] = s1_result.get("validation_loss_ratio")
+        program_metrics["validation_loss_ratio"] = s1_result.get(
+            "validation_loss_ratio"
+        )
         program_metrics["generalization_gap"] = s1_result.get("generalization_gap")
         program_metrics["discovery_loss"] = s1_result.get("discovery_loss")
         program_metrics["discovery_loss_ratio"] = s1_result.get("discovery_loss_ratio")
         program_metrics.update(screening_wikitext_fields(s1_result))
-        program_metrics.update({k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")})
+        program_metrics.update(
+            {k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")}
+        )
         # Propagate error info from training result to DB record
         if s1_result.get("error_type"):
             program_metrics["error_type"] = s1_result["error_type"]
@@ -778,6 +927,7 @@ class _DashboardMixin:
         # Compute efficiency_multiple at screening time
         try:
             from ..leaderboard_scoring import compute_efficiency_multiple
+
             eff = compute_efficiency_multiple(
                 loss_ratio=s1_result.get("loss_ratio"),
                 param_count=program_metrics.get("param_count"),
@@ -793,30 +943,42 @@ class _DashboardMixin:
         # Merge traces
         perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
         if perf_report:
-            program_metrics["perf_report_json"] = json.dumps(perf_report)
+            program_metrics["perf_report_json"] = json.dumps(json_safe(perf_report))
             results.setdefault("_perf_traces", []).append(perf_report)
-            
-        starvation_report = s1_result.get("starvation_report", s1_result.get("gpu_starvation"))
+
+        starvation_report = s1_result.get(
+            "starvation_report", s1_result.get("gpu_starvation")
+        )
         if starvation_report:
-            program_metrics["starvation_report_json"] = json.dumps(starvation_report)
+            program_metrics["starvation_report_json"] = json.dumps(
+                json_safe(starvation_report)
+            )
             results.setdefault("_gpu_starvation", []).append(starvation_report)
-            
-        kernel_timings = s1_result.get("kernel_timings_ms", s1_result.get("kernel_timing"))
+
+        kernel_timings = s1_result.get(
+            "kernel_timings_ms", s1_result.get("kernel_timing")
+        )
         if kernel_timings:
-            program_metrics["kernel_timings_json"] = json.dumps(kernel_timings)
+            program_metrics["kernel_timings_json"] = json.dumps(
+                json_safe(kernel_timings)
+            )
             results.setdefault("_kernel_timing", []).append(kernel_timings)
-            
+
         if getattr(jr, "telemetry", None):
-            program_metrics["queue_telemetry_json"] = json.dumps(jr.telemetry)
+            program_metrics["queue_telemetry_json"] = json.dumps(
+                json_safe(jr.telemetry)
+            )
 
         if s1_passed:
             results["stage1_passed"] += 1
+            funnel["stage1_survived"] = int(funnel.get("stage1_survived", 0)) + 1
             with self._lock:
                 self._progress.stage1_passed += 1
 
             logger.info(
                 "  ★ S1 SURVIVOR [%d] %s — loss_ratio=%.4f, params=%s",
-                i + 1, graph.fingerprint()[:10],
+                i + 1,
+                graph.fingerprint()[:10],
                 loss_ratio or 0,
                 f"{program_metrics.get('param_count', 0):,}",
             )
@@ -825,9 +987,13 @@ class _DashboardMixin:
             if final_loss is not None:
                 try:
                     baseline = self._get_baseline()
-                    baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
-                    baseline_recipe = self._resolve_baseline_recipe(s1_result, default_lr=config.stage1_lr)
-                    
+                    baseline_steps = int(
+                        s1_result.get("n_train_steps") or config.stage1_steps
+                    )
+                    baseline_recipe = self._resolve_baseline_recipe(
+                        s1_result, default_lr=config.stage1_lr
+                    )
+
                     # 1. Discovery Baseline (Random Tokens)
                     discovery_loss = s1_result.get("discovery_loss")
                     if discovery_loss is not None:
@@ -848,7 +1014,9 @@ class _DashboardMixin:
                             )
                             # Keep measured discovery_loss_ratio intact; store
                             # baseline-relative comparison separately.
-                            program_metrics["discovery_baseline_ratio"] = discovery_ratio
+                            program_metrics["discovery_baseline_ratio"] = (
+                                discovery_ratio
+                            )
                         except Exception as e:
                             logger.debug("Discovery baseline failed: %s", e)
 
@@ -856,7 +1024,9 @@ class _DashboardMixin:
                     val_loss = s1_result.get("validation_loss")
                     if val_loss is not None:
                         try:
-                            v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(config, split="val")
+                            v_data_fn, v_data_tag, v_cache = (
+                                self._make_baseline_data_fn(config, split="val")
+                            )
                             v_baseline_ratio = baseline.compare(
                                 val_loss,
                                 d_model=config.model_dim,
@@ -874,8 +1044,12 @@ class _DashboardMixin:
                             )
                             # Keep measured validation_loss_ratio intact; store
                             # baseline-relative comparison separately.
-                            program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
-                            program_metrics["validation_baseline_ratio"] = v_baseline_ratio
+                            program_metrics["validation_baseline_loss_ratio"] = (
+                                v_baseline_ratio
+                            )
+                            program_metrics["validation_baseline_ratio"] = (
+                                v_baseline_ratio
+                            )
                         except Exception:
                             pass
 
@@ -904,12 +1078,20 @@ class _DashboardMixin:
             # where multi-layer models are trained for longer.
             try:
                 diag_dev = str(config.device) if torch.cuda.is_available() else "cpu"
-                diag_model = compile_model([graph], vocab_size=config.vocab_size, max_seq_len=64)
-                diag_result = run_diagnostic_suite(diag_model, device=diag_dev, n_steps=50)
+                diag_model = compile_model(
+                    [graph], vocab_size=config.vocab_size, max_seq_len=64
+                )
+                diag_result = run_diagnostic_suite(
+                    diag_model, device=diag_dev, n_steps=50
+                )
                 program_metrics["diagnostic_score"] = diag_result.diagnostic_score
-                program_metrics["diagnostic_tasks_json"] = json.dumps(diag_result.to_dict())
+                program_metrics["diagnostic_tasks_json"] = json.dumps(
+                    json_safe(diag_result.to_dict())
+                )
             except Exception as e:
-                logger.debug("Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e)
+                logger.debug(
+                    "Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e
+                )
 
         # Novelty scoring for S1 survivors
         n_score = None
@@ -927,7 +1109,9 @@ class _DashboardMixin:
 
                     # Store fingerprint fields with fp_ prefix for DB columns
                     if fp_dict.get("hierarchy_fitness") is not None:
-                        program_metrics["fp_hierarchy_fitness"] = fp_dict["hierarchy_fitness"]
+                        program_metrics["fp_hierarchy_fitness"] = fp_dict[
+                            "hierarchy_fitness"
+                        ]
                     if fp_dict.get("gromov_delta") is not None:
                         program_metrics["fp_gromov_delta"] = fp_dict["gromov_delta"]
 
@@ -963,7 +1147,9 @@ class _DashboardMixin:
                     novelty_requires_justification
                 )
             except Exception as e:
-                logger.debug("Novelty scoring failed for %s: %s", graph.fingerprint()[:10], e)
+                logger.debug(
+                    "Novelty scoring failed for %s: %s", graph.fingerprint()[:10], e
+                )
 
         # Record result
         novelty_kwargs = {}
@@ -979,14 +1165,20 @@ class _DashboardMixin:
         if training_curve:
             try:
                 from ...eval.ncd import compute_graph_ncd
+
                 graph_json_str = graph_to_json(graph)
                 ncd_result = compute_graph_ncd(
-                    graph_json_str, training_curve,
+                    graph_json_str,
+                    training_curve,
                     n_params=program_metrics.get("param_count"),
                 )
                 program_metrics["ncd_score"] = ncd_result["ncd_score"]
-                program_metrics["ncd_description_length"] = ncd_result["description_length"]
-                program_metrics["ncd_description_length_per_param"] = ncd_result["description_length_per_param"]
+                program_metrics["ncd_description_length"] = ncd_result[
+                    "description_length"
+                ]
+                program_metrics["ncd_description_length_per_param"] = ncd_result[
+                    "description_length_per_param"
+                ]
             except Exception:
                 pass
 
@@ -1003,6 +1195,12 @@ class _DashboardMixin:
             **novelty_kwargs,
             **program_metrics,
         )
+        if rid:
+            funnel["persisted_rows"] = int(funnel.get("persisted_rows", 0)) + 1
+        else:
+            funnel["dropped_persistence_quality_gate"] = (
+                int(funnel.get("dropped_persistence_quality_gate", 0)) + 1
+            )
 
         if training_curve and rid:
             try:
@@ -1012,59 +1210,92 @@ class _DashboardMixin:
         if rid:
             try:
                 from ...eval.wikitext_eval import screening_wikitext_payload
+
                 payload = screening_wikitext_payload(s1_result)
                 if payload:
                     nb.set_external_benchmarks(rid, payload)
             except Exception as e:
-                logger.debug("Screening benchmark payload persist failed for %s: %s", rid, e)
+                logger.debug(
+                    "Screening benchmark payload persist failed for %s: %s", rid, e
+                )
 
         # Every S1 survivor gets a screening-tier leaderboard entry
         if s1_passed and rid:
             try:
                 from ._helpers import _upsert_screening_entry
-                _upsert_screening_entry(nb, {
-                    "result_id": rid,
-                    "model_source": program_metrics.get("model_source", "graph_synthesis"),
-                    "graph_fingerprint": graph.fingerprint(),
-                    "loss_ratio": loss_ratio,
-                    "novelty_score": novelty_kwargs.get("novelty_score"),
-                    "novelty_confidence": novelty_kwargs.get("novelty_confidence"),
-                    "fp_jacobian_spectral_norm": program_metrics.get("fp_jacobian_spectral_norm"),
-                    "routing_savings_ratio": program_metrics.get("routing_savings_ratio"),
-                    "activation_sparsity_score": program_metrics.get("activation_sparsity_score"),
-                    "depth_savings_ratio": program_metrics.get("depth_savings_ratio"),
-                    "compression_ratio": program_metrics.get("compression_ratio"),
-                    "wikitext_perplexity": program_metrics.get("wikitext_perplexity"),
-                    "wikitext_score": program_metrics.get("wikitext_score"),
-                })
+
+                _upsert_screening_entry(
+                    nb,
+                    {
+                        "result_id": rid,
+                        "model_source": program_metrics.get(
+                            "model_source", "graph_synthesis"
+                        ),
+                        "graph_fingerprint": graph.fingerprint(),
+                        "loss_ratio": loss_ratio,
+                        "novelty_score": novelty_kwargs.get("novelty_score"),
+                        "novelty_confidence": novelty_kwargs.get("novelty_confidence"),
+                        "fp_jacobian_spectral_norm": program_metrics.get(
+                            "fp_jacobian_spectral_norm"
+                        ),
+                        "routing_savings_ratio": program_metrics.get(
+                            "routing_savings_ratio"
+                        ),
+                        "activation_sparsity_score": program_metrics.get(
+                            "activation_sparsity_score"
+                        ),
+                        "depth_savings_ratio": program_metrics.get(
+                            "depth_savings_ratio"
+                        ),
+                        "compression_ratio": program_metrics.get("compression_ratio"),
+                        "wikitext_perplexity": program_metrics.get(
+                            "wikitext_perplexity"
+                        ),
+                        "wikitext_score": program_metrics.get("wikitext_score"),
+                    },
+                )
             except Exception as e:
                 logger.debug("Screening leaderboard upsert failed for %s: %s", rid, e)
 
         # Update best metrics in experiment summary
         if loss_ratio is not None:
-            if results["best_loss_ratio"] is None or loss_ratio < results["best_loss_ratio"]:
+            if (
+                results["best_loss_ratio"] is None
+                or loss_ratio < results["best_loss_ratio"]
+            ):
                 results["best_loss_ratio"] = loss_ratio
-        
+
         try:
-            # We can't easily recompute global novelty here without all graphs,
-            # but we can take the individual score if it was computed.
-            nov = program_metrics.get("novelty_score")
+            nov = novelty_kwargs.get("novelty_score") or program_metrics.get(
+                "novelty_score"
+            )
             if nov is not None:
-                if results["best_novelty_score"] is None or nov > results["best_novelty_score"]:
+                if (
+                    results["best_novelty_score"] is None
+                    or nov > results["best_novelty_score"]
+                ):
                     results["best_novelty_score"] = nov
         except Exception:
             pass
 
-        self._emit_event("program_evaluated", {
-            "index": i, "fingerprint": graph.fingerprint()[:10],
-            "result": "pass" if s1_passed else "fail",
-            "loss_ratio": f"{loss_ratio:.4f}" if loss_ratio is not None else None,
-            "result_id": rid,
-            "throughput": f"{throughput:.0f}" if throughput else None,
-            "params": program_metrics.get("param_count"),
-            "memory_mb": f"{program_metrics.get('peak_memory_mb', 0):.1f}" if program_metrics.get("peak_memory_mb") else None,
-            "novelty": f"{program_metrics.get('novelty_score', 0):.3f}" if program_metrics.get("novelty_score") is not None else None,
-        })
+        self._emit_event(
+            "program_evaluated",
+            {
+                "index": i,
+                "fingerprint": graph.fingerprint()[:10],
+                "result": "pass" if s1_passed else "fail",
+                "loss_ratio": f"{loss_ratio:.4f}" if loss_ratio is not None else None,
+                "result_id": rid,
+                "throughput": f"{throughput:.0f}" if throughput else None,
+                "params": program_metrics.get("param_count"),
+                "memory_mb": f"{program_metrics.get('peak_memory_mb', 0):.1f}"
+                if program_metrics.get("peak_memory_mb")
+                else None,
+                "novelty": f"{program_metrics.get('novelty_score', 0):.3f}"
+                if program_metrics.get("novelty_score") is not None
+                else None,
+            },
+        )
 
     def _resolve_pending_selection_insight_trials(self, nb: LabNotebook) -> None:
         """Resolve pending insight-bundle trials once downstream outcomes are available."""
@@ -1077,7 +1308,9 @@ class _DashboardMixin:
 
         leaderboard = nb.get_leaderboard(limit=2000)
         by_result = {
-            str(row.get("result_id")): row for row in leaderboard if row.get("result_id")
+            str(row.get("result_id")): row
+            for row in leaderboard
+            if row.get("result_id")
         }
         for trial in trials:
             context = str(trial.get("context") or "")
@@ -1102,24 +1335,40 @@ class _DashboardMixin:
                     passed = 1.0 if bool(inv_pass) else 0.0
                     loss_term = max(0.0, 1.0 - self._to_float(inv_loss, default=1.0))
                     rob_term = max(0.0, min(1.0, self._to_float(inv_rob, default=0.0)))
-                    rewards.append(max(0.0, min(1.0, 0.5 * passed + 0.3 * loss_term + 0.2 * rob_term)))
+                    rewards.append(
+                        max(
+                            0.0,
+                            min(1.0, 0.5 * passed + 0.3 * loss_term + 0.2 * rob_term),
+                        )
+                    )
                     resolved = True
                 elif context == "auto_validate_investigation":
                     val_pass = entry.get("validation_passed")
                     val_loss = entry.get("validation_loss_ratio")
                     val_base = entry.get("validation_baseline_ratio")
-                    val_std = self._to_float(entry.get("validation_multi_seed_std"), default=0.2)
+                    val_std = self._to_float(
+                        entry.get("validation_multi_seed_std"), default=0.2
+                    )
                     if val_pass is None and val_loss is None and val_base is None:
                         resolved = False
                         rewards = []
                         break
                     passed = 1.0 if bool(val_pass) else 0.0
                     if val_base is not None:
-                        loss_term = max(0.0, 1.0 - self._to_float(val_base, default=1.0))
+                        loss_term = max(
+                            0.0, 1.0 - self._to_float(val_base, default=1.0)
+                        )
                     else:
-                        loss_term = max(0.0, 1.0 - self._to_float(val_loss, default=1.0))
+                        loss_term = max(
+                            0.0, 1.0 - self._to_float(val_loss, default=1.0)
+                        )
                     std_term = max(0.0, min(1.0, 1.0 - val_std))
-                    rewards.append(max(0.0, min(1.0, 0.5 * passed + 0.3 * loss_term + 0.2 * std_term)))
+                    rewards.append(
+                        max(
+                            0.0,
+                            min(1.0, 0.5 * passed + 0.3 * loss_term + 0.2 * std_term),
+                        )
+                    )
                     resolved = True
                 else:
                     rewards = []

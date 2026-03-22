@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Auto-extracted mixin for LabNotebook."""
 
 import json
@@ -15,9 +16,11 @@ except Exception:
     from pathlib import Path as _Path
     import importlib.util as _importlib_util
     import sys as _sys
+
     _prereg_path = _Path(__file__).parent.parent / "preregistration.py"
     _prereg_spec = _importlib_util.spec_from_file_location(
-        "_notebook_preregistration_fallback", str(_prereg_path))
+        "_notebook_preregistration_fallback", str(_prereg_path)
+    )
     _prereg_mod = _importlib_util.module_from_spec(_prereg_spec)
     assert _prereg_spec is not None and _prereg_spec.loader is not None
     _sys.modules[_prereg_spec.name] = _prereg_mod
@@ -28,6 +31,7 @@ except Exception:
 
 class _ExperimentsMixin:
     """Experiments operations for the Lab Notebook."""
+
     __slots__ = ()
 
     def cleanup_stale_experiments(
@@ -99,7 +103,6 @@ class _ExperimentsMixin:
         self._maybe_commit()
         return len(all_ids)
 
-
     def get_resumable_experiment(self, experiment_id: str) -> Optional[Dict]:
         """Get experiment data for resume if status is 'running' or 'failed'.
 
@@ -122,7 +125,6 @@ class _ExperimentsMixin:
             "hypothesis": row["hypothesis"],
             "started_at": row["started_at"],
         }
-
 
     # ── Hypothesis Preregistration ──
 
@@ -159,7 +161,6 @@ class _ExperimentsMixin:
         self._maybe_commit()
         return prereg_id
 
-
     def get_preregistration(self, preregistration_id: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM hypothesis_preregistrations WHERE preregistration_id = ?",
@@ -168,7 +169,12 @@ class _ExperimentsMixin:
         if row is None:
             return None
         out = dict(row)
-        for field in ("hypothesis_json", "analysis_plan_json", "falsification_json", "confounders_json"):
+        for field in (
+            "hypothesis_json",
+            "analysis_plan_json",
+            "falsification_json",
+            "confounders_json",
+        ):
             raw = out.get(field)
             if raw:
                 try:
@@ -177,8 +183,9 @@ class _ExperimentsMixin:
                     pass
         return out
 
-
-    def get_preregistration_for_experiment(self, experiment_id: str) -> Optional[Dict[str, Any]]:
+    def get_preregistration_for_experiment(
+        self, experiment_id: str
+    ) -> Optional[Dict[str, Any]]:
         row = self.conn.execute(
             "SELECT preregistration_id FROM experiments WHERE experiment_id = ?",
             (experiment_id,),
@@ -187,8 +194,9 @@ class _ExperimentsMixin:
             return None
         return self.get_preregistration(row["preregistration_id"])
 
-
-    def get_preregistration_deviations(self, experiment_id: str) -> List[Dict[str, Any]]:
+    def get_preregistration_deviations(
+        self, experiment_id: str
+    ) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT * FROM preregistration_deviations
                WHERE experiment_id = ?
@@ -205,7 +213,6 @@ class _ExperimentsMixin:
                     pass
             out.append(d)
         return out
-
 
     def log_preregistration_deviation(
         self,
@@ -237,7 +244,6 @@ class _ExperimentsMixin:
         self._maybe_commit()
         return dev_id
 
-
     # ── Experiments ──
 
     def start_experiment(
@@ -252,7 +258,9 @@ class _ExperimentsMixin:
     ) -> str:
         """Start a new experiment. Returns experiment ID."""
         if require_preregistration and not preregistration_id:
-            raise PreregistrationError("Experiment start blocked: missing preregistration_id.")
+            raise PreregistrationError(
+                "Experiment start blocked: missing preregistration_id."
+            )
         exp_id = str(uuid.uuid4())[:12]
         now = time.time()
         config_payload = dict(config)
@@ -263,8 +271,16 @@ class _ExperimentsMixin:
             (experiment_id, timestamp, experiment_type, status, hypothesis,
              research_question, preregistration_id, config_json, started_at)
             VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)""",
-            (exp_id, now, experiment_type, hypothesis, research_question, preregistration_id,
-             json.dumps(config_payload), now),
+            (
+                exp_id,
+                now,
+                experiment_type,
+                hypothesis,
+                research_question,
+                preregistration_id,
+                json.dumps(config_payload),
+                now,
+            ),
         )
         if preregistration_id:
             self.conn.execute(
@@ -280,8 +296,12 @@ class _ExperimentsMixin:
         confidence = (hypothesis_metadata or {}).get("confidence")
         critique_confidence = (hypothesis_metadata or {}).get("critique_confidence")
         critique = (hypothesis_metadata or {}).get("critique")
-        effective_confidence = confidence if confidence is not None else critique_confidence
-        confidence_text = effective_confidence if effective_confidence is not None else "not provided"
+        effective_confidence = (
+            confidence if confidence is not None else critique_confidence
+        )
+        confidence_text = (
+            effective_confidence if effective_confidence is not None else "not provided"
+        )
         if isinstance(critique, dict):
             verdict = critique.get("verdict") or "unknown"
             gate = critique.get("gate") or "n/a"
@@ -290,23 +310,24 @@ class _ExperimentsMixin:
             critique_text = f"{verdict} (gate={gate}) — {concern_hint}"
         else:
             critique_text = critique if critique else "not provided"
-        self.add_entry(ExperimentEntry(
-            entry_type="hypothesis",
-            title=f"Experiment {exp_id} started",
-            content=(
-                f"Type: {experiment_type}\n"
-                f"Hypothesis: {hypothesis or 'exploratory'}\n"
-                f"Provenance: {source}\n"
-                f"Confidence: {confidence_text}\n"
-                f"Critique: {critique_text}"
-            ),
-            experiment_id=exp_id,
-            tags=["experiment_start"],
-            metadata=hypothesis_metadata or {},
-        ))
+        self.add_entry(
+            ExperimentEntry(
+                entry_type="hypothesis",
+                title=f"Experiment {exp_id} started",
+                content=(
+                    f"Type: {experiment_type}\n"
+                    f"Hypothesis: {hypothesis or 'exploratory'}\n"
+                    f"Provenance: {source}\n"
+                    f"Confidence: {confidence_text}\n"
+                    f"Critique: {critique_text}"
+                ),
+                experiment_id=exp_id,
+                tags=["experiment_start"],
+                metadata=hypothesis_metadata or {},
+            )
+        )
 
         return exp_id
-
 
     def complete_experiment(
         self,
@@ -322,15 +343,15 @@ class _ExperimentsMixin:
         n_total = results.get("total", 0)
         if n_total == 0:
             return self.fail_experiment(
-                experiment_id, 
+                experiment_id,
                 error="Experiment completed with 0 programs generated (possible synthesis failure).",
-                results=results
+                results=results,
             )
 
         now = time.time()
         started = self.conn.execute(
             "SELECT started_at FROM experiments WHERE experiment_id = ?",
-            (experiment_id,)
+            (experiment_id,),
         ).fetchone()
         duration = now - started["started_at"] if started else 0
 
@@ -351,18 +372,22 @@ class _ExperimentsMixin:
                 completed_at = ?,
                 duration_seconds = ?
             WHERE experiment_id = ?""",
-            (self._compress(results),
-             results.get("total", 0),
-             results.get("stage0_passed", 0),
-             results.get("stage05_passed", 0),
-             results.get("stage1_passed", 0),
-             results.get("best_loss_ratio"),
-             results.get("best_novelty_score"),
-             aria_summary, aria_mood,
-             self._compress(insights or []),
-             llm_analysis,
-             now, duration,
-             experiment_id),
+            (
+                self._compress(results),
+                results.get("total", 0),
+                results.get("stage0_passed", 0),
+                results.get("stage05_passed", 0),
+                results.get("stage1_passed", 0),
+                results.get("best_loss_ratio"),
+                results.get("best_novelty_score"),
+                aria_summary,
+                aria_mood,
+                self._compress(insights or []),
+                llm_analysis,
+                now,
+                duration,
+                experiment_id,
+            ),
         )
         self._maybe_commit()
 
@@ -371,33 +396,41 @@ class _ExperimentsMixin:
         if is_exploratory:
             self.log_preregistration_deviation(
                 experiment_id,
-                rationale=exploratory_deviation_reason or "Post-hoc exploratory deviation.",
+                rationale=exploratory_deviation_reason
+                or "Post-hoc exploratory deviation.",
                 details={"source": "complete_experiment"},
             )
-        self.add_entry(ExperimentEntry(
-            entry_type="analysis",
-            title="Post-hoc Analysis Link",
-            content=(
-                "Analysis linked to preregistration."
-                if prereg
-                else "Analysis has no preregistration link and is exploratory."
-            ),
-            experiment_id=experiment_id,
-            tags=["analysis_traceability"],
-            metadata={
-                "preregistration_id": prereg.get("preregistration_id") if prereg else None,
-                "analysis_mode": "exploratory" if is_exploratory or not prereg else "confirmatory",
-                "deviation_reason": exploratory_deviation_reason,
-            },
-        ))
+        self.add_entry(
+            ExperimentEntry(
+                entry_type="analysis",
+                title="Post-hoc Analysis Link",
+                content=(
+                    "Analysis linked to preregistration."
+                    if prereg
+                    else "Analysis has no preregistration link and is exploratory."
+                ),
+                experiment_id=experiment_id,
+                tags=["analysis_traceability"],
+                metadata={
+                    "preregistration_id": prereg.get("preregistration_id")
+                    if prereg
+                    else None,
+                    "analysis_mode": "exploratory"
+                    if is_exploratory or not prereg
+                    else "confirmatory",
+                    "deviation_reason": exploratory_deviation_reason,
+                },
+            )
+        )
 
-
-    def fail_experiment(self, experiment_id: str, error: str, results: Optional[Dict] = None):
+    def fail_experiment(
+        self, experiment_id: str, error: str, results: Optional[Dict] = None
+    ):
         """Mark an experiment as failed. Deletes record if it contains no useful information."""
         self.flush_writes()
         results_blob = self._compress(results) if results else None
         n_prog = results.get("total", 0) if results else 0
-        
+
         # First update so we have the state
         self.conn.execute(
             """UPDATE experiments SET 
@@ -414,17 +447,16 @@ class _ExperimentsMixin:
         # Delete if it's total junk (no programs AND no LLM insights AND no results)
         row = self.conn.execute(
             "SELECT llm_analysis FROM experiments WHERE experiment_id = ?",
-            (experiment_id,)
+            (experiment_id,),
         ).fetchone()
         has_results = self.conn.execute(
             "SELECT 1 FROM program_results WHERE experiment_id = ? LIMIT 1",
-            (experiment_id,)
+            (experiment_id,),
         ).fetchone()
 
         if n_prog == 0 and (not row or not row["llm_analysis"]) and not has_results:
             self._delete_experiment_cascade(experiment_id)
             LOGGER.info("Deleted zero-value failed experiment %s", experiment_id)
-
 
     def _delete_experiment_cascade(self, experiment_id: str) -> None:
         """Delete an experiment and all FK-dependent child rows.
@@ -447,8 +479,11 @@ class _ExperimentsMixin:
 
         # Direct children of experiments
         for table in (
-            "entries", "insights", "hypotheses",
-            "preregistration_deviations", "hypothesis_preregistrations",
+            "entries",
+            "insights",
+            "hypotheses",
+            "preregistration_deviations",
+            "hypothesis_preregistrations",
             "healer_tasks",
         ):
             try:
@@ -487,7 +522,6 @@ class _ExperimentsMixin:
         LOGGER.debug("Purged %d empty failed experiments", len(rows))
         return len(rows)
 
-
     def cancel_experiment(self, experiment_id: str) -> bool:
         """Cancel a running experiment by marking it as failed.
 
@@ -509,13 +543,11 @@ class _ExperimentsMixin:
         self._maybe_commit()
         return True
 
-
     # ── Queries ──
 
     def get_experiment(self, experiment_id: str) -> Optional[Dict]:
         row = self.conn.execute(
-            "SELECT * FROM experiments WHERE experiment_id = ?",
-            (experiment_id,)
+            "SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,)
         ).fetchone()
         if row is None:
             return None
@@ -525,7 +557,6 @@ class _ExperimentsMixin:
         if d.get("insights_json"):
             d["insights"] = self._decompress(d["insights_json"])
         return d
-
 
     def backfill_experiment_metrics(self, experiment_id: str) -> Dict[str, Any]:
         """Backfill missing summary metrics on an existing experiment row.
@@ -589,9 +620,8 @@ class _ExperimentsMixin:
             )
             self._maybe_commit()
 
-        throughput_available = (
-            (avg_tp is not None and float(avg_tp) > 0)
-            or (perf_tp is not None and float(perf_tp) > 0)
+        throughput_available = (avg_tp is not None and float(avg_tp) > 0) or (
+            perf_tp is not None and float(perf_tp) > 0
         )
 
         return {
@@ -601,7 +631,6 @@ class _ExperimentsMixin:
             "n_program_results": n_results,
             "throughput_available": bool(throughput_available),
         }
-
 
     def get_recent_experiments(self, n: int = 20, offset: int = 0) -> List[Dict]:
         n = max(1, int(n))
@@ -614,10 +643,9 @@ class _ExperimentsMixin:
                       best_loss_ratio, best_novelty_score, aria_mood,
                       aria_summary, duration_seconds
                FROM experiments ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
-            (n, offset)
+            (n, offset),
         ).fetchall()
         return [dict(r) for r in rows]
-
 
     def get_latest_completed_experiment_timestamp(self) -> float:
         row = self.conn.execute(
@@ -630,7 +658,6 @@ class _ExperimentsMixin:
         except Exception:
             return 0.0
 
-
     def get_experiment_trends(self, limit: int = 50) -> List[Dict]:
         """Get cross-experiment trend data for charts."""
 
@@ -638,7 +665,13 @@ class _ExperimentsMixin:
             normalized = str(mode or "").strip().lower()
             if normalized in {"investigation", "validation", "single"}:
                 return 0.55
-            if normalized in {"continuous", "evolution", "synthesis", "morphological", "training"}:
+            if normalized in {
+                "continuous",
+                "evolution",
+                "synthesis",
+                "morphological",
+                "training",
+            }:
                 return 1.0
             return 0.8
 
@@ -684,11 +717,16 @@ class _ExperimentsMixin:
             _avg("routing_drop_rate", "avg_routing_drop_rate")
             _avg("routing_utilization_entropy", "avg_routing_utilization_entropy")
             _avg("routing_confidence_mean", "avg_routing_confidence_mean")
-            _avg("routing_capacity_overflow_count", "avg_routing_capacity_overflow_count")
+            _avg(
+                "routing_capacity_overflow_count", "avg_routing_capacity_overflow_count"
+            )
             _avg("discovery_loss_ratio", "avg_discovery_loss_ratio")
             _avg("validation_loss_ratio", "avg_validation_loss_ratio")
             _avg("generalization_gap", "avg_generalization_gap")
-            if "routing_tokens_total" in available_cols and "routing_tokens_processed" in available_cols:
+            if (
+                "routing_tokens_total" in available_cols
+                and "routing_tokens_processed" in available_cols
+            ):
                 select_parts.append(
                     "AVG(CASE WHEN routing_tokens_total > 0 "
                     "THEN CAST(routing_tokens_processed AS REAL) / routing_tokens_total END) "
@@ -707,7 +745,9 @@ class _ExperimentsMixin:
                     f"GROUP BY experiment_id"
                 )
                 agg_rows = self.conn.execute(query, exp_ids).fetchall()
-                program_metrics_by_exp = {row["experiment_id"]: dict(row) for row in agg_rows}
+                program_metrics_by_exp = {
+                    row["experiment_id"]: dict(row) for row in agg_rows
+                }
         trends = []
         total_programs = 0
         total_stage1 = 0
@@ -716,7 +756,7 @@ class _ExperimentsMixin:
             exp_id = d.get("experiment_id")
             if exp_id and exp_id in program_metrics_by_exp:
                 d.update(program_metrics_by_exp[exp_id])
-            
+
             # Extract perf report if available
             results_json = d.get("results_json")
             if results_json:
@@ -724,13 +764,19 @@ class _ExperimentsMixin:
                     res = self._decompress(results_json)
                     perf = res.get("perf_report")
                     if isinstance(perf, dict):
-                        d["avg_step_time_ms"] = perf.get("trace_avg_ms", {}).get("forward_pass", 0) + \
-                                               perf.get("trace_avg_ms", {}).get("backward_pass", 0)
+                        d["avg_step_time_ms"] = perf.get("trace_avg_ms", {}).get(
+                            "forward_pass", 0
+                        ) + perf.get("trace_avg_ms", {}).get("backward_pass", 0)
                         d["avg_throughput_tok_s"] = perf.get("avg_throughput_tok_s", 0)
-                        d["gpu_starvation_ms"] = perf.get("gpu_starvation", {}).get("total_stall_ms", 0)
+                        d["gpu_starvation_ms"] = perf.get("gpu_starvation", {}).get(
+                            "total_stall_ms", 0
+                        )
                 except Exception:
                     pass
-            if d.get("avg_throughput_tok_s") in (None, 0) and d.get("avg_throughput_tok_s_programs") is not None:
+            if (
+                d.get("avg_throughput_tok_s") in (None, 0)
+                and d.get("avg_throughput_tok_s_programs") is not None
+            ):
                 d["avg_throughput_tok_s"] = d.get("avg_throughput_tok_s_programs")
 
             n_programs = max(int(d.get("n_programs_generated") or 0), 0)
@@ -794,7 +840,6 @@ class _ExperimentsMixin:
 
         return sanitize_for_db(trends)
 
-
     def get_campaign_experiments(self, campaign_id: str) -> List[Dict]:
         """Get all experiments for a campaign."""
         rows = self.conn.execute(
@@ -808,16 +853,20 @@ class _ExperimentsMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
-
     # ── Hypotheses ──
 
-    def record_hypothesis(self, campaign_id: Optional[str],
-                          prediction: str, reasoning: str,
-                          test_method: str, success_metric: str,
-                          parent_id: Optional[str] = None,
-                          confidence: float = 0.5,
-                          experiment_id: Optional[str] = None,
-                          metadata: Optional[Dict] = None) -> str:
+    def record_hypothesis(
+        self,
+        campaign_id: Optional[str],
+        prediction: str,
+        reasoning: str,
+        test_method: str,
+        success_metric: str,
+        parent_id: Optional[str] = None,
+        confidence: float = 0.5,
+        experiment_id: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+    ) -> str:
         """Record a structured hypothesis. Returns hypothesis_id."""
         hypothesis_id = str(uuid.uuid4())[:12]
         now = time.time()
@@ -827,10 +876,19 @@ class _ExperimentsMixin:
              prediction, reasoning, test_method, success_metric,
              parent_hypothesis_id, status, confidence_before, metadata_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-            (hypothesis_id, campaign_id, experiment_id, now,
-             prediction, reasoning, test_method, success_metric,
-             parent_id, confidence,
-             json.dumps(metadata) if metadata else None),
+            (
+                hypothesis_id,
+                campaign_id,
+                experiment_id,
+                now,
+                prediction,
+                reasoning,
+                test_method,
+                success_metric,
+                parent_id,
+                confidence,
+                json.dumps(metadata) if metadata else None,
+            ),
         )
         # Update parent's child list
         if parent_id:
@@ -848,10 +906,14 @@ class _ExperimentsMixin:
         self._maybe_commit()
         return hypothesis_id
 
-
-    def resolve_hypothesis(self, hypothesis_id: str, status: str,
-                           evidence: str, summary: str,
-                           confidence_after: float) -> None:
+    def resolve_hypothesis(
+        self,
+        hypothesis_id: str,
+        status: str,
+        evidence: str,
+        summary: str,
+        confidence_after: float,
+    ) -> None:
         """Resolve a hypothesis with outcome."""
         self.conn.execute(
             """UPDATE hypotheses SET
@@ -862,9 +924,9 @@ class _ExperimentsMixin:
         )
         self._maybe_commit()
 
-
-    def get_hypothesis_chain(self, hypothesis_id: str,
-                             max_depth: int = 500) -> List[Dict]:
+    def get_hypothesis_chain(
+        self, hypothesis_id: str, max_depth: int = 500
+    ) -> List[Dict]:
         """Trace lineage from root to all descendants."""
         # Find root (with cycle detection)
         current = hypothesis_id

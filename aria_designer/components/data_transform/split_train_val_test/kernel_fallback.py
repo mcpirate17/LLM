@@ -1,4 +1,5 @@
 """Python fallback kernel for split_train_val_test."""
+
 import torch
 
 
@@ -71,8 +72,8 @@ class ComponentHandler:
         n_rows = int(indices.numel())
         train_n, val_n, _ = self._split_counts(n_rows, train_ratio, val_ratio)
         train_idx = indices[:train_n]
-        val_idx = indices[train_n:train_n + val_n]
-        test_idx = indices[train_n + val_n:]
+        val_idx = indices[train_n : train_n + val_n]
+        test_idx = indices[train_n + val_n :]
         return train_idx, val_idx, test_idx
 
     def _stratified_indices(self, rows, config, generator):
@@ -88,7 +89,9 @@ class ComponentHandler:
         if unique_values.numel() <= stratify_bins:
             labels = values
         else:
-            quantiles = torch.linspace(0.0, 1.0, stratify_bins + 1, device=values.device)
+            quantiles = torch.linspace(
+                0.0, 1.0, stratify_bins + 1, device=values.device
+            )
             boundaries = torch.quantile(values, quantiles)
             boundaries = torch.unique(boundaries)
             if boundaries.numel() < 2:
@@ -103,7 +106,9 @@ class ComponentHandler:
     def forward(self, inputs, config):
         errors = self.validate_config(config)
         if errors:
-            raise ValueError("Invalid split_train_val_test config: " + "; ".join(errors))
+            raise ValueError(
+                "Invalid split_train_val_test config: " + "; ".join(errors)
+            )
 
         data = inputs.get("data", inputs.get("x"))
         if data is None:
@@ -148,27 +153,47 @@ class ComponentHandler:
                 if shuffle and cls_idx.numel() > 1:
                     perm = torch.randperm(cls_idx.numel(), generator=generator)
                     cls_idx = cls_idx[perm]
-                t_idx, v_idx, s_idx = self._contiguous_split(cls_idx, train_ratio, val_ratio)
+                t_idx, v_idx, s_idx = self._contiguous_split(
+                    cls_idx, train_ratio, val_ratio
+                )
                 train_parts.append(t_idx)
                 val_parts.append(v_idx)
                 test_parts.append(s_idx)
 
-            train_idx = torch.cat(train_parts) if train_parts else torch.empty(0, dtype=torch.long)
-            val_idx = torch.cat(val_parts) if val_parts else torch.empty(0, dtype=torch.long)
-            test_idx = torch.cat(test_parts) if test_parts else torch.empty(0, dtype=torch.long)
+            train_idx = (
+                torch.cat(train_parts)
+                if train_parts
+                else torch.empty(0, dtype=torch.long)
+            )
+            val_idx = (
+                torch.cat(val_parts) if val_parts else torch.empty(0, dtype=torch.long)
+            )
+            test_idx = (
+                torch.cat(test_parts)
+                if test_parts
+                else torch.empty(0, dtype=torch.long)
+            )
 
             if shuffle:
                 if train_idx.numel() > 1:
-                    train_idx = train_idx[torch.randperm(train_idx.numel(), generator=generator)]
+                    train_idx = train_idx[
+                        torch.randperm(train_idx.numel(), generator=generator)
+                    ]
                 if val_idx.numel() > 1:
-                    val_idx = val_idx[torch.randperm(val_idx.numel(), generator=generator)]
+                    val_idx = val_idx[
+                        torch.randperm(val_idx.numel(), generator=generator)
+                    ]
                 if test_idx.numel() > 1:
-                    test_idx = test_idx[torch.randperm(test_idx.numel(), generator=generator)]
+                    test_idx = test_idx[
+                        torch.randperm(test_idx.numel(), generator=generator)
+                    ]
         else:
             indices = torch.arange(n_rows, dtype=torch.long)
             if shuffle and n_rows > 1:
                 indices = indices[torch.randperm(n_rows, generator=generator)]
-            train_idx, val_idx, test_idx = self._contiguous_split(indices, train_ratio, val_ratio)
+            train_idx, val_idx, test_idx = self._contiguous_split(
+                indices, train_ratio, val_ratio
+            )
 
         return {
             "train": rows.index_select(0, train_idx),

@@ -10,6 +10,7 @@ from .core import NativeRunnerState, _FALLBACK_METRICS, _env_flag
 logger = logging.getLogger(__name__)
 _native_lib_cache: Any = False
 
+
 class _NrCompileRequest(ctypes.Structure):
     _fields_ = [
         ("ir_json", ctypes.c_char_p),
@@ -18,12 +19,14 @@ class _NrCompileRequest(ctypes.Structure):
         ("max_seq_len", ctypes.c_int32),
     ]
 
+
 class _NrCompileResponse(ctypes.Structure):
     _fields_ = [
         ("status", ctypes.c_int32),
         ("model_handle", ctypes.c_int64),
         ("message", ctypes.c_char_p),
     ]
+
 
 class _NrExecuteRequest(ctypes.Structure):
     _fields_ = [
@@ -33,6 +36,7 @@ class _NrExecuteRequest(ctypes.Structure):
         ("seq_len", ctypes.c_int32),
     ]
 
+
 class _NrExecuteResponse(ctypes.Structure):
     _fields_ = [
         ("status", ctypes.c_int32),
@@ -40,6 +44,7 @@ class _NrExecuteResponse(ctypes.Structure):
         ("vocab_size", ctypes.c_int32),
         ("message", ctypes.c_char_p),
     ]
+
 
 def _try_load_native_lib() -> Any:
     """Try to load the native C kernel library. Returns ctypes CDLL or None.
@@ -51,8 +56,16 @@ def _try_load_native_lib() -> Any:
         return _native_lib_cache
 
     lib_paths = [
-        Path(__file__).resolve().parents[2] / "runtime" / "native" / "build" / "libaria_native_runtime.so",
-        Path(__file__).resolve().parents[3] / "aria_designer" / "runtime" / "lib" / "libaria_runtime.so",
+        Path(__file__).resolve().parents[2]
+        / "runtime"
+        / "native"
+        / "build"
+        / "libaria_native_runtime.so",
+        Path(__file__).resolve().parents[3]
+        / "aria_designer"
+        / "runtime"
+        / "lib"
+        / "libaria_runtime.so",
     ]
     for p in lib_paths:
         if p.exists():
@@ -67,12 +80,16 @@ def _try_load_native_lib() -> Any:
     _native_lib_cache = None
     return None
 
+
 def _reset_native_lib_cache() -> None:
     """Reset the library cache (used in tests)."""
     global _native_lib_cache
     _native_lib_cache = False
 
-def _normalize_nr_compile_reason(compile_status: int, compile_message: Optional[str]) -> str:
+
+def _normalize_nr_compile_reason(
+    compile_status: int, compile_message: Optional[str]
+) -> str:
     msg = str(compile_message or "").strip().lower()
     if not msg:
         return f"status_{int(compile_status)}"
@@ -104,6 +121,7 @@ def _normalize_nr_compile_reason(compile_status: int, compile_message: Optional[
     if "kernel" in msg:
         return "kernel_lookup_failure"
     return msg.replace(":", "_").replace(" ", "_")
+
 
 def _build_native_abi_only_model(
     abi_session: NativeRunnerAbiSession,
@@ -148,7 +166,9 @@ def _build_native_abi_only_model(
 class NativeRunnerAbiSession:
     """Holder for runner ABI compiled handle + token execute helper."""
 
-    def __init__(self, native_lib: Any, model_handle: int, vocab_size: int, max_seq_len: int):
+    def __init__(
+        self, native_lib: Any, model_handle: int, vocab_size: int, max_seq_len: int
+    ):
         self._native_lib = native_lib
         self.model_handle = int(model_handle)
         self.vocab_size = int(vocab_size)
@@ -186,6 +206,7 @@ class NativeRunnerAbiSession:
             pass
         self._closed = True
 
+
 def _maybe_prepare_runner_abi_session(
     *,
     layer_graphs: List[Any],
@@ -216,7 +237,13 @@ def _maybe_prepare_runner_abi_session(
         return report
     if not all(
         hasattr(native_lib, name)
-        for name in ("nr_runtime_init", "nr_set_strict_mode", "nr_compile", "nr_execute", "nr_release_model")
+        for name in (
+            "nr_runtime_init",
+            "nr_set_strict_mode",
+            "nr_compile",
+            "nr_execute",
+            "nr_release_model",
+        )
     ):
         report["reason"] = "runner_abi_symbols_missing"
         return report
@@ -228,13 +255,28 @@ def _maybe_prepare_runner_abi_session(
         if not isinstance(nodes, dict) or not nodes:
             return False
         known_node_ids = {str(node_id) for node_id in nodes.keys()}
-        required_order = ["exp", "add", "mul", "matmul", "linear", "softmax", "rmsnorm", "sub"]
+        required_order = [
+            "exp",
+            "add",
+            "mul",
+            "matmul",
+            "linear",
+            "softmax",
+            "rmsnorm",
+            "sub",
+        ]
         first_positions = {op_name: None for op_name in required_order}
         first_node_ids = {op_name: None for op_name in required_order}
         required_counts = {op_name: 0 for op_name in required_order}
-        input_incoming_counts: Dict[str, Dict[str, int]] = {str(node_id): {} for node_id in nodes.keys()}
-        edge_incoming_counts: Dict[str, Dict[str, int]] = {str(node_id): {} for node_id in nodes.keys()}
-        input_refs_by_node: Dict[str, List[str]] = {str(node_id): [] for node_id in nodes.keys()}
+        input_incoming_counts: Dict[str, Dict[str, int]] = {
+            str(node_id): {} for node_id in nodes.keys()
+        }
+        edge_incoming_counts: Dict[str, Dict[str, int]] = {
+            str(node_id): {} for node_id in nodes.keys()
+        }
+        input_refs_by_node: Dict[str, List[str]] = {
+            str(node_id): [] for node_id in nodes.keys()
+        }
         raw_declared_edges: List[Dict[str, str]] = []
         has_unary = False
         for idx, (node_id, node) in enumerate(nodes.items()):
@@ -281,7 +323,8 @@ def _maybe_prepare_runner_abi_session(
         if any(int(required_counts[op_name]) != 1 for op_name in required_order):
             return False
         if not all(
-            int(first_positions[required_order[i]]) < int(first_positions[required_order[i + 1]])
+            int(first_positions[required_order[i]])
+            < int(first_positions[required_order[i + 1]])
             for i in range(len(required_order) - 1)
         ):
             return False
@@ -326,20 +369,28 @@ def _maybe_prepare_runner_abi_session(
             child_node_id_str = str(child_node_id)
             parent_node_id_str = str(parent_node_id)
             input_parent_count = int(
-                input_incoming_counts.get(child_node_id_str, {}).get(parent_node_id_str, 0)
+                input_incoming_counts.get(child_node_id_str, {}).get(
+                    parent_node_id_str, 0
+                )
             )
             if input_parent_count != 1:
                 return False
             if has_explicit_edges:
                 edge_parent_count = int(
-                    edge_incoming_counts.get(child_node_id_str, {}).get(parent_node_id_str, 0)
+                    edge_incoming_counts.get(child_node_id_str, {}).get(
+                        parent_node_id_str, 0
+                    )
                 )
                 if edge_parent_count != 1:
                     return False
         return True
 
     graph = next(
-        (g for g in layer_graphs if hasattr(g, "nodes") and _graph_is_abi_family_candidate(g)),
+        (
+            g
+            for g in layer_graphs
+            if hasattr(g, "nodes") and _graph_is_abi_family_candidate(g)
+        ),
         None,
     )
     if graph is None:
@@ -380,7 +431,9 @@ def _maybe_prepare_runner_abi_session(
             else None
         )
         if compile_status != 0:
-            compile_reason = _normalize_nr_compile_reason(compile_status, compile_message)
+            compile_reason = _normalize_nr_compile_reason(
+                compile_status, compile_message
+            )
             report["reason"] = f"nr_compile_failed:{compile_status}:{compile_reason}"
             report["compile_status"] = compile_status
             report["compile_reason"] = compile_reason
@@ -406,15 +459,16 @@ def _maybe_prepare_runner_abi_session(
         report["session"] = session
         report["succeeded"] = True
         report["reason"] = "ok"
-        report["compile_message"] = (
-            compile_message
-        )
+        report["compile_message"] = compile_message
         report["compile_status"] = compile_status
-        report["compile_reason"] = _normalize_nr_compile_reason(compile_status, compile_message)
+        report["compile_reason"] = _normalize_nr_compile_reason(
+            compile_status, compile_message
+        )
         return report
     except Exception as exc:
         report["reason"] = f"runner_abi_error:{exc}"
         return report
+
 
 def record_native_abi_parity_result(passed: Optional[bool]) -> None:
     """Record sampled ABI parity outcome from sandbox/runner integration."""

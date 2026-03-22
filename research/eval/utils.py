@@ -36,17 +36,12 @@ def safe_json_load(raw: Any) -> Any:
 def safe_parse_float(value: Any) -> Optional[float]:
     """Convert *value* to float, returning None on failure.
 
-    Handles strings, numpy scalars, torch tensors, and Python numerics.
+    Thin wrapper around ``shared_utils.safe_float`` — handles strings,
+    numpy scalars, torch tensors, bytes blobs, and Python numerics.
     """
-    if value is None:
-        return None
-    try:
-        f = float(value)
-        if math.isfinite(f):
-            return f
-        return None
-    except (TypeError, ValueError):
-        return None
+    from research.scientist.shared_utils import safe_float
+
+    return safe_float(value, default=None)
 
 
 def tokenize_file(path: Path, vocab_size: int) -> List[int]:
@@ -84,11 +79,15 @@ def micro_train_loop(
     lr: float = 3e-4,
     clip_grad: float = 1.0,
     warmup_steps: int = 10,
+    loss_trajectory: Optional[dict] = None,
 ) -> float:
     """Perform a short training loop on the provided batches.
 
     Includes LR warmup to handle architectures with extreme initial logits.
     If training diverges (NaN loss), retries once at 1/10th LR.
+
+    If *loss_trajectory* is not None, it is populated with
+    ``{step_number: loss_value}`` for every step (1-indexed).
     """
     model.train()
     if not batches:
@@ -126,12 +125,16 @@ def micro_train_loop(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             opt.step()
             final_loss = loss.item()
+            if loss_trajectory is not None:
+                loss_trajectory[step + 1] = final_loss
         return final_loss
 
     result = _run(model, lr)
     if not math.isfinite(result):
         # Retry with 1/10th LR for architectures with extreme init
         logger.info("Micro-train diverged at lr=%.1e, retrying at %.1e", lr, lr * 0.1)
+        if loss_trajectory is not None:
+            loss_trajectory.clear()
         # Re-init weights for clean retry
         for m in model.modules():
             if hasattr(m, "reset_parameters"):

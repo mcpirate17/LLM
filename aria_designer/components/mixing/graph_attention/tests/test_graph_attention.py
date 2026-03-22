@@ -1,4 +1,5 @@
 """Contract tests for graph_attention."""
+
 import yaml
 from pathlib import Path
 

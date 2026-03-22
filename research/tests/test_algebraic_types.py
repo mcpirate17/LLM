@@ -21,23 +21,35 @@ register_all_mathspaces()
 
 
 def test_bridge_operators_have_expected_algebraic_types():
-    assert PRIMITIVE_REGISTRY["exp_map"].algebraic_type == AlgebraicType("poincare", "real", "unit_ball")
-    assert PRIMITIVE_REGISTRY["log_map"].algebraic_type == AlgebraicType("euclidean", "unit_ball", "real")
+    assert PRIMITIVE_REGISTRY["exp_map"].algebraic_type == AlgebraicType(
+        "poincare", "real", "unit_ball"
+    )
+    assert PRIMITIVE_REGISTRY["log_map"].algebraic_type == AlgebraicType(
+        "euclidean", "unit_ball", "real"
+    )
 
 
 def test_algebraic_type_compatibility_enforces_bridges():
     real = AlgebraicType("euclidean", "real", "real")
     unit_ball = AlgebraicType("poincare", "unit_ball", "unit_ball")
     tropical = PRIMITIVE_REGISTRY["tropical_center"].algebraic_type
-    assert algebraic_types_compatible(real, PRIMITIVE_REGISTRY["exp_map"].algebraic_type)
-    assert algebraic_types_compatible(unit_ball, PRIMITIVE_REGISTRY["log_map"].algebraic_type)
+    assert algebraic_types_compatible(
+        real, PRIMITIVE_REGISTRY["exp_map"].algebraic_type
+    )
+    assert algebraic_types_compatible(
+        unit_ball, PRIMITIVE_REGISTRY["log_map"].algebraic_type
+    )
     assert not algebraic_types_compatible(unit_ball, tropical)
 
 
 def test_shape_compat_respects_algebraic_space_context():
     input_shape = [ShapeInfo(dim=32)]
-    assert _check_shape_compat(PRIMITIVE_REGISTRY["exp_map"], input_shape, 32, current_space="euclidean")
-    assert not _check_shape_compat(PRIMITIVE_REGISTRY["tropical_center"], input_shape, 32, current_space="poincare")
+    assert _check_shape_compat(
+        PRIMITIVE_REGISTRY["exp_map"], input_shape, 32, current_space="euclidean"
+    )
+    assert not _check_shape_compat(
+        PRIMITIVE_REGISTRY["tropical_center"], input_shape, 32, current_space="poincare"
+    )
 
 
 def test_space_entry_ops_accept_real_context():
@@ -50,7 +62,9 @@ def test_space_entry_ops_accept_real_context():
         "grade_mix",
         "padic_expand",
     ):
-        assert _check_shape_compat(PRIMITIVE_REGISTRY[op_name], input_shape, 32, current_space="euclidean")
+        assert _check_shape_compat(
+            PRIMITIVE_REGISTRY[op_name], input_shape, 32, current_space="euclidean"
+        )
 
 
 def test_instantiate_motif_rejects_incompatible_cross_space_sequence():
@@ -73,7 +87,8 @@ def test_typed_space_motifs_are_compatible_from_euclidean_input():
         motif.name
         for motifs in MOTIFS_BY_CLASS.values()
         for motif in motifs
-        if motif.name in {
+        if motif.name
+        in {
             "hyperbolic_residual_bridge",
             "tropical_attention_gate",
             "clifford_attention_mix",
@@ -87,6 +102,11 @@ def test_typed_space_motifs_are_compatible_from_euclidean_input():
         "padic_hierarchy_block",
     }
     for motif_name in motif_names:
-        motif = next(m for motifs in MOTIFS_BY_CLASS.values() for m in motifs if m.name == motif_name)
+        motif = next(
+            m
+            for motifs in MOTIFS_BY_CLASS.values()
+            for m in motifs
+            if m.name == motif_name
+        )
         out_id = _instantiate_motif(graph, input_id, motif, random.Random(0))
         assert out_id != input_id, motif_name

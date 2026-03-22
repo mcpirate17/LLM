@@ -51,8 +51,13 @@ def _sse_json(obj: Any) -> str:
     return json.dumps(obj, default=lambda x: x.item() if hasattr(x, "item") else str(x))
 
 
-def _sse_stage(stage: str, status: str, elapsed_ms: float | None = None,
-               metrics: dict | None = None, error: str | None = None) -> str:
+def _sse_stage(
+    stage: str,
+    status: str,
+    elapsed_ms: float | None = None,
+    metrics: dict | None = None,
+    error: str | None = None,
+) -> str:
     """Format a single SSE ``event: stage`` frame."""
     payload: Dict[str, Any] = {"stage": stage, "status": status}
     if elapsed_ms is not None:
@@ -105,7 +110,8 @@ def _try_fetch_original_graph(metadata: dict, model_dim: int):
             logger.info(
                 "Workflow has been modified (fingerprint changed from %s to %s). "
                 "Bypassing original graph load.",
-                graph.fingerprint(), expected_fp,
+                graph.fingerprint(),
+                expected_fp,
             )
             return None
 
@@ -120,7 +126,9 @@ def _try_fetch_original_graph(metadata: dict, model_dim: int):
         return (graph, cg_to_aria)
 
     except Exception:
-        logger.debug("Failed to fetch original graph for result_id=%s", result_id, exc_info=True)
+        logger.debug(
+            "Failed to fetch original graph for result_id=%s", result_id, exc_info=True
+        )
         return None
 
 
@@ -134,6 +142,7 @@ async def _stage_conversion(wf: dict, model_dim: int) -> dict:
         used_original = True
     else:
         from runtime.bridge import workflow_to_graph as _w2g
+
         graph, id_map = await asyncio.to_thread(_w2g, wf, model_dim, return_id_map=True)
         cg_to_aria = {v: k for k, v in id_map.items()}
         used_original = False
@@ -149,19 +158,30 @@ async def _stage_conversion(wf: dict, model_dim: int) -> dict:
     return {"metrics": metrics, "graph": graph, "cg_to_aria": cg_to_aria}
 
 
-async def _stage_profiling(graph: Any, cg_to_aria: dict, model_dim: int,
-                           batch_size: int, seq_len: int,
-                           duplicate_work_avoided: dict) -> dict:
+async def _stage_profiling(
+    graph: Any,
+    cg_to_aria: dict,
+    model_dim: int,
+    batch_size: int,
+    seq_len: int,
+    duplicate_work_avoided: dict,
+) -> dict:
     """Stage 2 -- static FLOPs / memory profiling."""
     if not HAS_PROFILER:
-        return {"metrics": {"skipped": True, "reason": "profiler not available"},
-                "op_profiles_for_nodes": []}
+        return {
+            "metrics": {"skipped": True, "reason": "profiler not available"},
+            "op_profiles_for_nodes": [],
+        }
 
     from runtime.profiler import profile_static_graph
+
     duplicate_work_avoided["workflow_to_graph"] += 1
     report = await asyncio.to_thread(
-        profile_static_graph, graph,
-        model_dim=model_dim, batch_size=batch_size, seq_len=seq_len,
+        profile_static_graph,
+        graph,
+        model_dim=model_dim,
+        batch_size=batch_size,
+        seq_len=seq_len,
     )
     report_dict = report.to_dict()
     mapped_profiles = [
@@ -183,17 +203,24 @@ async def _stage_profiling(graph: Any, cg_to_aria: dict, model_dim: int,
 async def _stage_compilation(graph: Any, vocab_size: int) -> dict:
     """Stage 3 -- compile ComputationGraph into a torch.nn.Module."""
     from research.synthesis.compiler import compile_model
+
     model = await asyncio.to_thread(compile_model, [graph], vocab_size=vocab_size)
     return {"metrics": {}, "model": model}
 
 
-async def _stage_sandbox(model: Any, batch_size: int, seq_len: int,
-                         vocab_size: int, device: str) -> dict:
+async def _stage_sandbox(
+    model: Any, batch_size: int, seq_len: int, vocab_size: int, device: str
+) -> dict:
     """Stage 4 -- safe_eval sandbox (forward + backward probe)."""
     from research.eval.sandbox import safe_eval
+
     sandbox = await asyncio.to_thread(
-        safe_eval, model, batch_size=batch_size, seq_len=seq_len,
-        vocab_size=vocab_size, device=device,
+        safe_eval,
+        model,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        vocab_size=vocab_size,
+        device=device,
     )
     metrics = {
         "passed": bool(sandbox.passed),
@@ -219,27 +246,43 @@ async def _stage_routing(model: Any, graph: Any, cg_to_aria: dict) -> dict:
     return {"metrics": {"op_routing": mapped_rt}}
 
 
-async def _stage_compression(model: Any, graph: Any, vocab_size: int,
-                             device: str, batch_size: int, seq_len: int) -> dict:
+async def _stage_compression(
+    model: Any, graph: Any, vocab_size: int, device: str, batch_size: int, seq_len: int
+) -> dict:
     """Stage 5 -- compression / efficiency analysis."""
     comp_result = await asyncio.to_thread(
-        bridge_analyze_compression, model, graph,
-        vocab_size=vocab_size, device=device,
-        batch_size=batch_size, seq_len=min(seq_len, 64),
+        bridge_analyze_compression,
+        model,
+        graph,
+        vocab_size=vocab_size,
+        device=device,
+        batch_size=batch_size,
+        seq_len=min(seq_len, 64),
     )
     return {"metrics": comp_result.to_dict()}
 
 
-async def _stage_fingerprint(model: Any, run_fingerprint: bool, seq_len: int,
-                             model_dim: int, vocab_size: int, device: str) -> dict:
+async def _stage_fingerprint(
+    model: Any,
+    run_fingerprint: bool,
+    seq_len: int,
+    model_dim: int,
+    vocab_size: int,
+    device: str,
+) -> dict:
     """Stage 6 -- behavioural fingerprint (CKA, locality, sparsity)."""
     if not run_fingerprint:
         return {"metrics": {"skipped": True}, "fp_obj": None}
 
     from research.eval.fingerprint import compute_fingerprint
+
     fp_obj = await asyncio.to_thread(
-        compute_fingerprint, model, seq_len=min(seq_len, 64),
-        model_dim=model_dim, vocab_size=vocab_size, device=device,
+        compute_fingerprint,
+        model,
+        seq_len=min(seq_len, 64),
+        model_dim=model_dim,
+        vocab_size=vocab_size,
+        device=device,
     )
     metrics = {
         "cka_vs_transformer": float(getattr(fp_obj, "cka_vs_transformer", 0)),
@@ -259,6 +302,7 @@ async def _stage_novelty(graph: Any, fp_obj: Any, run_novelty: bool) -> dict:
         return {"metrics": {"skipped": True}}
 
     from research.eval.metrics import novelty_score
+
     ns = await asyncio.to_thread(novelty_score, graph, fingerprint=fp_obj)
     metrics = {
         "structural_novelty": float(ns.structural_novelty),
@@ -296,10 +340,15 @@ async def _run_nonfatal_stage(
     ctx._last_stage_result = result
 
 
-def _build_lineage_payload(run_id: str, wf: dict, acc: dict,
-                           status: str, error: str | None,
-                           error_stage: str | None,
-                           total_ms: float | None) -> dict:
+def _build_lineage_payload(
+    run_id: str,
+    wf: dict,
+    acc: dict,
+    status: str,
+    error: str | None,
+    error_stage: str | None,
+    total_ms: float | None,
+) -> dict:
     """Construct the lineage sync payload for a completed eval run."""
     return {
         "run_id": run_id,
@@ -329,8 +378,14 @@ class _EvalRunContext:
     """Encapsulates run-level state and persistence for ``event_stream``."""
 
     __slots__ = (
-        "run_id", "wf", "budget", "accumulated", "total_t0",
-        "duplicate_work_avoided", "_lineage_synced", "_last_stage_result",
+        "run_id",
+        "wf",
+        "budget",
+        "accumulated",
+        "total_t0",
+        "duplicate_work_avoided",
+        "_lineage_synced",
+        "_last_stage_result",
     )
 
     def __init__(self, run_id: str, wf: dict, budget: dict) -> None:
@@ -347,16 +402,23 @@ class _EvalRunContext:
 
     def persist_stage(self, stage_name: str, stage_data: dict) -> None:
         """Write stage result to the run store for REST observability."""
-        _update_run(self.run_id, {
-            "stages": {
-                **(_get_run(self.run_id) or {}).get("stages", {}),
-                stage_name: stage_data,
+        _update_run(
+            self.run_id,
+            {
+                "stages": {
+                    **(_get_run(self.run_id) or {}).get("stages", {}),
+                    stage_name: stage_data,
+                },
             },
-        })
+        )
 
-    def persist_done(self, status: str, error: str | None = None,
-                     error_stage: str | None = None,
-                     total_ms: float | None = None) -> None:
+    def persist_done(
+        self,
+        status: str,
+        error: str | None = None,
+        error_stage: str | None = None,
+        total_ms: float | None = None,
+    ) -> None:
         perf_bundle = _build_designer_perf_bundle(
             run_id=self.run_id,
             workflow_id=self.wf.get("workflow_id"),
@@ -371,14 +433,20 @@ class _EvalRunContext:
         acc["perf_contract"] = perf_bundle["perf_contract"]
         acc["perf_budget_gate"] = perf_bundle["perf_budget_gate"]
         acc["perf_artifact_path"] = perf_bundle["perf_artifact_path"]
-        _update_run(self.run_id, {
-            "status": status, "error": error,
-            "error_stage": error_stage, "total_time_ms": total_ms,
-            "result": acc, "completed_at": _utc_now(),
-            "perf_contract": perf_bundle["perf_contract"],
-            "perf_artifact_path": perf_bundle["perf_artifact_path"],
-            "perf_budget_gate": perf_bundle["perf_budget_gate"],
-        })
+        _update_run(
+            self.run_id,
+            {
+                "status": status,
+                "error": error,
+                "error_stage": error_stage,
+                "total_time_ms": total_ms,
+                "result": acc,
+                "completed_at": _utc_now(),
+                "perf_contract": perf_bundle["perf_contract"],
+                "perf_artifact_path": perf_bundle["perf_artifact_path"],
+                "perf_budget_gate": perf_bundle["perf_budget_gate"],
+            },
+        )
         if not self._lineage_synced and settings.LINEAGE_SYNC_ENABLED:
             self._lineage_synced = _sync_lineage_to_research(
                 self._build_lineage(status, error, error_stage, total_ms),
@@ -395,31 +463,46 @@ class _EvalRunContext:
         total_ms = round((_time_mod.monotonic() - self.total_t0) * 1000, 1)
         self.attach_benchmarking()
         self.persist_done("error", error=error, error_stage=stage, total_ms=total_ms)
-        return (
-            f"event: done\ndata: {_sse_json({'status': 'error', 'error': error, 'error_stage': stage, 'total_time_ms': total_ms, 'benchmarking': self.accumulated.get('benchmarking')})}\n\n"
-        )
+        return f"event: done\ndata: {_sse_json({'status': 'error', 'error': error, 'error_stage': stage, 'total_time_ms': total_ms, 'benchmarking': self.accumulated.get('benchmarking')})}\n\n"
 
-    def stage_done_payload(self, stage_name: str, elapsed: float,
-                           metrics: dict) -> None:
+    def stage_done_payload(
+        self, stage_name: str, elapsed: float, metrics: dict
+    ) -> None:
         """Persist stage and accumulate metrics (used by the orchestrator)."""
         self.accumulated[stage_name] = metrics
-        self.persist_stage(stage_name, {
-            "status": "done", "elapsed_ms": round(elapsed, 1), "metrics": metrics,
-        })
+        self.persist_stage(
+            stage_name,
+            {
+                "status": "done",
+                "elapsed_ms": round(elapsed, 1),
+                "metrics": metrics,
+            },
+        )
 
     # -- private helpers ------------------------------------------------------
 
-    def _build_lineage(self, status: str, error: str | None,
-                       error_stage: str | None,
-                       total_ms: float | None) -> dict:
+    def _build_lineage(
+        self,
+        status: str,
+        error: str | None,
+        error_stage: str | None,
+        total_ms: float | None,
+    ) -> dict:
         return _build_lineage_payload(
-            self.run_id, self.wf, self.accumulated,
-            status, error, error_stage, total_ms,
+            self.run_id,
+            self.wf,
+            self.accumulated,
+            status,
+            error,
+            error_stage,
+            total_ms,
         )
 
 
 def _build_direct_perf_contract(
-    run_id: str, wf: dict, result_dict: dict,
+    run_id: str,
+    wf: dict,
+    result_dict: dict,
 ) -> Dict[str, Any]:
     """Build perf contract, budget gate, and artifact for a direct eval run."""
     duplicate_work = build_duplicate_work_report()
@@ -504,19 +587,22 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
 
     created_at = _utc_now()
 
-    _store_run(run_id, {
-        "run_id": run_id,
-        "workflow_id": wf.get("workflow_id"),
-        "status": result_dict.get("status", "unknown"),
-        "created_at": created_at,
-        "total_time_ms": result_dict.get("total_time_ms"),
-        "budget": budget,
-        "stages": {},
-        "result": result_dict,
-        "perf_contract": perf["perf_contract"],
-        "perf_artifact_path": perf["perf_artifact_path"],
-        "perf_budget_gate": perf["perf_budget_gate"],
-    })
+    _store_run(
+        run_id,
+        {
+            "run_id": run_id,
+            "workflow_id": wf.get("workflow_id"),
+            "status": result_dict.get("status", "unknown"),
+            "created_at": created_at,
+            "total_time_ms": result_dict.get("total_time_ms"),
+            "budget": budget,
+            "stages": {},
+            "result": result_dict,
+            "perf_contract": perf["perf_contract"],
+            "perf_artifact_path": perf["perf_artifact_path"],
+            "perf_budget_gate": perf["perf_budget_gate"],
+        },
+    )
 
     lineage_payload = {
         "run_id": run_id,
@@ -530,14 +616,18 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
             "sandbox_passed": result_dict.get("sandbox_passed"),
             "overall_novelty": result_dict.get("overall_novelty"),
             "efficiency_score": result_dict.get("efficiency_score"),
-            "benchmark_target_score": dig(result_dict, "benchmarking", "summary", "score"),
+            "benchmark_target_score": dig(
+                result_dict, "benchmarking", "summary", "score"
+            ),
         },
         "payload": result_dict,
         "created_at": _time_mod.time(),
     }
     result_dict["lineage_sync"] = {
         "attempted": settings.LINEAGE_SYNC_ENABLED,
-        "synced": _sync_lineage_to_research(lineage_payload) if settings.LINEAGE_SYNC_ENABLED else False,
+        "synced": _sync_lineage_to_research(lineage_payload)
+        if settings.LINEAGE_SYNC_ENABLED
+        else False,
     }
     return result_dict
 
@@ -570,11 +660,19 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
     async def event_stream():
         acc = ctx.accumulated
-        _store_run(run_id, {
-            "run_id": run_id, "workflow_id": wf.get("workflow_id"),
-            "status": "running", "created_at": _utc_now(),
-            "total_time_ms": None, "budget": budget, "stages": {}, "result": None,
-        })
+        _store_run(
+            run_id,
+            {
+                "run_id": run_id,
+                "workflow_id": wf.get("workflow_id"),
+                "status": "running",
+                "created_at": _utc_now(),
+                "total_time_ms": None,
+                "budget": budget,
+                "stages": {},
+                "result": None,
+            },
+        )
         yield f"event: run_id\ndata: {_sse_json({'run_id': run_id})}\n\n"
         if semantic_warnings:
             acc["semantic_warnings"] = semantic_warnings
@@ -586,16 +684,35 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
         try:
             result = await _stage_conversion(wf, bp["model_dim"])
             graph, cg_to_aria = result["graph"], result["cg_to_aria"]
-            ctx.stage_done_payload("conversion", (_time_mod.monotonic() - t0) * 1000, result["metrics"])
-            yield _sse_stage("conversion", "done", (_time_mod.monotonic() - t0) * 1000, result["metrics"])
+            ctx.stage_done_payload(
+                "conversion", (_time_mod.monotonic() - t0) * 1000, result["metrics"]
+            )
+            yield _sse_stage(
+                "conversion",
+                "done",
+                (_time_mod.monotonic() - t0) * 1000,
+                result["metrics"],
+            )
         except Exception as e:
-            yield _sse_stage("conversion", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e))
-            yield ctx.fatal_done(str(e), "conversion"); return
+            yield _sse_stage(
+                "conversion", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e)
+            )
+            yield ctx.fatal_done(str(e), "conversion")
+            return
 
         # --- Stage 2: profiling (non-fatal) ---
-        async for ev in _run_nonfatal_stage("profiling", _stage_profiling(
-            graph, cg_to_aria, bp["model_dim"], bp["batch_size"], bp["seq_len"], ctx.duplicate_work_avoided,
-        ), ctx):
+        async for ev in _run_nonfatal_stage(
+            "profiling",
+            _stage_profiling(
+                graph,
+                cg_to_aria,
+                bp["model_dim"],
+                bp["batch_size"],
+                bp["seq_len"],
+                ctx.duplicate_work_avoided,
+            ),
+            ctx,
+        ):
             yield ev
 
         # --- Stage 3: compilation (fatal) ---
@@ -609,20 +726,38 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             ctx.stage_done_payload("compilation", elapsed, metrics)
             yield _sse_stage("compilation", "done", elapsed, metrics)
         except Exception as e:
-            yield _sse_stage("compilation", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e))
-            yield ctx.fatal_done(str(e), "compilation"); return
+            yield _sse_stage(
+                "compilation",
+                "error",
+                (_time_mod.monotonic() - t0) * 1000,
+                error=str(e),
+            )
+            yield ctx.fatal_done(str(e), "compilation")
+            return
 
         # --- Stage 4: sandbox (fatal on exception, early-exit on fail) ---
         yield _sse_stage("sandbox", "running")
         t0 = _time_mod.monotonic()
         try:
-            result = await _stage_sandbox(model, bp["batch_size"], bp["seq_len"], bp["vocab_size"], bp["device"])
+            result = await _stage_sandbox(
+                model, bp["batch_size"], bp["seq_len"], bp["vocab_size"], bp["device"]
+            )
             sandbox = result["sandbox"]
-            ctx.stage_done_payload("sandbox", (_time_mod.monotonic() - t0) * 1000, result["metrics"])
-            yield _sse_stage("sandbox", "done", (_time_mod.monotonic() - t0) * 1000, result["metrics"])
+            ctx.stage_done_payload(
+                "sandbox", (_time_mod.monotonic() - t0) * 1000, result["metrics"]
+            )
+            yield _sse_stage(
+                "sandbox",
+                "done",
+                (_time_mod.monotonic() - t0) * 1000,
+                result["metrics"],
+            )
         except Exception as e:
-            yield _sse_stage("sandbox", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e))
-            yield ctx.fatal_done(str(e), "sandbox"); return
+            yield _sse_stage(
+                "sandbox", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e)
+            )
+            yield ctx.fatal_done(str(e), "sandbox")
+            return
 
         # --- Stage 4.5: routing (non-fatal, special "skipped" status) ---
         if bridge_analyze_routing:
@@ -630,41 +765,81 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             t0 = _time_mod.monotonic()
             try:
                 rt_result = await _stage_routing(model, graph, cg_to_aria)
-                ctx.stage_done_payload("routing", (_time_mod.monotonic() - t0) * 1000, rt_result["metrics"])
-                yield _sse_stage("routing", "done", (_time_mod.monotonic() - t0) * 1000, rt_result["metrics"])
+                ctx.stage_done_payload(
+                    "routing", (_time_mod.monotonic() - t0) * 1000, rt_result["metrics"]
+                )
+                yield _sse_stage(
+                    "routing",
+                    "done",
+                    (_time_mod.monotonic() - t0) * 1000,
+                    rt_result["metrics"],
+                )
             except Exception as e:
                 logger.error(f"Routing analysis failed: {e}")
-                yield _sse_stage("routing", "skipped", (_time_mod.monotonic() - t0) * 1000, error=str(e))
+                yield _sse_stage(
+                    "routing",
+                    "skipped",
+                    (_time_mod.monotonic() - t0) * 1000,
+                    error=str(e),
+                )
 
         # Early exit if sandbox ran but model failed validation
         if not sandbox.passed:
             total_ms = round((_time_mod.monotonic() - ctx.total_t0) * 1000, 1)
             ctx.attach_benchmarking()
             sb_err = getattr(sandbox, "error", "sandbox failed")
-            ctx.persist_done("failed_sandbox", error=sb_err, error_stage="sandbox", total_ms=total_ms)
+            ctx.persist_done(
+                "failed_sandbox", error=sb_err, error_stage="sandbox", total_ms=total_ms
+            )
             yield f"event: done\ndata: {_sse_json({'status': 'failed_sandbox', 'error': sb_err, 'total_time_ms': total_ms, 'result': acc, 'benchmarking': acc.get('benchmarking')})}\n\n"
             return
 
         # --- Stages 5-7: compression, fingerprint, novelty (non-fatal) ---
-        async for ev in _run_nonfatal_stage("compression", _stage_compression(
-            model, graph, bp["vocab_size"], bp["device"], bp["batch_size"], bp["seq_len"],
-        ), ctx):
+        async for ev in _run_nonfatal_stage(
+            "compression",
+            _stage_compression(
+                model,
+                graph,
+                bp["vocab_size"],
+                bp["device"],
+                bp["batch_size"],
+                bp["seq_len"],
+            ),
+            ctx,
+        ):
             yield ev
-        async for ev in _run_nonfatal_stage("fingerprint", _stage_fingerprint(
-            model, bp["run_fingerprint"], bp["seq_len"], bp["model_dim"], bp["vocab_size"], bp["device"],
-        ), ctx):
+        async for ev in _run_nonfatal_stage(
+            "fingerprint",
+            _stage_fingerprint(
+                model,
+                bp["run_fingerprint"],
+                bp["seq_len"],
+                bp["model_dim"],
+                bp["vocab_size"],
+                bp["device"],
+            ),
+            ctx,
+        ):
             yield ev
         fp_obj = dig(ctx._last_stage_result, "fp_obj")
-        async for ev in _run_nonfatal_stage("novelty", _stage_novelty(
-            graph, fp_obj, bp["run_novelty"],
-        ), ctx):
+        async for ev in _run_nonfatal_stage(
+            "novelty",
+            _stage_novelty(
+                graph,
+                fp_obj,
+                bp["run_novelty"],
+            ),
+            ctx,
+        ):
             yield ev
 
         # --- Done ---
         total_ms = round((_time_mod.monotonic() - ctx.total_t0) * 1000, 1)
         ctx.attach_benchmarking()
         acc["graph_fingerprint"] = dig(acc, "conversion", "graph_fingerprint")
-        acc["discovery_url"] = _discovery_url_for_fingerprint(acc.get("graph_fingerprint"))
+        acc["discovery_url"] = _discovery_url_for_fingerprint(
+            acc.get("graph_fingerprint")
+        )
         acc["composite_score"] = _compute_eval_composite_score(acc)
         ctx.persist_done("success", total_ms=total_ms)
         yield f"event: done\ndata: {_sse_json({'status': 'success', 'total_time_ms': total_ms, 'result': acc, 'benchmarking': acc.get('benchmarking'), 'perf_budget_gate': acc.get('perf_budget_gate'), 'perf_artifact_path': acc.get('perf_artifact_path'), 'graph_fingerprint': acc.get('graph_fingerprint'), 'discovery_url': acc.get('discovery_url'), 'composite_score': acc.get('composite_score')})}\n\n"
@@ -674,9 +849,12 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
 
 # ── Eval Observability Endpoints ──────────────────────────────────────
 
+
 @router.get("/eval/runs")
 def list_eval_runs(
-    status: Optional[str] = Query(None, description="Filter by status: running, success, error, failed_sandbox"),
+    status: Optional[str] = Query(
+        None, description="Filter by status: running, success, error, failed_sandbox"
+    ),
     limit: int = Query(50, ge=1, le=200),
 ) -> List[Dict[str, Any]]:
     """List recent evaluation runs.
@@ -721,7 +899,10 @@ def _get_run_stage_metrics(run_id: str, stage_name: str) -> Dict[str, Any]:
     run = _require_run(run_id)
     stage = run.get("stages", {}).get(stage_name, {})
     if not stage or stage.get("status") != "done":
-        raise HTTPException(status_code=404, detail=f"{stage_name.capitalize()} data not available for this run")
+        raise HTTPException(
+            status_code=404,
+            detail=f"{stage_name.capitalize()} data not available for this run",
+        )
     return {"run_id": run_id, **stage.get("metrics", {})}
 
 
@@ -763,7 +944,9 @@ def get_eval_run_benchmarking(run_id: str) -> Dict[str, Any]:
     """
     run = _require_run(run_id)
     if run.get("status") == "running":
-        raise HTTPException(status_code=409, detail="Benchmarking not final while run is still running")
+        raise HTTPException(
+            status_code=409, detail="Benchmarking not final while run is still running"
+        )
     result_payload = run.get("result") or {}
     benchmarking = result_payload.get("benchmarking")
     if not benchmarking:
@@ -785,7 +968,9 @@ def get_eval_run_perf(run_id: str) -> Dict[str, Any]:
     run = _require_run(run_id)
     perf_contract = run.get("perf_contract")
     if not perf_contract:
-        raise HTTPException(status_code=404, detail="Performance contract not available for this run")
+        raise HTTPException(
+            status_code=404, detail="Performance contract not available for this run"
+        )
     return {
         "run_id": run_id,
         "perf_contract": perf_contract,

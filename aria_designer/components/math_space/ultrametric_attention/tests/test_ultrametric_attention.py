@@ -1,4 +1,5 @@
 """Contract tests for ultrametric_attention."""
+
 import yaml
 from pathlib import Path
 

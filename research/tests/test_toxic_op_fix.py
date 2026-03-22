@@ -68,7 +68,9 @@ def test_failure_signatures_only_count_s1_failures(nb):
 
     # No failure signatures should exist — S0.5 failures are excluded
     count = nb.conn.execute("SELECT COUNT(*) FROM failure_signatures").fetchone()[0]
-    assert count == 0, f"Expected 0 failure signatures, got {count} (S0.5 failures contaminated)"
+    assert count == 0, (
+        f"Expected 0 failure signatures, got {count} (S0.5 failures contaminated)"
+    )
 
 
 def test_failure_signatures_count_genuine_s1_failures(nb):
@@ -188,8 +190,12 @@ def test_op_rehabilitation_basic(nb):
 
     # linear_proj has learnable parameters so gradient flow works
     result = test_op_in_isolation("linear_proj", model_dim=64, device="cpu")
-    assert result["compile_passed"], f"linear_proj should compile: {result['error_message']}"
-    assert result["forward_passed"], f"linear_proj should forward: {result['error_message']}"
+    assert result["compile_passed"], (
+        f"linear_proj should compile: {result['error_message']}"
+    )
+    assert result["forward_passed"], (
+        f"linear_proj should forward: {result['error_message']}"
+    )
 
 
 def test_rehabilitation_prevents_exclusion(nb):
@@ -216,8 +222,7 @@ def test_rehabilitation_prevents_exclusion(nb):
     assert cache["gelu"]["compile_passed"] is True
     assert cache["gelu"]["forward_passed"] is True
 
-    # Simulate the runner logic: rehabilitated ops get 0.5 penalty, not exclusion
-    excluded_ops = set()
+    # Simulate the runner logic: rehabilitated ops get soft penalty
     op_weights = {}
     rehab_cache = nb.get_op_rehabilitation_cache()
 
@@ -225,15 +230,16 @@ def test_rehabilitation_prevents_exclusion(nb):
     failed_ops = [{"op_name": "gelu", "s1_rate": 0, "n_used": 10, "confidence": 0.9}]
 
     for op_info in failed_ops:
-        if (op_info.get("s1_rate", 1) == 0
-                and op_info.get("n_used", 0) >= 5
-                and op_info.get("confidence", 0) >= 0.7):
+        if (
+            op_info.get("s1_rate", 1) == 0
+            and op_info.get("n_used", 0) >= 5
+            and op_info.get("confidence", 0) >= 0.7
+        ):
             op_name = op_info["op_name"]
             rehab = rehab_cache.get(op_name)
             if rehab and rehab.get("compile_passed") and rehab.get("forward_passed"):
                 op_weights[op_name] = 0.5
             else:
-                excluded_ops.add(op_name)
+                op_weights[op_name] = 0.1
 
-    assert "gelu" not in excluded_ops, "Rehabilitated op should NOT be excluded"
     assert op_weights.get("gelu") == 0.5, "Rehabilitated op should get 0.5 penalty"

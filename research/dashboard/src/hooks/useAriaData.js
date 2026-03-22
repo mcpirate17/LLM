@@ -90,7 +90,11 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     }
   }, []);
 
-  // Specialized fetchers for tab data (less frequent)
+  // Specialized fetchers for tab data (less frequent), with per-tab dedup
+  const tabInFlightRef = useRef(new Set());
+  const tabCacheRef = useRef({});
+  const TAB_CACHE_TTL_MS = 5000;
+
   const fetchTabData = useCallback(async (tab) => {
     const endpoints = {
       experiments: `/api/experiments?n=200`,
@@ -98,22 +102,33 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       entries: '/api/entries?n=50',
       insights: '/api/insights',
     };
-    
+
     const endpoint = endpoints[tab];
     if (!endpoint) return;
 
+    // Skip if this tab is already being fetched
+    if (tabInFlightRef.current.has(tab)) return;
+
+    // Return cached data if still fresh
+    const cached = tabCacheRef.current[tab];
+    if (cached && Date.now() - cached.ts < TAB_CACHE_TTL_MS) return;
+
+    tabInFlightRef.current.add(tab);
     try {
       const res = await apiCall(endpoint);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const data = Array.isArray(json) ? json : [];
-      
+
+      tabCacheRef.current[tab] = { ts: Date.now() };
       if (tab === 'experiments') setExperiments(data);
       if (tab === 'programs') setPrograms(data);
       if (tab === 'entries') setEntries(data);
       if (tab === 'insights') setInsights(data);
     } catch (err) {
       console.error(`Failed to fetch ${tab} data:`, err);
+    } finally {
+      tabInFlightRef.current.delete(tab);
     }
   }, []);
 

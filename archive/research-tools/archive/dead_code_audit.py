@@ -35,7 +35,9 @@ def _dashboard_component_orphans(root: Path) -> List[str]:
 
     used: Set[str] = set()
     js_files = list((root / "dashboard" / "src").rglob("*.js"))
-    import_re = re.compile(r"import\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+['\"](\./|\.\./).*?['\"]")
+    import_re = re.compile(
+        r"import\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+['\"](\./|\.\./).*?['\"]"
+    )
 
     for file_path in js_files:
         content = _read_text(file_path)
@@ -61,7 +63,8 @@ def _python_possible_orphans(root: Path) -> List[str]:
     )
 
     all_py_files = [
-        p for p in root.rglob("*.py")
+        p
+        for p in root.rglob("*.py")
         if not any(token in p.as_posix() for token in ignored_tokens)
     ]
 
@@ -98,7 +101,9 @@ def _python_possible_orphans(root: Path) -> List[str]:
             continue
 
         module_stem = path.stem
-        rel = path.relative_to(root).as_posix().replace("/", ".")[:-3]  # e.g. scientist.runner
+        rel = (
+            path.relative_to(root).as_posix().replace("/", ".")[:-3]
+        )  # e.g. scientist.runner
         package = rel.rsplit(".", 1)[0] if "." in rel else ""
 
         aliases = {
@@ -110,9 +115,8 @@ def _python_possible_orphans(root: Path) -> List[str]:
         }
         aliases = {a for a in aliases if a}
 
-        referenced = (
-            module_stem in imported_symbols
-            or any(a in imported_modules for a in aliases)
+        referenced = module_stem in imported_symbols or any(
+            a in imported_modules for a in aliases
         )
 
         if not referenced:

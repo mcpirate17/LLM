@@ -17,6 +17,7 @@ from runtime.bridge import (
     evaluate_workflow as direct_bridge_evaluate,
     validate_workflow_graph as direct_bridge_validate,
 )
+
 WORKFLOW_DIR = ROOT / "workflows" / "generated"
 API_BASE = "http://127.0.0.1:8091/api/v1"
 
@@ -26,7 +27,9 @@ def _post(path: str, payload: dict[str, Any]) -> requests.Response:
 
 
 def _load_workflows() -> list[dict[str, Any]]:
-    manifest = json.loads((WORKFLOW_DIR / "adaptive_lane_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (WORKFLOW_DIR / "adaptive_lane_manifest.json").read_text(encoding="utf-8")
+    )
     items = []
     for item in manifest:
         workflow = json.loads(Path(item["path"]).read_text(encoding="utf-8"))
@@ -80,7 +83,9 @@ def main() -> None:
             entry["preview"] = {"error": str(exc)}
 
         try:
-            eval_resp = _post("/workflows/evaluate", {"workflow": workflow, "budget": budget})
+            eval_resp = _post(
+                "/workflows/evaluate", {"workflow": workflow, "budget": budget}
+            )
             entry["evaluate_status"] = eval_resp.status_code
             entry["evaluate"] = eval_resp.json()
         except Exception as exc:
@@ -99,8 +104,12 @@ def main() -> None:
                 batch_size=budget["batch_size"],
                 seq_len=budget["seq_len"],
             )
-            entry["direct_bridge_elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 3)
-            entry["direct_bridge"] = direct.to_dict() if hasattr(direct, "to_dict") else dict(direct)
+            entry["direct_bridge_elapsed_ms"] = round(
+                (time.perf_counter() - t0) * 1000, 3
+            )
+            entry["direct_bridge"] = (
+                direct.to_dict() if hasattr(direct, "to_dict") else dict(direct)
+            )
         except Exception as exc:
             entry["direct_bridge_elapsed_ms"] = None
             entry["direct_bridge"] = {"error": str(exc)}

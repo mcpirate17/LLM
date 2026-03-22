@@ -1,4 +1,5 @@
 """Contract tests for token_merging."""
+
 import yaml
 from pathlib import Path
 

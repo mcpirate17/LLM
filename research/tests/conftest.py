@@ -1,4 +1,5 @@
 """Shared test fixtures and helpers for research/tests/."""
+
 from __future__ import annotations
 
 import ctypes
@@ -46,10 +47,16 @@ def pytest_collection_modifyitems(config, items):
         elif "api" in marker_names:
             item.add_marker(pytest.mark.xdist_group("api"))
 
+
 # ── Native library loading ────────────────────────────────────────────
 
 _NATIVE_LIB_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'runtime', 'native', 'build', 'libaria_native_runtime.so'
+    os.path.dirname(__file__),
+    "..",
+    "runtime",
+    "native",
+    "build",
+    "libaria_native_runtime.so",
 )
 
 _native_lib = None
@@ -79,8 +86,14 @@ def array_size(request):
 
 # ── Common test helpers ───────────────────────────────────────────────
 
-def assert_close(actual: np.ndarray, expected: np.ndarray, label: str = "",
-                 atol: float = 1e-5, rtol: float = 1e-5):
+
+def assert_close(
+    actual: np.ndarray,
+    expected: np.ndarray,
+    label: str = "",
+    atol: float = 1e-5,
+    rtol: float = 1e-5,
+):
     """Assert arrays are close with configurable tolerance."""
     np.testing.assert_allclose(actual, expected, atol=atol, rtol=rtol, err_msg=label)
 
@@ -96,6 +109,7 @@ def make_fake_graph(op_names):
 
 # ── Autouse cleanup fixture (P0 OOM prevention) ─────────────────────
 
+
 @pytest.fixture(autouse=True)
 def _cleanup_after_test():
     """Reclaim memory after every test — prevents OOM in parallel runs."""
@@ -103,6 +117,7 @@ def _cleanup_after_test():
     gc.collect()
     try:
         import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except ImportError:
@@ -111,10 +126,12 @@ def _cleanup_after_test():
 
 # ── Shared fixtures ──────────────────────────────────────────────────
 
+
 @pytest.fixture
 def tmp_notebook(tmp_path):
     """Provide a LabNotebook that auto-closes on teardown."""
     from research.scientist.notebook import LabNotebook
+
     nb = LabNotebook(str(tmp_path / "test.db"))
     yield nb
     nb.close()
@@ -124,6 +141,7 @@ def tmp_notebook(tmp_path):
 def flask_client(tmp_path):
     """Provide a Flask test client with auto-cleanup."""
     from research.scientist.api import create_app
+
     app = create_app(notebook_path=str(tmp_path / "test_api.db"))
     with app.test_client() as client:
         yield client

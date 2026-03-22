@@ -1,4 +1,5 @@
 """native API route registration."""
+
 from __future__ import annotations
 
 import logging
@@ -29,21 +30,25 @@ def register_native_routes(app, context: ApiRouteContext):
                 total_duration_us = sum(
                     float(p.get("duration_us", 0)) for p in node_profiles
                 )
-                return jsonify({
-                    "status": "ok",
-                    "enabled": profiling_enabled,
-                    "node_profiles": node_profiles,
-                    "peak_memory_bytes": int(profile.get("peak_memory_bytes", 0)),
-                    "total_duration_us": total_duration_us,
-                })
+                return jsonify(
+                    {
+                        "status": "ok",
+                        "enabled": profiling_enabled,
+                        "node_profiles": node_profiles,
+                        "peak_memory_bytes": int(profile.get("peak_memory_bytes", 0)),
+                        "total_duration_us": total_duration_us,
+                    }
+                )
             else:
-                return jsonify({
-                    "status": "ok",
-                    "enabled": profiling_enabled,
-                    "node_profiles": [],
-                    "peak_memory_bytes": 0,
-                    "total_duration_us": 0.0,
-                })
+                return jsonify(
+                    {
+                        "status": "ok",
+                        "enabled": profiling_enabled,
+                        "node_profiles": [],
+                        "peak_memory_bytes": 0,
+                        "total_duration_us": 0.0,
+                    }
+                )
         except Exception as e:
             logger.error(f"Error in /api/native-profile/v2/data: {e}")
             return jsonify({"error": str(e)}), 500
@@ -52,7 +57,10 @@ def register_native_routes(app, context: ApiRouteContext):
     def api_native_runner_profile_enable():
         """Toggle native kernel profiling on or off."""
         try:
-            from ..native_runner import enable_native_profiling, _try_import_rust_scheduler
+            from ..native_runner import (
+                enable_native_profiling,
+                _try_import_rust_scheduler,
+            )
 
             body = request.get_json(silent=True) or {}
             enable = bool(body.get("enable", True))
@@ -66,12 +74,14 @@ def register_native_routes(app, context: ApiRouteContext):
                 and rust.profiler_enabled()
             )
 
-            return jsonify({
-                "status": "ok",
-                "requested": enable,
-                "enabled": now_enabled,
-                "accepted": result,
-            })
+            return jsonify(
+                {
+                    "status": "ok",
+                    "requested": enable,
+                    "enabled": now_enabled,
+                    "accepted": result,
+                }
+            )
         except Exception as e:
             logger.error(f"Error in /api/native-profile/v2/enable: {e}")
             return jsonify({"error": str(e)}), 500

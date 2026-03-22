@@ -17,6 +17,7 @@ from .telemetry import _legacy_compile_count
 logger = logging.getLogger(__name__)
 _legacy_only_deprecation_warned = False
 
+
 def _maybe_fail_on_fallback_rate() -> None:
     max_rate_env = os.environ.get("NATIVE_RUNNER_MAX_FALLBACK_RATE")
     if max_rate_env is None:
@@ -29,7 +30,9 @@ def _maybe_fail_on_fallback_rate() -> None:
         max_rate_raw = 1.0
     max_rate_raw = max(0.0, min(1.0, max_rate_raw))
     try:
-        min_samples = int(str(os.environ.get("NATIVE_RUNNER_FALLBACK_MIN_SAMPLES", "1")))
+        min_samples = int(
+            str(os.environ.get("NATIVE_RUNNER_FALLBACK_MIN_SAMPLES", "1"))
+        )
     except Exception:
         min_samples = 1
 
@@ -43,6 +46,7 @@ def _maybe_fail_on_fallback_rate() -> None:
             "Native runner fallback rate exceeded threshold: "
             f"rate={rate:.3f} threshold={max_rate_raw:.3f} total={total}"
         )
+
 
 def _maybe_fail_on_legacy_compile_usage() -> None:
     max_legacy_env = os.environ.get("NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS")
@@ -60,6 +64,7 @@ def _maybe_fail_on_legacy_compile_usage() -> None:
             f"used={used} threshold={max_legacy}"
         )
 
+
 def _record_guardrail_event(
     event: str,
     *,
@@ -67,7 +72,9 @@ def _record_guardrail_event(
     threshold: int,
     source: Optional[str] = None,
 ) -> None:
-    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    timestamp = (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
     entry = {
         "event": str(event),
         "timestamp": timestamp,
@@ -81,7 +88,10 @@ def _record_guardrail_event(
     }
     _SELECTIVE_GUARDRAIL_HISTORY.append(entry)
     if len(_SELECTIVE_GUARDRAIL_HISTORY) > _SELECTIVE_GUARDRAIL_HISTORY_MAX:
-        del _SELECTIVE_GUARDRAIL_HISTORY[0 : len(_SELECTIVE_GUARDRAIL_HISTORY) - _SELECTIVE_GUARDRAIL_HISTORY_MAX]
+        del _SELECTIVE_GUARDRAIL_HISTORY[
+            0 : len(_SELECTIVE_GUARDRAIL_HISTORY) - _SELECTIVE_GUARDRAIL_HISTORY_MAX
+        ]
+
 
 def _maybe_warn_deprecated_legacy_only_flag() -> None:
     global _legacy_only_deprecation_warned

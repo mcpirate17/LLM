@@ -4,6 +4,7 @@
 Usage:
     python tools/validate_manifests.py
 """
+
 from __future__ import annotations
 
 import json
@@ -25,12 +26,20 @@ COMPONENTS_ROOT = _PROJECT_ROOT / "components"
 # Try jsonschema if available, fallback to basic validation
 try:
     import jsonschema
+
     HAS_JSONSCHEMA = True
 except ImportError:
     HAS_JSONSCHEMA = False
 
 VALID_DTYPES = {
-    "tensor", "scalar", "index", "mask", "complex_tensor", "dataset", "list", "record"
+    "tensor",
+    "scalar",
+    "index",
+    "mask",
+    "complex_tensor",
+    "dataset",
+    "list",
+    "record",
 }
 
 
@@ -44,13 +53,14 @@ def validate_basic(manifest: dict, path: Path) -> list[str]:
         errors.append(f"{path}: invalid category '{manifest.get('category')}'")
     if not manifest.get("outputs"):
         errors.append(f"{path}: must have at least one output")
-    
+
     # Validate dtypes in ports
     for section in ["inputs", "outputs"]:
         ports = manifest.get(section)
         if isinstance(ports, list):
             for i, port in enumerate(ports):
-                if not isinstance(port, dict): continue
+                if not isinstance(port, dict):
+                    continue
                 dtype = port.get("dtype")
                 if dtype not in VALID_DTYPES:
                     errors.append(f"{path}: {section}[{i}] has invalid dtype '{dtype}'")

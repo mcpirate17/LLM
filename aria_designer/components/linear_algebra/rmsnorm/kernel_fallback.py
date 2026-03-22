@@ -1,6 +1,20 @@
-"""Auto-generated Python fallback kernel for rmsnorm."""
+"""Python fallback kernel for rmsnorm."""
 
+import torch
 import torch.nn as nn
+
+
+class _RMSNorm(nn.Module):
+    __slots__ = ("eps",)
+
+    def __init__(self, d):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(d))
+        self.eps = 1e-6
+
+    def forward(self, x):
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (x / rms) * self.weight
 
 
 class ComponentHandler:
@@ -10,10 +24,11 @@ class ComponentHandler:
         return []
 
     def build(self, config):
-        # TODO: implement parameterized module
-        return nn.Identity()
+        return None
 
     def forward(self, inputs, config):
         x = inputs["x"]
-        # TODO: implement rmsnorm
-        return {"y": x}
+        d = x.shape[-1]
+        weight = torch.ones(d, device=x.device, dtype=x.dtype)
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+        return {"y": (x / rms) * weight}

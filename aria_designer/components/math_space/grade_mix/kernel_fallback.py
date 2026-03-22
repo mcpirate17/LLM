@@ -1,6 +1,8 @@
 """Kernel handler for grade_mix — dispatches to aria_core.grade_mix_f32."""
+
 import torch
 from components.base import NativeComponentHandler
+
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "grade_mix"
