@@ -168,7 +168,7 @@ def _score_fingerprint_bucket(
     ctx: JudgmentContext,
     signals: Dict[str, Any],
 ) -> _ScorerReturn:
-    """Bonus/penalty based on fingerprint bucket performance."""
+    """Bonus/penalty based on fingerprint bucket performance and category distribution."""
     buckets = signals.get("fingerprint_buckets", [])
     if not buckets or not ctx.fingerprint_bucket:
         return 0.0, 0.0, []
@@ -183,6 +183,25 @@ def _score_fingerprint_bucket(
     delta = (s1_rate - 0.3) * 1.5
     confidence = min(1.0, n_graphs / 20.0) if n_graphs >= _MIN_SUPPORT else 0.3
 
+    # Bonus for buckets with routing diversity (higher-resolution feature)
+    top_routing = bucket.get("top_routing_ops", [])
+    if top_routing:
+        routing_bonus = min(0.05, 0.02 * len(top_routing))
+        delta += routing_bonus
+
+    # Category distribution: penalize single-category dominance (op-soup),
+    # reward spread across multiple categories (structured architectures)
+    cat_dist = bucket.get("op_category_distribution", {})
+    if cat_dist:
+        max_cat_share = max(cat_dist.values()) if cat_dist.values() else 0.0
+        n_active_cats = sum(1 for v in cat_dist.values() if v >= 0.05)
+        # Penalize: >60% in one category = likely op-soup
+        if max_cat_share > 0.6:
+            delta -= 0.03 * (max_cat_share - 0.6)
+        # Reward: 4+ active categories = structurally diverse
+        if n_active_cats >= 4:
+            delta += 0.02 * min(1.0, (n_active_cats - 3) / 4.0)
+
     evidence = (
         [
             {
@@ -190,6 +209,9 @@ def _score_fingerprint_bucket(
                 "bucket": ctx.fingerprint_bucket,
                 "s1_rate": s1_rate,
                 "n_graphs": n_graphs,
+                "top_routing_ops": top_routing,
+                "template_signature": bucket.get("template_signature", ""),
+                "category_diversity": n_active_cats if cat_dist else 0,
                 "delta": round(delta, 4),
             }
         ]
@@ -458,6 +480,60 @@ def _score_intent_alignment(
     return delta, 0.7, evidence
 
 
+def _score_peer_comparison(
+    candidate: Dict[str, Any],
+    ctx: JudgmentContext,
+    signals: Dict[str, Any],
+) -> _ScorerReturn:
+    """Score based on how nearest historical peers performed.
+
+    Penalizes candidates whose op-set is similar to historically-failed peers.
+    Rewards similarity to successful peers.
+    """
+    peers = signals.get("nearest_peers", [])
+    if not peers:
+        return 0.0, 0.0, []
+
+    score_sum = 0.0
+    weight_sum = 0.0
+    evidence = []
+
+    for peer in peers:
+        sim = float(peer.get("jaccard_similarity", 0.0))
+        if sim < 0.1:
+            continue
+        s1 = bool(peer.get("stage1_passed", False))
+        loss = peer.get("loss_ratio")
+        # Positive signal from successful peers, negative from failed
+        if s1 and loss is not None:
+            peer_quality = max(0.0, 1.0 - min(float(loss), 1.5))
+            delta = sim * (peer_quality - 0.3)
+        elif not s1:
+            delta = -sim * 0.4
+        else:
+            continue
+        score_sum += delta
+        weight_sum += sim
+
+    if weight_sum < 0.1:
+        return 0.0, 0.0, []
+
+    avg_delta = score_sum / weight_sum
+    confidence = min(1.0, len(peers) / 3.0)
+
+    if abs(avg_delta) > 0.05:
+        evidence.append(
+            {
+                "signal": "peer_comparison",
+                "n_peers": len(peers),
+                "avg_similarity": round(weight_sum / max(len(peers), 1), 4),
+                "delta": round(avg_delta, 4),
+            }
+        )
+
+    return avg_delta, confidence, evidence
+
+
 # ── Scorer registry (dict dispatch) ──────────────────────────────────
 
 _SIGNAL_SCORERS: Dict[str, _ScorerFn] = {
@@ -469,6 +545,7 @@ _SIGNAL_SCORERS: Dict[str, _ScorerFn] = {
     "insight_interactions": _score_insight_interactions,
     "novelty": _score_novelty,
     "intent_alignment": _score_intent_alignment,
+    "peer_comparison": _score_peer_comparison,
 }
 
 

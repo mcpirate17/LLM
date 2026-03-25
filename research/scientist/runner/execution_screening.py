@@ -530,13 +530,64 @@ def _judgment_rerank(
         )
         return [(g, 0.5) for g in graphs]
 
-    ctx = JudgmentContext()
+    # Pre-build bucket name lookup for per-candidate context
+    bucket_names = {
+        b["bucket"] for b in signals.get("fingerprint_buckets", []) if b.get("bucket")
+    }
+
     scored: List[tuple] = []
     skipped = 0
 
     for graph in graphs:
         try:
-            result = score_candidate(graph, ctx, signals)
+            # Build per-candidate context and signals
+            candidate_signals = signals
+            fp = graph.fingerprint() if hasattr(graph, "fingerprint") else None
+
+            # Populate nearest_peers for this candidate's fingerprint
+            if fp and hasattr(nb, "get_nearest_peers"):
+                try:
+                    peers = nb.get_nearest_peers(fp, n=5)
+                    if peers:
+                        # Shallow copy to avoid mutating shared dict
+                        candidate_signals = {**signals, "nearest_peers": peers}
+                except Exception:
+                    pass
+
+            # Determine fingerprint bucket from candidate ops
+            ctx_bucket = ""
+            if bucket_names:
+                ops = set()
+                for node in getattr(graph, "nodes", {}).values():
+                    if not getattr(node, "is_input", False):
+                        op = getattr(node, "op_name", "")
+                        if op:
+                            ops.add(op)
+                # Simple bucket assignment matching notebook_analytics logic
+                has_attention = any("attention" in op for op in ops)
+                has_mixing = any(
+                    t in op
+                    for op in ops
+                    for t in ("state_space", "scan", "conv", "mix")
+                )
+                if has_attention and has_mixing and "hybrid" in bucket_names:
+                    ctx_bucket = "hybrid"
+                elif has_attention and "attention-heavy" in bucket_names:
+                    ctx_bucket = "attention-heavy"
+                elif has_mixing and "mixing-heavy" in bucket_names:
+                    ctx_bucket = "mixing-heavy"
+                elif (
+                    any(
+                        t in op for op in ops for t in ("sparse", "gate", "topk", "moe")
+                    )
+                    and "sparse" in bucket_names
+                ):
+                    ctx_bucket = "sparse"
+                elif "exotic" in bucket_names:
+                    ctx_bucket = "exotic"
+
+            ctx = JudgmentContext(fingerprint_bucket=ctx_bucket)
+            result = score_candidate(graph, ctx, candidate_signals)
         except Exception:
             scored.append((graph, 0.5, 0))  # neutral score on error
             continue
@@ -1250,6 +1301,102 @@ class _ExecutionScreeningMixin:
                         "result": "skipped_dedup",
                     },
                 )
+                continue
+
+            # ── Hard structural gates (zero GPU cost) ──────────────
+            # Gate 1: minimum op count — graphs need structural backbone
+            # (projection, norm, residual) plus meaningful routing ops.
+            if graph.n_ops() <= 7:
+                results["funnel_counts"].setdefault("dropped_structural_gate", 0)
+                results["funnel_counts"]["dropped_structural_gate"] += 1
+                results["funnel_counts"].setdefault("dropped_gate1_min_ops", 0)
+                results["funnel_counts"]["dropped_gate1_min_ops"] += 1
+                continue
+
+            # Gate 2: gradient path must exist or model can't learn.
+            if not graph.has_gradient_path():
+                results["funnel_counts"].setdefault("dropped_structural_gate", 0)
+                results["funnel_counts"]["dropped_structural_gate"] += 1
+                results["funnel_counts"].setdefault("dropped_gate2_no_grad", 0)
+                results["funnel_counts"]["dropped_gate2_no_grad"] += 1
+                continue
+
+            # Gate 3: residual connection required for stable training.
+            if not graph.has_residual_path():
+                results["funnel_counts"].setdefault("dropped_structural_gate", 0)
+                results["funnel_counts"]["dropped_structural_gate"] += 1
+                results["funnel_counts"].setdefault("dropped_gate3_no_residual", 0)
+                results["funnel_counts"]["dropped_gate3_no_residual"] += 1
+                continue
+
+            # Gate 4: at least one parameterized op required to learn.
+            _has_param_op = False
+            for _nid, _node in graph.nodes.items():
+                if _node.is_input or getattr(_node, "is_output", False):
+                    continue
+                _prim = None
+                try:
+                    from ...synthesis.primitives import get_primitive
+
+                    _prim = get_primitive(_node.op_name)
+                except Exception:
+                    pass
+                if _prim and getattr(_prim, "has_params", False):
+                    _has_param_op = True
+                    break
+            if not _has_param_op:
+                results["funnel_counts"].setdefault("dropped_structural_gate", 0)
+                results["funnel_counts"]["dropped_structural_gate"] += 1
+                results["funnel_counts"].setdefault("dropped_gate4_no_params", 0)
+                results["funnel_counts"]["dropped_gate4_no_params"] += 1
+                continue
+
+            # Gate 5: must contain at least one routing/MoE/sparse/compression op.
+            # Models without these can never score on the 135pt efficiency budget.
+            _EFFICIENCY_OPS = frozenset(
+                {
+                    "adaptive_lane_mixer",
+                    "adaptive_recursion",
+                    "block_sparse_linear",
+                    "cascade",
+                    "compression_mixture_experts",
+                    "early_exit",
+                    "gated_delta",
+                    "gated_linear",
+                    "gather_topk",
+                    "latent_attention_compressor",
+                    "mixed_recursion_gate",
+                    "mod_topk",
+                    "moe_2expert",
+                    "moe_topk",
+                    "n_way_sparse_router",
+                    "nm_sparse_linear",
+                    "padic_gate",
+                    "progressive_compression_gate",
+                    "relu_gate_routing",
+                    "route_lanes",
+                    "route_recursion",
+                    "route_topk",
+                    "routing_conditioned_compression",
+                    "sparse_threshold",
+                    "ternary_projection",
+                    "token_merge",
+                    "topk_gate",
+                    "tropical_gate",
+                    "tropical_moe",
+                    "tropical_router",
+                }
+            )
+            _graph_ops = {
+                node.op_name
+                for node in graph.nodes.values()
+                if not node.is_input and not getattr(node, "is_output", False)
+            }
+            if not (_graph_ops & _EFFICIENCY_OPS):
+                results["funnel_counts"].setdefault("dropped_structural_gate", 0)
+                results["funnel_counts"]["dropped_structural_gate"] += 1
+                results["funnel_counts"].setdefault("dropped_gate5_no_routing", 0)
+                results["funnel_counts"]["dropped_gate5_no_routing"] += 1
                 continue
 
             # Pre-screen: skip graphs whose op-pair structure is toxic

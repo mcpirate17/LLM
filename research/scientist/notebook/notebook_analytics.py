@@ -14,6 +14,74 @@ from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER
 
+# Lazy-loaded to avoid circular imports at module level
+_OP_CATEGORY_CACHE: Dict[str, str] = {}
+
+
+def _get_op_category(op_name: str) -> str:
+    """Map an op name to its OpCategory string. Cached for speed."""
+    if op_name in _OP_CATEGORY_CACHE:
+        return _OP_CATEGORY_CACHE[op_name]
+    try:
+        from research.synthesis.primitives import get_primitive
+
+        prim = get_primitive(op_name)
+        cat = prim.category.value
+    except (KeyError, ValueError):
+        cat = "unknown"
+    _OP_CATEGORY_CACHE[op_name] = cat
+    return cat
+
+
+# Canonical routing/compression/MoE ops — mirrored from grammar.py
+_ROUTING_OPS: frozenset = frozenset(
+    {
+        "entropy_score",
+        "token_type_classifier",
+        "route_topk",
+        "route_lanes",
+        "route_recursion",
+        "adaptive_lane_mixer",
+        "mixed_recursion_gate",
+        "early_exit",
+        "cascade",
+        "speculative",
+        "adaptive_recursion",
+        "mod_topk",
+        "token_merge",
+        "relu_gate_routing",
+        "moe_topk",
+        "moe_2expert",
+        "n_way_sparse_router",
+        "tropical_moe",
+        "topk_gate",
+        "tropical_gate",
+        "tropical_router",
+        "sparse_threshold",
+        "lif_neuron",
+        "padic_gate",
+        "routing_conditioned_compression",
+        "progressive_compression_gate",
+        "compression_mixture_experts",
+        "latent_attention_compressor",
+    }
+)
+
+# All 11 OpCategory values for the distribution vector
+_ALL_CATEGORIES: tuple = (
+    "elementwise_unary",
+    "elementwise_binary",
+    "reduction",
+    "linear_algebra",
+    "structural",
+    "parameterized",
+    "mixing",
+    "sequence",
+    "frequency",
+    "math_space",
+    "functional",
+)
+
 
 class _AnalyticsMixin:
     """Analytics operations for the Lab Notebook."""
@@ -286,7 +354,14 @@ class _AnalyticsMixin:
         )
 
     def get_fingerprint_buckets(self, limit: int = 5) -> List[Dict[str, Any]]:
-        """Bucket fingerprints into coarse structural families with top ops/pairs."""
+        """Bucket fingerprints into structural families with rich feature vectors.
+
+        Each bucket includes:
+        - Original fields: bucket, n_graphs, s1_rate, avg_novelty, top_ops, top_pairs
+        - op_category_distribution: normalized 11-dim vector over OpCategory
+        - top_routing_ops: top-3 routing/compression/MoE ops by frequency
+        - template_signature: most common template name in the bucket
+        """
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, novelty_score, graph_category_histogram,
                       fp_interaction_sparsity, fp_cka_vs_transformer, fp_cka_vs_ssm, fp_cka_vs_conv
@@ -309,14 +384,92 @@ class _AnalyticsMixin:
                 bucket["novelty_n"] += 1
             for op_name in ops:
                 bucket["op_counts"][op_name] = bucket["op_counts"].get(op_name, 0) + 1
+                # Accumulate category distribution
+                cat = _get_op_category(op_name)
+                if cat in bucket["category_counts"]:
+                    bucket["category_counts"][cat] += 1
+                # Accumulate routing op counts
+                if op_name in _ROUTING_OPS:
+                    bucket["routing_op_counts"][op_name] = (
+                        bucket["routing_op_counts"].get(op_name, 0) + 1
+                    )
             for signature in pairs:
                 bucket["pair_counts"][signature] = (
                     bucket["pair_counts"].get(signature, 0) + 1
+                )
+            # Extract template signature from graph metadata
+            template_name = self._extract_template_name(record["graph_json"])
+            if template_name:
+                bucket["template_counts"][template_name] = (
+                    bucket["template_counts"].get(template_name, 0) + 1
                 )
         ranked = [
             self._finalize_fingerprint_bucket(bucket) for bucket in buckets.values()
         ]
         return heapq.nlargest(limit, ranked, key=lambda item: item["n_graphs"])
+
+    def get_nearest_peers(
+        self, graph_fingerprint: str, n: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Find the n most structurally similar historical fingerprints via Jaccard similarity.
+
+        Compares the op-set of the target fingerprint against all other fingerprints
+        in program_results. Returns peers sorted by descending Jaccard similarity,
+        each with loss_ratio, novelty_score, tier, and composite_score.
+        """
+        # Get target ops
+        target_row = self.conn.execute(
+            """SELECT graph_json FROM program_results
+               WHERE graph_fingerprint = ? AND graph_json IS NOT NULL
+               LIMIT 1""",
+            (graph_fingerprint,),
+        ).fetchone()
+        if not target_row:
+            return []
+        target_ops = frozenset(self._extract_op_names(target_row[0]))
+        if not target_ops:
+            return []
+
+        # Get all distinct fingerprints with their ops and scores
+        rows = self.conn.execute(
+            """SELECT pr.graph_fingerprint, pr.graph_json, pr.loss_ratio,
+                      pr.novelty_score, pr.stage1_passed,
+                      l.tier, l.composite_score
+               FROM program_results pr
+               LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+               WHERE pr.graph_fingerprint IS NOT NULL
+                 AND pr.graph_fingerprint != ?
+                 AND pr.graph_json IS NOT NULL
+               GROUP BY pr.graph_fingerprint
+               ORDER BY pr.timestamp DESC
+               LIMIT 500""",
+            (graph_fingerprint,),
+        ).fetchall()
+
+        peers: List[Dict[str, Any]] = []
+        for row in rows:
+            peer_ops = frozenset(self._extract_op_names(row[1]))
+            if not peer_ops:
+                continue
+            intersection = len(target_ops & peer_ops)
+            union = len(target_ops | peer_ops)
+            jaccard = intersection / union if union > 0 else 0.0
+            if jaccard < 0.1:
+                continue
+            peers.append(
+                {
+                    "fingerprint": str(row[0]),
+                    "jaccard_similarity": round(jaccard, 4),
+                    "loss_ratio": float(row[2]) if row[2] is not None else None,
+                    "novelty_score": float(row[3]) if row[3] is not None else None,
+                    "stage1_passed": bool(row[4]),
+                    "tier": str(row[5] or ""),
+                    "composite_score": float(row[6]) if row[6] is not None else None,
+                }
+            )
+
+        peers.sort(key=lambda p: p["jaccard_similarity"], reverse=True)
+        return peers[:n]
 
     def get_lineage_successor_stats(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Aggregate parent→child fingerprint transitions from designer lineage."""
@@ -451,6 +604,9 @@ class _AnalyticsMixin:
             "novelty_n": 0,
             "op_counts": {},
             "pair_counts": {},
+            "category_counts": {cat: 0 for cat in _ALL_CATEGORIES},
+            "routing_op_counts": {},
+            "template_counts": {},
         }
 
     @staticmethod
@@ -460,6 +616,26 @@ class _AnalyticsMixin:
             if bucket["novelty_n"]
             else None
         )
+        # Normalize category distribution to sum=1
+        cat_counts = bucket.get("category_counts", {})
+        cat_total = max(1, sum(cat_counts.values()))
+        op_category_distribution = {
+            cat: round(cat_counts.get(cat, 0) / cat_total, 4) for cat in _ALL_CATEGORIES
+        }
+        # Top-3 routing ops by frequency
+        routing_counts = bucket.get("routing_op_counts", {})
+        top_routing_ops = [
+            op
+            for op, _ in sorted(
+                routing_counts.items(), key=lambda item: item[1], reverse=True
+            )[:3]
+        ]
+        # Most common template
+        template_counts = bucket.get("template_counts", {})
+        template_signature = ""
+        if template_counts:
+            template_signature = max(template_counts, key=template_counts.get)
+
         return {
             "bucket": bucket["bucket"],
             "n_graphs": int(bucket["n_graphs"]),
@@ -481,6 +657,9 @@ class _AnalyticsMixin:
                     reverse=True,
                 )[:10]
             ],
+            "op_category_distribution": op_category_distribution,
+            "top_routing_ops": top_routing_ops,
+            "template_signature": template_signature,
         }
 
     @staticmethod
@@ -586,6 +765,18 @@ class _AnalyticsMixin:
         if ops is None:
             ops = _OpsMixin._extract_ops_fallback(graph_json)
         return list(ops or [])
+
+    @staticmethod
+    def _extract_template_name(graph_json: str) -> str:
+        """Extract the template name from graph JSON metadata, if present."""
+        try:
+            data = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict):
+            return ""
+        return str(metadata.get("template") or metadata.get("template_name") or "")
 
     def _leaderboard_by_fingerprint(self) -> Dict[str, Dict[str, Any]]:
         rows = self.conn.execute(

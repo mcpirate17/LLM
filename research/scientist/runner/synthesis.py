@@ -298,6 +298,36 @@ class _SynthesisMixin:
                 best_ablation_lr is None or loss_ratio < best_ablation_lr
             ):
                 best_ablation_lr = loss_ratio
+
+            # Extract behavioral fingerprint from S1 worker if present
+            _fp_kwargs = {}
+            _fp_dict = s1.get("_behavioral_fingerprint") if s1 else None
+            if _fp_dict:
+                from ...eval.fingerprint import BehavioralFingerprint
+
+                _fp = BehavioralFingerprint()
+                for _k, _v in _fp_dict.items():
+                    if hasattr(_fp, _k):
+                        setattr(_fp, _k, _v)
+                _fp_kwargs = {
+                    "fingerprint_json": json.dumps(json_safe(_fp.to_dict())),
+                    "fp_interaction_locality": _fp.interaction_locality,
+                    "fp_interaction_sparsity": _fp.interaction_sparsity,
+                    "fp_interaction_symmetry": _fp.interaction_symmetry,
+                    "fp_interaction_hierarchy": _fp.interaction_hierarchy,
+                    "fp_intrinsic_dim": _fp.intrinsic_dim,
+                    "fp_isotropy": _fp.isotropy,
+                    "fp_rank_ratio": _fp.rank_ratio,
+                    "fp_jacobian_spectral_norm": _fp.jacobian_spectral_norm,
+                    "fp_jacobian_effective_rank": _fp.jacobian_effective_rank,
+                    "fp_sensitivity_uniformity": _fp.sensitivity_uniformity,
+                    "fp_cka_vs_transformer": _fp.cka_vs_transformer,
+                    "fp_cka_vs_ssm": _fp.cka_vs_ssm,
+                    "fp_cka_vs_conv": _fp.cka_vs_conv,
+                    "fp_hierarchy_fitness": _fp.hierarchy_fitness,
+                    "fp_gromov_delta": _fp.gromov_delta,
+                }
+
             rid = nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=graph.fingerprint(),
@@ -325,6 +355,7 @@ class _SynthesisMixin:
                 )
                 if s1_passed
                 else None,
+                **_fp_kwargs,
             )
             result_ids.append(rid)
 
@@ -559,7 +590,12 @@ class _SynthesisMixin:
                 return None
 
             prev_results_raw = row["results_json"]
-            prev_results = json.loads(prev_results_raw) if prev_results_raw else {}
+            if isinstance(prev_results_raw, bytes):
+                prev_results = nb._decompress(prev_results_raw) or {}
+            elif prev_results_raw:
+                prev_results = json.loads(prev_results_raw)
+            else:
+                prev_results = {}
             previous_distribution = prev_results.get("generated_op_distribution")
             if not isinstance(previous_distribution, dict) or not previous_distribution:
                 return None
@@ -595,13 +631,12 @@ class _SynthesisMixin:
     def _compute_multi_objective_fitness(
         self, s1_result, sandbox_result, graph, config
     ):
-        """Multi-objective fitness: quality + efficiency + speed + learning + compactness."""
+        """Multi-objective fitness: quality + efficiency + speed + learning."""
         weights = {
             "quality": 0.25,
-            "efficiency": 0.30,
+            "efficiency": 0.45,
             "speed": 0.15,
             "learning_speed": 0.15,
-            "compactness": 0.15,
         }
 
         components = {}
@@ -678,11 +713,6 @@ class _SynthesisMixin:
         # Learning speed: how fast loss improved
         lir = s1_result.get("loss_improvement_rate", 0) if s1_result else 0
         components["learning_speed"] = max(0.0, min(float(lir or 0), 1.0))
-
-        # Compactness: fewer ops = simpler
-        n_ops = len(graph.nodes) if hasattr(graph, "nodes") else 0
-        max_ops = max(1, int(config.max_ops))
-        components["compactness"] = max(0.0, 1.0 - min(n_ops / max_ops, 1.0))
 
         # Redistribute weight from missing components to quality
         weighted_sum = 0.0
@@ -1083,6 +1113,18 @@ class _SynthesisMixin:
         parent_novelty = float((source_row or {}).get("novelty_score") or 0.0)
         parent_quality = 1.0 - float((source_row or {}).get("loss_ratio") or 1.0)
 
+        # Fingerprint-aware bonuses
+        fingerprint_quality_bonus = 0.0
+        behavioral_diversity_bonus = 0.0
+        if source_row:
+            # Bonus for source with completed behavioral fingerprint
+            if source_row.get("fingerprint_json"):
+                fingerprint_quality_bonus = 0.1
+            # Reward mutations away from transformer-like behavior
+            cka_t = source_row.get("fp_cka_vs_transformer")
+            if cka_t is not None:
+                behavioral_diversity_bonus = 0.05 * max(0.0, 1.0 - float(cka_t))
+
         mode = str(intent or "balanced").lower()
         weighted_terms: Dict[str, float]
         if mode == "quality":
@@ -1120,6 +1162,11 @@ class _SynthesisMixin:
             }
         if mode in {"quality", "compression", "sparsity"}:
             weighted_terms["oscillation_penalty"] = -0.10 * oscillation_risk
+        # Fingerprint-aware bonuses (additive, independent of mode)
+        if fingerprint_quality_bonus > 0:
+            weighted_terms["fingerprint_quality_bonus"] = fingerprint_quality_bonus
+        if behavioral_diversity_bonus > 0:
+            weighted_terms["behavioral_diversity_bonus"] = behavioral_diversity_bonus
         score = float(sum(weighted_terms.values()))
         if not include_breakdown:
             return score
@@ -1154,7 +1201,13 @@ class _SynthesisMixin:
         min_distance: float,
         novelty_pressure: float,
     ) -> List[Dict[str, Any]]:
-        """Select top-k candidates while preserving pairwise diversity."""
+        """Select top-k candidates while preserving pairwise diversity.
+
+        Uses behavioral fingerprint features when available:
+        - hierarchy_fitness bonus: structured representations learn better
+        - low CKA-vs-transformer bonus: indicates genuine novelty
+        - fingerprint completion bonus: completed fingerprints are more trustworthy
+        """
         if not candidates:
             return []
         ranked = []
@@ -1163,6 +1216,18 @@ class _SynthesisMixin:
             novelty = float(row.get("novelty_score") or 0.0)
             quality = max(0.0, 1.0 - min(loss, 1.5))
             score = (1.0 - novelty_pressure) * quality + novelty_pressure * novelty
+
+            # Behavioral fingerprint bonuses
+            hierarchy = row.get("fp_interaction_hierarchy")
+            if hierarchy is not None:
+                score += 0.05 * min(1.0, float(hierarchy))
+            cka_transformer = row.get("fp_cka_vs_transformer")
+            if cka_transformer is not None:
+                # Reward low similarity to transformer (indicates novelty)
+                score += 0.03 * max(0.0, 1.0 - float(cka_transformer))
+            if row.get("fingerprint_json"):
+                score += 0.02  # completed fingerprint bonus
+
             ranked.append((score, row))
         ranked.sort(key=lambda x: x[0], reverse=True)
 
@@ -1206,7 +1271,9 @@ class _SynthesisMixin:
         placeholders = ",".join(["?"] * len(recent_ids))
         rows = nb.conn.execute(
             f"""SELECT result_id, experiment_id, graph_fingerprint, loss_ratio, novelty_score,
-                       stage1_passed, graph_n_ops, timestamp
+                       stage1_passed, graph_n_ops, timestamp,
+                       fp_interaction_hierarchy, fp_cka_vs_transformer,
+                       fp_cka_vs_ssm, fingerprint_json
                 FROM program_results
                 WHERE stage1_passed = 1
                   AND experiment_id IN ({placeholders})
