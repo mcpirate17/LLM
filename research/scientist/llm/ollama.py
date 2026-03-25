@@ -64,6 +64,22 @@ class OllamaBackend(LLMBackend):
         except Exception:
             return None
 
+    def unload_model(self) -> None:
+        """Force-unload the current model from GPU memory.
+
+        Sends a dummy request with keep_alive=0 to trigger immediate unload.
+        Call this before GPU-intensive work (training, evaluation).
+        """
+        try:
+            requests.post(
+                f"{self.host}/api/generate",
+                json={"model": self.model, "prompt": "", "keep_alive": 0},
+                timeout=10,
+            )
+            logger.info(f"Unloaded Ollama model {self.model} from GPU")
+        except Exception as e:
+            logger.debug(f"Ollama unload failed (may not be running): {e}")
+
     def generate(
         self,
         prompt: str,

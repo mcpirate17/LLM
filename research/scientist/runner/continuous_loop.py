@@ -39,6 +39,19 @@ class _ContinuousLoopMixin:
         self.aria._continuous_mode = True
         self.aria._llm_decision_interval = config.llm_decision_interval
 
+        # Backfill replication aggregates so composite scores reflect true n_runs
+        try:
+            init_nb = self._make_notebook()
+            n_backfilled = init_nb.backfill_replication_aggregates()
+            if n_backfilled:
+                logger.info(
+                    "Backfilled replication data on %d leaderboard entries",
+                    n_backfilled,
+                )
+            init_nb.close()
+        except Exception as e:
+            logger.debug("Replication backfill failed: %s", e)
+
         # Knowledge distiller — background intelligence thread
         distiller = None
         try:

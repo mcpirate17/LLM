@@ -153,7 +153,7 @@ class _LeaderboardMixin:
         resolved_result_id = result_id
         pr_row = self.conn.execute(
             "SELECT result_id, novelty_confidence, loss_ratio, param_count, flops_forward, "
-            "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json "
+            "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint "
             "FROM program_results WHERE result_id = ? "
             "OR graph_fingerprint = ? "
             "ORDER BY CASE WHEN result_id = ? THEN 0 ELSE 1 END, timestamp DESC "
@@ -184,6 +184,7 @@ class _LeaderboardMixin:
         _TIER_RANK = {
             "screened_out": 0,
             "screening": 1,
+            "investigation_failed": 1,
             "investigation": 2,
             "validation": 3,
             "breakthrough": 4,
@@ -227,6 +228,18 @@ class _LeaderboardMixin:
                 except (TypeError, ValueError):
                     pass
 
+        # Populate per-fingerprint replication aggregates
+        _fp = pr_row["graph_fingerprint"] if pr_row else None
+        if _fp:
+            agg = self.get_fingerprint_aggregates(_fp)
+            if agg.get("n_runs", 0) > 0:
+                kwargs.setdefault("replication_n", agg["n_runs"])
+                kwargs.setdefault("replication_loss_mean", agg["loss_mean"])
+                kwargs.setdefault("replication_loss_std", agg["loss_std"])
+                kwargs.setdefault(
+                    "replication_best_vs_mean_gap", agg["best_vs_mean_gap"]
+                )
+
         update_items = self._leaderboard_update_items(kwargs)
 
         score_kwargs = build_score_kwargs(
@@ -236,6 +249,15 @@ class _LeaderboardMixin:
             d,
             bool(is_reference),
         )
+        # Pass replication data to scoring
+        if _fp:
+            agg = kwargs
+            score_kwargs["replication_n"] = agg.get("replication_n")
+            score_kwargs["replication_loss_mean"] = agg.get("replication_loss_mean")
+            score_kwargs["replication_loss_std"] = agg.get("replication_loss_std")
+            score_kwargs["replication_best_vs_mean_gap"] = agg.get(
+                "replication_best_vs_mean_gap"
+            )
         composite = self.compute_composite_score(**score_kwargs)
 
         # Compute efficiency_multiple from program_results operational metrics
@@ -732,3 +754,50 @@ class _LeaderboardMixin:
                 for e in entries[:10]
             ],
         }
+
+    def backfill_replication_aggregates(self) -> int:
+        """Backfill replication_n and replication_loss_mean on all leaderboard entries.
+
+        Idempotent — safe to call on every startup. Only touches entries where
+        the stored replication_n disagrees with the current count from
+        program_results (handles new runs arriving since last backfill).
+
+        Returns the number of entries updated.
+        """
+        rows = self.conn.execute(
+            """SELECT l.entry_id, l.replication_n, pr.graph_fingerprint
+               FROM leaderboard l
+               JOIN program_results pr ON pr.result_id = l.result_id
+               WHERE pr.graph_fingerprint IS NOT NULL"""
+        ).fetchall()
+
+        updated = 0
+        for row in rows:
+            agg = self.get_fingerprint_aggregates(row["graph_fingerprint"])
+            n_runs = agg.get("n_runs", 0)
+            if n_runs == 0:
+                continue
+            # Skip if already up-to-date
+            if row["replication_n"] == n_runs:
+                continue
+            self.conn.execute(
+                """UPDATE leaderboard
+                   SET replication_n = ?,
+                       replication_loss_mean = ?,
+                       replication_loss_std = ?,
+                       replication_best_vs_mean_gap = ?
+                   WHERE entry_id = ?""",
+                (
+                    n_runs,
+                    agg.get("loss_mean"),
+                    agg.get("loss_std"),
+                    agg.get("best_vs_mean_gap"),
+                    row["entry_id"],
+                ),
+            )
+            updated += 1
+
+        if updated:
+            self._maybe_commit()
+            LOGGER.info("backfill_replication_aggregates: updated %d entries", updated)
+        return updated

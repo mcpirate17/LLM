@@ -74,6 +74,132 @@ _STRUCTURAL_SPLIT_OPS: FrozenSet[str] = frozenset(
     }
 )
 
+# Routing/gating ops — must not directly chain (double-routing produces
+# conflicting gradient signals: 100% failure in investigation data).
+_ROUTING_OPS: FrozenSet[str] = frozenset(
+    {
+        "adaptive_lane_mixer",
+        "adaptive_recursion",
+        "route_topk",
+        "route_lanes",
+        "route_recursion",
+        "moe_topk",
+        "moe_2expert",
+        "n_way_sparse_router",
+        "progressive_compression_gate",
+        "relu_gate_routing",
+        "routing_conditioned_compression",
+        "early_exit",
+        "cascade",
+    }
+)
+
+# Mask ops — produce structural masks, not data tensors. Must only feed
+# into attention/mixing ops that consume masks.
+_MASK_OPS: FrozenSet[str] = frozenset(
+    {
+        "sliding_window_mask",
+        "causal_mask",
+    }
+)
+
+# Mixing ops that can consume mask output
+_MIXING_OPS: FrozenSet[str] = frozenset(
+    {
+        "softmax_attention",
+        "linear_attention",
+        "graph_attention",
+        "diff_attention",
+        "local_window_attn",
+        "clifford_attention",
+    }
+)
+
+# Math-space ops — different algebraic metrics, must not directly chain
+# across spaces without normalization
+_MATH_SPACE_OPS: FrozenSet[str] = frozenset(
+    {
+        "clifford_attention",
+        "geometric_product",
+        "grade_select",
+        "rotor_transform",
+        "padic_expand",
+        "ultrametric_attention",
+        "tropical_center",
+        "tropical_matmul",
+        "tropical_gate",
+        "tropical_router",
+        "hyp_linear",
+        "hyp_tangent_nonlinear",
+        "chebyshev_spectral_mix",
+    }
+)
+
+# Sparse linear ops — internal sparsity patterns break when chained with
+# routing or full-width ops expecting dense input
+_SPARSE_LINEAR_OPS: FrozenSet[str] = frozenset(
+    {
+        "nm_sparse_linear",
+        "semi_structured_2_4_linear",
+        "block_sparse_linear",
+    }
+)
+
+# Ops that require causal masking context — identity strips it,
+# causing guaranteed causality violations when directly preceding these.
+_CAUSAL_SENSITIVE_OPS: FrozenSet[str] = frozenset(
+    {
+        "selective_scan",
+        "softmax_attention",
+        "linear_attention",
+        "graph_attention",
+        "diff_attention",
+        "state_space",
+        "rwkv_channel",
+        "rwkv_time_mixing",
+        "conv1d_seq",
+        "integral_kernel",
+        "transpose_sd",
+    }
+)
+
+# Ops that do internal Q/K/V or channel expansion — break when receiving
+# half-width input from split2 (100% RuntimeError in failure data).
+_FULL_DIM_OPS: FrozenSet[str] = frozenset(
+    {
+        "softmax_attention",
+        "linear_attention",
+        "graph_attention",
+        "diff_attention",
+        "state_space",
+        "selective_scan",
+        "rwkv_channel",
+        "rwkv_time_mixing",
+        "conv1d_seq",
+        "causal_mask",
+        "rope_rotate",
+        "sliding_window_mask",
+        "padic_expand",
+        "softmax_attention",
+        "gated_delta",
+        "low_rank_proj",
+        "basis_expansion",
+        "ternary_projection",
+    }
+)
+
+# Ops that need full model dim to function — down-projected input causes
+# RuntimeError (weight dim mismatch) or dead networks (capacity collapse).
+_FULL_DIM_CONSUMERS: FrozenSet[str] = frozenset(
+    {
+        "relu_gate_routing",
+        "adaptive_recursion",
+        "swiglu_mlp",
+        "gated_linear",
+        "conv1d_seq",
+    }
+)
+
 # ── Context Rules Registry ────────────────────────────────────────
 # Only ops with non-trivial constraints are listed.
 # Ops not listed here are treated as general-use with no extra constraints.
@@ -86,12 +212,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_successors=frozenset({"output_head"}),
         requires_residual_context=True,
     ),
-    "sliding_window_mask": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(),
-        forbidden_successors=frozenset({"output_head"}),
-        requires_residual_context=True,
-    ),
+    # sliding_window_mask: moved to routing section below
     "causal_mask": ContextRule(
         search_mode=SearchMode.RESTRICTED,
         forbidden_predecessors=frozenset(),
@@ -102,7 +223,9 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     "split2": ContextRule(
         search_mode=SearchMode.RESTRICTED,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=frozenset({"output_head"}),
+        # split2 halves dim — ops with internal projections built for full
+        # model_dim get RuntimeError shape mismatches (100% fail in data).
+        forbidden_successors=frozenset({"output_head"}) | _FULL_DIM_OPS,
     ),
     "split3": ContextRule(
         search_mode=SearchMode.RESTRICTED,
@@ -114,10 +237,24 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=frozenset(),
         forbidden_successors=frozenset({"output_head"}),
     ),
-    "identity": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+    # identity: moved to extended rules below
+    # ── Restricted-use: dimension-changing ops ───────────────────────
+    "linear_proj_down": ContextRule(
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=frozenset(),
-        forbidden_successors=frozenset({"output_head"}),
+        # Down-projection collapses dim — feeding into ops that expect
+        # full model_dim causes RuntimeError or capacity starvation
+        # (85-100% fail rate across swiglu_mlp, relu_gate_routing, etc.).
+        forbidden_successors=_FULL_DIM_CONSUMERS
+        | frozenset(
+            {
+                "identity",  # 100% fail — dead passthrough after dim collapse
+                "linear_proj_up",  # up after down with no activation = broken bottleneck
+                "concat",  # dim mismatch on concat with full-width sibling
+                "linear_proj",  # 100% fail (12/12)
+                "adaptive_recursion",  # 100% fail (7/7) — needs full dim
+            }
+        ),
     ),
     # ── Restricted-use: reduce ops (must not chain or feed output directly) ─
     "norm_last": ContextRule(
@@ -147,18 +284,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_successors=frozenset({"output_head"}),
         requires_residual_context=True,
     ),
-    "softmax_attention": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(),
-        forbidden_successors=frozenset({"output_head"}),
-        requires_residual_context=True,
-    ),
-    "linear_attention": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(),
-        forbidden_successors=frozenset({"output_head"}),
-        requires_residual_context=True,
-    ),
+    # softmax_attention, linear_attention: moved to extended rules below
     "state_space": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
@@ -195,11 +321,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_successors=_STRUCTURAL_SPLIT_OPS,
     ),
     # ── Promoted from NICHE to GENERAL: have dedicated templates + MATH_SPACE_RULES ──
-    "tropical_center": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(),
-        forbidden_successors=frozenset({"output_head"}),
-    ),
+    # tropical_center: moved to math-space rules section below
     "tropical_matmul": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
@@ -283,6 +405,203 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
     ),
+    # ── Routing ops: no double-routing, no feeding masks ────────────
+    # Failure data: adaptive_recursion->progressive_compression_gate,
+    # adaptive_lane_mixer->progressive_compression_gate, route_topk->add,
+    # moe_topk->rmsnorm all 100% fail. Routing ops must not chain.
+    "adaptive_recursion": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | frozenset({"linear_proj_down"}),
+        forbidden_successors=_ROUTING_OPS
+        | _MASK_OPS
+        | _MATH_SPACE_OPS
+        | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "adaptive_lane_mixer": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS
+        | _MASK_OPS
+        | frozenset(
+            {
+                "learnable_bias",  # redundant after routing
+            }
+        ),
+    ),
+    "route_topk": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS
+        | frozenset(
+            {
+                "add",
+                "mul",  # 100% fail: routing output fed to raw arithmetic
+                "linear_proj_up",  # 100% fail
+            }
+        ),
+    ),
+    "route_lanes": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS | _MASK_OPS,
+    ),
+    "moe_topk": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
+        forbidden_successors=_ROUTING_OPS
+        | frozenset(
+            {
+                "rmsnorm",
+                "layernorm",  # 100% fail: norm after MoE kills expert signals
+            }
+        ),
+    ),
+    "moe_2expert": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
+        forbidden_successors=_ROUTING_OPS
+        | frozenset(
+            {
+                "rmsnorm",
+                "layernorm",
+            }
+        ),
+    ),
+    "routing_conditioned_compression": ContextRule(
+        search_mode=SearchMode.NICHE,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS | _STRUCTURAL_SPLIT_OPS,
+    ),
+    # ── Mask ops: must feed mixing ops only ───────────────────────
+    "sliding_window_mask": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_ROUTING_OPS | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | (_ROUTING_OPS - _MIXING_OPS),
+        requires_residual_context=True,
+    ),
+    # ── Sparse linear ops: break with routing and MoE ────────────
+    "nm_sparse_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=_ROUTING_OPS
+        | frozenset(
+            {
+                "moe_topk",
+                "moe_2expert",  # 100% fail: sparse->MoE
+                "tanh",  # 100% fail
+            }
+        ),
+    ),
+    "semi_structured_2_4_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=_ROUTING_OPS,
+    ),
+    "block_sparse_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset(
+            {
+                "swiglu_mlp",  # 100% fail
+            }
+        ),
+    ),
+    # ── Down-projection: extend existing rule with more forbidden successors ─
+    # linear_proj_down->adaptive_recursion: 100% fail (7/7)
+    # linear_proj_down->add: 100% fail (11/11)
+    # linear_proj_down->linear_proj: 100% fail (12/12)
+    # (base rule already exists — updating handled below)
+    # ── Attention ops: must not feed raw linear_proj ──────────────
+    # softmax_attention->linear_proj: 100% fail (13/13)
+    # linear_attention->linear_proj: 100% fail (11/11)
+    "softmax_attention": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset({"output_head", "linear_proj"}),
+        requires_residual_context=True,
+    ),
+    "linear_attention": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    # ── MLP ops: must not feed down-projection or sparse ─────────
+    "swiglu_mlp": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
+        forbidden_successors=frozenset(
+            {
+                "linear_proj_down",  # 100% fail (15/15)
+                "nm_sparse_linear",  # 100% fail (6/6)
+            }
+        ),
+    ),
+    # ── Norm ops: must not feed identity or raw add ──────────────
+    "rmsnorm": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {
+                "progressive_compression_gate",  # 100% fail (17/17)
+                "moe_topk",  # 100% fail (40/40)
+                "chebyshev_spectral_mix",  # 100% fail (5/5)
+            }
+        ),
+        forbidden_successors=frozenset(
+            {
+                "identity",  # 100% fail (17/17) — strips causal mask
+                "rwkv_channel",  # 100% fail (17/17)
+            }
+        ),
+    ),
+    # layernorm->add has 30% fail rate (122F/289S) — not a hard ban.
+    # Failures are from direct layernorm->add with no op in between (empty residual).
+    # Most successes have layernorm->op->add with add as residual connection.
+    # ── Identity: extend existing — also kills selective_scan ────
+    "identity": ContextRule(
+        search_mode=SearchMode.RESTRICTED,
+        forbidden_predecessors=frozenset(
+            {
+                "rmsnorm",  # 100% fail (8/8)
+            }
+        ),
+        forbidden_successors=frozenset({"output_head"})
+        | _CAUSAL_SENSITIVE_OPS
+        | frozenset({"selective_scan"}),  # 100% fail (5/5)
+    ),
+    # ── Projection ops: chain prevention ─────────────────────────
+    "linear_proj_up": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset({"cos"}),  # 100% fail (17/17)
+        forbidden_successors=frozenset(
+            {
+                "mul",  # 100% fail (6/6)
+                "linear_proj_up",  # 100% fail (5/5) — double up-project
+                "linear_proj",  # 100% fail (5/5)
+            }
+        ),
+    ),
+    # ── Math-space ops: prevent cross-space chaining ─────────────
+    "padic_expand": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset(
+            {
+                "ultrametric_attention",  # 100% fail (5/5) — padic->ultrametric
+            }
+        )
+        | (_MATH_SPACE_OPS - frozenset({"padic_expand"})),
+    ),
+    "tropical_center": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset(
+            {
+                "linear_proj",  # 100% fail (5/5)
+            }
+        )
+        | (_MATH_SPACE_OPS - frozenset({"tropical_center", "tropical_matmul"})),
+    ),
     # ── Still NICHE: no dedicated template, needs further investigation ──
     "geometric_product": ContextRule(
         search_mode=SearchMode.NICHE,
@@ -291,8 +610,13 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     ),
     "progressive_compression_gate": ContextRule(
         search_mode=SearchMode.NICHE,
-        forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=_STRUCTURAL_SPLIT_OPS,
+        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
+        forbidden_successors=_STRUCTURAL_SPLIT_OPS
+        | frozenset(
+            {
+                "rmsnorm",  # 100% fail (17/17)
+            }
+        ),
     ),
 }
 

@@ -93,20 +93,78 @@ def _auto_discover_primary_model(probe) -> Optional[str]:
         return None
 
 
-def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
-    """Factory: create an LLM backend from environment variables.
+def _load_persisted_config() -> Optional["LLMBackend"]:
+    """Load LLM config from llm_config.json (saved by dashboard UI).
 
-    Environment:
-        ARIA_LLM_BACKEND: 'ollama', 'anthropic', or 'openai' (Primary)
-        ARIA_ANALYST_BACKEND: Faster fallback for standard analysis (optional)
-        ARIA_ANALYST_MODEL: Model override for analyst mode
+    The dashboard saves backend/api_key/model to llm_config.json next to the
+    notebook DB. CLI-launched runs (--mode=continuous) bypass the API server,
+    so create_backend() must also check this file.
+    """
+    from pathlib import Path
+
+    # Look for llm_config.json in common locations
+    for candidate in [
+        Path("research/llm_config.json"),
+        Path("llm_config.json"),
+        Path(__file__).resolve().parents[2] / "llm_config.json",
+    ]:
+        if not candidate.exists():
+            continue
+        try:
+            import json as _json
+
+            data = _json.loads(candidate.read_text())
+            backend_name = str(data.get("backend", "")).strip().lower()
+            api_key = str(data.get("api_key", "")).strip()
+            model = str(data.get("model", "")).strip()
+            host = str(data.get("host", "")).strip()
+            if not backend_name:
+                continue
+            b = create_backend_from_config(
+                backend_name, api_key=api_key, model=model, host=host
+            )
+            if b is not None:
+                logger.info(
+                    f"Loaded LLM config from {candidate}: backend={backend_name}"
+                )
+                return b
+        except Exception as e:
+            logger.debug(f"Failed to load {candidate}: {e}")
+    return None
+
+
+def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
+    """Factory: create an LLM backend from environment variables or persisted config.
+
+    Priority order:
+        1. Explicit env vars (ARIA_LLM_BACKEND, ARIA_ANALYST_BACKEND)
+        2. Persisted llm_config.json (saved by dashboard UI)
+        3. ANTHROPIC_API_KEY env var
+        4. Local Ollama auto-discovery (keep_alive=0)
+        5. None (rule-based fallback)
 
     Returns None if no backend is configured (rule-based fallback).
     """
-    # Auto-detection: if no explicit backend set, probe local Ollama
+    # Auto-detection when no explicit env var is set
     if not os.environ.get("ARIA_LLM_BACKEND") and not (
         is_analyst and os.environ.get("ARIA_ANALYST_BACKEND")
     ):
+        # Check persisted config from dashboard UI first
+        persisted = _load_persisted_config()
+        if persisted is not None:
+            return persisted
+
+        # Then check for Anthropic API key in env
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            from .anthropic import AnthropicBackend
+
+            b = AnthropicBackend()
+            if b.is_available():
+                logger.info(
+                    "Auto-detected Anthropic API key — using Anthropic over Ollama"
+                )
+                return b
+
         from .ollama import OllamaBackend
 
         probe = OllamaBackend()
@@ -120,10 +178,15 @@ def create_backend(is_analyst: bool = False) -> Optional[LLMBackend]:
                     return probe
             else:
                 # For primary LLM, pick the best available model
+                # Use keep_alive=0 — unload immediately after each call
+                # to avoid holding GPU memory during training
                 discovered = _auto_discover_primary_model(probe)
                 if discovered:
                     probe.model = discovered
-                    logger.info(f"Auto-detected primary LLM: {discovered} (Ollama)")
+                    probe.keep_alive = 0
+                    logger.info(
+                        f"Auto-detected primary LLM: {discovered} (Ollama, keep_alive=0)"
+                    )
                     return probe
 
     if is_analyst:

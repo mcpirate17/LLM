@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import queue
+import time
 from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -35,9 +37,29 @@ def _build_source_map(nb: Any, result_ids: List[str]) -> Dict[str, Dict]:
 
     Centralises the repeated ``[d or {} for d in (nb.get_program_details(ids) or [])]``
     pattern used in investigation/validation execution.
+
+    Also reconstructs ``_behavioral_fingerprint`` from ``fingerprint_json``
+    so that post-investigation fingerprint completion (CKA) can run.
     """
+    import json
+
     details = [d or {} for d in (nb.get_program_details(result_ids) or [])]
-    return {d.get("result_id"): d for d in details if d.get("result_id")}
+    source_map = {}
+    for d in details:
+        rid = d.get("result_id")
+        if not rid:
+            continue
+        # Reconstruct _behavioral_fingerprint from fingerprint_json if absent
+        if "_behavioral_fingerprint" not in d and d.get("fingerprint_json"):
+            try:
+                fp_data = d["fingerprint_json"]
+                if isinstance(fp_data, str):
+                    fp_data = json.loads(fp_data)
+                d["_behavioral_fingerprint"] = fp_data
+            except (json.JSONDecodeError, TypeError):
+                pass
+        source_map[rid] = d
+    return source_map
 
 
 def _corpus_type_from_config(config: Any) -> str:
@@ -292,6 +314,7 @@ def clear_gpu_memory() -> None:
 
     Centralised cleanup to avoid duplicating torch.cuda.empty_cache() +
     gc.collect() across 13+ call sites in runner submodules.
+    Also unloads any Ollama model to free VRAM for training.
     """
     import gc
 
@@ -303,6 +326,46 @@ def clear_gpu_memory() -> None:
     except Exception:
         pass
     gc.collect()
+    _unload_ollama_if_running()
+
+
+_ollama_last_unload: float = 0.0
+
+
+def _unload_ollama_if_running() -> None:
+    """Unload Ollama model from GPU if the server is reachable.
+
+    Debounced to at most once per 60 seconds — clear_gpu_memory() is called
+    20+ times per cycle and we don't want to spam HTTP requests.
+    No-ops silently if Ollama isn't running.
+    """
+    global _ollama_last_unload
+    import time
+
+    now = time.monotonic()
+    if now - _ollama_last_unload < 60.0:
+        return
+    _ollama_last_unload = now
+
+    try:
+        import requests
+
+        r = requests.get("http://localhost:11434/api/tags", timeout=1)
+        if r.status_code != 200:
+            return
+        models = r.json().get("models", [])
+        if not models:
+            return
+        for m in models:
+            name = m.get("name", "")
+            if name:
+                requests.post(
+                    "http://localhost:11434/api/generate",
+                    json={"model": name, "prompt": "", "keep_alive": 0},
+                    timeout=5,
+                )
+    except Exception:
+        pass
 
 
 def compute_seed_metrics(
@@ -521,7 +584,7 @@ def _native_proactive_gating(graph) -> Dict[str, Any]:
 
 def _native_runner_progress_report() -> Dict[str, Any]:
     try:
-        from ..native_runner import native_runner_capability_report
+        from ..native.telemetry import native_runner_capability_report
 
         return native_runner_capability_report()
     except Exception as exc:
@@ -739,40 +802,49 @@ def _evaluate_investigation_benchmarks(
             model,
             config.vocab_size,
             dev,
-            checkpoints=(200, 500),
+            checkpoints=(100, 500, 1000),
             seq_len=eval_seq_len,
         )
         ckpts = wt_result.get("checkpoints") or {}
-        ckpt_200 = ckpts.get(200) or ckpts.get("200") or {}
+        ckpt_100 = ckpts.get(100) or ckpts.get("100") or {}
         ckpt_500 = ckpts.get(500) or ckpts.get("500") or {}
-        ppl_200 = ckpt_200.get("ppl")
+        ckpt_1000 = ckpts.get(1000) or ckpts.get("1000") or {}
+        ppl_100 = ckpt_100.get("ppl")
         ppl_500 = ckpt_500.get("ppl")
+        ppl_1000 = ckpt_1000.get("ppl")
         improvement_ratio = wt_result.get("improvement_ratio")
-        result["wikitext_ppl_200"] = ppl_200
+        result["wikitext_ppl_200"] = ppl_100  # legacy column, now stores @100
         result["wikitext_ppl_500"] = ppl_500
         result["wikitext_improvement_ratio"] = improvement_ratio
-        result["wikitext_eval_steps"] = 500
-        result["eval_budget_steps"] = 500
+        result["wikitext_eval_steps"] = 1000 if ppl_1000 else 500
+        result["eval_budget_steps"] = 1000 if ppl_1000 else 500
+        # Use ppl@1000 as the screening perplexity (matches v7 anchor)
+        result["wikitext_perplexity"] = ppl_1000 or ppl_500 or ppl_100
         result["evaluation_stage"] = "PROBED"
         result["capability_tier"] = _trajectory_probe_capability_tier(
-            ppl_500,
+            ppl_1000 or ppl_500,
             improvement_ratio,
             float(
                 getattr(config, "improvement_ratio_escalation_threshold", 2.0) or 2.0
             ),
         )
-        result["inv_wikitext_ppl"] = wt_result.get("peak_ppl") or ppl_500 or ppl_200
+        result["inv_wikitext_ppl"] = (
+            wt_result.get("peak_ppl") or ppl_1000 or ppl_500 or ppl_100
+        )
         result["inv_wikitext_score"] = (
-            ckpt_500.get("score")
+            ckpt_1000.get("score")
+            if ckpt_1000.get("score") is not None
+            else ckpt_500.get("score")
             if ckpt_500.get("score") is not None
-            else ckpt_200.get("score")
+            else ckpt_100.get("score")
         )
         result["wikitext_trajectory_payload"] = wt_result
         if result["inv_wikitext_ppl"] is not None:
             logger.info(
-                "Investigation WikiText probe ppl200=%s ppl500=%s ratio=%s tier=%s",
-                f"{ppl_200:.1f}" if isinstance(ppl_200, (int, float)) else "n/a",
+                "Investigation WikiText-103 probe ppl100=%s ppl500=%s ppl1000=%s ratio=%s tier=%s",
+                f"{ppl_100:.1f}" if isinstance(ppl_100, (int, float)) else "n/a",
                 f"{ppl_500:.1f}" if isinstance(ppl_500, (int, float)) else "n/a",
+                f"{ppl_1000:.1f}" if isinstance(ppl_1000, (int, float)) else "n/a",
                 f"{improvement_ratio:.2f}"
                 if isinstance(improvement_ratio, (int, float))
                 else "n/a",
@@ -828,6 +900,7 @@ def _submit_benchmark_eval(
     config,
     dev,
     cached_json_load,
+    fingerprint_incomplete: bool = False,
 ) -> Future:
     """Submit benchmark evals + result recording to a background thread.
 
@@ -867,6 +940,7 @@ def _submit_benchmark_eval(
                 robustness=robustness,
                 investigation_passed=investigation_passed,
                 benchmark_result=benchmark_result,
+                fingerprint_incomplete=fingerprint_incomplete,
             )
             thread_nb.flush_writes()
         finally:
@@ -878,6 +952,8 @@ def _submit_benchmark_eval(
 _TIER_RANK = {
     "screened_out": 0,
     "screening": 1,
+    "investigation_failed": 1,  # same rank as screening — allows transition from screening
+    "investigation_fingerprint_incomplete": 1,  # fingerprint failed — not promotable
     "investigation": 2,
     "validation": 3,
     "breakthrough": 4,
@@ -914,6 +990,7 @@ def _record_investigation_result(
     robustness: float,
     investigation_passed: bool,
     benchmark_result: Dict[str, Any],
+    fingerprint_incomplete: bool = False,
 ) -> None:
     """Persist leaderboard and program-results updates for investigation.
 
@@ -953,7 +1030,11 @@ def _record_investigation_result(
         tier=_safe_tier(
             nb,
             source_result_id,
-            "investigation" if investigation_passed else "screened_out",
+            "investigation"
+            if investigation_passed
+            else "investigation_fingerprint_incomplete"
+            if fingerprint_incomplete
+            else "investigation_failed",
         ),
         novelty_confidence=source.get("novelty_confidence"),
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
@@ -1061,3 +1142,90 @@ def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
         compression_ratio=row.get("compression_ratio"),
         **wiki_fields,
     )
+
+
+# ── SSE Log Bridge ──────────────────────────────────────────────────────
+# Bridges Python logging → SSE event queue so dashboard live feed shows
+# log messages without modifying every call site.
+
+_SSE_LOG_DEDUP_WINDOW: float = 5.0  # seconds to suppress identical messages
+_SSE_LOG_RATE_LIMIT: int = 10  # max events per second per logger name
+_SSE_LOG_RATE_WINDOW: float = 1.0  # sliding window for rate limit
+
+
+class SSELogHandler(logging.Handler):
+    """Logging handler that forwards records to the runner's SSE event queue.
+
+    Guardrails:
+    - Only captures ``research.*`` loggers at INFO+
+    - Deduplicates identical messages within a time window
+    - Rate-limits per logger name to prevent queue saturation
+    - Never persists to DB (avoids bloating the notebook)
+    """
+
+    __slots__ = (
+        "_queue",
+        "_dedup",
+        "_rate_counts",
+        "_rate_window_start",
+    )
+
+    def __init__(self, event_queue: queue.Queue):
+        super().__init__(level=logging.INFO)
+        self._queue = event_queue
+        # {message_text: last_emit_ts}
+        self._dedup: Dict[str, float] = {}
+        # {logger_name: count_in_current_window}
+        self._rate_counts: Dict[str, int] = {}
+        self._rate_window_start: float = time.monotonic()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Only research.* loggers, skip werkzeug/urllib3/etc.
+        return record.name.startswith("research.")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record) if self.formatter else record.getMessage()
+            now = time.monotonic()
+
+            # ── Dedup: skip identical messages within window ──
+            last_seen = self._dedup.get(msg)
+            if last_seen is not None and (now - last_seen) < _SSE_LOG_DEDUP_WINDOW:
+                return
+            self._dedup[msg] = now
+
+            # Prune stale dedup entries periodically (every ~50 messages)
+            if len(self._dedup) > 200:
+                cutoff = now - _SSE_LOG_DEDUP_WINDOW
+                self._dedup = {k: v for k, v in self._dedup.items() if v > cutoff}
+
+            # ── Rate limit per logger name ──
+            if (now - self._rate_window_start) >= _SSE_LOG_RATE_WINDOW:
+                self._rate_counts.clear()
+                self._rate_window_start = now
+            count = self._rate_counts.get(record.name, 0)
+            if count >= _SSE_LOG_RATE_LIMIT:
+                return
+            self._rate_counts[record.name] = count + 1
+
+            # ── Push to SSE queue ──
+            # Truncate short logger prefix for dashboard display
+            short_name = record.name
+            if short_name.startswith("research."):
+                short_name = short_name[len("research.") :]
+
+            payload = {
+                "type": "log_message",
+                "data": {
+                    "level": record.levelname,
+                    "logger": short_name,
+                    "message": msg[:500],
+                    "timestamp": time.time(),
+                },
+                "timestamp": time.time(),
+            }
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            pass  # drop log events silently when queue is saturated
+        except Exception:
+            pass  # never break the logging pipeline

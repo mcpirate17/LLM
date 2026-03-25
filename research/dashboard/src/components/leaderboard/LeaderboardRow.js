@@ -77,7 +77,9 @@ export const LeaderboardRow = React.memo(({
         cursor: 'pointer',
         background: isHighlighted
           ? 'rgba(88, 166, 255, 0.2)'
-          : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
+          : (entry.is_reference || entry.model_source === 'reference')
+            ? 'rgba(136, 87, 204, 0.10)'
+            : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
         animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
       }}
       onClick={() => onSelect(entry.result_id)}
