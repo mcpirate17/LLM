@@ -232,11 +232,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}),
     ),
-    "concat": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
-        forbidden_predecessors=frozenset(),
-        forbidden_successors=frozenset({"output_head"}),
-    ),
+    # concat: moved to extended rules section with failure-derived constraints
     # identity: moved to extended rules below
     # ── Restricted-use: dimension-changing ops ───────────────────────
     "linear_proj_down": ContextRule(
@@ -349,7 +345,12 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     ),
     "early_exit": ContextRule(
         search_mode=SearchMode.RESTRICTED,
-        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_predecessors=_REDUCE_OPS
+        | frozenset(
+            {
+                "add",  # 100% fail (37/37) — double residual, conflicting exits
+            }
+        ),
         forbidden_successors=_STRUCTURAL_SPLIT_OPS,
         requires_residual_context=True,
     ),
@@ -398,7 +399,8 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     "exp": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+        forbidden_successors=frozenset({"output_head", "mul", "linear_proj"})
+        | _STRUCTURAL_SPLIT_OPS,
     ),
     "sign_ste": ContextRule(
         search_mode=SearchMode.GENERAL,
@@ -415,7 +417,13 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_successors=_ROUTING_OPS
         | _MASK_OPS
         | _MATH_SPACE_OPS
-        | _STRUCTURAL_SPLIT_OPS,
+        | _STRUCTURAL_SPLIT_OPS
+        | _MIXING_OPS  # 100% fail: recursion strips residual/mask context
+        | frozenset(
+            {
+                "linear_proj_up",  # 100% fail — redundant projection after recursion
+            }
+        ),
     ),
     "adaptive_lane_mixer": ContextRule(
         search_mode=SearchMode.GENERAL,
@@ -516,7 +524,11 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     # linear_attention->linear_proj: 100% fail (11/11)
     "softmax_attention": ContextRule(
         search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(),
+        forbidden_predecessors=frozenset(
+            {
+                "causal_mask",  # 100% fail (58/58) — mask tensor fed as data input
+            }
+        ),
         forbidden_successors=frozenset({"output_head", "linear_proj"}),
         requires_residual_context=True,
     ),
@@ -615,6 +627,66 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         | frozenset(
             {
                 "rmsnorm",  # 100% fail (17/17)
+            }
+        ),
+    ),
+    # ── From user-reported 5% penalty pairs (all 100% fail in program_results) ──
+    "spectral_filter": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {
+                "add",  # 100% fail (56/56) — residual sum into FFT = garbage spectrum
+            }
+        ),
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "bottleneck_proj": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset(
+            {
+                "cos",  # 100% fail (10/10) — reduced dim into cos = numerically unstable
+            }
+        ),
+    ),
+    "concat": ContextRule(
+        search_mode=SearchMode.RESTRICTED,
+        forbidden_predecessors=frozenset(
+            {
+                "concat",  # 100% fail (14/14) — double concat = 4x dim explosion
+                "cos",  # 100% fail (10/10) — cos ∈ [-1,1] width != sibling width
+            }
+        ),
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "conv1d_seq": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset(
+            {
+                "neg",  # 100% fail (11/11) — negation destroys conv features
+            }
+        ),
+    ),
+    "cos": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset(
+            {
+                "concat",  # 100% fail (10/10) — bounded output width mismatch
+                "linear_proj_down",  # 100% fail (16/16) — bounded input starves projection
+                "linear_proj_up",  # 100% fail (17/17)
+            }
+        )
+        | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "gated_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset(
+            {
+                "mul",  # 100% fail (10/10) — double gating
+                "ternary_projection",  # 100% fail (27/27) — gated output into {-1,0,1} kills gradients
             }
         ),
     ),
