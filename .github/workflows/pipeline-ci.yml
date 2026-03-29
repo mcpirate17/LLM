@@ -18,6 +18,10 @@ on:
       - ".github/workflows/pipeline-ci.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 concurrency:
   group: pipeline-ci-${{ github.ref }}
   cancel-in-progress: true

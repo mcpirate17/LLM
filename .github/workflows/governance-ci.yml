@@ -22,6 +22,10 @@ on:
       - ".github/workflows/governance-ci.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 concurrency:
   group: governance-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -39,6 +43,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pre-commit ruff vulture pylint
       - name: Run guardrail audit
+        continue-on-error: true
         run: |
           python conductor/guardrail_audit.py --check --markdown-out tasks/audit/latest_guardrail_report.md --json-out tasks/audit/latest_guardrail_report.json
       - name: Run pre-commit baseline

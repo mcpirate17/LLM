@@ -64,7 +64,12 @@ def _canonical_component_violations() -> List[CanonicalViolation]:
             payload = json.loads(file_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        nodes = payload.get("nodes")
+        if isinstance(payload, list):
+            nodes = payload
+        elif isinstance(payload, dict):
+            nodes = payload.get("nodes")
+        else:
+            continue
         if not isinstance(nodes, list):
             continue
         for node in nodes:

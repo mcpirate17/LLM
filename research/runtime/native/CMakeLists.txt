@@ -17,13 +17,18 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_designer/runtime/s
 # Local native kernel sources
 file(GLOB NATIVE_SRCS src/*.c)
 
-# Shared aria_designer kernel sources (reuse, don't duplicate)
+# Shared aria_designer kernel sources (reuse if present, skip in CI)
 set(DESIGNER_KERNELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_designer/runtime/src)
-set(DESIGNER_SRCS
-    ${DESIGNER_KERNELS_DIR}/kernels.c
-)
+set(DESIGNER_KERNEL_FILE ${DESIGNER_KERNELS_DIR}/kernels.c)
+set(DESIGNER_SRCS "")
+if(EXISTS ${DESIGNER_KERNEL_FILE})
+    message(STATUS "Found designer kernels: ${DESIGNER_KERNEL_FILE}")
+    set(DESIGNER_SRCS ${DESIGNER_KERNEL_FILE})
+else()
+    message(STATUS "Designer kernels not found (local build artifact), building without")
+endif()
 
-# Build shared library linking both local + designer kernels
+# Build shared library linking both local + designer kernels (if present)
 add_library(aria_native_runtime SHARED ${NATIVE_SRCS} ${DESIGNER_SRCS})
 target_link_libraries(aria_native_runtime m)
 

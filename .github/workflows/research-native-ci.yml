@@ -44,7 +44,7 @@ jobs:
         if: matrix.python-version == '3.11'
         run: |
           cd research/dashboard
-          npm ci
+          npm install
           CI=true npx react-scripts test --watch=false --runInBand --testPathPattern=ControlPanel.test.js
 
       - name: Build native runtime
