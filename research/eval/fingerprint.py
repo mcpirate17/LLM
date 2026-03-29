@@ -154,6 +154,180 @@ class BehavioralFingerprint:
         return "\n".join(lines)
 
 
+def _populate_behavioral_probes(
+    fp: BehavioralFingerprint,
+    model: nn.Module,
+    probe_ids: torch.Tensor,
+    reps: list,
+    dev: torch.device,
+    seq_len: int,
+    vocab_size: int,
+    include: bool,
+) -> int:
+    """Fill interaction, geometry, hierarchy, and sensitivity fields.
+
+    Returns the number of sub-analyses that succeeded.
+    """
+    n_succeeded = 0
+
+    if reps is not None and len(reps) > 0:
+        if include:
+            interaction = _analyze_interactions(
+                model, probe_ids, dev, seq_len, vocab_size
+            )
+            fp.interaction_locality = interaction["locality"]
+            fp.interaction_sparsity = interaction["sparsity"]
+            fp.interaction_symmetry = interaction["symmetry"]
+            fp.interaction_hierarchy = interaction["hierarchy"]
+            if interaction.get("_succeeded"):
+                n_succeeded += 1
+
+            geometry = _analyze_geometry(reps)
+            fp.intrinsic_dim = geometry["intrinsic_dim"]
+            fp.isotropy = geometry["isotropy"]
+            fp.rank_ratio = geometry["rank_ratio"]
+            if geometry.get("_succeeded"):
+                n_succeeded += 1
+        else:
+            fp.interaction_locality = None
+            fp.interaction_sparsity = None
+            fp.interaction_symmetry = None
+            fp.interaction_hierarchy = None
+            fp.intrinsic_dim = None
+            fp.isotropy = None
+            fp.rank_ratio = None
+
+        try:
+            from .hierarchy_probe import hierarchy_fitness as _hf
+
+            hf_result = _hf(reps, max_tokens=100)
+            fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
+            fp.gromov_delta = hf_result["gromov_delta"]
+        except Exception as e:
+            logger.debug("Hierarchy probe skipped: %s", e)
+
+    if include:
+        sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
+        fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
+        fp.jacobian_effective_rank = sensitivity["effective_rank"]
+        fp.sensitivity_uniformity = sensitivity["uniformity"]
+        if sensitivity.get("_succeeded"):
+            n_succeeded += 1
+    else:
+        fp.jacobian_spectral_norm = None
+        fp.jacobian_effective_rank = None
+        fp.sensitivity_uniformity = None
+
+    try:
+        routing_data = _analyze_routing(model, probe_ids, dev)
+        fp.routing_selectivity = routing_data["selectivity"]
+        fp.routing_compute_ratio = routing_data["compute_ratio"]
+        fp.routing_lane_correlation = routing_data["lane_correlation"]
+        fp.routing_telemetry_present = routing_data.get("_has_routing", False)
+    except Exception as e_route:
+        logger.debug("Routing analysis skipped: %s", e_route)
+        fp.routing_telemetry_present = False
+
+    return n_succeeded
+
+
+def _populate_cka(
+    fp: BehavioralFingerprint,
+    reps: list,
+    include: bool,
+) -> Tuple[int, bool]:
+    """Fill CKA similarity fields and validity gates.
+
+    Returns (n_succeeded, cka_all_zero).
+    """
+    if not include:
+        fp.cka_vs_transformer = None
+        fp.cka_vs_ssm = None
+        fp.cka_vs_conv = None
+        fp.cka_source = "deferred"
+        fp.novelty_valid_for_promotion = False
+        fp.novelty_validity_reason = "cka_deferred_post_investigation"
+        return 0, False
+
+    from .cka_references import get_default_store
+
+    store = get_default_store()
+    ref_activations = store.get_references()
+    cka_meta = store.get_metadata()
+
+    cka = _compute_reference_cka(reps, ref_activations=ref_activations)
+    fp.cka_vs_transformer = cka.get("transformer", 0.0)
+    fp.cka_vs_ssm = cka.get("ssm", 0.0)
+    fp.cka_vs_conv = cka.get("conv", 0.0)
+    fp.cka_source = cka_meta.get("cka_source", "none")
+    fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
+    fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
+    fp.similarity_path = cka_meta.get("cka_similarity_path", "_compute_reference_cka")
+
+    # Sanity gate: all CKA scores near-zero likely means the computation
+    # failed (device mismatch, degenerate reps).
+    all_near_zero = (
+        fp.cka_vs_transformer < 0.01 and fp.cka_vs_ssm < 0.01 and fp.cka_vs_conv < 0.01
+    )
+    if all_near_zero and cka.get("_succeeded"):
+        logger.warning(
+            "CKA sanity gate: all three scores < 0.01 — marking "
+            "cka_reference_quality as false"
+        )
+        fp.cka_reference_quality = False
+    else:
+        fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
+
+    fp.novelty_reference_version = build_novelty_reference_version(
+        fp.cka_source,
+        fp.cka_artifact_version,
+        fp.cka_probe_protocol_hash,
+    )
+
+    # Promotion validity based on CKA source
+    if fp.cka_source == "artifact":
+        fp.novelty_valid_for_promotion = True
+        fp.novelty_validity_reason = "artifact_reference"
+    elif fp.cka_source == "heuristic_fallback":
+        fp.novelty_valid_for_promotion = False
+        fp.novelty_validity_reason = "heuristic_fallback_reference"
+    else:
+        fp.novelty_valid_for_promotion = False
+        fp.novelty_validity_reason = "no_reference_available"
+
+    # Degenerate CKA: all three scores near zero → no usable signal.
+    # Would yield novelty_score ≈ 1.0 from distance term.
+    cka_scores = [fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv]
+    cka_all_zero = all(abs(s) < 1e-6 for s in cka_scores)
+    if cka_all_zero:
+        fp.novelty_valid_for_promotion = False
+        fp.novelty_validity_reason = "cka_degenerate_zeros"
+        logger.warning(
+            "cka_degenerate_zeros: cka_scores=%s cka_source=%s quality=%s",
+            cka_scores,
+            fp.cka_source,
+            fp.quality,
+        )
+
+    # Kernel fallback invalidates promotion — C++ probes may have produced
+    # degraded results that inflate or deflate novelty.
+    from research.synthesis.compiler_op_utils import (
+        kernel_fallback_occurred as _kf,
+    )
+
+    if _kf():
+        fp.novelty_valid_for_promotion = False
+        fp.novelty_validity_reason = fp.novelty_validity_reason + "|kernel_fallback"
+        logger.warning(
+            "novelty_invalidated_kernel_fallback: cka_source=%s quality=%s",
+            fp.cka_source,
+            fp.quality,
+        )
+
+    n_succeeded = 1 if cka.get("_succeeded") else 0
+    return n_succeeded, cka_all_zero
+
+
 def compute_fingerprint(
     model: nn.Module,
     seq_len: int = 64,
@@ -177,187 +351,35 @@ def compute_fingerprint(
     model = model.to(dev).eval()
     fp = BehavioralFingerprint()
 
-    n_succeeded = 0
-
     with torch.no_grad():
-        # Generate probe inputs
         probe_ids = torch.randint(0, vocab_size, (n_probes, seq_len), device=dev)
-
-        # Get intermediate representations
         reps = _get_representations(model, probe_ids, dev)
 
-        if reps is not None and len(reps) > 0:
-            if include_behavioral_probes:
-                # Token interaction pattern
-                interaction = _analyze_interactions(
-                    model, probe_ids, dev, seq_len, vocab_size
-                )
-                fp.interaction_locality = interaction["locality"]
-                fp.interaction_sparsity = interaction["sparsity"]
-                fp.interaction_symmetry = interaction["symmetry"]
-                fp.interaction_hierarchy = interaction["hierarchy"]
-                if interaction.get("_succeeded"):
-                    n_succeeded += 1
+        probe_succeeded = _populate_behavioral_probes(
+            fp,
+            model,
+            probe_ids,
+            reps,
+            dev,
+            seq_len,
+            vocab_size,
+            include=include_behavioral_probes,
+        )
+        cka_succeeded, cka_all_zero = _populate_cka(
+            fp,
+            reps,
+            include=include_cka,
+        )
 
-                # Representation geometry
-                geometry = _analyze_geometry(reps)
-                fp.intrinsic_dim = geometry["intrinsic_dim"]
-                fp.isotropy = geometry["isotropy"]
-                fp.rank_ratio = geometry["rank_ratio"]
-                if geometry.get("_succeeded"):
-                    n_succeeded += 1
-            else:
-                # Behavioral probes deferred — set fields to None
-                fp.interaction_locality = None
-                fp.interaction_sparsity = None
-                fp.interaction_symmetry = None
-                fp.interaction_hierarchy = None
-                fp.intrinsic_dim = None
-                fp.isotropy = None
-                fp.rank_ratio = None
-
-            # Hierarchy detection (Gromov delta-hyperbolicity)
-            # Structural — always computed when reps available
-            try:
-                from .hierarchy_probe import hierarchy_fitness as _hf
-
-                hf_result = _hf(reps, max_tokens=100)
-                fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
-                fp.gromov_delta = hf_result["gromov_delta"]
-            except Exception as e:
-                logger.debug("Hierarchy probe skipped: %s", e)
-
-        if include_behavioral_probes:
-            # Input sensitivity (Jacobian analysis)
-            sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
-            fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
-            fp.jacobian_effective_rank = sensitivity["effective_rank"]
-            fp.sensitivity_uniformity = sensitivity["uniformity"]
-            if sensitivity.get("_succeeded"):
-                n_succeeded += 1
-        else:
-            fp.jacobian_spectral_norm = None
-            fp.jacobian_effective_rank = None
-            fp.sensitivity_uniformity = None
-
-        # Routing-aware analysis (Task 2H)
-        try:
-            routing_data = _analyze_routing(model, probe_ids, dev)
-            fp.routing_selectivity = routing_data["selectivity"]
-            fp.routing_compute_ratio = routing_data["compute_ratio"]
-            fp.routing_lane_correlation = routing_data["lane_correlation"]
-            # _analyze_routing returns all-zero defaults when model has no routing ops
-            fp.routing_telemetry_present = routing_data.get("_has_routing", False)
-        except Exception as e_route:
-            logger.debug("Routing analysis skipped: %s", e_route)
-            fp.routing_telemetry_present = False
-
-        cka_all_zero = False
-
-        if include_cka:
-            # CKA similarity to reference architectures
-            # Try artifact-backed CKA first, fall back to heuristic
-            from .cka_references import get_default_store
-
-            store = get_default_store()
-            ref_activations = store.get_references()
-            cka_meta = store.get_metadata()
-
-            cka = _compute_reference_cka(reps, ref_activations=ref_activations)
-            fp.cka_vs_transformer = cka.get("transformer", 0.0)
-            fp.cka_vs_ssm = cka.get("ssm", 0.0)
-            fp.cka_vs_conv = cka.get("conv", 0.0)
-            fp.cka_source = cka_meta.get("cka_source", "none")
-            fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
-            fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
-            fp.similarity_path = cka_meta.get(
-                "cka_similarity_path", "_compute_reference_cka"
-            )
-            # Sanity gate: if all CKA scores are near-zero, the computation
-            # likely failed (e.g. device mismatch, degenerate reps). Mark as
-            # low-quality rather than trusting the manifest blindly.
-            all_near_zero = (
-                fp.cka_vs_transformer < 0.01
-                and fp.cka_vs_ssm < 0.01
-                and fp.cka_vs_conv < 0.01
-            )
-            if all_near_zero and cka.get("_succeeded"):
-                logger.warning(
-                    "CKA sanity gate: all three scores < 0.01 — marking "
-                    "cka_reference_quality as false"
-                )
-                fp.cka_reference_quality = False
-            else:
-                fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
-            fp.novelty_reference_version = build_novelty_reference_version(
-                fp.cka_source,
-                fp.cka_artifact_version,
-                fp.cka_probe_protocol_hash,
-            )
-            if fp.cka_source == "artifact":
-                fp.novelty_valid_for_promotion = True
-                fp.novelty_validity_reason = "artifact_reference"
-            elif fp.cka_source == "heuristic_fallback":
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "heuristic_fallback_reference"
-            else:
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "no_reference_available"
-
-            # Degenerate CKA: all three scores near zero means the CKA computation
-            # produced no usable signal. Invalidate regardless of cka_source or
-            # _succeeded — arithmetic would yield novelty_score ≈ 1.0 from
-            # _cka_distance_novelty = 1.0 - max(0,0,0,0.01) = 0.99.
-            cka_scores = [fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv]
-            cka_all_zero = all(abs(s) < 1e-6 for s in cka_scores)
-            if cka_all_zero:
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "cka_degenerate_zeros"
-                logger.warning(
-                    "cka_degenerate_zeros: cka_scores=%s cka_source=%s quality=%s",
-                    cka_scores,
-                    fp.cka_source,
-                    fp.quality,
-                )
-
-            # Kernel fallback invalidates promotion — C++ probes may have produced
-            # degraded results that inflate or deflate novelty.
-            from research.synthesis.compiler_op_utils import (
-                kernel_fallback_occurred as _kf,
-            )
-
-            if _kf():
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = (
-                    fp.novelty_validity_reason + "|kernel_fallback"
-                )
-                logger.warning(
-                    "novelty_invalidated_kernel_fallback: cka_source=%s quality=%s",
-                    fp.cka_source,
-                    fp.quality,
-                )
-
-            if cka.get("_succeeded"):
-                n_succeeded += 1
-        else:
-            # CKA deferred — set fields to None, mark invalid for promotion
-            fp.cka_vs_transformer = None
-            fp.cka_vs_ssm = None
-            fp.cka_vs_conv = None
-            fp.cka_source = "deferred"
-            fp.novelty_valid_for_promotion = False
-            fp.novelty_validity_reason = "cka_deferred_post_investigation"
-
+        n_succeeded = probe_succeeded + cka_succeeded
         fp.behavior_signature_score = _behavior_signature_score(fp)
         fp.novelty_score = _blend_behavioral_novelty(fp)
 
         # When CKA is degenerate, the blend formula produces ~0.99 from the
-        # CKA distance term. Replace with behavior_signature_score alone so
-        # novelty reflects only what was actually measured.
+        # CKA distance term. Replace with behavior_signature_score alone.
         if cka_all_zero:
             fp.novelty_score = fp.behavior_signature_score
 
-    # Record analysis quality
     fp.analyses_succeeded = n_succeeded
     if n_succeeded == 4:
         fp.quality = "full"
