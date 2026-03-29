@@ -22,6 +22,7 @@ from .motifs import (
     MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_MATH_SPACE,
     MOTIF_CLASS_MOE,
+    MOTIF_CLASS_NORM,  # noqa: F401 — re-exported for _templates_*.py
     MOTIF_CLASS_REDUCE,
     MOTIF_CLASS_SPARSE,
     MOTIF_CLASS_SSM,
