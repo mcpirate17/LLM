@@ -55,6 +55,15 @@ def _maybe_prepare_runner_abi_session(
 def compile_model_native_first(
     layer_graphs, vocab_size=VOCAB_SIZE, max_seq_len=None, **kwargs
 ):
+    # Reject graphs with byte-unsafe ops before native compilation —
+    # token_merge/mod_topk break tensor layout in native execution.
+    from research.synthesis.context_rules import find_byte_safety_violations
+
+    for g in layer_graphs:
+        violations = find_byte_safety_violations(g)
+        if violations:
+            raise ValueError(f"Cannot compile for native execution: {violations[0]}")
+
     _compiler_mod.os.environ = os.environ
     _compiler_mod._legacy_compile_model = _legacy_compile_model
     _compiler_mod._try_load_native_lib = _try_load_native_lib

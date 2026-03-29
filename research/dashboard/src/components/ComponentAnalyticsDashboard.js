@@ -106,6 +106,13 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
 
   const filtered = useMemo(() => {
     let list = components || [];
+    // Deduplicate by op name (keep first occurrence — highest priority from backend sort)
+    const seen = new Set();
+    list = list.filter(c => {
+      if (seen.has(c.op)) return false;
+      seen.add(c.op);
+      return true;
+    });
     if (filter !== 'all') list = list.filter(c => c.status === filter);
     if (sourceFilter !== 'all') list = list.filter(c => c.data_source === sourceFilter);
     if (searchTerm) {

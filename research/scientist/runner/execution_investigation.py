@@ -25,7 +25,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from ..thresholds import (
+    INVESTIGATION_BRITTLE_OVERRIDE_LR,
+    INVESTIGATION_EARLY_PASS_LR,
+)
 from ._types import RunConfig
+
+
+def _fail_loud(phase: str, message: str, exc: BaseException) -> None:
+    logger.exception("%s: %s", phase, message)
+    raise RuntimeError(f"{phase}: {message}") from exc
 
 
 class _ExecutionInvestigationMixin:
@@ -56,8 +65,12 @@ class _ExecutionInvestigationMixin:
                             rid[:8],
                             row[0],
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _fail_loud(
+                        "investigation",
+                        f"failed to read pre-inv score for {rid[:8]}",
+                        exc,
+                    )
 
         # Load phase checkpoint to find where we left off
         resume_from_candidate = 0
@@ -84,7 +97,7 @@ class _ExecutionInvestigationMixin:
             dev = resolve_device(config.device)
             str(dev)
 
-            inv_config = RunConfig.from_dict(config.to_dict())
+            inv_config = config.copy()
             inv_config.stage1_steps = config.investigation_steps
             inv_config.stage1_batch_size = config.investigation_batch_size
             # Scale early stopping for longer investigation runs.
@@ -174,8 +187,12 @@ class _ExecutionInvestigationMixin:
                                 _tp_cap,
                                 free_mb,
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _fail_loud(
+                            "investigation",
+                            f"failed to compute VRAM seq_len cap for {source_result_id[:8]}",
+                            exc,
+                        )
                 tp_max_seq = min(config.max_seq_len, _tp_cap)
                 training_programs, tp_sched = synthesize_training_program_batch(
                     n_programs=config.n_training_programs,
@@ -226,10 +243,16 @@ class _ExecutionInvestigationMixin:
                                 max_seq_len=tp_max_seq,
                             )
                         else:
-                            continue
+                            raise RuntimeError(
+                                f"No model source available for {source_result_id[:8]}"
+                            )
                     except Exception as e:
-                        logger.debug(f"Model reconstruction failed: {e}")
-                        continue
+                        _fail_loud(
+                            "investigation",
+                            f"model reconstruction failed for {source_result_id[:8]} "
+                            f"training program {tp_i + 1}/{len(training_programs)}",
+                            e,
+                        )
 
                     self._emit_event(
                         "investigation_progress",
@@ -289,13 +312,12 @@ class _ExecutionInvestigationMixin:
                                 del _probe
                                 torch.cuda.synchronize()
                                 logger.info("CUDA context recovered after fatal error")
-                            except Exception:
-                                logger.error(
-                                    "CUDA context unrecoverable — aborting "
-                                    "remaining training programs for %s",
-                                    source_result_id[:8],
+                            except Exception as exc:
+                                _fail_loud(
+                                    "investigation",
+                                    f"CUDA context unrecoverable for {source_result_id[:8]}",
+                                    exc,
                                 )
-                                break
                             continue  # skip model retention, try next program
 
                     # Retain the best-performing model for post-investigation
@@ -315,11 +337,11 @@ class _ExecutionInvestigationMixin:
 
                 # Skip candidates where no training program could reconstruct the model
                 if not tp_results:
-                    logger.debug(
-                        f"Threaded investigation: skipping {source_result_id[:8]} — "
-                        f"model failed to reconstruct for all {len(training_programs)} programs"
+                    raise RuntimeError(
+                        f"Investigation aborted for {source_result_id[:8]}: "
+                        f"model failed to reconstruct for all {len(training_programs)} "
+                        "training programs"
                     )
-                    continue
 
                 # Detect infrastructure failures (CUDA errors, OOM, etc.)
                 # These are not evidence about the architecture — don't record
@@ -387,69 +409,110 @@ class _ExecutionInvestigationMixin:
                 results["stage05_passed"] += 1
 
                 # Gate: pass investigation if loss quality is good enough.
-                # [CALIBRATION] source: judgment — 0.5 and 0.3 are hardcoded; no config key
-                #   last reviewed: unknown — flag for calibration sweep
-                investigation_passed_early = (best_lr or 1.0) < 0.5 and (
-                    not brittle_risk or (best_lr is not None and best_lr < 0.3)
+                # Thresholds centralized in thresholds.py.
+                investigation_passed_early = (
+                    best_lr or 1.0
+                ) < INVESTIGATION_EARLY_PASS_LR and (
+                    not brittle_risk
+                    or (
+                        best_lr is not None
+                        and best_lr < INVESTIGATION_BRITTLE_OVERRIDE_LR
+                    )
                 )
 
                 # Post-investigation fingerprint completion: run CKA +
                 # behavioral probes on the best converged model.
+                # Fingerprint must complete for escalation to validation
+                # (B1 gate in _auto_escalate_investigation blocks without it).
+                _fingerprint_completed = False
+                _fingerprint_attempted = False
                 _fp_dict = source.get("_behavioral_fingerprint")
                 if _best_inv_model is not None and _fp_dict is not None:
-                    try:
-                        from ...eval.fingerprint import (
-                            BehavioralFingerprint,
-                            complete_fingerprint_post_investigation,
-                        )
+                    _fingerprint_attempted = True
+                    from ...eval.fingerprint import (
+                        BehavioralFingerprint,
+                        complete_fingerprint_post_investigation,
+                    )
 
-                        _fp = BehavioralFingerprint(
-                            **{
-                                k: v
-                                for k, v in _fp_dict.items()
-                                if k
-                                in {
-                                    f.name
-                                    for f in BehavioralFingerprint.__dataclass_fields__.values()
-                                }
+                    _fp = BehavioralFingerprint(
+                        **{
+                            k: v
+                            for k, v in _fp_dict.items()
+                            if k
+                            in {
+                                f.name
+                                for f in BehavioralFingerprint.__dataclass_fields__.values()
                             }
-                        )
-                        if not _fp.fingerprint_completed_post_investigation:
-                            _fp = complete_fingerprint_post_investigation(
-                                _fp,
-                                _best_inv_model,
-                                seq_len=min(64, config.max_seq_len),
-                                model_dim=config.model_dim,
-                                vocab_size=config.vocab_size,
-                                device=str(dev),
-                            )
-                            # Update the source fingerprint for downstream use
-                            source["_behavioral_fingerprint"] = _fp.to_dict()
-                            source["novelty_confidence"] = (
-                                0.9
-                                if _fp.quality == "full"
-                                else 0.4 + (_fp.analyses_succeeded * 0.1)
-                                if _fp.quality == "partial"
-                                else 0.3
-                            )
-                            logger.info(
-                                "post_investigation_fingerprint_completed: "
-                                "result_id=%s novelty_score=%.4f "
-                                "novelty_valid=%s cka_source=%s",
-                                source_result_id[:12],
-                                _fp.novelty_score,
-                                _fp.novelty_valid_for_promotion,
-                                _fp.cka_source,
-                            )
-                    except Exception as e:
-                        logger.error(
-                            "post_investigation_fingerprint_failed: "
-                            "result_id=%s error=%s",
+                        }
+                    )
+                    if _fp.fingerprint_completed_post_investigation:
+                        _fingerprint_completed = True
+                    else:
+                        # Attempt fingerprint completion with one retry
+                        for _attempt in range(2):
+                            try:
+                                _fp = complete_fingerprint_post_investigation(
+                                    _fp,
+                                    _best_inv_model,
+                                    seq_len=min(64, config.max_seq_len),
+                                    model_dim=config.model_dim,
+                                    vocab_size=config.vocab_size,
+                                    device=str(dev),
+                                )
+                                if _fp.fingerprint_completed_post_investigation:
+                                    _fingerprint_completed = True
+                                    _fp_dict_updated = _fp.to_dict()
+                                    source["_behavioral_fingerprint"] = _fp_dict_updated
+                                    source["novelty_confidence"] = (
+                                        0.9
+                                        if _fp.quality == "full"
+                                        else 0.4 + (_fp.analyses_succeeded * 0.1)
+                                        if _fp.quality == "partial"
+                                        else 0.3
+                                    )
+                                    # Persist to DB so escalation gate can read it.
+                                    # Use _submit_write to avoid "database is locked"
+                                    # from competing with the async writer thread.
+                                    nb._submit_write(
+                                        "UPDATE program_results "
+                                        "SET fingerprint_json = ?, "
+                                        "    novelty_valid_for_promotion = ? "
+                                        "WHERE result_id = ?",
+                                        (
+                                            json.dumps(_fp_dict_updated),
+                                            int(_fp.novelty_valid_for_promotion),
+                                            source_result_id,
+                                        ),
+                                    )
+                                    logger.info(
+                                        "post_investigation_fingerprint_completed: "
+                                        "result_id=%s novelty_score=%.4f "
+                                        "novelty_valid=%s cka_source=%s attempt=%d",
+                                        source_result_id[:12],
+                                        _fp.novelty_score,
+                                        _fp.novelty_valid_for_promotion,
+                                        _fp.cka_source,
+                                        _attempt + 1,
+                                    )
+                                    break
+                            except Exception as e:
+                                logger.error(
+                                    "post_investigation_fingerprint_failed: "
+                                    "result_id=%s attempt=%d error=%s",
+                                    source_result_id[:12],
+                                    _attempt + 1,
+                                    str(e),
+                                )
+
+                    if not _fingerprint_completed:
+                        # Downgrade: investigation cannot pass without a
+                        # completed fingerprint — escalation will be blocked.
+                        investigation_passed_early = False
+                        logger.warning(
+                            "investigation_fingerprint_incomplete: "
+                            "result_id=%s — downgrading investigation_passed to False",
                             source_result_id[:12],
-                            str(e),
                         )
-                        # fp remains with cka_source="deferred",
-                        # novelty_valid_for_promotion stays False
 
                 # Free the retained model
                 if _best_inv_model is not None:
@@ -457,6 +520,7 @@ class _ExecutionInvestigationMixin:
                     _best_inv_model = None
                     clear_gpu_memory()
 
+                _fp_incomplete = _fingerprint_attempted and not _fingerprint_completed
                 investigation_entry = {
                     "result_id": source_result_id,
                     "data_mode": str(config.data_mode or "random"),
@@ -471,6 +535,7 @@ class _ExecutionInvestigationMixin:
                     "loss_ratio_multiplier": lr_multiplier,
                     "brittle_risk": brittle_risk,
                     "investigation_passed": investigation_passed_early,
+                    "fingerprint_incomplete": _fp_incomplete,
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program")
@@ -529,6 +594,7 @@ class _ExecutionInvestigationMixin:
                         config=config,
                         dev=dev,
                         cached_json_load=self._cached_json_load,
+                        fingerprint_incomplete=_fp_incomplete,
                     )
                 else:
                     _record_investigation_result(
@@ -545,6 +611,7 @@ class _ExecutionInvestigationMixin:
                         robustness=robustness,
                         investigation_passed=investigation_passed,
                         benchmark_result={},
+                        fingerprint_incomplete=_fp_incomplete,
                     )
 
                 # Save checkpoint after each candidate completes
@@ -571,7 +638,11 @@ class _ExecutionInvestigationMixin:
                         metrics={"candidate_idx": prog_idx + 1},
                     )
                 except Exception as e:
-                    logger.debug("Investigation checkpoint save failed: %s", e)
+                    _fail_loud(
+                        "investigation",
+                        f"checkpoint save failed for candidate {prog_idx + 1}",
+                        e,
+                    )
 
             # Detect all-infrastructure-failure: if every candidate was
             # skipped due to CUDA/OOM errors and no investigation_results
@@ -644,8 +715,12 @@ class _ExecutionInvestigationMixin:
             if not config.keep_checkpoints:
                 try:
                     ckpt.cleanup(exp_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _fail_loud(
+                        "investigation",
+                        f"checkpoint cleanup failed for {exp_id[:8]}",
+                        exc,
+                    )
 
             self._update_progress(
                 status="completed",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import sqlite3
 
 from flask import jsonify, request
 
@@ -13,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 def with_notebook_context(notebook_path: str):
-    """Decorator factory: injects a request-scoped ``nb`` kwarg and catches
-    unhandled exceptions with a standard 500 JSON response.
+    """Decorator factory: injects a shared ``nb`` kwarg and catches
+    unhandled exceptions with a standard JSON error response.
 
     Usage::
 
@@ -29,9 +30,39 @@ def with_notebook_context(notebook_path: str):
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            nb = get_notebook(notebook_path)
+            try:
+                nb = get_notebook(notebook_path)
+            except sqlite3.OperationalError as e:
+                logger.warning(
+                    "%s %s -> 503 (db locked during init): %s",
+                    request.method,
+                    request.path,
+                    e,
+                )
+                return jsonify(
+                    {"error": "Database temporarily busy, retry shortly"}
+                ), 503
             try:
                 return fn(*args, nb=nb, **kwargs)
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e):
+                    logger.warning(
+                        "%s %s -> 503 (db locked): %s",
+                        request.method,
+                        request.path,
+                        e,
+                    )
+                    return jsonify(
+                        {"error": "Database temporarily busy, retry shortly"}
+                    ), 503
+                logger.error(
+                    "Unhandled db error on %s %s: %s",
+                    request.method,
+                    request.path,
+                    e,
+                    exc_info=True,
+                )
+                return jsonify({"error": str(e)}), 500
             except Exception as e:
                 logger.error("Error in %s: %s", request.path, e, exc_info=True)
                 return jsonify({"error": str(e)}), 500

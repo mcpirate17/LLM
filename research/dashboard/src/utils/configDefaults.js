@@ -26,6 +26,11 @@ export const DEFAULT_CONFIG = {
   archive_size: 200,
   k_nearest: 15,
   archive_threshold: 0.3,
+  // Exploitation
+  exploit_mode: false,
+  exploit_prob: 0.2,
+  local_mutation_prob: 0.3,
+  exploit_top_k: 5,
   // Automation
   auto_scale_up: true,
   auto_scale_up_min_survivors: 3,

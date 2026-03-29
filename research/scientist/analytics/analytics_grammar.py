@@ -692,6 +692,18 @@ class _GrammarMixin:
                 # Blend 70% default, 30% learned
                 learned[cat] = round(0.7 * default + 0.3 * learned[cat], 2)
 
+        # ── P0.2: Op synergy → category weight adjustment ──
+        if learned:
+            learned = self._apply_synergy_adjustments(learned, op_rates)
+
+        # ── P2.4: Survivorship bias correction — exploration bonus ──
+        if learned:
+            learned = self._apply_exploration_bonus(learned, op_rates)
+
+        # ── P2.2: Family regression detection → penalize regressing categories ──
+        if learned:
+            learned = self._apply_family_regression_penalty(learned, op_rates)
+
         if learned and last_applied:
             for cat in learned:
                 if cat in last_applied:
@@ -845,6 +857,206 @@ class _GrammarMixin:
                 penalties[cat] = 1.0
 
         return penalties
+
+    def _apply_family_regression_penalty(
+        self,
+        learned: Dict[str, float],
+        op_rates: Dict[str, Dict],
+    ) -> Dict[str, float]:
+        """Penalize categories associated with regressing architecture families (P2.2).
+
+        Detects families whose composite_score MA has declined > 20% from peak,
+        maps their ops to categories, and reduces category weights proportionally.
+        """
+        from ...scientist.intelligence.analyzer import detect_family_regression
+
+        try:
+            regressions = detect_family_regression(self.nb)
+        except Exception as e:
+            logger.warning("Family regression detection failed: %s", e)
+            return learned
+
+        if not regressions:
+            return learned
+
+        # Map regressing family fingerprint prefixes → ops → categories
+        regressing_prefixes = {r["family"] for r in regressions}
+        decline_by_prefix = {r["family"]: r["decline_pct"] for r in regressions}
+
+        # Query ops for regressing families
+        cat_decline: Dict[str, List[float]] = defaultdict(list)
+        try:
+            rows = self.nb.conn.execute(
+                """SELECT pr.graph_fingerprint, pr.graph_json
+                   FROM program_results pr
+                   WHERE pr.graph_json IS NOT NULL
+                     AND pr.graph_fingerprint IS NOT NULL
+                   ORDER BY pr.timestamp DESC LIMIT 500"""
+            ).fetchall()
+
+            for row in rows:
+                fp = str(row["graph_fingerprint"] or "").strip()
+                prefix = fp[:8] if len(fp) >= 8 else ""
+                if prefix not in regressing_prefixes:
+                    continue
+
+                decline = decline_by_prefix[prefix]
+                ops = self._extract_ops_fast(row["graph_json"])
+                if not ops:
+                    continue
+
+                seen_cats: Set[str] = set()
+                for op_name in ops:
+                    try:
+                        cat = get_primitive(op_name).category.value
+                        if cat not in seen_cats:
+                            cat_decline[cat].append(decline)
+                            seen_cats.add(cat)
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning("Family regression op lookup failed: %s", e)
+            return learned
+
+        n_penalized = 0
+        for cat in learned:
+            if cat not in cat_decline:
+                continue
+            avg_decline = sum(cat_decline[cat]) / len(cat_decline[cat])
+            # Penalty: max(0.5, 1.0 - decline_pct)
+            penalty = max(0.5, 1.0 - avg_decline)
+            learned[cat] = round(learned[cat] * penalty, 2)
+            n_penalized += 1
+
+        if n_penalized:
+            logger.info(
+                "Family regression penalty: %d categories penalized "
+                "(from %d regressing families)",
+                n_penalized,
+                len(regressions),
+            )
+
+        return learned
+
+    def _apply_exploration_bonus(
+        self,
+        learned: Dict[str, float],
+        op_rates: Dict[str, Dict],
+    ) -> Dict[str, float]:
+        """Apply exploration bonus to under-tested categories (P2.4).
+
+        Tracks n_tested per category (total programs, not just S1 passes)
+        and applies: weight *= (1.0 + 0.5 / sqrt(n_tested + 1)).
+        This prevents under-explored ops from staying at default weights.
+        """
+        from ...synthesis.context_rules import S1_EXEMPT_OPS
+
+        # Aggregate n_tested per category
+        cat_n_tested: Dict[str, float] = defaultdict(float)
+        for op_name, stats in op_rates.items():
+            try:
+                op = get_primitive(op_name)
+                cat = op.category.value
+            except Exception:
+                continue
+            if op_name in S1_EXEMPT_OPS:
+                continue
+            cat_n_tested[cat] += stats.get("n_used", 0)
+
+        under_explored = []
+        for cat in learned:
+            n_tested = cat_n_tested.get(cat, 0)
+            bonus = 1.0 + 0.5 / math.sqrt(n_tested + 1)
+            learned[cat] = round(learned[cat] * bonus, 2)
+            if n_tested < 10:
+                under_explored.append(f"{cat}({n_tested:.0f})")
+
+        if under_explored:
+            logger.info(
+                "Exploration bonus: %d under-explored categories (n_tested < 10): %s",
+                len(under_explored),
+                ", ".join(under_explored[:10]),
+            )
+
+        return learned
+
+    def _apply_synergy_adjustments(
+        self,
+        learned: Dict[str, float],
+        op_rates: Dict[str, Dict],
+    ) -> Dict[str, float]:
+        """Adjust category weights based on op synergy/anti-synergy signal.
+
+        Aggregates per-op-pair lift into per-category bonuses/penalties.
+        Synergistic pairs (lift > 1.5): boost categories containing those ops.
+        Anti-synergistic pairs (lift < 0.5): penalize categories.
+        """
+        from ...scientist.intelligence.analyzer import analyze_op_synergies
+
+        try:
+            synergies = analyze_op_synergies(self.nb)
+        except Exception as e:
+            logger.warning("Synergy analysis failed, skipping adjustments: %s", e)
+            return learned
+
+        if not synergies:
+            return learned
+
+        # Map ops → categories
+        op_to_cat: Dict[str, str] = {}
+        for op_name in op_rates:
+            try:
+                op = get_primitive(op_name)
+                op_to_cat[op_name] = op.category.value
+            except Exception:
+                continue
+
+        # Accumulate per-category synergy/anti-synergy signal
+        cat_syn_lifts: Dict[str, List[float]] = defaultdict(list)
+        cat_anti_lifts: Dict[str, List[float]] = defaultdict(list)
+
+        for syn in synergies:
+            cats = set()
+            for op in (syn.op_a, syn.op_b):
+                cat = op_to_cat.get(op)
+                if cat:
+                    cats.add(cat)
+            if syn.label == "synergistic" and syn.lift > 1.5:
+                for cat in cats:
+                    cat_syn_lifts[cat].append(syn.lift)
+            elif syn.label == "anti_synergistic" and syn.lift < 0.5:
+                for cat in cats:
+                    cat_anti_lifts[cat].append(syn.lift)
+
+        n_boosted = 0
+        n_penalized = 0
+        for cat in learned:
+            # Synergy boost: use best lift for this category
+            if cat in cat_syn_lifts:
+                best_lift = max(cat_syn_lifts[cat])
+                # Clamped bonus: 1.0 + 0.2 * min(lift - 1.0, 3.0), max 1.6x
+                bonus = 1.0 + 0.2 * min(best_lift - 1.0, 3.0)
+                learned[cat] = round(learned[cat] * bonus, 2)
+                n_boosted += 1
+            # Anti-synergy penalty: use worst lift for this category
+            if cat in cat_anti_lifts:
+                worst_lift = min(cat_anti_lifts[cat])
+                # Penalty: max(0.3, 1.0 - 0.3 * (1.0 - lift))
+                penalty = max(0.3, 1.0 - 0.3 * (1.0 - worst_lift))
+                learned[cat] = round(learned[cat] * penalty, 2)
+                n_penalized += 1
+
+        if n_boosted or n_penalized:
+            logger.info(
+                "Synergy adjustments: %d categories boosted, %d penalized "
+                "(from %d synergistic, %d anti-synergistic pairs)",
+                n_boosted,
+                n_penalized,
+                sum(len(v) for v in cat_syn_lifts.values()),
+                sum(len(v) for v in cat_anti_lifts.values()),
+            )
+
+        return learned
 
     def get_current_grammar_weights(self) -> Dict[str, float]:
         """Get the default grammar weights for comparison."""

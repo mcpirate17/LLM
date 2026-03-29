@@ -13,8 +13,6 @@ import pytest
 
 from research.scientist.leaderboard_scoring import (
     compute_composite_score,
-    compute_composite_v5,
-    compute_composite_v6,
 )
 from research.synthesis.graph import ComputationGraph
 
@@ -49,32 +47,6 @@ def test_v4_barely_learning_capped_at_20():
 
 
 @pytest.mark.unit
-def test_v5_nonlearning_capped_at_10():
-    """A result with loss_ratio=0.9825 cannot score above 10 (v5)."""
-    score = compute_composite_v5(
-        screening_lr=0.9825,
-        screening_nov=0.9,
-        novelty_confidence=1.0,
-        loss_improvement_rate=0.01,
-        param_count=10_000_000,
-    )
-    assert score <= 10.0, f"Non-learning model scored {score}, expected <= 10"
-
-
-@pytest.mark.unit
-def test_v5_barely_learning_capped_at_20():
-    """A result with loss_ratio=0.92 cannot score above 20 (v5)."""
-    score = compute_composite_v5(
-        screening_lr=0.92,
-        screening_nov=0.9,
-        novelty_confidence=1.0,
-        loss_improvement_rate=0.05,
-        param_count=10_000_000,
-    )
-    assert score <= 20.0, f"Barely-learning model scored {score}, expected <= 20"
-
-
-@pytest.mark.unit
 def test_v4_legitimate_model_not_capped():
     """Var H (loss_ratio=0.54) must not be capped."""
     score = compute_composite_score(
@@ -82,19 +54,6 @@ def test_v4_legitimate_model_not_capped():
         screening_nov=0.68,
         novelty_confidence=0.5,
         loss_improvement_rate=0.5,
-    )
-    assert score > 20.0, f"Legitimate model scored {score}, should be > 20"
-
-
-@pytest.mark.unit
-def test_v5_legitimate_model_not_capped():
-    """Var H (loss_ratio=0.54) must not be capped (v5)."""
-    score = compute_composite_v5(
-        screening_lr=0.54,
-        screening_nov=0.68,
-        novelty_confidence=0.5,
-        loss_improvement_rate=0.5,
-        param_count=30_000_000,
     )
     assert score > 20.0, f"Legitimate model scored {score}, should be > 20"
 
@@ -111,16 +70,8 @@ def test_nonlearning_cannot_reach_validated():
         loss_improvement_rate=0.01,
         scaling_param_efficiency=5.0,
     )
-    score_v5 = compute_composite_v5(
-        screening_lr=0.9825,
-        screening_nov=0.99,
-        novelty_confidence=1.0,
-        loss_improvement_rate=0.01,
-        param_count=5_000_000,
-    )
     # Even with maxed-out novelty, routing, etc., score must stay below 20
     assert score_v4 <= 10.0, f"v4 non-learning {score_v4} > 10"
-    assert score_v5 <= 10.0, f"v5 non-learning {score_v5} > 10"
 
 
 # ── Fingerprint integrity tests ────────────────────────────────────────
@@ -207,102 +158,3 @@ def test_v4_decompose_shows_cap():
     assert isinstance(result, dict)
     assert result["breakdown"]["insufficient_learning_cap"] == 10.0
     assert result["composite_score"] <= 10.0
-
-
-# ── v6 step gate tests ───────────────────────────────────────────────
-# Bug: c05a (500-step screening run) scored 206.20 because
-# validation_loss was measured on training corpus val split, not WikiText.
-# Step gates prevent screening runs from competing with validated results.
-
-
-@pytest.mark.unit
-def test_v6_screening_run_cannot_outscore_validated():
-    """A 500-step screening run cannot score above 40 (hard cap)."""
-    score = compute_composite_v6(
-        final_loss=4.07,
-        loss_ratio=0.39,
-        screening_lr=0.39,
-        val_lr=0.04,
-        n_train_steps=500,
-        validation_passed=True,
-        loss_improvement_rate=0.5,
-    )
-    assert score <= 40.0, f"500-step screening run scored {score} > 40 cap"
-
-
-@pytest.mark.unit
-def test_v6_validation_tier_requires_real_training():
-    """Validation tier with <4000 steps is capped at investigation ceiling."""
-    score = compute_composite_v6(
-        final_loss=4.07,
-        loss_ratio=0.39,
-        val_lr=0.04,
-        n_train_steps=2500,
-        validation_passed=True,
-        loss_improvement_rate=0.5,
-    )
-    assert score <= 85.0, f"Short validation run scored {score} > 85 ceiling"
-
-
-@pytest.mark.unit
-def test_v6_legitimate_10k_model_not_capped():
-    """A 10K-step validated model is NOT penalized by step gates."""
-    score = compute_composite_v6(
-        final_loss=4.07,
-        loss_ratio=0.39,
-        val_lr=0.04,
-        n_train_steps=10000,
-        validation_passed=True,
-        loss_improvement_rate=0.5,
-    )
-    # Should score well above the screening cap
-    assert score > 40.0, f"10K-step model scored {score}, should be > 40"
-
-
-@pytest.mark.unit
-def test_v6_reference_bypasses_step_gate():
-    """Reference architectures bypass step gates regardless of n_train_steps."""
-    ref_score = compute_composite_v6(
-        final_loss=2.63,
-        loss_ratio=0.265,
-        screening_lr=0.265,
-        n_train_steps=500,
-        is_reference=True,
-    )
-    # References must not be capped by step gate
-    assert ref_score > 40.0, f"Reference scored {ref_score}, step gate should not apply"
-
-
-@pytest.mark.unit
-def test_v6_step_gate_decompose():
-    """Decompose mode shows step gate was applied."""
-    result = compute_composite_v6(
-        final_loss=4.07,
-        screening_lr=0.39,
-        n_train_steps=500,
-        decompose=True,
-    )
-    assert isinstance(result, dict)
-    bd = result["breakdown"]
-    assert bd.get("step_gate") is True
-    assert bd["step_fraction"] == 500 / 2000
-    assert result["composite_score"] <= 40.0
-
-
-@pytest.mark.unit
-def test_v6_zero_steps_no_crash():
-    """n_train_steps=0 or None should not trigger step gate (no data)."""
-    score_zero = compute_composite_v6(
-        final_loss=4.07,
-        screening_lr=0.39,
-        n_train_steps=0,
-    )
-    score_none = compute_composite_v6(
-        final_loss=4.07,
-        screening_lr=0.39,
-        n_train_steps=None,
-    )
-    # Both should produce the same score — no step gate applied
-    assert abs(score_zero - score_none) < 0.01, (
-        f"n_steps=0 ({score_zero}) != n_steps=None ({score_none})"
-    )

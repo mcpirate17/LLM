@@ -130,7 +130,7 @@ def compile_model_native_first(
             coverage = op_support["native_coverage"]
             if coverage >= 1.0:
                 full_native_coverage = True
-                logger.info(
+                logger.debug(
                     "Full native path available: all %d ops supported by kernel library",
                     len(op_support["all_ops"]),
                 )
@@ -701,7 +701,7 @@ def compile_model_native_first(
             capability.get("status"),
         )
     else:
-        logger.info(
+        logger.debug(
             "Native runner capability status=%s enabled=%s strict=%s native_lib=%s",
             capability.get("status"),
             capability.get("enabled"),

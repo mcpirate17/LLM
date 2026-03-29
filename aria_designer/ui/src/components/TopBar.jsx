@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { memo, useMemo, useState } from 'react'
 import AriaAvatar from './AriaAvatar'
 
 const stepGlyph = (status, busy = false) => {
@@ -8,7 +8,7 @@ const stepGlyph = (status, busy = false) => {
   return '\u2022'
 }
 
-export default function TopBar({
+function TopBar({
   runStatus, stepStatus, workflowStage, validateUi,
   saveState, historyUi, snapToGridEnabled,
   handleValidate, handleCompile, handlePreview, handleDeepRun,
@@ -213,3 +213,5 @@ export default function TopBar({
     </header>
   )
 }
+
+export default memo(TopBar)

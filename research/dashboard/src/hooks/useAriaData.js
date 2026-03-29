@@ -3,6 +3,7 @@ import { useEventBus } from './useEventBus';
 import { apiCall } from '../services/apiService';
 
 const AriaDataContext = createContext(null);
+const ANALYTICS_STALE_MS = 15000;
 
 /**
  * Provider that owns the shared analytics and dashboard endpoints.
@@ -33,48 +34,35 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const apiBaseRef = useRef(apiBase);
   apiBaseRef.current = apiBase;
   const inFlightRef = useRef(false);
+  const analyticsInFlightRef = useRef(false);
   const abortRef = useRef(null);
+  const analyticsAbortRef = useRef(null);
+  const analyticsLoadedAtRef = useRef(0);
 
-  const fetchSharedData = useCallback(async () => {
+  const fetchCoreData = useCallback(async () => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
-    
+
     try {
-      const [ltRes, lbRes, mcRes, fpRes, dashRes, cycleRes, historyRes] = await Promise.all([
-        apiCall(`/api/analytics/learning-trajectory`, { signal: controller.signal }),
-        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1`, { signal: controller.signal }),
-        apiCall(`/api/analytics/math-family-coverage`, { signal: controller.signal }),
-        apiCall(`/api/diagnostics/fingerprint`, { signal: controller.signal }),
+      const [dashRes, cycleRes, historyRes] = await Promise.all([
         apiCall(`/api/dashboard/summary`, { signal: controller.signal }),
         apiCall(`/api/aria/cycle-status`, { signal: controller.signal }).catch(() => ({ ok: false })),
         apiCall(`/api/aria/cycle-history?n=60&compact=1`, { signal: controller.signal }).catch(() => ({ ok: false })),
       ]);
 
-      const ltData = ltRes.ok ? await ltRes.json() : null;
-      const lbData = lbRes.ok ? await lbRes.json() : null;
-      const mcData = mcRes.ok ? await mcRes.json() : null;
-      const fpData = fpRes.ok ? await fpRes.json() : null;
       const dashData = dashRes.ok ? await dashRes.json() : null;
       const cycleData = cycleRes.ok ? await cycleRes.json() : null;
       const historyData = historyRes.ok ? await historyRes.json() : [];
 
-      // Atomic state updates
-      setLearningTrajectory(ltData);
-      if (lbData) {
-        setLeaderboardRaw(lbData);
-        setLeaderboardEntries(lbData.entries || []);
-      }
-      setMathFamilyCoverage(mcData);
-      setFingerprintDiagnostics(fpData?.sensitivity_skips || null);
       if (dashData) {
         setDashboardData(dashData);
         if (dashData.summary) setSummary(dashData.summary);
       }
       if (cycleData && !cycleData.error) setAriaCycle(cycleData);
       if (Array.isArray(historyData)) setCycleHistory(historyData);
-      
+
       setLastUpdated(Date.now());
       setError(null);
     } catch (err) {
@@ -87,6 +75,50 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       }
       inFlightRef.current = false;
       setLoading(false);
+    }
+  }, []);
+
+  const fetchAnalyticsData = useCallback(async ({ force = false } = {}) => {
+    const now = Date.now();
+    if (!force && analyticsLoadedAtRef.current && now - analyticsLoadedAtRef.current < ANALYTICS_STALE_MS) {
+      return;
+    }
+    if (analyticsInFlightRef.current) return;
+    analyticsInFlightRef.current = true;
+    const controller = new AbortController();
+    analyticsAbortRef.current = controller;
+
+    try {
+      const [ltRes, lbRes, mcRes, fpRes] = await Promise.all([
+        apiCall(`/api/analytics/learning-trajectory`, { signal: controller.signal }),
+        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1`, { signal: controller.signal }),
+        apiCall(`/api/analytics/math-family-coverage`, { signal: controller.signal }),
+        apiCall(`/api/diagnostics/fingerprint`, { signal: controller.signal }),
+      ]);
+
+      const ltData = ltRes.ok ? await ltRes.json() : null;
+      const lbData = lbRes.ok ? await lbRes.json() : null;
+      const mcData = mcRes.ok ? await mcRes.json() : null;
+      const fpData = fpRes.ok ? await fpRes.json() : null;
+
+      setLearningTrajectory(ltData);
+      if (lbData) {
+        setLeaderboardRaw(lbData);
+        setLeaderboardEntries(lbData.entries || []);
+      }
+      setMathFamilyCoverage(mcData);
+      setFingerprintDiagnostics(fpData?.sensitivity_skips || null);
+      analyticsLoadedAtRef.current = Date.now();
+      setError(null);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setError(err.message);
+      }
+    } finally {
+      if (analyticsAbortRef.current === controller) {
+        analyticsAbortRef.current = null;
+      }
+      analyticsInFlightRef.current = false;
     }
   }, []);
 
@@ -134,26 +166,30 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
 
   // Initial fetch on mount
   useEffect(() => {
-    fetchSharedData();
-  }, [fetchSharedData]);
+    fetchCoreData();
+  }, [fetchCoreData]);
 
   // Poll at adaptive interval
   useEffect(() => {
-    const interval = setInterval(fetchSharedData, isRunning ? 3000 : 10000);
+    const interval = setInterval(fetchCoreData, isRunning ? 3000 : 10000);
     return () => clearInterval(interval);
-  }, [fetchSharedData, isRunning]);
+  }, [fetchCoreData, isRunning]);
 
   useEffect(() => () => {
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
+    if (analyticsAbortRef.current) {
+      analyticsAbortRef.current.abort();
+      analyticsAbortRef.current = null;
+    }
   }, []);
 
   const sseTimersRef = useRef([]);
   const debouncedRefresh = useCallback(() => {
-    sseTimersRef.current.push(setTimeout(fetchSharedData, 2000));
-  }, [fetchSharedData]);
+    sseTimersRef.current.push(setTimeout(fetchCoreData, 2000));
+  }, [fetchCoreData]);
 
   useEventBus('experiment_completed', debouncedRefresh);
   useEventBus('aria_cycle_completed', debouncedRefresh);
@@ -183,7 +219,8 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       initialLoading: loading && !dashboardData,
       error,
       lastUpdated,
-      refreshSharedData: fetchSharedData,
+      refreshSharedData: fetchCoreData,
+      refreshAnalyticsData: fetchAnalyticsData,
       fetchTabData,
     }}>
       {children}

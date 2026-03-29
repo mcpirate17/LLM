@@ -6,6 +6,9 @@ build-backend = "hatchling.build"
 name = "llm-workspace"
 version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+    "lightgbm>=4.6.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["research", "aria_designer"]

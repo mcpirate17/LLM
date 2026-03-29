@@ -1,0 +1,44 @@
+id: difficulty_blend_3way
+version: 1.0.0
+name: Adaptive Lane Mixer
+category: routing
+tags:
+- parameterized
+- learnable
+- core
+- exotic
+status: approved
+description: Routes tokens to experts based on learned difficulty scores.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D*2
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  Routes tokens between "fast" (skip), "medium" (low-rank), and "hard" (full MLP) paths based on a learned difficulty gate.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, S, D].
+  ### Plain Language
+  Smart routing that gives easy tokens a fast pass and saves heavy compute for difficult tokens.
+  '

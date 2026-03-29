@@ -755,6 +755,49 @@ CREATE TABLE IF NOT EXISTS knowledge_digests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_digests_ts ON knowledge_digests(timestamp DESC);
+
+-- Analytics tables for feedback-driven template/op/motif selection
+CREATE TABLE IF NOT EXISTS template_stats (
+    template_name TEXT PRIMARY KEY,
+    eval_count INTEGER NOT NULL DEFAULT 0,
+    s0_pass_count INTEGER NOT NULL DEFAULT 0,
+    s1_pass_count INTEGER NOT NULL DEFAULT 0,
+    mean_loss REAL,
+    min_loss REAL,
+    std_loss REAL,
+    mean_novelty REAL,
+    last_updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS op_stats (
+    op_name TEXT PRIMARY KEY,
+    eval_count INTEGER NOT NULL DEFAULT 0,
+    s0_pass_count INTEGER NOT NULL DEFAULT 0,
+    s1_pass_count INTEGER NOT NULL DEFAULT 0,
+    mean_loss REAL,
+    min_loss REAL,
+    std_loss REAL,
+    mean_novelty REAL,
+    co_occurrence_json TEXT,  -- JSON: {other_op: count} for top-20 co-occurring ops
+    last_updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS motif_stats (
+    motif_name TEXT PRIMARY KEY,
+    eval_count INTEGER NOT NULL DEFAULT 0,
+    s0_pass_count INTEGER NOT NULL DEFAULT 0,
+    s1_pass_count INTEGER NOT NULL DEFAULT 0,
+    mean_loss REAL,
+    min_loss REAL,
+    std_loss REAL,
+    mean_novelty REAL,
+    best_template TEXT,  -- template where this motif performed best
+    last_updated REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_template_stats_loss ON template_stats(mean_loss);
+CREATE INDEX IF NOT EXISTS idx_op_stats_loss ON op_stats(mean_loss);
+CREATE INDEX IF NOT EXISTS idx_motif_stats_loss ON motif_stats(mean_loss);
 """
 
 # Columns added in the schema expansion — used for migration
@@ -775,6 +818,8 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "has_zero_grad": "INTEGER",
     "error_type": "TEXT",
     "error_message": "TEXT",
+    "failure_details_json": "TEXT",
+    "semantic_warnings_json": "TEXT",
     "stage_at_death": "TEXT",
     "initial_loss": "REAL",
     "min_loss": "REAL",

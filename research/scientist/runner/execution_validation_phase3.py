@@ -42,7 +42,7 @@ class _ExecutionValidationPhase3Mixin:
         dev = resolve_device(config.device)
         dev_str = str(dev)
 
-        val_config = RunConfig.from_dict(config.to_dict())
+        val_config = config.copy()
         val_config.stage1_steps = config.validation_steps
         val_config.stage1_batch_size = config.validation_batch_size
         val_config.max_seq_len = config.validation_seq_len

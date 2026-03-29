@@ -112,7 +112,7 @@ class _DashboardMixin:
             "positional_encoding": "rope",
         }
 
-        bench_config = RunConfig.from_dict(config.to_dict())
+        bench_config = config.copy()
         if bench_config.stage1_steps <= 0:
             bench_config.stage1_steps = 1
 
@@ -924,7 +924,10 @@ class _DashboardMixin:
             program_metrics["error_message"] = s1_result["error"]
         self._merge_s1_telemetry(program_metrics, s1_result)
 
-        # Compute efficiency_multiple at screening time
+        # Compute efficiency_multiple at screening time.
+        # MoE models: skip param count penalty (active params < total params).
+        from .synthesis import _graph_is_moe
+
         try:
             from ..leaderboard_scoring import compute_efficiency_multiple
 
@@ -934,6 +937,7 @@ class _DashboardMixin:
                 forward_time_ms=s1_result.get("forward_time_ms"),
                 peak_memory_mb=s1_result.get("peak_memory_mb"),
                 throughput_tok_s=s1_result.get("throughput"),
+                is_moe=_graph_is_moe(graph) if graph else False,
             )
             if eff:
                 program_metrics["efficiency_multiple"] = eff["geomean"]
@@ -1107,13 +1111,33 @@ class _DashboardMixin:
                         if hasattr(fp, k):
                             setattr(fp, k, v)
 
-                    # Store fingerprint fields with fp_ prefix for DB columns
-                    if fp_dict.get("hierarchy_fitness") is not None:
-                        program_metrics["fp_hierarchy_fitness"] = fp_dict[
-                            "hierarchy_fitness"
-                        ]
-                    if fp_dict.get("gromov_delta") is not None:
-                        program_metrics["fp_gromov_delta"] = fp_dict["gromov_delta"]
+                    # Persist all behavioral fingerprint fields to DB
+                    program_metrics["fingerprint_json"] = json.dumps(
+                        json_safe(fp.to_dict())
+                    )
+                    program_metrics["fp_interaction_locality"] = fp.interaction_locality
+                    program_metrics["fp_interaction_sparsity"] = fp.interaction_sparsity
+                    program_metrics["fp_interaction_symmetry"] = fp.interaction_symmetry
+                    program_metrics["fp_interaction_hierarchy"] = (
+                        fp.interaction_hierarchy
+                    )
+                    program_metrics["fp_intrinsic_dim"] = fp.intrinsic_dim
+                    program_metrics["fp_isotropy"] = fp.isotropy
+                    program_metrics["fp_rank_ratio"] = fp.rank_ratio
+                    program_metrics["fp_jacobian_spectral_norm"] = (
+                        fp.jacobian_spectral_norm
+                    )
+                    program_metrics["fp_jacobian_effective_rank"] = (
+                        fp.jacobian_effective_rank
+                    )
+                    program_metrics["fp_sensitivity_uniformity"] = (
+                        fp.sensitivity_uniformity
+                    )
+                    program_metrics["fp_cka_vs_transformer"] = fp.cka_vs_transformer
+                    program_metrics["fp_cka_vs_ssm"] = fp.cka_vs_ssm
+                    program_metrics["fp_cka_vs_conv"] = fp.cka_vs_conv
+                    program_metrics["fp_hierarchy_fitness"] = fp.hierarchy_fitness
+                    program_metrics["fp_gromov_delta"] = fp.gromov_delta
 
                     calibration_row = self._ensure_novelty_calibration(nb, config, fp)
                     calibration = None

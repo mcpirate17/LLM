@@ -31,7 +31,7 @@ class _ExecutionExperimentPhase3Mixin:
         t_start: float,
     ) -> None:
         candidates = self._generate_candidates(
-            config, config.n_programs, "morphological_box"
+            config, config.n_programs, "morphological_box", nb=nb
         )
         results["total"] = len(candidates)
 

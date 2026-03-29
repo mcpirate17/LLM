@@ -800,11 +800,34 @@ def build_validation_context(candidates: list, investigation_results: list) -> s
     return "\n\n".join(sections)
 
 
+def _safe_num(val, default=0):
+    """Safely convert a DB value to float, handling bytes/None."""
+    if val is None:
+        return default
+    if isinstance(val, bytes):
+        import struct
+
+        try:
+            return (
+                struct.unpack("f", val)[0]
+                if len(val) == 4
+                else struct.unpack("d", val)[0]
+            )
+        except struct.error:
+            return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def _build_mode_recent_experiments_section(recent_experiments: list) -> str:
-    total_s1 = sum(e.get("n_stage1_passed", 0) for e in recent_experiments)
-    total_programs = sum(e.get("n_programs_generated", 0) for e in recent_experiments)
+    total_s1 = sum(_safe_num(e.get("n_stage1_passed", 0)) for e in recent_experiments)
+    total_programs = sum(
+        _safe_num(e.get("n_programs_generated", 0)) for e in recent_experiments
+    )
     avg_novelty_scores = [
-        e.get("best_novelty_score", 0)
+        _safe_num(e.get("best_novelty_score", 0))
         for e in recent_experiments
         if e.get("best_novelty_score") is not None
     ]
@@ -818,11 +841,11 @@ def _build_mode_recent_experiments_section(recent_experiments: list) -> str:
         exp_type = exp.get("experiment_type", "synthesis")
         s1 = exp.get("n_stage1_passed", 0)
         total = exp.get("n_programs_generated", 0)
-        novelty = exp.get("best_novelty_score")
-        loss = exp.get("best_validation_loss_ratio")
+        novelty = _safe_num(exp.get("best_novelty_score"), default=None)
+        loss = _safe_num(exp.get("best_validation_loss_ratio"), default=None)
         loss_label = "val_loss"
         if loss is None:
-            loss = exp.get("best_loss_ratio")
+            loss = _safe_num(exp.get("best_loss_ratio"), default=None)
             loss_label = "loss"
         line = f"  [{exp_type}] {s1}/{total} S1"
         if novelty is not None:

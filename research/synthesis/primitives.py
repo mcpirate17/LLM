@@ -160,12 +160,47 @@ OPCODE_MAP: Dict[str, int] = {"input": 0}
 REVERSE_OPCODE_MAP: Dict[int, str] = {0: "input"}
 
 
+# Backward-compatible aliases for renamed ops (old name → new name).
+# get_primitive() resolves these transparently so serialized graphs and
+# database entries using old names continue to work.
+OP_NAME_ALIASES: Dict[str, str] = {
+    # Phase 1 renames (other session)
+    "route_topk": "feature_sparsity",
+    "route_lanes": "gated_lane_blend",
+    "route_recursion": "depth_gated_transform",
+    "routing_conditioned_compression": "signal_conditioned_compression",
+    "relu_gate_routing": "relu_gated_moe",
+    # Phase 2 renames (remaining "routing" ops that don't actually route)
+    "adaptive_lane_mixer": "difficulty_blend_3way",
+    "adaptive_recursion": "depth_weighted_proj",
+    "cascade": "learned_token_gate",
+    "compression_mixture_experts": "dual_compression_blend",
+    "difficulty_scorer": "token_difficulty_proj",
+    "early_exit": "confidence_token_gate",
+    "entropy_score": "token_entropy",
+    "mixed_recursion_gate": "score_depth_blend",
+    "mod_topk": "depth_token_mask",
+    "progressive_compression_gate": "adaptive_rank_gate",
+    "speculative": "cheap_verify_blend",
+    "token_merge": "adjacent_token_merge",
+    "token_type_classifier": "token_class_proj",
+    "n_way_sparse_router": "sparse_bottleneck_moe",
+}
+
+
 def _register(op: PrimitiveOp) -> PrimitiveOp:
     PRIMITIVE_REGISTRY[op.name] = op
     if op.name not in OPCODE_MAP:
         opcode = len(OPCODE_MAP)
         OPCODE_MAP[op.name] = opcode
         REVERSE_OPCODE_MAP[opcode] = op.name
+    # Also register under any old alias names pointing to this op,
+    # so serialized graphs using old names still resolve.
+    for old_name, new_name in OP_NAME_ALIASES.items():
+        if new_name == op.name:
+            PRIMITIVE_REGISTRY[old_name] = op
+            if old_name not in OPCODE_MAP:
+                OPCODE_MAP[old_name] = OPCODE_MAP[op.name]
     return op
 
 
@@ -900,47 +935,48 @@ _register(
 
 _register(
     PrimitiveOp(
-        "route_topk",
+        "feature_sparsity",
         OpCategory.FUNCTIONAL,
         1,
         "identity",
-        description="Top-k token selection with STE mask",
+        description="Top-k feature selection with STE mask (sparsifies feature dim, not tokens)",
         config_keys=("k",),
         standalone=False,
     )
 )
 _register(
     PrimitiveOp(
-        "route_lanes",
+        "gated_lane_blend",
         OpCategory.PARAMETERIZED,
         1,
         "identity",
         has_params=True,
         param_formula="D*D*3+D*3",
-        description="Learned difficulty-based lane routing: score tokens, assign to n lanes, per-lane transforms",
+        description="Learned difficulty-based lane blend: score tokens, soft-weight N internal linear projections",
         config_keys=("n_lanes",),
     )
 )
 _register(
     PrimitiveOp(
-        "route_recursion",
+        "depth_gated_transform",
         OpCategory.PARAMETERIZED,
         1,
         "identity",
         has_params=True,
         param_formula="D*D*3+D*3",
-        description="Learned difficulty-based depth routing: score tokens, apply variable-depth transforms",
+        description="Learned difficulty-based depth gate: score tokens, apply variable-depth linear transforms",
         config_keys=("max_depth",),
     )
 )
 _register(
     PrimitiveOp(
-        "token_merge",
+        "adjacent_token_merge",  # was: token_merge
         OpCategory.FUNCTIONAL,
         1,
         "identity",
-        description="Similarity-based token merging: (B,S,D) -> (B,K,D)",
+        description="Similarity-based token merging with seq_len restore: (B,S,D) -> (B,S,D)",
         config_keys=("n_keep",),
+        byte_safe=True,  # kernel restores seq_len via nearest-neighbor mapping
     )
 )
 
@@ -948,7 +984,7 @@ _register(
 
 _register(
     PrimitiveOp(
-        "mod_topk",
+        "depth_token_mask",  # was: mod_topk
         OpCategory.FUNCTIONAL,
         1,
         "identity",
@@ -956,11 +992,12 @@ _register(
         param_formula="D",
         description="Mixture-of-Depths top-k token routing (masking)",
         config_keys=("capacity_factor",),
+        byte_safe=False,
     )
 )
 _register(
     PrimitiveOp(
-        "early_exit",
+        "confidence_token_gate",  # was: early_exit
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -972,7 +1009,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "adaptive_recursion",
+        "depth_weighted_proj",  # was: adaptive_recursion
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -984,7 +1021,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "cascade",
+        "learned_token_gate",  # was: cascade
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -996,7 +1033,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "speculative",
+        "cheap_verify_blend",  # was: speculative
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -1011,7 +1048,7 @@ _register(
 
 _register(
     PrimitiveOp(
-        "adaptive_lane_mixer",
+        "difficulty_blend_3way",  # was: adaptive_lane_mixer
         OpCategory.PARAMETERIZED,
         2,
         "identity",
@@ -1022,7 +1059,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "mixed_recursion_gate",
+        "score_depth_blend",  # was: mixed_recursion_gate
         OpCategory.PARAMETERIZED,
         2,
         "identity",
@@ -1033,18 +1070,18 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "routing_conditioned_compression",
+        "signal_conditioned_compression",
         OpCategory.PARAMETERIZED,
         2,
         "identity",
         has_params=True,
         param_formula="D*D*2",
-        description="Compression level chosen per-token by routing scores",
+        description="Compression level chosen per-token by external signal (interpolates full-rank vs low-rank)",
     )
 )
 _register(
     PrimitiveOp(
-        "token_type_classifier",
+        "token_class_proj",  # was: token_type_classifier
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -1057,7 +1094,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "entropy_score",
+        "token_entropy",  # was: entropy_score
         OpCategory.FUNCTIONAL,
         1,
         "reduce_last",
@@ -1067,7 +1104,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "progressive_compression_gate",
+        "adaptive_rank_gate",  # was: progressive_compression_gate
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -1078,7 +1115,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "compression_mixture_experts",
+        "dual_compression_blend",  # was: compression_mixture_experts
         OpCategory.PARAMETERIZED,
         2,
         "identity",
@@ -1092,13 +1129,13 @@ _register(
 
 _register(
     PrimitiveOp(
-        "relu_gate_routing",
+        "relu_gated_moe",
         OpCategory.PARAMETERIZED,
         1,
         "identity",
         has_params=True,
         param_formula="D*D*4",
-        description="ReLU-gated MoE (ReMoE): sparse expert activation with learned gate and expert projections",
+        description="ReLU-gated MoE (ReMoE): sparse expert activation with learned gate and internal expert projections",
     )
 )
 _register(
@@ -1194,7 +1231,7 @@ _register(
 )
 _register(
     PrimitiveOp(
-        "n_way_sparse_router",
+        "sparse_bottleneck_moe",  # was: n_way_sparse_router
         OpCategory.PARAMETERIZED,
         1,
         "identity",
@@ -1483,66 +1520,55 @@ def _apply_algebraic_type_tags() -> None:
 _apply_algebraic_type_tags()
 
 
-# ── Byte-Safety & Depth Constraint Tags ──────────────────────────────
-# Ops that reorder, drop, merge, or zero-out tokens are unsafe for
-# byte-level / sub-word streams where every position matters.
+# ── True Token-Routing Ops ──────────────────────────────────────────
+# These dispatch tokens to genuinely different compute types via
+# gather-scatter, unlike gated mixture ops which blend identical
+# linear projections with different weights.
 
-# Safety constraints: op_name → (byte_unsafe, min_depth_byte, min_depth_normal)
-# byte_unsafe: True = op is unsafe for byte-level streams (informational)
-# min_depth_normal: minimum layer depth before this op can appear
-_OP_SAFETY_CONSTRAINTS: Dict[str, tuple] = {
-    # Critical: drops/merges tokens — unsafe for byte-level streams
-    "token_merge": (True, 0, 2),
-    # High: zeros token positions via stride/threshold masking
-    "mod_topk": (True, 0, 2),
-    # Medium-high: hard binary gate zeros tokens
-    "early_exit": (False, 4, 2),
-    "cascade": (False, 4, 2),
-    # Medium: per-token heterogeneous transforms — workable after context mixing
-    "routing_conditioned_compression": (False, 4, 2),
-    "compression_mixture_experts": (False, 4, 2),
-    # Routing: per-token lane/depth/topk assignment needs context mixing first
-    "route_lanes": (False, 2, 2),
-    "route_recursion": (False, 2, 2),
-    "adaptive_recursion": (False, 2, 2),
-    "route_topk": (False, 2, 2),
-}
+_register(
+    PrimitiveOp(
+        "hetero_moe",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*7",
+        description="Heterogeneous MoE: routes tokens to attention, conv1d, or SSM experts",
+    )
+)
+_register(
+    PrimitiveOp(
+        "arch_router",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*8",
+        description="Architecture router: tokens choose transformer, mamba, or MLP processing style",
+    )
+)
+_register(
+    PrimitiveOp(
+        "compute_budget_router",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*5",
+        description="Adaptive compute budget: easy tokens get cheap linear, medium conv, hard attention",
+    )
+)
 
-_MIN_LAYER_DEPTH: Dict[str, int] = {
-    op: depth_normal
-    for op, (_, _, depth_normal) in _OP_SAFETY_CONSTRAINTS.items()
-    if depth_normal > 0
-}
 
 # Ops that MUST have a residual bypass around them to preserve
 # information flow.  Enforced at template/validation level.
 REQUIRES_RESIDUAL_BYPASS: frozenset = frozenset(
     {
-        "token_merge",
-        "mod_topk",
-        "early_exit",
-        "cascade",
+        "adjacent_token_merge",
+        "depth_token_mask",
+        "learned_token_gate",
     }
 )
-
-
-def _apply_byte_safety_tags() -> None:
-    """Tag ops with byte-safety and depth constraints from _OP_SAFETY_CONSTRAINTS."""
-    for op_name, (
-        byte_banned,
-        _depth_byte,
-        depth_normal,
-    ) in _OP_SAFETY_CONSTRAINTS.items():
-        op = PRIMITIVE_REGISTRY.get(op_name)
-        if op is None:
-            continue
-        if byte_banned:
-            object.__setattr__(op, "byte_safe", False)
-        if depth_normal > 0:
-            object.__setattr__(op, "min_layer_depth", depth_normal)
-
-
-_apply_byte_safety_tags()
 
 
 # ── Op Wiring Constraints ──────────────────────────────────────────────
@@ -1556,56 +1582,60 @@ _apply_byte_safety_tags()
 
 OP_WIRING_RULES: Dict[str, dict] = {
     # Signal producers: non-standard output shape, can't be terminal
-    "entropy_score": {
+    "token_entropy": {  # was: entropy_score
         "output_shape": "(B,S,1)",
         "input_signals": {
             0: {
-                "from_ops": ["token_type_classifier", "linear_proj"],
+                "from_ops": ["token_class_proj", "linear_proj"],
                 "shape_hint": "(B,S,K) class logits or projected scores",
             },
         },
         "valid_consumers": [
-            "routing_conditioned_compression",  # as input[1]
+            "signal_conditioned_compression",  # as input[1]
             "mul",  # template gating pattern: mul(x, entropy)
         ],
         "note": "Produces (B,S,1) difficulty signal — input must be class logits, not raw activations",
     },
-    "token_type_classifier": {
+    "token_class_proj": {  # was: token_type_classifier
         "output_shape": "(B,S,D)",
         "valid_consumers": [
-            "entropy_score",  # classifier → entropy → routing
-            "compression_mixture_experts",  # as input[1] with n_classes matching
-            "mixed_recursion_gate",  # as input[1] depth scores
-            "routing_conditioned_compression",  # as input[1] routing signal
+            "token_entropy",  # classifier → entropy → routing
+            "dual_compression_blend",  # as input[1] with n_classes matching
+            "score_depth_blend",  # as input[1] depth scores
+            "signal_conditioned_compression",  # as input[1] routing signal
         ],
-        "note": "Produces class scores — feeds entropy_score, MoE routing, or depth gates",
+        "note": "Produces class scores — feeds token_entropy, MoE routing, or depth gates",
     },
     # 2-input consumers: input[1] must come from specific signal producers
-    "routing_conditioned_compression": {
+    "signal_conditioned_compression": {
         "input_signals": {
             1: {
-                "from_ops": ["entropy_score", "token_type_classifier", "mul"],
+                "from_ops": ["token_entropy", "token_class_proj", "mul"],
                 "shape_hint": "(B,S,1) or (B,S,K) routing signal",
             },
         },
     },
-    "compression_mixture_experts": {
+    "dual_compression_blend": {
         "input_signals": {
             1: {
-                "from_ops": ["token_type_classifier", "entropy_score", "linear_proj"],
+                "from_ops": ["token_class_proj", "token_entropy", "linear_proj"],
                 "shape_hint": "(B,S,2+) expert routing weights",
             },
         },
     },
-    "mixed_recursion_gate": {
+    "score_depth_blend": {  # was: mixed_recursion_gate
         "input_signals": {
             1: {
-                "from_ops": ["token_type_classifier", "linear_proj", "route_recursion"],
+                "from_ops": [
+                    "token_class_proj",
+                    "linear_proj",
+                    "depth_gated_transform",
+                ],
                 "shape_hint": "(B,S,max_depth) depth scores",
             },
         },
     },
-    "adaptive_lane_mixer": {
+    "difficulty_blend_3way": {  # was: adaptive_lane_mixer
         "input_signals": {
             1: {
                 "from_ops": None,  # any (B,S,D) input — self-contained gate
@@ -1614,12 +1644,12 @@ OP_WIRING_RULES: Dict[str, dict] = {
         },
     },
     # Ops that MUST have residual bypass (information-destructive)
-    "token_merge": {"requires_residual": True},
-    "mod_topk": {"requires_residual": True},
-    "early_exit": {"requires_residual": True},
-    "cascade": {"requires_residual": True},
-    "route_lanes": {"min_layer_depth": 2},
-    "route_recursion": {"min_layer_depth": 2},
+    "adjacent_token_merge": {"requires_residual": True},
+    "depth_token_mask": {"requires_residual": True},
+    "confidence_token_gate": {"requires_residual": True},
+    "learned_token_gate": {"requires_residual": True},
+    "gated_lane_blend": {"min_layer_depth": 2},
+    "depth_gated_transform": {"min_layer_depth": 2},
 }
 
 
@@ -1708,17 +1738,18 @@ def default_algebraic_type_for_space(space: str) -> AlgebraicType:
 
 
 def get_primitive(name: str) -> PrimitiveOp:
-    """Get a primitive by name."""
-    if name not in PRIMITIVE_REGISTRY:
+    """Get a primitive by name, resolving aliases for renamed ops."""
+    resolved = OP_NAME_ALIASES.get(name, name)
+    if resolved not in PRIMITIVE_REGISTRY:
         # Lazily register mathspace ops on first miss
         from ..mathspaces.registry import register_all_mathspaces
 
         register_all_mathspaces()
-    if name not in PRIMITIVE_REGISTRY:
+    if resolved not in PRIMITIVE_REGISTRY:
         raise KeyError(
             f"Unknown primitive: {name}. Available: {list(PRIMITIVE_REGISTRY.keys())}"
         )
-    return PRIMITIVE_REGISTRY[name]
+    return PRIMITIVE_REGISTRY[resolved]
 
 
 def list_primitives(category: Optional[OpCategory] = None) -> List[PrimitiveOp]:

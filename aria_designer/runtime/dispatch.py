@@ -1,5 +1,7 @@
 """Kernel dispatcher — routes calls to aria_core (pybind11) or Python/torch fallback."""
 
+from collections import deque
+
 import numpy as np
 import torch
 from typing import Optional
@@ -56,10 +58,10 @@ class KernelDispatcher:
             adj[s].append(t)
             in_deg[t] += 1
             out_deg[s] += 1
-        queue = [i for i in range(n) if in_deg[i] == 0]
+        queue = deque(i for i in range(n) if in_deg[i] == 0)
         topo = []
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             topo.append(node)
             for nb in adj[node]:
                 in_deg[nb] -= 1
@@ -127,13 +129,7 @@ class KernelDispatcher:
             return _torch_to_np(
                 aria_core.tropical_matmul_f32(_np_to_torch(a), _np_to_torch(b))
             )
-        m, k = a.shape
-        _, n = b.shape
-        out = np.empty((m, n), dtype=np.float32)
-        for i in range(m):
-            for j in range(n):
-                out[i, j] = np.min(a[i, :] + b[:, j])
-        return out
+        return np.min(a[:, :, None] + b[None, :, :], axis=1).astype(np.float32)
 
     def tropical_center(self, x: np.ndarray) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
@@ -174,7 +170,20 @@ class KernelDispatcher:
             return _torch_to_np(
                 aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base))
             )
-        return x
+        # RoPE: rotate pairs of dimensions by position-dependent angles
+        # x shape: (..., seq_len, d) where d is even
+        *batch, seq_len, d = x.shape
+        half_d = d // 2
+        positions = np.arange(seq_len, dtype=np.float32)
+        dim_indices = np.arange(half_d, dtype=np.float32)
+        freqs = positions[:, None] / (theta_base ** (dim_indices[None, :] / half_d))
+        cos_f = np.cos(freqs).astype(np.float32)
+        sin_f = np.sin(freqs).astype(np.float32)
+        x1 = x[..., :half_d]
+        x2 = x[..., half_d:]
+        return np.concatenate(
+            [x1 * cos_f - x2 * sin_f, x1 * sin_f + x2 * cos_f], axis=-1
+        )
 
     def gated_linear(
         self,
@@ -230,7 +239,22 @@ class KernelDispatcher:
                     _np_to_torch(wr),
                 )
             )
-        return x
+        # RWKV time-mixing: linear attention with exponential decay
+        # x: (batch, seq_len, d), decay/bonus: (d,), wk/wv/wr: (d, d)
+        k = x @ wk  # (batch, seq_len, d)
+        v = x @ wv
+        r = 1.0 / (1.0 + np.exp(-(x @ wr)))  # receptance gate (sigmoid)
+
+        b, seq_len, d = k.shape
+        out = np.zeros_like(x, dtype=np.float32)
+        state = np.zeros((b, d), dtype=np.float32)
+        for t in range(seq_len):
+            kt = k[:, t, :]
+            vt = v[:, t, :]
+            bonus_term = np.exp(bonus + kt) * vt
+            out[:, t, :] = r[:, t, :] * (state + bonus_term)
+            state = np.exp(decay) * state + np.exp(kt) * vt
+        return out
 
     def causal_mask(self, x: np.ndarray) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
@@ -249,40 +273,30 @@ class KernelDispatcher:
         gate = 1.0 / (1.0 + np.exp(-valuation))
         return x * gate
 
+    @staticmethod
+    def _tropical_distance_weights(x: np.ndarray, temperature: float) -> np.ndarray:
+        """Tropical distance matrix + softmax weights. x: (b, s, d)."""
+        dist = np.min(x[:, :, None, :] + x[:, None, :, :], axis=-1)
+        weights = np.exp(-dist / temperature)
+        weights /= np.sum(weights, axis=-1, keepdims=True)
+        return weights
+
     def tropical_attention(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
             return _torch_to_np(
                 aria_core.tropical_attention_f32(_np_to_torch(x), temperature)
             )
-        b, s, d = x.shape
-        out = np.empty_like(x, dtype=np.float32)
-        for i in range(b):
-            dist = np.empty((s, s), dtype=np.float32)
-            for r in range(s):
-                for c in range(s):
-                    dist[r, c] = np.min(x[i, r, :] + x[i, c, :])
-            weights = np.exp(-dist / temperature)
-            weights /= np.sum(weights, axis=-1, keepdims=True)
-            out[i] = weights @ x[i]
-        return out
+        weights = self._tropical_distance_weights(x, temperature)
+        return np.einsum("brc,bcd->brd", weights, x).astype(np.float32)
 
     def tropical_gate(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
         if _HAS_ARIA_CORE and self.use_native:
             return _torch_to_np(
                 aria_core.tropical_gate_f32(_np_to_torch(x), temperature)
             )
-        b, s, d = x.shape
-        out = np.empty_like(x, dtype=np.float32)
-        for i in range(b):
-            dist = np.empty((s, s), dtype=np.float32)
-            for r in range(s):
-                for c in range(s):
-                    dist[r, c] = np.min(x[i, r, :] + x[i, c, :])
-            weights = np.exp(-dist / temperature)
-            weights /= np.sum(weights, axis=-1, keepdims=True)
-            gated = weights @ x[i]
-            out[i] = x[i] * (1.0 / (1.0 + np.exp(-gated)))
-        return out
+        weights = self._tropical_distance_weights(x, temperature)
+        gated = np.einsum("brc,bcd->brd", weights, x)
+        return (x * (1.0 / (1.0 + np.exp(-gated)))).astype(np.float32)
 
     def file_loader_csv(
         self,
@@ -292,18 +306,14 @@ class KernelDispatcher:
         delimiter: str = ",",
         has_header: bool = True,
     ) -> np.ndarray:
-        rows = []
-        with open(file_path, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if has_header and i == 0:
-                    continue
-                parts = [
-                    p.strip() for p in line.strip().split(delimiter) if p.strip() != ""
-                ]
-                if not parts:
-                    continue
-                rows.append([float(v) for v in parts])
-        return np.array(rows, dtype=np.float32)
+        skip = 1 if has_header else 0
+        return np.loadtxt(
+            file_path,
+            dtype=np.float32,
+            delimiter=delimiter,
+            skiprows=skip,
+            max_rows=_max_rows,
+        )
 
     def binary_file_reader(
         self, file_path: str, max_elems: int = 1_000_000, offset_bytes: int = 0

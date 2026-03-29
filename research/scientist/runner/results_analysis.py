@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import time
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -200,6 +202,10 @@ class _ResultsAnalysisMixin:
                         },
                     },
                 )
+            # Update analytics stats tables for feedback-driven search
+            self._update_analytics_stats(
+                nb, graph, _s0_passed, _s1_passed, recorded_lr, fp_novelty
+            )
         except Exception as e:
             if debug:
                 logger.exception(
@@ -208,6 +214,145 @@ class _ResultsAnalysisMixin:
                 )
             else:
                 logger.debug("Failed to record program result: %s", e)
+
+    def _update_analytics_stats(
+        self,
+        nb: LabNotebook,
+        graph,
+        s0_passed: bool,
+        s1_passed: bool,
+        loss_ratio: Optional[float],
+        novelty: Optional[float],
+    ) -> None:
+        """Incrementally update template_stats, motif_stats, and op_stats after each eval."""
+        now = time.time()
+        templates = graph.metadata.get("templates_used", [])
+        motifs = graph.metadata.get("motifs_used", [])
+        ops = {
+            n.op_name
+            for n in (
+                graph.nodes.values() if isinstance(graph.nodes, dict) else graph.nodes
+            )
+            if hasattr(n, "op_name") and n.op_name != "input"
+        }
+
+        s0_inc = 1 if s0_passed else 0
+        s1_inc = 1 if s1_passed else 0
+        valid_loss = loss_ratio is not None and math.isfinite(loss_ratio)
+
+        try:
+            conn = nb.conn
+            for tpl in templates:
+                row = conn.execute(
+                    "SELECT eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss FROM template_stats WHERE template_name = ?",
+                    (tpl,),
+                ).fetchone()
+                if row:
+                    ec, s0c, s1c, ml, mnl = row
+                    ec2 = ec + 1
+                    new_mean = (
+                        (ml * ec + loss_ratio) / ec2
+                        if valid_loss and ml is not None
+                        else (loss_ratio if valid_loss else ml)
+                    )
+                    new_min = (
+                        min(mnl, loss_ratio)
+                        if valid_loss and mnl is not None
+                        else (loss_ratio if valid_loss else mnl)
+                    )
+                    conn.execute(
+                        "UPDATE template_stats SET eval_count=?, s0_pass_count=?, s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? WHERE template_name=?",
+                        (ec2, s0c + s0_inc, s1c + s1_inc, new_mean, new_min, now, tpl),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO template_stats (template_name, eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss, last_updated) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            tpl,
+                            1,
+                            s0_inc,
+                            s1_inc,
+                            loss_ratio if valid_loss else None,
+                            loss_ratio if valid_loss else None,
+                            now,
+                        ),
+                    )
+
+            # Incremental motif_stats updates (same pattern as template_stats)
+            for mot in motifs:
+                row = conn.execute(
+                    "SELECT eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss FROM motif_stats WHERE motif_name = ?",
+                    (mot,),
+                ).fetchone()
+                if row:
+                    ec, s0c, s1c, ml, mnl = row
+                    ec2 = ec + 1
+                    new_mean = (
+                        (ml * ec + loss_ratio) / ec2
+                        if valid_loss and ml is not None
+                        else (loss_ratio if valid_loss else ml)
+                    )
+                    new_min = (
+                        min(mnl, loss_ratio)
+                        if valid_loss and mnl is not None
+                        else (loss_ratio if valid_loss else mnl)
+                    )
+                    conn.execute(
+                        "UPDATE motif_stats SET eval_count=?, s0_pass_count=?, s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? WHERE motif_name=?",
+                        (ec2, s0c + s0_inc, s1c + s1_inc, new_mean, new_min, now, mot),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO motif_stats (motif_name, eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss, last_updated) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            mot,
+                            1,
+                            s0_inc,
+                            s1_inc,
+                            loss_ratio if valid_loss else None,
+                            loss_ratio if valid_loss else None,
+                            now,
+                        ),
+                    )
+
+            for op in ops:
+                row = conn.execute(
+                    "SELECT eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss FROM op_stats WHERE op_name = ?",
+                    (op,),
+                ).fetchone()
+                if row:
+                    ec, s0c, s1c, ml, mnl = row
+                    ec2 = ec + 1
+                    new_mean = (
+                        (ml * ec + loss_ratio) / ec2
+                        if valid_loss and ml is not None
+                        else (loss_ratio if valid_loss else ml)
+                    )
+                    new_min = (
+                        min(mnl, loss_ratio)
+                        if valid_loss and mnl is not None
+                        else (loss_ratio if valid_loss else mnl)
+                    )
+                    conn.execute(
+                        "UPDATE op_stats SET eval_count=?, s0_pass_count=?, s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? WHERE op_name=?",
+                        (ec2, s0c + s0_inc, s1c + s1_inc, new_mean, new_min, now, op),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO op_stats (op_name, eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss, last_updated) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            op,
+                            1,
+                            s0_inc,
+                            s1_inc,
+                            loss_ratio if valid_loss else None,
+                            loss_ratio if valid_loss else None,
+                            now,
+                        ),
+                    )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to update analytics stats", exc_info=True)
 
     def _analyze_results(
         self, results: Dict, exp_id: str, nb: LabNotebook, context: str = ""
@@ -601,13 +746,13 @@ class _ResultsAnalysisMixin:
                         routing_mode = "topk_gate"
                         break
                     elif op_name in {
-                        "mod_topk",
-                        "early_exit",
-                        "adaptive_recursion",
+                        "depth_token_mask",
+                        "confidence_token_gate",
+                        "depth_weighted_proj",
                         "token_merging",
-                        "token_merge",
-                        "cascade",
-                        "speculative",
+                        "adjacent_token_merge",
+                        "learned_token_gate",
+                        "cheap_verify_blend",
                         "route_topk",
                         "route_lanes",
                         "route_recursion",
@@ -652,7 +797,7 @@ class _ResultsAnalysisMixin:
                     rt_expert_counts.cpu().tolist()
                 )
 
-        # Detect entropy_score ops and flag NULL routing_utilization_entropy
+        # Detect token_entropy ops and flag NULL routing_utilization_entropy
         has_entropy_gate = False
         for layer in layers:
             ops = getattr(layer, "ops", None)
@@ -668,7 +813,7 @@ class _ResultsAnalysisMixin:
             for compiled_op in op_values:
                 op_obj = getattr(compiled_op, "op", None)
                 op_name = getattr(op_obj, "name", "") if op_obj else ""
-                if op_name == "entropy_score":
+                if op_name == "token_entropy":
                     has_entropy_gate = True
                     break
             if has_entropy_gate:

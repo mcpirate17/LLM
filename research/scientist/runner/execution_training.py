@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 def _sample_entropy_gate_output(
     model: nn.Module, input_ids: torch.Tensor
 ) -> float | None:
-    """Sample the mean entropy_score output from the model (no-grad forward pass).
+    """Sample the mean token_entropy output from the model (no-grad forward pass).
 
-    Returns the mean absolute entropy_score value, or None if no entropy_score ops found.
+    Returns the mean absolute token_entropy value, or None if no token_entropy ops found.
     """
     values: List[float] = []
     hooks = []
@@ -45,7 +45,7 @@ def _sample_entropy_gate_output(
 
     for mod in model.modules():
         op_name = getattr(mod, "_op_name", None)
-        if op_name and "entropy_score" in str(op_name):
+        if op_name and "token_entropy" in str(op_name):
             hooks.append(mod.register_forward_hook(_hook))
 
     if not hooks:
@@ -211,6 +211,62 @@ def _collect_routing_aux_loss(
         fracs = ec.float() / total
         uniform = 1.0 / ec.numel()
         aux = aux + ((fracs - uniform) ** 2).sum()
+
+    if not found:
+        return None
+    return aux * weight
+
+
+def _collect_early_exit_loss(
+    model: nn.Module,
+    targets: torch.Tensor,
+    weight: float = 0.1,
+) -> "torch.Tensor | None":
+    """Collect early-exit auxiliary losses from early_exit ops.
+
+    Early-exit ops store hidden states and gate values during the forward pass.
+    This function projects those hidden states through the model's shared
+    lm_head to produce early logits, then computes gate-weighted cross-entropy
+    against the training targets.  This gives the confidence gate real gradient
+    signal to learn which tokens are easy vs hard.
+    """
+    lm_head = getattr(model, "lm_head", None)
+    norm = getattr(model, "norm", None)
+    if lm_head is None:
+        return None
+
+    aux = torch.tensor(0.0)
+    found = False
+
+    for module in model.modules():
+        ee_aux = getattr(module, "_early_exit_aux", None)
+        if ee_aux is None:
+            continue
+        found = True
+        hidden = ee_aux["hidden"]  # (B, S, D)
+        gate = ee_aux["gate"]  # (B, S) — high = easy
+        module._early_exit_aux = None  # free memory
+
+        # Project through shared lm_head (with optional norm)
+        normed = norm(hidden) if norm is not None else hidden
+        early_logits = lm_head(normed)  # (B, S, V)
+
+        B, S, V = early_logits.shape
+        # Shift: predict next token (same as main loss)
+        logits_shifted = early_logits[:, :-1].reshape(-1, V)
+        gate_shifted = gate[:, :-1].reshape(-1)
+
+        # Align targets shape
+        tgt = targets
+        if tgt.numel() != logits_shifted.shape[0]:
+            tgt = tgt[: logits_shifted.shape[0]]
+
+        per_token_ce = F.cross_entropy(logits_shifted, tgt, reduction="none")
+        # Gate-weighted mean: easy tokens (high gate) contribute more
+        weighted_ce = (gate_shifted * per_token_ce).sum() / gate_shifted.sum().clamp(
+            min=1.0
+        )
+        aux = aux + weighted_ce
 
     if not found:
         return None
@@ -690,6 +746,15 @@ class _ExecutionTrainingMixin:
                             loss = loss + aux_loss
                             step_state["routing_aux_loss"] = aux_loss.item()
 
+                        # Collect early-exit auxiliary loss: projects
+                        # intermediate hidden states through shared lm_head.
+                        ee_loss = _collect_early_exit_loss(
+                            model, input_ids[:, 1:].reshape(-1)
+                        )
+                        if ee_loss is not None:
+                            loss = loss + ee_loss
+                            step_state["early_exit_aux_loss"] = ee_loss.item()
+
                         bwd_t0 = time.perf_counter()
                         with _trace_ctx("backward_pass"):
                             optimizer.zero_grad(set_to_none=True)
@@ -1165,17 +1230,17 @@ class _ExecutionTrainingMixin:
                         ):
                             if wt.get(_slope_key) is not None:
                                 result[_slope_key] = wt[_slope_key]
-                            logger.info(
-                                "    Screening WikiText ppl=%.1f score=%.3f (%.0fms)",
-                                wt["wikitext_perplexity"],
-                                wt.get("wikitext_score") or 0,
-                                wt.get("elapsed_ms") or 0,
-                            )
+                        logger.info(
+                            "    Screening WikiText ppl=%.1f score=%.3f (%.0fms)",
+                            wt["wikitext_perplexity"],
+                            wt.get("wikitext_score") or 0,
+                            wt.get("elapsed_ms") or 0,
+                        )
                     except Exception as e_wt:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
                 # Post-S1 triage: cheap evals for composite score dimensions
-                if result.get("stage1_passed") and model is not None:
+                if result.get("passed") and model is not None:
                     try:
                         from .execution_triage import run_triage
 

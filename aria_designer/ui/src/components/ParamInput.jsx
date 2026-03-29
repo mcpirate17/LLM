@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 
 const SCOPE_OPTION_LABELS = {
   split_scope: {
@@ -18,7 +18,7 @@ const PARAM_SCOPE_HELP = {
   filter_scope: 'Choose the level where filtering happens: full rows, individual tokens, or feature channels.',
 }
 
-export default function ParamInput({ name, schema, value, paramValues, onChange, onBlur }) {
+function ParamInput({ name, schema, value, paramValues, onChange, onBlur }) {
   const [pickerMeta, setPickerMeta] = useState('')
   const isPathField = schema.type === 'string' && (
     schema.format === 'file' ||
@@ -278,3 +278,5 @@ export default function ParamInput({ name, schema, value, paramValues, onChange,
     />
   )
 }
+
+export default memo(ParamInput)

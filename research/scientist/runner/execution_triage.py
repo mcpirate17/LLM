@@ -27,17 +27,17 @@ logger = logging.getLogger(__name__)
 
 _ROUTING_OPS = frozenset(
     {
-        "early_exit",
-        "cascade",
+        "confidence_token_gate",
+        "learned_token_gate",
         "route_lanes",
         "route_recursion",
-        "adaptive_recursion",
-        "adaptive_lane_mixer",
-        "n_way_sparse_router",
-        "routing_conditioned_compression",
-        "token_merge",
-        "speculative",
-        "mixed_recursion_gate",
+        "depth_weighted_proj",
+        "difficulty_blend_3way",
+        "sparse_bottleneck_moe",
+        "signal_conditioned_compression",
+        "adjacent_token_merge",
+        "cheap_verify_blend",
+        "score_depth_blend",
     }
 )
 
@@ -57,9 +57,9 @@ _MOE_OPS = frozenset(
         "moe_topk",
         "moe_2expert",
         "tropical_moe",
-        "relu_gate_routing",
-        "n_way_sparse_router",
-        "compression_mixture_experts",
+        "relu_gated_moe",
+        "sparse_bottleneck_moe",
+        "dual_compression_blend",
         "topk_gate",
     }
 )

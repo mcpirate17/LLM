@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 from ._types import RunConfig, LiveProgress
 
 
+def _fail_loud(phase: str, message: str, exc: BaseException) -> None:
+    logger.exception("%s: %s", phase, message)
+    raise RuntimeError(f"{phase}: {message}") from exc
+
+
 class _ContinuousInvestigationMixin:
     """Pre-investigation gate and inline investigation execution."""
 
@@ -51,7 +56,7 @@ class _ContinuousInvestigationMixin:
             if not graph_json:
                 return None
 
-            probe_config = RunConfig.from_dict(config.to_dict())
+            probe_config = config.copy()
             probe_config.stage1_steps = max(
                 50,
                 int(config.investigation_steps * config.pre_inv_probe_steps_fraction),
@@ -76,6 +81,73 @@ class _ContinuousInvestigationMixin:
         except Exception as e:
             logger.warning("Pre-inv probe failed for %s: %s", result_id[:8], e)
             return None
+
+    def _apply_predictor_filter(
+        self, config: RunConfig, nb: LabNotebook, eligible: list
+    ) -> list:
+        """Filter candidates using the lightweight performance predictor.
+
+        Removes candidates whose predicted investigation loss_ratio exceeds
+        config.investigation_predictor_max_lr.
+        """
+        from ..intelligence.predictor import (
+            train as train_predictor,
+            predict as predict_lr,
+        )
+
+        try:
+            model = train_predictor(nb)
+        except Exception as e:
+            logger.warning("Predictor training failed, skipping filter: %s", e)
+            return eligible
+
+        if not model.is_fitted():
+            return eligible
+
+        max_lr = config.investigation_predictor_max_lr
+        kept = []
+        filtered_count = 0
+        for row in eligible:
+            fp_json = row.get("fingerprint_json")
+            if not fp_json:
+                kept.append(row)
+                continue
+
+            fp_dict = fp_json if isinstance(fp_json, dict) else None
+            if fp_dict is None:
+                try:
+                    fp_dict = json.loads(fp_json)
+                except (json.JSONDecodeError, TypeError):
+                    kept.append(row)
+                    continue
+
+            predicted = predict_lr(
+                model,
+                fp_dict,
+                novelty_score=float(row.get("novelty_score") or 0),
+                structural_novelty=float(row.get("structural_novelty") or 0),
+            )
+
+            if predicted > max_lr:
+                filtered_count += 1
+                logger.debug(
+                    "Predictor filtered %s: predicted_lr=%.4f > %.4f",
+                    str(row.get("result_id", ""))[:8],
+                    predicted,
+                    max_lr,
+                )
+            else:
+                kept.append(row)
+
+        if filtered_count:
+            logger.info(
+                "Predictor filter: removed %d/%d candidates (predicted_lr > %.2f)",
+                filtered_count,
+                len(eligible),
+                max_lr,
+            )
+
+        return kept
 
     def _pre_investigation_gate(
         self, config: RunConfig, nb: LabNotebook, leaderboard: list
@@ -153,6 +225,10 @@ class _ContinuousInvestigationMixin:
             "Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible)
         )
 
+        # ── Predictor filter: skip candidates with high predicted loss_ratio ──
+        if config.investigation_predictor_enabled and eligible:
+            eligible = self._apply_predictor_filter(config, nb, eligible)
+
         # ── Slope reprieve: rescue high-slope candidates that failed Stage A ──
         cycle_reprieve_count = 0
         if config.slope_reprieve_enabled:
@@ -166,10 +242,10 @@ class _ContinuousInvestigationMixin:
             for rc in reprieve_candidates:
                 if cycle_reprieve_count >= config.slope_reprieve_max_per_cycle:
                     break
-                loss_ratio = (
+                loss_ratio = float(
                     rc.get("loss_ratio") or rc.get("screening_loss_ratio") or 1.0
                 )
-                slope = rc.get("screening_slope") or 0.0
+                slope = float(rc.get("screening_slope") or 0.0)
                 consistent = bool(rc.get("screening_slope_consistent"))
                 reprieve_eligible = (
                     float(loss_ratio) < config.slope_reprieve_loss_floor
@@ -237,12 +313,20 @@ class _ContinuousInvestigationMixin:
                     "UPDATE leaderboard SET pre_inv_score = ? WHERE result_id = ?",
                     (row["_pre_inv_score"], row["result_id"]),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _fail_loud(
+                    "continuous_investigation",
+                    f"failed to persist pre-inv score for {row['result_id'][:8]}",
+                    exc,
+                )
         try:
             nb.conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _fail_loud(
+                "continuous_investigation",
+                "failed to commit pre-inv scores",
+                exc,
+            )
 
         logger.info(
             "Pre-inv gate Stage B: top %d scored [%s]",
@@ -371,8 +455,12 @@ class _ContinuousInvestigationMixin:
                     "WHERE result_id = ?",
                     (rid,),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _fail_loud(
+                    "continuous_investigation",
+                    f"failed to bump reinvestigation count for {rid[:8]}",
+                    exc,
+                )
             logger.info(
                 "  Recipe re-roll candidate: %s (wikitext_score above investigation tier)",
                 rid[:8],
@@ -380,8 +468,12 @@ class _ContinuousInvestigationMixin:
         if candidates:
             try:
                 nb.conn.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _fail_loud(
+                    "continuous_investigation",
+                    "failed to commit reinvestigation counts",
+                    exc,
+                )
 
         return candidates
 
@@ -456,7 +548,7 @@ class _ContinuousInvestigationMixin:
             if not graph_json:
                 return None
 
-            reprieve_config = RunConfig.from_dict(config.to_dict())
+            reprieve_config = config.copy()
             reprieve_config.stage1_steps = config.slope_reprieve_eval_steps
             reprieve_config.stage1_batch_size = config.stage1_batch_size
             reprieve_config.n_programs = 1
@@ -562,7 +654,7 @@ class _ContinuousInvestigationMixin:
             dev = resolve_device(config.device)
             str(dev)
 
-            inv_config = RunConfig.from_dict(config.to_dict())
+            inv_config = config.copy()
             inv_config.stage1_steps = config.investigation_steps
             inv_config.stage1_batch_size = config.investigation_batch_size
             # Scale early stopping for longer investigation runs.
@@ -651,10 +743,16 @@ class _ContinuousInvestigationMixin:
                             seq_len_override=config.max_seq_len,
                         )
                         if model is None:
-                            continue
+                            raise RuntimeError(
+                                f"No model built for {source_result_id[:8]}"
+                            )
                     except Exception as e:
-                        logger.debug(f"Model reconstruction failed: {e}")
-                        continue
+                        _fail_loud(
+                            "continuous_investigation",
+                            f"model reconstruction failed for {source_result_id[:8]} "
+                            f"training program {tp_i + 1}/{len(training_programs)}",
+                            e,
+                        )
 
                     self._emit_event(
                         "investigation_progress",
@@ -703,11 +801,11 @@ class _ContinuousInvestigationMixin:
 
                 # Skip candidates where no training program could reconstruct the model
                 if not tp_results:
-                    logger.debug(
-                        f"Investigation: skipping {source_result_id[:8]} — "
-                        f"model failed to reconstruct for all {len(training_programs)} programs"
+                    raise RuntimeError(
+                        f"Continuous investigation aborted for {source_result_id[:8]}: "
+                        f"model failed to reconstruct for all {len(training_programs)} "
+                        "training programs"
                     )
-                    continue
 
                 # Compute robustness
                 n_passed = sum(1 for r in tp_results if r.get("passed"))
@@ -737,57 +835,94 @@ class _ContinuousInvestigationMixin:
                 )
 
                 # Post-investigation fingerprint completion
+                # Fingerprint must complete for escalation to validation
+                # (B1 gate in _auto_escalate_investigation blocks without it).
+                _fingerprint_completed = False
+                _fingerprint_attempted = False
                 _fp_dict = source.get("_behavioral_fingerprint")
                 if _best_inv_model is not None and _fp_dict is not None:
-                    try:
-                        from ...eval.fingerprint import (
-                            BehavioralFingerprint,
-                            complete_fingerprint_post_investigation,
-                        )
+                    _fingerprint_attempted = True
+                    from ...eval.fingerprint import (
+                        BehavioralFingerprint,
+                        complete_fingerprint_post_investigation,
+                    )
 
-                        _fp = BehavioralFingerprint(
-                            **{
-                                k: v
-                                for k, v in _fp_dict.items()
-                                if k
-                                in {
-                                    f.name
-                                    for f in BehavioralFingerprint.__dataclass_fields__.values()
-                                }
+                    _fp = BehavioralFingerprint(
+                        **{
+                            k: v
+                            for k, v in _fp_dict.items()
+                            if k
+                            in {
+                                f.name
+                                for f in BehavioralFingerprint.__dataclass_fields__.values()
                             }
-                        )
-                        if not _fp.fingerprint_completed_post_investigation:
-                            _fp = complete_fingerprint_post_investigation(
-                                _fp,
-                                _best_inv_model,
-                                seq_len=min(64, config.max_seq_len),
-                                model_dim=config.model_dim,
-                                vocab_size=config.vocab_size,
-                                device=str(dev),
-                            )
-                            source["_behavioral_fingerprint"] = _fp.to_dict()
-                            source["novelty_confidence"] = (
-                                0.9
-                                if _fp.quality == "full"
-                                else 0.4 + (_fp.analyses_succeeded * 0.1)
-                                if _fp.quality == "partial"
-                                else 0.3
-                            )
-                            logger.info(
-                                "post_investigation_fingerprint_completed: "
-                                "result_id=%s novelty_score=%.4f "
-                                "novelty_valid=%s cka_source=%s",
-                                source_result_id[:12],
-                                _fp.novelty_score,
-                                _fp.novelty_valid_for_promotion,
-                                _fp.cka_source,
-                            )
-                    except Exception as e:
-                        logger.error(
-                            "post_investigation_fingerprint_failed: "
-                            "result_id=%s error=%s",
+                        }
+                    )
+                    if _fp.fingerprint_completed_post_investigation:
+                        _fingerprint_completed = True
+                    else:
+                        # Attempt fingerprint completion with one retry
+                        for _attempt in range(2):
+                            try:
+                                _fp = complete_fingerprint_post_investigation(
+                                    _fp,
+                                    _best_inv_model,
+                                    seq_len=min(64, config.max_seq_len),
+                                    model_dim=config.model_dim,
+                                    vocab_size=config.vocab_size,
+                                    device=str(dev),
+                                )
+                                if _fp.fingerprint_completed_post_investigation:
+                                    _fingerprint_completed = True
+                                    _fp_dict_updated = _fp.to_dict()
+                                    source["_behavioral_fingerprint"] = _fp_dict_updated
+                                    source["novelty_confidence"] = (
+                                        0.9
+                                        if _fp.quality == "full"
+                                        else 0.4 + (_fp.analyses_succeeded * 0.1)
+                                        if _fp.quality == "partial"
+                                        else 0.3
+                                    )
+                                    # Persist to DB so escalation gate can read it.
+                                    # Use _submit_write to avoid "database is locked"
+                                    # from competing with the async writer thread.
+                                    nb._submit_write(
+                                        "UPDATE program_results "
+                                        "SET fingerprint_json = ?, "
+                                        "    novelty_valid_for_promotion = ? "
+                                        "WHERE result_id = ?",
+                                        (
+                                            json.dumps(_fp_dict_updated),
+                                            int(_fp.novelty_valid_for_promotion),
+                                            source_result_id,
+                                        ),
+                                    )
+                                    logger.info(
+                                        "post_investigation_fingerprint_completed: "
+                                        "result_id=%s novelty_score=%.4f "
+                                        "novelty_valid=%s cka_source=%s attempt=%d",
+                                        source_result_id[:12],
+                                        _fp.novelty_score,
+                                        _fp.novelty_valid_for_promotion,
+                                        _fp.cka_source,
+                                        _attempt + 1,
+                                    )
+                                    break
+                            except Exception as e:
+                                logger.error(
+                                    "post_investigation_fingerprint_failed: "
+                                    "result_id=%s attempt=%d error=%s",
+                                    source_result_id[:12],
+                                    _attempt + 1,
+                                    str(e),
+                                )
+
+                    if not _fingerprint_completed:
+                        investigation_passed_early = False
+                        logger.warning(
+                            "investigation_fingerprint_incomplete: "
+                            "result_id=%s — downgrading investigation_passed to False",
                             source_result_id[:12],
-                            str(e),
                         )
 
                 if _best_inv_model is not None:
@@ -795,6 +930,7 @@ class _ContinuousInvestigationMixin:
                     _best_inv_model = None
                     clear_gpu_memory()
 
+                _fp_incomplete = _fingerprint_attempted and not _fingerprint_completed
                 investigation_entry = {
                     "result_id": source_result_id,
                     "robustness": robustness,
@@ -805,6 +941,7 @@ class _ContinuousInvestigationMixin:
                     "loss_ratio_multiplier": lr_multiplier,
                     "brittle_risk": brittle_risk,
                     "investigation_passed": investigation_passed_early,
+                    "fingerprint_incomplete": _fp_incomplete,
                     "n_programs_passed": n_passed,
                     "n_programs_tested": len(tp_results),
                     "best_training_program": best_tp.get("training_program")
@@ -862,6 +999,7 @@ class _ContinuousInvestigationMixin:
                         config=config,
                         dev=dev,
                         cached_json_load=self._cached_json_load,
+                        fingerprint_incomplete=_fp_incomplete,
                     )
                 else:
                     _record_investigation_result(
@@ -878,6 +1016,7 @@ class _ContinuousInvestigationMixin:
                         robustness=robustness,
                         investigation_passed=investigation_passed,
                         benchmark_result={},
+                        fingerprint_incomplete=_fp_incomplete,
                     )
 
             # Complete experiment with LLM analysis

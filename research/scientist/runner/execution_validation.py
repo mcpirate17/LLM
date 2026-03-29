@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 from ._types import RunConfig
 
 
+def _fail_loud(phase: str, message: str, exc: BaseException) -> None:
+    logger.exception("%s: %s", phase, message)
+    raise RuntimeError(f"{phase}: {message}") from exc
+
+
 class _ExecutionValidationMixin:
     """Validation and scale-up thread execution."""
 
@@ -41,6 +46,23 @@ class _ExecutionValidationMixin:
         nb = self._make_notebook()
         t_start = time.time()
         ckpt = CheckpointManager(config.checkpoint_dir)
+
+        def _vstatus(phase: str, rid_short: str = "") -> None:
+            """Emit validation sub-phase to dashboard + log."""
+            label = (
+                f"validation[{rid_short}]: {phase}"
+                if rid_short
+                else f"validation: {phase}"
+            )
+            logger.info(label)
+            self._emit_event(
+                "validation_phase",
+                {
+                    "experiment_id": exp_id,
+                    "phase": phase,
+                },
+            )
+            self._update_progress(status=f"validation: {phase}")
 
         # Load phase checkpoint to find where we left off
         resume_from_candidate = 0
@@ -100,6 +122,88 @@ class _ExecutionValidationMixin:
                     nb, source_result_id
                 )
 
+                # B3: Validation tier requires artifact-backed CKA.
+                # If the entry doesn't have it, attempt fingerprint
+                # completion now. If it still fails, cap novelty at 50%.
+                _novelty_cap = None
+                _fp_data = source.get("_behavioral_fingerprint") or {}
+                _cka_src = _fp_data.get("cka_source", "unknown")
+                if _cka_src != "artifact":
+                    logger.info(
+                        "validation_cka_check: result_id=%s cka_source=%s "
+                        "— attempting fingerprint completion",
+                        source_result_id[:12],
+                        _cka_src,
+                    )
+                    try:
+                        from ...eval.fingerprint import (
+                            BehavioralFingerprint,
+                            complete_fingerprint_post_investigation,
+                        )
+
+                        _fp_fields = {
+                            k: v
+                            for k, v in _fp_data.items()
+                            if k
+                            in {
+                                f.name
+                                for f in BehavioralFingerprint.__dataclass_fields__.values()
+                            }
+                        }
+                        if _fp_fields:
+                            _fp = BehavioralFingerprint(**_fp_fields)
+                            # Build a temporary model for fingerprinting
+                            _tmp_model = self._build_model_from_source(
+                                model_source,
+                                arch_spec_json_str,
+                                graph_json_str,
+                                config,
+                                seq_len_override=min(64, config.validation_seq_len),
+                            )
+                            if _tmp_model is not None:
+                                _fp = complete_fingerprint_post_investigation(
+                                    _fp,
+                                    _tmp_model,
+                                    seq_len=min(64, config.validation_seq_len),
+                                    model_dim=config.model_dim,
+                                    vocab_size=config.vocab_size,
+                                    device=str(dev),
+                                )
+                                del _tmp_model
+                                clear_gpu_memory()
+                                if _fp.cka_source == "artifact":
+                                    source["_behavioral_fingerprint"] = _fp.to_dict()
+                                    logger.info(
+                                        "validation_cka_completed: result_id=%s "
+                                        "cka_source=artifact",
+                                        source_result_id[:12],
+                                    )
+                                else:
+                                    _novelty_cap = 0.5
+                                    logger.warning(
+                                        "validation_cka_still_missing: result_id=%s "
+                                        "cka_source=%s — capping novelty at 50%%",
+                                        source_result_id[:12],
+                                        _fp.cka_source,
+                                    )
+                            else:
+                                _novelty_cap = 0.5
+                                logger.warning(
+                                    "validation_cka_model_build_failed: result_id=%s "
+                                    "— capping novelty at 50%%",
+                                    source_result_id[:12],
+                                )
+                        else:
+                            _novelty_cap = 0.5
+                    except Exception as e:
+                        _novelty_cap = 0.5
+                        logger.warning(
+                            "validation_cka_attempt_failed: result_id=%s error=%s "
+                            "— capping novelty at 50%%",
+                            source_result_id[:12],
+                            str(e),
+                        )
+
                 seed_results = self._run_validation_seed_sweep(
                     exp_id=exp_id,
                     source_result_id=source_result_id,
@@ -120,11 +224,11 @@ class _ExecutionValidationMixin:
 
                 # Skip candidates where no seed could reconstruct the model
                 if not seed_results:
-                    logger.debug(
-                        f"Threaded validation: skipping {source_result_id[:8]} — "
-                        f"model failed to reconstruct for all {config.validation_n_seeds} seeds"
+                    raise RuntimeError(
+                        f"Validation aborted for {source_result_id[:8]}: "
+                        f"model failed to reconstruct for all "
+                        f"{config.validation_n_seeds} seeds"
                     )
-                    continue
 
                 # Compute validation metrics
                 _sm = compute_seed_metrics(seed_results)
@@ -138,6 +242,8 @@ class _ExecutionValidationMixin:
                 best_seed = _sm["best_seed"]
 
                 # Baseline comparison at validation scale
+                _rid_short = source_result_id[:8]
+                _vstatus("baseline comparison", _rid_short)
                 val_baseline_ratio = None
                 if best_seed is not None:
                     try:
@@ -203,11 +309,16 @@ class _ExecutionValidationMixin:
                                     v_baseline_ratio
                                 )
                             except Exception:
-                                pass
-                    except Exception:
-                        pass
+                                raise
+                    except Exception as exc:
+                        _fail_loud(
+                            "validation",
+                            f"baseline comparison failed for {source_result_id[:8]}",
+                            exc,
+                        )
 
                 # Parameter-normalized baseline comparison
+                _vstatus("normalized baseline comparison", _rid_short)
                 val_normalized_ratio = None
                 val_param_efficiency = None
                 source_params = (
@@ -252,14 +363,19 @@ class _ExecutionValidationMixin:
                         )
                         val_normalized_ratio = norm_result.get("normalized_ratio")
                         val_param_efficiency = norm_result.get("param_efficiency")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _fail_loud(
+                            "validation",
+                            f"normalized baseline comparison failed for {source_result_id[:8]}",
+                            exc,
+                        )
 
                 if len(passed_seeds) > 0:
                     results["stage1_passed"] += 1
                 results["stage0_passed"] += 1
                 results["stage05_passed"] += 1
 
+                _vstatus("external evals", _rid_short)
                 ev_res = self._run_external_evals(
                     config=config,
                     dev=dev,
@@ -359,7 +475,48 @@ class _ExecutionValidationMixin:
                 ):
                     results["best_novelty_score"] = source_novelty
 
+                # B3: Compute capped novelty values before leaderboard promotion.
+                # promote_to_tier reads novelty_confidence from program_results,
+                # so we must update the source row first.
+                _raw_novelty = source.get("novelty_score")
+                _raw_confidence = source.get("novelty_confidence")
+                if _novelty_cap is not None:
+                    if _raw_novelty is not None:
+                        _raw_novelty = float(_raw_novelty) * _novelty_cap
+                    if _raw_confidence is not None:
+                        _raw_confidence = float(_raw_confidence) * _novelty_cap
+                    logger.info(
+                        "validation_novelty_capped: result_id=%s cap=%.2f "
+                        "novelty=%.4f confidence=%.4f",
+                        source_result_id[:12],
+                        _novelty_cap,
+                        _raw_novelty or 0.0,
+                        _raw_confidence or 0.0,
+                    )
+                    try:
+                        _cap_updates = []
+                        if _raw_novelty is not None:
+                            _cap_updates.append(("novelty_score", _raw_novelty))
+                        if _raw_confidence is not None:
+                            _cap_updates.append(("novelty_confidence", _raw_confidence))
+                        if _cap_updates:
+                            _set_clause = ", ".join(f"{c} = ?" for c, _ in _cap_updates)
+                            _vals = [v for _, v in _cap_updates] + [source_result_id]
+                            nb._submit_write(
+                                f"UPDATE program_results SET {_set_clause} WHERE result_id = ?",
+                                _vals,
+                            )
+                            # Must be visible before promote_to_tier reads it
+                            nb.flush_writes()
+                    except Exception as _cap_err:
+                        logger.debug(
+                            "B3 novelty cap DB update failed for %s: %s",
+                            source_result_id[:12],
+                            _cap_err,
+                        )
+
                 # Update leaderboard — direct lookup by result_id
+                _vstatus("leaderboard promotion", _rid_short)
                 entry = nb.get_leaderboard_entry(source_result_id)
                 if entry:
                     nb.promote_to_tier(
@@ -398,6 +555,11 @@ class _ExecutionValidationMixin:
                         efficiency_wall_score=efficiency_wall_score,
                         max_viable_seq_len=max_viable_seq_len,
                         scaling_regime=scaling_regime,
+                        **(
+                            {"screening_novelty": _raw_novelty}
+                            if _novelty_cap is not None and _raw_novelty is not None
+                            else {}
+                        ),
                     )
                     # Store detailed benchmark payload
                     external_benchmarks_payload = {}
@@ -419,6 +581,7 @@ class _ExecutionValidationMixin:
                 # Trajectory probe — run after leaderboard update to get
                 # peak_ppl / steps_to_divergence / ppl_500 for breakthrough
                 # detection and composite scoring.
+                _vstatus("trajectory probe (4000 steps)", _rid_short)
                 trajectory_composite = None
                 try:
                     if graph_json_str and len(passed_seeds) > 0:
@@ -534,7 +697,8 @@ class _ExecutionValidationMixin:
                         },
                     )
 
-                # Record validation result
+                # Record validation result (uses capped _raw_novelty/_raw_confidence
+                # computed before promote_to_tier above)
                 nb.record_program_result(
                     experiment_id=exp_id,
                     graph_fingerprint=source.get("graph_fingerprint", source_result_id),
@@ -544,8 +708,8 @@ class _ExecutionValidationMixin:
                     stage1_passed=len(passed_seeds) > 0,
                     loss_ratio=val_loss_ratio,
                     baseline_loss_ratio=val_baseline_ratio,
-                    novelty_score=source.get("novelty_score"),
-                    novelty_confidence=source.get("novelty_confidence"),
+                    novelty_score=_raw_novelty,
+                    novelty_confidence=_raw_confidence,
                     novelty_raw_score=source.get("novelty_raw_score"),
                     novelty_z_score=source.get("novelty_z_score"),
                     novelty_reference_version=source.get("novelty_reference_version"),
@@ -584,9 +748,14 @@ class _ExecutionValidationMixin:
                         metrics={"candidate_idx": prog_idx + 1},
                     )
                 except Exception as e:
-                    logger.debug("Validation checkpoint save failed: %s", e)
+                    _fail_loud(
+                        "validation",
+                        f"checkpoint save failed for candidate {prog_idx + 1}",
+                        e,
+                    )
 
             # Complete experiment
+            _vstatus("generating experiment summary")
             context = self._build_rich_context_for_experiment(
                 results, config, hypothesis, nb
             )
@@ -606,8 +775,12 @@ class _ExecutionValidationMixin:
             if not config.keep_checkpoints:
                 try:
                     ckpt.cleanup(exp_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _fail_loud(
+                        "validation",
+                        f"checkpoint cleanup failed for {exp_id[:8]}",
+                        exc,
+                    )
 
             self._update_progress(
                 status="completed",
@@ -685,7 +858,7 @@ class _ExecutionValidationMixin:
             dev_str = str(dev)
 
             # Create a modified config for scale-up training
-            scale_config = RunConfig.from_dict(config.to_dict())
+            scale_config = config.copy()
             scale_config.stage1_steps = config.scale_up_steps
             scale_config.stage1_batch_size = config.scale_up_batch_size
             scale_config.max_seq_len = config.scale_up_seq_len
@@ -735,7 +908,9 @@ class _ExecutionValidationMixin:
                 # Reconstruct graph from stored JSON
                 graph_json_str = source_program.get("graph_json")
                 if not graph_json_str:
-                    continue
+                    raise RuntimeError(
+                        f"Scale-up source {source_result_id[:8]} has no graph_json"
+                    )
 
                 try:
                     graph = graph_from_json(graph_json_str)
@@ -751,7 +926,11 @@ class _ExecutionValidationMixin:
                             "error": f"Graph deserialization failed: {e}",
                         },
                     )
-                    continue
+                    _fail_loud(
+                        "scale_up",
+                        f"graph deserialization failed for {source_result_id[:8]}",
+                        e,
+                    )
 
                 # Compile model
                 try:
@@ -773,7 +952,11 @@ class _ExecutionValidationMixin:
                             "error": f"Compilation failed: {e}",
                         },
                     )
-                    continue
+                    _fail_loud(
+                        "scale_up",
+                        f"compilation failed for {source_result_id[:8]}",
+                        e,
+                    )
 
                 results["stage0_passed"] += 1
                 results["stage05_passed"] += 1
@@ -880,8 +1063,12 @@ class _ExecutionValidationMixin:
                                 program_metrics["validation_baseline_loss_ratio"] = (
                                     v_baseline_ratio
                                 )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _fail_loud(
+                                "scale_up",
+                                f"baseline comparison failed for {source_result_id[:8]}",
+                                exc,
+                            )
 
                 program_metrics["stage_at_death"] = (
                     "survived" if s1_passed else "stage1"
@@ -895,8 +1082,12 @@ class _ExecutionValidationMixin:
                             json_safe(diag.to_dict())
                         )
                         program_metrics["diagnostic_score"] = diag.diagnostic_score
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _fail_loud(
+                            "scale_up",
+                            f"diagnostic suite failed for {source_result_id[:8]}",
+                            exc,
+                        )
 
                 # Benchmark evals (non-blocking) for scale-up survivors
                 if s1_passed and model is not None:
@@ -975,8 +1166,12 @@ class _ExecutionValidationMixin:
                         calibration_row = self._ensure_novelty_calibration(
                             nb, config, fp
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _fail_loud(
+                            "scale_up",
+                            f"fingerprint computation failed for {source_result_id[:8]}",
+                            exc,
+                        )
 
                 calibration = None
                 if calibration_row:
@@ -1047,8 +1242,12 @@ class _ExecutionValidationMixin:
                 if training_curve and result_id:
                     try:
                         nb.store_training_curve(result_id, training_curve)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _fail_loud(
+                            "scale_up",
+                            f"training curve persistence failed for {result_id[:8]}",
+                            exc,
+                        )
 
                 self._emit_event(
                     "scale_up_progress",

@@ -72,5 +72,5 @@ def test_composite_score_backwards_compat():
         screening_nov=0.7,
     )
 
-    # Canonical scoring: nonlinear perf curve + novelty with confidence gate
-    assert score > 30.0  # sanity: should be positive and meaningful
+    # v7 scoring: S-curved perf + novelty; lr=0.5 is weak → lower baseline
+    assert score > 10.0  # sanity: should be positive and meaningful

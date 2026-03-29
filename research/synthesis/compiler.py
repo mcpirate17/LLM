@@ -8,6 +8,7 @@ parameters allocated for parameterized ops.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import math
 from typing import Dict, List, Optional, Tuple, Callable
@@ -18,7 +19,14 @@ import torch.nn.functional as F
 
 from .primitives import get_primitive, PrimitiveOp, _ALGEBRAIC_SPACE_TAGS
 from .graph import ComputationGraph, ShapeInfo
-from .compiler_op_utils import record_kernel_fallback, _safe_linear
+from .compiler_op_utils import (
+    record_kernel_fallback,
+    _safe_linear,
+    _build_nm_mask,
+    _flatten_for_kernel,
+    _unflatten_from_kernel,
+    _build_block_sparse_mask,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +42,7 @@ try:
 except ImportError:
     HAS_KERNELS = False
 
-try:
-    from . import cpu_ops
-
-    HAS_CPU_OPS = True
-except ImportError:
-    HAS_CPU_OPS = False
+HAS_CPU_OPS = importlib.util.find_spec("research.synthesis.cpu_ops") is not None
 
 from research.defaults import VOCAB_SIZE, MODEL_DIM, VALIDATION_SEQ_LEN
 from research.env import aria_core, HAS_ARIA_CORE
@@ -63,6 +66,7 @@ def _register_split_op_modules() -> None:
         "compiler_ops_attention": ".compiler_ops_attention",
         "compiler_ops_mathspaces": ".compiler_ops_mathspaces",
         "compiler_ops_routing": ".compiler_ops_routing",
+        "true_routing_ops": ".true_routing_ops",
     }
     for label, rel_import in split_modules.items():
         try:
@@ -226,92 +230,6 @@ def _record_routing_telemetry(
         telemetry["heatmap"] = selected_experts[0].detach().cpu().numpy().tolist()
 
     setattr(module, "routing_telemetry", telemetry)
-
-
-def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
-    if n <= 0 or m <= 0 or n > m:
-        return torch.ones_like(weight)
-
-    if HAS_CPU_OPS and weight.device.type == "cpu" and weight.dtype == torch.float32:
-        return cpu_ops.build_nm_mask_cpu(weight, n, m)
-
-    rows, cols = weight.shape
-    n_chunks = cols // m
-    if n_chunks <= 0:
-        return torch.ones_like(weight)
-
-    usable = n_chunks * m
-    core = weight[:, :usable].abs().reshape(rows, n_chunks, m)
-    keep_idx = core.topk(k=n, dim=-1).indices
-    mask_core = torch.zeros_like(core)
-    mask_core.scatter_(-1, keep_idx, 1.0)
-    mask = torch.ones_like(weight)
-    mask[:, :usable] = mask_core.reshape(rows, usable)
-    return mask
-
-
-def _flatten_for_kernel(x: torch.Tensor):
-    """Flatten >=3D tensor to 2D for C kernels that expect (batch, dim).
-
-    Returns (x_2d, orig_shape) so the caller can reshape back via
-    out.reshape(*orig_shape[:-1], -1).
-    """
-    if not isinstance(x, torch.Tensor):
-        raise RuntimeError(
-            f"_flatten_for_kernel expected Tensor, got {type(x).__name__}"
-        )
-    if x.dim() < 1:
-        raise RuntimeError(f"_flatten_for_kernel expected >=1D tensor, got {x.dim()}D")
-    orig_shape = x.shape
-    if x.dim() > 2:
-        x = x.contiguous().reshape(-1, orig_shape[-1])
-    elif not x.is_contiguous():
-        x = x.contiguous()
-    return x, orig_shape
-
-
-def _unflatten_from_kernel(out: torch.Tensor, orig_shape):
-    """Reshape 2D kernel output back to match the original input shape."""
-    if len(orig_shape) > 2:
-        return out.reshape(*orig_shape[:-1], -1)
-    return out
-
-
-def _build_block_sparse_mask(
-    weight: torch.Tensor, block_size: int, block_density: float
-) -> torch.Tensor:
-    block_size = max(1, int(block_size))
-    # Floor at 0.25: below 25% density, too many gradient paths are dead
-    # and convergence fails 41% of the time. Old floor was 0.05.
-    block_density = float(max(0.25, min(1.0, block_density)))
-
-    rows, cols = weight.shape
-    row_blocks = rows // block_size
-    col_blocks = cols // block_size
-    if row_blocks <= 0 or col_blocks <= 0:
-        return torch.ones_like(weight)
-
-    usable_rows = row_blocks * block_size
-    usable_cols = col_blocks * block_size
-    core = weight[:usable_rows, :usable_cols]
-    blocks = core.view(row_blocks, block_size, col_blocks, block_size).permute(
-        0, 2, 1, 3
-    )
-    scores = blocks.abs().mean(dim=(2, 3))
-
-    keep_per_row = max(1, int(round(col_blocks * block_density)))
-    keep_idx = scores.topk(k=keep_per_row, dim=1).indices
-
-    block_mask = torch.zeros_like(scores)
-    block_mask.scatter_(1, keep_idx, 1.0)
-    block_mask = (
-        block_mask.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, block_size, block_size)
-    )
-    block_mask = block_mask.permute(0, 2, 1, 3).reshape(usable_rows, usable_cols)
-
-    mask = torch.ones_like(weight)
-    mask[:usable_rows, :usable_cols] = block_mask
-    return mask
 
 
 # ── Op Implementations ──────────────────────────────────────────────
@@ -884,8 +802,9 @@ def _op_kronecker_linear(module, inputs, config):
     return out.reshape(B, S, D)
 
 
-@register_op("n_way_sparse_router")
-def _op_n_way_sparse_router(module, inputs, config):
+@register_op("sparse_bottleneck_moe")
+@register_op("n_way_sparse_router")  # backward-compat alias
+def _op_sparse_bottleneck_moe(module, inputs, config):
     x = inputs[0]  # (B, S, D)
     B, S, D = x.shape
     n_ways = max(2, min(config.get("n_ways", 4), 16))
@@ -998,9 +917,10 @@ def _op_latent_attention_compressor(module, inputs, config):
     return x + torch.sigmoid(k) * v
 
 
-@register_op("routing_conditioned_compression")
-def _op_routing_conditioned_compression(module, inputs, config):
-    """Changes linear layer compression level based on routing signal."""
+@register_op("signal_conditioned_compression")
+@register_op("routing_conditioned_compression")  # backward-compat alias
+def _op_signal_conditioned_compression(module, inputs, config):
+    """Changes linear layer compression level based on external signal."""
     x, routing_signal = inputs[0], inputs[1]
     if not hasattr(module, "weight_full"):
         return x
@@ -1021,8 +941,9 @@ def _op_routing_conditioned_compression(module, inputs, config):
     return full
 
 
-@register_op("token_type_classifier")
-def _op_token_type_classifier(module, inputs, config):
+@register_op("token_class_proj")
+@register_op("token_type_classifier")  # backward-compat alias
+def _op_token_class_proj(module, inputs, config):
     """Token type classifier: D → n_classes (with nonlinearity) → D."""
     x = inputs[0]  # (B, S, D)
     if not hasattr(module, "classifier_weight"):
@@ -1037,8 +958,9 @@ def _op_token_type_classifier(module, inputs, config):
     return _safe_linear(scores, module.classifier_proj_back)
 
 
-@register_op("progressive_compression_gate")
-def _op_progressive_compression_gate(module, inputs, config):
+@register_op("adaptive_rank_gate")
+@register_op("progressive_compression_gate")  # backward-compat alias
+def _op_adaptive_rank_gate(module, inputs, config):
     """Per-token compression gate: learned projection decides compression ratio per token."""
     x = inputs[0]
     if not hasattr(module, "weight_full"):
@@ -1057,8 +979,9 @@ def _op_progressive_compression_gate(module, inputs, config):
     return full
 
 
-@register_op("compression_mixture_experts")
-def _op_compression_mixture_experts(module, inputs, config):
+@register_op("dual_compression_blend")
+@register_op("compression_mixture_experts")  # backward-compat alias
+def _op_dual_compression_blend(module, inputs, config):
     """Routing assigns tokens to method-specific compression experts."""
     x = inputs[0]
     routing_signal = inputs[1] if len(inputs) > 1 else x
@@ -1156,8 +1079,12 @@ def _execute_op(
             telemetry[op_name] = stats
             setattr(module, "mathspace_telemetry", telemetry)
 
-        # Tropical routing telemetry for route-collapse detection
-        if op_name in ("tropical_router", "tropical_moe"):
+        # Tropical routing telemetry for route-collapse detection.
+        # Gated: only runs when collect_telemetry is True on the module (set
+        # by dashboard / profiler), avoiding overhead during normal training.
+        if op_name in ("tropical_router", "tropical_moe") and getattr(
+            module, "collect_telemetry", False
+        ):
             _tropical_obj = getattr(module, "_tropical_router", None) or getattr(
                 module, "_tropical_moe", None
             )
@@ -1300,8 +1227,12 @@ class CompiledOp(nn.Module):
                 "conv_weight",
                 self._make_param((D_in, 1, 3), std=1.0 / math.sqrt(3)),
             ),
-            "route_lanes": lambda: self._init_route_lanes(config, D_in),
-            "route_recursion": lambda: self._init_route_recursion(config, D_in),
+            "gated_lane_blend": lambda: self._init_gated_lane_blend(config, D_in),
+            "depth_gated_transform": lambda: self._init_depth_gated_transform(
+                config, D_in
+            ),
+            "route_lanes": lambda: self._init_gated_lane_blend(config, D_in),
+            "route_recursion": lambda: self._init_depth_gated_transform(config, D_in),
             "topk_gate": lambda: setattr(
                 self, "gate_proj", self._make_param((2, D_in), std=0.02)
             ),
@@ -1404,44 +1335,48 @@ class CompiledOp(nn.Module):
             "stdp_attention": lambda: setattr(
                 self, "log_tau", nn.Parameter(torch.tensor(0.0))
             ),
-            "mod_topk": lambda: (
+            "depth_token_mask": lambda: (
                 setattr(self, "router_weight", self._make_param((1, D_in), std=0.02)),
             ),
-            "adaptive_lane_mixer": lambda: self._init_adaptive_lane_mixer(D_in),
-            "mixed_recursion_gate": lambda: self._init_mixed_recursion_gate(
-                config, D_in
-            ),
-            "early_exit": lambda: setattr(
+            "difficulty_blend_3way": lambda: self._init_difficulty_blend_3way(D_in),
+            "score_depth_blend": lambda: self._init_score_depth_blend(config, D_in),
+            "confidence_token_gate": lambda: setattr(
                 self, "confidence_proj", self._make_param((1, D_in), std=0.02)
             ),
-            "cascade": lambda: setattr(
+            "learned_token_gate": lambda: setattr(
                 self, "cascade_proj", self._make_param((1, D_in), std=0.02)
             ),
-            "speculative": lambda: self._init_speculative(D_in),
-            "adaptive_recursion": lambda: self._init_adaptive_recursion(config, D_in),
-            "token_type_classifier": lambda: self._init_token_type_classifier(
-                config, D_in
+            "cheap_verify_blend": lambda: self._init_cheap_verify_blend(D_in),
+            "depth_weighted_proj": lambda: self._init_depth_weighted_proj(config, D_in),
+            "token_class_proj": lambda: self._init_token_class_proj(config, D_in),
+            "adaptive_rank_gate": lambda: self._init_adaptive_rank_gate(D_in, D_out),
+            "dual_compression_blend": lambda: self._init_dual_compression_blend(
+                D_in, D_out
             ),
-            "progressive_compression_gate": lambda: (
-                self._init_progressive_compression_gate(D_in, D_out)
-            ),
-            "compression_mixture_experts": lambda: (
-                self._init_compression_mixture_experts(D_in, D_out)
-            ),
-            "relu_gate_routing": lambda: self._init_relu_gate_routing(config, D_in),
+            "relu_gated_moe": lambda: self._init_relu_gated_moe(config, D_in),
+            "relu_gate_routing": lambda: self._init_relu_gated_moe(config, D_in),
             "ternary_projection": lambda: self._init_ternary_projection(
                 config, D_in, D_out
             ),
             "latent_attention_compressor": lambda: (
                 self._init_latent_attention_compressor(D_in)
             ),
+            "signal_conditioned_compression": lambda: (
+                self._init_signal_conditioned_compression(D_in)
+            ),
             "routing_conditioned_compression": lambda: (
-                self._init_routing_conditioned_compression(D_in)
+                self._init_signal_conditioned_compression(D_in)
             ),
             "chebyshev_spectral_mix": lambda: self._init_chebyshev_spectral_mix(
                 config, D_in
             ),
-            "n_way_sparse_router": lambda: self._init_n_way_sparse_router(config, D_in),
+            "sparse_bottleneck_moe": lambda: self._init_sparse_bottleneck_moe(
+                config, D_in
+            ),
+            # True routing ops (heterogeneous experts)
+            "hetero_moe": lambda: self._init_hetero_moe(D_in),
+            "arch_router": lambda: self._init_arch_router(D_in),
+            "compute_budget_router": lambda: self._init_compute_budget_router(D_in),
         }
 
         handler = dispatch.get(op.name)
@@ -1558,7 +1493,7 @@ class CompiledOp(nn.Module):
         ):
             proj.weight.data.normal_(std=0.02)
 
-    def _init_route_lanes(self, config: Dict, d_in: int) -> None:
+    def _init_gated_lane_blend(self, config: Dict, d_in: int) -> None:
         n_lanes = int(config.get("n_lanes", 3))
         self.lane_scorer = self._make_param((n_lanes, d_in), std=0.02)
         projs = []
@@ -1568,7 +1503,7 @@ class CompiledOp(nn.Module):
             projs.append(p)
         self.lane_projs = nn.ParameterList(projs)
 
-    def _init_route_recursion(self, config: Dict, d_in: int) -> None:
+    def _init_depth_gated_transform(self, config: Dict, d_in: int) -> None:
         max_depth = int(config.get("max_depth", 3))
         max_depth = max(1, min(6, max_depth))
         self.depth_scorer = self._make_param((max_depth, d_in), std=0.02)
@@ -1607,7 +1542,7 @@ class CompiledOp(nn.Module):
         self.conv_proj = nn.Linear(d_in, d_in, bias=False)
         self.conv_proj.weight.data.normal_(std=0.01)
 
-    def _init_adaptive_lane_mixer(self, d_in: int) -> None:
+    def _init_difficulty_blend_3way(self, d_in: int) -> None:
         self.gate_proj = self._make_param((3, d_in), std=0.02)
         rank = max(d_in // 4, 1)
         self.U_mid = self._make_param((rank, d_in), std=0.02)
@@ -1621,7 +1556,7 @@ class CompiledOp(nn.Module):
         self.heavy_mlp[0].weight.data.normal_(std=0.02)
         self.heavy_mlp[2].weight.data.normal_(std=0.02)
 
-    def _init_mixed_recursion_gate(self, config: Dict, d_in: int) -> None:
+    def _init_score_depth_blend(self, config: Dict, d_in: int) -> None:
         max_depth = int(config.get("max_depth", 3))
         projs = []
         for _ in range(max_depth):
@@ -1630,11 +1565,11 @@ class CompiledOp(nn.Module):
             projs.append(p)
         self.step_projs = nn.ParameterList(projs)
 
-    def _init_speculative(self, d_in: int) -> None:
+    def _init_cheap_verify_blend(self, d_in: int) -> None:
         self.cheap_proj = self._make_param((d_in, d_in), std=0.02)
         self.verify_gate = self._make_param((1, d_in), std=0.02)
 
-    def _init_adaptive_recursion(self, config: Dict, d_in: int) -> None:
+    def _init_depth_weighted_proj(self, config: Dict, d_in: int) -> None:
         max_depth = int(config.get("max_depth", 3))
         max_depth = max(1, min(6, max_depth))
         self.depth_scorer = self._make_param((max_depth, d_in), std=0.02)
@@ -1645,7 +1580,7 @@ class CompiledOp(nn.Module):
             projs.append(p)
         self.step_projs = nn.ParameterList(projs)
 
-    def _init_relu_gate_routing(self, config: Dict, d_in: int) -> None:
+    def _init_relu_gated_moe(self, config: Dict, d_in: int) -> None:
         n_experts = int(config.get("n_experts", 8))
         self.gate_proj = self._make_param((n_experts, d_in), std=0.02)
         expert_list = []
@@ -1655,12 +1590,12 @@ class CompiledOp(nn.Module):
             expert_list.append(p)
         self.expert_weights = nn.ParameterList(expert_list)
 
-    def _init_token_type_classifier(self, config: Dict, d_in: int) -> None:
+    def _init_token_class_proj(self, config: Dict, d_in: int) -> None:
         n_classes = int(config.get("n_classes", 2))
         self.classifier_weight = self._make_param((n_classes, d_in), std=0.02)
         self.classifier_proj_back = self._make_param((d_in, n_classes), std=0.02)
 
-    def _init_progressive_compression_gate(self, d_in: int, d_out: int) -> None:
+    def _init_adaptive_rank_gate(self, d_in: int, d_out: int) -> None:
         self.weight_full = self._make_param((d_out, d_in), std=0.02)
         self.compress_param = nn.Parameter(torch.zeros(1))
         self.token_gate = self._make_param((1, d_in), std=0.02)
@@ -1668,7 +1603,7 @@ class CompiledOp(nn.Module):
         self.U_comp = self._make_param((rank, d_in), std=0.02)
         self.V_comp = self._make_param((d_out, rank), std=0.02)
 
-    def _init_compression_mixture_experts(self, d_in: int, d_out: int) -> None:
+    def _init_dual_compression_blend(self, d_in: int, d_out: int) -> None:
         self.expert_weights = nn.Parameter(torch.ones(2))
         rank = max(d_in // 8, 1)
         self.U_lr = self._make_param((rank, d_in), std=0.02)
@@ -1687,7 +1622,7 @@ class CompiledOp(nn.Module):
         self.kv_compress = self._make_param((latent_dim, d_in), std=0.02)
         self.kv_up = self._make_param((d_in * 2, latent_dim), std=0.02)
 
-    def _init_routing_conditioned_compression(self, d_in: int) -> None:
+    def _init_signal_conditioned_compression(self, d_in: int) -> None:
         self.weight_full = self._make_param((d_in, d_in), std=0.02)
         rank = max(d_in // 8, 1)
         self.U_comp = self._make_param((rank, d_in), std=0.02)
@@ -1702,7 +1637,7 @@ class CompiledOp(nn.Module):
                 p.data.add_(1.0)
             setattr(self, f"cheb_c{k}", p)
 
-    def _init_n_way_sparse_router(self, config: Dict, d_in: int) -> None:
+    def _init_sparse_bottleneck_moe(self, config: Dict, d_in: int) -> None:
         n_ways = max(2, min(config.get("n_ways", 4), 16))
         hidden = d_in // n_ways
         self.gate_weight = self._make_param((d_in, n_ways), std=0.02)
@@ -1711,6 +1646,55 @@ class CompiledOp(nn.Module):
                 self, f"expert_down_{i}", self._make_param((d_in, hidden), std=0.02)
             )
             setattr(self, f"expert_up_{i}", self._make_param((hidden, d_in), std=0.02))
+
+    # ── True routing op inits ────────────────────────────────────────
+
+    def _init_hetero_moe(self, d_in: int) -> None:
+        """Heterogeneous MoE: gate + attention/conv/SSM expert params."""
+        self.gate_weight = self._make_param((3, d_in), std=0.02)
+        # Attention expert: Q/K/V packed + output proj
+        self.attn_qkv = self._make_param((3 * d_in, d_in), std=0.02)
+        self.attn_out = self._make_param((d_in, d_in), std=0.02)
+        # Conv expert: depthwise conv1d kernel=3 + output proj
+        self.conv_weight = self._make_param((d_in, 1, 3), std=0.02)
+        self.conv_proj = self._make_param((d_in, d_in), std=0.02)
+        # SSM expert: diagonal A (log-space) + input-dependent B/C + skip D
+        self.ssm_A_log = self._make_param((d_in,), std=0.1)
+        self.ssm_B_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_C_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_D = self._make_param((d_in,), std=0.02)
+
+    def _init_arch_router(self, d_in: int) -> None:
+        """Architecture router: gate + transformer/mamba/MLP block params."""
+        self.gate_weight = self._make_param((3, d_in), std=0.02)
+        # Shared attention params (transformer path)
+        self.attn_qkv = self._make_param((3 * d_in, d_in), std=0.02)
+        self.attn_out = self._make_param((d_in, d_in), std=0.02)
+        self.arch_ffn = self._make_param((d_in, d_in), std=0.02)
+        # Shared conv + SSM params (mamba path)
+        self.conv_weight = self._make_param((d_in, 1, 3), std=0.02)
+        self.conv_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_A_log = self._make_param((d_in,), std=0.1)
+        self.ssm_B_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_C_proj = self._make_param((d_in, d_in), std=0.02)
+        self.ssm_D = self._make_param((d_in,), std=0.02)
+        self.arch_proj = self._make_param((d_in, d_in), std=0.02)
+        # MLP path
+        hidden = d_in * 4
+        self.mlp_up = self._make_param((hidden, d_in), std=0.02)
+        self.mlp_down = self._make_param((d_in, hidden), std=0.02)
+
+    def _init_compute_budget_router(self, d_in: int) -> None:
+        """Compute budget router: gate + cheap/medium/expensive tier params."""
+        self.gate_weight = self._make_param((3, d_in), std=0.02)
+        # Tier 0 (cheap): single linear projection
+        self.cheap_proj = self._make_param((d_in, d_in), std=0.02)
+        # Tier 1 (medium): depthwise conv + proj
+        self.conv_weight = self._make_param((d_in, 1, 3), std=0.02)
+        self.conv_proj = self._make_param((d_in, d_in), std=0.02)
+        # Tier 2 (expensive): attention
+        self.attn_qkv = self._make_param((3 * d_in, d_in), std=0.02)
+        self.attn_out = self._make_param((d_in, d_in), std=0.02)
 
     def _cast_params_to(self, dtype: torch.dtype) -> None:
         """Cast raw parameters to match input dtype (bf16 autocast safety).
@@ -1809,6 +1793,19 @@ class CompiledLayer(nn.Module):
             if is_boundary:
                 self._mathspace_boundary_nids.add(str(nid))
 
+        # Pre-cache forward execution plan to eliminate per-iteration str()
+        # conversions and dict lookups in the hot forward() loop.
+        self._fwd_plan: list = []
+        for nid in self.topo_order:
+            node = graph.nodes[nid]
+            if node.is_input:
+                self._fwd_plan.append((nid, True, None, node.input_ids, False))
+            else:
+                nid_str = str(nid)
+                op = self.ops[nid_str]
+                is_boundary = nid_str in self._mathspace_boundary_nids
+                self._fwd_plan.append((nid, False, op, node.input_ids, is_boundary))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Execute the computation graph with liveness-based memory management.
 
@@ -1833,46 +1830,36 @@ class CompiledLayer(nn.Module):
         if output_id is None:
             raise RuntimeError("Graph has no output node")
 
-        # Track if we need aggressive reclamation (high memory pressure)
         is_cuda = x.is_cuda
 
-        for nid in self.topo_order:
-            node = self.graph.nodes[nid]
-            if node.is_input:
+        for nid, is_input, op, input_ids, is_boundary in self._fwd_plan:
+            if is_input:
                 node_outputs[nid] = x
             else:
-                # Build input tuple only for registered consumers
-                inputs = tuple(node_outputs[iid] for iid in node.input_ids)
-                out = self.ops[str(nid)](*inputs)
-                # Normalize at math-space block boundaries (not between
-                # consecutive math ops — preserves algebraic semantics).
-                # LayerNorm is created lazily using the actual tensor's last
-                # dim, because shape inference can be wrong for ops like
-                # tropical_matmul that output (B,S,S) instead of (B,S,D).
-                nid_str = str(nid)
-                if nid_str in self._mathspace_boundary_nids:
-                    # RMSNorm instead of LayerNorm: no mean-centering preserves
-                    # gradient flow when the same input feeds Q/K/V + residual.
-                    rms = (
-                        out.float().pow(2).mean(dim=-1, keepdim=True).add(1e-6).rsqrt()
+                inputs = tuple(node_outputs[iid] for iid in input_ids)
+                out = op(*inputs)
+                if is_boundary:
+                    # RMSNorm at math-space block boundaries.
+                    # Skip .float() when already float32.
+                    out_f = out if out.dtype == torch.float32 else out.float()
+                    rms = out_f.pow(2).mean(dim=-1, keepdim=True).add_(1e-6).rsqrt_()
+                    out = (
+                        out * rms
+                        if out.dtype == torch.float32
+                        else out * rms.to(out.dtype)
                     )
-                    out = out * rms.to(out.dtype)
                 node_outputs[nid] = out
 
-            # Immediately decrement counts for this node's inputs
-            for iid in node.input_ids:
+            for iid in input_ids:
                 counts[iid] -= 1
-                # If no more consumers and not the final output, reclaim HBM
                 if counts[iid] <= 0 and iid != output_id:
                     if iid in node_outputs:
-                        # Explicitly clear reference to trigger prompt reclamation
                         out_to_del = node_outputs.pop(iid)
                         if is_cuda:
-                            # Manually help reference counting
                             del out_to_del
 
         out = node_outputs.pop(output_id)
-        node_outputs.clear()  # Reclaim any lingering intermediates
+        node_outputs.clear()
         return out
 
     def set_capture_heatmap(self, enabled: bool = True) -> None:
@@ -1969,6 +1956,10 @@ def compile_graph(graph: ComputationGraph, use_ir: bool = True) -> nn.Module:
         graph: The computation graph to compile.
         use_ir: If True (default), uses the high-performance IRExecutor path.
     """
+    from .graph_validator import annotate_kv_cacheable
+
+    annotate_kv_cacheable(graph)
+
     if use_ir:
         from .ir_executor import IRExecutor
 

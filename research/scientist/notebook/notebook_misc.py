@@ -199,7 +199,14 @@ class _MiscMixin:
         programs = self.get_program_results(experiment_id)
         total = len(programs)
         if total == 0:
-            return {"total": 0, "funnel": {}, "errors": {}, "stage_deaths": {}}
+            return {
+                "total": 0,
+                "funnel": {},
+                "errors": {},
+                "stage_deaths": {},
+                "root_causes": {},
+                "exemplars": [],
+            }
 
         s0_pass = sum(1 for p in programs if p.get("stage0_passed"))
         s05_pass = sum(1 for p in programs if p.get("stage05_passed"))
@@ -207,12 +214,47 @@ class _MiscMixin:
 
         # Error type distribution (use classified error_type if available)
         errors: Dict[str, int] = {}
+        root_causes: Dict[str, int] = {}
+        exemplars: List[Dict[str, Any]] = []
         for p in programs:
             err_type = p.get("error_type") or ""
             err_msg = p.get("error_message") or p.get("stage0_error") or ""
             key = err_type if err_type else err_msg[:80].strip()
             if key:
                 errors[key] = errors.get(key, 0) + 1
+            failure_details = {}
+            raw_failure = p.get("failure_details_json")
+            if raw_failure:
+                try:
+                    failure_details = (
+                        _json_loads(raw_failure)
+                        if isinstance(raw_failure, str)
+                        else raw_failure
+                    )
+                except Exception:
+                    failure_details = {}
+            root_cause = (
+                failure_details.get("root_cause_code")
+                or err_type
+                or p.get("stage_at_death")
+                or "unknown"
+            )
+            root_causes[root_cause] = root_causes.get(root_cause, 0) + 1
+            if failure_details and len(exemplars) < 10:
+                exemplars.append(
+                    {
+                        "result_id": p.get("result_id"),
+                        "graph_fingerprint": p.get("graph_fingerprint"),
+                        "stage": failure_details.get("stage")
+                        or p.get("stage_at_death"),
+                        "root_cause_code": root_cause,
+                        "error_type": failure_details.get("error_type") or err_type,
+                        "error_message": failure_details.get("error_message")
+                        or err_msg,
+                        "failure_op": failure_details.get("failure_op"),
+                        "traceback_excerpt": failure_details.get("traceback_excerpt"),
+                    }
+                )
 
         # Stage-at-death histogram
         stage_deaths = {"validation": 0, "stage0": 0, "stage0.5": 0, "stage1": 0}
@@ -236,7 +278,9 @@ class _MiscMixin:
                 "stage1_passed": s1_pass,
             },
             "errors": dict(sorted(errors.items(), key=lambda x: -x[1])[:10]),
+            "root_causes": dict(sorted(root_causes.items(), key=lambda x: -x[1])[:10]),
             "stage_deaths": stage_deaths,
+            "exemplars": exemplars,
         }
 
     def get_dashboard_summary(self) -> Dict:
@@ -305,7 +349,10 @@ class _MiscMixin:
         ).fetchone()
         if latest_perf_row and latest_perf_row["results_json"]:
             try:
-                latest_results = _json_loads(latest_perf_row["results_json"])
+                rj = latest_perf_row["results_json"]
+                latest_results = (
+                    self._decompress(rj) if isinstance(rj, bytes) else _json_loads(rj)
+                )
                 perf_report = (
                     latest_results.get("perf_report")
                     if isinstance(latest_results, dict)
@@ -577,11 +624,15 @@ class _MiscMixin:
         throughput_tok_s: Optional[float] = None,
         peak_memory_mb: Optional[float] = None,
         forward_time_ms: Optional[float] = None,
+        is_moe: bool = False,
     ) -> Optional[Dict[str, float]]:
         """Geometric mean of per-dimension ratios vs GPT-2.
 
         All ratios >1.0 = better than GPT-2. Requires at least 3 of 6
         dimensions to return a result (graceful with missing data).
+
+        For MoE models (is_moe=True), total param count is excluded since
+        MoE activates only a fraction of params per token.
         Returns dict with per-dimension ratios and ``geomean``, or None.
         """
         ref = self._GPT2_REF
@@ -592,7 +643,8 @@ class _MiscMixin:
             ratios["x_quality"] = ref["loss_ratio"] / loss_ratio
 
         # x_params: ref_params / cand_params (fewer = better)
-        if param_count is not None and param_count > 0:
+        # MoE: skip — total params != active params
+        if param_count is not None and param_count > 0 and not is_moe:
             ratios["x_params"] = ref["param_count"] / param_count
 
         # x_flops: ref_flops / cand_flops (fewer = better)
@@ -624,10 +676,20 @@ class _MiscMixin:
 
     @staticmethod
     def compute_composite_score(**kwargs) -> float:
-        """Delegate to v6 scoring (GPT-2 = 100 anchor, open-ended)."""
-        from ..leaderboard_scoring import compute_composite_v6
+        """Delegate to v7 scoring (14-component, 565pt max).
 
-        result = compute_composite_v6(**kwargs)
+        Translates legacy parameter names to v7 equivalents for backward
+        compatibility with callers that still use ``wikitext_perplexity``.
+        """
+        from ..leaderboard_scoring import compute_composite_v7
+
+        # Translate legacy kwargs → v7 parameter names
+        if "wikitext_perplexity" in kwargs and "ppl_screening" not in kwargs:
+            kwargs["ppl_screening"] = kwargs.pop("wikitext_perplexity")
+        # wikitext_score has no direct v7 equivalent — drop silently
+        kwargs.pop("wikitext_score", None)
+
+        result = compute_composite_v7(**kwargs)
         return result if isinstance(result, (int, float)) else float(result)
 
     @staticmethod

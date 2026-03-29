@@ -1,5 +1,5 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
@@ -12,6 +12,25 @@ import { filterRowsByQuery } from '../utils/tableFiltering';
  * ExperimentDetail — Full experiment breakdown with hypothesis, funnel,
  * all programs table, failure analysis, and Aria's LLM analysis.
  */
+
+/** Extract a compact architecture summary from API-provided ops_summary or category histogram. */
+function extractArchSummary(p) {
+  // Backend extracts unique op names and sends as ops_summary
+  if (p.ops_summary) return p.ops_summary;
+  // Fall back to category histogram if ops_summary is missing
+  const hist = p.graph_category_histogram;
+  if (hist) {
+    try {
+      const cats = typeof hist === 'string' ? JSON.parse(hist) : hist;
+      const parts = Object.entries(cats)
+        .filter(([, v]) => v > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${v}\u00d7${k.replace(/_/g, ' ')}`);
+      if (parts.length > 0) return parts.join(' ');
+    } catch { /* fall through */ }
+  }
+  return null;
+}
 
 /** Rate a program row: green (learned well), amber (compiles), red (failed early) */
 function programRowRating(p) {
@@ -37,18 +56,19 @@ function progScoreColor(score) {
 }
 
 const PROG_COLUMNS = [
-  { key: '_score', label: 'Utility Score' },
-  { key: 'rating', label: 'Rating' },
-  { key: 'graph_fingerprint', label: 'Fingerprint' },
-  { key: 'stage0_passed', label: 'S0' },
-  { key: 'stage05_passed', label: 'S0.5' },
-  { key: 'stage1_passed', label: 'S1' },
-  { key: 'novelty_score', label: 'Novelty' },
-  { key: 'loss_ratio', label: 'Loss Ratio' },
-  { key: 'param_count', label: 'Params' },
-  { key: 'peak_memory_mb', label: 'Memory' },
-  { key: 'flops_forward', label: 'FLOPs' },
-  { key: 'baseline_loss_ratio', label: 'Baseline' },
+  { key: '_score', label: 'Score', initWidth: 52 },
+  { key: 'rating', label: 'Rating', initWidth: 80 },
+  { key: 'graph_fingerprint', label: 'Fingerprint', initWidth: 90 },
+  { key: '_arch', label: 'Architecture', initWidth: 220 },
+  { key: 'stage0_passed', label: 'S0', initWidth: 32 },
+  { key: 'stage05_passed', label: 'S0.5', initWidth: 36 },
+  { key: 'stage1_passed', label: 'S1', initWidth: 32 },
+  { key: 'novelty_score', label: 'Novelty', initWidth: 60 },
+  { key: 'loss_ratio', label: 'Loss Ratio', initWidth: 72 },
+  { key: 'param_count', label: 'Params', initWidth: 56 },
+  { key: 'peak_memory_mb', label: 'Memory', initWidth: 64 },
+  { key: 'flops_forward', label: 'FLOPs', initWidth: 56 },
+  { key: 'baseline_loss_ratio', label: 'Baseline', initWidth: 64 },
 ];
 
 const EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY = 'dashboard.experiment-detail.programs.sort.v1';
@@ -134,16 +154,46 @@ function ExperimentSummaryHeader({ experiment, programs }) {
 
 function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram }) {
   const [filterQuery, setFilterQuery] = useState('');
+  const [colWidths, setColWidths] = useState(() =>
+    Object.fromEntries(PROG_COLUMNS.map(c => [c.key, c.initWidth]))
+  );
+  const dragRef = useRef(null);
+
+  const onResizeStart = useCallback((e, colKey) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = colWidths[colKey];
+    const onMove = (ev) => {
+      const delta = ev.clientX - startX;
+      setColWidths(prev => ({ ...prev, [colKey]: Math.max(28, startW + delta) }));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      dragRef.current = null;
+    };
+    dragRef.current = colKey;
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [colWidths]);
+
+  // Pre-compute architecture summaries so they're available for filtering
+  const augmented = useMemo(() =>
+    programs.map(p => ({ ...p, _arch: extractArchSummary(p) })),
+    [programs]
+  );
 
   const filtered = useMemo(() => (
-    filterRowsByQuery(programs, filterQuery, [
+    filterRowsByQuery(augmented, filterQuery, [
       'graph_fingerprint',
       'result_id',
       'architecture_name',
       'program_id',
       'notes',
+      '_arch',
     ])
-  ), [programs, filterQuery]);
+  ), [augmented, filterQuery]);
 
   const sorted = useMemo(() => {
     const aug = filtered.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) }));
@@ -152,6 +202,7 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
       if (sortKey === '_score') { va = a._score; vb = b._score; }
       else if (sortKey === 'rating') { va = ROW_RATING_ORDER[a._rating.label] || 0; vb = ROW_RATING_ORDER[b._rating.label] || 0; }
       else if (sortKey === 'graph_fingerprint') { va = a.graph_fingerprint || ''; vb = b.graph_fingerprint || ''; return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb); }
+      else if (sortKey === '_arch') { va = a._arch || ''; vb = b._arch || ''; return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb); }
       else { va = a[sortKey]; vb = b[sortKey]; }
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
@@ -160,6 +211,16 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
     });
     return aug;
   }, [filtered, sortKey, sortDesc]);
+
+  const cellStyle = (key) => ({
+    width: colWidths[key],
+    minWidth: 28,
+    maxWidth: colWidths[key],
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    wordBreak: key === 'graph_fingerprint' || key === '_arch' ? 'break-all' : undefined,
+    whiteSpace: key === 'graph_fingerprint' || key === '_arch' ? 'normal' : 'nowrap',
+  });
 
   return (
     <div className="card">
@@ -184,16 +245,27 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
         Every architecture tested in this experiment. P = passed, F = failed at that stage.
         Baseline {'<'} 1.0 means it outperformed a standard transformer of the same size.
         Click any row for the full computation graph and detailed metrics.
+        Drag column borders to resize.
       </p>
       <div style={{ maxHeight: 400, overflow: 'auto' }}>
-        <table className="data-table">
+        <table className="data-table" style={{ tableLayout: 'fixed', width: 'max-content', minWidth: '100%' }}>
           <thead>
             <tr>
               {PROG_COLUMNS.map(col => (
                 <th
                   key={col.key}
+                  style={{
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    position: 'relative',
+                    width: colWidths[col.key],
+                    minWidth: 28,
+                    maxWidth: colWidths[col.key],
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
                   onClick={() => onSort(col.key)}
-                  style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                 >
                   {col.label}
                   {sortKey === col.key && (
@@ -201,6 +273,20 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
                       {sortDesc ? '\u25BC' : '\u25B2'}
                     </span>
                   )}
+                  {/* Resize handle */}
+                  <span
+                    onMouseDown={(e) => onResizeStart(e, col.key)}
+                    style={{
+                      position: 'absolute',
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: 5,
+                      cursor: 'col-resize',
+                      background: dragRef.current === col.key ? 'var(--accent-blue)' : 'transparent',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
                 </th>
               ))}
             </tr>
@@ -212,32 +298,37 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
                 <tr key={p.result_id || i}
                   style={{ cursor: 'pointer' }}
                   onClick={() => onSelectProgram && onSelectProgram(p.result_id)}>
-                  <td style={{ fontWeight: 600, color: progScoreColor(p._score) }}>
+                  <td style={{ ...cellStyle('_score'), fontWeight: 600, color: progScoreColor(p._score) }}>
                     {p._score}
                   </td>
-                  <td title={rating.tip}>
+                  <td style={cellStyle('rating')} title={rating.tip}>
                     <span style={{
                       display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-                      background: rating.color, marginRight: 6,
+                      background: rating.color, marginRight: 6, verticalAlign: 'middle',
                     }} />
                     <span style={{ fontSize: 11, color: rating.color }}>{rating.label}</span>
                   </td>
-                  <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
+                  <td style={{ ...cellStyle('graph_fingerprint'), fontFamily: 'monospace', fontSize: 11, color: 'var(--accent-blue)' }}>
                     {p.graph_fingerprint?.slice(0, 10) || '--'}
                   </td>
-                  <td><span className={`badge ${p.stage0_passed ? 'pass' : 'fail'}`}>{p.stage0_passed ? 'P' : 'F'}</span></td>
-                  <td><span className={`badge ${p.stage05_passed ? 'pass' : 'fail'}`}>{p.stage05_passed ? 'P' : 'F'}</span></td>
-                  <td><span className={`badge ${p.stage1_passed ? 'pass' : 'fail'}`}>{p.stage1_passed ? 'P' : 'F'}</span></td>
-                  <td style={{ color: noveltyColor(p.novelty_score) }}>
+                  <td style={{ ...cellStyle('_arch'), fontSize: 11, color: 'var(--text-secondary)' }}
+                      title={p._arch || ''}>
+                    {p._arch || '--'}
+                  </td>
+                  <td style={cellStyle('stage0_passed')}><span className={`badge ${p.stage0_passed ? 'pass' : 'fail'}`}>{p.stage0_passed ? 'P' : 'F'}</span></td>
+                  <td style={cellStyle('stage05_passed')}><span className={`badge ${p.stage05_passed ? 'pass' : 'fail'}`}>{p.stage05_passed ? 'P' : 'F'}</span></td>
+                  <td style={cellStyle('stage1_passed')}><span className={`badge ${p.stage1_passed ? 'pass' : 'fail'}`}>{p.stage1_passed ? 'P' : 'F'}</span></td>
+                  <td style={{ ...cellStyle('novelty_score'), color: noveltyColor(p.novelty_score) }}>
                     {p.novelty_score?.toFixed(3) || '--'}
                   </td>
-                  <td style={{ color: lossColor(p.loss_ratio) }}>
+                  <td style={{ ...cellStyle('loss_ratio'), color: lossColor(p.loss_ratio) }}>
                     {p.loss_ratio?.toFixed(4) || '--'}
                   </td>
-                  <td>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>
-                  <td style={{ fontSize: 11 }}>{p.peak_memory_mb ? `${Number(p.peak_memory_mb).toFixed(0)}MB` : '--'}</td>
-                  <td style={{ fontSize: 11 }}>{p.flops_forward ? `${(p.flops_forward / 1e6).toFixed(1)}M` : '--'}</td>
+                  <td style={cellStyle('param_count')}>{p.param_count ? `${(p.param_count / 1e6).toFixed(1)}M` : '--'}</td>
+                  <td style={{ ...cellStyle('peak_memory_mb'), fontSize: 11 }}>{p.peak_memory_mb ? `${Number(p.peak_memory_mb).toFixed(0)}MB` : '--'}</td>
+                  <td style={{ ...cellStyle('flops_forward'), fontSize: 11 }}>{p.flops_forward ? `${(p.flops_forward / 1e6).toFixed(1)}M` : '--'}</td>
                   <td style={{
+                    ...cellStyle('baseline_loss_ratio'),
                     fontSize: 11,
                     fontWeight: p.baseline_loss_ratio != null && p.baseline_loss_ratio < 1 ? 600 : 'normal',
                     color: p.baseline_loss_ratio != null
@@ -252,7 +343,7 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
           </tbody>
         </table>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, display: 'flex', gap: 16 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <span><span style={{ color: 'var(--accent-green)' }}>Green</span> = learned from data (S1 pass)</span>
         <span><span style={{ color: 'var(--accent-yellow)' }}>Amber</span> = passed learning stage</span>
         <span><span style={{ color: 'var(--accent-orange, #f0883e)' }}>Orange</span> = compiled but didn't learn</span>

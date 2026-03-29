@@ -262,7 +262,7 @@ class _ControlStartMixin:
         if not ids:
             raise ValueError("result_ids required for fingerprint refinement")
 
-        refine_config = RunConfig.from_dict(config.to_dict())
+        refine_config = config.copy()
         refine_config.model_source = "fingerprint_refine"
         refine_config.refine_source_result_ids = ",".join(ids)
         if refine_config.refine_mutations_per_source <= 0:

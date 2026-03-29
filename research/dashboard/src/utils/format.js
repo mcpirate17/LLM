@@ -16,18 +16,18 @@ export function formatDuration(seconds) {
 }
 
 /**
- * Map a v6 score to a color (GPT-2 = 100 anchor, open-ended).
- *   105+ = gold  (clearly beats GPT-2)
- *   100-105 = green (beats or matches GPT-2)
- *   90-99 = white  (competitive, below GPT-2)
- *   <90 = grey   (below competitive threshold)
- *   <20 = red    (didn't learn)
+ * Map a v7 composite score to a color (565pt max, reference avg ~150).
+ *   150+ = gold   (reference-tier performance)
+ *   100-150 = green (strong candidate)
+ *   60-100 = blue  (promising, above median)
+ *   30-60 = grey   (below median)
+ *   <30 = red      (didn't learn / marginal)
  */
 export function scoreColor(score) {
-  if (score >= 105) return 'var(--accent-yellow, #d29922)';
+  if (score >= 150) return 'var(--accent-yellow, #d29922)';
   if (score >= 100) return 'var(--accent-green)';
-  if (score >= 90) return 'var(--text-primary)';
-  if (score >= 20) return 'var(--text-muted)';
+  if (score >= 60) return 'var(--accent-blue)';
+  if (score >= 30) return 'var(--text-muted)';
   return 'var(--accent-red)';
 }
 

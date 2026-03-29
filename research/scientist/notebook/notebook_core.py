@@ -61,14 +61,31 @@ class _NotebookCore:
                 return (cwd.parent / db_path).absolute()
         return path.resolve()
 
-    def __init__(self, db_path: str | Path = "research/lab_notebook.db"):
+    # Track whether migration has already run for a given DB path this process.
+    # Once the schema is migrated once, subsequent connections can skip it.
+    _migrated_paths: set[str] = set()
+
+    def __init__(
+        self,
+        db_path: str | Path = "research/lab_notebook.db",
+        *,
+        skip_migrate: bool = False,
+        check_same_thread: bool = True,
+    ):
         self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(
+            str(self.db_path),
+            timeout=10.0,
+            check_same_thread=check_same_thread,
+        )
         self.conn.execute("PRAGMA foreign_keys=ON")
         # Enable WAL mode for high-concurrency performance
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        # Busy timeout: wait up to 15s for locks instead of failing immediately.
+        # Without this, concurrent reader/writer access throws OperationalError.
+        self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.row_factory = sqlite3.Row
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
@@ -77,7 +94,12 @@ class _NotebookCore:
         self._dashboard_summary_cache_expires_at: float = 0.0
         self.conn.executescript(NOTEBOOK_SCHEMA)
         self._maybe_commit()
-        self._migrate()
+
+        db_key = str(self.db_path)
+        cls = type(self)
+        if not skip_migrate and db_key not in cls._migrated_paths:
+            self._migrate()
+            cls._migrated_paths.add(db_key)
 
         self._write_queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -87,10 +109,11 @@ class _NotebookCore:
     def _writer_loop(self):
         """Background thread that handles all database writes."""
         # Use a separate connection for the writer thread
-        writer_conn = sqlite3.connect(str(self.db_path))
+        writer_conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         writer_conn.execute("PRAGMA foreign_keys=ON")
         writer_conn.execute("PRAGMA journal_mode=WAL")
         writer_conn.execute("PRAGMA synchronous=NORMAL")
+        writer_conn.execute("PRAGMA busy_timeout=15000")
 
         batch = []
         last_commit = time.time()
@@ -131,8 +154,44 @@ class _NotebookCore:
                     batch = []
                     last_commit = time.time()
                 continue
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    # Retry with exponential backoff — the main thread may be
+                    # holding a write lock (WAL allows only one writer).
+                    _recovered = False
+                    for _retry in range(5):
+                        time.sleep(0.05 * (2**_retry))  # 50ms → 800ms
+                        try:
+                            # Re-execute the statement that failed
+                            if item not in batch:
+                                if (
+                                    isinstance(params, list)
+                                    and params
+                                    and isinstance(params[0], (list, tuple))
+                                ):
+                                    writer_conn.executemany(sql, params)
+                                else:
+                                    writer_conn.execute(sql, params)
+                                batch.append(item)
+                            # Commit the pending batch
+                            writer_conn.commit()
+                            batch = []
+                            last_commit = time.time()
+                            _recovered = True
+                            break
+                        except sqlite3.OperationalError:
+                            continue
+                    if not _recovered:
+                        LOGGER.warning(
+                            "LabNotebook async writer: db locked after 5 retries, "
+                            "re-queuing %s",
+                            sql[:60],
+                        )
+                        self._write_queue.put(item)
+                else:
+                    LOGGER.error("LabNotebook async writer error: %s", e)
             except Exception as e:
-                LOGGER.error(f"LabNotebook async writer error: {e}")
+                LOGGER.error("LabNotebook async writer error: %s", e)
 
         if batch:
             writer_conn.commit()
@@ -158,7 +217,29 @@ class _NotebookCore:
         self.conn.commit()
 
     def _migrate(self):
-        """Add any missing columns to existing databases."""
+        """Add any missing columns to existing databases.
+
+        Retries up to 3 times on ``OperationalError: database is locked``
+        since migration runs DDL that requires a write lock, and the runner's
+        writer thread may be holding it.
+        """
+        for attempt in range(3):
+            try:
+                self._migrate_impl()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e) and attempt < 2:
+                    LOGGER.warning(
+                        "Migration attempt %d hit db lock, retrying in %ds...",
+                        attempt + 1,
+                        2 * (attempt + 1),
+                    )
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    raise
+
+    def _migrate_impl(self):
+        """Internal migration logic."""
         # Migrate experiments table
         try:
             self.conn.execute("SELECT llm_analysis FROM experiments LIMIT 1")
@@ -519,6 +600,11 @@ class _NotebookCore:
             "n_routing_ops INTEGER",
             "n_sparse_ops INTEGER",
             "n_moe_ops INTEGER",
+            # Per-fingerprint replication aggregates (Stream A)
+            "replication_n INTEGER",
+            "replication_loss_mean REAL",
+            "replication_loss_std REAL",
+            "replication_best_vs_mean_gap REAL",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:

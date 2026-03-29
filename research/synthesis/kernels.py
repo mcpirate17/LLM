@@ -497,9 +497,16 @@ def triton_local_attn(x: torch.Tensor, window_size: int = 32) -> torch.Tensor:
     B, S, D = x.shape
     out = torch.empty_like(x)
 
-    # Block sizes (tuning would be better)
-    BLOCK_S = 32
+    # Block sizes — must fit in shared memory (typically 100-101KB).
+    # The kernel uses ~4 * BLOCK_S * BLOCK_D * 4 bytes of shared memory.
     BLOCK_D = triton.next_power_of_2(D)
+    _shmem_bytes = 4 * 32 * BLOCK_D * 4  # 4 buffers, fp32
+    if _shmem_bytes > 98_304:  # 96KB safe limit
+        BLOCK_S = max(8, 98_304 // (4 * BLOCK_D * 4))
+        # Round down to power of 2 for Triton
+        BLOCK_S = 1 << (BLOCK_S.bit_length() - 1)
+    else:
+        BLOCK_S = 32
 
     grid = (B, triton.cdiv(S, BLOCK_S))
 

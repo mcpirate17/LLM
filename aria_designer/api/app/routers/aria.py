@@ -37,6 +37,8 @@ from ..shared_api import (
     HAS_BRIDGE,
     bridge_validate,
     _PROJECT_ROOT,
+    get_approved_registry_ids,
+    collect_unresolved_nodes,
 )
 from ..component_identity import canonicalize_component_id, canonicalize_workflow_ids
 from ..type_utils import dig, safe_str
@@ -45,38 +47,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/aria", tags=["aria"])
 
 
-def _approved_registry_ids() -> set[str]:
-    return db.list_component_types(status="approved")
-
-
 def _canonicalize_workflow_payload(
     workflow: Dict[str, Any], *, preserve_raw_ids: bool = False
 ) -> Dict[str, Any]:
     canonicalize_workflow_ids(
         workflow,
-        _approved_registry_ids(),
+        get_approved_registry_ids(),
         preserve_raw_ids=preserve_raw_ids,
     )
     return workflow
-
-
-def _collect_unresolved_nodes(workflow: Dict[str, Any]) -> List[Dict[str, str]]:
-    registry_ids = _approved_registry_ids()
-    issues: List[Dict[str, str]] = []
-    for node in workflow.get("nodes", []):
-        component_type = str(node.get("component_type") or "").strip().lower()
-        if component_type and component_type not in registry_ids:
-            issues.append(
-                {
-                    "node_id": str(node.get("id") or ""),
-                    "component_type": str(node.get("component_type") or ""),
-                    "message": (
-                        f"Node {node.get('id')} uses unresolved component type "
-                        f"'{node.get('component_type')}'."
-                    ),
-                }
-            )
-    return issues
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +143,7 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
             insertion_hints=insertion_hints,
         )
     _canonicalize_workflow_payload(patched_workflow, preserve_raw_ids=True)
-    unresolved = _collect_unresolved_nodes(patched_workflow)
+    unresolved = collect_unresolved_nodes(patched_workflow)
     if unresolved:
         raise HTTPException(
             status_code=422,
@@ -283,7 +262,7 @@ def _infer_component_from_prompt(
     components_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "components")
     )
-    registry_ids = _approved_registry_ids()
+    registry_ids = get_approved_registry_ids()
 
     def _is_installed(comp_type: str) -> bool:
         resolved = canonicalize_component_id(comp_type, registry_ids)
@@ -379,7 +358,7 @@ def _normalize_component_type(
     token = (raw or "").strip().lower().replace(" ", "_")
     if not token:
         return None
-    canonical = canonicalize_component_id(token, _approved_registry_ids())
+    canonical = canonicalize_component_id(token, get_approved_registry_ids())
     if "/" in canonical and db.get_component(canonical):
         return canonical
     # Fallback: scan approved list for substring matches on unknown leaves

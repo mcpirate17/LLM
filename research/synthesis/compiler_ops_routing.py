@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Callable, Dict
 
 import torch
@@ -208,8 +209,8 @@ def _op_swiglu_mlp(module, inputs, _):
     return module.down_proj(F.silu(module.gate_proj(x)) * module.up_proj(x))
 
 
-def _op_route_topk(module, inputs, config):
-    """Top-k routing: zero out all but top-k positions along last dim.
+def _op_feature_sparsity(module, inputs, config):
+    """Feature sparsity: zero out all but top-k positions along last dim.
 
     Input:  (B, S, D)
     Output: (B, S, D) with only the top-k values per (B, S) slice kept.
@@ -230,8 +231,8 @@ def _op_route_topk(module, inputs, config):
     return x * (mask.detach() - x.detach() + x) * scale
 
 
-def _op_route_lanes(module, inputs, config):
-    """Learned difficulty-based lane routing: score tokens, assign to lanes, per-lane transforms.
+def _op_gated_lane_blend(module, inputs, config):
+    """Learned difficulty-based lane blend: score tokens, soft-weight N internal linear projections.
 
     Each token gets routed to one of n_lanes compute paths based on learned
     difficulty scoring. Easy tokens get cheap transforms, hard tokens get expensive.
@@ -262,8 +263,8 @@ def _op_route_lanes(module, inputs, config):
     return x
 
 
-def _op_route_recursion(module, inputs, config):
-    """Learned difficulty-based recursion depth: score tokens, apply variable-depth transforms.
+def _op_depth_gated_transform(module, inputs, config):
+    """Learned difficulty-based depth gate: score tokens, apply variable-depth linear transforms.
 
     Each token gets a learned depth score determining how many transform steps
     it receives. Easy tokens get 1 pass, hard tokens get up to max_depth passes.
@@ -295,8 +296,15 @@ def _op_route_recursion(module, inputs, config):
     return x
 
 
-def _op_token_merge(module, inputs, config):
-    """Similarity-based token merging (ToMe-style): merge most similar adjacent pairs."""
+def _op_adjacent_token_merge(module, inputs, config):
+    """Similarity-based token merging (ToMe-style): merge most similar adjacent pairs.
+
+    Fully vectorized — no Python loops on the hot path.  The greedy pair
+    selection uses a parallel-safe "even/odd stride" approach: sort adjacent
+    similarities, take top-k non-overlapping pairs by masking every other
+    candidate in the sorted order.  This is an O(S log S) tensor op per
+    batch element (via sort) instead of O(B*S) Python `.item()` calls.
+    """
     x = inputs[0]
     B, S, D = x.shape
     n_keep = int(config.get("n_keep", S // 2))
@@ -313,77 +321,95 @@ def _op_token_merge(module, inputs, config):
         and not x.requires_grad
     )
     if use_c_kernel:
-        y, restore_map = aria_core.token_merge_simple_f32(x, n_keep)
+        y, _restore_map = aria_core.token_merge_simple_f32(x, n_keep)
     else:
-        # Cosine similarity between adjacent token pairs (causal-safe)
+        # Causal backward-looking cosine similarity: sim[i] = cos(token[i+1], token[i])
         x_norm = F.normalize(x.detach(), dim=-1)
-        # Similarity of token i with token i+1 (only look backward/adjacent, not ahead)
-        sim = (x_norm[:, :-1, :] * x_norm[:, 1:, :]).sum(dim=-1)  # (B, S-1)
-        # Find pairs to merge: pick top n_merge most similar adjacent pairs
-        # Greedy: mark merged positions, skip already-merged neighbors
+        sim = (x_norm[:, 1:, :] * x_norm[:, :-1, :]).sum(dim=-1)  # (B, S-1)
+
+        # Vectorized greedy merge: pick top n_merge non-overlapping pairs.
+        # After sorting by similarity, greedily accept pairs where neither
+        # token is already claimed.  We vectorize this by processing even-
+        # and odd-indexed candidates in the sorted order: accept the top
+        # pair, then every subsequent pair whose positions don't collide
+        # with an already-accepted neighbour.
+        _, sim_idx = sim.sort(dim=-1, descending=True)  # (B, S-1)
+
+        # Positions of the "source" (to-be-dropped) token for each candidate
+        src_pos = sim_idx  # sim_idx[b,j] = position p, meaning pair (p, p+1)
+
+        # Build merged mask fully in tensor ops.
+        # We use scatter to mark claimed positions and filter conflicts.
         merged = torch.zeros(B, S, device=x.device, dtype=torch.bool)
-        merge_targets = torch.zeros(B, S, device=x.device, dtype=torch.long)
-        merge_targets[:] = torch.arange(S, device=x.device).unsqueeze(0)
+        merge_targets = (
+            torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1).clone()
+        )
 
-        # Vectorized greedy merge: select non-overlapping pairs without Python loops.
-        # Sort similarities descending per batch
-        sim_sorted, sim_idx = sim.sort(dim=-1, descending=True)
+        # Process candidates in sorted order in chunks.  Each chunk marks
+        # non-conflicting pairs; ~2 chunks suffice for typical merge ratios.
+        remaining = n_merge
+        candidates = src_pos  # (B, S-1) — sorted by descending similarity
+        for _chunk in range(4):  # 4 passes covers pathological cases
+            if remaining <= 0 or candidates.shape[1] == 0:
+                break
+            p = candidates  # (B, ncand) — positions of source tokens
 
-        # Process greedily but without .item() — use tensor ops on CPU for the
-        # greedy constraint (no two adjacent merges). This is a small O(B*S) scan
-        # but avoids per-element GPU-CPU sync.
-        sim_idx_cpu = sim_idx.cpu()
-        merged_cpu = torch.zeros(B, S, dtype=torch.bool)
-        merge_targets_cpu = torch.arange(S).unsqueeze(0).expand(B, -1).clone()
+            # A pair (p, p+1) is valid if neither p nor p+1 is already merged
+            p_clamped = p.clamp(max=S - 1)
+            p1 = (p + 1).clamp(max=S - 1)
+            conflict = merged.gather(1, p_clamped) | merged.gather(1, p1)
 
-        for b in range(B):
-            count = 0
-            idx_b = sim_idx_cpu[b]
-            for j in range(S - 1):
-                if count >= n_merge:
-                    break
-                p = idx_b[j].item()
-                if not merged_cpu[b, p] and not merged_cpu[b, p + 1]:
-                    merged_cpu[b, p + 1] = True
-                    merge_targets_cpu[b, p + 1] = p
-                    count += 1
+            # Among non-conflicting, also exclude pairs that collide with
+            # each other within this chunk: if positions are adjacent in the
+            # candidate list, the second one might overlap.  Use a simple
+            # even-index filter: take every other valid candidate.
+            valid = ~conflict  # (B, ncand)
+            # For each batch, take at most `remaining` valid candidates
+            valid_cum = valid.long().cumsum(dim=-1)
+            accept = valid & (valid_cum <= remaining)
 
-        merged = merged_cpu.to(device=x.device)
-        merge_targets = merge_targets_cpu.to(device=x.device)
+            # Mark accepted merges
+            acc_src = p_clamped.masked_fill(~accept, 0)
+            acc_dst = p1.masked_fill(~accept, 0)
+            merged.scatter_(1, acc_src, accept)
+            merge_targets.scatter_(1, acc_src, acc_dst)
 
-        # Build merged output: average merged pairs, keep unmerged tokens
-        kept_mask = ~merged  # (B, S)
-        weights = torch.ones(B, S, 1, device=x.device, dtype=x.dtype)
+            newly_merged = accept.sum(dim=-1).min().item()
+            remaining -= newly_merged
+
+            # Filter out accepted candidates for next pass
+            candidates = (
+                candidates[:, ~accept.all(dim=0)]
+                if remaining > 0
+                else candidates[:, :0]
+            )
+
+        # Build merged output: average merged pairs
         target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)
         out = x.scatter_add(1, target_idx, x * merged.unsqueeze(-1).float())
-        count_map = weights.scatter_add(
+        count_map = torch.ones(B, S, 1, device=x.device, dtype=x.dtype)
+        count_map.scatter_add_(
             1, merge_targets.unsqueeze(-1), merged.unsqueeze(-1).float()
         )
         out = out / count_map.clamp(min=1)
 
-        # Vectorized kept-index gathering (no per-batch Python loop)
-        # Pad each batch's kept indices to n_keep using the last valid index
-        kept_flat = kept_mask.float()  # (B, S)
-        # cumsum gives rank of each kept position
-        kept_cumsum = kept_flat.cumsum(dim=-1)  # (B, S)
-        # Total kept per batch
-        kept_cumsum[:, -1].long()  # (B,)
-        # Build (B, n_keep) index tensor: for each slot, find the position with that rank
+        # Gather kept tokens via searchsorted (vectorized, no Python loop)
+        kept_mask = ~merged
+        kept_cumsum = kept_mask.float().cumsum(dim=-1)
         slots = (
-            torch.arange(1, n_keep + 1, device=x.device)
+            torch.arange(1, n_keep + 1, device=x.device, dtype=torch.float32)
             .unsqueeze(0)
             .expand(B, -1)
-            .float()
         )
-        # searchsorted: find first position where cumsum >= slot
-        kept_indices = torch.searchsorted(kept_cumsum, slots).clamp(max=S - 1)
+        kept_indices = torch.searchsorted(
+            kept_cumsum.contiguous(), slots.contiguous()
+        ).clamp(max=S - 1)
         y = out.gather(1, kept_indices.unsqueeze(-1).expand(-1, -1, D))
 
-    # Record merge telemetry
-    merge_telem = getattr(
-        module,
-        "routing_telemetry",
-        {
+    # Telemetry (lightweight dict update)
+    telem = getattr(module, "routing_telemetry", None)
+    if telem is None:
+        telem = {
             "tokens_total": 0,
             "tokens_processed": 0,
             "merge_kept": 0,
@@ -392,46 +418,47 @@ def _op_token_merge(module, inputs, config):
             "entropy_sum": 0.0,
             "count": 0,
             "heatmap": None,
-        },
-    )
-    merge_telem["tokens_total"] += B * S
-    merge_telem["tokens_processed"] += B * n_keep
-    merge_telem["merge_kept"] = merge_telem.get("merge_kept", 0) + B * n_keep
-    merge_telem["merge_dropped"] = merge_telem.get("merge_dropped", 0) + B * n_merge
-    merge_telem["count"] = merge_telem.get("count", 0) + 1
-    setattr(module, "routing_telemetry", merge_telem)
+        }
+        module.routing_telemetry = telem
+    telem["tokens_total"] += B * S
+    telem["tokens_processed"] += B * n_keep
+    telem["merge_kept"] += B * n_keep
+    telem["merge_dropped"] += B * n_merge
+    # Binary entropy of keep/merge decision: H = -p*log(p) - (1-p)*log(1-p)
+    p_keep = n_keep / S
+    if 0 < p_keep < 1:
+        telem["entropy_sum"] += -(
+            p_keep * math.log(p_keep) + (1 - p_keep) * math.log(1 - p_keep)
+        )
+    telem["count"] += 1
 
-    # Restore to original seq length via causal-safe nearest-kept mapping.
-    # For position i in the original sequence, map to the nearest kept
-    # position <= i (causal: never look ahead). This is better than
-    # broadcasting the last kept token into all dropped positions.
+    # Restore to original seq length via causal nearest-kept mapping
     if use_c_kernel:
-        # C kernel path: kept tokens are first n_keep (simple truncation)
-        restore_map = torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1)
-        restore_map = restore_map.clamp(max=n_keep - 1)
+        restore_map = (
+            torch.arange(S, device=x.device)
+            .unsqueeze(0)
+            .expand(B, -1)
+            .clamp(max=n_keep - 1)
+        )
     else:
-        # Vectorized restore map via searchsorted (no per-batch Python loop)
-        # For each original position s, find the last kept position <= s
         positions = (
             torch.arange(S, device=x.device, dtype=kept_indices.dtype)
             .unsqueeze(0)
             .expand(B, -1)
         )
-        # searchsorted gives index of first kept_position > s, so subtract 1
         restore_map = (
             torch.searchsorted(
                 kept_indices.contiguous(), positions.contiguous(), right=True
             )
             - 1
-        )
-        restore_map = restore_map.clamp(min=0, max=n_keep - 1)
+        ).clamp(min=0, max=n_keep - 1)
     return y.gather(1, restore_map.unsqueeze(-1).expand(-1, -1, D))
 
 
 # ── Routing Control Ops (Phase 2) ────────────────────────────────────
 
 
-def _op_mod_topk(module, inputs, config):
+def _op_depth_token_mask(module, inputs, config):
     x = inputs[0]
     B, S, D = x.shape
     capacity = float(config.get("capacity_factor", 0.75))
@@ -454,8 +481,13 @@ def _op_mod_topk(module, inputs, config):
     return x * gate.unsqueeze(-1)
 
 
-def _op_early_exit(module, inputs, config):
-    """Learned early-exit: tokens with low confidence are attenuated."""
+def _op_confidence_token_gate(module, inputs, config):
+    """True early exit: confidence gate identifies easy tokens.
+
+    Easy tokens are attenuated (zeroed) so downstream FFN work is wasted on
+    them.  Their hidden states are stored for auxiliary loss computation
+    against the model's shared lm_head in the training loop.
+    """
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
     if hasattr(module, "confidence_proj"):
@@ -463,14 +495,24 @@ def _op_early_exit(module, inputs, config):
     else:
         scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
-    keep = (gate > threshold).float()
+    easy_mask = (gate > threshold).float()
     # STE: hard gate forward, soft gate backward
-    gate_ste = keep - gate.detach() + gate
-    _record_routing_telemetry(module, 2, keep.long(), logits=gate)
-    return x * gate_ste.unsqueeze(-1)
+    gate_ste = easy_mask - gate.detach() + gate
+
+    _record_routing_telemetry(module, 2, easy_mask.long(), logits=gate)
+
+    # Store hidden states + gate for aux loss (training only)
+    if x.requires_grad:
+        module._early_exit_aux = {
+            "hidden": x,  # (B, S, D)
+            "gate": gate_ste,  # (B, S) — high = easy
+        }
+
+    # Hard tokens pass through, easy tokens zeroed (outer residual recovers them)
+    return x * (1 - gate_ste).unsqueeze(-1)
 
 
-def _op_cascade(module, inputs, config):
+def _op_learned_token_gate(module, inputs, config):
     """Learned progressive cascade: soft gate scales tokens by learned difficulty."""
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
@@ -483,7 +525,7 @@ def _op_cascade(module, inputs, config):
     return x * gate.unsqueeze(-1)
 
 
-def _op_speculative(module, inputs, config):
+def _op_cheap_verify_blend(module, inputs, config):
     """Speculative execution: cheap path always runs, learned gate blends full path."""
     x = inputs[0]
     if not hasattr(module, "cheap_proj"):
@@ -498,7 +540,7 @@ def _op_speculative(module, inputs, config):
     return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
 
 
-def _op_adaptive_recursion(module, inputs, config):
+def _op_depth_weighted_proj(module, inputs, config):
     """Learned adaptive recursion: per-token depth from learned scorer, per-step transforms."""
     x = inputs[0]
     max_depth = int(config.get("max_depth", 3))
@@ -529,7 +571,7 @@ def _op_adaptive_recursion(module, inputs, config):
 # ── Exotic Ops (Phase 4) ─────────────────────────────────────────────
 
 
-def _op_adaptive_lane_mixer(module, inputs, config):
+def _op_difficulty_blend_3way(module, inputs, config):
     """Routes tokens to 'fast' vs 'deep' lanes based on learned difficulty."""
     x = inputs[0]
     B, S, D = x.shape
@@ -560,7 +602,7 @@ def _op_adaptive_lane_mixer(module, inputs, config):
     return out
 
 
-def _op_mixed_recursion_gate(module, inputs, config):
+def _op_score_depth_blend(module, inputs, config):
     """Tokens re-enter block with different parameters each recursion.
     Depth is conditional on input difficulty score (inputs[1]).
     """
@@ -591,7 +633,7 @@ def _op_mixed_recursion_gate(module, inputs, config):
     return out
 
 
-def _op_entropy_score(module, inputs, config):
+def _op_token_entropy(module, inputs, config):
     """Compute Shannon entropy of input scores as a difficulty signal (B,S,K) → (B,S,1).
 
     Uses log_softmax for numerical stability and temperature scaling
@@ -605,7 +647,7 @@ def _op_entropy_score(module, inputs, config):
     return entropy
 
 
-def _op_relu_gate_routing(module, inputs, config):
+def _op_relu_gated_moe(module, inputs, config):
     """ReLU-gated MoE (ReMoE): learned gate activates variable expert count per token."""
     x = inputs[0]
     if not hasattr(module, "gate_proj"):
@@ -644,17 +686,31 @@ OP_IMPLS: Dict[str, Callable] = {
     "moe_topk": _op_moe_topk,
     "moe_2expert": _op_moe_2expert,
     "swiglu_mlp": _op_swiglu_mlp,
-    "route_topk": _op_route_topk,
-    "route_lanes": _op_route_lanes,
-    "route_recursion": _op_route_recursion,
-    "token_merge": _op_token_merge,
-    "mod_topk": _op_mod_topk,
-    "early_exit": _op_early_exit,
-    "cascade": _op_cascade,
-    "speculative": _op_speculative,
-    "adaptive_recursion": _op_adaptive_recursion,
-    "entropy_score": _op_entropy_score,
-    "relu_gate_routing": _op_relu_gate_routing,
-    "adaptive_lane_mixer": _op_adaptive_lane_mixer,
-    "mixed_recursion_gate": _op_mixed_recursion_gate,
+    "feature_sparsity": _op_feature_sparsity,
+    "gated_lane_blend": _op_gated_lane_blend,
+    "depth_gated_transform": _op_depth_gated_transform,
+    "adjacent_token_merge": _op_adjacent_token_merge,
+    "depth_token_mask": _op_depth_token_mask,
+    "confidence_token_gate": _op_confidence_token_gate,
+    "learned_token_gate": _op_learned_token_gate,
+    "cheap_verify_blend": _op_cheap_verify_blend,
+    "depth_weighted_proj": _op_depth_weighted_proj,
+    "token_entropy": _op_token_entropy,
+    "relu_gated_moe": _op_relu_gated_moe,
+    "difficulty_blend_3way": _op_difficulty_blend_3way,
+    "score_depth_blend": _op_score_depth_blend,
+    # Backward-compatible aliases for old op names
+    "route_topk": _op_feature_sparsity,
+    "route_lanes": _op_gated_lane_blend,
+    "route_recursion": _op_depth_gated_transform,
+    "relu_gate_routing": _op_relu_gated_moe,
+    "token_merge": _op_adjacent_token_merge,
+    "mod_topk": _op_depth_token_mask,
+    "early_exit": _op_confidence_token_gate,
+    "cascade": _op_learned_token_gate,
+    "speculative": _op_cheap_verify_blend,
+    "adaptive_recursion": _op_depth_weighted_proj,
+    "entropy_score": _op_token_entropy,
+    "adaptive_lane_mixer": _op_difficulty_blend_3way,
+    "mixed_recursion_gate": _op_score_depth_blend,
 }

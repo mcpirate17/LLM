@@ -20,12 +20,18 @@ function AdvancedConfigPanels({ config, updateConfig, onCategoryWeightChange }) 
             weights={config.category_weights}
             onChange={onCategoryWeightChange}
           />
-          <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <ConfigField label="Excluded Ops (comma-sep)">
-              <input type="text" value={config.excluded_ops} onChange={(e) => updateConfig('excluded_ops', e.target.value)} placeholder="" />
+          <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+            <ConfigField label="Excluded Ops (comma-separated op names to never generate)">
+              <input type="text" value={config.excluded_ops} onChange={(e) => updateConfig('excluded_ops', e.target.value)} placeholder="e.g. spectral_filter, tropical_gate" />
             </ConfigField>
-            <ConfigField label="Op Weights (op:weight, ...)">
-              <input type="text" value={config.op_weights} onChange={(e) => updateConfig('op_weights', e.target.value)} placeholder="" />
+            <ConfigField label="Op Weights (bias generation toward/away from specific ops: >1 = more likely, <1 = less likely, 0.1 = nearly suppressed)">
+              <textarea
+                rows={3}
+                style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                value={config.op_weights}
+                onChange={(e) => updateConfig('op_weights', e.target.value)}
+                placeholder="e.g. route_lanes:2.5, split2:0.3, moe_topk:0.5, sparse_threshold:2.2"
+              />
             </ConfigField>
           </div>
         </div>
@@ -64,6 +70,24 @@ function AdvancedConfigPanels({ config, updateConfig, onCategoryWeightChange }) 
           <ConfigField label="Max Recursion">
             <input type="number" value={config.max_recursion_depth} onChange={(e) => updateConfig('max_recursion_depth', parseInt(e.target.value))} />
           </ConfigField>
+        </div>
+        <div style={{ marginTop: 12, padding: 12, background: 'rgba(99,179,237,0.06)', borderRadius: 6, border: '1px solid rgba(99,179,237,0.2)' }}>
+          <ConfigField label="Evolution Exploit Mode (mutate near top-K winners instead of random; forces routing ops)">
+            <input type="checkbox" checked={config.exploit_mode} onChange={(e) => updateConfig('exploit_mode', e.target.checked)} />
+          </ConfigField>
+          {config.exploit_mode && (
+            <div className="config-grid" style={{ marginTop: 8 }}>
+              <ConfigField label="Exploit Prob (fraction of offspring guided by archive)">
+                <input type="number" step="0.05" min="0" max="1" value={config.exploit_prob} onChange={(e) => updateConfig('exploit_prob', parseFloat(e.target.value))} />
+              </ConfigField>
+              <ConfigField label="Local Mutation Prob (single-op swap for top-K parents)">
+                <input type="number" step="0.05" min="0" max="1" value={config.local_mutation_prob} onChange={(e) => updateConfig('local_mutation_prob', parseFloat(e.target.value))} />
+              </ConfigField>
+              <ConfigField label="Exploit Top-K (how many top individuals to exploit around)">
+                <input type="number" min="1" max="20" value={config.exploit_top_k} onChange={(e) => updateConfig('exploit_top_k', parseInt(e.target.value))} />
+              </ConfigField>
+            </div>
+          )}
         </div>
       </details>
 

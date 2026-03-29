@@ -1,0 +1,64 @@
+id: sparse_bottleneck_moe
+version: 1.0.0
+name: N-way sparse router with bottleneck experts
+category: routing
+tags:
+- parameterized
+- learnable
+- routing
+- vram_efficient
+status: approved
+description: "Width-over-depth N-way router: N narrow bottleneck experts (D/N hidden), top-k activation with straight-through estimator."
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params:
+  n_ways:
+    type: int
+    default: 4
+  top_k:
+    type: int
+    default: 2
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: 2*D*D+D*4
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+
+  N-way sparse router with bottleneck experts.
+
+  Each expert has D→D/N→D bottleneck. Only top-k of N experts activated per token.
+
+  Active compute: k/N fraction. Width replaces depth.
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: n_ways (int, default=4), top_k (int, default=2).
+
+
+  ### Plain Language
+
+  Routes each token through a small selection of lightweight expert pathways.
+  Uses width (many small experts) instead of depth (many layers) for efficiency.
+
+  '

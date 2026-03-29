@@ -326,7 +326,7 @@ function computeEfficiencyBonus(entry) {
   
   if (throughput != null) {
     // Baseline throughput targets calibrated to current model performance
-    const targetThroughput = (entry.routing_mode || entry.compute_routing === 'mod_topk') ? 50000 : 25000;
+    const targetThroughput = (entry.routing_mode || entry.compute_routing === 'depth_token_mask') ? 50000 : 25000;
     scores.push(clamp01(Number(throughput) / targetThroughput));
   }
 
@@ -355,7 +355,7 @@ function computeAdaptiveBonus(entry) {
   const recursionSavings = pickFirstNumber(entry, [
     'recursion_savings_ratio',
     'recursion_compute_savings',
-    'adaptive_recursion_savings',
+    'depth_weighted_proj_savings',
     'recursion_efficiency_gain',
   ]);
   // Recursion savings: 50% savings = full score

@@ -6,6 +6,7 @@ imports between __init__.py and submodules.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -72,7 +73,7 @@ class RunConfig:
     mode: str = "single"
     n_programs: int = 100
     model_dim: int = MODEL_DIM
-    n_layers: int = 4
+    n_layers: int = 6
     vocab_size: int = VOCAB_SIZE
     max_seq_len: int = MAX_SEQ_LEN
     device: str = "cuda"
@@ -135,12 +136,11 @@ class RunConfig:
     # Escalation threshold: auto-escalate if ppl_200/ppl_500 exceeds this ratio
     improvement_ratio_escalation_threshold: float = 2.0
     # Synthesis grammar
-    min_depth: int = 3
-    max_depth: int = 10
-    max_ops: int = 16
+    max_depth: int = 16
+    max_ops: int = 24
     math_space_weight: float = 2.0
     residual_prob: float = 0.7
-    composition_depth: int = 2  # Minimum template blocks per graph
+    composition_depth: int = 3  # Minimum template blocks per graph
     _efficiency_mode: bool = False
     _exotic_mode: bool = False
     _routing_first_mode: bool = False
@@ -190,6 +190,13 @@ class RunConfig:
     archive_size: int = 200
     k_nearest: int = 15
     archive_threshold: float = 0.3
+    # Exploitation: bias mutation toward winning fingerprint neighborhoods
+    exploit_mode: bool = False  # master flag: enables routing + splits + exploitation
+    exploit_prob: float = (
+        0.2  # probability of archive-guided exploitation per offspring
+    )
+    local_mutation_prob: float = 0.3  # probability of single-op swap for top-K parents
+    exploit_top_k: int = 5  # number of top individuals considered for exploitation
     # Scale-up mode
     scale_up: bool = False
     scale_up_result_ids: str = ""  # comma-separated result IDs
@@ -257,9 +264,11 @@ class RunConfig:
     validation_seq_len: int = VALIDATION_SEQ_LEN
     validation_n_seeds: int = 5
     # Auto-escalation pipeline
-    auto_investigate: bool = True
-    auto_investigate_min_survivors: int = 3  # need 3 S1 survivors before escalating any
-    auto_investigate_top_n: int = 3  # top 3 candidates per batch (was 1)
+    auto_investigate: bool = (
+        True  # Re-enabled: routing models now produce viable candidates
+    )
+    auto_investigate_min_survivors: int = 5  # Routing models pass S1 reliably
+    auto_investigate_top_n: int = 3  # Investigate top 3 per experiment
     auto_validate: bool = True
     auto_validate_min_robustness: float = 0.5
     auto_validate_max_baseline_ratio: float = 0.60
@@ -317,6 +326,11 @@ class RunConfig:
     stage05_stability_threshold: float = 0.5
     investigation_loss_ratio_threshold: float = 0.15
     investigation_robustness_threshold: float = 0.5
+    # Adaptive percentile thresholds: opt-in mode where promotion thresholds
+    # are computed from recent population distribution instead of fixed values.
+    adaptive_thresholds_enabled: bool = False
+    screening_promotion_percentile: float = 90.0  # promote top 10% of screening
+    investigation_promotion_percentile: float = 90.0  # promote top 10% of investigation
     # Lightning structural floor: minimum structural novelty to proceed past
     # the lightning gate. Below this the graph is too similar to existing
     # population to justify investigation cost.
@@ -328,7 +342,7 @@ class RunConfig:
     # Pre-investigation gate
     pre_inv_gate_enabled: bool = True
     pre_inv_max_lr: float = (
-        0.40  # loss_ratio < 0.40 → final_loss < 4.6 on wikitext103+tiktoken
+        0.50  # Raised from 0.40: routing models have higher screening lr
     )
     pre_inv_min_stability: float = 0.5
     pre_inv_max_spectral_norm: float = 50.0
@@ -356,6 +370,8 @@ class RunConfig:
     # Custom grammar weights (passed through to GrammarConfig)
     category_weights: Optional[Dict[str, float]] = None
     op_weights: Optional[Dict[str, float]] = None
+    template_weights: Optional[Dict[str, float]] = None
+    routing_mandatory: bool = True  # require routing/MoE ops in every graph
     # Branching / width control (passed to GrammarConfig)
     min_splits: int = 0  # minimum forced split-merge blocks per graph
     three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)
@@ -367,6 +383,22 @@ class RunConfig:
     llm_decision_interval: int = (
         5  # call Sonnet every N cycles (0 = never in continuous)
     )
+    # Investigation predictor: skip candidates with predicted loss_ratio > max_lr.
+    # Ridge regression on 18D fingerprint features, trained in-memory from notebook history.
+    investigation_predictor_enabled: bool = True
+    investigation_predictor_max_lr: float = 0.7
+
+    # GBM pre-screener: LightGBM on graph-structure features, skips hopeless graphs
+    # before expensive eval. Gate threshold: skip if P(pass_s1) < gbm_gate_threshold.
+    gbm_prescreener_enabled: bool = True
+    gbm_gate_threshold: float = 0.1
+
+    # Thompson sampling for template selection (alternative to UCB1)
+    use_thompson_sampling: bool = False
+
+    def copy(self) -> RunConfig:
+        """Shallow copy via dataclasses.replace (no dict round-trip)."""
+        return dataclasses.replace(self)
 
     def to_dict(self) -> Dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}

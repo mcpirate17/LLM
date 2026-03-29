@@ -13,7 +13,10 @@ def test_canonicalize_component_id():
     assert canonicalize_component_id("relu") == "math/relu"
     assert canonicalize_component_id("linear_proj") == "linear_algebra/linear_proj"
     assert canonicalize_component_id("softmax_attention") == "mixing/softmax_attention"
-    assert canonicalize_component_id("difficulty_scorer") == "routing/difficulty_scorer"
+    assert (
+        canonicalize_component_id("token_difficulty_proj")
+        == "routing/token_difficulty_proj"
+    )
     assert canonicalize_component_id("rmsnorm") == "linear_algebra/rmsnorm"
     assert canonicalize_component_id("layernorm") == "normalization/layernorm"
 
@@ -30,7 +33,7 @@ def test_canonicalize_workflow():
     wf = {
         "nodes": [
             {"id": "n1", "component_type": "input"},
-            {"id": "n2", "component_type": "difficulty_scorer"},
+            {"id": "n2", "component_type": "token_difficulty_proj"},
             {"id": "n3", "component_type": "linear_proj"},
             {"id": "n4", "component_type": "output_head"},
         ]
@@ -38,18 +41,18 @@ def test_canonicalize_workflow():
     canonicalize_workflow(wf)
 
     assert wf["nodes"][0]["component_type"] == "io/input"
-    assert wf["nodes"][1]["component_type"] == "routing/difficulty_scorer"
+    assert wf["nodes"][1]["component_type"] == "routing/token_difficulty_proj"
     assert wf["nodes"][2]["component_type"] == "linear_algebra/linear_proj"
     assert wf["nodes"][3]["component_type"] == "io/output_head"
 
 
 def test_discover_concepts():
-    message = "I want a model with softmax_attention and a difficulty_scorer"
+    message = "I want a model with softmax_attention and a token_difficulty_proj"
     found = discover_concepts(message)
 
     types = {f["component_type"] for f in found}
     assert "mixing/softmax_attention" in types
-    assert "routing/difficulty_scorer" in types
+    assert "routing/token_difficulty_proj" in types
 
 
 def test_canonicalize_idempotent():
@@ -130,7 +133,7 @@ def test_round_trip_bare_to_canonical():
         "relu",
         "softmax_attention",
         "linear_proj",
-        "difficulty_scorer",
+        "token_difficulty_proj",
         "concat",
     ]
     for bare in bare_ids:

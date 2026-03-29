@@ -38,6 +38,16 @@ from ._types import RunConfig
 from ._helpers import propose_ablation_suite
 
 
+from ...synthesis.op_roles import MOE_OPS
+
+
+def _graph_is_moe(graph) -> bool:
+    """Return True if graph contains any MoE/routing-with-experts op."""
+    return any(
+        node.op_name in MOE_OPS for node in graph.nodes.values() if not node.is_input
+    )
+
+
 class _SynthesisMixin:
     """Grammar config, ablation, weight management, diversity."""
 
@@ -667,7 +677,10 @@ class _SynthesisMixin:
         # both improvement rate AND reaching a useful absolute loss level.
         components["quality"] = 0.5 * ratio_quality + 0.5 * absolute_quality
 
-        # Efficiency: use actual efficiency_multiple vs GPT-2
+        # Efficiency: use actual efficiency_multiple vs GPT-2.
+        # MoE models have more total params but only activate a fraction per
+        # token — don't penalize total param count for MoE architectures.
+        is_moe = _graph_is_moe(graph)
         max_params = config.model_dim * config.vocab_size * 2
         param_count = getattr(sandbox_result, "param_count", 0) or 0
         try:
@@ -685,9 +698,13 @@ class _SynthesisMixin:
                 ),
                 peak_memory_mb=s1_result.get("peak_memory_mb") if s1_result else None,
                 throughput_tok_s=s1_result.get("throughput") if s1_result else None,
+                is_moe=is_moe,
             )
             if eff_result and eff_result.get("geomean", 0) > 0:
                 components["efficiency"] = min(1.0, eff_result["geomean"] / 5.0)
+            elif is_moe:
+                # MoE: score on speed/throughput, not param count
+                components["efficiency"] = 0.5
             elif param_count > 0 and max_params > 0:
                 components["efficiency"] = max(
                     0.0, 1.0 - min(param_count / max_params, 1.0)
@@ -695,7 +712,9 @@ class _SynthesisMixin:
             else:
                 components["efficiency"] = 0.0
         except Exception:
-            if param_count > 0 and max_params > 0:
+            if is_moe:
+                components["efficiency"] = 0.5
+            elif param_count > 0 and max_params > 0:
                 components["efficiency"] = max(
                     0.0, 1.0 - min(param_count / max_params, 1.0)
                 )
@@ -1081,7 +1100,11 @@ class _SynthesisMixin:
             flops_per_token = params * 2
         baseline_fpt = 2.0 * _cfg_dim**2 * _cfg_layers
         flop_efficiency = min(1.0, baseline_fpt / max(flops_per_token, 1.0))
-        param_efficiency_proxy = min(1.0, (6 * _cfg_dim**2) / max(params, 1.0))
+        # MoE: don't penalize total param count — active params are a fraction
+        if _graph_is_moe(graph):
+            param_efficiency_proxy = 0.5  # neutral — judge on FLOP efficiency instead
+        else:
+            param_efficiency_proxy = min(1.0, (6 * _cfg_dim**2) / max(params, 1.0))
         compression_proxy = (
             0.5 * flop_efficiency
             + 0.3 * param_efficiency_proxy

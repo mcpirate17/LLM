@@ -94,16 +94,16 @@ def test_get_component_execution_capability_unmapped(client):
 
 
 def test_get_component_execution_capability_routing_passthrough(client):
-    r = client.get("/api/v1/components/token_merge/execution-capability")
+    r = client.get("/api/v1/components/adjacent_token_merge/execution-capability")
     assert r.status_code == 200
     data = r.json()
     assert data["bridge"]["bridge_supported"] is True
-    assert data["bridge"]["primitive_name"] == "token_merge"
-    r2 = client.get("/api/v1/components/speculative/execution-capability")
+    assert data["bridge"]["primitive_name"] == "adjacent_token_merge"
+    r2 = client.get("/api/v1/components/cheap_verify_blend/execution-capability")
     assert r2.status_code == 200
     data2 = r2.json()
     assert data2["bridge"]["bridge_supported"] is True
-    assert data2["bridge"]["primitive_name"] == "speculative"
+    assert data2["bridge"]["primitive_name"] == "cheap_verify_blend"
     r3 = client.get("/api/v1/components/random_data_source/execution-capability")
     assert r3.status_code == 200
     data3 = r3.json()
@@ -201,6 +201,92 @@ def test_compile_workflow_reports_semantic_warnings(client):
     assert "semantic_warning_count" in data
     # Passthrough components have approximate fidelity
     assert isinstance(data["semantic_warning_count"], int)
+
+
+def test_compile_workflow_returns_structured_error_details(client):
+    workflow = {
+        "workflow": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": "wf_compile_error_details",
+            "name": "Compile Error Details",
+            "nodes": [
+                {"id": "n_in", "component_type": "input", "params": {}, "ui_meta": {}},
+                {
+                    "id": "n_bad",
+                    "component_type": "math/definitely_missing_component",
+                    "params": {},
+                    "ui_meta": {},
+                },
+                {
+                    "id": "n_out",
+                    "component_type": "output_head",
+                    "params": {},
+                    "ui_meta": {},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "n_in",
+                    "source_port": "y",
+                    "target": "n_bad",
+                    "target_port": "x",
+                },
+                {
+                    "id": "e2",
+                    "source": "n_bad",
+                    "source_port": "y",
+                    "target": "n_out",
+                    "target_port": "x",
+                },
+            ],
+        }
+    }
+    r = client.post("/api/v1/workflows/compile", json=workflow)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["compiled"] is False
+    assert "error_details" in data
+    assert data["error_details"]["stage"] == "compilation"
+    assert data["error_details"]["error_type"]
+
+
+def test_eval_run_store_persists_to_database():
+    from aria_designer.api.app import database as db
+    from aria_designer.api.app.shared_api import _store_run
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db.init_db(Path(tmpdir) / "test_runs.db")
+        _store_run(
+            "eval_persisted_1",
+            {
+                "run_id": "eval_persisted_1",
+                "workflow_id": "wf_persisted",
+                "status": "failed_sandbox",
+                "created_at": "2026-03-29T12:00:00Z",
+                "stages": {
+                    "sandbox": {
+                        "status": "done",
+                        "elapsed_ms": 12.5,
+                        "metrics": {"stability_score": 0.1},
+                    }
+                },
+                "result": {"status": "failed_sandbox", "total_time_ms": 12.5},
+                "error_details": {
+                    "stage": "sandbox",
+                    "error_type": "failed_sandbox",
+                    "error_message": "nan detected",
+                },
+                "semantic_warnings": [
+                    {"code": "approximate_lowering", "message": "passthrough lowering"}
+                ],
+            },
+        )
+        row = db.get_workflow_run("eval_persisted_1")
+        assert row is not None
+        assert row["workflow_id"] == "wf_persisted"
+        assert row["stages"]["sandbox"]["metrics"]["stability_score"] == 0.1
+        assert row["error_details"]["stage"] == "sandbox"
 
 
 def test_bridge_gap_report(client):

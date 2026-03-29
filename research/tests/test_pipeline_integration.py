@@ -83,7 +83,9 @@ class TestRunConfig(unittest.TestCase):
         from research.scientist.runner import RunConfig
 
         config = RunConfig()
-        self.assertEqual(config.auto_investigate_min_survivors, 3)
+        self.assertEqual(
+            config.auto_investigate_min_survivors, 5
+        )  # raised for routing models
 
     def test_auto_investigate_enabled_by_default(self):
         """Auto-investigation should be on by default."""

@@ -10,14 +10,7 @@ import {
   ArrowUpFromLine,
 } from 'lucide-react'
 import { CATEGORY_ICONS } from '../utils/categoryConfig'
-
-function formatFlops(n) {
-  if (n == null) return ''
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'G'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return String(n)
-}
+import { formatNum as formatFlops } from '../utils/format'
 
 const IO_INPUT_IDS = new Set(['input', 'graph_input'])
 const IO_OUTPUT_IDS = new Set(['output_head', 'graph_output'])

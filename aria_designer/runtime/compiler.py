@@ -1,5 +1,7 @@
 import logging
 import os
+from collections import defaultdict
+
 import torch.nn as nn
 import importlib.util
 import yaml
@@ -18,6 +20,14 @@ class WorkflowModule(nn.Module):
         self.edges = workflow_json["edges"]
         self.component_registry = component_registry
 
+        # Precompute edge adjacency — O(E) once instead of O(N×E) per forward
+        self._edges_by_target = defaultdict(list)
+        self._source_set = set()
+        for e in self.edges:
+            self._edges_by_target[e["target"]].append(e)
+            self._source_set.add(e["source"])
+        self._sink_nodes = frozenset(self.nodes_config.keys()) - self._source_set
+
         dtype_issues = find_unsupported_edge_dtype_pairings(
             workflow_json,
             self.component_registry.get_manifest,
@@ -30,10 +40,10 @@ class WorkflowModule(nn.Module):
         dispatcher = KernelDispatcher()
         node_ids = list(self.nodes_config.keys())
         node_to_idx = {nid: i for i, nid in enumerate(node_ids)}
-        c_edges = []
-        for e in self.edges:
-            # We use indices for the C validator
-            c_edges.append((node_to_idx[e["source"]], node_to_idx[e["target"]], 0, 0))
+        c_edges = [
+            (node_to_idx[e["source"]], node_to_idx[e["target"]], 0, 0)
+            for e in self.edges
+        ]
 
         res = dispatcher.validate_graph(node_ids, c_edges)
         if not res["valid"]:
@@ -78,20 +88,19 @@ class WorkflowModule(nn.Module):
         for nid, val in inputs.items():
             node_outputs[nid] = val
 
+        edges_by_target = self._edges_by_target  # local ref avoids repeated attr lookup
+
         for node_id in self.topo_order:
             # If it's a source node and we already have its output, skip
-            if node_id in node_outputs and not self._has_incoming_edges(node_id):
+            if node_id in node_outputs and node_id not in edges_by_target:
                 continue
 
-            # Gather inputs from edges
+            # Gather inputs from edges — O(degree) not O(E)
             node_inputs = {}
-            for e in self.edges:
-                if e["target"] == node_id:
-                    src_val = node_outputs.get(e["source"])
-                    # If multiple outputs from source, we'd need port handling
-                    # For now, simplify.
-                    port_name = e["target_port"] if e["target_port"] else "x"
-                    node_inputs[port_name] = src_val
+            for e in edges_by_target.get(node_id, ()):
+                src_val = node_outputs.get(e["source"])
+                port_name = e["target_port"] if e["target_port"] else "x"
+                node_inputs[port_name] = src_val
 
             # Execute node
             config = self.nodes_config[node_id]
@@ -105,27 +114,13 @@ class WorkflowModule(nn.Module):
                         node_id, module, node_inputs, params
                     )
             else:
-                # Pure functional component fallback or placeholder
                 out = self._invoke_handler(node_id, comp_type, node_inputs, params)
                 if out is not None:
                     node_outputs[node_id] = out
 
-        # Identify sink nodes (no outgoing edges)
-        sinks = self._get_sink_nodes()
-        return {nid: node_outputs[nid] for nid in sinks if nid in node_outputs}
-
-    def _has_incoming_edges(self, node_id):
-        for e in self.edges:
-            if e["target"] == node_id:
-                return True
-        return False
-
-    def _get_sink_nodes(self):
-        {e["target"] for e in self.edges}
-        sources = {e["source"] for e in self.edges}
-        all_nodes = set(self.nodes_config.keys())
-        # Sinks are nodes that are NOT sources for any edge
-        return all_nodes - sources
+        return {
+            nid: node_outputs[nid] for nid in self._sink_nodes if nid in node_outputs
+        }
 
     def _invoke_node(self, node_id, module, node_inputs, params):
         # Prefer handler.forward() if available — it knows the port names
@@ -197,23 +192,40 @@ class ComponentRegistry:
         self.components_dir = components_dir
         self.handlers = {}
         self.manifests = {}
+        self._dir_cache = {}  # component_type → directory path (or None)
 
     def _resolve_component_dir(self, component_type):
+        if component_type in self._dir_cache:
+            return self._dir_cache[component_type]
+
         from aria_designer.api.app.component_identity import canonicalize_component_id
 
-        component_type = canonicalize_component_id(component_type)
+        canonical = canonicalize_component_id(component_type)
+        if canonical in self._dir_cache:
+            result = self._dir_cache[canonical]
+            self._dir_cache[component_type] = result
+            return result
+
+        result = self._scan_component_dir(canonical)
+        self._dir_cache[component_type] = result
+        self._dir_cache[canonical] = result
+        return result
+
+    def _scan_component_dir(self, component_type):
         parts = component_type.split("/")
         if len(parts) == 2:
             cat, cid = parts
             component_dir = os.path.join(self.components_dir, cat, cid)
             if os.path.isdir(component_dir):
                 return component_dir
-            # Category mismatch (e.g. functional/mod_topk vs routing/mod_topk)
-            # — fall through to search by op name alone
             parts = [cid]
 
         cid = parts[0]
-        for cat in os.listdir(self.components_dir):
+        try:
+            categories = os.listdir(self.components_dir)
+        except OSError:
+            return None
+        for cat in categories:
             category_dir = os.path.join(self.components_dir, cat)
             if not os.path.isdir(category_dir):
                 continue

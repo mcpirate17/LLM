@@ -331,7 +331,7 @@ def execute_tropical_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     per-token variation, which would kill gradient flow through LayerNorm.
     """
     if hasattr(module, "weight"):
-        q = torch.nn.functional.linear(x, module.weight)
+        q = torch.nn.functional.linear(x, module.weight.to(x.dtype))
     else:
         q = x
     return x + tropical_attention(q, x, x)
@@ -353,16 +353,11 @@ def execute_tropical_center(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     ):
         return aria_core.tropical_center_f32(x)
     B, S, D = x.shape
-    tau = 1.0  # Higher τ for gradient flow (was _SMOOTH_TAU=0.1)
+    tau = _SMOOTH_TAU
     inv_tau = 1.0 / tau
     neg_x_scaled = -x * inv_tau  # (B, S, D)
-    # Cumulative logsumexp via sequential scan (causal)
-    log_acc = neg_x_scaled[:, :1, :]  # (B, 1, D)
-    chunks = [log_acc]
-    for t in range(1, S):
-        log_acc = torch.logaddexp(log_acc, neg_x_scaled[:, t : t + 1, :])
-        chunks.append(log_acc)
-    cmin_smooth = -tau * torch.cat(chunks, dim=1)  # (B, S, D)
+    # Cumulative logsumexp — single fused C++ call replaces Python loop over S
+    cmin_smooth = -tau * torch.logcumsumexp(neg_x_scaled, dim=1)  # (B, S, D)
     return x - cmin_smooth
 
 
@@ -387,7 +382,7 @@ def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     gated = torch.bmm(gate_scores, x)  # (B, S, D)
     # Linear projection if params available
     if hasattr(module, "weight"):
-        gated = torch.nn.functional.linear(gated, module.weight)
+        gated = torch.nn.functional.linear(gated, module.weight.to(gated.dtype))
     # Sigmoid gate blending with residual
     gate = torch.sigmoid(gated)
     return x * gate

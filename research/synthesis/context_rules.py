@@ -21,6 +21,7 @@ from typing import Dict, FrozenSet, Iterable, List, Optional
 
 from .graph import ComputationGraph
 from .motifs import MOTIFS_BY_CLASS, Motif
+from .primitives import PRIMITIVE_REGISTRY
 
 
 # ── Search-mode classification ────────────────────────────────────
@@ -29,8 +30,6 @@ from .motifs import MOTIFS_BY_CLASS, Motif
 class SearchMode(Enum):
     __slots__ = ()
     GENERAL = "general"
-    RESTRICTED = "restricted"
-    NICHE = "niche"
 
 
 # ── Per-op context rule ───────────────────────────────────────────
@@ -74,25 +73,31 @@ _STRUCTURAL_SPLIT_OPS: FrozenSet[str] = frozenset(
     }
 )
 
-# Routing/gating ops — must not directly chain (double-routing produces
+# Gating/mixture ops — must not directly chain (double-gating produces
 # conflicting gradient signals: 100% failure in investigation data).
-_ROUTING_OPS: FrozenSet[str] = frozenset(
+_GATING_OPS: FrozenSet[str] = frozenset(
     {
-        "adaptive_lane_mixer",
-        "adaptive_recursion",
-        "route_topk",
-        "route_lanes",
-        "route_recursion",
+        "difficulty_blend_3way",  # was: adaptive_lane_mixer
+        "depth_weighted_proj",  # was: adaptive_recursion
+        "feature_sparsity",
+        "gated_lane_blend",
+        "depth_gated_transform",
         "moe_topk",
         "moe_2expert",
-        "n_way_sparse_router",
-        "progressive_compression_gate",
-        "relu_gate_routing",
-        "routing_conditioned_compression",
-        "early_exit",
-        "cascade",
+        "sparse_bottleneck_moe",  # was: n_way_sparse_router
+        "adaptive_rank_gate",  # was: progressive_compression_gate
+        "relu_gated_moe",
+        "signal_conditioned_compression",
+        "confidence_token_gate",  # was: early_exit
+        "learned_token_gate",  # was: cascade
+        # True routing ops (heterogeneous experts)
+        "hetero_moe",
+        "arch_router",
+        "compute_budget_router",
     }
 )
+# Backward-compat alias
+_ROUTING_OPS = _GATING_OPS
 
 # Mask ops — produce structural masks, not data tensors. Must only feed
 # into attention/mixing ops that consume masks.
@@ -192,7 +197,7 @@ _FULL_DIM_OPS: FrozenSet[str] = frozenset(
 # RuntimeError (weight dim mismatch) or dead networks (capacity collapse).
 _FULL_DIM_CONSUMERS: FrozenSet[str] = frozenset(
     {
-        "relu_gate_routing",
+        "relu_gated_moe",
         "adaptive_recursion",
         "swiglu_mlp",
         "gated_linear",
@@ -214,21 +219,21 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     ),
     # sliding_window_mask: moved to routing section below
     "causal_mask": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=frozenset(),
         forbidden_successors=frozenset({"output_head"}),
         requires_residual_context=True,
     ),
     # ── Restricted-use: structural ops ──────────────────────────────
     "split2": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         # split2 halves dim — ops with internal projections built for full
         # model_dim get RuntimeError shape mismatches (100% fail in data).
         forbidden_successors=frozenset({"output_head"}) | _FULL_DIM_OPS,
     ),
     "split3": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}),
     ),
@@ -254,22 +259,22 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     ),
     # ── Restricted-use: reduce ops (must not chain or feed output directly) ─
     "norm_last": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
     ),
     "max_last": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
     ),
     "sum_last": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
     ),
     "mean_last": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
     ),
@@ -338,13 +343,13 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=frozenset(),
         forbidden_successors=frozenset({"output_head"}),
     ),
-    "n_way_sparse_router": ContextRule(
+    "sparse_bottleneck_moe": ContextRule(  # was: n_way_sparse_router
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=_STRUCTURAL_SPLIT_OPS,
     ),
-    "early_exit": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+    "confidence_token_gate": ContextRule(  # was: early_exit
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS
         | frozenset(
             {
@@ -354,8 +359,8 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_successors=_STRUCTURAL_SPLIT_OPS,
         requires_residual_context=True,
     ),
-    "cascade": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+    "learned_token_gate": ContextRule(  # was: cascade
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=_STRUCTURAL_SPLIT_OPS,
     ),
@@ -374,6 +379,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+        requires_residual_context=True,  # division output range depends on inputs; residual stabilizes
     ),
     "log": ContextRule(
         search_mode=SearchMode.GENERAL,
@@ -411,7 +417,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     # Failure data: adaptive_recursion->progressive_compression_gate,
     # adaptive_lane_mixer->progressive_compression_gate, route_topk->add,
     # moe_topk->rmsnorm all 100% fail. Routing ops must not chain.
-    "adaptive_recursion": ContextRule(
+    "depth_weighted_proj": ContextRule(  # was: adaptive_recursion
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS | frozenset({"linear_proj_down"}),
         forbidden_successors=_ROUTING_OPS
@@ -425,7 +431,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
             }
         ),
     ),
-    "adaptive_lane_mixer": ContextRule(
+    "difficulty_blend_3way": ContextRule(  # was: adaptive_lane_mixer
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=_ROUTING_OPS
@@ -436,22 +442,27 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
             }
         ),
     ),
-    "route_topk": ContextRule(
+    "feature_sparsity": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=_ROUTING_OPS
+        forbidden_successors=_GATING_OPS
         | frozenset(
             {
                 "add",
-                "mul",  # 100% fail: routing output fed to raw arithmetic
+                "mul",  # 100% fail: gated output fed to raw arithmetic
                 "linear_proj_up",  # 100% fail
             }
         ),
     ),
-    "route_lanes": ContextRule(
+    "gated_lane_blend": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=_ROUTING_OPS | _MASK_OPS,
+        forbidden_successors=_GATING_OPS | _MASK_OPS,
+    ),
+    "depth_gated_transform": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_GATING_OPS | _STRUCTURAL_SPLIT_OPS,
     ),
     "moe_topk": ContextRule(
         search_mode=SearchMode.GENERAL,
@@ -475,10 +486,12 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
             }
         ),
     ),
-    "routing_conditioned_compression": ContextRule(
-        search_mode=SearchMode.NICHE,
+    "signal_conditioned_compression": ContextRule(
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=_ROUTING_OPS | _STRUCTURAL_SPLIT_OPS,
+        # Allow moe_topk/moe_2expert after compression — data-mined high-signal combo
+        forbidden_successors=(_GATING_OPS - frozenset({"moe_topk", "moe_2expert"}))
+        | _STRUCTURAL_SPLIT_OPS,
     ),
     # ── Mask ops: must feed mixing ops only ───────────────────────
     "sliding_window_mask": ContextRule(
@@ -562,16 +575,21 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_successors=frozenset(
             {
                 "identity",  # 100% fail (17/17) — strips causal mask
-                "rwkv_channel",  # 100% fail (17/17)
+                # rwkv_channel removed: data mining (n=11,447) shows
+                # rmsnorm → rwkv_channel → add at loss=0.049 when in
+                # proper residual scaffold. Original 17/17 failures lacked
+                # the residual add; templates now enforce it.
             }
         ),
     ),
     # layernorm->add has 30% fail rate (122F/289S) — not a hard ban.
     # Failures are from direct layernorm->add with no op in between (empty residual).
     # Most successes have layernorm->op->add with add as residual connection.
-    # ── Identity: extend existing — also kills selective_scan ────
+    # ── Identity: passthrough. Causality violations correlate with identity
+    # but the root cause is graphs lacking causal attention — fixed by
+    # grammar-level causal_mask injection before sequence-mixing ops.
     "identity": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=frozenset(
             {
                 "rmsnorm",  # 100% fail (8/8)
@@ -614,14 +632,16 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         )
         | (_MATH_SPACE_OPS - frozenset({"tropical_center", "tropical_matmul"})),
     ),
-    # ── Still NICHE: no dedicated template, needs further investigation ──
+    # geometric_product: has dedicated template (geometric_product_block).
+    # Data: standalone 100% fail (11/11), doubled 58% fail — needs residual + companion.
     "geometric_product": ContextRule(
-        search_mode=SearchMode.NICHE,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=_STRUCTURAL_SPLIT_OPS,
+        forbidden_successors=_STRUCTURAL_SPLIT_OPS | frozenset({"output_head"}),
+        requires_residual_context=True,  # multivector output unbounded without skip
     ),
-    "progressive_compression_gate": ContextRule(
-        search_mode=SearchMode.NICHE,
+    "adaptive_rank_gate": ContextRule(  # was: progressive_compression_gate
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
         forbidden_successors=_STRUCTURAL_SPLIT_OPS
         | frozenset(
@@ -650,7 +670,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         ),
     ),
     "concat": ContextRule(
-        search_mode=SearchMode.RESTRICTED,
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=frozenset(
             {
                 "concat",  # 100% fail (14/14) — double concat = 4x dim explosion
@@ -690,6 +710,300 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
             }
         ),
     ),
+    # ── Comprehensive coverage: remaining standalone ops ─────────
+    #
+    # Elementwise unary — safe activations need no rules, but risky
+    # ones (sqrt, abs) and gradient-killers need successors constrained.
+    "abs": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "neg": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "sqrt": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "square": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "relu": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "sigmoid": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "tanh": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "sin": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "gelu": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "silu": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    # Elementwise binary — add/mul are fundamental, need minimal rules.
+    "add": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "mul": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "maximum": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    # Linear algebra — binary ops need bounded input and stabilized output.
+    # Data: matmul 36% S1, outer_product 32%, cosine_similarity 23%.
+    # Successes cluster around norm→proj→op→proj→residual patterns.
+    "matmul": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS
+        | frozenset(
+            {"rmsnorm", "layernorm"}
+        ),  # 68% fail without proj between norm and matmul
+        forbidden_successors=frozenset({"output_head", "gather_topk"})
+        | _STRUCTURAL_SPLIT_OPS,
+        requires_residual_context=True,  # unbounded output needs skip connection
+    ),
+    "outer_product": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head", "gather_topk"})
+        | _STRUCTURAL_SPLIT_OPS,
+        requires_residual_context=True,  # unbounded output needs skip connection
+    ),
+    "cosine_similarity": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS
+        | frozenset(
+            {"rmsnorm", "layernorm"}
+        ),  # 95% fail (148 samples) — needs proj first
+        forbidden_successors=frozenset(
+            {"output_head", "gather_topk"}
+        )  # 95% fail (305 samples)
+        | _STRUCTURAL_SPLIT_OPS,
+        requires_residual_context=True,  # [-1,1] output needs residual to preserve signal
+    ),
+    # Reductions — cumsum/cumprod need norm after; cumprod is risky.
+    "cumsum": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "cumprod_safe": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    # Sequence — softmax_last produces probabilities, must feed projection.
+    "softmax_last": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    # Structural — multi_head_mix, gather_topk.
+    "multi_head_mix": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "gather_topk": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    # Parameterized — projections, norms, routing gaps.
+    "linear_proj": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "layernorm": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset(
+            {
+                "identity",  # strips causal context, same as rmsnorm
+                # rwkv_channel removed: data mining (n=11,447) shows
+                # layernorm → rwkv_channel → add → layernorm at loss=0.054.
+                # The winning RWKV pattern requires norm before the op.
+            }
+        ),
+    ),
+    "learnable_scale": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "learnable_bias": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "grouped_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "kronecker_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "embedding_lookup": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(),
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    "latent_attention_compressor": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "conv_only": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    # Gating gaps — relu_gated_moe, speculative, topk_gate, mod_topk, token_merge.
+    "relu_gated_moe": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | frozenset({"linear_proj_down"}),
+        forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
+    ),
+    "cheap_verify_blend": ContextRule(  # was: speculative
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "topk_gate": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+    ),
+    "depth_token_mask": ContextRule(  # was: mod_topk
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
+        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "adjacent_token_merge": ContextRule(  # was: token_merge
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    # 2-input routing/compression ops — template-confined but need rules
+    # in case grammar places them.
+    "dual_compression_blend": ContextRule(  # was: compression_mixture_experts
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        # Allow moe_topk/moe_2expert after compression — data-mined high-signal combo
+        forbidden_successors=(_ROUTING_OPS - frozenset({"moe_topk", "moe_2expert"}))
+        | frozenset({"output_head"}),
+    ),
+    "score_depth_blend": ContextRule(  # was: mixed_recursion_gate
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+    ),
+    # Math-space gaps — ops in math_space category but not in _MATH_SPACE_OPS
+    # or without ContextRule.
+    "exp_map": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "log_map": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "grade_mix": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "hyp_distance": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "hyperbolic_norm": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "padic_gate": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"})
+        | (_MATH_SPACE_OPS - frozenset({"padic_expand", "padic_gate"})),
+    ),
+    "padic_residual": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"})
+        | (_MATH_SPACE_OPS - frozenset({"padic_expand", "padic_residual"})),
+    ),
+    "poincare_add": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "spike_rate_code": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "tropical_add": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"})
+        | (
+            _MATH_SPACE_OPS
+            - frozenset({"tropical_add", "tropical_matmul", "tropical_center"})
+        ),
+    ),
+    "tropical_attention": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+    ),
+    "tropical_moe": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
+        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+    ),
 }
 
 _OP_CONTEXT_CLASS: Dict[str, str] = {
@@ -699,14 +1013,7 @@ _OP_CONTEXT_CLASS: Dict[str, str] = {
     "split3": CONTEXT_CLASS_STRUCTURAL,
     "concat": CONTEXT_CLASS_STRUCTURAL,
     "identity": CONTEXT_CLASS_STRUCTURAL,
-    # Restricted: template-confined (UNSAFE role)
-    "geometric_product": CONTEXT_CLASS_RESTRICTED,
-    # Phase 3: promoted to GENERAL — have proven templates and MATH_SPACE_RULES
-    # (previously RESTRICTED, now with dedicated template paths)
-    # lif_neuron, sparse_threshold, stdp_attention → spiking_residual_block
-    # tropical_center, tropical_matmul → tropical_residual / tropical_matmul_block
-    # n_way_sparse_router → n_way_moe_block
-    # early_exit → cascaded_early_exit
+    # geometric_product: promoted to GENERAL — context rules enforce valid placement
 }
 
 _MOTIF_TEMPLATE_ALLOWLIST: Dict[str, FrozenSet[str]] = {
@@ -882,16 +1189,6 @@ _STABILIZER_SUCCESSORS = frozenset(
 
 # ── Derived sets (frozen at import time) ──────────────────────────
 
-NICHE_OPS: FrozenSet[str] = frozenset(
-    name for name, rule in CONTEXT_RULES.items() if rule.search_mode == SearchMode.NICHE
-)
-
-RESTRICTED_OPS: FrozenSet[str] = frozenset(
-    name
-    for name, rule in CONTEXT_RULES.items()
-    if rule.search_mode == SearchMode.RESTRICTED
-)
-
 STRUCTURAL_OPS: FrozenSet[str] = frozenset(
     {
         "identity",
@@ -936,22 +1233,6 @@ REQUIRES_RESIDUAL_CONTEXT: FrozenSet[str] = frozenset(
 
 
 # ── Query helpers ─────────────────────────────────────────────────
-
-
-def get_search_mode(op_name: str) -> SearchMode:
-    """Return the search-mode classification for an op."""
-    rule = CONTEXT_RULES.get(op_name)
-    if rule is not None:
-        return rule.search_mode
-    return SearchMode.GENERAL
-
-
-def is_niche(op_name: str) -> bool:
-    return op_name in NICHE_OPS
-
-
-def is_restricted(op_name: str) -> bool:
-    return op_name in RESTRICTED_OPS
 
 
 def is_structural(op_name: str) -> bool:
@@ -1173,10 +1454,10 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
                 and len(non_input_nodes) <= 2
             ):
                 violations.append("identity cannot be the primary learning carrier")
-        elif node.op_name == "split3":
+        elif node.op_name in ("split2", "split3"):
             if not _has_descendant_op(graph, nid, {"concat", "add"}, children):
                 violations.append(
-                    "split3 must rejoin through concat or add before output"
+                    f"{node.op_name} must rejoin through concat or add before output"
                 )
         elif node.op_name == "lif_neuron":
             if not _has_descendant_op(
@@ -1305,6 +1586,26 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
                 violations.append(
                     "cumsum requires immediate norm successor (running sum grows unbounded)"
                 )
+        elif node.op_name == "matmul":
+            if not _has_immediate_predecessor_op(
+                graph, nid, {"linear_proj", "linear_proj_up", "linear_proj_down"}
+            ):
+                violations.append(
+                    "matmul requires immediate projection predecessor (68% fail without)"
+                )
+            if not _has_immediate_successor_op(
+                children, graph, nid, _STABILIZER_SUCCESSORS | {"add"}
+            ):
+                violations.append(
+                    "matmul requires immediate stabilizer/merge successor (proj/norm/mul/add)"
+                )
+        elif node.op_name == "cosine_similarity":
+            if not _has_immediate_predecessor_op(
+                graph, nid, {"linear_proj", "linear_proj_up", "linear_proj_down"}
+            ):
+                violations.append(
+                    "cosine_similarity requires immediate projection predecessor (95% fail without)"
+                )
         elif node.op_name == "outer_product":
             if not _has_immediate_successor_op(
                 children, graph, nid, _STABILIZER_SUCCESSORS | {"add"}
@@ -1332,3 +1633,70 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
 def validate_context_rules(graph: ComputationGraph) -> Optional[str]:
     violations = find_graph_context_violations(graph)
     return violations[0] if violations else None
+
+
+# ── Byte-safety enforcement ──────────────────────────────────────
+
+# Lazily computed set of ops with byte_safe=False in the registry.
+_BYTE_UNSAFE_OPS: FrozenSet[str] = frozenset(
+    name for name, op in PRIMITIVE_REGISTRY.items() if not op.byte_safe
+)
+
+
+def find_byte_safety_violations(graph: ComputationGraph) -> List[str]:
+    """Check that no byte-unsafe ops appear in the graph.
+
+    Call this when the graph will run in native or quantized execution
+    modes where token reordering/merging breaks tensor layout assumptions.
+    """
+    violations: List[str] = []
+    for nid, node in graph.nodes.items():
+        if node.is_input:
+            continue
+        if node.op_name in _BYTE_UNSAFE_OPS:
+            violations.append(
+                f"Byte-unsafe op '{node.op_name}' (node {nid}) is not "
+                f"allowed in native/quantized execution mode"
+            )
+    return violations
+
+
+# ── 5.5: Weight sharing context rules ────────────────────────────
+# tied_proj and shared_basis_proj are efficient alternatives to
+# linear_proj. They should follow the same placement rules as
+# linear_proj but are additionally safe to chain (weight sharing
+# reduces redundant parameters).
+
+# ── True routing ops: dispatch tokens to heterogeneous experts ────
+CONTEXT_RULES["hetero_moe"] = ContextRule(
+    search_mode=SearchMode.GENERAL,
+    forbidden_predecessors=_REDUCE_OPS,
+    forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
+    requires_residual_context=True,
+)
+
+CONTEXT_RULES["arch_router"] = ContextRule(
+    search_mode=SearchMode.GENERAL,
+    forbidden_predecessors=_REDUCE_OPS,
+    forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
+    requires_residual_context=True,
+)
+
+CONTEXT_RULES["compute_budget_router"] = ContextRule(
+    search_mode=SearchMode.GENERAL,
+    forbidden_predecessors=_REDUCE_OPS,
+    forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
+    requires_residual_context=True,
+)
+
+CONTEXT_RULES["tied_proj"] = ContextRule(
+    search_mode=SearchMode.GENERAL,
+    forbidden_predecessors=_REDUCE_OPS,
+    forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+)
+
+CONTEXT_RULES["shared_basis_proj"] = ContextRule(
+    search_mode=SearchMode.GENERAL,
+    forbidden_predecessors=_REDUCE_OPS,
+    forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+)

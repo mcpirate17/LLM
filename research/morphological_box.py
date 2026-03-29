@@ -252,7 +252,7 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                 "implicit_fixed_point",
                 "Implicit fixed-point channel solver (deep-equilibrium style)",
                 tags=("functional", "implicit_solver", "recurrent"),
-                incompatible_with=("early_exit",),
+                incompatible_with=("confidence_token_gate",),
             ),
             Option(
                 "identity_skip",
@@ -270,17 +270,17 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                 "uniform", "All tokens get all layers (baseline)", tags=("standard",)
             ),
             Option(
-                "mod_topk",
+                "depth_token_mask",
                 "Mixture of Depths: top-k tokens per layer",
                 tags=("dynamic_routing", "token_sparse"),
             ),
             Option(
-                "early_exit",
+                "confidence_token_gate",
                 "Early exit: tokens stop at different depths",
-                tags=("dynamic_routing", "early_exit"),
+                tags=("dynamic_routing", "confidence_token_gate"),
             ),
             Option(
-                "adaptive_recursion",
+                "depth_weighted_proj",
                 "Adaptive recursion depth per token (MoR-style)",
                 tags=("dynamic_routing", "recursion"),
             ),
@@ -290,19 +290,19 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                 tags=("stochastic",),
             ),
             Option(
-                "token_merge",
+                "adjacent_token_merge",
                 "Merge similar tokens to reduce sequence length",
                 tags=("token_sparse", "merging"),
             ),
             Option(
-                "cascade",
+                "learned_token_gate",
                 "Progressive cascade: easy tokens get shallow, hard get deep",
-                tags=("dynamic_routing", "cascade"),
+                tags=("dynamic_routing", "learned_token_gate"),
             ),
             Option(
-                "speculative",
+                "cheap_verify_blend",
                 "Speculative: run cheap path, verify with expensive path",
-                tags=("dynamic_routing", "speculative"),
+                tags=("dynamic_routing", "cheap_verify_blend"),
             ),
         ),
     ),
@@ -348,7 +348,7 @@ DIMENSIONS: Tuple[Dimension, ...] = (
                 "feedback_loop",
                 "Feedback connections from later to earlier layers",
                 tags=("recurrent", "feedback"),
-                incompatible_with=("early_exit",),
+                incompatible_with=("confidence_token_gate",),
             ),
         ),
     ),
@@ -538,7 +538,10 @@ def _check_structural_constraints(spec: ArchSpec) -> Optional[str]:
         return "SSM + DenseNet: SSM is inherently sequential, DenseNet adds O(n^2) connections"
 
     # Feedback loop + early exit = contradictory
-    if c["topology"] == "feedback_loop" and c["compute_routing"] == "early_exit":
+    if (
+        c["topology"] == "feedback_loop"
+        and c["compute_routing"] == "confidence_token_gate"
+    ):
         return "feedback loops + early exit: contradictory (can't exit if looping back)"
 
     # Functional token mixing should pair with expressive function-space channels
@@ -556,7 +559,7 @@ def _check_structural_constraints(spec: ArchSpec) -> Optional[str]:
     # Implicit fixed-point channels conflict with hard early exits
     if (
         c["channel_mixing"] == "implicit_fixed_point"
-        and c["compute_routing"] == "early_exit"
+        and c["compute_routing"] == "confidence_token_gate"
     ):
         return "implicit fixed-point channel solver + early exit: unstable stopping dynamics"
 

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 import { CheckCircle2, Loader, Circle, XCircle, ChevronRight } from 'lucide-react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import ChartActionRail from './ChartActionRail.jsx'
 import OpProfileTable from './RunResults/OpProfileTable.jsx'
 import BenchmarkTargets from './RunResults/BenchmarkTargets.jsx'
+import { formatNum } from '../utils/format'
 
 const STAGE_ORDER = ['conversion', 'profiling', 'compilation', 'sandbox', 'compression', 'fingerprint', 'novelty']
 
@@ -21,14 +22,6 @@ const CATEGORY_COLORS = [
   '#17a3ff', '#24d1a0', '#a060ff', '#f0a020', '#ff6090',
   '#20c0f0', '#c060c0', '#ff8040', '#e0c040', '#60c060',
 ]
-
-function formatNum(n) {
-  if (n == null) return '-'
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return typeof n === 'number' ? n.toFixed(n % 1 ? 2 : 0) : String(n)
-}
 
 function scoreTone(score) {
   if (score == null) return 'muted'
@@ -66,7 +59,7 @@ function ProgressBar({ value, color = 'var(--accent)' }) {
   )
 }
 
-export default function RunResultsPanel({
+function RunResultsPanel({
   evalState,
   baseline = null,
   benchmarkObserved = {},
@@ -518,3 +511,5 @@ export default function RunResultsPanel({
     </div>
   )
 }
+
+export default memo(RunResultsPanel)

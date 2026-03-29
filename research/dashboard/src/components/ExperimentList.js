@@ -415,7 +415,7 @@ function ExperimentList({
 
   const filtered = useMemo(() => (
     queryFiltered.filter((exp) => {
-      if (hideLowScore && exp._score < 5 && exp.status !== 'running') return false;
+      if (hideLowScore && exp._score < 5 && exp.status !== 'running' && exp.experiment_type !== 'backfill') return false;
       if (statusFilter !== 'all' && exp.status !== statusFilter) return false;
       if (typeFilter !== 'all' && exp.experiment_type !== typeFilter) return false;
       if (outcomeFilter === 'has_s1' && (exp.n_stage1_passed || 0) <= 0) return false;

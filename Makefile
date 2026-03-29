@@ -3,7 +3,7 @@
 
 PYTHON ?= python
 
-.PHONY: all aria_core test test-aria_core test-designer test-research clean help guardrails-dry guardrails-dry-report perf-summary
+.PHONY: all aria_core test test-aria_core test-designer test-research test-integration clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths
 
 all: aria_core  ## Build everything
 
@@ -36,6 +36,10 @@ test-research-all:  ## Run all research test markers
 	cd research && $(PYTHON) -m pytest tests/ -m native --tb=short
 	cd research && $(PYTHON) -m pytest tests/ -m designer --tb=short
 
+test-integration:  ## Run cross-project observability/bridge contract tests
+	$(PYTHON) -m pytest research/tests/test_api_integration.py -k experiment_failures -x --tb=short
+	cd aria_designer && $(PYTHON) -m pytest tests/test_api.py -k "structured_error_details or eval_run_store_persists_to_database" -x --tb=short
+
 guardrails-dry:  ## Enforce DRY/language guardrails against baseline
 	$(PYTHON) -m research.tools.dry_language_guardrails --strict
 
@@ -44,6 +48,15 @@ guardrails-dry-report:  ## Print DRY/language guardrail metrics
 
 perf-summary:  ## Print recent shared performance artifacts
 	$(PYTHON) -m research.tools.perf_summary --limit 10
+
+governance-check:  ## Block on guardrail violations from GLOBAL_DEV_PROMPT
+	$(PYTHON) conductor/guardrail_audit.py --check --markdown-out tasks/audit/latest_guardrail_report.md --json-out tasks/audit/latest_guardrail_report.json
+
+governance-audit:  ## Generate the full A-G audit report artifact
+	$(PYTHON) conductor/guardrail_audit.py --markdown-out tasks/audit/latest_guardrail_report.md --json-out tasks/audit/latest_guardrail_report.json
+
+profile-hotpaths:  ## Run lightweight benchmark/profiling hooks for CI
+	$(PYTHON) conductor/profile_hotpaths.py --json-out tasks/audit/profile_hotpaths.json
 
 dead: ## Standing dead-code detector
 	@mkdir -p tasks/audit
@@ -72,6 +85,27 @@ clean-junk:  ## Remove all cache files, orphaned DB records and temp logs
 	$(PYTHON) -m research.tools.db_integrity_cleanup
 	@echo "=== Cleaning Designer logs ==="
 	rm -f aria_designer/.run/*.log
+
+REPORT_RETENTION_DAYS ?= 14
+PERF_RETENTION_DAYS ?= 30
+
+clean-docs:  ## Remove stale docs, old reports, and temp files
+	@echo "=== Removing root-level junk ==="
+	rm -f "new 2.txt" ":memory:" ":memory:-shm" ":memory:-wal"
+	rm -f audit_report.md audit_report.json
+	rm -rf audit_results/
+	@echo "=== Pruning reports older than $(REPORT_RETENTION_DAYS) days ==="
+	find research/reports/ -name "report_*.md" -mtime +$(REPORT_RETENTION_DAYS) -delete 2>/dev/null || true
+	find research/reports/ -name "exploration_*" -mtime +$(REPORT_RETENTION_DAYS) -delete 2>/dev/null || true
+	@echo "=== Pruning perf artifacts older than $(PERF_RETENTION_DAYS) days ==="
+	find research/perf_artifacts/ -mindepth 2 -type d -mtime +$(PERF_RETENTION_DAYS) -exec rm -rf {} + 2>/dev/null || true
+	@echo "=== Cleaning logs ==="
+	rm -f research/aria_dashboard.log research/aria_dashboard.log.*
+	find aria_designer/ -name "*.log" -mtime +7 -delete 2>/dev/null || true
+	@echo "Reports remaining: $$(find research/reports/ -name 'report_*.md' 2>/dev/null | wc -l)"
+
+clean-all: clean clean-junk clean-docs  ## Full cleanup: build + cache + docs
+
 # ── Help ─────────────────────────────────────────────────────────────
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

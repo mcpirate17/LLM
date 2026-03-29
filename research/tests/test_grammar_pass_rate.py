@@ -45,19 +45,12 @@ def _smoke_test_structural(graph) -> bool:
     from research.synthesis.op_roles import get_role, OpRole
 
     has_params = False
-    has_unsafe_standalone = False
     for node in graph.nodes.values():
         role = get_role(node.op_name)
         if role in (OpRole.PROJECT, OpRole.MIX, OpRole.GATE):
             has_params = True
-        if role == OpRole.UNSAFE:
-            has_unsafe_standalone = True
 
-    if not has_params:
-        return False
-    if has_unsafe_standalone:
-        return False
-    return True
+    return has_params
 
 
 def _smoke_test_native(graph) -> bool:

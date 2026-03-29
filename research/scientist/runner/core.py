@@ -46,15 +46,15 @@ class _CoreMixin:
 
     _ROUTING_BENCHMARK_MODES = [
         "uniform",
-        "mod_topk",
-        "early_exit",
+        "depth_token_mask",
+        "confidence_token_gate",
         "token_merging",
         "moe_topk",
     ]
     _ROUTING_EFFICIENCY_FACTOR = {
         "uniform": 1.0,
-        "mod_topk": 0.7,
-        "early_exit": 0.75,
+        "depth_token_mask": 0.7,
+        "confidence_token_gate": 0.75,
         "token_merging": 0.65,
         "moe_topk": 0.8,
     }
@@ -114,6 +114,17 @@ class _CoreMixin:
         self._progress = LiveProgress()
         self._event_queue: queue.Queue = queue.Queue(maxsize=500)
         self._lock = threading.Lock()
+
+        # Bridge Python logging → SSE so dashboard shows log messages
+        from ._helpers import SSELogHandler
+
+        # Remove any stale SSE handlers from previous runner instances
+        _research_logger = logging.getLogger("research")
+        for _h in _research_logger.handlers[:]:
+            if isinstance(_h, SSELogHandler):
+                _research_logger.removeHandler(_h)
+        self._sse_log_handler = SSELogHandler(self._event_queue)
+        _research_logger.addHandler(self._sse_log_handler)
         self._last_recommendation: Optional[Dict] = None
         self._active_campaign_id: Optional[str] = None
         self._current_hypothesis_id: Optional[str] = None
@@ -142,7 +153,8 @@ class _CoreMixin:
         self._live_loss_curve: List[Dict] = []  # rolling buffer for dashboard chart
         self._grammar_weight_overrides: Dict[str, float] = {}
         try:
-            row = self.notebook.conn.execute(
+            _nb = LabNotebook(self.notebook_path, skip_migrate=True)
+            row = _nb.conn.execute(
                 "SELECT evidence FROM learning_log "
                 "WHERE event_type='chat_grammar_overrides_applied' "
                 "ORDER BY timestamp DESC LIMIT 1"
@@ -228,8 +240,13 @@ class _CoreMixin:
             pass  # Not main thread — atexit still covers us
 
     def _make_notebook(self) -> LabNotebook:
-        """Create a new notebook connection (thread-safe)."""
-        return LabNotebook(self.notebook_path)
+        """Create a new notebook connection (thread-safe).
+
+        Skips migration since the runner already ran it at init time.
+        This avoids DDL write-lock contention that caused
+        ``OperationalError: database is locked`` on every call.
+        """
+        return LabNotebook(self.notebook_path, skip_migrate=True)
 
     def _ensure_math_spaces(self):
         if not self._math_spaces_registered:

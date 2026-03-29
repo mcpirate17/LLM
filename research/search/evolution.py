@@ -19,7 +19,7 @@ import numpy as np
 
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
-from ..synthesis.primitives import get_primitive
+from ..synthesis.primitives import get_primitive, list_primitives
 from ..scientist.shared_utils import clamp
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,10 @@ class EvolutionConfig:
     fitness_weight: float = 0.5
     novelty_weight: float = 0.5
     grammar_config: Optional[GrammarConfig] = None
+    # Exploitation parameters
+    local_mutation_prob: float = 0.3
+    exploit_prob: float = 0.2
+    exploit_top_k: int = 5
 
 
 def _generate_context_valid_graph(
@@ -107,6 +111,7 @@ def evolutionary_search(
     seed: int = 42,
     callback: Optional[Callable[[int, List[Individual]], None]] = None,
     stop_check: Optional[Callable[[], bool]] = None,
+    archive: Optional[object] = None,
 ) -> List[Individual]:
     """Run evolutionary search over computation graphs.
 
@@ -200,6 +205,34 @@ def evolutionary_search(
                     fill_failures,
                 )
                 break
+
+            # Exploitation: with exploit_prob, select from archive exploit targets
+            use_exploit = (
+                archive is not None
+                and hasattr(archive, "suggest_exploit_target")
+                and rng.random() < config.exploit_prob
+            )
+            if use_exploit:
+                try:
+                    targets = archive.suggest_exploit_target(k=config.exploit_top_k)
+                    if targets:
+                        parent = rng.choice(targets)
+                        child_graph = _local_mutate_graph(parent.graph, rng)
+                        child = Individual(
+                            graph=child_graph,
+                            generation=gen + 1,
+                            parent_fingerprint=parent.fingerprint,
+                            metadata={"mutation_type": "local", "exploit": True},
+                        )
+                        new_population.append(child)
+                        logger.debug(
+                            "exploit_mutation: parent_fp=%s, gen=%d",
+                            parent.fingerprint[:16],
+                            gen + 1,
+                        )
+                        continue
+                except Exception:
+                    pass  # fall through to standard reproduction
 
             reproduction_mode = _choose_reproduction_mode(config, rng)
             mode_handlers = {
@@ -661,7 +694,11 @@ def _spawn_mutation_individual(
     rng: random.Random,
     generation: int,
 ) -> Individual:
-    """Sample a parent and return a mutation child."""
+    """Sample a parent and return a mutation child.
+
+    Top-K parents by fitness use local mutation (single-op swap) with
+    probability local_mutation_prob, preserving winning topology.
+    """
     parent = _tournament_select(
         population,
         config.tournament_size,
@@ -669,11 +706,25 @@ def _spawn_mutation_individual(
         config.fitness_weight,
         config.novelty_weight,
     )
-    child_graph = _mutate_graph(parent.graph, grammar, rng)
+
+    # Check if parent is in top-K by fitness
+    top_k_fitness = sorted((ind.fitness for ind in population), reverse=True)[
+        : config.exploit_top_k
+    ]
+    is_top_k = parent.fitness >= top_k_fitness[-1] if top_k_fitness else False
+
+    if is_top_k and rng.random() < config.local_mutation_prob:
+        child_graph = _local_mutate_graph(parent.graph, rng)
+        mutation_type = "local"
+    else:
+        child_graph = _mutate_graph(parent.graph, grammar, rng)
+        mutation_type = "standard"
+
     return Individual(
         graph=child_graph,
         generation=generation,
         parent_fingerprint=parent.fingerprint,
+        metadata={"mutation_type": mutation_type},
     )
 
 
@@ -736,6 +787,72 @@ def _mutate_graph(
     return new_graph
 
 
+def _local_mutate_graph(
+    graph: ComputationGraph,
+    rng: random.Random,
+) -> ComputationGraph:
+    """Local mutation: swap one random op with a same-category alternative.
+
+    Preserves the winning topology (all edges/connections intact) while
+    exploring nearby alternatives in the op space. Validates context rules
+    to avoid producing graphs with known-fatal op sequences (e.g.
+    full-dim ops after split2, double-routing chains).
+    """
+    import copy
+    from ..synthesis.context_rules import validate_context_rules
+
+    new_graph = copy.deepcopy(graph)
+    non_input_ids = [nid for nid, node in new_graph.nodes.items() if not node.is_input]
+    if not non_input_ids:
+        return new_graph
+
+    # Shuffle node order so we try different targets if first fails
+    targets = list(non_input_ids)
+    rng.shuffle(targets)
+
+    for target_id in targets:
+        target_node = new_graph.nodes[target_id]
+
+        try:
+            current_op = get_primitive(target_node.op_name)
+        except KeyError:
+            continue
+
+        # Find same-category alternatives, shuffled
+        same_cat_ops = [
+            op
+            for op in list_primitives(current_op.category)
+            if op.name != target_node.op_name and op.n_inputs == current_op.n_inputs
+        ]
+        if not same_cat_ops:
+            continue
+        rng.shuffle(same_cat_ops)
+
+        # Try each candidate until one passes context validation
+        original_op = target_node.op_name
+        for candidate in same_cat_ops:
+            target_node.op_name = candidate.name
+            new_graph._cache.clear()
+
+            violation = validate_context_rules(new_graph)
+            if violation is None:
+                new_graph.metadata["lineage"] = {
+                    "type": "local_mutation",
+                    "parent": graph.fingerprint(),
+                    "swapped_node": target_id,
+                    "old_op": original_op,
+                    "new_op": candidate.name,
+                }
+                return new_graph
+
+        # All candidates for this node failed — restore and try next node
+        target_node.op_name = original_op
+        new_graph._cache.clear()
+
+    # No valid swap found — return unmodified copy
+    return new_graph
+
+
 def _crossover_graphs(
     g1: ComputationGraph,
     g2: ComputationGraph,
@@ -769,19 +886,16 @@ def _derive_mutation_grammar(
     across generations which causes Python recursion depth exceeded errors.
     """
     # Hard caps to prevent recursion depth overflow across generations
-    HARD_MAX_DEPTH = 12
-    HARD_MAX_OPS = 20
+    HARD_MAX_DEPTH = 18
+    HARD_MAX_OPS = 28
 
     parent_depth = max(1, graph.depth())
     parent_ops = max(1, graph.n_ops())
     parent_cat = _category_histogram(graph)
 
-    min_depth = max(2, min(base.min_depth, parent_depth))
     max_depth = min(
         HARD_MAX_DEPTH,
-        max(
-            min_depth + 1, min(max(base.max_depth, parent_depth + 2), parent_depth + 4)
-        ),
+        max(3, min(max(base.max_depth, parent_depth + 2), parent_depth + 4)),
     )
     max_ops = min(
         HARD_MAX_OPS,
@@ -809,10 +923,10 @@ def _derive_mutation_grammar(
             "block_sparse_linear",
             "semi_structured_2_4_linear",
             "ternary_projection",
-            "entropy_score",
+            "token_entropy",
             "moe_topk",
             "moe_2expert",
-            "token_merge",
+            "adjacent_token_merge",
         }
     )
     parent_has_efficiency = any(
@@ -824,7 +938,6 @@ def _derive_mutation_grammar(
 
     return GrammarConfig(
         model_dim=graph.model_dim,
-        min_depth=min_depth,
         max_depth=max_depth,
         max_width=base.max_width,
         max_ops=max_ops,
@@ -839,6 +952,7 @@ def _derive_mutation_grammar(
         template_weights=template_weights,
         motif_weights=motif_weights,
         structured_sparsity_bias=sparsity_bias,
+        routing_mandatory=base.routing_mandatory,
     )
 
 
@@ -852,8 +966,8 @@ def _derive_crossover_grammar(
 
     Caps max_depth and max_ops to hard limits to prevent unbounded growth.
     """
-    HARD_MAX_DEPTH = 12
-    HARD_MAX_OPS = 20
+    HARD_MAX_DEPTH = 18
+    HARD_MAX_OPS = 28
 
     d1, d2 = max(1, g1.depth()), max(1, g2.depth())
     o1, o2 = max(1, g1.n_ops()), max(1, g2.n_ops())
@@ -861,12 +975,9 @@ def _derive_crossover_grammar(
     target_depth = max(2, int(round((d1 + d2) / 2 + rng.choice([-1, 0, 1]))))
     target_ops = max(3, int(round((o1 + o2) / 2 + rng.choice([-2, -1, 0, 1, 2]))))
 
-    min_depth = max(2, min(base.min_depth, target_depth))
     max_depth = min(
         HARD_MAX_DEPTH,
-        max(
-            min_depth + 1, min(max(base.max_depth, target_depth + 2), target_depth + 4)
-        ),
+        max(3, min(max(base.max_depth, target_depth + 2), target_depth + 4)),
     )
     max_ops = min(
         HARD_MAX_OPS,
@@ -897,10 +1008,10 @@ def _derive_crossover_grammar(
             "block_sparse_linear",
             "semi_structured_2_4_linear",
             "ternary_projection",
-            "entropy_score",
+            "token_entropy",
             "moe_topk",
             "moe_2expert",
-            "token_merge",
+            "adjacent_token_merge",
         }
     )
     sparsity_bias = base.structured_sparsity_bias
@@ -913,7 +1024,6 @@ def _derive_crossover_grammar(
 
     return GrammarConfig(
         model_dim=g1.model_dim,
-        min_depth=min_depth,
         max_depth=max_depth,
         max_width=max(base.max_width, 2),
         max_ops=max_ops,
@@ -934,6 +1044,7 @@ def _derive_crossover_grammar(
         template_weights=template_weights,
         motif_weights=motif_weights,
         structured_sparsity_bias=sparsity_bias,
+        routing_mandatory=base.routing_mandatory,
     )
 
 

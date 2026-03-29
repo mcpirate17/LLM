@@ -271,25 +271,27 @@ def test_passthrough_lowering_component_is_supported():
     assert info["primitive_name"] is None
     assert "passthrough lowering" in info["reason"].lower()
     # Routing ops with real primitives: bridge emits actual op nodes (not passthrough)
-    merge_info = get_component_execution_capability("routing/token_merge")
+    merge_info = get_component_execution_capability("routing/adjacent_token_merge")
     assert merge_info["bridge_supported"] is True
-    assert merge_info["primitive_name"] == "token_merge"
-    cascade_info = get_component_execution_capability("routing/cascade")
+    assert merge_info["primitive_name"] == "adjacent_token_merge"
+    cascade_info = get_component_execution_capability("routing/learned_token_gate")
     assert cascade_info["bridge_supported"] is True
-    assert cascade_info["primitive_name"] == "cascade"
-    adaptive_info = get_component_execution_capability("routing/adaptive_recursion")
+    assert cascade_info["primitive_name"] == "learned_token_gate"
+    adaptive_info = get_component_execution_capability("routing/depth_weighted_proj")
     assert adaptive_info["bridge_supported"] is True
-    assert adaptive_info["primitive_name"] == "adaptive_recursion"
-    speculative_info = get_component_execution_capability("routing/speculative")
+    assert adaptive_info["primitive_name"] == "depth_weighted_proj"
+    speculative_info = get_component_execution_capability("routing/cheap_verify_blend")
     assert speculative_info["bridge_supported"] is True
-    assert speculative_info["primitive_name"] == "speculative"
-    # difficulty_scorer has no primitive — remains passthrough
-    difficulty_info = get_component_execution_capability("routing/difficulty_scorer")
+    assert speculative_info["primitive_name"] == "cheap_verify_blend"
+    # token_difficulty_proj has no primitive — remains passthrough
+    difficulty_info = get_component_execution_capability(
+        "routing/token_difficulty_proj"
+    )
     assert difficulty_info["bridge_supported"] is True
     assert difficulty_info["primitive_name"] is None
-    router_info = get_component_execution_capability("routing/adaptive_lane_mixer")
+    router_info = get_component_execution_capability("routing/difficulty_blend_3way")
     assert router_info["bridge_supported"] is True
-    assert router_info["primitive_name"] == "adaptive_lane_mixer"
+    assert router_info["primitive_name"] == "difficulty_blend_3way"
     dispatch_info = get_component_execution_capability(
         "structural/conditional_dispatch"
     )
@@ -450,8 +452,12 @@ def test_workflow_with_routing_passthrough_components():
     wf = {
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "routing/token_merge", "params": {}},
-            {"id": "n2", "component_type": "routing/cascade", "params": {}},
+            {
+                "id": "n1",
+                "component_type": "routing/adjacent_token_merge",
+                "params": {},
+            },
+            {"id": "n2", "component_type": "routing/learned_token_gate", "params": {}},
             {"id": "n3", "component_type": "relu", "params": {}},
             {"id": "n4", "component_type": "graph_output", "params": {}},
         ],
@@ -463,7 +469,7 @@ def test_workflow_with_routing_passthrough_components():
         ],
     }
     graph = workflow_to_graph(wf, model_dim=256)
-    # token_merge + cascade are real primitives, plus relu = 3 ops
+    # adjacent_token_merge + learned_token_gate are real primitives, plus relu = 3 ops
     assert graph.n_ops() == 3
 
 
@@ -471,8 +477,8 @@ def test_workflow_with_adaptive_and_speculative_passthrough():
     wf = {
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "routing/adaptive_recursion", "params": {}},
-            {"id": "n2", "component_type": "routing/speculative", "params": {}},
+            {"id": "n1", "component_type": "routing/depth_weighted_proj", "params": {}},
+            {"id": "n2", "component_type": "routing/cheap_verify_blend", "params": {}},
             {"id": "n3", "component_type": "gelu", "params": {}},
             {"id": "n4", "component_type": "graph_output", "params": {}},
         ],
@@ -484,7 +490,7 @@ def test_workflow_with_adaptive_and_speculative_passthrough():
         ],
     }
     graph = workflow_to_graph(wf, model_dim=256)
-    # adaptive_recursion + speculative are real primitives, plus gelu = 3 ops
+    # depth_weighted_proj + cheap_verify_blend are real primitives, plus gelu = 3 ops
     assert graph.n_ops() == 3
 
 
@@ -492,10 +498,14 @@ def test_workflow_with_difficulty_lane_dispatch_passthrough():
     wf = {
         "nodes": [
             {"id": "n0", "component_type": "graph_input", "params": {}},
-            {"id": "n1", "component_type": "routing/difficulty_scorer", "params": {}},
+            {
+                "id": "n1",
+                "component_type": "routing/token_difficulty_proj",
+                "params": {},
+            },
             {
                 "id": "n2",
-                "component_type": "routing/adaptive_lane_mixer",
+                "component_type": "routing/difficulty_blend_3way",
                 "params": {"num_lanes": 2},
             },
             {
@@ -515,9 +525,9 @@ def test_workflow_with_difficulty_lane_dispatch_passthrough():
         ],
     }
     graph = workflow_to_graph(wf, model_dim=256)
-    # adaptive_lane_mixer is a real op,
-    # difficulty_scorer and conditional_dispatch are passthroughs,
-    # so we get: adaptive_lane_mixer + gelu = 2 ops
+    # difficulty_blend_3way is a real op,
+    # token_difficulty_proj and conditional_dispatch are passthroughs,
+    # so we get: difficulty_blend_3way + gelu = 2 ops
     assert graph.n_ops() == 2
 
 

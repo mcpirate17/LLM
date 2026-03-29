@@ -2,7 +2,7 @@
 
 import math
 
-import torch
+from aria_designer.components._weight_cache import cached_randn
 
 
 class ComponentHandler:
@@ -20,24 +20,28 @@ class ComponentHandler:
         p = int(math.isqrt(D))
         q = D // p
         if p * q != D:
-            # Fallback: find closest factorization
             for p in range(int(math.isqrt(D)), 0, -1):
                 if D % p == 0:
                     q = D // p
                     break
 
-        A = _lazy_factor(p, p, x.device, x.dtype, seed=42)
-        B_mat = _lazy_factor(q, q, x.device, x.dtype, seed=137)
+        A = cached_randn(
+            p,
+            p,
+            seed=42,
+            device=x.device,
+            dtype=x.dtype,
+            scale=p**-0.5,
+        )
+        B_mat = cached_randn(
+            q,
+            q,
+            seed=137,
+            device=x.device,
+            dtype=x.dtype,
+            scale=q**-0.5,
+        )
 
-        # y = (x.view(B,S,p,q) @ B.T).permute(0,1,3,2) @ A.T then reshape
         out = x.view(B, S, p, q) @ B_mat.T  # (B, S, p, q)
         out = out.permute(0, 1, 3, 2) @ A.T  # (B, S, q, p)
         return {"y": out.reshape(B, S, D)}
-
-
-def _lazy_factor(rows, cols, device, dtype, seed=0):
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(seed)
-    w = torch.randn(rows, cols, generator=gen, dtype=dtype).to(device)
-    w *= cols**-0.5
-    return w

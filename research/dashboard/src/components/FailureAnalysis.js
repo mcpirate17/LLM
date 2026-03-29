@@ -52,7 +52,9 @@ function FailureAnalysis({ experimentId }) {
 
   const funnel = data.funnel || {};
   const errors = data.errors || {};
+  const rootCauses = data.root_causes || {};
   const deaths = data.stage_deaths || {};
+  const exemplars = data.exemplars || [];
 
   return (
     <div className="card">
@@ -114,6 +116,52 @@ function FailureAnalysis({ experimentId }) {
               <span style={{ color: 'var(--accent-red)', fontWeight: 600, fontFamily: 'monospace' }}>
                 {count}x
               </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {Object.keys(rootCauses).length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+            Root Causes
+          </div>
+          {Object.entries(rootCauses).slice(0, 5).map(([cause, count], i) => (
+            <div key={i} style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '4px 0',
+              borderBottom: '1px solid var(--border)',
+              fontSize: 12,
+            }}>
+              <span style={{ color: 'var(--text-secondary)' }}>{cause}</span>
+              <span style={{ color: 'var(--accent-orange)', fontWeight: 600, fontFamily: 'monospace' }}>
+                {count}x
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {exemplars.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+            Example Failures
+          </div>
+          {exemplars.slice(0, 3).map((item) => (
+            <div key={item.result_id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-primary)', fontFamily: 'monospace', marginBottom: 4 }}>
+                {(item.result_id || 'unknown').slice(0, 12)} · {item.stage || 'unknown'} · {item.root_cause_code || item.error_type || 'unknown'}
+              </div>
+              {item.failure_op && (
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                  failing op: {item.failure_op}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'pre-wrap' }}>
+                {item.traceback_excerpt || item.error_message || 'No diagnostic excerpt recorded.'}
+              </div>
             </div>
           ))}
         </div>

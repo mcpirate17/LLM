@@ -229,16 +229,20 @@ def cluster_architecture_families(
     if len(programs) < min_cluster_size:
         return []
 
-    # Build Jaccard distance matrix
+    # Build Jaccard distance matrix (vectorized via binary op matrix)
     n = len(programs)
-    dist_matrix = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        for j in range(i + 1, n):
-            intersection = len(programs[i]["ops"] & programs[j]["ops"])
-            union = len(programs[i]["ops"] | programs[j]["ops"])
-            dist = 1.0 - (intersection / union if union > 0 else 0.0)
-            dist_matrix[i, j] = dist
-            dist_matrix[j, i] = dist
+    op_list = sorted(all_ops)
+    op_index = {op: idx for idx, op in enumerate(op_list)}
+    binary = np.zeros((n, len(op_list)), dtype=np.float32)
+    for i, prog in enumerate(programs):
+        for op in prog["ops"]:
+            binary[i, op_index[op]] = 1.0
+    row_sums = binary.sum(axis=1)  # (n,)
+    intersection = binary @ binary.T  # (n, n)
+    union = row_sums[:, None] + row_sums[None, :] - intersection
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dist_matrix = np.where(union > 0, 1.0 - intersection / union, 0.0)
+    np.fill_diagonal(dist_matrix, 0.0)
 
     # Agglomerative clustering
     try:
@@ -278,8 +282,10 @@ def cluster_architecture_families(
                 representative_ops=rep_ops[:10],
                 n_members=len(members),
                 s1_rate=1.0,  # all members are S1 by query
-                avg_novelty=float(np.mean([m["novelty"] for m in members])),
-                avg_loss_ratio=float(np.mean([m["loss_ratio"] for m in members])),
+                avg_novelty=float(np.nanmean([m["novelty"] or 0 for m in members])),
+                avg_loss_ratio=float(
+                    np.nanmean([m["loss_ratio"] or 0 for m in members])
+                ),
                 example_fingerprints=[m["fingerprint"][:16] for m in members[:3]],
             )
         )
@@ -686,6 +692,100 @@ def analyze_efficiency_profiles(
 
     profiles.sort(key=lambda p: p.loss_per_megaparam, reverse=True)
     return profiles[:10]
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint family regression detection (P2.2)
+# ---------------------------------------------------------------------------
+
+
+def detect_family_regression(
+    nb, window: int = 50, min_family_size: int = 10
+) -> List[Dict]:
+    """Detect architecture families whose composite_score is regressing.
+
+    Groups recent experiments by graph_fingerprint prefix (first 8 chars)
+    as a lightweight family proxy.  For each family with >= min_family_size
+    entries, computes a moving average of composite_score over the last
+    `window` experiments.  Flags families whose current MA is < 80% of
+    their historical peak MA.
+
+    Returns list of {"family": str, "peak_ma": float, "current_ma": float,
+                      "decline_pct": float}.
+    """
+    try:
+        rows = nb.conn.execute(
+            """
+            SELECT pr.graph_fingerprint, l.composite_score, pr.timestamp
+            FROM program_results pr
+            JOIN leaderboard l ON l.result_id = pr.result_id
+            WHERE l.composite_score IS NOT NULL
+              AND pr.graph_fingerprint IS NOT NULL
+            ORDER BY pr.timestamp ASC
+            """
+        ).fetchall()
+    except Exception as e:
+        logger.warning("Family regression query failed: %s", e)
+        return []
+
+    if not rows:
+        return []
+
+    # Group by fingerprint prefix (8 chars) as family proxy
+    families: Dict[str, List[float]] = defaultdict(list)
+    for row in rows:
+        fp = str(row[0] or "").strip()
+        if len(fp) < 8:
+            continue
+        family_key = fp[:8]
+        score = row[1]
+        if score is not None:
+            families[family_key].append(float(score))
+
+    regressions = []
+    for family_key, scores in families.items():
+        if len(scores) < min_family_size:
+            continue
+
+        # Compute moving average
+        arr = np.array(scores)
+        if len(arr) < window:
+            ma = np.cumsum(arr) / np.arange(1, len(arr) + 1)
+        else:
+            # Simple trailing MA
+            kernel = np.ones(window) / window
+            ma = np.convolve(arr, kernel, mode="valid")
+
+        if len(ma) == 0:
+            continue
+
+        peak_ma = float(np.max(ma))
+        current_ma = float(ma[-1])
+
+        if peak_ma <= 0:
+            continue
+
+        decline_pct = 1.0 - (current_ma / peak_ma)
+        if decline_pct > 0.20:  # > 20% decline from peak
+            regressions.append(
+                {
+                    "family": family_key,
+                    "peak_ma": round(peak_ma, 2),
+                    "current_ma": round(current_ma, 2),
+                    "decline_pct": round(decline_pct, 4),
+                    "n_entries": len(scores),
+                }
+            )
+
+    regressions.sort(key=lambda r: r["decline_pct"], reverse=True)
+
+    if regressions:
+        logger.info(
+            "Family regression: %d families declining >20%% from peak",
+            len(regressions),
+        )
+
+    return regressions
 
 
 # ---------------------------------------------------------------------------

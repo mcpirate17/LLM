@@ -1,0 +1,42 @@
+id: token_difficulty_proj
+version: 1.0.0
+name: Difficulty Scorer
+category: routing
+tags:
+- routing
+- adaptive_compute
+- parameterized
+status: approved
+description: 2-layer MLP scoring per-token difficulty (D→D//8→1, sigmoid output)
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D//8+D//8+D//8+1
+  preserves_gradient: true
+  numerically_risky: false
+help_md: |
+  ### Technical
+  2-layer MLP that scores per-token difficulty for adaptive routing.
+
+  Architecture: Linear(D→D//8) → ReLU → Linear(D//8→1) → Sigmoid.
+  Returns input tensor unchanged (passthrough); scores are stashed for downstream routing ops.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: y:tensor[B, S, D].
+
+  ### Plain Language
+  Assigns each token a difficulty score between 0 and 1, used by downstream
+  routing components to decide which processing lane handles each token.

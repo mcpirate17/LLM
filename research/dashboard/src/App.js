@@ -235,6 +235,7 @@ function AppContent({ onRunningChange }) {
     error,
     lastUpdated: dashboardUpdatedAt,
     refreshSharedData,
+    refreshAnalyticsData,
     fetchTabData,
   } = useAriaData() || {};
 
@@ -255,6 +256,14 @@ function AppContent({ onRunningChange }) {
 
   // Local state for experiments pagination (optional, but keeping for now)
   const [paginatedExperiments, setPaginatedExperiments] = useState([]);
+
+  useEffect(() => {
+    const heavyTabs = new Set(['command', 'trends', 'discoveries', 'references']);
+    if (!heavyTabs.has(activeTab) || typeof refreshAnalyticsData !== 'function') {
+      return;
+    }
+    refreshAnalyticsData();
+  }, [activeTab, refreshAnalyticsData]);
 
   // Drill-down state
   const [selectedExperiment, setSelectedExperiment] = useState(null);
@@ -1400,7 +1409,7 @@ function AppContent({ onRunningChange }) {
       </nav>
 
       <main className="app-main">
-        {initialLoading && !error && (
+        {initialLoading && !error && activeTab !== 'reports' && (
           <div className="ux-state ux-state-loading" style={{ justifyContent: 'center', marginBottom: 14 }}>
             <span className="ux-spinner" />
             <div className="ux-stack">

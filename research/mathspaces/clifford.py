@@ -342,7 +342,7 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
         n = D_padded * D_padded
         if W.numel() >= n:
             Wq = W[:n].reshape(D_padded, D_padded)
-            q = F.linear(x_padded, Wq)
+            q = F.linear(x_padded, Wq.to(x_padded.dtype))
             k = x_padded
         else:
             q = k = x_padded

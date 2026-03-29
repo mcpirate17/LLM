@@ -1,0 +1,35 @@
+id: depth_token_mask
+version: 1.0.0
+name: Mixture-of-Depths Top-K
+category: routing
+tags:
+- dynamic_routing
+- token_routing
+- sparse_compute
+status: approved
+description: Mixture-of-Depths top-k token routing with learned scorer
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D
+  preserves_gradient: true
+  numerically_risky: false

@@ -48,6 +48,8 @@ class NoveltySearchConfig:
     adaptation_step: float = 0.05
     max_fresh_injection_rate: float = 0.35
     max_novelty_weight: float = 0.92
+    exploit_prob: float = 0.2
+    local_mutation_prob: float = 0.3
     debug: bool = False
 
 
@@ -63,11 +65,12 @@ class BehaviorArchive:
     """
 
     _INITIAL_CAPACITY = 256
-    _FEATURE_DIM = 10  # length of _behavior_vector output
+    _FEATURE_DIM = 16  # length of _behavior_vector output
 
     def __init__(self, max_size: int = 200):
         self.max_size = max_size
         self.entries: List[Tuple[str, BehavioralFingerprint]] = []
+        self._individuals: List[Optional[Individual]] = []
         # Pre-allocated feature matrix with exponential growth
         self._feature_buf: np.ndarray = np.empty(
             (self._INITIAL_CAPACITY, self._FEATURE_DIM), dtype=np.float32
@@ -106,7 +109,12 @@ class BehaviorArchive:
         """Replace a single row in the feature buffer."""
         self._feature_buf[idx] = _behavior_vector(behavior)
 
-    def add(self, graph_hash: str, behavior: BehavioralFingerprint):
+    def add(
+        self,
+        graph_hash: str,
+        behavior: BehavioralFingerprint,
+        individual: Optional[Individual] = None,
+    ):
         """Add a behavior to the archive using reservoir sampling.
 
         Skips fingerprints with no behavioral data (all probes deferred).
@@ -116,11 +124,13 @@ class BehaviorArchive:
         self._total_seen += 1
         if len(self.entries) < self.max_size:
             self.entries.append((graph_hash, behavior))
+            self._individuals.append(individual)
             self._append_to_cache(behavior)
         else:
             j = self._rng.randint(0, self._total_seen - 1)
             if j < self.max_size:
                 self.entries[j] = (graph_hash, behavior)
+                self._individuals[j] = individual
                 self._replace_in_cache(j, behavior)
 
     def novelty_of(self, behavior: BehavioralFingerprint, k: int = 15) -> float:
@@ -155,8 +165,110 @@ class BehaviorArchive:
 
         return float(np.mean(k_nearest))
 
+    def update_individuals(self, population: List[Individual]) -> None:
+        """Associate archive entries with individuals by graph hash match."""
+        by_hash = {ind.fingerprint: ind for ind in population}
+        for i, (graph_hash, _) in enumerate(self.entries):
+            if graph_hash in by_hash:
+                self._individuals[i] = by_hash[graph_hash]
+
     def size(self) -> int:
         return len(self.entries)
+
+    def nearest_to(
+        self, behavior: BehavioralFingerprint, k: int = 5
+    ) -> List[Tuple[float, Individual]]:
+        """Return the k nearest archive members by RMS distance in feature space.
+
+        Returns list of (distance, Individual) tuples sorted ascending by distance.
+        Only includes entries that have an associated Individual.
+        """
+        fm = self._feature_matrix
+        if fm is None:
+            return []
+
+        vec = _behavior_vector(behavior)
+        if vec is None:
+            return []
+        target = np.array(vec, dtype=np.float32)
+
+        diff = fm - target
+        distances = np.sqrt(np.mean(np.square(diff), axis=1))
+
+        # Sort by distance ascending
+        order = np.argsort(distances)
+        results: List[Tuple[float, Individual]] = []
+        for idx in order:
+            if len(results) >= k:
+                break
+            ind = self._individuals[idx]
+            if ind is not None:
+                results.append((float(distances[idx]), ind))
+        return results
+
+    def top_by_fitness(self, k: int = 5) -> List[Individual]:
+        """Return the k highest-fitness individuals in the archive."""
+        with_fitness = [ind for ind in self._individuals if ind is not None]
+        with_fitness.sort(key=lambda x: x.fitness, reverse=True)
+        return with_fitness[:k]
+
+    def suggest_exploit_target(self, k: int = 3) -> List[Individual]:
+        """Return k high-fitness archive members in under-explored neighborhoods.
+
+        Identifies promising but under-explored regions: high fitness individuals
+        whose neighborhood (radius = median archive distance) has the fewest
+        other archive members nearby.
+        """
+        fm = self._feature_matrix
+        if fm is None or self._size < 2:
+            return self.top_by_fitness(k)
+
+        # Compute pairwise distances to find median archive distance
+        # Use random sample of pairs for efficiency when archive is large
+        n = self._size
+        if n <= 50:
+            # Small enough to compute all pairs
+            diffs = fm[:n, np.newaxis, :] - fm[np.newaxis, :n, :]
+            all_dists = np.sqrt(np.mean(np.square(diffs), axis=2))
+            # Exclude self-distances (diagonal)
+            mask = ~np.eye(n, dtype=bool)
+            median_dist = float(np.median(all_dists[mask]))
+        else:
+            # Sample 500 random pairs
+            rng = np.random.RandomState(42)
+            idx_a = rng.randint(0, n, size=500)
+            idx_b = rng.randint(0, n, size=500)
+            valid = idx_a != idx_b
+            idx_a, idx_b = idx_a[valid], idx_b[valid]
+            pair_dists = np.sqrt(np.mean(np.square(fm[idx_a] - fm[idx_b]), axis=1))
+            median_dist = float(np.median(pair_dists))
+
+        if median_dist <= 0:
+            return self.top_by_fitness(k)
+
+        # For each individual, count neighbors within median_dist radius
+        neighbor_counts: List[int] = []
+        for i in range(n):
+            diff = fm[:n] - fm[i]
+            dists = np.sqrt(np.mean(np.square(diff), axis=1))
+            neighbor_counts.append(int(np.sum(dists < median_dist)) - 1)  # exclude self
+
+        # Score: high fitness, low neighbor count (under-explored)
+        candidates: List[Tuple[float, int]] = []
+        for i in range(n):
+            ind = self._individuals[i]
+            if ind is None:
+                continue
+            # Rank by fitness descending, neighbor_count ascending
+            # Use negative neighbor count so higher score = better
+            score = ind.fitness - 0.1 * neighbor_counts[i]
+            candidates.append((score, i))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        results: List[Individual] = []
+        for _, idx in candidates[:k]:
+            results.append(self._individuals[idx])
+        return results
 
 
 def _behavior_distance(a: BehavioralFingerprint, b: BehavioralFingerprint) -> float:
@@ -187,11 +299,32 @@ def _behavior_vector(fp: BehavioralFingerprint) -> List[float] | None:
         fp.cka_vs_transformer,
         fp.cka_vs_ssm,
         fp.cka_vs_conv,
+        # Expanded: spectral, routing, hierarchy features (audit P2.2)
+        fp.jacobian_spectral_norm,
+        fp.jacobian_effective_rank,
+        fp.routing_selectivity,
+        fp.routing_compute_ratio,
+        fp.hierarchy_fitness,
+        fp.gromov_delta,
     ]
     # If all features are None, the fingerprint has no behavioral signal
     if all(v is None for v in raw_features):
         return None
-    return [_sanitize_unit_feature(v) for v in raw_features]
+    # First 10 features are unit-scaled [0,1]; last 6 need per-feature scaling
+    sanitized = [_sanitize_unit_feature(v) for v in raw_features[:10]]
+    # jacobian_spectral_norm: typical range 0-50, midpoint ~5
+    sanitized.append(_sanitize_scaled_feature(raw_features[10], scale=5.0))
+    # jacobian_effective_rank: typical range 1-128, midpoint ~16
+    sanitized.append(_sanitize_scaled_feature(raw_features[11], scale=16.0))
+    # routing_selectivity: already 0-1
+    sanitized.append(_sanitize_unit_feature(raw_features[12]))
+    # routing_compute_ratio: typical range 0-10, midpoint ~2
+    sanitized.append(_sanitize_scaled_feature(raw_features[13], scale=2.0))
+    # hierarchy_fitness: already 0-1
+    sanitized.append(_sanitize_unit_feature(raw_features[14]))
+    # gromov_delta: typical range 0-1+, midpoint ~0.3
+    sanitized.append(_sanitize_scaled_feature(raw_features[15], scale=0.3))
+    return sanitized
 
 
 def _sanitize_unit_feature(value: float | None) -> float:
@@ -211,6 +344,23 @@ def _sanitize_unit_feature(value: float | None) -> float:
     if not math.isfinite(v):
         return 0.0
     return min(1.0, max(0.0, v))
+
+
+def _sanitize_scaled_feature(value: float | None, scale: float) -> float:
+    """Map a non-negative unbounded feature to [0, 1] via v/(v+scale).
+
+    Uses a soft saturation that preserves ordering and avoids hard clipping.
+    Scale controls the midpoint: _sanitize_scaled_feature(scale, scale) = 0.5.
+    """
+    if value is None:
+        return 0.0
+    try:
+        v = float(value)
+    except Exception:
+        return 0.0
+    if not math.isfinite(v) or v < 0:
+        return 0.0
+    return v / (v + scale)
 
 
 @dataclass
@@ -340,6 +490,7 @@ def novelty_search(
     def gen_callback(gen: int, population: List[Individual]):
         result.generations_run = gen + 1
         result.total_evaluated += len(population)
+        archive.update_individuals(population)
         _update_adaptive_novelty_policy(
             generation=gen + 1,
             archive=archive,
@@ -360,6 +511,8 @@ def novelty_search(
         novelty_weight=config.novelty_weight,
         fresh_injection_rate=config.fresh_injection_rate,
         grammar_config=config.grammar_config,
+        exploit_prob=config.exploit_prob,
+        local_mutation_prob=config.local_mutation_prob,
     )
 
     final_population = evolutionary_search(
@@ -369,6 +522,7 @@ def novelty_search(
         seed=seed,
         callback=gen_callback,
         stop_check=stop_check,
+        archive=archive,
     )
 
     result.best_individuals = final_population[:10]

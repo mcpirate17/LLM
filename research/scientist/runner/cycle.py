@@ -211,36 +211,58 @@ class _CycleMixin:
         before_progress = self.progress.to_dict()
         cycle_error: Optional[str] = None
 
-        # Per-experiment watchdog: abort if a single cycle exceeds this limit.
-        # Modes like novelty/evolution can hang in generation loops; this is the
-        # last-resort safety net.  The watchdog sets _stop_event, which the inner
-        # loops check, causing a graceful exit rather than a hard kill.
-        max_cycle_seconds = (
-            int(getattr(config, "max_cycle_seconds", 0) or 0) or 1800
-        )  # default 30 min
+        # Per-experiment liveness watchdog: abort only if a cycle is stuck —
+        # no events emitted, no progress updates for `stall_timeout` seconds.
+        # A long-running but healthy cycle (training big models, running evals)
+        # will keep resetting the liveness clock via _emit_event/_update_progress.
+        stall_timeout = (
+            int(getattr(config, "max_cycle_stall_seconds", 0) or 0) or 600
+        )  # default 10 min of zero activity
         _watchdog_fired = False
+        _last_activity = [time.time()]  # mutable container for closure
+
+        _orig_emit = self._emit_event
+        _orig_progress = self._update_progress
+
+        def _tracked_emit(event_type, data):
+            _last_activity[0] = time.time()
+            return _orig_emit(event_type, data)
+
+        def _tracked_progress(**kwargs):
+            _last_activity[0] = time.time()
+            return _orig_progress(**kwargs)
+
+        self._emit_event = _tracked_emit
+        self._update_progress = _tracked_progress
 
         def _cycle_watchdog():
             nonlocal _watchdog_fired
-            _watchdog_fired = True
-            logger.error(
-                "WATCHDOG: Cycle %d (%s) exceeded %ds — setting stop event",
-                n_experiments,
-                selected_mode,
-                max_cycle_seconds,
-            )
-            self._emit_event(
-                "cycle_watchdog",
-                {
-                    "experiment_number": n_experiments,
-                    "mode": selected_mode,
-                    "timeout_seconds": max_cycle_seconds,
-                },
-            )
-            self._stop_event.set()
+            while not self._stop_event.is_set():
+                time.sleep(30)  # check every 30s
+                if self._stop_event.is_set():
+                    return
+                idle = time.time() - _last_activity[0]
+                if idle >= stall_timeout:
+                    _watchdog_fired = True
+                    logger.error(
+                        "WATCHDOG: Cycle %d (%s) stalled — no activity for %ds, setting stop event",
+                        n_experiments,
+                        selected_mode,
+                        int(idle),
+                    )
+                    self._emit_event(
+                        "cycle_watchdog",
+                        {
+                            "experiment_number": n_experiments,
+                            "mode": selected_mode,
+                            "idle_seconds": int(idle),
+                            "stall_timeout": stall_timeout,
+                        },
+                    )
+                    self._stop_event.set()
+                    return
 
-        watchdog = threading.Timer(max_cycle_seconds, _cycle_watchdog)
-        watchdog.daemon = True
+        watchdog = threading.Thread(target=_cycle_watchdog, daemon=True)
         watchdog.start()
 
         try:
@@ -252,11 +274,11 @@ class _CycleMixin:
                 note=f"Running {selected_mode} cycle {n_experiments}.",
             )
             logger.info(
-                "Cycle %d: starting %s run [%s] (watchdog=%ds)",
+                "Cycle %d: starting %s run [%s] (stall_watchdog=%ds)",
                 n_experiments,
                 selected_mode,
                 limit_str,
-                max_cycle_seconds,
+                stall_timeout,
             )
             if selected_mode in ("investigation", "validation"):
                 self._run_continuous_phase(
@@ -285,7 +307,15 @@ class _CycleMixin:
                 )
         except Exception as e:
             cycle_error = str(e)
-            logger.warning("Cycle %d FAILED (%s): %s", n_experiments, selected_mode, e)
+            import traceback as _tb
+
+            logger.warning(
+                "Cycle %d FAILED (%s): %s\n%s",
+                n_experiments,
+                selected_mode,
+                e,
+                _tb.format_exc(),
+            )
             failed_exp_id = self._fail_active_cycle_experiment(
                 nb,
                 cycle_error,
@@ -301,14 +331,18 @@ class _CycleMixin:
                 },
             )
         finally:
-            watchdog.cancel()
+            # Restore original methods and signal watchdog thread to exit
+            self._emit_event = _orig_emit
+            self._update_progress = _orig_progress
             # If watchdog fired, clear stop event so continuous mode can proceed
             # to the next cycle (the current cycle is already aborted).
             if _watchdog_fired:
                 self._stop_event.clear()
-                cycle_error = cycle_error or f"Watchdog timeout ({max_cycle_seconds}s)"
+                cycle_error = (
+                    cycle_error or f"Watchdog stall timeout ({stall_timeout}s idle)"
+                )
                 logger.warning(
-                    "Cycle %d: watchdog fired, stop event cleared for next cycle",
+                    "Cycle %d: watchdog fired (stall), stop event cleared for next cycle",
                     n_experiments,
                 )
             if not self._stop_event.is_set():
@@ -867,7 +901,7 @@ class _CycleMixin:
         three_way_split_prob, residual_prob) are treated as floors — Aria and
         mode selectors can raise them but never lower them.
         """
-        effective = RunConfig.from_dict(base_config.to_dict())
+        effective = base_config.copy()
         applied: Dict[str, Any] = {}
         ignored: Dict[str, Any] = {}
 
@@ -876,7 +910,6 @@ class _CycleMixin:
             {
                 "max_depth",
                 "max_ops",
-                "min_depth",
                 "grammar_split_prob",
                 "three_way_split_prob",
                 "residual_prob",

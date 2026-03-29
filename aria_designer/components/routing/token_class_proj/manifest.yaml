@@ -1,0 +1,49 @@
+id: token_class_proj
+version: 1.0.0
+name: Token Type Classifier
+category: routing
+tags:
+- parameterized
+- learnable
+- router
+status: approved
+description: Learned classifier to produce routing scores from token embeddings.
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: scores
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - n_classes
+params:
+  n_classes:
+    type: integer
+    default: 2
+    constraints:
+      min: 1
+      max: 128
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D * n_classes
+  preserves_gradient: true
+  numerically_risky: false
+help_md: '### Technical
+  A simple linear classifier that maps hidden embeddings to a set of discrete routing categories.
+
+  Inputs: x:tensor[B, S, D].
+  Outputs: scores:tensor[B, S, n_classes].
+  ### Plain Language
+  A categorization tool that identifies what "type" of data a token represents to guide future routing.
+  '

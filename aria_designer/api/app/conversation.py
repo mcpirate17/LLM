@@ -208,7 +208,7 @@ _ARCH_PATTERNS: List[Dict[str, Any]] = [
             "existing hard lane → gather back to output"
         ),
         "nodes": [
-            ("difficulty_scorer", "routing/difficulty_scorer", {}),
+            ("token_difficulty_proj", "routing/token_difficulty_proj", {}),
             ("lane_router", "routing/lane_router", {"num_lanes": 2}),
             (
                 "easy_dispatch",
@@ -501,7 +501,7 @@ def _build_difficulty_routed_patch(
     gather_id = f"aria_gather_{uuid4().hex[:4]}"
 
     _append_add_node(
-        ops, difficulty_id, "routing/difficulty_scorer", {}, base_x, base_y
+        ops, difficulty_id, "routing/token_difficulty_proj", {}, base_x, base_y
     )
     _append_add_node(
         ops, router_id, "routing/lane_router", {"num_lanes": 2}, base_x + 180, base_y

@@ -16,19 +16,10 @@ import '@xyflow/react/dist/style.css'
 import DesignerNode from './components/DesignerNode'
 import GhostNode from './components/GhostNode'
 import Palette from './components/Palette'
-import Inspector from './components/Inspector'
-import PatchPanel from './components/PatchPanel'
-import AskAriaModal from './components/AskAriaModal'
-import AriaChatPanel from './components/AriaChatPanel'
-import ZoomControls from './components/ZoomControls'
-import EmptyState from './components/EmptyState'
-import KeyboardShortcuts from './components/KeyboardShortcuts'
-import HelpPanel from './components/HelpPanel'
-import NexusCommandPalette from './components/NexusCommandPalette'
-import ImportDialog from './components/ImportDialog'
-import RunResultsPanel from './components/RunResultsPanel'
-import ErrorBoundary from './components/ErrorBoundary'
 import TopBar from './components/TopBar'
+import CanvasArea from './components/CanvasArea'
+import RightPanel from './components/RightPanel'
+import ModalLayer from './components/ModalLayer'
 import { isValidConnection as validateConnection } from './utils/validation'
 import { buildWorkflowJson } from './utils/workflow'
 import { findClosestEdge } from './utils/geometry'
@@ -733,54 +724,24 @@ function DesignerApp() {
           />
         )}
 
-        <div className="canvas" ref={reactFlowWrapper}
-          onDragEnter={() => setIsDragging(true)}
-          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false) }}
-        >
-          <ReactFlow
-            nodes={nodes} edges={edges} nodeTypes={nodeTypes}
-            defaultEdgeOptions={defaultEdgeOptions}
-            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-            onConnect={onConnect} onNodeDrag={onNodeDrag} onNodeDragStop={onNodeDragStop}
-            isValidConnection={isValidConnection}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-            onPaneClick={() => setSelectedNodeId(null)}
-            onDragOver={onDragOver} onDrop={onDrop}
-            fitView snapToGrid={snapToGridEnabled} snapGrid={[15, 15]}
-          >
-            <MiniMap pannable zoomable
-              style={{ background: 'rgba(10, 22, 40, 0.92)', border: '1px solid rgba(90, 138, 181, 0.45)', borderRadius: '8px' }}
-              maskColor="rgba(7, 16, 28, 0.55)" nodeColor="#5a8ab5"
-            />
-            <Background gap={15} color="rgba(255,255,255,0.12)" />
-          </ReactFlow>
-          {(() => {
-            const viewport = getViewport()
-            const zoom = Number(viewport?.zoom) || 1
-            const tx = Number(viewport?.x) || 0
-            const ty = Number(viewport?.y) || 0
-            return (
-              <>
-                {dragGuides.x != null && <div className="alignment-guide alignment-guide-vertical" style={{ left: `${dragGuides.x * zoom + tx}px` }} />}
-                {dragGuides.y != null && <div className="alignment-guide alignment-guide-horizontal" style={{ top: `${dragGuides.y * zoom + ty}px` }} />}
-              </>
-            )
-          })()}
-          {canvasIssue && <div className={`canvas-issue-banner canvas-issue-${canvasIssue.tone}`}>{canvasIssue.message}</div>}
-          {hasSelection && !isDragging && (
-            <div className="canvas-selection-hud" aria-live="polite">
-              <span className="canvas-selection-count">{selectedNodesCount} node(s), {selectedEdgesCount} edge(s) selected</span>
-              <div className="canvas-selection-actions">
-                <button type="button" onClick={handleAlignHorizontal} disabled={selectedNodesCount < 2}>Align H</button>
-                <button type="button" onClick={handleAlignVertical} disabled={selectedNodesCount < 2}>Align V</button>
-                <button type="button" onClick={handleTidySelection} disabled={selectedNodesCount < 1}>Tidy</button>
-                <button type="button" className="danger" onClick={handleDeleteSelection}>Delete</button>
-              </div>
-            </div>
-          )}
-          {isCanvasEmpty && !isDragging && <EmptyState onLoadTemplate={handleLoadExample} />}
-          <ZoomControls nodes={nodes} edges={edges} setNodes={setNodes} />
-        </div>
+        <CanvasArea
+          nodes={nodes} edges={edges} nodeTypes={nodeTypes} defaultEdgeOptions={defaultEdgeOptions}
+          onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
+          onNodeDrag={onNodeDrag} onNodeDragStop={onNodeDragStop}
+          isValidConnection={isValidConnection}
+          onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+          onPaneClick={() => setSelectedNodeId(null)}
+          onDragOver={onDragOver} onDrop={onDrop}
+          snapToGridEnabled={snapToGridEnabled}
+          isDragging={isDragging} setIsDragging={setIsDragging}
+          dragGuides={dragGuides} getViewport={getViewport}
+          canvasIssue={canvasIssue}
+          hasSelection={hasSelection} selectedNodesCount={selectedNodesCount} selectedEdgesCount={selectedEdgesCount}
+          handleAlignHorizontal={handleAlignHorizontal} handleAlignVertical={handleAlignVertical}
+          handleTidySelection={handleTidySelection} handleDeleteSelection={handleDeleteSelection}
+          isCanvasEmpty={isCanvasEmpty} handleLoadExample={handleLoadExample}
+          setNodes={setNodes} reactFlowWrapper={reactFlowWrapper}
+        />
 
         {!embeddedMode && (
           <footer className="statusbar">
@@ -810,74 +771,33 @@ function DesignerApp() {
       </main>
 
       {!embeddedMode && (
-        <aside className="panel right">
-          <div
-            className={`resize-handle-left ${isResizing ? 'resizing' : ''}`}
-            onMouseDown={startResizing} onKeyDown={handleResizeKeyDown}
-            role="separator" aria-orientation="vertical" aria-label="Resize properties panel"
-            aria-valuemin={250} aria-valuemax={900} aria-valuenow={Math.round(rightPanelWidth)} tabIndex={0}
-            title="Drag to resize properties panel"
-          />
-          <div className="panel-tabs">
-            <button type="button" className={rightPanelTab === 'inspector' ? 'active' : ''} aria-pressed={rightPanelTab === 'inspector'}
-              onClick={() => { setRightPanelTab('inspector'); setPreviewPatch(null); setNodes(nds => nds.map(n => ({ ...n, className: '' }))) }}>
-              Properties
-            </button>
-            <button type="button" className={rightPanelTab === 'chat' ? 'active' : ''} aria-pressed={rightPanelTab === 'chat'}
-              onClick={() => setRightPanelTab('chat')}>
-              Aria Chat
-            </button>
-            {scopedProposals.length > 0 && (
-              <button type="button" className={rightPanelTab === 'proposals' ? 'active' : ''} aria-pressed={rightPanelTab === 'proposals'}
-                onClick={() => setRightPanelTab('proposals')}>
-                Proposals ({scopedProposals.length})
-              </button>
-            )}
-            <button type="button" className={rightPanelTab === 'results' ? 'active' : ''} aria-pressed={rightPanelTab === 'results'}
-              onClick={() => setRightPanelTab('results')}>
-              Results
-            </button>
-          </div>
-
-          {rightPanelTab === 'results' ? (
-            <RunResultsPanel evalState={evalState} baseline={importedBaseline}
-              benchmarkObserved={benchmarkObserved} onBenchmarkObservedChange={setBenchmarkObserved} />
-          ) : rightPanelTab === 'chat' ? (
-            <ErrorBoundary name="Chat">
-              <AriaChatPanel
-                workflowJsonFn={getWorkflowJsonForChat}
-                onApplyPatch={handleChatApplyPatch}
-              />
-            </ErrorBoundary>
-          ) : rightPanelTab === 'proposals' ? (
-            <PatchPanel proposals={scopedProposals} onApply={handleApplyPatch} onReject={handleRejectPatch}
-              onPreview={handlePreviewPatch}
-              onClose={() => { setRightPanelTab('inspector'); setPreviewPatch(null); setNodes(nds => nds.map(n => ({ ...n, className: '' }))) }} />
-          ) : (
-            <ErrorBoundary name="Inspector">
-              <Inspector selectedNode={selectedNode} allComponents={components} nodeCount={nodes.length}
-                edgeCount={edges.length} onParamChange={onParamChange} helpRequest={helpRequest} />
-            </ErrorBoundary>
-          )}
-        </aside>
+        <RightPanel
+          rightPanelTab={rightPanelTab} setRightPanelTab={setRightPanelTab}
+          rightPanelWidth={rightPanelWidth} isResizing={isResizing}
+          startResizing={startResizing} handleResizeKeyDown={handleResizeKeyDown}
+          selectedNode={selectedNode} components={components} nodes={nodes} edges={edges}
+          onParamChange={onParamChange} helpRequest={helpRequest}
+          evalState={evalState} importedBaseline={importedBaseline}
+          benchmarkObserved={benchmarkObserved} setBenchmarkObserved={setBenchmarkObserved}
+          getWorkflowJsonForChat={getWorkflowJsonForChat} handleChatApplyPatch={handleChatApplyPatch}
+          scopedProposals={scopedProposals} handleApplyPatch={handleApplyPatch}
+          handleRejectPatch={handleRejectPatch} handlePreviewPatch={handlePreviewPatch}
+          setPreviewPatch={setPreviewPatch} setNodes={setNodes}
+        />
       )}
 
-      <AskAriaModal
-        open={showAskAriaModal}
-        onClose={() => { setShowAskAriaModal(false); setAriaSuggestions([]) }}
-        onSubmitPrompt={handleAskAriaSubmit}
-        onSuggest={handleAskAriaSuggest}
-        onSwitchToChat={() => { setShowAskAriaModal(false); setAriaSuggestions([]); setRightPanelTab('chat') }}
-        suggestions={ariaSuggestions}
-        loading={ariaLoading}
+      <ModalLayer
+        showAskAriaModal={showAskAriaModal} setShowAskAriaModal={setShowAskAriaModal}
+        handleAskAriaSubmit={handleAskAriaSubmit} handleAskAriaSuggest={handleAskAriaSuggest}
+        ariaSuggestions={ariaSuggestions} ariaLoading={ariaLoading} setAriaSuggestions={setAriaSuggestions}
+        setRightPanelTab={setRightPanelTab}
+        showNexusPalette={showNexusPalette} setShowNexusPalette={setShowNexusPalette}
+        components={components} handleNexusAction={handleNexusAction}
+        showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
+        showHelpPanel={showHelpPanel} setShowHelpPanel={setShowHelpPanel}
+        showImportDialog={showImportDialog} setShowImportDialog={setShowImportDialog}
+        loadWorkflowJson={loadWorkflowJson}
       />
-      <NexusCommandPalette open={showNexusPalette} onClose={() => setShowNexusPalette(false)}
-        components={components} onAction={handleNexusAction} />
-      {showShortcuts && <KeyboardShortcuts onClose={() => setShowShortcuts(false)} />}
-      <HelpPanel isOpen={showHelpPanel} onClose={() => setShowHelpPanel(false)} />
-      {showImportDialog && (
-        <ImportDialog onImport={(wf) => loadWorkflowJson(wf)} onClose={() => setShowImportDialog(false)} />
-      )}
     </div>
   )
 }

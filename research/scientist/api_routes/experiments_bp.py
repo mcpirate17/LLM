@@ -35,6 +35,33 @@ from ._strategy_preflight import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_ops_summary(graph_json_str: str | None) -> str | None:
+    """Extract unique op names from a graph_json string for display."""
+    if not graph_json_str:
+        return None
+    try:
+        graph = (
+            json.loads(graph_json_str)
+            if isinstance(graph_json_str, str)
+            else graph_json_str
+        )
+        nodes = graph.get("nodes", {})
+        ops = sorted(
+            {
+                n["op_name"]
+                for n in (nodes.values() if isinstance(nodes, dict) else nodes)
+                if isinstance(n, dict) and n.get("op_name") and not n.get("is_input")
+            }
+        )
+        if not ops:
+            return None
+        if len(ops) <= 5:
+            return ", ".join(ops)
+        return ", ".join(ops[:4]) + f" +{len(ops) - 4}"
+    except Exception:
+        return None
+
+
 def register_experiments_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -62,6 +89,10 @@ def register_experiments_routes(app, context: ApiRouteContext):
             return jsonify({"error": "Not found"}), 404
         entries = nb.get_entries(experiment_id=experiment_id)
         programs = nb.get_program_results(experiment_id)
+        # Add compact op summary, strip heavy graph_json from list response
+        for p in programs:
+            p["ops_summary"] = _extract_ops_summary(p.get("graph_json"))
+            p.pop("graph_json", None)
         prereg = nb.get_preregistration_for_experiment(experiment_id)
         deviations = nb.get_preregistration_deviations(experiment_id)
         payload = {
@@ -78,6 +109,9 @@ def register_experiments_routes(app, context: ApiRouteContext):
     def api_experiment_programs(experiment_id, nb=None):
         """All programs for an experiment (not just S1 survivors)."""
         programs = nb.get_program_results(experiment_id)
+        for p in programs:
+            p["ops_summary"] = _extract_ops_summary(p.get("graph_json"))
+            p.pop("graph_json", None)
         return jsonify(_json_safe(programs))
 
     @app.route("/api/experiments/<experiment_id>/failures")
@@ -91,7 +125,6 @@ def register_experiments_routes(app, context: ApiRouteContext):
     @wnb
     def api_experiment_analysis(experiment_id, nb=None):
         """LLM-generated analysis (stored or on-demand)."""
-        aria = get_aria()
         exp = nb.get_experiment(experiment_id)
         if exp is None:
             return jsonify({"error": "Not found"}), 404
@@ -100,6 +133,17 @@ def register_experiments_routes(app, context: ApiRouteContext):
         if stored:
             return jsonify({"analysis": stored, "source": "stored"})
 
+        # Skip on-demand LLM generation for backfill experiments
+        if exp.get("experiment_type") == "backfill":
+            return jsonify(
+                {
+                    "analysis": None,
+                    "source": "unavailable",
+                    "reason": "Backfill experiments skip LLM analysis",
+                }
+            )
+
+        aria = get_aria()
         results = exp.get("results") or {}
         from ..llm.context_experiment import build_experiment_context
 
@@ -459,6 +503,20 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 }
             ), 404
         return jsonify({"status": "cancelled", "experiment_id": experiment_id})
+
+    @app.route("/api/experiments/<experiment_id>", methods=["DELETE"])
+    @wnb
+    def api_delete_experiment(experiment_id, nb=None):
+        """Delete an experiment and all its child rows."""
+        exp = nb.get_experiment(experiment_id)
+        if exp is None:
+            return jsonify({"error": "Experiment not found"}), 404
+        if str(exp.get("status", "")).strip().lower() == "running":
+            return jsonify(
+                {"error": "Cannot delete a running experiment — cancel it first"}
+            ), 409
+        nb._delete_experiment_cascade(experiment_id)
+        return jsonify({"status": "deleted", "experiment_id": experiment_id})
 
     @app.route("/api/experiments/<experiment_id>/rerun", methods=["POST"])
     @wnb

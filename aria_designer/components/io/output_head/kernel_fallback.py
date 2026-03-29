@@ -1,7 +1,8 @@
 """Python fallback kernel for output_head."""
 
-import torch
 import torch.nn.functional as F
+
+from aria_designer.components._weight_cache import cached_randn
 
 
 class ComponentHandler:
@@ -17,8 +18,12 @@ class ComponentHandler:
         x = inputs["x"] if "x" in inputs else next(iter(inputs.values()))  # (B, S, D)
         vocab_size = config.get("vocab_size", 32000)
         d_in = x.shape[-1]
-        gen = torch.Generator(device="cpu")
-        gen.manual_seed(d_in * 65537 + vocab_size)
-        w = torch.randn(vocab_size, d_in, generator=gen, dtype=x.dtype).to(x.device)
-        w *= d_in**-0.5
+        w = cached_randn(
+            vocab_size,
+            d_in,
+            seed=d_in * 65537 + vocab_size,
+            device=x.device,
+            dtype=x.dtype,
+            scale=d_in**-0.5,
+        )
         return {"logits": F.linear(x, w)}

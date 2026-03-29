@@ -408,6 +408,9 @@ class _ContinuousModesMixin:
             population_size=config.n_programs,
             n_generations=config.n_generations,
             grammar_config=self._build_grammar_config(config),
+            exploit_prob=config.exploit_prob,
+            local_mutation_prob=config.local_mutation_prob,
+            exploit_top_k=config.exploit_top_k,
         )
 
         fitness_cache: dict = {}
@@ -549,6 +552,8 @@ class _ContinuousModesMixin:
             population_size=config.n_programs,
             n_generations=config.n_generations,
             grammar_config=grammar,
+            exploit_prob=config.exploit_prob,
+            local_mutation_prob=config.local_mutation_prob,
             debug=config.debug,
         )
         dev = resolve_device(config.device)
@@ -766,7 +771,7 @@ class _ContinuousModesMixin:
             if self._stop_event.is_set() or budget_remaining <= 0 or not source_ids:
                 break
 
-            gen_cfg = RunConfig.from_dict(config.to_dict())
+            gen_cfg = config.copy()
             gen_cfg.model_source = "fingerprint_refine"
             gen_cfg.refine_source_result_ids = ",".join(source_ids)
             gen_cfg.refine_mutations_per_source = max(

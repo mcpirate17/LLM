@@ -12,19 +12,19 @@
     {"id": "pos_enc",       "component_type": "positional/rope_rotate",                    "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 240}}},
     {"id": "pre_norm",      "component_type": "linear_algebra/rmsnorm",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 360}}},
 
-    {"id": "scorer",        "component_type": "routing/difficulty_scorer",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 480}}},
-    {"id": "router",        "component_type": "routing/adaptive_lane_mixer",                "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 600}}},
+    {"id": "scorer",        "component_type": "routing/token_difficulty_proj",          "params": {},                                      "ui_meta": {"position": {"x": 420, "y": 480}}},
+    {"id": "router",        "component_type": "routing/difficulty_blend_3way",                "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 600}}},
 
     {"id": "lane1_fused",   "component_type": "linear_algebra/fused_linear_gelu",   "params": {},                                      "ui_meta": {"position": {"x": 60,  "y": 760}}},
 
     {"id": "lane2_ssm",     "component_type": "linear_algebra/selective_scan",       "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 760}}},
-    {"id": "lane2_rec",     "component_type": "routing/mixed_recursion_gate",       "params": {"max_depth": 2},                       "ui_meta": {"position": {"x": 360, "y": 880}}},
+    {"id": "lane2_rec",     "component_type": "routing/score_depth_blend",       "params": {"max_depth": 2},                       "ui_meta": {"position": {"x": 360, "y": 880}}},
     {"id": "lane2_norm",    "component_type": "linear_algebra/rmsnorm",          "params": {},                                      "ui_meta": {"position": {"x": 360, "y": 1000}}},
 
     {"id": "lane3_moe",     "component_type": "channel_mixing/moe_topk",           "params": {"num_experts": 2, "top_k": 1},         "ui_meta": {"position": {"x": 750, "y": 760}}},
     {"id": "lane3_trop",    "component_type": "math_space/tropical_attention",      "params": {},                                      "ui_meta": {"position": {"x": 750, "y": 880}}},
     {"id": "lane3_hyp",     "component_type": "math_space/hyp_distance",            "params": {},                                      "ui_meta": {"position": {"x": 750, "y": 1000}}},
-    {"id": "lane3_rec",     "component_type": "routing/adaptive_recursion",         "params": {"max_depth": 4},                       "ui_meta": {"position": {"x": 750, "y": 1120}}},
+    {"id": "lane3_rec",     "component_type": "routing/depth_weighted_proj",         "params": {"max_depth": 4},                       "ui_meta": {"position": {"x": 750, "y": 1120}}},
 
     {"id": "gather_12",     "component_type": "structural/conditional_gather",      "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 210, "y": 1120}}},
     {"id": "gather_all",    "component_type": "structural/conditional_gather",      "params": {"num_lanes": 3},                       "ui_meta": {"position": {"x": 420, "y": 1240}}},

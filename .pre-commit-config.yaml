@@ -18,8 +18,13 @@ repos:
 
   - repo: local
     hooks:
-      - id: no-file-over-3000
-        name: Reject god files (>3000 lines)
+      - id: guardrail-audit
+        name: Guardrail audit (staged files)
+        language: system
+        entry: python conductor/guardrail_audit.py --staged-only --check
+        pass_filenames: false
+      - id: no-file-over-1250
+        name: Reject god files (>1250 lines)
         language: python
-        entry: python -c "import subprocess,sys;r=subprocess.run(['git','ls-files','*.py'],capture_output=True,text=True);files=[f for f in r.stdout.strip().split('\n') if f and '/tests/' not in f and '/archive/' not in f];bad=[f for f in files if sum(1 for _ in open(f)) > 3000];[print(f) for f in bad];sys.exit(1 if bad else 0)"
+        entry: python -c "import subprocess,sys;r=subprocess.run(['git','diff','--cached','--name-only','--diff-filter=ACMR'],capture_output=True,text=True);files=[f for f in r.stdout.strip().split('\n') if f and f.endswith(('.py','.js','.jsx','.ts','.tsx','.c','.cc','.cpp','.cu','.h','.hpp')) and '/tests/' not in f and '/archive/' not in f and '/node_modules/' not in f];bad=[f'{f}:{sum(1 for _ in open(f, encoding=\"utf-8\", errors=\"ignore\"))}' for f in files if sum(1 for _ in open(f, encoding=\"utf-8\", errors=\"ignore\")) > 1250];[print(x) for x in bad];sys.exit(1 if bad else 0)"
         pass_filenames: false

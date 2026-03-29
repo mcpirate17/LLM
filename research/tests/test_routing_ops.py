@@ -9,15 +9,15 @@ import torch.nn as nn
 import pytest
 
 from research.synthesis.compiler_ops_routing import (
-    _op_route_topk,
-    _op_route_lanes,
-    _op_route_recursion,
-    _op_token_merge,
-    _op_mod_topk,
-    _op_early_exit,
-    _op_cascade,
-    _op_speculative,
-    _op_adaptive_recursion,
+    _op_feature_sparsity,
+    _op_gated_lane_blend,
+    _op_depth_gated_transform,
+    _op_adjacent_token_merge,
+    _op_depth_token_mask,
+    _op_confidence_token_gate,
+    _op_learned_token_gate,
+    _op_cheap_verify_blend,
+    _op_depth_weighted_proj,
 )
 from research.synthesis.compiler_op_utils import _record_routing_telemetry
 
@@ -36,13 +36,13 @@ class DummyModule(nn.Module):
 # ── route_topk ──────────────────────────────────────────────────────
 
 
-class TestRouteTopk:
+class TestFeatureSparsity:
     def test_output_shape_matches_input(self):
         """route_topk now returns (B,S,D) tensor (sparse mask), not a tuple."""
         module = DummyModule()
         B, S, D, k = 2, 8, 64, 4
         x = torch.randn(B, S, D)
-        result = _op_route_topk(module, [x], {"k": k})
+        result = _op_feature_sparsity(module, [x], {"k": k})
         assert isinstance(result, torch.Tensor), f"Expected Tensor, got {type(result)}"
         assert result.shape == (B, S, D), f"Expected {(B, S, D)}, got {result.shape}"
 
@@ -51,7 +51,7 @@ class TestRouteTopk:
         module = DummyModule()
         B, S, D, k = 2, 8, 64, 4
         x = torch.randn(B, S, D)
-        result = _op_route_topk(module, [x], {"k": k})
+        result = _op_feature_sparsity(module, [x], {"k": k})
         non_zero_per_slice = (result != 0).float().sum(dim=-1)  # (B, S)
         assert (non_zero_per_slice == k).all(), f"Expected {k} non-zero per slice"
 
@@ -60,7 +60,7 @@ class TestRouteTopk:
         module = DummyModule()
         D, k = 16, 3
         x = torch.randn(2, 4, D)
-        result = _op_route_topk(module, [x], {"k": k})
+        result = _op_feature_sparsity(module, [x], {"k": k})
         mask = result != 0
         scale = (D / k) ** 0.5
         assert torch.allclose(result[mask], x[mask] * scale)
@@ -68,7 +68,7 @@ class TestRouteTopk:
     def test_telemetry_recorded(self):
         module = DummyModule()
         x = torch.randn(2, 8, 64)
-        _op_route_topk(module, [x], {"k": 4})
+        _op_feature_sparsity(module, [x], {"k": 4})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] > 0
@@ -76,14 +76,14 @@ class TestRouteTopk:
     def test_gradient_flows(self):
         module = DummyModule()
         x = torch.randn(2, 4, 16, requires_grad=True)
-        result = _op_route_topk(module, [x], {"k": 3})
+        result = _op_feature_sparsity(module, [x], {"k": 3})
         result.sum().backward()
         assert x.grad is not None
 
     def test_k_equals_one(self):
         module = DummyModule()
         x = torch.randn(2, 4, 16)
-        result = _op_route_topk(module, [x], {"k": 1})
+        result = _op_feature_sparsity(module, [x], {"k": 1})
         non_zero = (result != 0).float().sum(dim=-1)
         assert (non_zero == 1).all()
 
@@ -101,26 +101,26 @@ def _make_lane_module(D, n_lanes):
     return module
 
 
-class TestRouteLanes:
+class TestGatedLaneBlend:
     def test_output_shape(self):
         B, S, D, L = 2, 8, 64, 4
         module = _make_lane_module(D, L)
         x = torch.randn(B, S, D)
-        result = _op_route_lanes(module, [x], {"n_lanes": L})
+        result = _op_gated_lane_blend(module, [x], {"n_lanes": L})
         assert result.shape == (B, S, D)
 
     def test_non_identity(self):
         B, S, D, L = 2, 8, 64, 3
         module = _make_lane_module(D, L)
         x = torch.randn(B, S, D)
-        result = _op_route_lanes(module, [x], {"n_lanes": L})
+        result = _op_gated_lane_blend(module, [x], {"n_lanes": L})
         assert not torch.allclose(result, x, atol=1e-5)
 
     def test_telemetry_recorded(self):
         D, L = 64, 4
         module = _make_lane_module(D, L)
         x = torch.randn(2, 8, D)
-        _op_route_lanes(module, [x], {"n_lanes": L})
+        _op_gated_lane_blend(module, [x], {"n_lanes": L})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] > 0
@@ -129,7 +129,7 @@ class TestRouteLanes:
         D, L = 32, 3
         module = _make_lane_module(D, L)
         x = torch.randn(2, 4, D, requires_grad=True)
-        result = _op_route_lanes(module, [x], {"n_lanes": L})
+        result = _op_gated_lane_blend(module, [x], {"n_lanes": L})
         result.sum().backward()
         assert x.grad is not None
 
@@ -147,26 +147,26 @@ def _make_depth_module(D, max_depth):
     return module
 
 
-class TestRouteRecursion:
+class TestDepthGatedTransform:
     def test_output_shape(self):
         B, S, D, Dp = 2, 8, 64, 5
         module = _make_depth_module(D, Dp)
         x = torch.randn(B, S, D)
-        result = _op_route_recursion(module, [x], {"max_depth": Dp})
+        result = _op_depth_gated_transform(module, [x], {"max_depth": Dp})
         assert result.shape == (B, S, D)
 
     def test_non_identity(self):
         B, S, D, Dp = 2, 8, 64, 3
         module = _make_depth_module(D, Dp)
         x = torch.randn(B, S, D)
-        result = _op_route_recursion(module, [x], {"max_depth": Dp})
+        result = _op_depth_gated_transform(module, [x], {"max_depth": Dp})
         assert not torch.allclose(result, x, atol=1e-5)
 
     def test_telemetry_recorded(self):
         D, Dp = 64, 5
         module = _make_depth_module(D, Dp)
         x = torch.randn(2, 8, D)
-        _op_route_recursion(module, [x], {"max_depth": Dp})
+        _op_depth_gated_transform(module, [x], {"max_depth": Dp})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] > 0
@@ -176,26 +176,26 @@ class TestRouteRecursion:
 # ── token_merge ─────────────────────────────────────────────────────
 
 
-class TestTokenMerge:
+class TestAdjacentTokenMerge:
     def test_output_shape_restored(self):
         """token_merge restores to original seq length via gather."""
         module = DummyModule()
         B, S, D = 2, 8, 16
         x = torch.randn(B, S, D)
-        result = _op_token_merge(module, [x], {"n_keep": 4})
+        result = _op_adjacent_token_merge(module, [x], {"n_keep": 4})
         # After restore, output has original sequence length
         assert result.shape == (B, S, D)
 
     def test_default_n_keep(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_token_merge(module, [x], {})
+        result = _op_adjacent_token_merge(module, [x], {})
         assert result.shape == (2, 8, 16)  # restored to original length
 
     def test_telemetry_recorded(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        _op_token_merge(module, [x], {"n_keep": 4})
+        _op_adjacent_token_merge(module, [x], {"n_keep": 4})
         assert hasattr(module, "routing_telemetry")
         rt = module.routing_telemetry
         assert rt["tokens_total"] == 2 * 8
@@ -206,7 +206,7 @@ class TestTokenMerge:
     def test_n_keep_equals_seq_len(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_token_merge(module, [x], {"n_keep": 8})
+        result = _op_adjacent_token_merge(module, [x], {"n_keep": 8})
         assert result.shape == x.shape
         # When n_keep == S, output should equal input
         assert torch.allclose(result, x)
@@ -237,17 +237,17 @@ class TestRecordRoutingTelemetry:
 # ── Control routing ops (Phase 2 bridge) ────────────────────────────
 
 
-class TestModTopk:
+class TestDepthTokenMask:
     def test_output_shape_preserved(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_mod_topk(module, [x], {"capacity_factor": 0.5})
+        result = _op_depth_token_mask(module, [x], {"capacity_factor": 0.5})
         assert result.shape == x.shape
 
     def test_sparsity_applied(self):
         module = DummyModule()
         x = torch.ones(2, 8, 16)
-        result = _op_mod_topk(module, [x], {"capacity_factor": 0.5})
+        result = _op_depth_token_mask(module, [x], {"capacity_factor": 0.5})
         # Some tokens should be zeroed out
         zeros = (result.abs().sum(dim=-1) < 1e-6).sum().item()
         assert zeros > 0, "capacity_factor=0.5 should zero some tokens"
@@ -255,71 +255,71 @@ class TestModTopk:
     def test_telemetry_recorded(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        _op_mod_topk(module, [x], {"capacity_factor": 0.75})
+        _op_depth_token_mask(module, [x], {"capacity_factor": 0.75})
         assert hasattr(module, "routing_telemetry")
 
 
-class TestEarlyExit:
+class TestConfidenceTokenGate:
     def test_output_shape_preserved(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_early_exit(module, [x], {"threshold": 0.5})
+        result = _op_confidence_token_gate(module, [x], {"threshold": 0.5})
         assert result.shape == x.shape
 
     def test_telemetry_recorded(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        _op_early_exit(module, [x], {"threshold": 0.5})
+        _op_confidence_token_gate(module, [x], {"threshold": 0.5})
         assert hasattr(module, "routing_telemetry")
 
 
-class TestCascade:
+class TestLearnedTokenGate:
     def test_output_shape_preserved(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_cascade(module, [x], {"threshold": 0.5})
+        result = _op_learned_token_gate(module, [x], {"threshold": 0.5})
         assert result.shape == x.shape
 
     def test_telemetry_recorded(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        _op_cascade(module, [x], {"threshold": 0.5})
+        _op_learned_token_gate(module, [x], {"threshold": 0.5})
         assert hasattr(module, "routing_telemetry")
 
 
-class TestSpeculative:
+class TestCheapVerifyBlend:
     def test_output_shape_preserved(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_speculative(module, [x], {"threshold": 0.5})
+        result = _op_cheap_verify_blend(module, [x], {"threshold": 0.5})
         assert result.shape == x.shape
 
     def test_scales_rather_than_drops(self):
         module = DummyModule()
         x = torch.ones(2, 8, 16)
-        result = _op_speculative(module, [x], {"threshold": 0.5})
+        result = _op_cheap_verify_blend(module, [x], {"threshold": 0.5})
         # speculative uses 0.5 + 0.5*gate scaling, never zero
         assert (result.abs().sum(dim=-1) > 0).all()
 
 
-class TestAdaptiveRecursion:
+class TestDepthWeightedProj:
     def test_output_shape_preserved(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_adaptive_recursion(module, [x], {"max_depth": 3})
+        result = _op_depth_weighted_proj(module, [x], {"max_depth": 3})
         assert result.shape == x.shape
 
     def test_max_depth_clamped(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
         # max_depth > 6 should be clamped
-        result = _op_adaptive_recursion(module, [x], {"max_depth": 100})
+        result = _op_depth_weighted_proj(module, [x], {"max_depth": 100})
         assert result.shape == x.shape
 
 
-class TestTokenMergingControl:
+class TestAdjacentTokenMergeControl:
     def test_output_shape_restored(self):
         module = DummyModule()
         x = torch.randn(2, 8, 16)
-        result = _op_token_merge(module, [x], {"n_keep": 4})
+        result = _op_adjacent_token_merge(module, [x], {"n_keep": 4})
         assert result.shape == (2, 8, 16)  # restored to original length

@@ -11,6 +11,7 @@ space, the delta measures how tree-like the space is. Low delta = tree-like.
 from __future__ import annotations
 
 import logging
+from itertools import combinations
 from typing import Dict
 
 import torch
@@ -71,24 +72,16 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
         idx_tensor = torch.from_numpy(indices.astype(np.int32))
         return float(aria_core.gromov_delta_f32(d_tensor, idx_tensor))
 
-    max_delta = 0.0
-    for i_idx in range(len(indices)):
-        for j_idx in range(i_idx + 1, len(indices)):
-            for k_idx in range(j_idx + 1, len(indices)):
-                for l_idx in range(k_idx + 1, len(indices)):
-                    x, y, z, w = (
-                        indices[i_idx],
-                        indices[j_idx],
-                        indices[k_idx],
-                        indices[l_idx],
-                    )
-                    s1 = d[x, y] + d[z, w]
-                    s2 = d[x, z] + d[y, w]
-                    s3 = d[x, w] + d[y, z]
-                    sums = sorted([s1, s2, s3])
-                    delta_val = (sums[2] - sums[1]) / 2.0
-                    if delta_val > max_delta:
-                        max_delta = delta_val
+    # Vectorized: enumerate all 4-tuples via combinations
+    combos = np.array(list(combinations(indices, 4)))  # (C4, 4)
+    x, y, z, w = combos[:, 0], combos[:, 1], combos[:, 2], combos[:, 3]
+    s1 = d[x, y] + d[z, w]
+    s2 = d[x, z] + d[y, w]
+    s3 = d[x, w] + d[y, z]
+    sums = np.stack([s1, s2, s3], axis=1)
+    sums.sort(axis=1)
+    deltas = (sums[:, 2] - sums[:, 1]) / 2.0
+    max_delta = float(deltas.max()) if len(deltas) > 0 else 0.0
 
     return float(max_delta)
 

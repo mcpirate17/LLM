@@ -15,6 +15,51 @@ class _ProgramsMixin:
 
     __slots__ = ()
 
+    @staticmethod
+    def _build_failure_details(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Construct a normalized failure payload for persisted program results."""
+        stage = kwargs.get("stage_at_death")
+        if not stage:
+            if kwargs.get("stage0_passed") in (0, False):
+                stage = "stage0"
+            elif kwargs.get("stage05_passed") in (0, False):
+                stage = "stage0.5"
+            elif kwargs.get("stage1_passed") in (0, False):
+                stage = "stage1"
+
+        error_type = kwargs.get("error_type")
+        error_message = kwargs.get("error_message")
+        stage0_error = kwargs.get("stage0_error")
+        failure_op = kwargs.get("failure_op")
+        if not any((stage, error_type, error_message, stage0_error, failure_op)):
+            return None
+
+        primary_message = error_message or stage0_error
+        traceback_excerpt = None
+        if isinstance(primary_message, str) and primary_message:
+            lines = [
+                line.strip() for line in primary_message.splitlines() if line.strip()
+            ]
+            if lines:
+                traceback_excerpt = "\n".join(lines[-6:])
+
+        return sanitize_for_db(
+            {
+                "stage": stage,
+                "error_type": error_type,
+                "error_message": error_message,
+                "stage0_error": stage0_error,
+                "failure_op": failure_op,
+                "root_cause_code": error_type or "unknown",
+                "traceback_excerpt": traceback_excerpt,
+                "grad_norm": kwargs.get("grad_norm"),
+                "max_grad_norm": kwargs.get("max_grad_norm"),
+                "stability_score": kwargs.get("stability_score"),
+                "param_count": kwargs.get("param_count"),
+                "graph_fingerprint": kwargs.get("graph_fingerprint"),
+            }
+        )
+
     def _ensure_experiment_row(self, experiment_id: Optional[str]) -> None:
         if not experiment_id:
             return
@@ -53,6 +98,21 @@ class _ProgramsMixin:
             return {"would_delete": count, "dry_run": True}
 
         junk_ids = [r["result_id"] for r in junk_rows]
+
+        # Never delete protected entries (verified leaders, breakthroughs)
+        if junk_ids:
+            ph = ",".join("?" * len(junk_ids))
+            protected = {
+                r[0]
+                for r in self.conn.execute(
+                    f"SELECT result_id FROM leaderboard "
+                    f"WHERE result_id IN ({ph}) AND tags LIKE '%protected%'",
+                    junk_ids,
+                ).fetchall()
+            }
+            if protected:
+                junk_ids = [rid for rid in junk_ids if rid not in protected]
+
         affected_experiments = {
             r["experiment_id"] for r in junk_rows if r["experiment_id"]
         }
@@ -121,6 +181,138 @@ class _ProgramsMixin:
             (graph_fingerprint,),
         ).fetchone()
         return row is not None
+
+    def get_fingerprint_aggregates(self, graph_fingerprint: str) -> dict:
+        """Per-fingerprint replication statistics across all persisted runs.
+
+        Counts every persisted run for this fingerprint regardless of
+        pass/fail status.  Runs dropped by the record_program_result
+        quality gate (S0 failures without error_type, signal-free S1
+        failures) are not in the DB and therefore not counted.
+
+        Loss/novelty stats aggregate over all runs that have data,
+        not just S1 passes.
+        """
+        if not graph_fingerprint:
+            return {}
+        row = self.conn.execute(
+            """SELECT
+                COUNT(*) AS n_runs_total,
+                SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) AS n_s1_passed,
+                SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) AS n_s0_passed,
+                -- Loss stats over all runs with loss data (not just S1 passes)
+                SUM(CASE WHEN loss_ratio IS NOT NULL THEN 1 ELSE 0 END) AS n_with_loss,
+                AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio END) AS loss_mean,
+                CASE WHEN SUM(CASE WHEN loss_ratio IS NOT NULL THEN 1 ELSE 0 END) > 1 THEN
+                    SQRT(MAX(0,
+                        AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio * loss_ratio END)
+                        - AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio END)
+                          * AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio END)
+                    ))
+                ELSE NULL END AS loss_std,
+                MIN(loss_ratio) AS loss_best,
+                AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END) AS novelty_mean,
+                CASE WHEN SUM(CASE WHEN novelty_score IS NOT NULL THEN 1 ELSE 0 END) > 1 THEN
+                    SQRT(MAX(0,
+                        AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score * novelty_score END)
+                        - AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END)
+                          * AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END)
+                    ))
+                ELSE NULL END AS novelty_std
+            FROM program_results
+            WHERE graph_fingerprint = ?""",
+            (graph_fingerprint,),
+        ).fetchone()
+        if not row or row["n_runs_total"] == 0:
+            return {}
+        loss_mean = row["loss_mean"]
+        loss_best = row["loss_best"]
+        gap = (
+            (loss_mean - loss_best)
+            if (loss_mean is not None and loss_best is not None)
+            else None
+        )
+        return {
+            "n_runs": row["n_runs_total"],
+            "n_s1_passed": row["n_s1_passed"],
+            "n_s0_passed": row["n_s0_passed"],
+            "n_with_loss": row["n_with_loss"],
+            "loss_mean": loss_mean,
+            "loss_std": row["loss_std"],
+            "loss_best": loss_best,
+            "best_vs_mean_gap": gap,
+            "novelty_mean": row["novelty_mean"],
+            "novelty_std": row["novelty_std"],
+        }
+
+    def get_fingerprint_aggregates_batch(
+        self,
+        fingerprints: list[str],
+    ) -> dict[str, dict]:
+        """Batch version of ``get_fingerprint_aggregates``.
+
+        Returns ``{fingerprint: agg_dict}`` for all fingerprints that have
+        at least one run.  Missing fingerprints are absent from the result.
+        """
+        if not fingerprints:
+            return {}
+        out: dict[str, dict] = {}
+        chunk_size = 900
+        for start in range(0, len(fingerprints), chunk_size):
+            chunk = fingerprints[start : start + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                f"""SELECT
+                    graph_fingerprint,
+                    COUNT(*) AS n_runs_total,
+                    SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) AS n_s1_passed,
+                    SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) AS n_s0_passed,
+                    SUM(CASE WHEN loss_ratio IS NOT NULL THEN 1 ELSE 0 END) AS n_with_loss,
+                    AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio END) AS loss_mean,
+                    CASE WHEN SUM(CASE WHEN loss_ratio IS NOT NULL THEN 1 ELSE 0 END) > 1 THEN
+                        SQRT(MAX(0,
+                            AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio * loss_ratio END)
+                            - AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio END)
+                              * AVG(CASE WHEN loss_ratio IS NOT NULL THEN loss_ratio END)
+                        ))
+                    ELSE NULL END AS loss_std,
+                    MIN(loss_ratio) AS loss_best,
+                    AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END) AS novelty_mean,
+                    CASE WHEN SUM(CASE WHEN novelty_score IS NOT NULL THEN 1 ELSE 0 END) > 1 THEN
+                        SQRT(MAX(0,
+                            AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score * novelty_score END)
+                            - AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END)
+                              * AVG(CASE WHEN novelty_score IS NOT NULL THEN novelty_score END)
+                        ))
+                    ELSE NULL END AS novelty_std
+                FROM program_results
+                WHERE graph_fingerprint IN ({placeholders})
+                GROUP BY graph_fingerprint""",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                if row["n_runs_total"] == 0:
+                    continue
+                loss_mean = row["loss_mean"]
+                loss_best = row["loss_best"]
+                gap = (
+                    (loss_mean - loss_best)
+                    if (loss_mean is not None and loss_best is not None)
+                    else None
+                )
+                out[row["graph_fingerprint"]] = {
+                    "n_runs": row["n_runs_total"],
+                    "n_s1_passed": row["n_s1_passed"],
+                    "n_s0_passed": row["n_s0_passed"],
+                    "n_with_loss": row["n_with_loss"],
+                    "loss_mean": loss_mean,
+                    "loss_std": row["loss_std"],
+                    "loss_best": loss_best,
+                    "best_vs_mean_gap": gap,
+                    "novelty_mean": row["novelty_mean"],
+                    "novelty_std": row["novelty_std"],
+                }
+        return out
 
     def record_program_result(
         self,
@@ -223,6 +415,18 @@ class _ProgramsMixin:
 
         # Sanitize numeric types (NumPy/Torch scalars) → native Python to prevent blob storage
         kwargs = sanitize_for_db(kwargs)
+
+        if "failure_details_json" not in kwargs:
+            failure_details = self._build_failure_details(kwargs)
+            if failure_details:
+                kwargs["failure_details_json"] = json.dumps(failure_details)
+        elif isinstance(kwargs.get("failure_details_json"), (dict, list)):
+            kwargs["failure_details_json"] = json.dumps(kwargs["failure_details_json"])
+
+        if isinstance(kwargs.get("semantic_warnings_json"), (dict, list)):
+            kwargs["semantic_warnings_json"] = json.dumps(
+                kwargs["semantic_warnings_json"]
+            )
 
         # Handle legacy 'throughput' -> 'throughput_tok_s' alias
         if "throughput" in kwargs:
@@ -659,6 +863,8 @@ class _ProgramsMixin:
             investigation_passed=merged.get("investigation_passed"),
             validation_passed=merged.get("validation_passed"),
             spectral_norm=merged.get("fp_jacobian_spectral_norm"),
+            throughput_tok_s=best_pr.get("throughput_tok_s"),
+            forward_time_ms=best_pr.get("forward_time_ms"),
             gpt2_raw_anchor=95.0,
         )
         # Monotonic safeguard: fingerprint aggregate should not score below its

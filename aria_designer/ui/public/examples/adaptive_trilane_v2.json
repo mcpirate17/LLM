@@ -47,7 +47,7 @@
     },
     {
       "id": "scorer",
-      "component_type": "routing/difficulty_scorer",
+      "component_type": "routing/token_difficulty_proj",
       "params": {},
       "ui_meta": {
         "position": {
@@ -58,7 +58,7 @@
     },
     {
       "id": "router",
-      "component_type": "routing/adaptive_lane_mixer",
+      "component_type": "routing/difficulty_blend_3way",
       "params": {
         "num_lanes": 3
       },
@@ -93,7 +93,7 @@
     },
     {
       "id": "lane2_rec",
-      "component_type": "routing/mixed_recursion_gate",
+      "component_type": "routing/score_depth_blend",
       "params": {
         "max_depth": 2
       },
@@ -120,7 +120,7 @@
     },
     {
       "id": "lane3_rec",
-      "component_type": "routing/adaptive_recursion",
+      "component_type": "routing/depth_weighted_proj",
       "params": {
         "max_depth": 4
       },
@@ -133,7 +133,7 @@
     },
     {
       "id": "lane3_gate",
-      "component_type": "routing/progressive_compression_gate",
+      "component_type": "routing/adaptive_rank_gate",
       "params": {},
       "ui_meta": {
         "position": {

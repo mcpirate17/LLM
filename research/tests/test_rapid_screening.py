@@ -139,7 +139,7 @@ def test_healthy_model_passes():
 
     assert result.passed
     assert result.kill_reason is None
-    assert result.metrics["steps_completed"] == 75
+    assert result.metrics["steps_completed"] == 150
     assert result.elapsed_ms > 0
 
 
@@ -158,7 +158,7 @@ def test_gpt2_reference_passes():
     result = checker.run(model, vocab_size=512, seq_len=32, batch_size=2, device="cpu")
 
     assert result.passed, f"GPT-2 reference killed: {result.kill_reason}"
-    assert result.metrics["steps_completed"] == 75
+    assert result.metrics["steps_completed"] == 150
 
 
 @pytest.mark.unit
@@ -207,7 +207,7 @@ def test_loss_spike_post_minimum_killed():
 
     assert not result.passed
     assert result.kill_metric == "loss_spike_post_minimum"
-    assert result.kill_step == 75
+    assert result.kill_step == 100
 
 
 @pytest.mark.unit

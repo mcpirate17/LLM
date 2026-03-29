@@ -51,6 +51,7 @@ const EVENT_TYPE_ALIASES = {
   continuous_limit_reached: 'limit_reached',
   learning_event: 'learning',
   training_step: 'training_step',
+  log_message: 'log',
 };
 
 const RENDERABLE_EVENT_TYPES = new Set([
@@ -90,6 +91,7 @@ const RENDERABLE_EVENT_TYPES = new Set([
   'aria_phase',
   'limit_reached',
   'learning',
+  'log',
 ]);
 
 const GENERATION_EVENT_TYPES = new Set(['evo_gen', 'nov_gen']);
@@ -469,6 +471,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   useEventBus('aria_cycle_phase', addEvent('aria_phase'));
   useEventBus('continuous_limit_reached', addEvent('limit_reached'));
   useEventBus('learning_event', addEvent('learning'));
+  useEventBus('log_message', addEvent('log'));
   useEventBus('training_step', handleTrainingStep);
 
   // Fetch loss curve on mount (regardless of experimentId)
@@ -1130,6 +1133,18 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
                 <span className="feed-event-msg" style={{ color: 'var(--accent-orange, #f0883e)', fontWeight: 600 }}>
                   {evt.description || 'Grammar weights adjusted'}
                   {evt.n_changed != null && ` (${evt.n_changed} categories)`}
+                </span>
+              )}
+              {evt.type === 'log' && (
+                <span className="feed-event-msg" style={{
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  color: evt.level === 'WARNING' ? 'var(--accent-yellow)'
+                       : evt.level === 'ERROR' ? 'var(--accent-red)'
+                       : 'var(--text-secondary)',
+                }}>
+                  <span style={{ opacity: 0.5, marginRight: 4 }}>[{evt.logger}]</span>
+                  {evt.message}
                 </span>
               )}
             </div>

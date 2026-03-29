@@ -10,7 +10,6 @@ Uses the existing CorpusTokenBatcher infrastructure via a cached text file.
 
 from __future__ import annotations
 
-import copy
 import logging
 import math
 import time
@@ -32,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 _WIKITEXT_CACHE_DIR = Path.home() / ".cache" / "aria" / "wikitext"
 
-# Subset sizes (chars) to keep evaluation fast
-_DEFAULT_MAX_CHARS_TRAIN = 500_000  # ~500KB of WikiText for micro-training
-_DEFAULT_MAX_CHARS_VAL = 50_000  # ~50KB for validation perplexity
+# Subset sizes (chars) — wiki103 for all non-screening evals
+_DEFAULT_MAX_CHARS_TRAIN = 20_000_000  # 20MB of WikiText-103 for micro-training
+_DEFAULT_MAX_CHARS_VAL = 200_000  # 200KB for validation perplexity
 
 # Screening defaults — smaller budget for fast turnaround
 _SCREENING_MAX_CHARS_TRAIN = 100_000
@@ -101,7 +100,7 @@ def trajectory_wikitext_payload(result: Dict[str, Any]) -> Optional[Dict[str, An
 
 
 def _download_wikitext(
-    variant: str = "wikitext-2-raw-v1",
+    variant: str = "wikitext-103-raw-v1",
     max_chars_train: int = _DEFAULT_MAX_CHARS_TRAIN,
     max_chars_val: int = _DEFAULT_MAX_CHARS_VAL,
 ) -> Tuple[Path, Path]:
@@ -299,7 +298,7 @@ def screening_wikitext_eval(
     n_eval_batches: int = _SCREENING_N_EVAL_BATCHES,
     batch_size: int = _SCREENING_BATCH_SIZE,
     lr: float = 3e-4,
-    variant: str = "wikitext-2-raw-v1",
+    variant: str = "wikitext-103-raw-v1",
 ) -> Dict[str, Any]:
     """Non-invasive WikiText eval for screening — ~2-5s on GPU.
 
@@ -355,10 +354,10 @@ def screening_wikitext_eval(
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return meta
 
-    # Clone model so micro-training doesn't mutate the live weights
+    # Save original weights so micro-training doesn't mutate the live model
     was_training = model.training
     try:
-        clone = copy.deepcopy(model)
+        original_state = {k: v.clone() for k, v in model.state_dict().items()}
     except Exception as exc:
         meta["screening_wikitext_status"] = "clone_failed"
         meta["error"] = str(exc)
@@ -366,13 +365,13 @@ def screening_wikitext_eval(
         return meta
 
     try:
-        # Pre-training perplexity (eval mode on clone)
-        pre_ppl = compute_perplexity(clone, val_batches, vocab_size)
+        # Pre-training perplexity (eval mode)
+        pre_ppl = compute_perplexity(model, val_batches, vocab_size)
 
-        # Micro-train the clone, recording per-step loss trajectory
+        # Micro-train the model, recording per-step loss trajectory
         loss_trajectory: dict = {}
         train_final_loss = micro_train_loop(
-            clone,
+            model,
             train_batches,
             vocab_size,
             n_steps=n_train_steps,
@@ -381,7 +380,7 @@ def screening_wikitext_eval(
         )
 
         # Post-training perplexity
-        post_ppl = compute_perplexity(clone, val_batches, vocab_size)
+        post_ppl = compute_perplexity(model, val_batches, vocab_size)
 
         ppl_improvement = None
         if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
@@ -422,8 +421,8 @@ def screening_wikitext_eval(
         meta["screening_wikitext_status"] = "eval_failed"
         meta["error"] = str(exc)
     finally:
-        del clone
-        # Restore original model's training mode
+        # Restore original weights and training mode
+        model.load_state_dict(original_state)
         model.train(was_training)
 
     meta["variant"] = variant
@@ -438,7 +437,7 @@ def evaluate_wikitext_perplexity(
     model: nn.Module,
     vocab_size: int,
     device: str,
-    variant: str = "wikitext-2-raw-v1",
+    variant: str = "wikitext-103-raw-v1",
     n_train_steps: int = 200,
     seq_len: int = 128,
     n_train_batches: int = 32,
@@ -523,15 +522,15 @@ def evaluate_wikitext_trajectory(
     vocab_size: int,
     device: str,
     checkpoints: tuple[int, ...] = (200, 500, 1000, 2000, 4000),
-    variant: str = "wikitext-2-raw-v1",
+    variant: str = "wikitext-103-raw-v1",
     seq_len: int = 128,
     n_train_batches: int = 0,
     n_eval_batches: int = 16,
     train_batch_size: int = 8,
     eval_batch_size: int = 8,
     lr: float = 3e-4,
-    max_chars_train: int = 2_000_000,
-    max_chars_val: int = _DEFAULT_MAX_CHARS_VAL,
+    max_chars_train: int = 200_000_000,
+    max_chars_val: int = 200_000,
     early_stop_factor: float = 2.0,
 ) -> Dict[str, Any]:
     """Evaluate WikiText PPL at multiple training checkpoints.

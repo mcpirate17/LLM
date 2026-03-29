@@ -650,8 +650,8 @@ def _score_adjustment(
         if cid in {
             "low_rank",
             "bottleneck_proj",
-            "token_merge",
-            "progressive_compression_gate",
+            "adjacent_token_merge",
+            "adaptive_rank_gate",
         }:
             delta += 0.04
 

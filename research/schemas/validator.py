@@ -8,12 +8,12 @@ from typing import Any
 
 VALID_ROUTING_KINDS = {
     "uniform",
-    "mod_topk",
-    "early_exit",
-    "adaptive_recursion",
-    "token_merge",
-    "cascade",
-    "speculative",
+    "depth_token_mask",
+    "confidence_token_gate",
+    "depth_weighted_proj",
+    "adjacent_token_merge",
+    "learned_token_gate",
+    "cheap_verify_blend",
     "mixture_of_paths",
     "multi_lane",
 }

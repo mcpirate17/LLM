@@ -1,0 +1,57 @@
+id: depth_weighted_proj
+version: 1.0.0
+name: Adaptive Recursion
+category: routing
+tags:
+- dynamic_routing
+- recursion
+- compute_routing
+status: approved
+description: Adaptive recursion depth per token (MoR-style)
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Adaptive recursion depth per token (MoR-style)
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Adaptive recursion depth per token (MoR-style)
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

@@ -57,6 +57,7 @@ def _sse_stage(
     elapsed_ms: float | None = None,
     metrics: dict | None = None,
     error: str | None = None,
+    error_details: dict | None = None,
 ) -> str:
     """Format a single SSE ``event: stage`` frame."""
     payload: Dict[str, Any] = {"stage": stage, "status": status}
@@ -66,7 +67,29 @@ def _sse_stage(
         payload["metrics"] = metrics
     if error is not None:
         payload["error"] = error
+    if error_details is not None:
+        payload["error_details"] = error_details
     return f"event: stage\ndata: {_sse_json(payload)}\n\n"
+
+
+def _build_error_details(
+    *,
+    stage: str | None,
+    error: Any,
+    error_type: str | None = None,
+    semantic_warnings: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Normalize an exception/string into a structured error payload."""
+    message = str(error) if error is not None else ""
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    return {
+        "stage": stage,
+        "error_type": error_type or getattr(error, "__class__", type(error)).__name__,
+        "error_message": message,
+        "root_cause_code": stage or error_type or "unknown",
+        "traceback_excerpt": "\n".join(lines[-6:]) if lines else None,
+        "semantic_warnings": semantic_warnings or [],
+    }
 
 
 # ── Stage work functions (called inside _run_stage) ──────────────────
@@ -335,7 +358,13 @@ async def _run_nonfatal_stage(
         yield _sse_stage(stage_name, "done", elapsed, result["metrics"])
     except Exception as e:
         elapsed = (_time_mod.monotonic() - t0) * 1000
-        yield _sse_stage(stage_name, "error", elapsed, error=str(e))
+        yield _sse_stage(
+            stage_name,
+            "error",
+            elapsed,
+            error=str(e),
+            error_details=_build_error_details(stage=stage_name, error=e),
+        )
         result = None
     ctx._last_stage_result = result
 
@@ -439,6 +468,16 @@ class _EvalRunContext:
                 "status": status,
                 "error": error,
                 "error_stage": error_stage,
+                "error_details": (
+                    _build_error_details(
+                        stage=error_stage,
+                        error=error,
+                        error_type=status,
+                        semantic_warnings=self.accumulated.get("semantic_warnings"),
+                    )
+                    if error
+                    else None
+                ),
                 "total_time_ms": total_ms,
                 "result": acc,
                 "completed_at": _utc_now(),
@@ -463,7 +502,7 @@ class _EvalRunContext:
         total_ms = round((_time_mod.monotonic() - self.total_t0) * 1000, 1)
         self.attach_benchmarking()
         self.persist_done("error", error=error, error_stage=stage, total_ms=total_ms)
-        return f"event: done\ndata: {_sse_json({'status': 'error', 'error': error, 'error_stage': stage, 'total_time_ms': total_ms, 'benchmarking': self.accumulated.get('benchmarking')})}\n\n"
+        return f"event: done\ndata: {_sse_json({'status': 'error', 'error': error, 'error_stage': stage, 'error_details': _build_error_details(stage=stage, error=error, error_type='error', semantic_warnings=self.accumulated.get('semantic_warnings')), 'total_time_ms': total_ms, 'benchmarking': self.accumulated.get('benchmarking')})}\n\n"
 
     def stage_done_payload(
         self, stage_name: str, elapsed: float, metrics: dict
@@ -580,6 +619,13 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
     result_dict["run_id"] = run_id
     result_dict["semantic_warnings"] = semantic_warnings
     result_dict["semantic_warning_count"] = len(semantic_warnings)
+    if result_dict.get("status") != "success":
+        result_dict["error_details"] = _build_error_details(
+            stage=result_dict.get("error_stage"),
+            error=result_dict.get("error"),
+            error_type=result_dict.get("status"),
+            semantic_warnings=semantic_warnings,
+        )
     perf = _build_direct_perf_contract(run_id, wf, result_dict)
     result_dict["perf_contract"] = perf["perf_contract"]
     result_dict["perf_artifact_path"] = perf["perf_artifact_path"]
@@ -598,6 +644,8 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
             "budget": budget,
             "stages": {},
             "result": result_dict,
+            "semantic_warnings": semantic_warnings,
+            "error_details": result_dict.get("error_details"),
             "perf_contract": perf["perf_contract"],
             "perf_artifact_path": perf["perf_artifact_path"],
             "perf_budget_gate": perf["perf_budget_gate"],
@@ -670,6 +718,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "total_time_ms": None,
                 "budget": budget,
                 "stages": {},
+                "semantic_warnings": semantic_warnings,
                 "result": None,
             },
         )
@@ -695,7 +744,11 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             )
         except Exception as e:
             yield _sse_stage(
-                "conversion", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e)
+                "conversion",
+                "error",
+                (_time_mod.monotonic() - t0) * 1000,
+                error=str(e),
+                error_details=_build_error_details(stage="conversion", error=e),
             )
             yield ctx.fatal_done(str(e), "conversion")
             return
@@ -731,6 +784,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                 "error",
                 (_time_mod.monotonic() - t0) * 1000,
                 error=str(e),
+                error_details=_build_error_details(stage="compilation", error=e),
             )
             yield ctx.fatal_done(str(e), "compilation")
             return
@@ -754,7 +808,11 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             )
         except Exception as e:
             yield _sse_stage(
-                "sandbox", "error", (_time_mod.monotonic() - t0) * 1000, error=str(e)
+                "sandbox",
+                "error",
+                (_time_mod.monotonic() - t0) * 1000,
+                error=str(e),
+                error_details=_build_error_details(stage="sandbox", error=e),
             )
             yield ctx.fatal_done(str(e), "sandbox")
             return
@@ -781,6 +839,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
                     "skipped",
                     (_time_mod.monotonic() - t0) * 1000,
                     error=str(e),
+                    error_details=_build_error_details(stage="routing", error=e),
                 )
 
         # Early exit if sandbox ran but model failed validation
@@ -791,7 +850,7 @@ async def evaluate_workflow_stream(req: RunWorkflowRequest):
             ctx.persist_done(
                 "failed_sandbox", error=sb_err, error_stage="sandbox", total_ms=total_ms
             )
-            yield f"event: done\ndata: {_sse_json({'status': 'failed_sandbox', 'error': sb_err, 'total_time_ms': total_ms, 'result': acc, 'benchmarking': acc.get('benchmarking')})}\n\n"
+            yield f"event: done\ndata: {_sse_json({'status': 'failed_sandbox', 'error': sb_err, 'error_details': _build_error_details(stage='sandbox', error=sb_err, error_type='failed_sandbox', semantic_warnings=acc.get('semantic_warnings')), 'total_time_ms': total_ms, 'result': acc, 'benchmarking': acc.get('benchmarking')})}\n\n"
             return
 
         # --- Stages 5-7: compression, fingerprint, novelty (non-fatal) ---

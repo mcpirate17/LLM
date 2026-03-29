@@ -2,6 +2,8 @@
 
 import torch.nn.functional as F
 
+from aria_designer.components._weight_cache import cached_randn
+
 
 class ComponentHandler:
     """Fallback handler for linear_proj: F.linear(x, W, b)."""
@@ -10,25 +12,18 @@ class ComponentHandler:
         return []
 
     def build(self, config):
-        out_dim = config.get("out_dim")
-        if out_dim:
-            return None  # dims not known until forward
         return None
 
     def forward(self, inputs, config):
         x = inputs["x"]
-        out_dim = config.get("out_dim") or x.shape[-1]
-        # Lazy projection: create weight on the fly for preview/shape inference.
-        # Real training uses the research pipeline compiler, not this fallback.
-        w = _lazy_linear(x.shape[-1], out_dim, x.device, x.dtype)
+        d_in = x.shape[-1]
+        d_out = config.get("out_dim") or d_in
+        w = cached_randn(
+            d_out,
+            d_in,
+            seed=d_in * 65537 + d_out,
+            device=x.device,
+            dtype=x.dtype,
+            scale=d_in**-0.5,
+        )
         return {"y": F.linear(x, w)}
-
-
-def _lazy_linear(in_dim, out_dim, device, dtype):
-    import torch
-
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(in_dim * 65537 + out_dim)
-    w = torch.randn(out_dim, in_dim, generator=gen, dtype=dtype).to(device)
-    w *= in_dim**-0.5
-    return w

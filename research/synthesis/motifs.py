@@ -130,9 +130,10 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         motif_class=MOTIF_CLASS_ATTENTION,
         steps=(
             MotifStep("softmax_attention", OpRole.MIX),
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="Standard softmax self-attention → projection",
+        description="Softmax self-attention → norm → projection",
         support=13,
         avg_loss_ratio=0.142,
         lift=2.37,
@@ -286,9 +287,9 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     ),
     Motif(
         name="gate_relu_routing",
-        motif_class=MOTIF_CLASS_GATE,
+        motif_class=MOTIF_CLASS_MOE,
         steps=(
-            MotifStep("relu_gate_routing", OpRole.GATE),
+            MotifStep("relu_gated_moe", OpRole.GATE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
         description="ReLU gate routing → projection",
@@ -563,13 +564,13 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     ),
     Motif(
         name="merge_scan",
-        motif_class=MOTIF_CLASS_SSM,
+        motif_class=MOTIF_CLASS_FFN,
         steps=(
-            MotifStep("token_merge", OpRole.MIX),
-            MotifStep("selective_scan", OpRole.MIX),
+            MotifStep("adjacent_token_merge", OpRole.MIX),
+            MotifStep("swiglu_mlp", OpRole.MIX),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="Token merge → selective scan → proj (sequence compression)",
+        description="Token merge → FFN → proj (sequence compression with safe successor)",
         support=6,
         avg_loss_ratio=0.105,
         lift=2.5,
@@ -637,7 +638,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_mod_topk",
         motif_class=MOTIF_CLASS_MOE,
-        steps=(MotifStep("mod_topk", OpRole.ROUTE),),
+        steps=(MotifStep("depth_token_mask", OpRole.ROUTE),),
         description="Mixture-of-Depths top-k token routing",
         support=0,
         avg_loss_ratio=0.0,
@@ -646,7 +647,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_speculative",
         motif_class=MOTIF_CLASS_GATE,
-        steps=(MotifStep("speculative", OpRole.ROUTE),),
+        steps=(MotifStep("cheap_verify_blend", OpRole.ROUTE),),
         description="Speculative dual-path blend (cheap + verify gate)",
         support=0,
         avg_loss_ratio=0.0,
@@ -664,7 +665,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_lanes_block",
         motif_class=MOTIF_CLASS_MOE,
-        steps=(MotifStep("route_lanes", OpRole.ROUTE),),
+        steps=(MotifStep("gated_lane_blend", OpRole.ROUTE),),
         description="Multi-lane dispatch with learned lane scorer",
         support=0,
         avg_loss_ratio=0.0,
@@ -673,7 +674,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_recursion_block",
         motif_class=MOTIF_CLASS_MOE,
-        steps=(MotifStep("route_recursion", OpRole.ROUTE),),
+        steps=(MotifStep("depth_gated_transform", OpRole.ROUTE),),
         description="Adaptive recursion depth per token",
         support=0,
         avg_loss_ratio=0.0,
@@ -682,7 +683,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_topk_sparse",
         motif_class=MOTIF_CLASS_SPARSE,
-        steps=(MotifStep("route_topk", OpRole.ROUTE),),
+        steps=(MotifStep("feature_sparsity", OpRole.ROUTE),),
         description="Hard top-k token selection with STE",
         support=0,
         avg_loss_ratio=0.0,
@@ -791,10 +792,38 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="n_way_routing",
         motif_class=MOTIF_CLASS_MOE,
         steps=(
-            MotifStep("n_way_sparse_router", OpRole.ROUTE),
+            MotifStep("sparse_bottleneck_moe", OpRole.ROUTE),
             MotifStep("rmsnorm", OpRole.NORMALIZE),
         ),
         description="N-way sparse routing → normalize",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
+    # ── True routing — heterogeneous expert dispatch ─────────────────
+    Motif(
+        name="true_hetero_moe",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(MotifStep("hetero_moe", OpRole.ROUTE),),
+        description="True heterogeneous MoE: routes tokens to attention, conv, or SSM experts",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
+    Motif(
+        name="true_arch_router",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(MotifStep("arch_router", OpRole.ROUTE),),
+        description="Architecture router: tokens choose transformer, mamba, or MLP style",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=2.5,
+    ),
+    Motif(
+        name="true_compute_budget",
+        motif_class=MOTIF_CLASS_MOE,
+        steps=(MotifStep("compute_budget_router", OpRole.ROUTE),),
+        description="Compute budget router: easy→cheap linear, medium→conv, hard→attention",
         support=0,
         avg_loss_ratio=0.0,
         lift=2.5,
@@ -1105,7 +1134,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="gate_entropy",
         motif_class=MOTIF_CLASS_GATE,
         steps=(
-            MotifStep("entropy_score", OpRole.GATE),
+            MotifStep("token_entropy", OpRole.GATE),
             MotifStep("linear_proj_up", OpRole.PROJECT),
         ),
         description="entropy_score (→dim=1) → linear_proj_up (restores dim)",
@@ -1117,7 +1146,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="gate_progressive",
         motif_class=MOTIF_CLASS_GATE,
         steps=(
-            MotifStep("progressive_compression_gate", OpRole.GATE),
+            MotifStep("adaptive_rank_gate", OpRole.GATE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
         description="Progressive compression gate → projection",
@@ -1144,7 +1173,9 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_early_exit",
         motif_class=MOTIF_CLASS_GATE,
-        steps=(MotifStep("early_exit", OpRole.ROUTE, config={"threshold": 0.5}),),
+        steps=(
+            MotifStep("confidence_token_gate", OpRole.ROUTE, config={"threshold": 0.5}),
+        ),
         description="Early-exit confidence gate (auto-bypassed)",
         support=0,
         avg_loss_ratio=0.0,
@@ -1153,7 +1184,9 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
     Motif(
         name="route_cascade",
         motif_class=MOTIF_CLASS_GATE,
-        steps=(MotifStep("cascade", OpRole.ROUTE, config={"threshold": 0.5}),),
+        steps=(
+            MotifStep("learned_token_gate", OpRole.ROUTE, config={"threshold": 0.5}),
+        ),
         description="Cascade difficulty gate (auto-bypassed)",
         support=0,
         avg_loss_ratio=0.0,
@@ -1163,7 +1196,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="route_adaptive_recursion",
         motif_class=MOTIF_CLASS_GATE,
         steps=(
-            MotifStep("adaptive_recursion", OpRole.ROUTE),
+            MotifStep("depth_weighted_proj", OpRole.ROUTE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
         description="Adaptive recursion → projection",
@@ -1178,9 +1211,10 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         steps=(
             MotifStep("rope_rotate", OpRole.POSITION),
             MotifStep("softmax_attention", OpRole.MIX),
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="RoPE → softmax attention → projection",
+        description="RoPE → softmax attention → norm → projection",
         support=0,
         avg_loss_ratio=0.0,
         lift=1.5,
@@ -1189,14 +1223,14 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         name="attn_causal_mask",
         motif_class=MOTIF_CLASS_ATTENTION,
         steps=(
-            MotifStep("causal_mask", OpRole.POSITION),
             MotifStep("softmax_attention", OpRole.MIX),
+            MotifStep("rmsnorm", OpRole.NORMALIZE),
             MotifStep("linear_proj", OpRole.PROJECT),
         ),
-        description="Causal mask → softmax attention → projection",
+        description="Softmax attention → norm → projection (causality handled internally)",
         support=0,
         avg_loss_ratio=0.0,
-        lift=0.05,  # Near-zero: softmax_attention already handles causality internally
+        lift=0.05,
     ),
     Motif(
         name="attn_sliding_window",
@@ -1723,6 +1757,98 @@ MATH_SPACE_RULES: Dict[str, Dict] = {
         "must_follow": {"hyp_linear"},
         "must_follow_with": {"log_map", "linear_proj"},
     },
+    # Numerically risky ops: must be preceded by norm to bound activations
+    "cosine_similarity": {"must_precede": {"rmsnorm", "layernorm"}},
+    "cumprod_safe": {"must_precede": {"rmsnorm", "layernorm"}},
+    "div_safe": {"must_precede": {"rmsnorm", "layernorm"}},
+    "exp": {"must_precede": {"rmsnorm", "layernorm"}},
+    "hyperbolic_norm": {"must_precede": {"rmsnorm", "layernorm"}},
+    "log": {"must_precede": {"rmsnorm", "layernorm"}},
+    "reciprocal": {"must_precede": {"rmsnorm", "layernorm"}},
+    "sqrt": {"must_precede": {"rmsnorm", "layernorm"}},
+    # Ops with domain constraints
+    "spike_rate_code": {"must_precede": {"rmsnorm", "layernorm", "lif_neuron"}},
+    "padic_gate": {"must_precede": {"rmsnorm", "layernorm"}},
+    "chebyshev_spectral_mix": {"must_precede": {"rmsnorm", "layernorm"}},
+    "kronecker_linear": {"must_precede": {"rmsnorm", "layernorm"}},
+    "sparse_bottleneck_moe": {"must_precede": {"rmsnorm", "layernorm"}},
+    "integral_kernel": {"must_precede": {"rmsnorm", "layernorm"}},
+    "basis_expansion": {"must_precede": {"rmsnorm", "layernorm"}},
+    "rotor_transform": {"must_precede": {"rmsnorm", "layernorm"}},
+    # Tropical routing ops: tropical algebraic type amplifies via min/max,
+    # must be preceded by norm and followed by projection to re-densify gradients.
+    "tropical_moe": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {"linear_proj", "linear_proj_down", "gated_linear"},
+    },
+    "tropical_router": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {"linear_proj", "linear_proj_down", "gated_linear"},
+    },
+    # Sequence-length-altering ops: SSM/recurrent ops assume fixed sequence
+    # length and will crash or produce garbage after these ops.
+    "adjacent_token_merge": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "linear_proj_up",
+            "gated_linear",
+            "fused_linear_gelu",
+            "gelu",
+            "silu",
+            "relu",
+            # Data-mined: top-3 token_merge graphs (loss_ratio 0.006–0.043)
+            # use conv1d_seq/swiglu_mlp after merge.  Post-merge rmsnorm
+            # satisfies conv1d_seq.must_precede when conv follows merge.
+            "conv1d_seq",
+            "swiglu_mlp",
+            "rmsnorm",
+            "layernorm",
+        },
+    },
+    "depth_token_mask": {
+        "must_precede": {"rmsnorm", "layernorm"},
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "linear_proj_up",
+            "gated_linear",
+            "fused_linear_gelu",
+        },
+    },
+    # Ops that were in the original audit's must_precede list
+    "exp_map": {"must_precede": {"rmsnorm", "layernorm", "linear_proj"}},
+    "log_map": {"must_follow": {"exp_map", "poincare_add", "hyp_linear"}},
+    "fixed_point_iter": {"must_precede": {"rmsnorm", "layernorm"}},
+    "hyp_distance": {"must_precede": {"exp_map"}},
+    "rwkv_time_mixing": {"must_precede": {"rmsnorm", "layernorm"}},
+    "selective_scan": {"must_precede": {"rmsnorm", "layernorm"}},
+    "n_way_sparse_router": {"must_precede": {"rmsnorm", "layernorm"}},
+    # Mixing ops: 3.3% pass when pred=input, 1% when pred=add, 57% when pred=norm.
+    # Every sequence-mixing op must be preceded by normalization.
+    # Data: 3000 experiments, mixing ops after add → 1% S0 pass rate.
+    "softmax_attention": {
+        "must_precede": {
+            "rmsnorm",
+            "layernorm",
+            "rope_rotate",
+            "causal_mask",
+            "sliding_window_mask",
+        }
+    },
+    "linear_attention": {
+        "must_precede": {"rmsnorm", "layernorm", "sliding_window_mask"}
+    },
+    "diff_attention": {"must_precede": {"rmsnorm", "layernorm"}},
+    "graph_attention": {"must_precede": {"rmsnorm", "layernorm"}},
+    "local_window_attn": {
+        "must_precede": {"rmsnorm", "layernorm", "sliding_window_mask"}
+    },
+    "multi_head_mix": {"must_precede": {"rmsnorm", "layernorm"}},
+    "gated_delta": {"must_precede": {"rmsnorm", "layernorm"}},
+    "conv1d_seq": {"must_precede": {"rmsnorm", "layernorm"}},
+    "latent_attention_compressor": {"must_precede": {"rmsnorm", "layernorm"}},
 }
 
 

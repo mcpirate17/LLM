@@ -397,7 +397,7 @@ class TestWikiTextEval:
             assert result["wikitext_score"] is not None
             assert 0.0 <= result["wikitext_score"] <= 1.0
             assert result["train_final_loss"] > 0
-            assert result["variant"] == "wikitext-2-raw-v1"
+            assert result["variant"] == "wikitext-103-raw-v1"
 
 
 # ── Notebook Schema ──────────────────────────────────────────────────

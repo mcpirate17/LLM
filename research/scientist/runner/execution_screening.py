@@ -1068,7 +1068,6 @@ class _ExecutionScreeningMixin:
             )
         except Exception as e:
             logger.debug("Insight grammar adjustment failed: %s", e)
-        old_weights = dict(grammar.category_weights)
 
         if grammar_weights:
             old_weights = dict(grammar.category_weights)
@@ -1271,6 +1270,97 @@ class _ExecutionScreeningMixin:
                 0, before_judgment - len(graphs)
             )
         results["funnel_counts"]["post_judgment"] = len(graphs)
+
+        # ── Ensemble pre-screener gate: skip graphs with P(pass_s1) < threshold ──
+        # Combines GBM (flat features) + GraphPredictor (topology features) +
+        # Bayesian (temporal op weights) + InteractionModel (pair stability).
+        # Falls back to GBM-only if ensemble components unavailable.
+        _ensemble = None
+        if config.gbm_prescreener_enabled and graphs:
+            try:
+                from ..intelligence.predictor import (
+                    train_gbm,
+                    train_ensemble,
+                    EnsemblePredictor,
+                )
+                from ...synthesis.graph_features import (
+                    extract_graph_features,
+                    enrich_with_op_stats,
+                    load_op_stats,
+                )
+
+                db_path = (
+                    str(nb.db_path)
+                    if hasattr(nb, "db_path")
+                    else "research/lab_notebook.db"
+                )
+                profiling_db = "research/profiling/component_profiles.db"
+
+                # Try full ensemble first, fall back to GBM-only
+                try:
+                    _ensemble = train_ensemble(
+                        db_path=db_path, profiling_db=profiling_db
+                    )
+                except Exception:
+                    _gbm_only = train_gbm(db_path=db_path)
+                    if _gbm_only.is_fitted():
+                        _ensemble = EnsemblePredictor(gbm=_gbm_only)
+
+                if _ensemble is not None and _ensemble.is_fitted():
+                    pre_count = len(graphs)
+                    kept: List = []
+                    skipped = 0
+                    _op_stats_cache = load_op_stats(db_path)
+                    for g in graphs:
+                        gd = g.to_dict()
+                        # Flat features for GBM component
+                        feats = extract_graph_features(gd)
+                        if feats:
+                            nodes = gd.get("nodes") or {}
+                            ops = [
+                                n.get("op_name", "")
+                                for n in nodes.values()
+                                if n.get("op_name", "") != "input"
+                            ]
+                            enrich_with_op_stats(feats, ops, preloaded=_op_stats_cache)
+                        # Ensemble combines GBM (flat feats) + topology + Bayesian + interaction
+                        p_pass = _ensemble.predict_gate(
+                            graph_json=gd,
+                            graph_features=feats if feats else None,
+                        )
+                        if p_pass < config.gbm_gate_threshold:
+                            skipped += 1
+                            try:
+                                nb.record_program_result(
+                                    experiment_id=exp_id,
+                                    graph=g,
+                                    graph_json=json.dumps(gd, separators=(",", ":")),
+                                    status="predictor_skip",
+                                    metrics={"predicted_p_s1": float(p_pass)},
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            kept.append(g)
+                    graphs = kept
+                    results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
+                    results["funnel_counts"]["post_gbm_prescreener"] = len(graphs)
+                    if skipped:
+                        _diag = (
+                            _ensemble.diagnostics()
+                            if hasattr(_ensemble, "diagnostics")
+                            else {}
+                        )
+                        logger.info(
+                            "Ensemble pre-screener: skipped %d/%d graphs (threshold=%.2f, components=%d)",
+                            skipped,
+                            pre_count,
+                            config.gbm_gate_threshold,
+                            _diag.get("n_components", 1),
+                        )
+            except Exception as e:
+                logger.debug("Ensemble pre-screener unavailable: %s", e)
+
         self._update_progress(total_programs=len(graphs))
 
         # Track ops from S0 failures for op_success_rates (not stored in DB)
@@ -1355,32 +1445,35 @@ class _ExecutionScreeningMixin:
             # Models without these can never score on the 135pt efficiency budget.
             _EFFICIENCY_OPS = frozenset(
                 {
-                    "adaptive_lane_mixer",
-                    "adaptive_recursion",
+                    "arch_router",
+                    "compute_budget_router",
+                    "difficulty_blend_3way",
+                    "depth_weighted_proj",
                     "block_sparse_linear",
-                    "cascade",
-                    "compression_mixture_experts",
-                    "early_exit",
+                    "learned_token_gate",
+                    "dual_compression_blend",
+                    "confidence_token_gate",
                     "gated_delta",
                     "gated_linear",
                     "gather_topk",
+                    "hetero_moe",
                     "latent_attention_compressor",
-                    "mixed_recursion_gate",
-                    "mod_topk",
+                    "score_depth_blend",
+                    "depth_token_mask",
                     "moe_2expert",
                     "moe_topk",
-                    "n_way_sparse_router",
+                    "sparse_bottleneck_moe",
                     "nm_sparse_linear",
                     "padic_gate",
-                    "progressive_compression_gate",
-                    "relu_gate_routing",
+                    "adaptive_rank_gate",
+                    "relu_gated_moe",
                     "route_lanes",
                     "route_recursion",
                     "route_topk",
-                    "routing_conditioned_compression",
+                    "signal_conditioned_compression",
                     "sparse_threshold",
                     "ternary_projection",
-                    "token_merge",
+                    "adjacent_token_merge",
                     "topk_gate",
                     "tropical_gate",
                     "tropical_moe",

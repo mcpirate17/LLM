@@ -303,8 +303,10 @@ def _score_failure_risk(
             )
         elif sig in risk_map:
             weight = float(risk_map[sig].get("weight", 1.0))
-            # weight is already 0.05-0.6 scale; convert to penalty
-            sig_penalty = -(1.0 - weight) * 0.3
+            # weight is 0.25-0.65 scale; convert to soft penalty.
+            # Multiplier kept low — failure correlations are often
+            # template-level, not proof the pair itself is broken.
+            sig_penalty = -(1.0 - weight) * 0.15
             penalty += sig_penalty
             if abs(sig_penalty) > 0.05:
                 evidence.append(

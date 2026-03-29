@@ -1,0 +1,173 @@
+{
+  "timestamp": 1774238074.2303352,
+  "uptime_seconds": 690,
+  "health": "critical",
+  "current_experiment": {
+    "mode": "refinement",
+    "programs": 0,
+    "s1": 0,
+    "errors": 0,
+    "idle_seconds": 8
+  },
+  "totals": {
+    "experiments": 4,
+    "programs": 62,
+    "s1_passers": 2,
+    "s1_rate": 3.2,
+    "errors": 5,
+    "triage_runs": 0,
+    "db_locks": 29,
+    "investigation_failures": 1,
+    "consecutive_failures": 15
+  },
+  "recent_errors": [
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:14",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:19",
+      "type": "db_locked"
+    },
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:19",
+      "type": "db_locked"
+    },
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:19",
+      "type": "db_locked"
+    },
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:19",
+      "type": "db_locked"
+    },
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:19",
+      "type": "db_locked"
+    },
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:19",
+      "type": "db_locked"
+    },
+    {
+      "ts": "",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:43:22",
+      "type": "db_locked"
+    },
+    {
+      "ts": "2026-03-22 23:50:09",
+      "type": "error",
+      "module": "research.scientist.api",
+      "message": "Unhandled exception on POST /api/experiments/stop: NameError: name 'reset_native_runner_telemetry' is not defined"
+    },
+    {
+      "ts": "2026-03-22 23:50:10",
+      "type": "investigation_failure",
+      "message": "unsupported format string passed to bytes.__format__"
+    },
+    {
+      "ts": "2026-03-22 23:52:12",
+      "type": "error",
+      "module": "research.scientist.api",
+      "message": "Unhandled exception on POST /api/experiments/stop: NameError: name 'reset_native_runner_telemetry' is not defined"
+    },
+    {
+      "ts": "2026-03-22 23:53:53",
+      "type": "error",
+      "module": "research.scientist.api",
+      "message": "Unhandled exception on POST /api/experiments/stop: NameError: name 'reset_native_runner_telemetry' is not defined"
+    },
+    {
+      "ts": "2026-03-22 23:53:57",
+      "type": "error",
+      "module": "research.scientist.api",
+      "message": "Unhandled exception on POST /api/system/reload: MethodNotAllowed: 405 Method Not Allowed: The method is not allowed for the requested URL."
+    }
+  ],
+  "experiment_transitions": [
+    {
+      "type": "experiment_start",
+      "ts": "2026-03-22 23:43:57",
+      "cycle": 2,
+      "mode": "synthesis",
+      "experiment_number": 1
+    },
+    {
+      "type": "experiment_start",
+      "ts": "2026-03-22 23:51:29",
+      "cycle": 1,
+      "mode": "synthesis",
+      "experiment_number": 2
+    },
+    {
+      "type": "experiment_start",
+      "ts": "2026-03-22 23:53:31",
+      "cycle": 1,
+      "mode": "synthesis",
+      "experiment_number": 3
+    },
+    {
+      "type": "experiment_start",
+      "ts": "2026-03-22 23:54:25",
+      "cycle": 1,
+      "mode": "refinement",
+      "experiment_number": 4
+    }
+  ],
+  "action_needed": [
+    "Database locked 5 times \u2014 concurrent access issue",
+    "Database locked 6 times \u2014 concurrent access issue",
+    "Database locked 7 times \u2014 concurrent access issue",
+    "Database locked 8 times \u2014 concurrent access issue",
+    "Database locked 9 times \u2014 concurrent access issue",
+    "Database locked 10 times \u2014 concurrent access issue",
+    "Database locked 11 times \u2014 concurrent access issue",
+    "Database locked 12 times \u2014 concurrent access issue",
+    "Database locked 13 times \u2014 concurrent access issue",
+    "Database locked 14 times \u2014 concurrent access issue",
+    "Database locked 15 times \u2014 concurrent access issue",
+    "Database locked 16 times \u2014 concurrent access issue",
+    "Database locked 17 times \u2014 concurrent access issue",
+    "Database locked 18 times \u2014 concurrent access issue",
+    "Database locked 19 times \u2014 concurrent access issue",
+    "Database locked 20 times \u2014 concurrent access issue",
+    "Database locked 21 times \u2014 concurrent access issue",
+    "Database locked 22 times \u2014 concurrent access issue",
+    "Database locked 23 times \u2014 concurrent access issue",
+    "Database locked 24 times \u2014 concurrent access issue",
+    "Database locked 25 times \u2014 concurrent access issue",
+    "Database locked 26 times \u2014 concurrent access issue",
+    "Database locked 27 times \u2014 concurrent access issue",
+    "Database locked 28 times \u2014 concurrent access issue",
+    "Database locked 29 times \u2014 concurrent access issue",
+    "Recurring error: unsupported format string passed to bytes.__format__. This error keeps happe",
+    "Recurring error: 'int' and 'bytes'. This error keeps happe"
+  ]
+}

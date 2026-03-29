@@ -11,7 +11,19 @@ export default function useCopyToClipboard() {
 
   const copy = useCallback(async (text) => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for non-secure contexts (e.g. HTTP on non-localhost)
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
       setCopiedValue(text);
       setTimeout(() => setCopiedValue(null), 1200);
     } catch {

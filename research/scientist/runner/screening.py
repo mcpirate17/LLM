@@ -24,8 +24,8 @@ import torch.nn as nn
 
 from ..native_runner import (
     compile_model_native_first as compile_model,
-    record_native_abi_parity_result,
 )
+from ..native.abi import record_native_abi_parity_result
 from ...synthesis.serializer import graph_from_json
 from ...eval.sandbox import safe_eval
 
@@ -248,7 +248,7 @@ class _ScreeningMixin:
         suitable for API responses.
         """
         mode_norm = str(mode or "single").strip().lower()
-        screened = RunConfig.from_dict(config.to_dict())
+        screened = config.copy()
         issues: List[Dict[str, Any]] = []
         adjustments: List[Dict[str, Any]] = []
         risk_score = 0
@@ -436,66 +436,65 @@ class _ScreeningMixin:
             )
             _harden_min_int(
                 "max_ops",
-                4,
+                8,
                 "medium",
-                "max_ops must be >= 4 for search-space viability.",
+                "max_ops must be >= 8 for viable routing architectures.",
                 10,
             )
 
         if mode_norm in {"evolve", "novelty"}:
-            if screened.max_depth > 12:
+            if screened.max_depth > 20:
                 old = screened.max_depth
                 if auto_harden:
-                    screened.max_depth = 12
+                    screened.max_depth = 20
                 _record_issue(
                     key="max_depth",
                     severity="medium",
-                    reason="Capping depth at 12 reduces recursion-overflow risk in search loops.",
-                    old_value=old,
-                    suggested_value=12,
-                    risk_points=12,
-                    adjusted=auto_harden,
-                )
-            if screened.max_ops > 20:
-                old = screened.max_ops
-                if auto_harden:
-                    screened.max_ops = 20
-                _record_issue(
-                    key="max_ops",
-                    severity="medium",
-                    reason="Capping max_ops at 20 reduces recursive expansion risk.",
+                    reason="Capping depth at 20 reduces recursion-overflow risk in search loops.",
                     old_value=old,
                     suggested_value=20,
                     risk_points=12,
                     adjusted=auto_harden,
                 )
-
-            # Complexity-aware search caps: allow exotic multi-lane architectures
-            # (MoE, MoD, routing) that need ~10-15 ops while still preventing
-            # runaway recursion (hard limits remain at 12/20 in evolution).
-            if screened.max_depth > 8:
-                old = screened.max_depth
-                if auto_harden:
-                    screened.max_depth = 8
-                _record_issue(
-                    key="max_depth",
-                    severity="medium",
-                    reason="Capping max_depth at 8 for evolve/novelty (allows exotic architectures).",
-                    old_value=old,
-                    suggested_value=8,
-                    risk_points=8,
-                    adjusted=auto_harden,
-                )
-            if screened.max_ops > 12:
+            if screened.max_ops > 28:
                 old = screened.max_ops
                 if auto_harden:
-                    screened.max_ops = 12
+                    screened.max_ops = 28
                 _record_issue(
                     key="max_ops",
                     severity="medium",
-                    reason="Capping max_ops at 12 for evolve/novelty (allows exotic architectures).",
+                    reason="Capping max_ops at 28 reduces recursive expansion risk.",
                     old_value=old,
-                    suggested_value=12,
+                    suggested_value=28,
+                    risk_points=12,
+                    adjusted=auto_harden,
+                )
+
+            # Complexity-aware search caps: allow multi-lane architectures
+            # (triple-lane split3 needs depth ~14, ops ~21).
+            if screened.max_depth > 16:
+                old = screened.max_depth
+                if auto_harden:
+                    screened.max_depth = 16
+                _record_issue(
+                    key="max_depth",
+                    severity="medium",
+                    reason="Capping max_depth at 16 for evolve/novelty (triple-lane templates need ~14).",
+                    old_value=old,
+                    suggested_value=16,
+                    risk_points=8,
+                    adjusted=auto_harden,
+                )
+            if screened.max_ops > 24:
+                old = screened.max_ops
+                if auto_harden:
+                    screened.max_ops = 24
+                _record_issue(
+                    key="max_ops",
+                    severity="medium",
+                    reason="Capping max_ops at 24 for evolve/novelty (triple-lane split3 needs ~21).",
+                    old_value=old,
+                    suggested_value=24,
                     risk_points=8,
                     adjusted=auto_harden,
                 )

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from ..notebook import LabNotebook
 from ..runner import ExperimentRunner
 from .deps import get_notebook
-from ..native_runner import native_runner_capability_report
+from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
 
 logger = logging.getLogger(__name__)

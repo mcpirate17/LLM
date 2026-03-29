@@ -165,9 +165,25 @@ def stage1_learning_gate(
                     f"not competitive on WikiText-103"
                 )
 
-    # Gate 4: Absolute random baseline
-
-    if final_loss > random_baseline * 0.95:
+    # Gate 4: Absolute random baseline — headroom-aware.
+    #
+    # Models that start far above the entropy floor (e.g., evolution candidates
+    # at init=200+ nats) may plateau just above the baseline after only 750
+    # training steps, despite demonstrating strong learning (loss_ratio < 0.2).
+    # Relax the floor for proven learners; keep it strict for non-learners.
+    if loss_ratio is not None and loss_ratio < 0.20:
+        # Strong learner (≥80% loss reduction) — pass regardless of absolute
+        # floor.  These need more training steps, not rejection.
+        pass
+    elif loss_ratio is not None and loss_ratio < 0.50:
+        # Moderate learner — allow slight overshoot above baseline.
+        if final_loss > random_baseline * 1.05:
+            return False, (
+                f"final_loss={final_loss:.3f} above relaxed baseline "
+                f"({random_baseline * 1.05:.3f}) — moderate learner but "
+                f"not close enough (ratio={loss_ratio:.3f})"
+            )
+    elif final_loss > random_baseline * 0.95:
         return False, (
             f"final_loss={final_loss:.3f} near random baseline "
             f"({random_baseline:.2f}) — model learned nothing meaningful"

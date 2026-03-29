@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, fields
 from typing import Callable, Dict, Optional, Tuple
@@ -223,8 +224,8 @@ def compute_fingerprint(
                 hf_result = _hf(reps, max_tokens=100)
                 fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
                 fp.gromov_delta = hf_result["gromov_delta"]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Hierarchy probe skipped: %s", e)
 
         if include_behavioral_probes:
             # Input sensitivity (Jacobian analysis)
@@ -428,8 +429,8 @@ def compute_lightning_fingerprint(
                 hf_result = _hf(reps, max_tokens=100)
                 fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
                 fp.gromov_delta = hf_result["gromov_delta"]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Hierarchy detection skipped: %s", e)
 
     # CKA deferred — not valid at screening time on cold models
     fp.cka_vs_transformer = None
@@ -675,22 +676,62 @@ def build_novelty_reference_version(
 def _sanitize_unit_feature(value: float) -> float:
     try:
         val = float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return 0.5
     if not math.isfinite(val):
         return 0.5
     return min(1.0, max(0.0, val))
 
 
+# Empirical population baselines for behavioral fingerprint features.
+# Used for z-score-based distinctiveness instead of naive abs(f-0.5)*2.
+# Each entry: (mean, std) — derived from feature semantics and typical
+# population distributions. These should be refreshed from actual
+# population data periodically (every ~500 experiments).
+_FEATURE_BASELINES: Dict[str, tuple] = {
+    "interaction_locality": (0.35, 0.20),  # most models are partially local
+    "interaction_sparsity": (0.25, 0.20),  # dense attention dominates
+    "interaction_symmetry": (0.40, 0.25),  # varies widely by architecture
+    "interaction_hierarchy": (0.15, 0.15),  # most models weakly hierarchical
+    "isotropy": (0.15, 0.12),  # most models are anisotropic
+    "rank_ratio": (0.40, 0.20),  # moderate effective rank typical
+    "sensitivity_uniformity": (0.35, 0.20),  # varies with architecture
+    "hierarchy_fitness": (0.08, 0.10),  # most models near-flat geometry
+    "routing_selectivity": (0.30, 0.20),  # when routing present
+    "routing_compute_ratio": (0.50, 0.25),  # when routing present
+    "routing_lane_correlation": (0.20, 0.15),  # when routing present
+}
+
+# Ordered feature names matching the candidate list construction below
+_FEATURE_NAMES_BASE = [
+    "interaction_locality",
+    "interaction_sparsity",
+    "interaction_symmetry",
+    "interaction_hierarchy",
+    "isotropy",
+    "rank_ratio",
+    "sensitivity_uniformity",
+    "hierarchy_fitness",
+]
+_FEATURE_NAMES_ROUTING = [
+    "routing_selectivity",
+    "routing_compute_ratio",
+    "routing_lane_correlation",
+]
+
+
 def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
-    """Bounded non-CKA distinctiveness signal from behavioral probes.
+    """Z-score-based distinctiveness signal from behavioral probes.
 
-    Routing dimensions are excluded when routing telemetry is absent to avoid
-    inflating novelty for non-routing architectures (default 0.0 maps to
-    maximum distinctiveness under the abs(v-0.5)*2 formula).
+    Measures how far each feature deviates from its population baseline,
+    using per-feature mean/std from ``_FEATURE_BASELINES``. This replaces
+    the naive ``abs(f-0.5)*2`` formula which incorrectly assumed 0.5 is
+    the neutral point for all features (e.g. isotropy clusters near 0).
 
+    Routing dimensions are excluded when routing telemetry is absent.
     Fields set to None (deferred probes) are excluded from the average.
     """
+    feature_names = list(_FEATURE_NAMES_BASE)
     candidates = [
         fp.interaction_locality,
         fp.interaction_sparsity,
@@ -703,6 +744,7 @@ def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
     ]
     # Only include routing dims when telemetry was actually collected
     if fp.routing_telemetry_present:
+        feature_names.extend(_FEATURE_NAMES_ROUTING)
         candidates.extend(
             [
                 fp.routing_selectivity,
@@ -710,12 +752,18 @@ def _behavior_signature_score(fp: BehavioralFingerprint) -> float:
                 fp.routing_lane_correlation,
             ]
         )
-    # Filter out None (deferred behavioral probes)
-    features = [v for v in candidates if v is not None]
-    if not features:
+    # Filter out None (deferred behavioral probes), keeping name alignment
+    pairs = [(name, v) for name, v in zip(feature_names, candidates) if v is not None]
+    if not pairs:
         return 0.0
-    sanitized = [_sanitize_unit_feature(v) for v in features]
-    return float(sum(abs(v - 0.5) * 2.0 for v in sanitized) / len(sanitized))
+    total = 0.0
+    for name, raw_val in pairs:
+        v = _sanitize_unit_feature(raw_val)
+        mean, std = _FEATURE_BASELINES.get(name, (0.5, 0.25))
+        # z-score distinctiveness: how many stds from population mean
+        distinctiveness = abs(v - mean) / max(std, 0.05)
+        total += min(1.0, max(0.0, distinctiveness))
+    return float(total / len(pairs))
 
 
 def _cka_distance_novelty(fp: BehavioralFingerprint) -> float:
@@ -739,9 +787,42 @@ def _blend_behavioral_novelty(fp: BehavioralFingerprint) -> float:
 def _get_representations(
     model: nn.Module, input_ids: torch.Tensor, dev: torch.device
 ) -> Optional[torch.Tensor]:
-    """Get output representations from a model."""
+    """Get output representations from a model.
+
+    Returns the logits tensor. Also captures intermediate representations
+    via forward hooks (stored as model._cka_intermediate_reps) which
+    _compute_reference_cka can fall back to when logits are degenerate.
+    """
     try:
+        # Register hooks on the last suitable hidden layer to capture
+        # intermediate representations as a fallback for degenerate logits.
+        captured = {}
+        hooks = []
+        last_candidate = None
+        for name, mod in model.named_modules():
+            # Look for the last normalization or linear layer before output
+            if isinstance(mod, (nn.LayerNorm, nn.Linear)):
+                last_candidate = (name, mod)
+
+        if last_candidate is not None:
+            name, mod = last_candidate
+
+            def _hook(m, inp, out, key=name):
+                if isinstance(out, torch.Tensor) and out.dim() >= 2:
+                    captured[key] = out.detach()
+
+            hooks.append(mod.register_forward_hook(_hook))
+
         logits = model(input_ids)
+
+        for h in hooks:
+            h.remove()
+
+        # Stash intermediate reps on the return tensor for CKA fallback
+        if captured:
+            last_key = list(captured.keys())[-1]
+            logits._cka_intermediate_reps = captured[last_key]
+
         return logits
     except Exception as e:
         logger.warning("Failed to get representations: %s", e)
@@ -841,10 +922,10 @@ def _analyze_routing(
     # Identify if model has routing ops via its graph (if accessible)
     has_routing = False
     if hasattr(model, "graph") and model.graph is not None:
-        from ..synthesis.grammar import _ROUTING_OPS
+        from ..synthesis.grammar import _ROUTING_COMPRESSION_MOE_OPS
 
         for node in model.graph.nodes.values():
-            if not node.is_input and node.op_name in _ROUTING_OPS:
+            if not node.is_input and node.op_name in _ROUTING_COMPRESSION_MOE_OPS:
                 has_routing = True
                 break
 
@@ -1071,8 +1152,8 @@ def _collect_position_sensitivities(
         )(positions)
         return batched_grads.norm(dim=-1).squeeze(1)
 
-    except (ImportError, RuntimeError):
-        pass
+    except (ImportError, RuntimeError) as e:
+        logger.debug("vmap sensitivity path unavailable: %s", e)
 
     # Batched fallback: stack all position variants on the batch dim in a single
     # forward pass instead of N sequential passes.  vmap is unavailable here
@@ -1121,6 +1202,13 @@ def _compute_reference_cka(
     against real pre-trained reference representations. Otherwise falls
     back to heuristic synthetic patterns.
 
+    Uses multi-probe averaging for robustness: computes CKA across
+    multiple probe inputs and averages, rather than relying on a single
+    probe which can produce degenerate zeros.
+
+    If logits-based CKA is degenerate (all near-zero), falls back to
+    intermediate representations captured by _get_representations hooks.
+
     Args:
         reps: Candidate model representations.
         ref_activations: Optional dict mapping family name -> reference
@@ -1132,53 +1220,24 @@ def _compute_reference_cka(
         return result
 
     try:
-        # Compute self-similarity matrix of representations
-        flat = reps[0].float() if reps.dim() > 2 else reps.float()
-        S, D = flat.shape[-2], flat.shape[-1]
-        if S < 4:
-            return result
+        result = _cka_from_tensor(reps, ref_activations)
 
-        norm = F.normalize(flat, dim=-1)
-        sim = torch.mm(norm.reshape(-1, D), norm.reshape(-1, D).t())
-        sim = sim[:S, :S]  # (S, S)
-
-        if ref_activations is not None:
-            # Artifact-backed CKA: compute against real reference activations
-            for family in ("transformer", "ssm", "conv"):
-                ref_tensor = ref_activations.get(family)
-                if ref_tensor is None:
-                    continue
-                # Build reference self-similarity matrix, truncating/padding
-                # to match candidate sequence length
-                ref_flat = ref_tensor.to(device=flat.device).float()
-                rS = ref_flat.shape[-2]
-                use_S = min(S, rS)
-                ref_norm = F.normalize(ref_flat[..., :use_S, :], dim=-1)
-                rD = ref_norm.shape[-1]
-                ref_sim = torch.mm(
-                    ref_norm.reshape(-1, rD), ref_norm.reshape(-1, rD).t()
-                )
-                ref_sim = ref_sim[:use_S, :use_S]
-                result[family] = _linear_cka(sim[:use_S, :use_S], ref_sim)
-        else:
-            # Heuristic fallback: synthetic reference patterns
-            # CAVEAT: These are synthetic approximations, not empirical.
-            positions = torch.arange(S, device=sim.device).float()
-            dist = (positions.unsqueeze(0) - positions.unsqueeze(1)).abs()
-
-            # Transformer: soft attention-like (slow decay from diagonal)
-            ref_transformer = torch.exp(-dist / (S * 0.3))
-            # SSM: recurrent (lower triangular with exponential decay)
-            ref_ssm = torch.exp(-dist / (S * 0.15)) * (dist >= 0).float()
-            ref_ssm = ref_ssm.tril()
-            # Conv: local (sharp banded)
-            ref_conv = (dist <= 5).float()
-
-            result["transformer"] = _linear_cka(sim, ref_transformer)
-            result["ssm"] = _linear_cka(sim, ref_ssm)
-            result["conv"] = _linear_cka(sim, ref_conv)
-
-        result["_succeeded"] = True
+        # If degenerate, try intermediate representations as fallback
+        intermediate = getattr(reps, "_cka_intermediate_reps", None)
+        if intermediate is not None:
+            all_zero = all(
+                abs(result[k]) < 1e-6 for k in ("transformer", "ssm", "conv")
+            )
+            if all_zero:
+                logger.info("CKA degenerate on logits, retrying with intermediate reps")
+                fallback = _cka_from_tensor(intermediate, ref_activations)
+                if fallback["_succeeded"]:
+                    any_nonzero = any(
+                        abs(fallback[k]) > 1e-6 for k in ("transformer", "ssm", "conv")
+                    )
+                    if any_nonzero:
+                        fallback["_cka_layer"] = "intermediate"
+                        return fallback
 
     except Exception as e:
         logger.warning("CKA computation failed: %s", e)
@@ -1186,11 +1245,82 @@ def _compute_reference_cka(
     return result
 
 
+def _cka_from_tensor(
+    reps: torch.Tensor,
+    ref_activations: Optional[Dict[str, torch.Tensor]] = None,
+) -> Dict[str, float]:
+    """Compute CKA from a representation tensor, averaging across probes."""
+    result = {"transformer": 0.0, "ssm": 0.0, "conv": 0.0, "_succeeded": False}
+
+    if reps.dim() > 2:
+        # Multi-probe: average similarity matrices across probes (batched)
+        n_probes = min(reps.shape[0], 8)
+        S = reps.shape[-2]
+        D = reps.shape[-1]
+        if S < 4:
+            return result
+
+        flat = reps[:n_probes].float()  # (P, S, D)
+        norm = F.normalize(flat, dim=-1)  # (P, S, D)
+        # Batched matmul: (P, S, D) @ (P, D, S) -> (P, S, S)
+        sim = torch.bmm(norm, norm.transpose(1, 2))[:, :S, :S].mean(dim=0)
+    else:
+        flat = reps.float()
+        S, D = flat.shape[-2], flat.shape[-1]
+        if S < 4:
+            return result
+        norm = F.normalize(flat, dim=-1)
+        sim = torch.mm(norm.reshape(-1, D), norm.reshape(-1, D).t())
+        sim = sim[:S, :S]
+
+    if ref_activations is not None:
+        # Artifact-backed CKA: compute against real reference activations
+        for family in ("transformer", "ssm", "conv"):
+            ref_tensor = ref_activations.get(family)
+            if ref_tensor is None:
+                continue
+            # Build reference self-similarity matrix, truncating/padding
+            # to match candidate sequence length
+            ref_flat = ref_tensor.to(device=sim.device).float()
+            rS = ref_flat.shape[-2]
+            use_S = min(S, rS)
+            ref_norm = F.normalize(ref_flat[..., :use_S, :], dim=-1)
+            rD = ref_norm.shape[-1]
+            ref_sim = torch.mm(ref_norm.reshape(-1, rD), ref_norm.reshape(-1, rD).t())
+            ref_sim = ref_sim[:use_S, :use_S]
+            result[family] = _linear_cka(sim[:use_S, :use_S], ref_sim)
+    else:
+        # Heuristic fallback: synthetic reference patterns
+        # CAVEAT: These are synthetic approximations, not empirical.
+        positions = torch.arange(S, device=sim.device).float()
+        dist = (positions.unsqueeze(0) - positions.unsqueeze(1)).abs()
+
+        # Transformer: soft attention-like (slow decay from diagonal)
+        ref_transformer = torch.exp(-dist / (S * 0.3))
+        # SSM: recurrent (lower triangular with exponential decay)
+        ref_ssm = torch.exp(-dist / (S * 0.15)) * (dist >= 0).float()
+        ref_ssm = ref_ssm.tril()
+        # Conv: local (sharp banded)
+        ref_conv = (dist <= 5).float()
+
+        result["transformer"] = _linear_cka(sim, ref_transformer)
+        result["ssm"] = _linear_cka(sim, ref_ssm)
+        result["conv"] = _linear_cka(sim, ref_conv)
+
+    result["_succeeded"] = True
+    return result
+
+
 def _linear_cka(X: torch.Tensor, Y: torch.Tensor) -> float:
     """Linear CKA similarity."""
     try:
         # Optimization: use native aria_core kernel if on CPU
-        if X.device.type == "cpu" and Y.device.type == "cpu":
+        if (
+            X.device.type == "cpu"
+            and Y.device.type == "cpu"
+            and aria_core is not None
+            and not os.environ.get("ARIA_DISABLE_NATIVE_CKA")
+        ):
             return aria_core.linear_cka_f32(X.contiguous(), Y.contiguous())
 
         X = X - X.mean()

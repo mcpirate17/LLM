@@ -233,6 +233,12 @@ def promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     baseline_ratio = safe_float(entry.get("validation_baseline_ratio"))
     std = safe_float(entry.get("validation_multi_seed_std"))
 
+    # Replication aggregates from leaderboard
+    replication_n = int(entry.get("replication_n") or 0)
+    replication_loss_mean = safe_float(entry.get("replication_loss_mean"))
+    replication_loss_std = safe_float(entry.get("replication_loss_std"))
+    replication_gap = safe_float(entry.get("replication_best_vs_mean_gap"))
+
     checks = {
         "baselineEvidence": baseline_ratio is not None,
         "baselineBeat": baseline_ratio is not None and baseline_ratio < 1.0,
@@ -240,6 +246,7 @@ def promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
         "boundedStd": std is not None and std <= 0.12,
         "ckaArtifactBacked": entry.get("cka_source") == "artifact",
         "repeatObserved": seen_runs >= 3,
+        "replicatedEvidence": replication_n >= 3,
     }
     evidence_count = sum(1 for ok in checks.values() if ok)
     total_checks = len(checks)
@@ -288,6 +295,22 @@ def promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     )
     missing = [name for name, ok in checks.items() if not ok]
 
+    # Replication summary: use mean±std instead of single best run
+    insufficient_replication = replication_n < 3
+    replication_summary = None
+    if replication_n >= 1 and replication_loss_mean is not None:
+        replication_summary = {
+            "n_runs": replication_n,
+            "loss_mean": round(replication_loss_mean, 4),
+            "loss_std": round(replication_loss_std, 4)
+            if replication_loss_std is not None
+            else None,
+            "best_vs_mean_gap": round(replication_gap, 4)
+            if replication_gap is not None
+            else None,
+            "sufficient": not insufficient_replication,
+        }
+
     return {
         "score": score,
         "seen_runs": seen_runs,
@@ -295,6 +318,8 @@ def promotion_evidence_for_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
         "evidence_count": evidence_count,
         "total_checks": total_checks,
         "missing": missing,
+        "replication": replication_summary,
+        "insufficient_replication": insufficient_replication,
     }
 
 

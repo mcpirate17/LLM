@@ -28,12 +28,12 @@ MODEL_DIM: int = 256
 VOCAB_SIZE: int = 100277  # tiktoken cl100k_base
 MAX_SEQ_LEN: int = 256  # stage-1 / screening
 VALIDATION_SEQ_LEN: int = 512  # investigation + validation
-N_LAYERS: int = 4
+N_LAYERS: int = 6
 N_HEADS: int = 8
 N_KV_HEADS: int = 4
 
 # ── Training defaults (stage budgets) ────────────────────────────────
-STAGE1_STEPS: int = 500
+STAGE1_STEPS: int = 750
 STAGE1_LR: float = 3e-4
 STAGE1_BATCH_SIZE: int = 4
 INVESTIGATION_STEPS: int = 2500

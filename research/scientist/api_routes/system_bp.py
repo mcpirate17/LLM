@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from flask import jsonify, request
 
-from ..native_runner import native_runner_capability_report
+from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
 from ..runner import RunConfig
 from ...perf_contract import list_recent_perf_artifacts, summarize_perf_artifacts

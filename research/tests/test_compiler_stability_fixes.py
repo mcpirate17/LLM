@@ -7,7 +7,7 @@ Tests for compiler-level stability fixes:
 
 import torch
 from research.synthesis.compiler import _build_block_sparse_mask
-from research.synthesis.compiler_ops_routing import _op_route_topk
+from research.synthesis.compiler_ops_routing import _op_feature_sparsity
 from research.synthesis.compiler_ops_mathspaces import _op_spectral_filter
 
 
@@ -46,13 +46,13 @@ class TestSpectralFilterClamp:
         assert module.freq_mask.grad is not None
 
 
-class TestRouteTopkScaleCap:
+class TestFeatureSparsityScaleCap:
     def test_extreme_sparsity_scale_capped(self):
         """With k=1 and D=512, scale should be capped at 4.0, not sqrt(512)=22.6."""
         module = type("M", (), {"_routing_ctx": {}})()
         # Use uniform input so topk selection doesn't amplify by picking outliers.
         x = torch.ones(1, 4, 512)
-        out = _op_route_topk(module, [x], {"k": 1})
+        out = _op_feature_sparsity(module, [x], {"k": 1})
         # With uniform input, selected value = 1.0 * scale.
         # If scale were sqrt(512)=22.6, nonzero would be 22.6.
         # With cap at 4.0, nonzero should be 4.0.
@@ -67,7 +67,7 @@ class TestRouteTopkScaleCap:
         module = type("M", (), {"_routing_ctx": {}})()
         x = torch.ones(1, 2, 64)
         k = 16  # D//4
-        out = _op_route_topk(module, [x], {"k": k})
+        out = _op_feature_sparsity(module, [x], {"k": k})
         # scale = sqrt(64/16) = 2.0, well below cap
         nonzero = out[out != 0]
         assert nonzero.numel() > 0
@@ -76,7 +76,7 @@ class TestRouteTopkScaleCap:
         """Gradients should flow through route_topk."""
         module = type("M", (), {"_routing_ctx": {}})()
         x = torch.randn(1, 2, 32, requires_grad=True)
-        out = _op_route_topk(module, [x], {"k": 4})
+        out = _op_feature_sparsity(module, [x], {"k": 4})
         out.sum().backward()
         assert x.grad is not None
 

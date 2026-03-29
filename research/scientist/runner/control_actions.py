@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, Optional
 
 
+from ..native.telemetry import reset_native_runner_telemetry
 from ..notebook import ExperimentEntry, LabNotebook
 
 from ._types import RunConfig

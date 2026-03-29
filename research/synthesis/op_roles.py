@@ -14,8 +14,8 @@ Roles:
   position  — Positional info. Applied once near input.
   reduce    — Dimension reduction ops. Used in specific contexts only.
   residual  — Binary ops for skip connections (add, mul).
-  unsafe    — Binary ops needing template-level input routing.
-              Never placed by grammar directly; handled by dedicated templates.
+  unsafe    — Fallback for truly unknown ops. Not used for known ops;
+              context rules enforce valid placement instead of blanket exclusion.
 """
 
 from __future__ import annotations
@@ -87,31 +87,38 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "concat": OpRole.ROUTE,
     "moe_topk": OpRole.ROUTE,
     "moe_2expert": OpRole.ROUTE,
-    "mod_topk": OpRole.ROUTE,
-    "early_exit": OpRole.ROUTE,
-    "adaptive_recursion": OpRole.ROUTE,
-    "token_merge": OpRole.ROUTE,
-    "cascade": OpRole.ROUTE,
-    "speculative": OpRole.ROUTE,
-    "route_topk": OpRole.ROUTE,
-    "route_lanes": OpRole.ROUTE,
-    "route_recursion": OpRole.ROUTE,
-    "adaptive_lane_mixer": OpRole.ROUTE,
-    "mixed_recursion_gate": OpRole.ROUTE,
-    "routing_conditioned_compression": OpRole.ROUTE,
-    "compression_mixture_experts": OpRole.ROUTE,
+    "depth_token_mask": OpRole.ROUTE,  # was: mod_topk
+    "confidence_token_gate": OpRole.ROUTE,  # was: early_exit
+    "depth_weighted_proj": OpRole.ROUTE,  # was: adaptive_recursion
+    "adjacent_token_merge": OpRole.ROUTE,  # was: token_merge
+    "learned_token_gate": OpRole.ROUTE,  # was: cascade
+    "cheap_verify_blend": OpRole.ROUTE,  # was: speculative
+    "feature_sparsity": OpRole.ROUTE,
+    "route_topk": OpRole.ROUTE,  # alias for feature_sparsity
+    "gated_lane_blend": OpRole.ROUTE,
+    "route_lanes": OpRole.ROUTE,  # alias for gated_lane_blend
+    "depth_gated_transform": OpRole.ROUTE,
+    "route_recursion": OpRole.ROUTE,  # alias for depth_gated_transform
+    "difficulty_blend_3way": OpRole.ROUTE,  # was: adaptive_lane_mixer
+    "score_depth_blend": OpRole.ROUTE,  # was: mixed_recursion_gate
+    "signal_conditioned_compression": OpRole.ROUTE,
+    # True token-routing ops (heterogeneous experts)
+    "hetero_moe": OpRole.ROUTE,
+    "arch_router": OpRole.ROUTE,
+    "compute_budget_router": OpRole.ROUTE,
+    "dual_compression_blend": OpRole.ROUTE,  # was: compression_mixture_experts
     "gather_topk": OpRole.ROUTE,
-    "n_way_sparse_router": OpRole.ROUTE,
+    "sparse_bottleneck_moe": OpRole.ROUTE,  # was: n_way_sparse_router
     # ── GATE: multiplicative modulation ─────────────────────────────
     "gated_linear": OpRole.GATE,
     "swiglu_mlp": OpRole.GATE,
     "learnable_scale": OpRole.GATE,
     "learnable_bias": OpRole.GATE,
     "topk_gate": OpRole.GATE,
-    "relu_gate_routing": OpRole.GATE,
-    "progressive_compression_gate": OpRole.GATE,
-    "token_type_classifier": OpRole.GATE,
-    "entropy_score": OpRole.GATE,
+    "relu_gated_moe": OpRole.GATE,
+    "adaptive_rank_gate": OpRole.GATE,  # was: progressive_compression_gate
+    "token_class_proj": OpRole.GATE,  # was: token_type_classifier
+    "token_entropy": OpRole.GATE,  # was: entropy_score
     # ── POSITION: positional information ────────────────────────────
     "rope_rotate": OpRole.POSITION,
     "causal_mask": OpRole.POSITION,
@@ -180,13 +187,16 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "ultrametric_attention": OpRole.MIX,
     # ── Frequency ────────────────────────────────────────────────
     "spectral_filter": OpRole.MIX,
-    # ── UNSAFE: binary ops needing template-level input routing ───
-    "div_safe": OpRole.UNSAFE,
-    "cumprod_safe": OpRole.REDUCE,  # safe within motif (sigmoid predecessor)
-    "matmul": OpRole.UNSAFE,
-    "outer_product": OpRole.UNSAFE,
-    "cosine_similarity": OpRole.UNSAFE,
-    "geometric_product": OpRole.UNSAFE,
+    "chebyshev_spectral_mix": OpRole.MIX,
+    "kronecker_linear": OpRole.PROJECT,
+    "hyp_tangent_nonlinear": OpRole.ACTIVATE,
+    # ── Binary / multi-input ops (context rules enforce valid placement) ──
+    "div_safe": OpRole.RESIDUAL,
+    "cumprod_safe": OpRole.REDUCE,
+    "matmul": OpRole.PROJECT,
+    "outer_product": OpRole.PROJECT,
+    "cosine_similarity": OpRole.REDUCE,
+    "geometric_product": OpRole.MIX,
     # ── Virtual graph nodes (not real ops, neutral role) ──────────
     "input": OpRole.RESIDUAL,
     "output": OpRole.RESIDUAL,
@@ -200,12 +210,12 @@ _CATEGORY_ROLE_FALLBACK: Dict[str, OpRole] = {
     "elementwise_unary": OpRole.ACTIVATE,
     "elementwise_binary": OpRole.RESIDUAL,
     "reduction": OpRole.REDUCE,
-    "linear_algebra": OpRole.UNSAFE,
+    "linear_algebra": OpRole.PROJECT,
     "structural": OpRole.ROUTE,
     "parameterized": OpRole.PROJECT,
     "mixing": OpRole.MIX,
     "sequence": OpRole.MIX,
-    "frequency": OpRole.UNSAFE,
+    "frequency": OpRole.MIX,
     "math_space": OpRole.MIX,
     "functional": OpRole.ROUTE,
 }
@@ -221,8 +231,8 @@ def get_role(op_name: str) -> OpRole:
 
     prim = PRIMITIVE_REGISTRY.get(op_name)
     if prim is not None:
-        return _CATEGORY_ROLE_FALLBACK.get(prim.category.value, OpRole.UNSAFE)
-    return OpRole.UNSAFE
+        return _CATEGORY_ROLE_FALLBACK.get(prim.category.value, OpRole.ACTIVATE)
+    return OpRole.ACTIVATE
 
 
 def ops_by_role(role: OpRole) -> FrozenSet[str]:
@@ -316,14 +326,26 @@ VALID_SUCCESSORS: Dict[OpRole, FrozenSet[OpRole]] = {
             OpRole.REDUCE,
         }
     ),
-    OpRole.UNSAFE: frozenset(),  # Never placed by grammar
+    OpRole.UNSAFE: frozenset(),  # Fallback for truly unknown ops
 }
 
 
 # ── Convenience sets ────────────────────────────────────────────────
 
-#: Ops that must never be sampled by the grammar.
-GRAMMAR_EXCLUDED_ROLES: FrozenSet[OpRole] = frozenset({OpRole.UNSAFE})
+#: MoE / routing-with-experts ops. Total params != active params per token.
+#: Used to exempt MoE models from param-count penalties in scoring.
+MOE_OPS: FrozenSet[str] = frozenset(
+    {
+        "moe_topk",
+        "moe_2expert",
+        "relu_gated_moe",
+        "sparse_bottleneck_moe",
+        "hetero_moe",
+        "arch_router",
+        "compute_budget_router",
+        "tropical_moe",
+    }
+)
 
 #: Roles that contribute learnable parameters.
 PARAM_ROLES: FrozenSet[OpRole] = frozenset(

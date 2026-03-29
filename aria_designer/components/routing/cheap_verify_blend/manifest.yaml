@@ -1,0 +1,57 @@
+id: cheap_verify_blend
+version: 1.0.0
+name: Speculative
+category: routing
+tags:
+- dynamic_routing
+- speculative
+- compute_routing
+status: approved
+description: 'Speculative: run cheap path, verify with expensive path'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Speculative: run cheap path, verify with expensive path
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Speculative: run cheap path, verify with expensive path
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

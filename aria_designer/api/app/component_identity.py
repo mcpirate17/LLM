@@ -38,7 +38,7 @@ _CANONICAL_MAP: Dict[str, str] = {
     "selective_scan": "linear_algebra/selective_scan",
     "conv1d_seq": "linear_algebra/conv1d_seq",
     "moe_topk": "channel_mixing/moe_topk",
-    "difficulty_scorer": "routing/difficulty_scorer",
+    "token_difficulty_proj": "routing/token_difficulty_proj",
     "split2": "structural/split2",
     "split3": "structural/split3",
     "concat": "structural/concat",
@@ -52,10 +52,13 @@ _CANONICAL_MAP: Dict[str, str] = {
     # ── Additional on-disk components ─────────────────────────────
     "conv_only": "mixing/conv_only",
     "swiglu_mlp": "channel_mixing/swiglu_mlp",
-    "early_exit": "routing/early_exit",
+    "confidence_token_gate": "routing/confidence_token_gate",
     "matmul": "linear_algebra/matmul",
     "topk_gate": "linear_algebra/topk_gate",
     "rope_rotate": "positional/rope_rotate",
+    "identity": "channel_mixing/identity_skip",
+    "identity_skip": "channel_mixing/identity_skip",
+    "spectral_filter": "frequency/spectral_filter",
 }
 
 

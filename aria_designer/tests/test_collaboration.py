@@ -30,10 +30,15 @@ def test_websocket_isolation():
     client = TestClient(app)
 
     with client.websocket_connect("/api/v1/collaboration/wf_a") as ws_a:
-        with client.websocket_connect("/api/v1/collaboration/wf_b"):
+        with client.websocket_connect("/api/v1/collaboration/wf_b") as ws_b:
             ws_a.send_json({"msg": "for_a"})
 
-            # ws_b should NOT receive it. We use a timeout to check.
-            # Simple way to check no message: try to receive with a short timeout
-            # (TestClient receive_json is blocking, so we might need a different approach or just trust logic)
-            pass
+            # ws_a should receive its own message back (broadcast)
+            received_a = ws_a.receive_json()
+            assert received_a["msg"] == "for_a"
+
+            # ws_b should NOT receive it — verify by sending on wf_b
+            # and confirming only wf_b's message arrives there
+            ws_b.send_json({"msg": "for_b"})
+            received_b = ws_b.receive_json()
+            assert received_b["msg"] == "for_b"

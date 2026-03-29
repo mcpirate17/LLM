@@ -28,24 +28,24 @@ class _ExecutionSearchMixin:
     # Ops considered "routing" for dashboard template stats
     _ROUTING_OPS = frozenset(
         {
-            "entropy_score",
-            "token_type_classifier",
+            "token_entropy",
+            "token_class_proj",
             "route_topk",
             "route_lanes",
             "route_recursion",
-            "adaptive_lane_mixer",
-            "mixed_recursion_gate",
-            "early_exit",
-            "cascade",
-            "speculative",
-            "adaptive_recursion",
-            "mod_topk",
+            "difficulty_blend_3way",
+            "score_depth_blend",
+            "confidence_token_gate",
+            "learned_token_gate",
+            "cheap_verify_blend",
+            "depth_weighted_proj",
+            "depth_token_mask",
             "token_merging",
-            "token_merge",
-            "relu_gate_routing",
+            "adjacent_token_merge",
+            "relu_gated_moe",
             "moe_topk",
             "moe_2expert",
-            "routing_conditioned_compression",
+            "signal_conditioned_compression",
             "mixture_of_experts",
             "moe",
             "conditional_compute",
@@ -73,6 +73,9 @@ class _ExecutionSearchMixin:
                 fitness_weight=config.fitness_weight,
                 novelty_weight=config.novelty_weight,
                 grammar_config=grammar,
+                exploit_prob=config.exploit_prob,
+                local_mutation_prob=config.local_mutation_prob,
+                exploit_top_k=config.exploit_top_k,
             )
 
             fitness_cache: dict = {}
@@ -320,6 +323,8 @@ class _ExecutionSearchMixin:
                 population_size=config.population_size,
                 n_generations=config.n_generations,
                 grammar_config=grammar,
+                exploit_prob=config.exploit_prob,
+                local_mutation_prob=config.local_mutation_prob,
                 debug=config.debug,
             )
 

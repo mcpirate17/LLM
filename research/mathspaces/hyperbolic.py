@@ -151,7 +151,7 @@ class HyperbolicLinear(nn.Module):
         # Map to tangent space, transform, map back
         c = self.c
         euclidean = log_map(x, c=c)
-        transformed = F.linear(euclidean, self.weight)
+        transformed = F.linear(euclidean, self.weight.to(euclidean.dtype))
         return exp_map(transformed, c=c)
 
 
@@ -188,7 +188,7 @@ def execute_hyp_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Hyperbolic linear transformation."""
     c = _module_curvature(module)
     euclidean = log_map(x, c=c)
-    transformed = F.linear(euclidean, module.weight)
+    transformed = F.linear(euclidean, module.weight.to(euclidean.dtype))
     return exp_map(transformed, c=c)
 
 

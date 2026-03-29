@@ -2,6 +2,8 @@
 
 import torch
 
+from aria_designer.components._weight_cache import cached_randn
+
 
 class ComponentHandler:
     """Chebyshev spectral mixing: K polynomial terms, K*D params."""
@@ -24,8 +26,17 @@ class ComponentHandler:
         # Normalize to [-1, 1] range per-feature
         x_norm = torch.tanh(x)
 
-        # Chebyshev coefficients: K values per feature dimension
-        coeffs = _lazy_coeffs(K, D, x.device, x.dtype)
+        # Chebyshev coefficients: K values per feature dimension (cached)
+        coeffs = cached_randn(
+            K,
+            D,
+            seed=K * 65537 + D,
+            device=x.device,
+            dtype=x.dtype,
+            scale=K**-0.5,
+        ).clone()
+        # Bias T_1 coefficient toward 1.0 (identity-like initialization)
+        coeffs[1] += 1.0
 
         # Chebyshev recurrence: T_0 = 1, T_1 = x, T_k = 2x*T_{k-1} - T_{k-2}
         T_prev2 = torch.ones_like(x_norm)  # T_0
@@ -40,15 +51,3 @@ class ComponentHandler:
             T_prev1 = T_k
 
         return {"y": output}
-
-
-def _lazy_coeffs(K, D, device, dtype):
-    """Generate K coefficient vectors of size D."""
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(K * 65537 + D)
-    coeffs = torch.randn(K, D, generator=gen, dtype=dtype).to(device)
-    # Scale so initial output ≈ input magnitude
-    coeffs *= K**-0.5
-    # Bias T_1 coefficient toward 1.0 (identity-like initialization)
-    coeffs[1] += 1.0
-    return coeffs

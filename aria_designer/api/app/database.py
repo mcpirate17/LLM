@@ -60,8 +60,12 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     status TEXT NOT NULL DEFAULT 'pending',
     results_json TEXT,
     perf_json TEXT,
+    stages_json TEXT,
+    error_json TEXT,
+    semantic_warnings_json TEXT,
     started_at TEXT,
     completed_at TEXT,
+    updated_at TEXT,
     FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 
@@ -114,6 +118,13 @@ CREATE INDEX IF NOT EXISTS idx_suggestion_outcomes_id ON suggestion_outcomes(sug
 CREATE INDEX IF NOT EXISTS idx_messages_session ON aria_messages(session_id);
 """
 
+_WORKFLOW_RUN_NEW_COLUMNS = {
+    "stages_json": "TEXT",
+    "error_json": "TEXT",
+    "semantic_warnings_json": "TEXT",
+    "updated_at": "TEXT",
+}
+
 
 def _get_conn() -> sqlite3.Connection:
     """Get thread-local database connection."""
@@ -142,6 +153,13 @@ def init_db(db_path: Optional[Path] = None) -> None:
 
     conn = _get_conn()
     conn.executescript(SCHEMA_SQL)
+    existing_workflow_run_cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(workflow_runs)").fetchall()
+    }
+    for col_name, col_type in _WORKFLOW_RUN_NEW_COLUMNS.items():
+        if col_name not in existing_workflow_run_cols:
+            conn.execute(f"ALTER TABLE workflow_runs ADD COLUMN {col_name} {col_type}")
     conn.commit()
     logger.debug("DB initialization complete")
 
@@ -340,6 +358,124 @@ def list_workflows() -> List[Dict[str, Any]]:
         "SELECT id, name, version, author, created_at, updated_at FROM workflows ORDER BY updated_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Workflow Run Persistence ─────────────────────────────────────────
+
+
+def _loads_json_blob(blob: Any) -> Any:
+    if not blob:
+        return None
+    if isinstance(blob, (dict, list)):
+        return blob
+    try:
+        return json.loads(blob)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def save_workflow_run(
+    *,
+    workflow_id: str,
+    run_id: str,
+    status: str,
+    results: Optional[Dict[str, Any]] = None,
+    perf: Optional[Dict[str, Any]] = None,
+    stages: Optional[Dict[str, Any]] = None,
+    error: Optional[Dict[str, Any]] = None,
+    semantic_warnings: Optional[List[Dict[str, Any]]] = None,
+    started_at: Optional[str] = None,
+    completed_at: Optional[str] = None,
+    updated_at: Optional[str] = None,
+) -> None:
+    """Upsert a durable workflow evaluation run snapshot."""
+    conn = _get_conn()
+    updated_at = updated_at or completed_at or started_at
+    conn.execute(
+        """INSERT OR IGNORE INTO workflows
+           (id, name, graph_json, version, author, parent_id, created_at, updated_at)
+           VALUES (?, ?, ?, 1, 'system', NULL, ?, ?)""",
+        (
+            workflow_id,
+            workflow_id,
+            json.dumps({}),
+            started_at or updated_at or "",
+            updated_at or started_at or "",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO workflow_runs
+           (workflow_id, run_id, status, results_json, perf_json, stages_json,
+            error_json, semantic_warnings_json, started_at, completed_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(run_id) DO UPDATE SET
+             workflow_id = excluded.workflow_id,
+             status = excluded.status,
+             results_json = excluded.results_json,
+             perf_json = excluded.perf_json,
+             stages_json = excluded.stages_json,
+             error_json = excluded.error_json,
+             semantic_warnings_json = excluded.semantic_warnings_json,
+             started_at = COALESCE(excluded.started_at, workflow_runs.started_at),
+             completed_at = COALESCE(excluded.completed_at, workflow_runs.completed_at),
+             updated_at = excluded.updated_at""",
+        (
+            workflow_id,
+            run_id,
+            status,
+            json.dumps(results) if results is not None else None,
+            json.dumps(perf) if perf is not None else None,
+            json.dumps(stages) if stages is not None else None,
+            json.dumps(error) if error is not None else None,
+            json.dumps(semantic_warnings) if semantic_warnings is not None else None,
+            started_at,
+            completed_at,
+            updated_at,
+        ),
+    )
+    conn.commit()
+
+
+def get_workflow_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch a single persisted workflow run."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM workflow_runs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    data["result"] = _loads_json_blob(data.get("results_json")) or {}
+    data["perf_contract"] = _loads_json_blob(data.get("perf_json"))
+    data["stages"] = _loads_json_blob(data.get("stages_json")) or {}
+    data["error_details"] = _loads_json_blob(data.get("error_json"))
+    data["semantic_warnings"] = (
+        _loads_json_blob(data.get("semantic_warnings_json")) or []
+    )
+    return data
+
+
+def list_workflow_runs(
+    *,
+    workflow_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """List persisted workflow runs newest-first."""
+    conn = _get_conn()
+    sql = "SELECT run_id FROM workflow_runs WHERE 1=1"
+    params: list[Any] = []
+    if workflow_id:
+        sql += " AND workflow_id = ?"
+        params.append(workflow_id)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY COALESCE(updated_at, completed_at, started_at) DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [run for row in rows if (run := get_workflow_run(row["run_id"])) is not None]
 
 
 # ── Aria Proposals ────────────────────────────────────────────────────

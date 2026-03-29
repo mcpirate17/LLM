@@ -34,6 +34,7 @@ except ImportError:
 # Shared kernel fallback state for split op modules.
 # compiler.py maintains its own copy; this one covers the compiler_ops_*.py files.
 _kernel_fallback_occurred: bool = False
+_kernel_fallback_logged: set = set()
 
 
 def record_kernel_fallback(kernel_name: str, error: Exception) -> None:
@@ -46,7 +47,14 @@ def record_kernel_fallback(kernel_name: str, error: Exception) -> None:
     compiler_mod = sys.modules.get("research.synthesis.compiler")
     if compiler_mod is not None:
         compiler_mod._kernel_fallback_occurred = True
-    logger.warning("kernel_fallback: kernel=%s reason=%s", kernel_name, error)
+    # Log once per kernel to avoid spam during training loops
+    if kernel_name not in _kernel_fallback_logged:
+        _kernel_fallback_logged.add(kernel_name)
+        logger.info(
+            "kernel_fallback: kernel=%s reason=%s (further occurrences suppressed)",
+            kernel_name,
+            error,
+        )
 
 
 def kernel_fallback_occurred() -> bool:
@@ -210,7 +218,9 @@ def _build_block_sparse_mask(
     weight: torch.Tensor, block_size: int, block_density: float
 ) -> torch.Tensor:
     block_size = max(1, int(block_size))
-    block_density = float(max(0.05, min(1.0, block_density)))
+    # Floor at 0.25: below 25% density, too many gradient paths are dead
+    # and convergence fails 41% of the time. Old floor was 0.05.
+    block_density = float(max(0.25, min(1.0, block_density)))
 
     rows, cols = weight.shape
     row_blocks = rows // block_size

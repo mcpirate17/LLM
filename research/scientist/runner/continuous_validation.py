@@ -150,7 +150,22 @@ class _ContinuousValidationMixin:
         passed_seeds: list,
         source_params: float | int,
     ) -> dict:
-        del exp_id, multi_seed_std
+        del multi_seed_std
+        _rid_short = source_result_id[:8]
+
+        def _vstatus(phase: str) -> None:
+            """Emit validation sub-phase to dashboard + log."""
+            logger.info("validation[%s]: %s", _rid_short, phase)
+            self._emit_event(
+                "validation_phase",
+                {
+                    "experiment_id": exp_id,
+                    "result_id": source_result_id,
+                    "phase": phase,
+                },
+            )
+            self._update_progress(status=f"validation: {phase}")
+
         result = {
             "is_breakthrough": False,
             "flop_gated": False,
@@ -179,6 +194,8 @@ class _ContinuousValidationMixin:
             "scaling_confidence": None,
             "scaling_result": None,
             "scaling_d512_param_efficiency": None,
+            "robustness_checks_attempted": 0,
+            "robustness_checks_failed": 0,
         }
         scaling_enabled = bool(getattr(config, "enable_scaling_comparison", True))
         model_factory = self._make_validation_model_factory(
@@ -196,6 +213,8 @@ class _ContinuousValidationMixin:
             config, dev, source_result_id
         )
         if val_loss_ratio is not None:
+            _vstatus("OOD robustness check")
+            result["robustness_checks_attempted"] += 1
             try:
                 result["ood_result"] = self._ood_robustness_check(
                     model_factory,
@@ -204,9 +223,12 @@ class _ContinuousValidationMixin:
                     n_steps=min(100, max(20, int(config.validation_steps) // 50)),
                 )
             except Exception as exc:
-                logger.debug(
-                    "OOD robustness check failed for %s: %s", source_result_id[:8], exc
+                result["robustness_checks_failed"] += 1
+                logger.warning(
+                    "OOD robustness check FAILED for %s: %s", _rid_short, exc
                 )
+            _vstatus("sensitivity check")
+            result["robustness_checks_attempted"] += 1
             try:
                 result["sensitivity_result"] = self._sensitivity_check(
                     model_factory,
@@ -216,18 +238,20 @@ class _ContinuousValidationMixin:
                     n_steps=min(100, max(20, int(config.validation_steps) // 50)),
                 )
             except Exception as exc:
-                logger.debug(
-                    "Sensitivity check failed for %s: %s", source_result_id[:8], exc
-                )
+                result["robustness_checks_failed"] += 1
+                logger.warning("Sensitivity check FAILED for %s: %s", _rid_short, exc)
+        _vstatus("reconstructing eval model")
         model = None
         try:
             model = model_factory()
             if model is None:
+                logger.warning("Model reconstruction returned None for %s", _rid_short)
                 return result
             model = model.to(dev)
             eval_seq_len = min(
                 128, int(getattr(config, "validation_seq_len", 128) or 128)
             )
+            _vstatus("WikiText perplexity")
             try:
                 from ...eval.wikitext_eval import evaluate_wikitext_perplexity
 
@@ -241,9 +265,8 @@ class _ContinuousValidationMixin:
                 result["wikitext_perplexity"] = wt_result.get("wikitext_perplexity")
                 result["wikitext_score"] = wt_result.get("wikitext_score")
             except Exception as exc:
-                logger.debug(
-                    "WikiText eval skipped for %s: %s", source_result_id[:8], exc
-                )
+                logger.warning("WikiText eval FAILED for %s: %s", _rid_short, exc)
+            _vstatus("TinyStories perplexity")
             try:
                 from ...eval.tinystories_eval import evaluate_tinystories
 
@@ -259,9 +282,8 @@ class _ContinuousValidationMixin:
                 )
                 result["tinystories_score"] = ts_result.get("tinystories_score")
             except Exception as exc:
-                logger.debug(
-                    "TinyStories eval skipped for %s: %s", source_result_id[:8], exc
-                )
+                logger.warning("TinyStories eval FAILED for %s: %s", _rid_short, exc)
+            _vstatus("long-context sweep")
             try:
                 long_context = run_long_context_sweep(
                     model_factory,
@@ -282,18 +304,19 @@ class _ContinuousValidationMixin:
                 result["long_context_details"] = long_context
                 result["max_viable_seq_len"] = long_context.get("max_viable_len")
             except Exception as exc:
-                logger.debug(
-                    "Long-context sweep skipped for %s: %s", source_result_id[:8], exc
-                )
+                logger.warning("Long-context sweep FAILED for %s: %s", _rid_short, exc)
+            _vstatus("noise sensitivity")
+            result["robustness_checks_attempted"] += 1
             try:
                 noise_result = evaluate_noise_sensitivity(
                     model, input_batches, dev, vocab_size=int(config.vocab_size)
                 )
                 result["noise_score"] = noise_result.get("noise_sensitivity_score")
             except Exception as exc:
-                logger.debug(
-                    "Noise sensitivity skipped for %s: %s", source_result_id[:8], exc
-                )
+                result["robustness_checks_failed"] += 1
+                logger.warning("Noise sensitivity FAILED for %s: %s", _rid_short, exc)
+            _vstatus("activation sparsity")
+            result["robustness_checks_attempted"] += 1
             try:
                 sparsity_result = evaluate_activation_sparsity(
                     model, input_batches, dev
@@ -303,18 +326,20 @@ class _ContinuousValidationMixin:
                 )
                 result["dead_neuron_ratio"] = sparsity_result.get("dead_neuron_ratio")
             except Exception as exc:
-                logger.debug(
-                    "Activation sparsity skipped for %s: %s", source_result_id[:8], exc
-                )
+                result["robustness_checks_failed"] += 1
+                logger.warning("Activation sparsity FAILED for %s: %s", _rid_short, exc)
+            _vstatus("routing heatmap")
+            result["robustness_checks_attempted"] += 1
             try:
                 routing_result = evaluate_routing_heatmap(model, input_batches, dev)
                 result["routing_collapse_score"] = routing_result.get(
                     "routing_collapse_score"
                 )
             except Exception as exc:
-                logger.debug(
-                    "Routing heatmap skipped for %s: %s", source_result_id[:8], exc
-                )
+                result["robustness_checks_failed"] += 1
+                logger.warning("Routing heatmap FAILED for %s: %s", _rid_short, exc)
+            _vstatus("quantization quality")
+            result["robustness_checks_attempted"] += 1
             try:
                 quant_result = evaluate_sparse_quant_quality(model, input_batches, dev)
                 if quant_result:
@@ -323,10 +348,11 @@ class _ContinuousValidationMixin:
                         "quality_per_byte"
                     )
             except Exception as exc:
-                logger.debug(
-                    "Sparse+quant eval skipped for %s: %s", source_result_id[:8], exc
-                )
+                result["robustness_checks_failed"] += 1
+                logger.warning("Sparse+quant eval FAILED for %s: %s", _rid_short, exc)
             if scaling_enabled:
+                _vstatus("efficiency wall")
+                result["robustness_checks_attempted"] += 1
                 try:
                     wall_result = evaluate_efficiency_wall(
                         model, int(config.vocab_size), dev
@@ -346,15 +372,16 @@ class _ContinuousValidationMixin:
                         "time_scaling_factor"
                     )
                 except Exception as exc:
-                    logger.debug(
-                        "Efficiency-wall eval skipped for %s: %s",
-                        source_result_id[:8],
-                        exc,
+                    result["robustness_checks_failed"] += 1
+                    logger.warning(
+                        "Efficiency-wall eval FAILED for %s: %s", _rid_short, exc
                     )
         finally:
             if model is not None:
                 del model
             clear_gpu_memory()
+        _vstatus("cross-task robustness")
+        result["robustness_checks_attempted"] += 1
         try:
             cross_task = evaluate_cross_task_robustness(
                 model_factory,
@@ -370,9 +397,8 @@ class _ContinuousValidationMixin:
             )
             result["cross_task_score"] = cross_task.get("cross_task_score")
         except Exception as exc:
-            logger.debug(
-                "Cross-task eval skipped for %s: %s", source_result_id[:8], exc
-            )
+            result["robustness_checks_failed"] += 1
+            logger.warning("Cross-task eval FAILED for %s: %s", _rid_short, exc)
         scaling_gate_passed = not scaling_enabled or (
             result["scaling_param_efficiency"] is not None
             and float(result["scaling_param_efficiency"])
@@ -384,6 +410,7 @@ class _ContinuousValidationMixin:
             )
         )
         if scaling_enabled:
+            _vstatus("scaling reference comparison (d256)")
             try:
                 scaling_payload = self._run_scaling_reference_compare(
                     config=config,
@@ -412,12 +439,13 @@ class _ContinuousValidationMixin:
                         scaling_payload.get("confidence") or "local_reference"
                     )
             except Exception as exc:
-                logger.debug(
-                    "Scaling reference comparison skipped for %s: %s",
-                    source_result_id[:8],
+                logger.warning(
+                    "Scaling reference comparison FAILED for %s: %s",
+                    _rid_short,
                     exc,
                 )
             if bool(getattr(config, "scaling_d512_enabled", True)):
+                _vstatus("scaling reference comparison (d512)")
                 try:
                     d512_payload = self._run_scaling_reference_compare(
                         config=config,
@@ -435,9 +463,9 @@ class _ContinuousValidationMixin:
                         if isinstance(result.get("scaling_result"), dict):
                             result["scaling_result"]["d512_result"] = d512_payload
                 except Exception as exc:
-                    logger.debug(
-                        "d512 scaling comparison skipped for %s: %s",
-                        source_result_id[:8],
+                    logger.warning(
+                        "d512 scaling comparison FAILED for %s: %s",
+                        _rid_short,
                         exc,
                     )
         # [CALIBRATION] source: judgment — 0.70 fallback duplicates RunConfig.breakthrough_raw_threshold
@@ -498,6 +526,13 @@ class _ContinuousValidationMixin:
         result["flop_gated"] = bool(
             not scaling_gate_passed and result["scaling_flop_efficiency"] is not None
         )
+        if result["robustness_checks_failed"] > 0:
+            logger.warning(
+                "validation[%s]: %d/%d robustness checks failed",
+                _rid_short,
+                result["robustness_checks_failed"],
+                result["robustness_checks_attempted"],
+            )
         return result
 
     def _validation_run_seeds(
@@ -543,7 +578,7 @@ class _ContinuousValidationMixin:
                         if p.dim() >= 2:
                             nn.init.xavier_uniform_(p)
             except Exception as e:
-                logger.debug(f"Model reconstruction failed: {e}")
+                logger.warning("Model reconstruction FAILED for seed %d: %s", seed, e)
                 continue
 
             self._emit_event(
@@ -687,10 +722,14 @@ class _ContinuousValidationMixin:
                             data_tag=v_data_tag,
                             cache_data_fn=v_cache,
                         )
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as exc:
+                        logger.warning(
+                            "Val-split baseline comparison FAILED for %s: %s",
+                            _rid_short,
+                            exc,
+                        )
+            except Exception as exc:
+                logger.warning("Baseline comparison FAILED for %s: %s", _rid_short, exc)
 
         # Parameter-normalized baseline comparison
         val_normalized_ratio = None
@@ -731,8 +770,12 @@ class _ContinuousValidationMixin:
                 )
                 val_normalized_ratio = norm_result.get("normalized_ratio")
                 val_param_efficiency = norm_result.get("param_efficiency")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Param-normalized baseline comparison FAILED for %s: %s",
+                    _rid_short,
+                    exc,
+                )
 
         if len(passed_seeds) > 0:
             results["stage1_passed"] += 1
@@ -856,9 +899,10 @@ class _ContinuousValidationMixin:
 
                 # Skip candidates where no seed could reconstruct the model
                 if not seed_results:
-                    logger.debug(
-                        f"Inline validation: skipping {source_result_id[:8]} — "
-                        f"model failed to reconstruct for all {config.validation_n_seeds} seeds"
+                    logger.warning(
+                        "Inline validation: skipping %s — model failed to reconstruct for all %d seeds",
+                        source_result_id[:8],
+                        config.validation_n_seeds,
                     )
                     continue
 

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..native_runner import reset_native_runner_telemetry
+from ..native.telemetry import reset_native_runner_telemetry
 from ..notebook import LabNotebook
 from ..preregistration import (
     HypothesisPreregistration,
@@ -317,6 +317,29 @@ class _ResultsKnowledgeMixin:
                 )
         except Exception as e:
             logger.debug(f"Knowledge extraction failed: {e}")
+
+        # ── Refresh intelligence layer on same cadence as knowledge extraction ──
+        # Bayesian tracker applies temporal decay; interaction model retrains.
+        # Cheap (~2s total), runs every knowledge_extraction_interval experiments.
+        try:
+            from ..intelligence.temporal_bayesian import TemporalBayesianTracker
+
+            db_path = (
+                str(nb.db_path)
+                if hasattr(nb, "db_path")
+                else "research/lab_notebook.db"
+            )
+            tracker = TemporalBayesianTracker.from_db(
+                db_path=db_path,
+                apply_decay=True,
+                detect_fixes=True,
+            )
+            n_ops = len(tracker.op_posteriors)
+            logger.debug(
+                "Intelligence refresh: Bayesian tracker updated (%d ops)", n_ops
+            )
+        except Exception:
+            pass
 
     def _ensure_campaign(self, config: RunConfig, nb: LabNotebook) -> Optional[str]:
         """Ensure an active campaign exists. Create one if needed."""

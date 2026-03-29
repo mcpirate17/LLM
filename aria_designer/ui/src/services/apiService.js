@@ -8,12 +8,11 @@ async function handleResponse(response) {
     } catch {
       errorData = { error: `HTTP ${response.status}: ${response.statusText}` };
     }
-    throw new Error(
-      errorData.detail ||
-      errorData.error ||
-      errorData.message ||
-      `HTTP ${response.status}`
-    );
+    const detail = errorData.detail;
+    const msg = (detail && typeof detail === 'object')
+      ? (detail.message || JSON.stringify(detail))
+      : (detail || errorData.error || errorData.message || `HTTP ${response.status}`);
+    throw new Error(msg);
   }
   return response;
 }

@@ -25,7 +25,11 @@ class _ExecutionCandidatesMixin:
     __slots__ = ()
 
     def _generate_candidates(
-        self, config: RunConfig, n: int, source: str = "graph_synthesis"
+        self,
+        config: RunConfig,
+        n: int,
+        source: str = "graph_synthesis",
+        nb: "Optional[LabNotebook]" = None,
     ) -> List["ModelCandidate"]:
         """Generate candidate models from the specified source.
 
@@ -41,10 +45,10 @@ class _ExecutionCandidatesMixin:
             n_morph = int(n * config.morph_ratio)
             n_graph = n - n_morph
             candidates.extend(
-                self._generate_candidates(config, n_graph, "graph_synthesis")
+                self._generate_candidates(config, n_graph, "graph_synthesis", nb=nb)
             )
             candidates.extend(
-                self._generate_candidates(config, n_morph, "morphological_box")
+                self._generate_candidates(config, n_morph, "morphological_box", nb=nb)
             )
             return candidates
 
@@ -131,8 +135,23 @@ class _ExecutionCandidatesMixin:
                 logger.warning("morphological_box or arch_builder not available")
             return candidates
 
-        # Default: graph_synthesis
-        grammar = self._build_grammar_config(config)
+        # Default: graph_synthesis — load analytics-derived weights from notebook
+        op_weights, template_weights, motif_weights, category_weights = (
+            self._load_learned_weights(nb=nb)
+        )
+        grammar = self._build_grammar_config(
+            config,
+            op_weights=op_weights,
+            category_weights=category_weights,
+        )
+        if template_weights:
+            if grammar.routing_mandatory:
+                for k, v in template_weights.items():
+                    grammar.template_weights.setdefault(k, v)
+            else:
+                grammar.template_weights.update(template_weights)
+        if motif_weights:
+            grammar.motif_weights.update(motif_weights)
 
         graphs = batch_generate(n, grammar).graphs
         for graph in graphs:
@@ -179,18 +198,232 @@ class _ExecutionCandidatesMixin:
 
         return candidates
 
+    def _load_learned_weights(
+        self,
+        nb: "Optional[LabNotebook]" = None,
+    ) -> tuple:
+        """Load analytics-derived op/template/motif/category weights from notebook history.
+
+        Returns (op_weights, template_weights, motif_weights, category_weights) dicts.
+        Falls back to empty dicts on any failure — never blocks candidate generation.
+        """
+        op_weights: Dict[str, float] = {}
+        template_weights: Dict[str, float] = {}
+        motif_weights: Dict[str, float] = {}
+        category_weights: Dict[str, float] = {}
+        try:
+            from ..analytics import ExperimentAnalytics
+
+            if nb is None:
+                nb = getattr(self, "nb", None) or getattr(self, "_notebook", None)
+            if nb is None:
+                nb = self._make_notebook()
+            if nb is None:
+                return op_weights, template_weights, motif_weights, category_weights
+            analytics = ExperimentAnalytics(nb)
+            _window_cutoff = time.time() - 604800  # 7-day window
+            try:
+                learned_op = analytics.compute_op_weights(since_ts=_window_cutoff)
+                op_weights.update(learned_op)
+            except Exception:
+                pass
+            try:
+                learned_tpl = analytics.compute_template_weights(
+                    since_ts=_window_cutoff
+                )
+                if learned_tpl:
+                    template_weights.update(learned_tpl)
+            except Exception:
+                pass
+            # Template selection scheduler — Thompson sampling or UCB1
+            try:
+                db_path = (
+                    str(nb.db_path)
+                    if hasattr(nb, "db_path")
+                    else "research/lab_notebook.db"
+                )
+                _use_thompson = getattr(
+                    getattr(self, "_current_config", None),
+                    "use_thompson_sampling",
+                    False,
+                )
+                if _use_thompson:
+                    from ...search.scheduler import ThompsonScheduler
+
+                    sched_weights = ThompsonScheduler(db_path=db_path).sample()
+                else:
+                    from ...search.scheduler import ExplorationScheduler
+
+                    sched_weights = ExplorationScheduler(db_path=db_path).step()
+
+                if sched_weights:
+                    for tpl, w in sched_weights.items():
+                        # Blend: existing analytics weight × scheduler weight (geometric mean)
+                        if tpl in template_weights:
+                            template_weights[tpl] = (template_weights[tpl] * w) ** 0.5
+                        else:
+                            template_weights[tpl] = w
+            except Exception:
+                pass
+            try:
+                learned_motif = analytics.compute_motif_weights(since_ts=_window_cutoff)
+                if learned_motif:
+                    motif_weights.update(learned_motif)
+            except Exception:
+                pass
+            try:
+                syn_motif, syn_tpl = analytics.compute_synergy_boosts()
+                for name, boost in syn_motif.items():
+                    motif_weights[name] = motif_weights.get(name, 1.0) * boost
+                for name, boost in syn_tpl.items():
+                    template_weights[name] = template_weights.get(name, 1.0) * boost
+            except Exception:
+                pass
+            # ── Temporal Bayesian tracker: temporal-decay-aware weights ──
+            # Overrides analytics weights for ops with sufficient evidence,
+            # respects code-fix resets (ops fixed recently get higher weights).
+            try:
+                from ..intelligence.temporal_bayesian import TemporalBayesianTracker
+
+                db_path = (
+                    str(nb.db_path)
+                    if hasattr(nb, "db_path")
+                    else "research/lab_notebook.db"
+                )
+                tracker = TemporalBayesianTracker.from_db(
+                    db_path=db_path,
+                    apply_decay=True,
+                    detect_fixes=True,
+                )
+                _use_thompson = getattr(
+                    getattr(self, "_current_config", None),
+                    "use_thompson_sampling",
+                    False,
+                )
+                bayes_mode = "thompson" if _use_thompson else "mean"
+                bayes_op = tracker.op_weights(mode=bayes_mode)
+                bayes_tpl = tracker.template_weights(mode=bayes_mode)
+                bayes_motif = tracker.motif_weights(mode=bayes_mode)
+                # Blend: geometric mean of analytics × Bayesian
+                for op, bw in bayes_op.items():
+                    if op in op_weights:
+                        op_weights[op] = (op_weights[op] * bw) ** 0.5
+                    else:
+                        op_weights[op] = bw
+                for tpl, bw in bayes_tpl.items():
+                    if tpl in template_weights:
+                        template_weights[tpl] = (template_weights[tpl] * bw) ** 0.5
+                    else:
+                        template_weights[tpl] = bw
+                for mot, bw in bayes_motif.items():
+                    if mot in motif_weights:
+                        motif_weights[mot] = (motif_weights[mot] * bw) ** 0.5
+                    else:
+                        motif_weights[mot] = bw
+                logger.debug(
+                    "Bayesian tracker: blended %d op, %d template, %d motif weights (mode=%s)",
+                    len(bayes_op),
+                    len(bayes_tpl),
+                    len(bayes_motif),
+                    bayes_mode,
+                )
+            except Exception as exc:
+                logger.debug("Bayesian tracker unavailable: %s", exc)
+
+            # ── Interaction model: penalize motifs with unstable consecutive pairs ──
+            try:
+                from ..intelligence.interaction_model import InteractionModel
+
+                db_path = (
+                    str(nb.db_path)
+                    if hasattr(nb, "db_path")
+                    else "research/lab_notebook.db"
+                )
+                profiling_db = "research/profiling/component_profiles.db"
+                from pathlib import Path
+
+                imodel = InteractionModel.train(
+                    notebook_db=Path(db_path),
+                    profiling_db=Path(profiling_db),
+                    n_epochs=30,
+                )
+                if imodel._trained:
+                    # Adjust motif weights by viability score
+                    try:
+                        from ...synthesis.motifs import MOTIF_LIBRARY
+
+                        for motif_name, motif in MOTIF_LIBRARY.items():
+                            steps = [s.op_name for s in motif.steps]
+                            viability = imodel.motif_viability(steps)
+                            # Viability [0,1] → multiplier [0.3, 1.5]
+                            mult = 0.3 + 1.2 * viability
+                            motif_weights[motif_name] = (
+                                motif_weights.get(motif_name, 1.0) * mult
+                            )
+                    except Exception:
+                        pass
+                    logger.debug(
+                        "Interaction model: adjusted motif weights (%d ops)",
+                        imodel.n_ops,
+                    )
+            except Exception as exc:
+                logger.debug("Interaction model unavailable: %s", exc)
+
+            # Penalize ops with 0% S1 pass rate and sufficient sample size
+            try:
+                neg = analytics.negative_results_synthesis()
+                for op_info in neg.get("failed_ops", []):
+                    if (
+                        op_info.get("s1_rate", 1) == 0
+                        and op_info.get("n_used", 0) >= 5
+                        and op_info.get("confidence", 0) >= 0.7
+                    ):
+                        op_name = op_info["op_name"]
+                        if op_info.get("failure_stage") == "compilation":
+                            op_weights[op_name] = 0.15
+                        else:
+                            op_weights[op_name] = 0.1
+                for op_info in neg.get("weak_ops", []):
+                    op_name = op_info.get("op_name", "")
+                    penalty = op_info.get("penalty_weight", 1.0)
+                    if op_name:
+                        op_weights[op_name] = penalty
+            except Exception:
+                pass
+            # Category-level weights from historical success data
+            try:
+                last_cat = getattr(self, "_last_category_weights", None)
+                learned_cat = analytics.compute_grammar_weights(last_applied=last_cat)
+                if learned_cat:
+                    category_weights.update(learned_cat)
+                    self._last_category_weights = dict(learned_cat)
+            except Exception:
+                pass
+            if op_weights or category_weights:
+                logger.info(
+                    "Loaded %d op weights, %d category weights for candidate generation",
+                    len(op_weights),
+                    len(category_weights),
+                )
+        except Exception as exc:
+            logger.debug("Analytics weight loading unavailable: %s", exc)
+        return op_weights, template_weights, motif_weights, category_weights
+
     # ── Training with synthesized programs ──
 
     def _build_grammar_config(
         self,
         config: RunConfig,
         op_weights: Optional[Dict[str, float]] = None,
+        category_weights: Optional[Dict[str, float]] = None,
     ) -> GrammarConfig:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
         from ...synthesis.grammar import GrammarConfig
 
-        # Routing-first mode: mandate routing structure in every graph
-        if getattr(config, "_routing_first_mode", False):
+        # exploit_mode implies routing-first: mandate routing/splits in every graph
+        if getattr(config, "exploit_mode", False) or getattr(
+            config, "_routing_first_mode", False
+        ):
             grammar = GrammarConfig.routing_first(model_dim=config.model_dim)
             if getattr(config, "composition_depth", 0) > 0:
                 grammar.composition_depth = config.composition_depth
@@ -203,6 +436,8 @@ class _ExecutionCandidatesMixin:
                         )
                     else:
                         grammar.op_weights.setdefault(op_name, w)
+            if category_weights:
+                grammar.category_weights.update(category_weights)
             return grammar
 
         # Exotic mode: use the exotic preset as base, then layer on learned op_weights
@@ -218,6 +453,8 @@ class _ExecutionCandidatesMixin:
                         grammar.op_weights[op_name] = existing * w
                     else:
                         grammar.op_weights.setdefault(op_name, w)
+            if category_weights:
+                grammar.category_weights.update(category_weights)
             return grammar
 
         # Efficiency mode: use the efficient preset as base
@@ -231,6 +468,8 @@ class _ExecutionCandidatesMixin:
                         )
                     else:
                         grammar.op_weights.setdefault(op_name, w)
+            if category_weights:
+                grammar.category_weights.update(category_weights)
             return grammar
 
         # Pick up structured_sparsity_bias from mode recommendation or config
@@ -246,9 +485,8 @@ class _ExecutionCandidatesMixin:
             # API overrides take precedence over learned weights
             merged_op_weights.update(config.op_weights)
 
-        grammar = GrammarConfig(
+        grammar_kwargs: Dict[str, Any] = dict(
             model_dim=config.model_dim,
-            min_depth=config.min_depth,
             max_depth=config.max_depth,
             max_ops=config.max_ops,
             residual_prob=config.residual_prob,
@@ -263,24 +501,34 @@ class _ExecutionCandidatesMixin:
             branch_depth=config.branch_depth,
             max_recursion_depth=config.max_recursion_depth,
             composition_depth=getattr(config, "composition_depth", 0),
+            template_weights=config.template_weights or {},
+            use_db_weights=config.template_weights
+            is None,  # skip DB weights when explicit
+            routing_mandatory=config.routing_mandatory,
         )
+        if config.category_weights:
+            grammar_kwargs["category_weights"] = config.category_weights
+        grammar = GrammarConfig(**grammar_kwargs)
         # Baseline routing/difficulty op boosts (always applied unless overridden)
         _routing_defaults = {
-            "entropy_score": 2.5,
+            "token_entropy": 2.5,
             "route_topk": 2.0,
             "route_lanes": 2.0,
             "moe_topk": 2.0,
             "moe_2expert": 2.0,
             "token_merging": 1.5,
-            "cascade": 1.5,
-            "adaptive_recursion": 1.5,
+            "learned_token_gate": 1.5,
+            "depth_weighted_proj": 1.5,
         }
         for op_name, default_w in _routing_defaults.items():
             grammar.op_weights.setdefault(op_name, default_w)
 
         # Apply specialized weights
         grammar.category_weights["math_space"] = config.math_space_weight
-        # Apply custom category weights from API (overrides defaults)
+        # Apply analytics-derived category weights from historical success data
+        if category_weights:
+            grammar.category_weights.update(category_weights)
+        # Apply custom category weights from API (overrides analytics + defaults)
         if config.category_weights:
             grammar.category_weights.update(config.category_weights)
 

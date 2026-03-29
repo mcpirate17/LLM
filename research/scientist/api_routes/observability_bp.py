@@ -113,10 +113,13 @@ def _build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
             g = _json.loads(r["graph_json"])
         except Exception:
             continue
+        raw_nodes = g.get("nodes")
+        if not isinstance(raw_nodes, dict):
+            continue
         ops = sorted(
             {
                 n.get("op_name", n.get("op", ""))
-                for n in g.get("nodes", {}).values()
+                for n in raw_nodes.values()
                 if isinstance(n, dict)
             }
             - {"", "input"}

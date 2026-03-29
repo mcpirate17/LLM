@@ -260,7 +260,22 @@ class _LeaderboardMixin:
             )
         composite = self.compute_composite_score(**score_kwargs)
 
-        # Compute efficiency_multiple from program_results operational metrics
+        # Compute efficiency_multiple from program_results operational metrics.
+        # MoE models: skip param count penalty (active params < total params).
+        from ...synthesis.op_roles import MOE_OPS
+
+        _is_moe = False
+        if pr_row and pr_row["graph_json"]:
+            try:
+                _gj = pr_row["graph_json"]
+                if isinstance(_gj, str):
+                    _gj = json.loads(_gj)
+                _is_moe = any(
+                    n.get("op_name") in MOE_OPS
+                    for n in (_gj.get("nodes") or {}).values()
+                )
+            except Exception:
+                pass
         eff_mult = kwargs.get("efficiency_multiple")
         if eff_mult is None and pr_row:
             eff_result = self.compute_efficiency_multiple(
@@ -270,6 +285,7 @@ class _LeaderboardMixin:
                 throughput_tok_s=pr_row["throughput_tok_s"],
                 peak_memory_mb=pr_row["peak_memory_mb"],
                 forward_time_ms=pr_row["forward_time_ms"],
+                is_moe=_is_moe,
             )
             if eff_result is not None:
                 eff_mult = eff_result["geomean"]
@@ -771,13 +787,16 @@ class _LeaderboardMixin:
                WHERE pr.graph_fingerprint IS NOT NULL"""
         ).fetchall()
 
+        # Batch-fetch all fingerprint aggregates in one query
+        fps = list({row["graph_fingerprint"] for row in rows})
+        agg_map = self.get_fingerprint_aggregates_batch(fps)
+
         updated = 0
         for row in rows:
-            agg = self.get_fingerprint_aggregates(row["graph_fingerprint"])
+            agg = agg_map.get(row["graph_fingerprint"], {})
             n_runs = agg.get("n_runs", 0)
             if n_runs == 0:
                 continue
-            # Skip if already up-to-date
             if row["replication_n"] == n_runs:
                 continue
             self.conn.execute(

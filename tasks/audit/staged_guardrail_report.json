@@ -1,0 +1,48 @@
+{
+  "summary": {
+    "files_scanned": 0,
+    "python_files_scanned": 0,
+    "vulture_exit_code": 3,
+    "pylint_exit_code": 124,
+    "dead_code_hits": 3,
+    "duplicate_hits": 1
+  },
+  "issues": [
+    {
+      "kind": "dead_code",
+      "severity": "high",
+      "path": "research/scientist/intelligence/gnn_predictor.py",
+      "symbol": null,
+      "message": "research/scientist/intelligence/gnn_predictor.py:273: unused variable 'embed_dim' (100% confidence)",
+      "recommendation": "Delete, wire in, or explicitly whitelist if intentionally dynamic.",
+      "metric": {}
+    },
+    {
+      "kind": "dead_code",
+      "severity": "high",
+      "path": "research/scientist/intelligence/predictor.py",
+      "symbol": null,
+      "message": "research/scientist/intelligence/predictor.py:434: unused variable 'gate_threshold' (100% confidence)",
+      "recommendation": "Delete, wire in, or explicitly whitelist if intentionally dynamic.",
+      "metric": {}
+    },
+    {
+      "kind": "dead_code",
+      "severity": "high",
+      "path": "research/tools/aria_audit.py",
+      "symbol": null,
+      "message": "research/tools/aria_audit.py:46: unused import 'textwrap' (90% confidence)",
+      "recommendation": "Delete, wire in, or explicitly whitelist if intentionally dynamic.",
+      "metric": {}
+    },
+    {
+      "kind": "duplicate_code",
+      "severity": "medium",
+      "path": "multiple",
+      "symbol": null,
+      "message": "timed out: pylint research aria_core aria_designer --disable=all --enable=duplicate-code --min-similarity-lines=10",
+      "recommendation": "Collapse repeated logic into one implementation or delete stale variants.",
+      "metric": {}
+    }
+  ]
+}

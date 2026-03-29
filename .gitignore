@@ -57,3 +57,20 @@ LA3/
 personaplex/
 research/corpus/
 research/rescore_artifacts/
+
+# Auto-generated reports (data lives in lab_notebook.db)
+research/reports/report_*.md
+research/reports/exploration_*
+research/reports/architecture_features.csv
+
+# Root-level junk patterns
+:memory:*
+new *.txt
+<MagicMock *
+
+# One-off audit outputs
+audit_results/
+audit_report.*
+
+# Performance artifacts
+research/perf_artifacts/

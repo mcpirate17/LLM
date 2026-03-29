@@ -130,6 +130,39 @@ types: feat | fix | perf | refactor | chore | test
 
 ---
 
+## Document Hygiene
+
+### Placement Rules
+- **Repo root**: Only project-wide config, README, and active P0 plans. No scripts, no data files, no analysis outputs.
+- **Scripts**: `research/tools/` or `aria_designer/tools/`. Never loose at root.
+- **Data/reports**: `research/reports/` (gitignored, auto-pruned) or `research/artifacts/`.
+- **Completed plans**: Delete from `tasks/` immediately — git history preserves them.
+
+### Retention
+- `research/reports/report_*.md` and `exploration_*`: auto-pruned after 14 days by `make clean-docs`
+- `research/perf_artifacts/`: auto-pruned after 30 days
+- Permanent docs must have `DO_NOT_DELETE` in filename or `do_not_delete: true` in frontmatter
+
+### Agent Rules
+1. Never create files in the repo root (except updating existing config)
+2. Never commit auto-generated reports to git — `research/reports/` is gitignored
+3. When a plan is completed: delete the plan file, note in `tasks/todo.md`
+4. No SQLite databases in repo root — use in-memory connections or `research/`
+5. Add lifecycle frontmatter to plans/tasks:
+   ```yaml
+   ---
+   status: active | completed | abandoned
+   created: YYYY-MM-DD
+   author: claude-opus | gemini | codex | human
+   ---
+   ```
+
+### Cleanup
+Run `make clean-docs` to prune stale reports, logs, and junk files.
+Run `make clean-all` for full cleanup (build + cache + docs).
+
+---
+
 ## The Standard
 Every piece of code should be: **correct → minimal → fast**, in that order.
 If it's not correct, performance is irrelevant.

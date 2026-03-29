@@ -1,0 +1,57 @@
+id: learned_token_gate
+version: 1.0.0
+name: Cascade
+category: routing
+tags:
+- dynamic_routing
+- cascade
+- compute_routing
+status: approved
+description: 'Progressive cascade: easy tokens get shallow, hard get deep'
+inputs:
+- name: x
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+outputs:
+- name: y
+  dtype: tensor
+  shape:
+  - B
+  - S
+  - D
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+constraints:
+  incompatible_with: []
+help_md: '### Technical
+
+  Progressive cascade: easy tokens get shallow, hard get deep
+
+
+  Inputs: x:tensor[B, S, D].
+
+  Outputs: y:tensor[B, S, D].
+
+  Params: none.
+
+
+  ### Plain Language
+
+  Progressive cascade: easy tokens get shallow, hard get deep
+
+
+  Use when you need this specific transformation in a workflow.
+
+  '

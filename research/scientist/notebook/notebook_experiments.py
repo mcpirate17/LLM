@@ -378,8 +378,12 @@ class _ExperimentsMixin:
                 results.get("stage0_passed", 0),
                 results.get("stage05_passed", 0),
                 results.get("stage1_passed", 0),
-                results.get("best_loss_ratio"),
-                results.get("best_novelty_score"),
+                float(results["best_loss_ratio"])
+                if results.get("best_loss_ratio") is not None
+                else None,
+                float(results["best_novelty_score"])
+                if results.get("best_novelty_score") is not None
+                else None,
                 aria_summary,
                 aria_mood,
                 self._compress(insights or []),

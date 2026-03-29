@@ -37,7 +37,9 @@ from .primitives import (
 from .templates import (
     apply_template,
 )
-from .context_rules import apply_context_rule_priors, validate_context_rules
+from .context_rules import validate_context_rules
+from .graph_validator import validate_dim_flow, check_param_budget
+from .template_rules import validate_template_graph
 from .validator import validate_graph
 
 
@@ -107,10 +109,9 @@ class GrammarConfig:
     """Configuration for the graph generator."""
 
     model_dim: int = MODEL_DIM
-    min_depth: int = 3
-    max_depth: int = 10
+    max_depth: int = 16  # depth budget (triple-lane templates need ~12-14)
     max_width: int = 4  # max parallel paths (2 or 3 way splits)
-    max_ops: int = 16  # max total operations
+    max_ops: int = 24  # max total operations (triple-lane split3 needs ~21)
     residual_prob: float = 0.7  # probability of residual connection
     split_prob: float = 0.3  # probability of branching into parallel paths
     min_splits: int = 0  # minimum number of split-merge blocks to force
@@ -141,7 +142,7 @@ class GrammarConfig:
     op_weights: Dict[str, float] = field(default_factory=dict)
 
     # Structured Sparsity Constraints (Z7)
-    structured_sparsity_bias: float = 0.0
+    structured_sparsity_bias: float = 0.3
     enforce_block_size: Optional[int] = None
     min_block_density: float = 0.05
     max_block_density: float = 0.5
@@ -151,6 +152,11 @@ class GrammarConfig:
     hyperbolic_boost_factor: float = 3.0
     _hierarchy_fitness: Optional[float] = None
 
+    # ── DB-driven template weights ──────────────────────────────────
+    # When True, loads template weights from template_stats DB table
+    # (blended with static defaults). Requires backfill_stats.py to have run.
+    use_db_weights: bool = True
+
     # ── Motif-based grammar config (Phase 6) ────────────────────────
     # Template selection weights (template_name → weight).
     # If empty, uses DEFAULT_TEMPLATE_WEIGHTS.
@@ -159,7 +165,7 @@ class GrammarConfig:
     # If empty, uses motif's lift score as weight.
     motif_weights: Dict[str, float] = field(default_factory=dict)
     # Number of templates to compose per graph (1-3)
-    composition_depth: int = 2  # Minimum template blocks per graph
+    composition_depth: int = 3  # Minimum template blocks per graph
 
     # ── Under-observed component exploration ──────────────────────────
     # Op names to boost during graph generation (under-observed ops).
@@ -167,12 +173,8 @@ class GrammarConfig:
     exploration_targets: FrozenSet[str] = field(default_factory=frozenset)
     exploration_boost_factor: float = 4.0  # Weight multiplier for target motifs
 
-    # ── Context-rule search-mode control ─────────────────────────────
-    allow_niche_ops: bool = False  # Allow niche-mode ops in generation
-    restricted_op_weight: float = 0.3  # Weight penalty for restricted-use ops
-
     # ── Routing-First Config (Phase 2) ────────────────────────────────
-    routing_mandatory: bool = False  # Force routing structure in every graph
+    routing_mandatory: bool = True  # Force routing structure in every graph
     routing_min_lanes: int = 2  # Minimum routing lanes (2 or 3)
     difficulty_scorer_type: str = "entropy"  # "entropy" or "learned"
 
@@ -187,9 +189,8 @@ class GrammarConfig:
         """Config tuned for efficiency-first architecture search (>5x GPT-2)."""
         return cls(
             model_dim=model_dim,
-            min_depth=3,
-            max_depth=8,
-            max_ops=12,
+            max_depth=14,
+            max_ops=24,
             residual_prob=0.7,
             split_prob=0.3,
             merge_prob=0.4,
@@ -231,8 +232,8 @@ class GrammarConfig:
             op_weights={
                 "nm_sparse_linear": 4.0,
                 "moe_topk": 4.0,
-                "entropy_score": 3.5,
-                "token_merge": 3.5,
+                "token_entropy": 3.5,
+                "adjacent_token_merge": 3.5,
                 "ternary_projection": 3.5,
                 "block_sparse_linear": 3.5,
                 "semi_structured_2_4_linear": 3.0,
@@ -247,9 +248,8 @@ class GrammarConfig:
         """Config tuned for exotic architecture exploration."""
         return cls(
             model_dim=model_dim,
-            min_depth=3,
-            max_depth=10,
-            max_ops=16,
+            max_depth=16,
+            max_ops=24,
             split_prob=0.6,
             residual_prob=0.4,
             merge_prob=0.5,
@@ -284,25 +284,25 @@ class GrammarConfig:
                 "sequential": 1.0,
             },
             op_weights={
-                "route_topk": 3.0,
-                "route_lanes": 3.0,
-                "route_recursion": 2.5,
-                "mod_topk": 3.0,
-                "early_exit": 2.0,
-                "adaptive_recursion": 3.0,
-                "token_merge": 2.0,
-                "cascade": 2.0,
-                "speculative": 2.0,
+                "feature_sparsity": 3.0,
+                "gated_lane_blend": 3.0,
+                "depth_gated_transform": 2.5,
+                "depth_token_mask": 3.0,
+                "confidence_token_gate": 2.0,
+                "depth_weighted_proj": 3.0,
+                "adjacent_token_merge": 2.0,
+                "learned_token_gate": 2.0,
+                "cheap_verify_blend": 2.0,
                 "moe_topk": 3.0,
-                "adaptive_lane_mixer": 3.0,
-                "mixed_recursion_gate": 2.5,
-                "relu_gate_routing": 2.5,
+                "difficulty_blend_3way": 3.0,
+                "score_depth_blend": 2.5,
+                "relu_gated_moe": 2.5,
                 "latent_attention_compressor": 3.0,
-                "routing_conditioned_compression": 2.5,
-                "progressive_compression_gate": 2.0,
-                "compression_mixture_experts": 2.5,
-                "token_type_classifier": 2.5,
-                "entropy_score": 2.5,
+                "signal_conditioned_compression": 2.5,
+                "adaptive_rank_gate": 2.0,
+                "dual_compression_blend": 2.5,
+                "token_class_proj": 2.5,
+                "token_entropy": 2.5,
             },
         )
 
@@ -341,9 +341,8 @@ class GrammarConfig:
         }
         return cls(
             model_dim=model_dim,
-            min_depth=3,
-            max_depth=10,
-            max_ops=16,
+            max_depth=16,
+            max_ops=24,
             residual_prob=0.8,
             split_prob=0.3,
             risky_op_prob=0.5,
@@ -365,15 +364,15 @@ class GrammarConfig:
             },
             template_weights=tpl_weights,
             op_weights={
-                "entropy_score": 5.0,
-                "adaptive_lane_mixer": 4.0,
-                "early_exit": 3.5,
-                "cascade": 3.5,
-                "adaptive_recursion": 3.5,
+                "token_entropy": 5.0,
+                "difficulty_blend_3way": 4.0,
+                "confidence_token_gate": 3.5,
+                "learned_token_gate": 3.5,
+                "depth_weighted_proj": 3.5,
                 "moe_topk": 3.0,
                 "moe_2expert": 3.0,
-                "token_merge": 3.0,
-                "relu_gate_routing": 2.5,
+                "adjacent_token_merge": 3.0,
+                "relu_gated_moe": 2.5,
                 "swiglu_mlp": 2.0,
                 "gated_linear": 2.0,
             },
@@ -392,17 +391,106 @@ class GrammarConfig:
             target_ops: Op names to boost (e.g. from DB query for <20 observations)
             boost_factor: Weight multiplier for motifs/templates containing targets
         """
+        # Exploration targets may not be routing/compression/MoE ops,
+        # so relax routing_mandatory to avoid rejecting valid exploration
+        # graphs. The target ops are the priority here.
         return cls(
             model_dim=model_dim,
-            min_depth=3,
-            max_depth=12,
-            max_ops=18,
+            max_depth=16,
+            max_ops=24,
             residual_prob=0.6,
             split_prob=0.4,
             risky_op_prob=0.7,
+            routing_mandatory=False,
             exploration_targets=target_ops,
             exploration_boost_factor=boost_factor,
         )
+
+
+# ── DB-backed template weight loader ────────────────────────────────
+
+
+class _DBTemplateWeightCache:
+    """TTL-bounded cache for DB template weights. No global mutable state."""
+
+    __slots__ = ("_weights", "_expires", "_ttl")
+
+    def __init__(self, ttl: float = 60.0):
+        self._weights: Optional[Dict[str, float]] = None
+        self._expires: float = 0.0
+        self._ttl = ttl
+
+    def get(
+        self, db_path: str = "research/lab_notebook.db"
+    ) -> Optional[Dict[str, float]]:
+        """Load template weights from template_stats, cached for TTL seconds."""
+        import math as _math
+        import sqlite3
+        import time as _time
+
+        now = _time.time()
+        if self._weights is not None and now < self._expires:
+            return self._weights
+
+        try:
+            from pathlib import Path
+
+            path = Path(db_path)
+            if not path.is_absolute():
+                cwd = Path.cwd()
+                if (
+                    cwd.name == "research"
+                    and path.parts
+                    and path.parts[0] == "research"
+                ):
+                    path = cwd.parent / db_path
+                else:
+                    path = path.resolve()
+            if not path.exists():
+                return None
+
+            conn = sqlite3.connect(str(path), timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            rows = conn.execute(
+                """SELECT template_name, eval_count, s1_pass_count, mean_loss
+                   FROM template_stats WHERE eval_count >= 5"""
+            ).fetchall()
+            conn.close()
+
+            if not rows:
+                return None
+
+            from .templates import DEFAULT_TEMPLATE_WEIGHTS
+
+            k = 3.0
+            db_weights: Dict[str, float] = {}
+            for tpl_name, eval_count, s1_count, mean_loss in rows:
+                if mean_loss is None or not _math.isfinite(mean_loss):
+                    continue
+                s1_rate = s1_count / max(eval_count, 1)
+                perf_weight = _math.exp(-k * mean_loss) * (1.0 + s1_rate)
+                static_weight = DEFAULT_TEMPLATE_WEIGHTS.get(tpl_name, 1.0)
+                db_weights[tpl_name] = 0.5 * static_weight + 0.5 * perf_weight
+
+            for tpl_name, w in DEFAULT_TEMPLATE_WEIGHTS.items():
+                if tpl_name not in db_weights:
+                    db_weights[tpl_name] = w
+
+            self._weights = db_weights
+            self._expires = now + self._ttl
+            logger.info(
+                "Loaded DB template weights for %d templates (%.0f%% from DB)",
+                len(db_weights),
+                len(rows) / max(len(db_weights), 1) * 100,
+            )
+            return db_weights
+
+        except Exception as e:
+            logger.debug("Failed to load DB template weights: %s", e)
+            return None
+
+
+_db_weight_cache = _DBTemplateWeightCache(ttl=60.0)
 
 
 class EfficiencyPrior:
@@ -462,7 +550,13 @@ def generate_layer_graph(
 
     # Template and motif weights flow directly into template/motif pickers.
     # Non-empty dicts carry research-signal priors from execution_screening.
-    tpl_weights = dict(config.template_weights) if config.template_weights else None
+    # If config has explicit weights, use them. If use_db_weights, try DB.
+    if config.template_weights:
+        tpl_weights = dict(config.template_weights)
+    elif config.use_db_weights:
+        tpl_weights = _db_weight_cache.get()  # TTL-cached, returns None if unavailable
+    else:
+        tpl_weights = None
     motif_weights = dict(config.motif_weights) if config.motif_weights else {}
 
     # Bridge op_weights → motif_weights: geometric mean of constituent op weights.
@@ -509,14 +603,14 @@ def generate_layer_graph(
             "spike_rate_code": "spiking_moe_block",
             "hyp_linear": "hyperbolic_bridge_block",
             "hyp_tangent_nonlinear": "hyperbolic_bridge_block",
-            "n_way_sparse_router": "n_way_moe_block",
+            "sparse_bottleneck_moe": "n_way_moe_block",
             "conv_only": "conv_residual_block",
             "fixed_point_iter": "iterative_refinement",
             "gated_delta": "recurrent_delta_block",
             "bottleneck_proj": "bottleneck",
             "low_rank_proj": "bottleneck",
-            "early_exit": "cascaded_early_exit",
-            "adaptive_recursion": "recursive_depth_router",
+            "confidence_token_gate": "cascaded_early_exit",
+            "depth_weighted_proj": "recursive_depth_router",
             "tropical_center": "tropical_center_block",
             "tropical_attention": "tropical_center_block",
             "tropical_add": "tropical_residual",
@@ -540,7 +634,14 @@ def generate_layer_graph(
             "reciprocal": "reciprocal_gated",
             "sign_ste": "sign_ste_gated",
             "log": "log_gated",
+            "ultrametric_attention": "ultrametric_attention_block",
             "graph_attention": "graph_attention_block",
+            # 2-input routing ops — need dedicated template for structural wiring
+            "dual_compression_blend": "signal_routed_compression",
+            "signal_conditioned_compression": "signal_routed_compression",
+            "score_depth_blend": "mixed_recursion",
+            "difficulty_blend_3way": "three_lane_adaptive",
+            "relu_gated_moe": "moe",
         }
         if tpl_weights is None:
             from .templates import DEFAULT_TEMPLATE_WEIGHTS
@@ -552,10 +653,6 @@ def generate_layer_graph(
                 tpl_weights[tpl_name] *= config.exploration_boost_factor
 
     motif_weights = motif_weights or None
-    motif_weights = apply_context_rule_priors(
-        motif_weights,
-        exploration_targets=config.exploration_targets,
-    )
     graph.metadata["context_rules_version"] = "low_s1_v1"
 
     # High sparsity bias → force first template from efficiency pool
@@ -589,6 +686,32 @@ def generate_layer_graph(
             if (t_idx == 0 and _use_efficiency_first)
             else tpl_weights
         )
+
+        # Depth-aware template biasing: early blocks favor FFN/conv,
+        # late blocks favor attention/SSM (per GPT-2 layer importance research).
+        if _iter_weights and n_templates > 1:
+            depth_ratio = t_idx / (n_templates - 1)
+            depth_weights = {}
+            for tpl_name, base_w in _iter_weights.items():
+                tl = tpl_name.lower()
+                if depth_ratio < 0.33:
+                    if "conv" in tl or "ffn" in tl or "bottleneck" in tl:
+                        depth_weights[tpl_name] = base_w * 1.5
+                    elif "attention" in tl or "transformer" in tl:
+                        depth_weights[tpl_name] = base_w * 0.6
+                    else:
+                        depth_weights[tpl_name] = base_w
+                elif depth_ratio > 0.66:
+                    if "attention" in tl or "transformer" in tl or "mamba" in tl:
+                        depth_weights[tpl_name] = base_w * 1.5
+                    elif "bottleneck" in tl or "compress" in tl:
+                        depth_weights[tpl_name] = base_w * 0.6
+                    else:
+                        depth_weights[tpl_name] = base_w
+                else:
+                    depth_weights[tpl_name] = base_w
+            _iter_weights = depth_weights
+
         trial_graph = graph.copy()
         trial_current = apply_template(
             trial_graph,
@@ -603,6 +726,14 @@ def generate_layer_graph(
             break
         graph = trial_graph
         current = trial_current
+
+    # Record depth placement for leaderboard analysis
+    tpls_used = graph.metadata.get("templates_used", [])
+    if tpls_used and n_templates > 1:
+        graph.metadata["layer_depths"] = {
+            f"block_{i}": tpls_used[i] if i < len(tpls_used) else None
+            for i in range(n_templates)
+        }
 
     # Optional spectral filter injection (driven by freq_domain_prob)
     # Wrapped in residual: FFT numerical drift is unrecoverable without skip.
@@ -647,6 +778,13 @@ def generate_layer_graph(
             # path explicitly rather than swallowing the failure.
             current = current
 
+    # Final LayerNorm before output head — every serious LM (GPT-2, LLaMA,
+    # Mamba) has this. Without it logit scale depends on last block's variance.
+    # Worth ~5-15% perplexity improvement.
+    last_op = graph.nodes[current].op_name
+    if last_op not in ("rmsnorm", "layernorm"):
+        current = graph.add_op("rmsnorm", [current])
+
     graph.set_output(current)
 
     # Prune dead branches
@@ -658,25 +796,44 @@ def generate_layer_graph(
     return graph
 
 
-_ROUTING_OPS: frozenset = frozenset(
+_ROUTING_COMPRESSION_MOE_OPS: frozenset = frozenset(
     {
-        "entropy_score",
-        "token_type_classifier",
-        "route_topk",
-        "route_lanes",
-        "route_recursion",
-        "adaptive_lane_mixer",
-        "mixed_recursion_gate",
-        "early_exit",
-        "cascade",
-        "speculative",
-        "adaptive_recursion",
-        "mod_topk",
-        "token_merge",
-        "relu_gate_routing",
+        # Routing — per-token path selection
+        "token_entropy",
+        "token_class_proj",
+        "feature_sparsity",
+        "gated_lane_blend",
+        "depth_gated_transform",
+        "difficulty_blend_3way",
+        "score_depth_blend",
+        "confidence_token_gate",
+        "learned_token_gate",
+        "cheap_verify_blend",
+        "depth_weighted_proj",
+        "depth_token_mask",
+        "adjacent_token_merge",
+        "relu_gated_moe",
+        # True routing — heterogeneous expert dispatch
+        "hetero_moe",
+        "arch_router",
+        "compute_budget_router",
+        # MoE — expert selection
         "moe_topk",
         "moe_2expert",
-        "routing_conditioned_compression",
+        "sparse_bottleneck_moe",
+        "tropical_moe",
+        # Conditional gating — per-token activation decisions
+        "topk_gate",
+        "tropical_gate",
+        "tropical_router",
+        "sparse_threshold",
+        "lif_neuron",
+        "padic_gate",
+        # Dynamic compression — per-token bandwidth decisions
+        "signal_conditioned_compression",
+        "adaptive_rank_gate",
+        "dual_compression_blend",
+        "latent_attention_compressor",
     }
 )
 
@@ -696,17 +853,32 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
             result.errors[0] if result.errors else "Graph validation failed"
         )
 
+    # Dimension-flow validation — catch skip-only paths and dim mismatches
+    # that slipped through template ValueError fallbacks.
+    dim_result = validate_dim_flow(graph)
+    if not dim_result.valid:
+        raise ValueError(dim_result.errors[0])
+
+    # Parameter budget — reject graphs that would OOM before eval.
+    # Budget: 12 transformer-equivalent layers * 4*D*D params each.
+    max_params = 12 * 4 * config.model_dim * config.model_dim
+    budget_result = check_param_budget(graph, max_params)
+    if not budget_result.valid:
+        raise ValueError(budget_result.errors[0])
+
     # Algebraic space consistency check — reject graphs that mix
     # incompatible mathematical spaces (e.g., tropical after poincaré).
     space_err = _check_graph_space_consistency(graph)
     if space_err is not None:
         raise ValueError(space_err)
 
-    # Routing-mandatory check: reject graphs without routing ops
+    # Routing-mandatory check: every graph must have routing, compression, or MoE
     if config.routing_mandatory:
         op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
-        if not op_names & _ROUTING_OPS:
-            raise ValueError("routing_mandatory=True but graph has no routing ops")
+        if not op_names & _ROUTING_COMPRESSION_MOE_OPS:
+            raise ValueError(
+                "routing_mandatory=True but graph has no routing/compression/MoE ops"
+            )
 
     # Depth constraint check: reject ops placed before their min_layer_depth.
     # Approximate layer depth by topological order from input.
@@ -870,6 +1042,13 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     ctx_err = validate_context_rules(graph)
     if ctx_err is not None:
         raise ValueError(ctx_err)
+
+    # Template-level structural invariants (metadata only, don't reject)
+    tpl_errors = validate_template_graph(graph)
+    if tpl_errors:
+        for err in tpl_errors:
+            logger.debug("template_rule: %s", err)
+        graph.metadata["template_rule_warnings"] = tpl_errors
 
 
 def _graph_exceeds_final_budget(
@@ -1037,8 +1216,8 @@ def _check_shape_compat(
         "linear_proj_down": 4,
         "linear_proj_up": 4,
         "fused_linear_gelu": 4,
-        "adaptive_lane_mixer": 8,
-        "relu_gate_routing": 8,
+        "difficulty_blend_3way": 8,
+        "relu_gated_moe": 8,
     }
     min_dim = _MIN_DIM_OPS.get(op.name)
     if min_dim and s0.dim < min_dim:

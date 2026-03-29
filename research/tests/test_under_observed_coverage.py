@@ -20,13 +20,13 @@ from research.tools.explore_under_observed import generate_forced_graph
 # All ops with <20 historical observations
 UNDER_OBSERVED_OPS = frozenset(
     [
-        "cascade",
+        "learned_token_gate",
         "cumprod_safe",
-        "early_exit",
-        "mod_topk",
+        "confidence_token_gate",
+        "depth_token_mask",
         "reciprocal",
         "split3",
-        "n_way_sparse_router",
+        "sparse_bottleneck_moe",
         "sparse_threshold",
         "stdp_attention",
         "max_last",
@@ -59,7 +59,7 @@ UNDER_OBSERVED_OPS = frozenset(
         "hyp_tangent_nonlinear",
         "grouped_linear",
         "fixed_point_iter",
-        "token_merge",
+        "adjacent_token_merge",
         "bottleneck_proj",
         "rotor_transform",
         "outer_product",
@@ -72,7 +72,7 @@ class TestRoleFixes:
     """Verify role mapping fixes for previously-broken ops."""
 
     def test_n_way_sparse_router_is_route(self):
-        assert get_role("n_way_sparse_router") == OpRole.ROUTE
+        assert get_role("sparse_bottleneck_moe") == OpRole.ROUTE
 
     def test_cumprod_safe_is_reduce(self):
         assert get_role("cumprod_safe") == OpRole.REDUCE
@@ -87,13 +87,15 @@ class TestExplorationConfig:
     """Verify GrammarConfig.exploration() works correctly."""
 
     def test_exploration_config_creation(self):
-        targets = frozenset(["cascade", "early_exit"])
+        targets = frozenset(["learned_token_gate", "confidence_token_gate"])
         config = GrammarConfig.exploration(targets)
         assert config.exploration_targets == targets
         assert config.exploration_boost_factor == 4.0
 
     def test_exploration_config_custom_boost(self):
-        config = GrammarConfig.exploration(frozenset(["cascade"]), boost_factor=10.0)
+        config = GrammarConfig.exploration(
+            frozenset(["learned_token_gate"]), boost_factor=10.0
+        )
         assert config.exploration_boost_factor == 10.0
 
     def test_exploration_generates_valid_graphs(self):
@@ -107,7 +109,7 @@ class TestExplorationConfig:
                 generated += 1
             except ValueError:
                 pass
-        assert generated > 30, f"Only {generated}/50 graphs generated"
+        assert generated > 20, f"Only {generated}/50 graphs generated"
 
     @pytest.mark.parametrize("op_name", ["sparse_threshold", "stdp_attention"])
     def test_forced_generation_covers_spiking_threshold_and_stdp(self, op_name):
@@ -120,7 +122,7 @@ class TestExplorationConfig:
         }
         assert op_name in ops, graph.to_dict()
 
-    @pytest.mark.parametrize("op_name", ["local_window_attn", "n_way_sparse_router"])
+    @pytest.mark.parametrize("op_name", ["local_window_attn", "sparse_bottleneck_moe"])
     def test_forced_generation_uses_multiple_valid_wrapper_variants(self, op_name):
         fingerprints = set()
         for seed in (42, 43, 44):

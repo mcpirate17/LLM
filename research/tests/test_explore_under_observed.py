@@ -128,7 +128,9 @@ class TestDiscoverTargets:
 
 class TestOpsInGraph:
     def test_extracts_ops(self):
-        g = generate_layer_graph(GrammarConfig(composition_depth=1), seed=42)
+        g = generate_layer_graph(
+            GrammarConfig(composition_depth=1, routing_mandatory=False), seed=42
+        )
         ops = _ops_in_graph(g)
         assert len(ops) > 0
         assert "input" not in ops
@@ -210,7 +212,16 @@ class TestGenerateWeightedBatch:
 class TestUpdateCoverage:
     def test_updates_on_compile_pass(self):
         coverage = {"op_a": OpCoverage("op_a", 5)}
-        graph = generate_layer_graph(seed=42)
+        graph = None
+        for s in range(42, 62):
+            try:
+                graph = generate_layer_graph(
+                    GrammarConfig(routing_mandatory=False), seed=s
+                )
+                break
+            except ValueError:
+                continue
+        assert graph is not None, "Could not generate a valid graph in 20 seeds"
         present = _ops_in_graph(graph)
         # Pick a real op from the graph
         op_name = next(iter(present))
@@ -233,7 +244,16 @@ class TestUpdateCoverage:
 
     def test_skips_ops_not_in_graph(self):
         coverage = {"nonexistent_xyz": OpCoverage("nonexistent_xyz", 0)}
-        graph = generate_layer_graph(seed=42)
+        graph = None
+        for s in range(42, 62):
+            try:
+                graph = generate_layer_graph(
+                    GrammarConfig(routing_mandatory=False), seed=s
+                )
+                break
+            except ValueError:
+                continue
+        assert graph is not None
         result = ExplorationResult(
             graph_fingerprint="abc",
             target_ops=["nonexistent_xyz"],
@@ -376,7 +396,7 @@ class TestEvaluateGraph:
     def test_compile_and_forward_cpu(self):
         """Verify a simple graph compiles and passes forward on CPU."""
         graph = generate_layer_graph(
-            GrammarConfig(composition_depth=1, max_ops=8),
+            GrammarConfig(composition_depth=1, max_ops=8, routing_mandatory=False),
             seed=42,
         )
         result = evaluate_graph(graph, device="cpu", run_s1=False)

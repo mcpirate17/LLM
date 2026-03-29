@@ -40,7 +40,10 @@ from ..shared_api import (
     bridge_list_primitives,
     bridge_profile,
     bridge_validate,
+    collect_unresolved_nodes,
     find_unsupported_edge_dtype_pairings,
+    get_approved_registry_ids,
+    require_feature,
     runtime_compile,
 )
 from research.defaults import MODEL_DIM, VOCAB_SIZE
@@ -55,7 +58,7 @@ router = APIRouter(prefix="/api/v1", tags=["workflows"])
 def _canonicalize_request_workflow(
     workflow: WorkflowGraphModel,
 ) -> tuple[WorkflowGraphModel, dict, set[str]]:
-    registry_ids = db.list_component_types(status="approved")
+    registry_ids = get_approved_registry_ids()
     payload = workflow.model_dump()
     canonicalize_workflow_ids(payload, registry_ids)
     return WorkflowGraphModel.model_validate(payload), payload, registry_ids
@@ -64,22 +67,16 @@ def _canonicalize_request_workflow(
 def _unresolved_component_issues(
     workflow_payload: dict, registry_ids: set[str]
 ) -> List[ValidationIssue]:
-    unresolved: List[ValidationIssue] = []
-    for node in workflow_payload.get("nodes", []):
-        component_type = str(node.get("component_type") or "").strip().lower()
-        if component_type and component_type not in registry_ids:
-            unresolved.append(
-                ValidationIssue(
-                    severity="error",
-                    code="unknown_component",
-                    node_id=node.get("id"),
-                    message=(
-                        f"Node {node.get('id')}: unresolved component type "
-                        f"'{node.get('component_type')}'."
-                    ),
-                )
-            )
-    return unresolved
+    raw = collect_unresolved_nodes(workflow_payload, registry_ids)
+    return [
+        ValidationIssue(
+            severity="error",
+            code="unknown_component",
+            node_id=r["node_id"],
+            message=r["message"],
+        )
+        for r in raw
+    ]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -347,9 +344,17 @@ def compile_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error("Compilation failed: %s", e)
+        error_details = {
+            "stage": "compilation",
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "root_cause_code": "compilation",
+            "semantic_warnings": semantic_warnings,
+        }
         return {
             "compiled": False,
             "error": str(e),
+            "error_details": error_details,
             "workflow_id": req.workflow.workflow_id,
             "semantic_warnings": semantic_warnings,
             "semantic_warning_count": len(semantic_warnings),
@@ -398,7 +403,16 @@ def preview_workflow(req: CompileWorkflowRequest) -> Dict[str, Any]:
         return {"success": True, "results": results}
     except Exception as e:
         logger.error("Preview failed: %s", e)
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": str(e),
+            "error_details": {
+                "stage": "preview",
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "root_cause_code": "preview",
+            },
+        }
 
 
 @router.post("/workflows/run")
@@ -571,8 +585,7 @@ def get_benchmark_targets(
 @router.post("/workflows/profile")
 def profile_workflow_endpoint(req: RunWorkflowRequest) -> Dict[str, Any]:
     """Profile a workflow: FLOPs, memory, latency, bottleneck analysis."""
-    if not HAS_PROFILER:
-        raise HTTPException(status_code=501, detail="Profiler not available")
+    require_feature(HAS_PROFILER, "Profiler")
     wf = req.workflow.model_dump()
     budget = req.budget
     report = bridge_profile(
@@ -606,8 +619,7 @@ def profile_workflow_endpoint(req: RunWorkflowRequest) -> Dict[str, Any]:
 @router.post("/workflows/validate-graph")
 def validate_workflow_graph_endpoint(req: ValidateWorkflowRequest) -> Dict[str, Any]:
     """Validate that a workflow maps to a valid ComputationGraph in the research pipeline."""
-    if not HAS_BRIDGE:
-        raise HTTPException(status_code=501, detail="Research bridge not available")
+    require_feature(HAS_BRIDGE, "Research bridge")
     wf = req.workflow.model_dump()
     return bridge_validate(wf, model_dim=req.workflow.metadata.get("model_dim", 256))
 
@@ -615,8 +627,7 @@ def validate_workflow_graph_endpoint(req: ValidateWorkflowRequest) -> Dict[str, 
 @router.get("/primitives")
 def list_primitives() -> List[Dict[str, Any]]:
     """List all available primitives from the research pipeline."""
-    if not HAS_BRIDGE:
-        raise HTTPException(status_code=501, detail="Research bridge not available")
+    require_feature(HAS_BRIDGE, "Research bridge")
     return bridge_list_primitives()
 
 

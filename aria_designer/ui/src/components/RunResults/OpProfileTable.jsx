@@ -51,8 +51,8 @@ const OpProfileTable = ({
             </tr>
           </thead>
           <tbody>
-            {opProfiles.map((op, i) => (
-              <tr key={i}>
+            {opProfiles.map((op) => (
+              <tr key={op.op_name}>
                 <td style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35 }}>{op.op_name}</td>
                 <td>{formatNum(op.flops)}</td>
                 <td>{formatNum(op.params)}</td>

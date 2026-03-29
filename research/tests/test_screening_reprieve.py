@@ -124,7 +124,7 @@ class TestReprieveConfig:
 
     def test_existing_defaults_unchanged(self):
         cfg = RunConfig()
-        assert cfg.pre_inv_max_lr == 0.40
+        assert cfg.pre_inv_max_lr == 0.50  # raised from 0.40 for routing models
         assert cfg.pre_inv_probe_enabled is False
         assert cfg.pre_inv_top_n == 15
 

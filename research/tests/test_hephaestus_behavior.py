@@ -16,7 +16,7 @@ class TestHephaestusBehavior(unittest.TestCase):
         print("\nTesting Budget Pruning...")
         # Use a slightly relaxed budget — motif-based templates produce more
         # parameterized ops than the old random-walk grammar.
-        tight_config = GrammarConfig(model_dim=64, max_ops=6)
+        tight_config = GrammarConfig(model_dim=64, max_ops=6, routing_mandatory=False)
         gen = AdaptiveGenerator(tight_config)
 
         graphs = [gen.generate(seed=i) for i in range(10)]

@@ -50,7 +50,7 @@ class _ContinuousLoopMixin:
                 )
             init_nb.close()
         except Exception as e:
-            logger.debug("Replication backfill failed: %s", e)
+            logger.warning("Replication backfill failed: %s", e)
 
         # Knowledge distiller — background intelligence thread
         distiller = None
@@ -72,7 +72,7 @@ class _ContinuousLoopMixin:
                     logger.info("Recovered knowledge digest from DB")
                 init_nb.close()
             except Exception as e:
-                logger.debug("Digest recovery failed: %s", e)
+                logger.warning("Digest recovery failed: %s", e)
             distiller.start()
             self._knowledge_distiller = distiller
         except Exception as e:
@@ -123,7 +123,7 @@ class _ContinuousLoopMixin:
                 logger.info(f"Cleaned up {n_cleaned} stale running experiments")
             cleanup_nb.close()
         except Exception as e:
-            logger.debug(f"Stale experiment cleanup failed: {e}")
+            logger.warning("Stale experiment cleanup failed: %s", e)
 
         # Initialize campaign
         try:
@@ -131,7 +131,7 @@ class _ContinuousLoopMixin:
             self._ensure_campaign(config, init_nb)
             init_nb.close()
         except Exception as e:
-            logger.debug(f"Campaign init failed: {e}")
+            logger.warning("Campaign init failed: %s", e)
 
         while not self._stop_event.is_set():
             self._wait_for_cycle_resume(n_experiments)
@@ -152,8 +152,8 @@ class _ContinuousLoopMixin:
                         f"Retrying after heal: {retry['scope'][:200]}",
                     )
                     retry_nb.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Heal retry logging failed: %s", e)
 
             # Check limits before starting next experiment
             stop_reason = self._check_continuous_limits(config, t_start, n_experiments)
@@ -186,8 +186,8 @@ class _ContinuousLoopMixin:
                 if distiller is not None:
                     try:
                         distiller.stop()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Distiller stop failed at limit: %s", e)
                 # Launch queued auto-scale-up
                 self._run_pending_scale_up()
                 return
@@ -218,7 +218,7 @@ class _ContinuousLoopMixin:
                                 stats.get("n_correlation_samples", 0),
                             )
                     except Exception as e:
-                        logger.debug(
+                        logger.warning(
                             "Failed to generate gate performance summary: %s", e
                         )
             finally:
@@ -228,8 +228,8 @@ class _ContinuousLoopMixin:
             if distiller is not None:
                 try:
                     distiller.notify_cycle_complete()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Distiller cycle notification failed: %s", e)
 
             # Update cost in progress
             self._update_progress(
@@ -255,15 +255,15 @@ class _ContinuousLoopMixin:
                         },
                     )
                 except Exception as e:
-                    logger.debug("Checkpoint save failed: %s", e)
+                    logger.warning("Checkpoint save failed: %s", e)
 
             # Purge empty failed experiments between cycles to prevent DB bloat.
             try:
                 self.notebook.purge_empty_experiments()
                 self.notebook.compact_old_chat()
                 self.notebook.backfill_failure_signatures()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Inter-cycle cleanup failed: %s", e)
 
             if config.rest_between_experiments > 0 and not self._stop_event.is_set():
                 time.sleep(config.rest_between_experiments)
@@ -272,8 +272,8 @@ class _ContinuousLoopMixin:
         if distiller is not None:
             try:
                 distiller.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Distiller stop failed: %s", e)
 
         # Re-enable LLM for interactive use after continuous mode ends.
         self.aria._continuous_mode = False
@@ -315,7 +315,7 @@ class _ContinuousLoopMixin:
                 ckpt_exp_id = resume_id or "continuous"
                 ckpt.cleanup(ckpt_exp_id)
             except Exception as e:
-                logger.debug("Checkpoint cleanup failed: %s", e)
+                logger.warning("Checkpoint cleanup failed: %s", e)
 
         # Launch queued auto-scale-up
         self._run_pending_scale_up()
@@ -717,11 +717,11 @@ class _ContinuousLoopMixin:
                     trigger=decision_log["trigger"],
                 )
             except Exception as log_err:
-                logger.debug("Mode selection decision log failed: %s", log_err)
+                logger.warning("Mode selection decision log failed: %s", log_err)
 
             return rec
         except Exception as e:
-            logger.debug(f"Mode selection failed, defaulting to synthesis: {e}")
+            logger.warning("Mode selection failed, defaulting to synthesis: %s", e)
             return {
                 "mode": "synthesis",
                 "reasoning": "Fallback",
@@ -746,6 +746,6 @@ class _ContinuousLoopMixin:
                     )
             self._maybe_auto_scale_up(cumulative_results, config, nb)
         except Exception as e:
-            logger.debug(f"End-of-session automation failed: {e}")
+            logger.warning("End-of-session automation failed: %s", e)
         finally:
             nb.close()

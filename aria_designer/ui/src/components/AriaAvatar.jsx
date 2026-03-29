@@ -368,4 +368,4 @@ function Sparkle({ x, y, size, color }) {
   );
 }
 
-export default AriaAvatar;
+export default React.memo(AriaAvatar);
