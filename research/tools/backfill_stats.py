@@ -22,16 +22,17 @@ from typing import Dict, List, Tuple
 
 def _extract_graph_info(
     graph_json: str,
-) -> Tuple[List[str], List[str], List[str]]:
-    """Extract template names, motif names, and op names from graph JSON."""
+) -> Tuple[List[str], List[str], List[str], List[dict]]:
+    """Extract template names, motif names, op names, and slot usage from graph JSON."""
     try:
         g = json.loads(graph_json)
     except (json.JSONDecodeError, TypeError):
-        return [], [], []
+        return [], [], [], []
 
     metadata = g.get("metadata", {})
     templates = metadata.get("templates_used", [])
     motifs = metadata.get("motifs_used", [])
+    slot_usage = metadata.get("template_slot_usage", [])
 
     ops = []
     nodes = g.get("nodes", {})
@@ -46,6 +47,7 @@ def _extract_graph_info(
         templates if isinstance(templates, list) else [],
         motifs if isinstance(motifs, list) else [],
         ops,
+        slot_usage if isinstance(slot_usage, list) else [],
     )
 
 
@@ -90,9 +92,11 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
     motif_data: Dict[
         str, list
     ] = {}  # [eval, s0, s1, [losses], [novelties], best_tpl, best_loss]
+    # Slot stats: slot_key → {eval, s1, [losses], class_outcomes, wc_count, wc_s1, wc_class_outcomes, template_name, slot_index, slot_classes}
+    slot_data: Dict[str, dict] = {}
 
     for graph_json, s0, s1, loss_ratio, novelty in rows:
-        templates, motifs, ops = _extract_graph_info(graph_json)
+        templates, motifs, ops, slot_usage = _extract_graph_info(graph_json)
         s0_pass = 1 if s0 else 0
         s1_pass = 1 if s1 else 0
         valid_loss = loss_ratio is not None and math.isfinite(loss_ratio)
@@ -142,6 +146,49 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
                     d[5] = templates[0] if templates else None
             if valid_nov:
                 d[4].append(novelty)
+
+        # Accumulate slot-level stats
+        for slot in slot_usage:
+            if not isinstance(slot, dict):
+                continue
+            tpl_name = slot.get("template_name", "unknown")
+            slot_idx = slot.get("slot_index", 0)
+            sk = f"{tpl_name}.slot{slot_idx}"
+            motif_cls = slot.get("selected_motif_class")
+            is_wc = bool(slot.get("wildcard"))
+
+            if sk not in slot_data:
+                slot_data[sk] = {
+                    "eval": 0,
+                    "s1": 0,
+                    "losses": [],
+                    "class_outcomes": {},
+                    "wc_count": 0,
+                    "wc_s1": 0,
+                    "wc_class_outcomes": {},
+                    "template_name": tpl_name,
+                    "slot_index": slot_idx,
+                    "slot_classes": slot.get("slot_classes", []),
+                }
+            sd = slot_data[sk]
+            sd["eval"] += 1
+            sd["s1"] += s1_pass
+            if valid_loss:
+                sd["losses"].append(loss_ratio)
+
+            if motif_cls:
+                # Track per-class outcomes
+                co = sd["wc_class_outcomes"] if is_wc else sd["class_outcomes"]
+                if motif_cls not in co:
+                    co[motif_cls] = {"n": 0, "s1": 0, "losses": []}
+                co[motif_cls]["n"] += 1
+                co[motif_cls]["s1"] += s1_pass
+                if valid_loss:
+                    co[motif_cls]["losses"].append(loss_ratio)
+
+            if is_wc:
+                sd["wc_count"] += 1
+                sd["wc_s1"] += s1_pass
 
     # Write template_stats
     conn.execute("DELETE FROM template_stats")
@@ -211,6 +258,45 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
             ),
         )
 
+    # Write slot_stats
+    conn.execute("DELETE FROM slot_stats")
+    for sk, sd in slot_data.items():
+        # Summarize class_outcomes: replace loss lists with mean_loss
+        def _summarize_outcomes(outcomes: dict) -> dict:
+            out = {}
+            for cls, vals in outcomes.items():
+                out[cls] = {
+                    "n": vals["n"],
+                    "s1": vals["s1"],
+                    "mean_loss": _mean_or_none(vals["losses"]),
+                }
+            return out
+
+        losses = sd["losses"]
+        conn.execute(
+            """INSERT INTO slot_stats
+               (slot_key, template_name, slot_index, slot_classes,
+                eval_count, s1_pass_count, mean_loss, min_loss,
+                class_outcomes, wildcard_count, wildcard_s1_count,
+                wildcard_class_outcomes, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                sk,
+                sd["template_name"],
+                sd["slot_index"],
+                json.dumps(sd["slot_classes"]),
+                sd["eval"],
+                sd["s1"],
+                _mean_or_none(losses),
+                min(losses) if losses else None,
+                json.dumps(_summarize_outcomes(sd["class_outcomes"])),
+                sd["wc_count"],
+                sd["wc_s1"],
+                json.dumps(_summarize_outcomes(sd["wc_class_outcomes"])),
+                now,
+            ),
+        )
+
     conn.commit()
     conn.close()
 
@@ -218,6 +304,7 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
         "template_stats": len(tpl_data),
         "op_stats": len(op_data),
         "motif_stats": len(motif_data),
+        "slot_stats": len(slot_data),
     }
     print(f"Backfilled: {counts}")
     return counts
@@ -226,5 +313,22 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backfill analytics stats tables")
     parser.add_argument("--db", default="research/lab_notebook.db")
+    parser.add_argument(
+        "--refresh-models",
+        action="store_true",
+        help="Also retrain ML predictors (Bayesian tracker, graph predictor) after stats backfill",
+    )
     args = parser.parse_args()
     backfill(args.db)
+
+    if args.refresh_models:
+        print("\nRefreshing ML models...")
+        try:
+            from research.tools.train_predictors import train_bayesian, train_graph_predictor
+
+            train_bayesian(save=True)
+            print("  Bayesian tracker refreshed")
+            train_graph_predictor()
+            print("  Graph predictor refreshed")
+        except Exception as e:
+            print(f"  ML model refresh failed: {e}")

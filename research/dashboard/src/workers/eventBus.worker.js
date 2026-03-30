@@ -50,7 +50,7 @@ self.onmessage = function(e) {
       'auto_scale_up_queued', 'auto_investigate_queued',
       'auto_validate_queued', 'auto_report_generated',
       'aria_recommendation', 'breakthrough_detected',
-      'log_message',
+      'log_message', 'validation_phase',
     ];
 
     knownEvents.forEach(eventName => {

@@ -19,7 +19,12 @@ from ...training.checkpointing import CheckpointManager
 from ..notebook import ExperimentEntry
 from ..llm.context_experiment import build_validation_context
 from ..shared_utils import coerce_dict_payload, resolve_device
-from ._helpers import clear_gpu_memory, compute_seed_metrics
+from ._helpers import (
+    clear_gpu_memory, compute_seed_metrics,
+    run_baseline_comparison, build_validation_entry,
+    promote_validation_candidate, run_trajectory_probe,
+    handle_breakthrough,
+)
 
 import logging
 
@@ -47,8 +52,13 @@ class _ExecutionValidationMixin:
         t_start = time.time()
         ckpt = CheckpointManager(config.checkpoint_dir)
 
+        _outer_phase_index = 0
+        _OUTER_TOTAL_PHASES = 5  # baseline, normalized baseline, external evals, leaderboard promotion, trajectory probe
+
         def _vstatus(phase: str, rid_short: str = "") -> None:
             """Emit validation sub-phase to dashboard + log."""
+            nonlocal _outer_phase_index
+            _outer_phase_index += 1
             label = (
                 f"validation[{rid_short}]: {phase}"
                 if rid_short
@@ -59,7 +69,10 @@ class _ExecutionValidationMixin:
                 "validation_phase",
                 {
                     "experiment_id": exp_id,
+                    "result_id": rid_short,
                     "phase": phase,
+                    "outer_index": _outer_phase_index,
+                    "outer_total": _OUTER_TOTAL_PHASES,
                 },
             )
             self._update_progress(status=f"validation: {phase}")
@@ -85,6 +98,7 @@ class _ExecutionValidationMixin:
                     continue
                 if self._stop_event.is_set():
                     break
+                _outer_phase_index = 0  # reset per candidate
 
                 self._update_progress(
                     current_program=prog_idx + 1,
@@ -241,75 +255,27 @@ class _ExecutionValidationMixin:
                 init_sensitivity_std = _sm["init_sensitivity_std"]
                 best_seed = _sm["best_seed"]
 
-                # Baseline comparison at validation scale
                 _rid_short = source_result_id[:8]
+
+                _compare = lambda loss, **kw: run_baseline_comparison(
+                    get_baseline=self._get_baseline,
+                    resolve_recipe=self._resolve_baseline_recipe,
+                    make_data_fn=self._make_baseline_data_fn,
+                    candidate_loss=loss, train_result=best_seed,
+                    config=config, dev_str=dev_str, **kw,
+                )
+
+                # Baseline comparison at validation scale
                 _vstatus("baseline comparison", _rid_short)
                 val_baseline_ratio = None
                 if best_seed is not None:
                     try:
-                        baseline = self._get_baseline()
-                        baseline_steps = int(
-                            best_seed.get("n_train_steps") or config.validation_steps
-                        )
-                        baseline_recipe = self._resolve_baseline_recipe(
-                            best_seed, default_lr=config.stage1_lr
-                        )
-                        bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(
-                            config
-                        )
-                        val_baseline_ratio = baseline.compare(
-                            best_seed["final_loss"],
-                            d_model=config.model_dim,
-                            seq_len=min(128, config.validation_seq_len),
-                            n_steps=max(1, baseline_steps),
-                            vocab_size=config.vocab_size,
-                            batch_size=config.validation_batch_size,
-                            lr=baseline_recipe["lr"],
-                            device=dev_str,
-                            n_layers=config.n_layers,
-                            optimizer_name=baseline_recipe["optimizer_name"],
-                            weight_decay=baseline_recipe["weight_decay"],
-                            momentum=baseline_recipe["momentum"],
-                            betas=baseline_recipe["betas"],
-                            data_fn=bl_data_fn,
-                            data_tag=bl_data_tag,
-                            cache_data_fn=bl_cache,
-                        )
-                        # Optional: Validation baseline comparison (using val split)
+                        val_baseline_ratio = _compare(best_seed["final_loss"])
                         v_loss = best_seed.get("validation_loss")
                         if v_loss is not None:
-                            try:
-                                v_data_fn, v_data_tag, v_cache = (
-                                    self._make_baseline_data_fn(config, split="val")
-                                )
-                                v_baseline_ratio = baseline.compare(
-                                    v_loss,
-                                    d_model=config.model_dim,
-                                    seq_len=min(
-                                        128,
-                                        int(getattr(config, "validation_seq_len", 128)),
-                                    ),
-                                    n_steps=max(1, baseline_steps),
-                                    vocab_size=config.vocab_size,
-                                    batch_size=int(
-                                        getattr(config, "validation_batch_size", 4)
-                                    ),
-                                    lr=baseline_recipe["lr"],
-                                    device=dev_str,
-                                    n_layers=config.n_layers,
-                                    optimizer_name=baseline_recipe["optimizer_name"],
-                                    weight_decay=baseline_recipe["weight_decay"],
-                                    momentum=baseline_recipe["momentum"],
-                                    betas=baseline_recipe["betas"],
-                                    data_fn=v_data_fn,
-                                    data_tag=v_data_tag,
-                                    cache_data_fn=v_cache,
-                                )
-                                program_metrics["validation_baseline_loss_ratio"] = (
-                                    v_baseline_ratio
-                                )
-                            except Exception:
-                                raise
+                            program_metrics["validation_baseline_loss_ratio"] = (
+                                _compare(v_loss, split="val")
+                            )
                     except Exception as exc:
                         _fail_loud(
                             "validation",
@@ -321,45 +287,15 @@ class _ExecutionValidationMixin:
                 _vstatus("normalized baseline comparison", _rid_short)
                 val_normalized_ratio = None
                 val_param_efficiency = None
-                source_params = (
-                    (
-                        source.get("param_count")
-                        or source.get("graph_n_params_estimate")
-                        or 0
-                    )
-                    if source
-                    else 0
+                source_params = int(
+                    (source.get("param_count") or source.get("graph_n_params_estimate") or 0)
+                    if source else 0
                 )
                 if loss_ratios and best_seed is not None and source_params > 0:
                     try:
-                        baseline = self._get_baseline()
-                        baseline_steps = int(
-                            best_seed.get("n_train_steps") or config.validation_steps
-                        )
-                        baseline_recipe = self._resolve_baseline_recipe(
-                            best_seed, default_lr=config.stage1_lr
-                        )
-                        bl_data_fn, bl_data_tag, bl_cache = self._make_baseline_data_fn(
-                            config
-                        )
-                        norm_result = baseline.compare_normalized(
+                        norm_result = _compare(
                             best_seed["final_loss"],
-                            program_params=int(source_params),
-                            d_model=config.model_dim,
-                            seq_len=min(128, config.validation_seq_len),
-                            n_steps=max(1, baseline_steps),
-                            vocab_size=config.vocab_size,
-                            batch_size=config.validation_batch_size,
-                            lr=baseline_recipe["lr"],
-                            device=dev_str,
-                            n_layers=config.n_layers,
-                            optimizer_name=baseline_recipe["optimizer_name"],
-                            weight_decay=baseline_recipe["weight_decay"],
-                            momentum=baseline_recipe["momentum"],
-                            betas=baseline_recipe["betas"],
-                            data_fn=bl_data_fn,
-                            data_tag=bl_data_tag,
-                            cache_data_fn=bl_cache,
+                            normalized=True, program_params=source_params,
                         )
                         val_normalized_ratio = norm_result.get("normalized_ratio")
                         val_param_efficiency = norm_result.get("param_efficiency")
@@ -395,73 +331,31 @@ class _ExecutionValidationMixin:
                     source_params=source_params,
                 )
 
-                is_breakthrough = ev_res["is_breakthrough"]
-                flop_gated = ev_res["flop_gated"]
-                quant_int8_retention = ev_res["quant_int8_retention"]
-                quant_quality_per_byte = ev_res["quant_quality_per_byte"]
-                long_context_score = ev_res["long_context_score"]
-                long_context_details = ev_res["long_context_details"]
-                noise_score = ev_res["noise_score"]
-                ood_result = ev_res["ood_result"]
-                sensitivity_result = ev_res.get("sensitivity_result")
-                activation_sparsity_score = ev_res["activation_sparsity_score"]
-                dead_neuron_ratio = ev_res["dead_neuron_ratio"]
-                routing_collapse_score = ev_res["routing_collapse_score"]
-                wikitext_perplexity = ev_res["wikitext_perplexity"]
-                wikitext_score = ev_res["wikitext_score"]
-                tinystories_perplexity = ev_res["tinystories_perplexity"]
-                tinystories_score = ev_res["tinystories_score"]
-                cross_task_score = ev_res["cross_task_score"]
-                efficiency_wall_score = ev_res["efficiency_wall_score"]
-                max_viable_seq_len = ev_res["max_viable_seq_len"]
-                scaling_regime = ev_res["scaling_regime"]
-                scaling_param_efficiency = ev_res["scaling_param_efficiency"]
-                scaling_flop_efficiency = ev_res["scaling_flop_efficiency"]
-                scaling_gate_passed_val = ev_res["scaling_gate_passed_val"]
-                scaling_best_family = ev_res["scaling_best_family"]
-                scaling_confidence = ev_res["scaling_confidence"]
-                scaling_d512_param_efficiency = ev_res.get(
-                    "scaling_d512_param_efficiency"
-                )
-                scaling_result = ev_res.get("scaling_result")
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
 
-                tier = "breakthrough" if is_breakthrough else "validation"
+                # Build typed ValidationMetrics for helper consumption
+                from ._types import ValidationMetrics
+                _metrics = ValidationMetrics(
+                    val_loss_ratio=val_loss_ratio,
+                    multi_seed_std=multi_seed_std,
+                    robustness_score=robustness_score,
+                    is_unstable=is_unstable,
+                    init_sensitivity_std=init_sensitivity_std,
+                    val_baseline_ratio=val_baseline_ratio,
+                    val_normalized_ratio=val_normalized_ratio,
+                    val_param_efficiency=val_param_efficiency,
+                    passed_seeds=passed_seeds,
+                    best_seed=best_seed,
+                    source_params=int(source_params),
+                )
 
-                validation_entry = {
-                    "result_id": source_result_id,
-                    "val_loss_ratio": val_loss_ratio,
-                    "val_baseline_ratio": val_baseline_ratio,
-                    "val_normalized_ratio": val_normalized_ratio,
-                    "param_efficiency": val_param_efficiency,
-                    "multi_seed_std": multi_seed_std,
-                    "robustness_score": robustness_score,
-                    "is_unstable": is_unstable,
-                    "seeds_passed": len(passed_seeds),
-                    "total_seeds": config.validation_n_seeds,
-                    "is_breakthrough": is_breakthrough,
-                    "flop_gated": flop_gated,
-                    "quant_int8_retention": quant_int8_retention,
-                    "quant_quality_per_byte": quant_quality_per_byte,
-                    "long_context_score": long_context_score,
-                    "noise_sensitivity_score": noise_score,
-                    "init_sensitivity_std": init_sensitivity_std,
-                    "novelty_confidence": nov_conf,
-                    "ood_robustness": ood_result,
-                    "sensitivity": sensitivity_result,
-                    "activation_sparsity_score": activation_sparsity_score,
-                    "dead_neuron_ratio": dead_neuron_ratio,
-                    "routing_collapse_score": routing_collapse_score,
-                    "wikitext_perplexity": wikitext_perplexity,
-                    "wikitext_score": wikitext_score,
-                    "tinystories_perplexity": tinystories_perplexity,
-                    "tinystories_score": tinystories_score,
-                    "cross_task_score": cross_task_score,
-                    "efficiency_wall_score": efficiency_wall_score,
-                    "max_viable_seq_len": max_viable_seq_len,
-                    "scaling_regime": scaling_regime,
-                }
-                results["validation_results"].append(validation_entry)
+                validation_entry = build_validation_entry(
+                    source_result_id=source_result_id,
+                    metrics=_metrics, ev_res=ev_res,
+                    nov_conf=nov_conf, config=config,
+                )
+                tier = "breakthrough" if ev_res.is_breakthrough else "validation"
+                results["validation_results"].append(validation_entry.to_dict())
 
                 if val_loss_ratio and (
                     results["best_loss_ratio"] is None
@@ -475,9 +369,33 @@ class _ExecutionValidationMixin:
                 ):
                     results["best_novelty_score"] = source_novelty
 
-                # B3: Compute capped novelty values before leaderboard promotion.
-                # promote_to_tier reads novelty_confidence from program_results,
-                # so we must update the source row first.
+                _vstatus("leaderboard promotion", _rid_short)
+                promote_validation_candidate(
+                    nb=nb, source_result_id=source_result_id, source=source,
+                    tier=tier, metrics=_metrics, ev_res=ev_res,
+                    novelty_cap=_novelty_cap,
+                )
+
+                _vstatus("trajectory probe (4000 steps)", _rid_short)
+                trajectory_composite = run_trajectory_probe(
+                    graph_json_str=graph_json_str, config=config, dev=dev,
+                    dev_str=dev_str, nb=nb, source_result_id=source_result_id,
+                    tier=tier, passed_seeds=passed_seeds,
+                )
+
+                is_breakthrough = handle_breakthrough(
+                    is_breakthrough=ev_res.is_breakthrough,
+                    trajectory_composite=trajectory_composite,
+                    aria=self.aria, nb=nb, exp_id=exp_id,
+                    source_result_id=source_result_id, source=source,
+                    validation_entry=validation_entry,
+                    val_loss_ratio=val_loss_ratio,
+                    val_baseline_ratio=val_baseline_ratio,
+                    multi_seed_std=multi_seed_std,
+                    emit_event=self._emit_event,
+                )
+
+                # Compute capped novelty for record_program_result
                 _raw_novelty = source.get("novelty_score")
                 _raw_confidence = source.get("novelty_confidence")
                 if _novelty_cap is not None:
@@ -485,243 +403,22 @@ class _ExecutionValidationMixin:
                         _raw_novelty = float(_raw_novelty) * _novelty_cap
                     if _raw_confidence is not None:
                         _raw_confidence = float(_raw_confidence) * _novelty_cap
-                    logger.info(
-                        "validation_novelty_capped: result_id=%s cap=%.2f "
-                        "novelty=%.4f confidence=%.4f",
-                        source_result_id[:12],
-                        _novelty_cap,
-                        _raw_novelty or 0.0,
-                        _raw_confidence or 0.0,
-                    )
-                    try:
-                        _cap_updates = []
-                        if _raw_novelty is not None:
-                            _cap_updates.append(("novelty_score", _raw_novelty))
-                        if _raw_confidence is not None:
-                            _cap_updates.append(("novelty_confidence", _raw_confidence))
-                        if _cap_updates:
-                            _set_clause = ", ".join(f"{c} = ?" for c, _ in _cap_updates)
-                            _vals = [v for _, v in _cap_updates] + [source_result_id]
-                            nb._submit_write(
-                                f"UPDATE program_results SET {_set_clause} WHERE result_id = ?",
-                                _vals,
-                            )
-                            # Must be visible before promote_to_tier reads it
-                            nb.flush_writes()
-                    except Exception as _cap_err:
-                        logger.debug(
-                            "B3 novelty cap DB update failed for %s: %s",
-                            source_result_id[:12],
-                            _cap_err,
-                        )
 
-                # Update leaderboard — direct lookup by result_id
-                _vstatus("leaderboard promotion", _rid_short)
-                entry = nb.get_leaderboard_entry(source_result_id)
-                if entry:
-                    nb.promote_to_tier(
-                        entry_id=entry["entry_id"],
-                        tier=tier,
-                        validation_loss_ratio=val_loss_ratio,
-                        validation_baseline_ratio=val_baseline_ratio,
-                        validation_multi_seed_std=multi_seed_std,
-                        validation_robustness_score=robustness_score,
-                        validation_is_unstable=int(is_unstable),
-                        validation_passed=len(passed_seeds) > 0,
-                        normalized_baseline_ratio=val_normalized_ratio,
-                        param_efficiency=val_param_efficiency,
-                        quant_int8_retention=quant_int8_retention,
-                        quant_quality_per_byte=quant_quality_per_byte,
-                        robustness_long_ctx_score=long_context_score,
-                        robustness_noise_score=noise_score,
-                        init_sensitivity_std=init_sensitivity_std,
-                        fp_jacobian_spectral_norm=source.get(
-                            "fp_jacobian_spectral_norm"
-                        ),
-                        scaling_param_efficiency=scaling_param_efficiency,
-                        scaling_d512_param_efficiency=scaling_d512_param_efficiency,
-                        scaling_flop_efficiency=scaling_flop_efficiency,
-                        scaling_gate_passed=scaling_gate_passed_val,
-                        scaling_best_family=scaling_best_family,
-                        scaling_confidence=scaling_confidence,
-                        activation_sparsity_score=activation_sparsity_score,
-                        dead_neuron_ratio=dead_neuron_ratio,
-                        routing_collapse_score=routing_collapse_score,
-                        wikitext_perplexity=wikitext_perplexity,
-                        wikitext_score=wikitext_score,
-                        tinystories_perplexity=tinystories_perplexity,
-                        tinystories_score=tinystories_score,
-                        cross_task_score=cross_task_score,
-                        efficiency_wall_score=efficiency_wall_score,
-                        max_viable_seq_len=max_viable_seq_len,
-                        scaling_regime=scaling_regime,
-                        **(
-                            {"screening_novelty": _raw_novelty}
-                            if _novelty_cap is not None and _raw_novelty is not None
-                            else {}
-                        ),
-                    )
-                    # Store detailed benchmark payload
-                    external_benchmarks_payload = {}
-                    scaling_payload = coerce_dict_payload(scaling_result)
-                    if scaling_payload is not None:
-                        external_benchmarks_payload.update(scaling_payload)
-                        external_benchmarks_payload["scaling_comparison"] = (
-                            scaling_payload
-                        )
-                    if long_context_details is not None:
-                        external_benchmarks_payload["long_context"] = (
-                            long_context_details
-                        )
-                    if external_benchmarks_payload:
-                        nb.set_external_benchmarks(
-                            source_result_id, external_benchmarks_payload
-                        )
-
-                # Trajectory probe — run after leaderboard update to get
-                # peak_ppl / steps_to_divergence / ppl_500 for breakthrough
-                # detection and composite scoring.
-                _vstatus("trajectory probe (4000 steps)", _rid_short)
-                trajectory_composite = None
-                try:
-                    if graph_json_str and len(passed_seeds) > 0:
-                        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
-
-                        traj_graph = graph_from_json(graph_json_str)
-                        traj_layers = [traj_graph] * config.n_layers
-                        traj_model = compile_model(
-                            traj_layers,
-                            vocab_size=config.vocab_size,
-                            max_seq_len=128,
-                        )
-                        traj_model = traj_model.to(dev)
-                        traj_result = evaluate_wikitext_trajectory(
-                            traj_model,
-                            config.vocab_size,
-                            dev_str,
-                            checkpoints=(200, 500, 1000, 2000, 4000),
-                            seq_len=128,
-                        )
-                        del traj_model
-                        clear_gpu_memory()
-
-                        traj_peak_ppl = traj_result.get("peak_ppl")
-                        traj_steps_div = traj_result.get("steps_to_divergence")
-                        traj_ppl_500 = None
-                        traj_ckpts = traj_result.get("checkpoints", {})
-                        if 500 in traj_ckpts:
-                            traj_ppl_500 = traj_ckpts[500].get("ppl")
-
-                        # Update leaderboard with trajectory data
-                        entry = nb.get_leaderboard_entry(source_result_id)
-                        if entry:
-                            traj_update = {}
-                            if traj_peak_ppl is not None:
-                                traj_update["peak_ppl"] = traj_peak_ppl
-                                import math as _math
-
-                                _vocab = config.vocab_size or 32000
-                                _ws = max(
-                                    0.0,
-                                    _math.log(_vocab / traj_peak_ppl)
-                                    / _math.log(_vocab),
-                                )
-                                traj_update["wikitext_score"] = round(_ws, 4)
-                            if traj_result.get("peak_step") is not None:
-                                traj_update["peak_step"] = traj_result["peak_step"]
-                            if traj_steps_div is not None:
-                                traj_update["steps_to_divergence"] = traj_steps_div
-                            if traj_ppl_500 is not None:
-                                traj_update["ppl_500"] = traj_ppl_500
-                            if traj_update:
-                                nb.promote_to_tier(
-                                    entry_id=entry["entry_id"],
-                                    tier=tier,
-                                    **traj_update,
-                                )
-                                # Re-read composite for breakthrough check
-                                updated = nb.conn.execute(
-                                    "SELECT composite_score FROM leaderboard WHERE entry_id = ?",
-                                    (entry["entry_id"],),
-                                ).fetchone()
-                                if updated:
-                                    trajectory_composite = updated["composite_score"]
-                        logger.info(
-                            "Trajectory probe %s: peak_ppl=%.1f steps_to_div=%s ppl_500=%s composite=%.1f",
-                            source_result_id[:8],
-                            traj_peak_ppl or 0,
-                            traj_steps_div,
-                            traj_ppl_500,
-                            trajectory_composite or 0,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Trajectory probe failed for %s: %s", source_result_id[:8], e
-                    )
-
-                # Trajectory-aware breakthrough: composite > 300 or
-                # never-diverging with frontier-quality PPL
-                # [CALIBRATION] source: judgment — 300.0 hardcoded; no config key
-                #   last reviewed: unknown — flag for calibration sweep
-                if not is_breakthrough and trajectory_composite is not None:
-                    if trajectory_composite > 300.0:
-                        is_breakthrough = True
-                        logger.info(
-                            "Trajectory-aware breakthrough: %s composite=%.1f",
-                            source_result_id[:8],
-                            trajectory_composite,
-                        )
-
-                # Breakthrough detection
-                if is_breakthrough:
-                    ctx = build_validation_context([source], [validation_entry])
-                    announcement = self.aria.announce_breakthrough(ctx)
-                    nb.add_entry(
-                        ExperimentEntry(
-                            entry_type="insight",
-                            title="BREAKTHROUGH DETECTED",
-                            content=announcement,
-                            experiment_id=exp_id,
-                            tags=["breakthrough"],
-                        )
-                    )
-                    self._emit_event(
-                        "breakthrough_detected",
-                        {
-                            "experiment_id": exp_id,
-                            "result_id": source_result_id,
-                            "val_loss_ratio": val_loss_ratio,
-                            "val_baseline_ratio": val_baseline_ratio,
-                            "multi_seed_std": multi_seed_std,
-                            "announcement": announcement,
-                        },
-                    )
-
-                # Record validation result (uses capped _raw_novelty/_raw_confidence
-                # computed before promote_to_tier above)
                 nb.record_program_result(
                     experiment_id=exp_id,
                     graph_fingerprint=source.get("graph_fingerprint", source_result_id),
                     graph_json=graph_json_str or "{}",
-                    stage0_passed=True,
-                    stage05_passed=True,
+                    stage0_passed=True, stage05_passed=True,
                     stage1_passed=len(passed_seeds) > 0,
-                    loss_ratio=val_loss_ratio,
-                    baseline_loss_ratio=val_baseline_ratio,
-                    novelty_score=_raw_novelty,
-                    novelty_confidence=_raw_confidence,
+                    loss_ratio=val_loss_ratio, baseline_loss_ratio=val_baseline_ratio,
+                    novelty_score=_raw_novelty, novelty_confidence=_raw_confidence,
                     novelty_raw_score=source.get("novelty_raw_score"),
                     novelty_z_score=source.get("novelty_z_score"),
                     novelty_reference_version=source.get("novelty_reference_version"),
-                    novelty_valid_for_promotion=source.get(
-                        "novelty_valid_for_promotion"
-                    ),
+                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
                     novelty_validity_reason=source.get("novelty_validity_reason"),
-                    novelty_requires_justification=source.get(
-                        "novelty_requires_justification"
-                    ),
-                    model_source=model_source,
-                    arch_spec_json=arch_spec_json_str,
+                    novelty_requires_justification=source.get("novelty_requires_justification"),
+                    model_source=model_source, arch_spec_json=arch_spec_json_str,
                 )
 
                 # Save checkpoint after each candidate completes
@@ -802,19 +499,22 @@ class _ExecutionValidationMixin:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Validation failed (%s): %s\n%s", exp_id, e, error)
-            self._invoke_code_healer(
-                nb=nb,
-                trigger_type="repeated_exception",
-                experiment_id=exp_id,
-                scope=f"Validation failure: {str(e)[:240]}",
-                reproduction_steps=[
-                    'python -m pytest tests/test_integration.py -k "validation" -x --tb=short'
-                ],
-                acceptance_tests=[
-                    'python -m pytest tests/test_integration.py -k "validation" -x --tb=short'
-                ],
-                trigger_payload={"mode": "validation", "error": str(e)},
-            )
+            try:
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="repeated_exception",
+                    experiment_id=exp_id,
+                    scope=f"Validation failure: {str(e)[:240]}",
+                    reproduction_steps=[
+                        'python -m pytest tests/test_integration.py -k "validation" -x --tb=short'
+                    ],
+                    acceptance_tests=[
+                        'python -m pytest tests/test_integration.py -k "validation" -x --tb=short'
+                    ],
+                    trigger_payload={"mode": "validation", "error": str(e)},
+                )
+            except Exception:
+                logger.warning("code_healer failed during validation error handling", exc_info=True)
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -828,6 +528,23 @@ class _ExecutionValidationMixin:
                     "error": str(e),
                 },
             )
+        except BaseException as e:
+            # Catch everything — CUDA errors, KeyboardInterrupt, SystemExit.
+            # A background thread must never die silent.
+            logger.critical(
+                "Validation thread KILLED (%s): %s\n%s",
+                exp_id, e, traceback.format_exc(),
+            )
+            try:
+                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            raise
         finally:
             self._live_training_context = None
             nb.close()
@@ -1329,19 +1046,22 @@ class _ExecutionValidationMixin:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Scale-up failed (%s): %s\n%s", exp_id, e, error)
-            self._invoke_code_healer(
-                nb=nb,
-                trigger_type="repeated_exception",
-                experiment_id=exp_id,
-                scope=f"Scale-up failure: {str(e)[:240]}",
-                reproduction_steps=[
-                    'python -m pytest tests/test_integration.py -k "scale_up" -x --tb=short'
-                ],
-                acceptance_tests=[
-                    'python -m pytest tests/test_integration.py -k "scale_up" -x --tb=short'
-                ],
-                trigger_payload={"mode": "scale_up", "error": str(e)},
-            )
+            try:
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="repeated_exception",
+                    experiment_id=exp_id,
+                    scope=f"Scale-up failure: {str(e)[:240]}",
+                    reproduction_steps=[
+                        'python -m pytest tests/test_integration.py -k "scale_up" -x --tb=short'
+                    ],
+                    acceptance_tests=[
+                        'python -m pytest tests/test_integration.py -k "scale_up" -x --tb=short'
+                    ],
+                    trigger_payload={"mode": "scale_up", "error": str(e)},
+                )
+            except Exception:
+                logger.warning("code_healer failed during scale-up error handling", exc_info=True)
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -1355,6 +1075,21 @@ class _ExecutionValidationMixin:
                     "error": str(e),
                 },
             )
+        except BaseException as e:
+            logger.critical(
+                "Scale-up thread KILLED (%s): %s\n%s",
+                exp_id, e, traceback.format_exc(),
+            )
+            try:
+                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            raise
         finally:
             self._live_training_context = None
             nb.close()

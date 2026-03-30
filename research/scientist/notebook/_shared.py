@@ -795,9 +795,28 @@ CREATE TABLE IF NOT EXISTS motif_stats (
     last_updated REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS slot_stats (
+    slot_key TEXT PRIMARY KEY,            -- e.g. "transformer_block.slot0"
+    template_name TEXT NOT NULL,
+    slot_index INTEGER NOT NULL,
+    slot_classes TEXT NOT NULL,            -- JSON array of prescribed classes
+    eval_count INTEGER NOT NULL DEFAULT 0,
+    s1_pass_count INTEGER NOT NULL DEFAULT 0,
+    mean_loss REAL,
+    min_loss REAL,
+    -- Per-class success tracking (drives adaptive slot expansion)
+    class_outcomes TEXT,                  -- JSON: {motif_class: {n, s1, mean_loss}}
+    -- Wildcard tracking
+    wildcard_count INTEGER NOT NULL DEFAULT 0,
+    wildcard_s1_count INTEGER NOT NULL DEFAULT 0,
+    wildcard_class_outcomes TEXT,          -- JSON: same structure, wildcard fills only
+    last_updated REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_template_stats_loss ON template_stats(mean_loss);
 CREATE INDEX IF NOT EXISTS idx_op_stats_loss ON op_stats(mean_loss);
 CREATE INDEX IF NOT EXISTS idx_motif_stats_loss ON motif_stats(mean_loss);
+CREATE INDEX IF NOT EXISTS idx_slot_stats_template ON slot_stats(template_name);
 """
 
 # Columns added in the schema expansion — used for migration
@@ -944,6 +963,19 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "screening_wikitext_variant": "TEXT",
     "screening_wikitext_elapsed_ms": "REAL",
     "screening_wikitext_budget_json": "TEXT",
+    # Routing/MoE fast-lane fairness probe
+    "routing_fast_lane_applied": "INTEGER",
+    "routing_fast_lane_status": "TEXT",
+    "routing_fast_lane_metric_version": "TEXT",
+    "routing_fast_lane_perplexity": "REAL",
+    "routing_fast_lane_score": "REAL",
+    "routing_fast_lane_pre_perplexity": "REAL",
+    "routing_fast_lane_ppl_improvement": "REAL",
+    "routing_fast_lane_elapsed_ms": "REAL",
+    "routing_fast_lane_budget_json": "TEXT",
+    "routing_fast_lane_slope": "REAL",
+    "routing_fast_lane_slope_consistent": "INTEGER",
+    "routing_fast_lane_routing_ops_json": "TEXT",
     # Screening slope trajectory (slope reprieve feature)
     "screening_loss_10": "REAL",
     "screening_loss_25": "REAL",

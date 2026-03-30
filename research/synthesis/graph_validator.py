@@ -175,8 +175,29 @@ def validate_dim_flow(graph: ComputationGraph) -> DimFlowResult:
             n_reachable_params += 1
 
     if n_reachable_params == 0:
-        result.add_warning(
+        result.add_error(
             "No parameterized ops on reachable path — model cannot learn"
+        )
+
+    # Minimum effective depth: reject graphs where most slots silently skipped.
+    _TRIVIAL_OPS = {"identity", "rmsnorm", "layernorm"}
+    n_reachable_nontrivial = sum(
+        1
+        for nid in reachable
+        if not graph.nodes[nid].is_input
+    )
+    n_effective_ops = sum(
+        1
+        for nid in reachable
+        if not graph.nodes[nid].is_input
+        and graph.nodes[nid].op_name not in _TRIVIAL_OPS
+    )
+    # At least 3 effective ops, or at least 30% of reachable ops must be non-trivial
+    min_effective = min(3, max(1, int(n_reachable_nontrivial * 0.3)))
+    if n_effective_ops < min_effective:
+        result.add_error(
+            f"Too few effective ops: {n_effective_ops} < {min_effective} — "
+            f"likely all slots fell back to skip"
         )
 
     # ── 3. Dead parameterized nodes (unreachable learned weights) ─

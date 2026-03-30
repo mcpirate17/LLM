@@ -799,11 +799,13 @@ class EnsemblePredictor:
     graph_pred: Optional[Any] = None  # GraphPredictor
     bayesian: Optional[Any] = None  # TemporalBayesianTracker
     interaction: Optional[Any] = None  # InteractionModel
-    # Meta-learner weights (fitted)
+    # Learned meta-learner weights (calibrated from held-out data)
     w_ensemble: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_ensemble: float = 0.0
+    _score_mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    _score_std: np.ndarray = field(default_factory=lambda: np.zeros(0))
     _n_components: int = 0
-    _exploration_bonus: float = 0.15
+    _n_score_dims: int = 0  # number of score dimensions the weights were trained on
 
     def is_fitted(self) -> bool:
         # Fitted if at least one component is available
@@ -882,12 +884,20 @@ class EnsemblePredictor:
         if not scores:
             return 0.5
 
-        # Simple weighted average (equal weights for now)
-        mean_score = float(np.mean(scores))
-        mean_uncertainty = float(np.mean(uncertainties))
-
-        # UCB-style exploration bonus
-        final = mean_score + self._exploration_bonus * mean_uncertainty
+        # Learned blend weights (calibrated logistic regression on component scores)
+        if self.w_ensemble.size > 0 and self._n_score_dims > 0:
+            x = np.zeros(self._n_score_dims, dtype=np.float64)
+            for i, s in enumerate(scores[:self._n_score_dims]):
+                x[i] = s
+            # Standardize using training stats
+            if self._score_mean.size == self._n_score_dims:
+                x = (x - self._score_mean) / np.maximum(self._score_std, 1e-8)
+            logit = float(x @ self.w_ensemble + self.b_ensemble)
+            final = float(1.0 / (1.0 + np.exp(-np.clip(logit, -10, 10))))
+        else:
+            # Fallback: simple average (no exploration bonus — exploration
+            # happens at grammar level via Thompson sampling, not screening gate)
+            final = float(np.mean(scores))
 
         return float(np.clip(final, 0.01, 0.99))
 
@@ -951,7 +961,8 @@ class EnsemblePredictor:
                     self.interaction is not None and self.interaction._trained,
                 ]
             ),
-            "exploration_bonus": self._exploration_bonus,
+            "calibrated": self.w_ensemble.size > 0,
+            "n_score_dims": self._n_score_dims,
         }
 
 
@@ -1017,5 +1028,169 @@ def train_ensemble(
     except Exception as e:
         logger.warning("Ensemble: InteractionModel training failed: %s", e)
 
+    # 5. Calibrate blend weights from held-out data
+    try:
+        _calibrate_ensemble(ensemble, db_path)
+    except Exception as e:
+        logger.warning("Ensemble calibration failed (using fallback averaging): %s", e)
+
     logger.info("Ensemble ready: %s", ensemble.diagnostics())
     return ensemble
+
+
+def _calibrate_ensemble(
+    ensemble: EnsemblePredictor,
+    db_path: str,
+    n_samples: int = 2000,
+    n_epochs: int = 60,
+    lr: float = 0.01,
+) -> None:
+    """Calibrate ensemble blend weights from held-out program_results.
+
+    Fits a logistic regression on component scores → actual S1 labels.
+    This learns which components to trust more and the optimal threshold.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.execute("PRAGMA busy_timeout=10000")
+    rows = conn.execute(
+        """SELECT graph_json, stage1_passed
+           FROM program_results
+           WHERE graph_json IS NOT NULL AND stage0_passed = 1
+           ORDER BY RANDOM() LIMIT ?""",
+        (n_samples,),
+    ).fetchall()
+    conn.close()
+
+    if len(rows) < 100:
+        return
+
+    # Collect component scores for each graph
+    from ...synthesis.graph_features import extract_graph_features, enrich_with_op_stats, load_op_stats
+
+    op_stats_cache = load_op_stats(db_path)
+    score_rows: list = []
+    labels: list = []
+
+    for gj, s1 in rows:
+        try:
+            gj_dict = json.loads(gj) if isinstance(gj, str) else gj
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        scores = []
+
+        # GBM score
+        if ensemble.gbm is not None and ensemble.gbm.is_fitted():
+            feats = extract_graph_features(gj_dict)
+            if feats:
+                nodes = gj_dict.get("nodes") or {}
+                ops = [n.get("op_name", "") for n in nodes.values() if n.get("op_name", "") != "input"]
+                enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
+                scores.append(ensemble.gbm.predict_gate(feats))
+            else:
+                scores.append(0.5)
+        else:
+            scores.append(0.5)
+
+        # GraphPredictor score
+        if ensemble.graph_pred is not None and ensemble.graph_pred.is_fitted():
+            scores.append(ensemble.graph_pred.predict_gate(gj_dict))
+        else:
+            scores.append(0.5)
+
+        # Bayesian worst-op score
+        if ensemble.bayesian is not None:
+            nodes = gj_dict.get("nodes") or {}
+            ops = [n.get("op_name", "") for n in nodes.values()
+                   if n.get("op_name", "") and n.get("op_name") != "input"]
+            if ops:
+                op_weights = ensemble.bayesian.op_weights(mode="mean")
+                worst = min(op_weights.get(op, 0.5) for op in ops)
+                scores.append(float(np.clip(worst / 3.0, 0.0, 1.0)))
+            else:
+                scores.append(0.5)
+        else:
+            scores.append(0.5)
+
+        # Interaction model score
+        if ensemble.interaction is not None and ensemble.interaction._trained:
+            nodes = gj_dict.get("nodes") or {}
+            ops = [n.get("op_name", "") for n in nodes.values()
+                   if n.get("op_name", "") and n.get("op_name") != "input"]
+            if len(ops) >= 2:
+                stabs = [ensemble.interaction.predict_stability(a, b)
+                         for a in ops for b in ops if a != b]
+                scores.append(float(np.mean(stabs)) if stabs else 0.5)
+            else:
+                scores.append(0.5)
+        else:
+            scores.append(0.5)
+
+        score_rows.append(scores)
+        labels.append(int(s1 or 0))
+
+    if len(score_rows) < 100:
+        return
+
+    X = np.array(score_rows, dtype=np.float64)
+    y = np.array(labels, dtype=np.float64)
+    n_dims = X.shape[1]
+
+    # Standardize scores (components have different scales/ranges)
+    score_mean = X.mean(axis=0)
+    score_std = X.std(axis=0)
+    score_std[score_std < 1e-8] = 1.0
+    X_norm = (X - score_mean) / score_std
+
+    # Stratified split
+    rng = np.random.RandomState(42)
+    pos_idx = np.where(y == 1)[0]
+    neg_idx = np.where(y == 0)[0]
+    rng.shuffle(pos_idx)
+    rng.shuffle(neg_idx)
+    split_p = int(len(pos_idx) * 0.8)
+    split_n = int(len(neg_idx) * 0.8)
+    train_idx = np.concatenate([pos_idx[:split_p], neg_idx[:split_n]])
+    val_idx = np.concatenate([pos_idx[split_p:], neg_idx[split_n:]])
+
+    X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
+    y_tr, y_va = y[train_idx], y[val_idx]
+
+    # Logistic regression via SGD
+    w = rng.randn(n_dims).astype(np.float64) * 0.01
+    b = 0.0
+
+    def _sig(x):
+        return 1.0 / (1.0 + np.exp(-np.clip(x, -15, 15)))
+
+    for _ in range(n_epochs):
+        perm = rng.permutation(len(X_tr))
+        for start in range(0, len(X_tr), 128):
+            idx = perm[start:start + 128]
+            x_b = X_tr[idx]
+            y_b = y_tr[idx]
+            preds = _sig(x_b @ w + b)
+            grad = (preds - y_b)[:, None] * x_b
+            w -= lr * grad.mean(axis=0) + lr * 0.01 * w
+            b -= lr * float((preds - y_b).mean())
+
+    # Validate
+    val_preds = _sig(X_va @ w + b)
+    val_correct = int(np.sum((val_preds > 0.5) == y_va))
+    val_acc = val_correct / max(len(X_va), 1)
+
+    ensemble.w_ensemble = w.astype(np.float32)
+    ensemble.b_ensemble = float(b)
+    ensemble._score_mean = score_mean.astype(np.float32)
+    ensemble._score_std = score_std.astype(np.float32)
+    ensemble._n_score_dims = n_dims
+
+    logger.info(
+        "Ensemble calibrated: %d-dim logistic regression, val_acc=%.3f, "
+        "weights=[%s], bias=%.3f (%d train, %d val)",
+        n_dims, val_acc,
+        ", ".join(f"{wi:.3f}" for wi in w),
+        b, len(X_tr), len(X_va),
+    )

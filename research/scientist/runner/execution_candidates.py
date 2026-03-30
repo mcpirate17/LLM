@@ -507,7 +507,7 @@ class _ExecutionCandidatesMixin:
             routing_mandatory=config.routing_mandatory,
         )
         if config.category_weights:
-            grammar_kwargs["category_weights"] = config.category_weights
+            grammar_kwargs["category_weights"] = dict(config.category_weights)
         grammar = GrammarConfig(**grammar_kwargs)
         # Baseline routing/difficulty op boosts (always applied unless overridden)
         _routing_defaults = {

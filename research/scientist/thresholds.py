@@ -105,3 +105,35 @@ STRUCTURAL_ONLY_NOVELTY_CAP: float = 15.0
 # Below this spectral_norm, the model is considered degenerate (collapsed).
 # Used in multiple composite scoring versions.
 SPECTRAL_NORM_FLOOR: float = 0.01
+
+# ---------------------------------------------------------------------------
+# GPT-2 reference metrics (measured on d_model=256, 6-layer config)
+# ---------------------------------------------------------------------------
+
+GPT2_REF = {
+    "loss_ratio": 0.2646,
+    "param_count": 9_767_424,
+    "flops_forward": 19_534_848,
+    "throughput_tok_s": 1_200_845,
+    "peak_memory_mb": 115.0,
+    "forward_time_ms": 0.43,
+}
+
+# WikiText reference score floor and perplexity ceiling.
+# Calibrated 2026-03-23 against wiki103 4-ref frontier.
+WIKITEXT_REF_SCORE_FLOOR: float = 0.5868
+WIKITEXT_REF_PPL_CEILING: float = 72.68
+
+# ---------------------------------------------------------------------------
+# Tier ranking (for preventing tier downgrades)
+# ---------------------------------------------------------------------------
+
+TIER_RANK = {
+    "screened_out": 0,
+    "screening": 1,
+    "investigation_failed": 1,
+    "investigation_fingerprint_incomplete": 1,
+    "investigation": 2,
+    "validation": 3,
+    "breakthrough": 4,
+}

@@ -10,24 +10,13 @@ import math
 from typing import Any, Dict, Optional, Sequence, Union
 
 from .thresholds import (
+    GPT2_REF,
     INSUFFICIENT_LEARNING_LR,
     SPECTRAL_NORM_FLOOR,
     STRUCTURAL_ONLY_NOVELTY_CAP,
+    WIKITEXT_REF_PPL_CEILING,
+    WIKITEXT_REF_SCORE_FLOOR,
 )
-
-
-# GPT-2 reference metrics (measured on d_model=256, 6-layer config)
-_GPT2_REF = {
-    "loss_ratio": 0.2646,
-    "param_count": 9_767_424,
-    "flops_forward": 19_534_848,
-    "throughput_tok_s": 1_200_845,
-    "peak_memory_mb": 115.0,
-    "forward_time_ms": 0.43,
-}
-
-_WIKITEXT_REF_SCORE_FLOOR = 0.5868
-_WIKITEXT_REF_PPL_CEILING = 72.68
 
 
 def compute_efficiency_multiple(
@@ -48,7 +37,7 @@ def compute_efficiency_multiple(
     the geomean since MoE activates only a fraction of params per token.
     Returns dict with per-dimension ratios and ``geomean``, or None.
     """
-    ref = _GPT2_REF
+    ref = GPT2_REF
     ratios: Dict[str, float] = {}
 
     if loss_ratio is not None and loss_ratio > 0:
@@ -584,11 +573,11 @@ def compute_composite_score(
                 _bd["_disqualified"] = True  # type: ignore[assignment]
                 return {"composite_score": 0.0, "breakdown": _bd}
             return 0.0
-        if effective_ppl > _WIKITEXT_REF_PPL_CEILING:
+        if effective_ppl > WIKITEXT_REF_PPL_CEILING:
             over_ref = min(
                 2.0,
-                (effective_ppl - _WIKITEXT_REF_PPL_CEILING)
-                / max(_WIKITEXT_REF_PPL_CEILING, 1e-6),
+                (effective_ppl - WIKITEXT_REF_PPL_CEILING)
+                / max(WIKITEXT_REF_PPL_CEILING, 1e-6),
             )
             score -= 20.0 * over_ref
         if effective_ppl > 1000:
@@ -608,15 +597,15 @@ def compute_composite_score(
     if inv_failed:
         # Cap penalty for models with frontier-competitive WikiText scores
         has_frontier_evidence = (
-            wikitext_score is not None and wikitext_score >= _WIKITEXT_REF_SCORE_FLOOR
+            wikitext_score is not None and wikitext_score >= WIKITEXT_REF_SCORE_FLOOR
         )
         if inv_robust is not None and inv_robust < 0.5 and not has_frontier_evidence:
             score -= 25.0 * min(1.0, (0.5 - inv_robust) / 0.5)
-        if wikitext_score is not None and wikitext_score < _WIKITEXT_REF_SCORE_FLOOR:
+        if wikitext_score is not None and wikitext_score < WIKITEXT_REF_SCORE_FLOOR:
             score -= 20.0 * min(
                 1.0,
-                (_WIKITEXT_REF_SCORE_FLOOR - wikitext_score)
-                / max(_WIKITEXT_REF_SCORE_FLOOR, 1e-6),
+                (WIKITEXT_REF_SCORE_FLOOR - wikitext_score)
+                / max(WIKITEXT_REF_SCORE_FLOOR, 1e-6),
             )
         elif wikitext_score is None and wikitext_perplexity is None:
             score -= 8.0
@@ -662,31 +651,22 @@ def compute_composite_score(
         if _bd is not None:
             _bd["insufficient_learning_cap"] = _insufficient_learning_cap
 
-    # Replication confidence dampening: scores from < 3 replicated runs
-    # are dampened to prevent lucky single-run outliers from dominating.
-    # sqrt(n/3) ramps: n=1 → 0.577, n=2 → 0.816, n=3 → 1.0.
-    if not is_reference and _repl_n > 0 and _repl_n < 3:
-        repl_confidence = math.sqrt(_repl_n / 3.0)
-        pre_repl = final
-        final *= repl_confidence
-        if _bd is not None:
-            _bd["replication_confidence"] = repl_confidence
-            _bd["replication_dampening"] = final - pre_repl
-    elif _bd is not None and _repl_n >= 3:
-        _bd["replication_confidence"] = 1.0
+    # Replication count is metadata, not a scoring signal. It tells us how
+    # many times we tested something — that's about our process, not the
+    # architecture. The outlier penalty below handles unreliable results.
 
-    # Lucky-outlier penalty: if best run is much better than mean,
-    # the best run was likely noise. Penalize the gap.
+    # Seed variance flag: if best run differs significantly from mean,
+    # the architecture hasn't converged in the eval budget — it needs
+    # extended training, not a score penalty. Flag it for the runner.
     if (
         not is_reference
         and replication_best_vs_mean_gap is not None
         and _repl_n >= 2
         and replication_best_vs_mean_gap > 0.1
     ):
-        outlier_penalty = min(20.0, (replication_best_vs_mean_gap - 0.1) * 200.0)
-        final = max(0.0, final - outlier_penalty)
         if _bd is not None:
-            _bd["outlier_penalty"] = -outlier_penalty
+            _bd["needs_extended_training"] = True
+            _bd["seed_variance_gap"] = replication_best_vs_mean_gap
 
     if decompose:
         return {"composite_score": final, "breakdown": _bd}
@@ -1088,10 +1068,10 @@ def compute_composite_v7(
     speed_pts = 0.0
     if not _inv_failed:
         if throughput_tok_s is not None and throughput_tok_s > 0:
-            ratio = throughput_tok_s / _GPT2_REF["throughput_tok_s"]
+            ratio = throughput_tok_s / GPT2_REF["throughput_tok_s"]
             speed_pts = 25.0 * _scurve(ratio)
         elif forward_time_ms is not None and forward_time_ms > 0:
-            ratio = _GPT2_REF["forward_time_ms"] / forward_time_ms
+            ratio = GPT2_REF["forward_time_ms"] / forward_time_ms
             speed_pts = 25.0 * _scurve(ratio)
     _track("speed", speed_pts)
     score += speed_pts

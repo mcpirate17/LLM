@@ -186,12 +186,25 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     }
   }, []);
 
+  const invalidateTabCache = useCallback((tab) => {
+    if (tab) {
+      delete tabCacheRef.current[tab];
+    } else {
+      tabCacheRef.current = {};
+    }
+  }, []);
+
   const sseTimersRef = useRef([]);
   const debouncedRefresh = useCallback(() => {
     sseTimersRef.current.push(setTimeout(fetchCoreData, 2000));
   }, [fetchCoreData]);
 
-  useEventBus('experiment_completed', debouncedRefresh);
+  const onExperimentCompleted = useCallback(() => {
+    invalidateTabCache('experiments');
+    debouncedRefresh();
+  }, [invalidateTabCache, debouncedRefresh]);
+
+  useEventBus('experiment_completed', onExperimentCompleted);
   useEventBus('aria_cycle_completed', debouncedRefresh);
 
   useEffect(() => () => {
@@ -222,6 +235,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       refreshSharedData: fetchCoreData,
       refreshAnalyticsData: fetchAnalyticsData,
       fetchTabData,
+      invalidateTabCache,
     }}>
       {children}
     </AriaDataContext.Provider>

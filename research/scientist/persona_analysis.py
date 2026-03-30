@@ -5,6 +5,10 @@ import re
 import time
 from typing import Dict, List, Optional
 
+_RE_MODE = re.compile(r"MODE:\s*(\S+)")
+_RE_CONFIDENCE = re.compile(r"CONFIDENCE:\s*([\d.]+)")
+_RE_JSON_BLOCK = re.compile(r"```json\s*(\{.+?\})\s*```", re.DOTALL)
+
 logger = logging.getLogger(__name__)
 
 
@@ -202,7 +206,7 @@ class _PersonaAnalysisMixin:
                 result["briefing_text"] = alt_match.group(1).strip()
 
         action = {}
-        mode_match = re.search(r"MODE:\s*(\S+)", text)
+        mode_match = _RE_MODE.search(text)
         if mode_match:
             action["mode"] = mode_match.group(1).strip().lower()
 
@@ -220,14 +224,14 @@ class _PersonaAnalysisMixin:
         if reasoning_match:
             action["reasoning"] = reasoning_match.group(1).strip()
 
-        conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", text)
+        conf_match = _RE_CONFIDENCE.search(text)
         if conf_match:
             try:
                 result["confidence"] = float(conf_match.group(1))
             except ValueError:
                 pass
 
-        json_match = re.search(r"```json\s*(\{.+?\})\s*```", text, re.DOTALL)
+        json_match = _RE_JSON_BLOCK.search(text)
         if json_match:
             try:
                 action["config"] = _json.loads(json_match.group(1))

@@ -35,6 +35,7 @@ const EVENT_TYPE_ALIASES = {
   investigation_completed: 'invest_complete',
   validation_started: 'validate_start',
   validation_progress: 'validate_progress',
+  validation_phase: 'validate_phase',
   validation_completed: 'validate_complete',
   breakthrough_detected: 'breakthrough',
   auto_investigate_queued: 'auto_investigate',
@@ -76,6 +77,7 @@ const RENDERABLE_EVENT_TYPES = new Set([
   'invest_complete',
   'validate_start',
   'validate_progress',
+  'validate_phase',
   'validate_complete',
   'breakthrough',
   'auto_investigate',
@@ -456,6 +458,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   useEventBus('investigation_completed', addEvent('invest_complete'));
   useEventBus('validation_started', addEvent('validate_start'));
   useEventBus('validation_progress', addEvent('validate_progress'));
+  useEventBus('validation_phase', addEvent('validate_phase'));
   useEventBus('validation_completed', addEvent('validate_complete'));
   useEventBus('breakthrough_detected', addEvent('breakthrough'));
   useEventBus('auto_investigate_queued', addEvent('auto_investigate'));
@@ -609,6 +612,11 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
     [displayEvents],
   );
 
+  const latestValidationPhase = useMemo(
+    () => [...displayEvents].reverse().find((evt) => evt?.type === 'validate_phase'),
+    [displayEvents],
+  );
+
   const latestValidationCompletion = useMemo(
     () => [...displayEvents].reverse().find((evt) => evt?.type === 'validate_complete'),
     [displayEvents],
@@ -635,19 +643,25 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
         text: `Experiment failed${progress?.error ? `: ${progress.error}` : '.'}`,
       };
     }
-    if (status === 'validating') {
+    if (status === 'validating' || status.startsWith('validation:')) {
       const seedText = latestValidationProgress?.seed && latestValidationProgress?.total_seeds
         ? `seed ${latestValidationProgress.seed}/${latestValidationProgress.total_seeds}`
         : `seed run ${lossCurveMeta.segmentCount || 1}`;
+      const phaseText = latestValidationPhase?.phase
+        ? ` — ${latestValidationPhase.phase}`
+        : '';
+      const testProgress = latestValidationPhase?.test_index && latestValidationPhase?.total_tests
+        ? ` (${latestValidationPhase.test_index}/${latestValidationPhase.total_tests})`
+        : '';
       if (lossCurveMeta.staleSeconds >= 15) {
         return {
           tone: 'warn',
-          text: `Validation is still active on ${seedText}, but loss updates have been idle for ${lossCurveMeta.staleSeconds}s. Likely between seeds or in post-seed evaluation.`,
+          text: `Validation active on ${seedText}${phaseText}${testProgress}, but loss updates idle for ${lossCurveMeta.staleSeconds}s.`,
         };
       }
       return {
         tone: 'info',
-        text: `Running validation for ${latestValidationProgress?.source_result_id?.slice(0, 8) || 'candidate'} on ${seedText}.`,
+        text: `Validating ${latestValidationProgress?.source_result_id?.slice(0, 8) || 'candidate'} on ${seedText}${phaseText}${testProgress}`,
       };
     }
     if (latestValidationCompletion) {
@@ -660,7 +674,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
       tone: 'info',
       text: progress?.aria_message || '',
     };
-  }, [progress, latestValidationProgress, latestValidationCompletion, lossCurveMeta]);
+  }, [progress, latestValidationProgress, latestValidationPhase, latestValidationCompletion, lossCurveMeta]);
 
   const curveCards = useMemo(() => {
     const currentExperimentId = lossCurveExpRef.current || activeExperimentRef.current || null;
@@ -1032,6 +1046,43 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
                     <span style={{ marginLeft: 4 }}>L:{evt.loss_ratio}</span>
                   )}
                   {evt.status === 'starting' && ' starting...'}
+                </span>
+              )}
+              {evt.type === 'validate_phase' && (
+                <span className="feed-event-msg" style={{ color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                    {(evt.result_id || evt.experiment_id || '').slice(0, 8)}
+                  </span>
+                  <span>{evt.phase}</span>
+                  {(() => {
+                    const idx = evt.test_index ?? evt.outer_index;
+                    const total = evt.total_tests ?? evt.outer_total;
+                    if (idx == null || total == null) return null;
+                    return (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{
+                          display: 'inline-block',
+                          width: 60,
+                          height: 6,
+                          borderRadius: 3,
+                          background: 'rgba(139,92,246,0.15)',
+                          overflow: 'hidden',
+                        }}>
+                          <span style={{
+                            display: 'block',
+                            width: `${Math.round((idx / total) * 100)}%`,
+                            height: '100%',
+                            borderRadius: 3,
+                            background: 'var(--accent-purple)',
+                            transition: 'width 0.3s ease',
+                          }} />
+                        </span>
+                        <span style={{ fontSize: 10, fontFamily: 'monospace', opacity: 0.7 }}>
+                          {idx}/{total}
+                        </span>
+                      </span>
+                    );
+                  })()}
                 </span>
               )}
               {evt.type === 'validate_complete' && (

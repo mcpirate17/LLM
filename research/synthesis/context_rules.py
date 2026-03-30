@@ -540,9 +540,22 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=frozenset(
             {
                 "causal_mask",  # 100% fail (58/58) — mask tensor fed as data input
+                "split2",
+                "split3",  # halved dim breaks multi-head structure
+                "linear_proj_down",  # reduced dim breaks head dimension
+                "token_merge",  # destroyed token order breaks attention
+                "transpose_sd",  # wrong axis orientation
+            }
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset(
+            {
+                "output_head",
+                "linear_proj",  # 100% fail (13/13) — raw attention output needs norm first
+                "identity",  # strips causal context
+                "softmax_attention",  # stacking raw attention 100% fail
             }
         ),
-        forbidden_successors=frozenset({"output_head", "linear_proj"}),
         requires_residual_context=True,
     ),
     "linear_attention": ContextRule(
@@ -550,6 +563,75 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=frozenset(),
         forbidden_successors=frozenset({"output_head"}),
         requires_residual_context=True,
+    ),
+    # ── High-value ops with strict placement requirements ────────
+    # token_merge: 89% S0 fail (causality gate) in random placement.
+    # 75% S1 success in token_merge_block template, 100% in sparse_ffn.
+    # Destroys token ordering — anything causal downstream will fail.
+    "token_merge": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS
+        | frozenset(
+            {
+                "split2",
+                "split3",  # dim mismatch after split
+            }
+        ),
+        forbidden_successors=_CAUSAL_SENSITIVE_OPS
+        | frozenset(
+            {
+                "output_head",
+                "softmax_attention",  # attention needs original token order
+                "linear_attention",
+                "selective_scan",  # SSM needs causal token ordering
+                "state_space",
+                "conv1d_seq",  # conv assumes original sequence order
+            }
+        ),
+        requires_residual_context=True,  # merged output needs skip connection to preserve info
+    ),
+    # selective_scan: 54% S0 fail (causality), 90% S1 fail when S0 passes.
+    # Every success with loss < 0.05 has norm → conv1d_seq → silu → selective_scan → add.
+    "selective_scan": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS
+        | _STRUCTURAL_SPLIT_OPS
+        | frozenset(
+            {
+                "identity",  # strips causal context
+                "token_merge",  # destroys token ordering SSM depends on
+                "transpose_sd",  # transposes (S,D) axes, breaks SSM state shape
+            }
+        ),
+        forbidden_successors=frozenset(
+            {
+                "output_head",
+                "selective_scan",  # SSM→SSM chaining 96% fail
+                "state_space",  # same failure mode
+            }
+        ),
+        requires_residual_context=True,  # SSM output needs residual path
+    ),
+    # transpose_sd: 95% S1 fail in random placement. Works in cross_dim_mixer (9%)
+    # / dual_axis_block (5%) where templates manage the transpose lifecycle.
+    # Keep forbidden_successors narrow — blanket bans on _CAUSAL_SENSITIVE_OPS /
+    # _FULL_DIM_OPS block template-internal edges (4932/4940 grammar rejections).
+    "transpose_sd": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS
+        | frozenset(
+            {
+                "transpose_sd",  # 100% fail (10/10) — double transpose = noop or wrong
+            }
+        ),
+        forbidden_successors=frozenset(
+            {
+                "output_head",
+                "split2",
+                "split3",  # splitting transposed tensor
+            }
+        ),
+        requires_residual_context=True,  # transposed output MUST rejoin through residual
     ),
     # ── MLP ops: must not feed down-projection or sparse ─────────
     "swiglu_mlp": ContextRule(
@@ -649,6 +731,104 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
                 "rmsnorm",  # 100% fail (17/17)
             }
         ),
+    ),
+    # ── Token merge: destroys token ordering ──────────────────────
+    # Data (2026-03-29): 89% S0 failure from causality gate when downstream
+    # ops assume causal token ordering. Successes: token_merge → conv1d_seq
+    # (loss 0.006), token_merge → swiglu_mlp (loss 0.006). Requires residual.
+    "token_merge": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _STRUCTURAL_SPLIT_OPS,
+        forbidden_successors=_CAUSAL_SENSITIVE_OPS
+        | frozenset(
+            {
+                "output_head",
+                "softmax_attention",  # needs original token order
+                "linear_attention",
+                "selective_scan",  # SSM needs causal token ordering
+                "state_space",
+                "identity",  # strips context
+            }
+        ),
+        requires_residual_context=True,
+    ),
+    "adjacent_token_merge": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _STRUCTURAL_SPLIT_OPS,
+        forbidden_successors=_CAUSAL_SENSITIVE_OPS
+        | frozenset(
+            {
+                "output_head",
+                "softmax_attention",
+                "linear_attention",
+                "selective_scan",
+                "state_space",
+                "identity",
+            }
+        ),
+        requires_residual_context=True,
+    ),
+    # ── Routing ops: require linear_proj predecessor ──────────────
+    # Data (2026-03-29): These routing ops only succeed when preceded by
+    # a projection. Direct norm→router: 0-5% S1. proj→router: 10-70%.
+    # The router needs a transformed representation, not raw normed activations.
+    "arch_router": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {"rmsnorm", "layernorm"}  # 2% consec S1 (63 samples) — needs proj between
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "compute_budget_router": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {"rmsnorm", "layernorm"}  # 0% consec S1 (15 samples) — needs proj between
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "hetero_moe": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {"rmsnorm", "layernorm"}  # 0% consec S1 (13 samples) — needs proj between
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head", "linear_proj"}),  # 0% (15 samples)
+        requires_residual_context=True,
+    ),
+    # gated_linear: norm→gated_linear 4% consec but 26% co-occur —
+    # needs projection input to gate against (data: linear_proj_down→gated_linear 0.244 loss)
+    "gated_linear": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {"rmsnorm", "layernorm"}  # 4% consec S1 vs 26% co-occur — needs proj between
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+    ),
+    # moe_topk: norm→moe_topk 5% consec, only works after linear_proj (data: 2/2 S1)
+    "moe_topk": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {"rmsnorm", "layernorm"}  # 5% consec S1 (20 samples) — needs proj between
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    # moe_2expert: norm→moe_2expert 4% consec vs 19% co-occur
+    # Works after gelu (0.161 loss), conv1d_seq (0.008 loss), silu (0.436 loss)
+    "moe_2expert": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=frozenset(
+            {"rmsnorm", "layernorm"}  # 4% consec S1 (28 samples) — needs activation/proj between
+        )
+        | _REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
     ),
     # ── From user-reported 5% penalty pairs (all 100% fail in program_results) ──
     "spectral_filter": ContextRule(

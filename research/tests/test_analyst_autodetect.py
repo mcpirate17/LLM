@@ -15,8 +15,9 @@ pytestmark = pytest.mark.unit
 
 
 class TestAnalystAutodetect(unittest.TestCase):
+    @patch("research.scientist.llm.backend._load_persisted_config", return_value=None)
     @patch("research.scientist.llm.ollama.requests.get")
-    def test_autodetect_gemma(self, mock_get):
+    def test_autodetect_gemma(self, mock_get, _mock_persisted):
         # Setup mock Ollama response with a small Gemma model
         mock_resp = MagicMock()
         mock_resp.status_code = 200

@@ -447,3 +447,108 @@ class LiveProgress:
 
     def to_dict(self) -> Dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
+
+
+# ── Validation result types ──
+
+
+@dataclass(slots=True)
+class ExternalEvalResult:
+    """Typed output from _run_external_evals.
+
+    Replaces the 28-key untyped dict that was manually unpacked at 3 call sites.
+    """
+
+    is_breakthrough: bool = False
+    flop_gated: bool = False
+    quant_int8_retention: Optional[float] = None
+    quant_quality_per_byte: Optional[float] = None
+    long_context_score: Optional[float] = None
+    long_context_details: Optional[Dict] = None
+    noise_score: Optional[float] = None
+    ood_result: Optional[Dict] = None
+    sensitivity_result: Optional[Dict] = None
+    activation_sparsity_score: Optional[float] = None
+    dead_neuron_ratio: Optional[float] = None
+    routing_collapse_score: Optional[float] = None
+    wikitext_perplexity: Optional[float] = None
+    wikitext_score: Optional[float] = None
+    tinystories_perplexity: Optional[float] = None
+    tinystories_score: Optional[float] = None
+    cross_task_score: Optional[float] = None
+    efficiency_wall_score: Optional[float] = None
+    max_viable_seq_len: Optional[int] = None
+    scaling_regime: Optional[str] = None
+    scaling_param_efficiency: Optional[float] = None
+    scaling_flop_efficiency: Optional[float] = None
+    scaling_gate_passed_val: Optional[bool] = None
+    scaling_best_family: Optional[str] = None
+    scaling_confidence: Optional[str] = None
+    scaling_result: Optional[Dict] = None
+    scaling_d512_param_efficiency: Optional[float] = None
+    robustness_checks_attempted: int = 0
+    robustness_checks_failed: int = 0
+
+
+@dataclass(slots=True)
+class ValidationEntry:
+    """Structured validation result for one candidate.
+
+    Replaces the 25-key dict literal that was duplicated at 2 call sites.
+    """
+
+    result_id: str = ""
+    val_loss_ratio: Optional[float] = None
+    val_baseline_ratio: Optional[float] = None
+    val_normalized_ratio: Optional[float] = None
+    param_efficiency: Optional[float] = None
+    multi_seed_std: float = 0.0
+    robustness_score: float = 1.0
+    is_unstable: bool = False
+    seeds_passed: int = 0
+    total_seeds: int = 0
+    is_breakthrough: bool = False
+    flop_gated: bool = False
+    quant_int8_retention: Optional[float] = None
+    quant_quality_per_byte: Optional[float] = None
+    long_context_score: Optional[float] = None
+    noise_sensitivity_score: Optional[float] = None
+    init_sensitivity_std: Optional[float] = None
+    novelty_confidence: float = 0.0
+    ood_robustness: Optional[Dict] = None
+    sensitivity: Optional[Dict] = None
+    activation_sparsity_score: Optional[float] = None
+    dead_neuron_ratio: Optional[float] = None
+    routing_collapse_score: Optional[float] = None
+    wikitext_perplexity: Optional[float] = None
+    wikitext_score: Optional[float] = None
+    tinystories_perplexity: Optional[float] = None
+    tinystories_score: Optional[float] = None
+    cross_task_score: Optional[float] = None
+    efficiency_wall_score: Optional[float] = None
+    max_viable_seq_len: Optional[int] = None
+    scaling_regime: Optional[str] = None
+
+    def to_dict(self) -> Dict:
+        return dataclasses.asdict(self)
+
+
+@dataclass(slots=True)
+class ValidationMetrics:
+    """Output from seed metric computation + baseline comparisons.
+
+    Replaces the untyped dict returned by _validation_compute_metrics.
+    """
+
+    val_loss_ratio: Optional[float] = None
+    multi_seed_std: float = 0.0
+    robustness_score: float = 1.0
+    is_unstable: bool = False
+    init_sensitivity_std: Optional[float] = None
+    val_baseline_ratio: Optional[float] = None
+    val_normalized_ratio: Optional[float] = None
+    val_param_efficiency: Optional[float] = None
+    passed_seeds: list = field(default_factory=list)
+    loss_ratios: list = field(default_factory=list)
+    best_seed: Optional[Dict] = None
+    source_params: int = 0

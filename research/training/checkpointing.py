@@ -79,8 +79,8 @@ class CheckpointManager:
             )
             return state
         except Exception as e:
-            logger.warning("Failed to load continuous checkpoint %s: %s", path, e)
-            return None
+            logger.error("Failed to load continuous checkpoint %s: %s", path, e)
+            raise e
 
     # ── Phase checkpoints (investigation / validation) ──
 
@@ -129,8 +129,8 @@ class CheckpointManager:
             )
             return state
         except Exception as e:
-            logger.warning("Failed to load phase checkpoint %s: %s", path, e)
-            return None
+            logger.error("Failed to load phase checkpoint %s: %s", path, e)
+            raise e
 
     # ── Cleanup ──
 

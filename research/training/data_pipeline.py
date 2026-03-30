@@ -171,8 +171,9 @@ class CorpusTokenBatcher:
                             continue
                         try:
                             item = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as e:
+                            logger.error("Failed to decode JSON line in corpus: %s", e)
+                            raise e
 
                         if isinstance(item, dict):
                             value = item.get(self.config.text_key)
@@ -199,8 +200,8 @@ class CorpusTokenBatcher:
             tokens = self._tokenizer.encode(joined, self.vocab_size)
             return [int(t) for t in tokens]
         except Exception as exc:
-            logger.warning("Corpus load failed from %s: %s", self.path, exc)
-            return []
+            logger.error("Corpus load failed from %s: %s", self.path, exc)
+            raise exc
 
     def sample_batch(
         self,

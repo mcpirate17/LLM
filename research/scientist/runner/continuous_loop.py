@@ -31,6 +31,27 @@ class _ContinuousLoopMixin:
 
     def _run_continuous_thread(self, config: RunConfig):
         """Execute continuous experiments in background."""
+        try:
+            self._run_continuous_thread_inner(config)
+        except BaseException as e:
+            import traceback
+
+            logger.critical(
+                "Continuous thread KILLED: %s\n%s", e, traceback.format_exc(),
+            )
+            try:
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": "continuous", "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            if not isinstance(e, Exception):
+                raise
+
+    def _run_continuous_thread_inner(self, config: RunConfig):
+        """Inner continuous loop body."""
         n_experiments = 0
         t_start = time.time()
         self.aria.reset_cost_tracking()

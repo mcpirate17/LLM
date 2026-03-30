@@ -324,6 +324,8 @@ class TestIntegration:
 
         runner = MagicMock(spec=ExperimentRunner)
         runner._get_reference_baseline_lr = MagicMock(return_value=None)
+        runner._reference_margin_ceiling = MagicMock(return_value=None)
+        runner._apply_predictor_filter = MagicMock(side_effect=lambda c, n, e: e)
 
         config = RunConfig()
         config.pre_inv_gate_enabled = True

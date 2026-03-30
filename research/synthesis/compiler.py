@@ -17,7 +17,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .primitives import get_primitive, PrimitiveOp, _ALGEBRAIC_SPACE_TAGS
+from .primitives import (
+    get_primitive,
+    PrimitiveOp,
+    _ALGEBRAIC_SPACE_TAGS,
+    PRIMITIVE_REGISTRY,
+)
 from .graph import ComputationGraph, ShapeInfo
 from .compiler_op_utils import (
     record_kernel_fallback,
@@ -1041,16 +1046,15 @@ def _execute_op(
             if nonfinite > 0:
                 result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
                 telemetry = getattr(module, "mathspace_telemetry", {})
-                stats = telemetry.get(op_name, {"calls": 0, "nonfinite": 0})
-                stats["calls"] += 1
-                stats["nonfinite"] += nonfinite
-                telemetry[op_name] = stats
-                setattr(module, "mathspace_telemetry", telemetry)
+                if len(telemetry) < 256:
+                    stats = telemetry.get(op_name, {"calls": 0, "nonfinite": 0})
+                    stats["calls"] += 1
+                    stats["nonfinite"] += nonfinite
+                    telemetry[op_name] = stats
+                    setattr(module, "mathspace_telemetry", telemetry)
         return result
 
     # Fallback for dynamic math space ops not in _OP_DISPATCH
-    from .primitives import PRIMITIVE_REGISTRY
-
     if op_name in PRIMITIVE_REGISTRY:
         prim = PRIMITIVE_REGISTRY[op_name]
         if not (hasattr(prim, "execute_fn") and prim.execute_fn is not None):

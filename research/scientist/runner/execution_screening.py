@@ -66,7 +66,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 from ._types import RunConfig, LiveProgress
-from ._helpers import _native_proactive_gating, clear_gpu_memory
+from ._helpers import (
+    _native_proactive_gating,
+    clear_gpu_memory,
+    graph_routing_ops,
+    routing_fast_lane_fields,
+)
 
 try:
     from ..judgment import score_candidate, JudgmentContext
@@ -772,19 +777,22 @@ class _ExecutionScreeningMixin:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Experiment failed (%s): %s\n%s", exp_id, e, error)
-            self._invoke_code_healer(
-                nb=nb,
-                trigger_type="repeated_exception",
-                experiment_id=exp_id,
-                scope=f"Synthesis/experiment failure: {str(e)[:240]}",
-                reproduction_steps=[
-                    'python -m pytest tests/test_integration.py -k "start_experiment" -x --tb=short'
-                ],
-                acceptance_tests=[
-                    'python -m pytest tests/test_integration.py -k "start_experiment" -x --tb=short'
-                ],
-                trigger_payload={"mode": "synthesis", "error": str(e)},
-            )
+            try:
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="repeated_exception",
+                    experiment_id=exp_id,
+                    scope=f"Synthesis/experiment failure: {str(e)[:240]}",
+                    reproduction_steps=[
+                        'python -m pytest tests/test_integration.py -k "start_experiment" -x --tb=short'
+                    ],
+                    acceptance_tests=[
+                        'python -m pytest tests/test_integration.py -k "start_experiment" -x --tb=short'
+                    ],
+                    trigger_payload={"mode": "synthesis", "error": str(e)},
+                )
+            except Exception:
+                logger.warning("code_healer failed during experiment error handling", exc_info=True)
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -798,6 +806,21 @@ class _ExecutionScreeningMixin:
                     "error": str(e),
                 },
             )
+        except BaseException as e:
+            logger.critical(
+                "Experiment thread KILLED (%s): %s\n%s",
+                exp_id, e, traceback.format_exc(),
+            )
+            try:
+                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            raise
         finally:
             nb.close()
             # Launch queued auto-scale-up after notebook is closed
@@ -1271,10 +1294,12 @@ class _ExecutionScreeningMixin:
             )
         results["funnel_counts"]["post_judgment"] = len(graphs)
 
-        # ── Ensemble pre-screener gate: skip graphs with P(pass_s1) < threshold ──
-        # Combines GBM (flat features) + GraphPredictor (topology features) +
-        # Bayesian (temporal op weights) + InteractionModel (pair stability).
-        # Falls back to GBM-only if ensemble components unavailable.
+        # ── Ensemble ranker: score and SORT graphs by predicted quality ──
+        # Graphs are evaluated in predicted-quality order (best first).
+        # Only skip graphs with extremely low scores (hard floor at threshold)
+        # to avoid wasting compute on obviously broken graphs — but the
+        # primary mechanism is RANKING, not gating. This ensures graphs with
+        # novel or unusual ops still get evaluated (just later in the queue).
         _ensemble = None
         if config.gbm_prescreener_enabled and graphs:
             try:
@@ -1296,7 +1321,6 @@ class _ExecutionScreeningMixin:
                 )
                 profiling_db = "research/profiling/component_profiles.db"
 
-                # Try full ensemble first, fall back to GBM-only
                 try:
                     _ensemble = train_ensemble(
                         db_path=db_path, profiling_db=profiling_db
@@ -1307,13 +1331,10 @@ class _ExecutionScreeningMixin:
                         _ensemble = EnsemblePredictor(gbm=_gbm_only)
 
                 if _ensemble is not None and _ensemble.is_fitted():
-                    pre_count = len(graphs)
-                    kept: List = []
-                    skipped = 0
                     _op_stats_cache = load_op_stats(db_path)
+                    scored: List[tuple] = []
                     for g in graphs:
                         gd = g.to_dict()
-                        # Flat features for GBM component
                         feats = extract_graph_features(gd)
                         if feats:
                             nodes = gd.get("nodes") or {}
@@ -1323,11 +1344,19 @@ class _ExecutionScreeningMixin:
                                 if n.get("op_name", "") != "input"
                             ]
                             enrich_with_op_stats(feats, ops, preloaded=_op_stats_cache)
-                        # Ensemble combines GBM (flat feats) + topology + Bayesian + interaction
                         p_pass = _ensemble.predict_gate(
                             graph_json=gd,
                             graph_features=feats if feats else None,
                         )
+                        scored.append((p_pass, g, gd))
+
+                    # Sort by predicted quality (best first for evaluation priority)
+                    scored.sort(key=lambda x: -x[0])
+
+                    # Hard floor: only skip graphs scoring below threshold
+                    kept: List = []
+                    skipped = 0
+                    for p_pass, g, gd in scored:
                         if p_pass < config.gbm_gate_threshold:
                             skipped += 1
                             try:
@@ -1342,22 +1371,27 @@ class _ExecutionScreeningMixin:
                                 pass
                         else:
                             kept.append(g)
+
                     graphs = kept
                     results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
                     results["funnel_counts"]["post_gbm_prescreener"] = len(graphs)
-                    if skipped:
-                        _diag = (
-                            _ensemble.diagnostics()
-                            if hasattr(_ensemble, "diagnostics")
-                            else {}
-                        )
-                        logger.info(
-                            "Ensemble pre-screener: skipped %d/%d graphs (threshold=%.2f, components=%d)",
-                            skipped,
-                            pre_count,
-                            config.gbm_gate_threshold,
-                            _diag.get("n_components", 1),
-                        )
+                    scores_arr = [s[0] for s in scored]
+                    _diag = (
+                        _ensemble.diagnostics()
+                        if hasattr(_ensemble, "diagnostics")
+                        else {}
+                    )
+                    logger.info(
+                        "Ensemble ranker: %d graphs scored [%.3f–%.3f], "
+                        "%d below floor (%.2f), %d kept, components=%d",
+                        len(scored),
+                        min(scores_arr) if scores_arr else 0,
+                        max(scores_arr) if scores_arr else 0,
+                        skipped,
+                        config.gbm_gate_threshold,
+                        len(kept),
+                        _diag.get("n_components", 1),
+                    )
             except Exception as e:
                 logger.debug("Ensemble pre-screener unavailable: %s", e)
 
@@ -1854,6 +1888,85 @@ class _ExecutionScreeningMixin:
                         max_seq_len=config.max_seq_len,
                     )
                     program_metrics["progressive_phase2_compiled"] = True
+
+                routing_ops = graph_routing_ops(graph)
+                if routing_ops:
+                    program_metrics["routing_fast_lane_applied"] = 1
+                    try:
+                        from ...eval.wikitext_eval import screening_wikitext_eval
+
+                        fast_lane_model = compile_model(
+                            layer_graphs,
+                            vocab_size=config.vocab_size,
+                            max_seq_len=config.max_seq_len,
+                        )
+                        fast_lane = screening_wikitext_eval(
+                            fast_lane_model,
+                            config.vocab_size,
+                            "cpu",
+                            seq_len=min(96, config.max_seq_len),
+                            n_train_steps=24,
+                            n_train_batches=8,
+                            n_eval_batches=3,
+                            batch_size=3,
+                        )
+                        fast_lane["routing_fast_lane_applied"] = 1
+                        fast_lane["routing_fast_lane_status"] = fast_lane.get(
+                            "screening_wikitext_status"
+                        )
+                        fast_lane["routing_fast_lane_metric_version"] = (
+                            "routing_fast_lane_v1"
+                        )
+                        fast_lane["routing_fast_lane_perplexity"] = fast_lane.get(
+                            "wikitext_perplexity"
+                        )
+                        fast_lane["routing_fast_lane_score"] = fast_lane.get(
+                            "wikitext_score"
+                        )
+                        fast_lane["routing_fast_lane_pre_perplexity"] = fast_lane.get(
+                            "wikitext_pre_perplexity"
+                        )
+                        fast_lane["routing_fast_lane_ppl_improvement"] = (
+                            fast_lane.get("wikitext_ppl_improvement")
+                        )
+                        fast_lane["routing_fast_lane_elapsed_ms"] = fast_lane.get(
+                            "elapsed_ms"
+                        )
+                        fast_lane["routing_fast_lane_budget"] = dict(
+                            fast_lane.get("screening_wikitext_budget") or {}
+                        )
+                        fast_lane["routing_fast_lane_slope"] = fast_lane.get(
+                            "screening_slope"
+                        )
+                        fast_lane["routing_fast_lane_slope_consistent"] = fast_lane.get(
+                            "screening_slope_consistent"
+                        )
+                        fast_lane["routing_fast_lane_routing_ops"] = routing_ops
+                        program_metrics.update(routing_fast_lane_fields(fast_lane))
+                        logger.info(
+                            "    Routing fast lane ops=%s score=%.3f status=%s (%.0fms)%s",
+                            ",".join(routing_ops),
+                            float(fast_lane.get("routing_fast_lane_score") or 0.0),
+                            fast_lane.get("routing_fast_lane_status") or "unknown",
+                            float(fast_lane.get("routing_fast_lane_elapsed_ms") or 0.0),
+                            (
+                                f" error={fast_lane.get('error')}"
+                                if fast_lane.get("routing_fast_lane_status") != "ok"
+                                and fast_lane.get("error")
+                                else ""
+                            ),
+                        )
+                        del fast_lane_model
+                    except Exception as e_fast_lane:
+                        logger.warning("Routing fast lane failed: %s", e_fast_lane)
+                        program_metrics.setdefault("routing_fast_lane_applied", 1)
+                        program_metrics["routing_fast_lane_status"] = "eval_failed"
+                        program_metrics["routing_fast_lane_metric_version"] = (
+                            "routing_fast_lane_v1"
+                        )
+                        program_metrics["routing_fast_lane_routing_ops_json"] = (
+                            json.dumps(routing_ops, separators=(",", ":"))
+                        )
 
                 # Stage 1: Asynchronous Execution (Z6)
                 self._update_progress(current_stage="queuing_s1")

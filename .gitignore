@@ -75,5 +75,11 @@ new *.txt
 audit_results/
 audit_report.*
 
+# Scale test checkpoints (multi-GB)
+research/artifacts/scale_test/*.pt
+
+# Runtime learning state
+research/runtime/learning/
+
 # Performance artifacts
 research/perf_artifacts/

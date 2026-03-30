@@ -838,16 +838,16 @@ class _AnalyticsMixin:
     def _failure_penalty_weight(
         fail_rate: float, total: int, positive_support: int
     ) -> Optional[float]:
-        # Soft penalties only — many high-fail-rate pairs are standard
-        # transformer patterns (norm→routing, routing→residual, proj→routing)
-        # that fail due to broader template composition, not the pair itself.
-        # Floor at 0.25 so no pair is nearly killed.
+        # Soft penalties — many high-fail-rate pairs are standard transformer
+        # patterns that fail due to broader template composition, not the pair
+        # itself.  Weights are deweight factors: lower = stronger penalty.
+        # Aligned with get_failure_signature_blocklist (0.05 for ~100% failure).
         if fail_rate >= 0.95 and total >= 20 and positive_support >= 5:
-            return 0.25
+            return 0.05
         if fail_rate >= 0.85 and total >= 10 and positive_support >= 3:
-            return 0.45
+            return 0.15
         if fail_rate >= 0.70 and total >= 5 and positive_support >= 3:
-            return 0.65
+            return 0.30
         return None
 
     @staticmethod

@@ -1,18 +1,20 @@
-import { useState, memo } from 'react'
-import { CheckCircle2, Loader, Circle, XCircle, ChevronRight } from 'lucide-react'
+import { useEffect, useMemo, useState, memo } from 'react'
+import { CheckCircle2, Loader, Circle, XCircle, ChevronRight, RefreshCw } from 'lucide-react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import ChartActionRail from './ChartActionRail.jsx'
 import OpProfileTable from './RunResults/OpProfileTable.jsx'
 import BenchmarkTargets from './RunResults/BenchmarkTargets.jsx'
 import { formatNum } from '../utils/format'
+import { apiCall } from '../services/apiService'
 
-const STAGE_ORDER = ['conversion', 'profiling', 'compilation', 'sandbox', 'compression', 'fingerprint', 'novelty']
+const STAGE_ORDER = ['conversion', 'profiling', 'compilation', 'sandbox', 'routing', 'compression', 'fingerprint', 'novelty']
 
 const STAGE_LABELS = {
   conversion: 'Conversion',
   profiling: 'Profiling',
   compilation: 'Compilation',
   sandbox: 'Sandbox Eval',
+  routing: 'Routing',
   compression: 'Compression',
   fingerprint: 'Fingerprint',
   novelty: 'Novelty',
@@ -59,13 +61,153 @@ function ProgressBar({ value, color = 'var(--accent)' }) {
   )
 }
 
+function normalizeStages(stages) {
+  if (Array.isArray(stages)) {
+    return stages.filter(Boolean)
+  }
+  if (!stages || typeof stages !== 'object') {
+    return []
+  }
+  return Object.entries(stages).map(([stage, payload]) => {
+    if (payload && typeof payload === 'object') return { stage, ...payload }
+    return { stage, status: 'unknown' }
+  })
+}
+
+function normalizeEvalState(evalState) {
+  if (!evalState) return null
+  const result = evalState.result || {}
+  return {
+    ...evalState,
+    runId: evalState.runId || evalState.run_id || null,
+    workflowId: evalState.workflowId || evalState.workflow_id || null,
+    totalTimeMs: evalState.totalTimeMs ?? evalState.total_time_ms ?? result.total_time_ms ?? null,
+    stages: normalizeStages(evalState.stages),
+    benchmarking: evalState.benchmarking || result.benchmarking || null,
+    compositeScore: evalState.compositeScore ?? result.composite_score ?? null,
+    graphFingerprint: evalState.graphFingerprint ?? result.graph_fingerprint ?? null,
+    discoveryUrl: evalState.discoveryUrl ?? result.discovery_url ?? null,
+    semanticWarnings: evalState.semanticWarnings || evalState.semantic_warnings || [],
+    errorDetails: evalState.errorDetails || evalState.error_details || null,
+    error: evalState.error || result.error || null,
+  }
+}
+
+function formatWhen(raw) {
+  if (!raw) return null
+  const dt = new Date(raw)
+  if (Number.isNaN(dt.getTime())) return String(raw)
+  return dt.toLocaleString()
+}
+
+function toneForStatus(status) {
+  if (status === 'success' || status === 'done') return 'success'
+  if (status === 'running') return 'running'
+  if (status === 'error' || status === 'failed_sandbox') return 'danger'
+  return 'neutral'
+}
+
+function getStageFailures(stages) {
+  return stages.filter((stage) => stage?.status === 'error' || stage?.error || stage?.error_details)
+}
+
 function RunResultsPanel({
   evalState,
   baseline = null,
   benchmarkObserved = {},
   onBenchmarkObservedChange = null,
 }) {
-  const { stages = [], totalTimeMs, error, compositeScore, graphFingerprint, discoveryUrl } = evalState || {}
+  const liveEvalState = useMemo(() => normalizeEvalState(evalState), [evalState])
+  const [recentRuns, setRecentRuns] = useState([])
+  const [recentRunsLoading, setRecentRunsLoading] = useState(false)
+  const [recentRunsError, setRecentRunsError] = useState(null)
+  const [selectedRunId, setSelectedRunId] = useState(null)
+  const [selectedRunData, setSelectedRunData] = useState(null)
+  const [selectedRunLoading, setSelectedRunLoading] = useState(false)
+  const [selectedRunError, setSelectedRunError] = useState(null)
+
+  const refreshRecentRuns = async () => {
+    setRecentRunsLoading(true)
+    setRecentRunsError(null)
+    try {
+      const res = await apiCall('/api/v1/eval/runs?limit=12')
+      const data = await res.json()
+      setRecentRuns(Array.isArray(data) ? data : [])
+    } catch (err) {
+      setRecentRunsError(err.message || 'Unable to load recent runs')
+    } finally {
+      setRecentRunsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refreshRecentRuns()
+  }, [])
+
+  useEffect(() => {
+    if (liveEvalState?.runId) {
+      refreshRecentRuns()
+    }
+  }, [liveEvalState?.runId, liveEvalState?.status])
+
+  useEffect(() => {
+    if (selectedRunId || liveEvalState?.runId) return
+    if (recentRuns.length > 0) {
+      setSelectedRunId(recentRuns[0].run_id)
+    }
+  }, [recentRuns, selectedRunId, liveEvalState?.runId])
+
+  useEffect(() => {
+    if (!selectedRunId || selectedRunId === liveEvalState?.runId) {
+      setSelectedRunData(null)
+      setSelectedRunError(null)
+      setSelectedRunLoading(false)
+      return
+    }
+    let cancelled = false
+    const loadRun = async () => {
+      setSelectedRunLoading(true)
+      setSelectedRunError(null)
+      try {
+        const res = await apiCall(`/api/v1/eval/runs/${encodeURIComponent(selectedRunId)}`)
+        const data = await res.json()
+        if (!cancelled) setSelectedRunData(normalizeEvalState(data))
+      } catch (err) {
+        if (!cancelled) {
+          setSelectedRunData(null)
+          setSelectedRunError(err.message || `Unable to load run ${selectedRunId}`)
+        }
+      } finally {
+        if (!cancelled) setSelectedRunLoading(false)
+      }
+    }
+    loadRun()
+    return () => { cancelled = true }
+  }, [selectedRunId, liveEvalState?.runId])
+
+  const activeEvalState = selectedRunId && selectedRunId !== liveEvalState?.runId
+    ? selectedRunData
+    : liveEvalState
+  const fallbackRun = !activeEvalState && selectedRunId && selectedRunId === recentRuns[0]?.run_id
+    ? normalizeEvalState(recentRuns[0])
+    : null
+  const viewState = activeEvalState || fallbackRun
+
+  const {
+    stages = [],
+    totalTimeMs,
+    error,
+    compositeScore,
+    graphFingerprint,
+    discoveryUrl,
+    semanticWarnings = [],
+    errorDetails = null,
+    runId = null,
+    workflowId = null,
+    status = null,
+    created_at: createdAt = null,
+    completed_at: completedAt = null,
+  } = viewState || {}
 
   const stageMap = {}
   for (const s of stages) stageMap[s.stage] = s
@@ -75,10 +217,11 @@ function RunResultsPanel({
   const compressionMetrics = stageMap.compression?.metrics
   const fingerprintMetrics = stageMap.fingerprint?.metrics
   const noveltyMetrics = stageMap.novelty?.metrics
-  const benchmarkMetrics = evalState?.benchmarking || stageMap.benchmarking?.metrics || null
+  const benchmarkMetrics = viewState?.benchmarking || stageMap.benchmarking?.metrics || null
   const notMeasuredTargets = Array.isArray(benchmarkMetrics?.targets)
     ? benchmarkMetrics.targets.filter((t) => t.status === 'not_measured')
     : []
+  const stageFailures = getStageFailures(stages)
   const abiProbe = sandboxMetrics?.native_abi_probe || null
   const abiParityAttempted = Boolean(abiProbe?.parity_attempted)
   const abiParityPass = abiProbe?.parity_pass
@@ -94,18 +237,15 @@ function RunResultsPanel({
     ? (abiParityPass ? 'pass' : 'fail')
     : (abiPrimaryUsed ? 'primary' : 'probe')
 
-  // FLOPs by category chart data
   const chartData = Object.entries(profilingMetrics?.flops_by_category || {})
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value)
-
-  // Sorted op profiles
   const opProfiles = profilingMetrics?.op_profiles || []
   const topBottleneck = opProfiles[0] || null
   const benchmarkSrc = benchmarkObserved && typeof benchmarkObserved === 'object' ? benchmarkObserved : {}
   const benchmarkInputCount = Object.entries(benchmarkSrc).filter(([, v]) => Number.isFinite(Number(v))).length
 
-  if (!evalState || stages.length === 0) {
+  if (!viewState && !recentRunsLoading) {
     return (
       <div className="eval-results" style={{ color: 'var(--muted)', padding: 16, textAlign: 'center' }}>
         Click <strong>Deep Run</strong> to stream evaluation results.
@@ -115,8 +255,91 @@ function RunResultsPanel({
 
   return (
     <div className="eval-results">
+      <CollapsibleSection title="Recent Runs" defaultOpen>
+        <div className="run-history-toolbar">
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+            Persisted eval history from `workflow_runs`
+          </div>
+          <button type="button" className="history-refresh-button" onClick={refreshRecentRuns} disabled={recentRunsLoading}>
+            <RefreshCw size={12} />
+            Refresh
+          </button>
+        </div>
+        {recentRunsError && <div className="run-history-error">{recentRunsError}</div>}
+        <div className="run-history-list">
+          {liveEvalState?.runId && (
+            <button
+              type="button"
+              className={`run-history-item ${(selectedRunId === liveEvalState.runId || !selectedRunId) ? 'active' : ''}`}
+              onClick={() => setSelectedRunId(liveEvalState.runId)}
+            >
+              <span className={`run-history-pill tone-${toneForStatus(liveEvalState.status)}`}>{liveEvalState.status || 'live'}</span>
+              <span className="run-history-main">
+                <strong>Live run</strong>
+                <span>{liveEvalState.runId}</span>
+              </span>
+            </button>
+          )}
+          {recentRuns.map((run) => (
+            <button
+              key={run.run_id}
+              type="button"
+              className={`run-history-item ${selectedRunId === run.run_id ? 'active' : ''}`}
+              onClick={() => setSelectedRunId(run.run_id)}
+            >
+              <span className={`run-history-pill tone-${toneForStatus(run.status)}`}>{run.status || 'unknown'}</span>
+              <span className="run-history-main">
+                <strong>{run.workflow_id || 'workflow'}</strong>
+                <span>{run.run_id}</span>
+              </span>
+              <span className="run-history-meta">
+                {run.total_time_ms != null ? `${(Number(run.total_time_ms) / 1000).toFixed(1)}s` : '-'}
+              </span>
+            </button>
+          ))}
+          {recentRunsLoading && <div className="run-history-empty">Loading recent runs...</div>}
+          {!recentRunsLoading && !liveEvalState?.runId && recentRuns.length === 0 && (
+            <div className="run-history-empty">No persisted runs yet.</div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      {selectedRunLoading && <div className="run-history-empty">Loading run detail...</div>}
+      {selectedRunError && <div className="run-history-error">{selectedRunError}</div>}
+
+      {viewState && (
+        <div className="run-meta-card">
+          <div className="run-meta-grid">
+            <div>
+              <div className="score-discovery-label">Run</div>
+              <div className="run-meta-value">{runId || '-'}</div>
+            </div>
+            <div>
+              <div className="score-discovery-label">Workflow</div>
+              <div className="run-meta-value">{workflowId || '-'}</div>
+            </div>
+            <div>
+              <div className="score-discovery-label">Status</div>
+              <div className={`run-meta-status tone-${toneForStatus(status)}`}>{status || '-'}</div>
+            </div>
+            <div>
+              <div className="score-discovery-label">Started</div>
+              <div className="run-meta-value">{formatWhen(createdAt) || '-'}</div>
+            </div>
+            <div>
+              <div className="score-discovery-label">Completed</div>
+              <div className="run-meta-value">{formatWhen(completedAt) || '-'}</div>
+            </div>
+            <div>
+              <div className="score-discovery-label">Elapsed</div>
+              <div className="run-meta-value">{totalTimeMs != null ? `${(totalTimeMs / 1000).toFixed(2)}s` : '-'}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {(compositeScore != null || graphFingerprint) && (
-        <div className="score-discovery-section">
+        <div className="score-discovery-card">
           <div>
             <div className="score-discovery-label">Score & Discovery</div>
             <div className={`composite-score-badge tone-${scoreTone(compositeScore)}`}>
@@ -147,7 +370,58 @@ function RunResultsPanel({
         </div>
       )}
 
-      {/* Progress Stepper */}
+      {errorDetails && (
+        <CollapsibleSection title="Failure Detail" defaultOpen>
+          <div className="failure-detail-card">
+            <div className="failure-chip-row">
+              {errorDetails.stage && <span className="failure-chip">stage: {errorDetails.stage}</span>}
+              {errorDetails.error_type && <span className="failure-chip">type: {errorDetails.error_type}</span>}
+              {errorDetails.root_cause_code && <span className="failure-chip">root cause: {errorDetails.root_cause_code}</span>}
+              {errorDetails.exception_class && <span className="failure-chip">exception: {errorDetails.exception_class}</span>}
+            </div>
+            <div className="failure-message">{errorDetails.error_message || error || 'Run failed'}</div>
+            {errorDetails.failure_op && (
+              <div className="failure-kv"><strong>Failing op:</strong> {String(errorDetails.failure_op)}</div>
+            )}
+            {errorDetails.traceback_excerpt && (
+              <pre className="failure-traceback">{String(errorDetails.traceback_excerpt)}</pre>
+            )}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {semanticWarnings.length > 0 && (
+        <CollapsibleSection title={`Semantic Warnings (${semanticWarnings.length})`} defaultOpen>
+          <div className="warnings-list">
+            {semanticWarnings.map((warning, index) => {
+              const text = typeof warning === 'string' ? warning : (warning.message || JSON.stringify(warning))
+              return <div key={`${index}-${text.slice(0, 24)}`} className="warning-item">{text}</div>
+            })}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {stageFailures.length > 0 && (
+        <CollapsibleSection title={`Stage Failures (${stageFailures.length})`}>
+          <div className="stage-failures">
+            {stageFailures.map((stage) => {
+              const details = stage.error_details || {}
+              return (
+                <div key={stage.stage} className="stage-failure-card">
+                  <div className="stage-failure-head">
+                    <strong>{STAGE_LABELS[stage.stage] || stage.stage}</strong>
+                    <span>{details.root_cause_code || stage.status}</span>
+                  </div>
+                  <div className="stage-failure-message">
+                    {details.error_message || stage.error || 'Stage failed'}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </CollapsibleSection>
+      )}
+
       <div className="eval-stepper">
         {STAGE_ORDER.map((name) => {
           const s = stageMap[name]
@@ -161,12 +435,6 @@ function RunResultsPanel({
           )
         })}
       </div>
-
-      {totalTimeMs != null && (
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10, textAlign: 'right' }}>
-          Total: {(totalTimeMs / 1000).toFixed(2)}s
-        </div>
-      )}
 
       {error && (
         <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 10, padding: '6px 8px', background: 'rgba(255,80,80,0.1)', borderRadius: 6 }}>
@@ -205,7 +473,6 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* Summary Metrics Grid */}
       {sandboxMetrics && (
         <CollapsibleSection title="Summary" defaultOpen>
           <div className="metrics-grid">
@@ -291,7 +558,6 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* FLOPs by Category Chart */}
       {chartData.length > 0 && (
         <CollapsibleSection title="FLOPs by Category">
           <div className="chart-container">
@@ -318,7 +584,6 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* Per-Op Profile Table */}
       {opProfiles.length > 0 && (
         <CollapsibleSection title={`Per-Op Profile (${opProfiles.length})`}>
           <OpProfileTable
@@ -328,7 +593,6 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* Bottleneck Highlights */}
       {profilingMetrics?.bottleneck_ops?.length > 0 && (
         <CollapsibleSection title="Bottlenecks">
           <div>
@@ -339,16 +603,12 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* Compression & Efficiency */}
       {compressionMetrics && (
         <CollapsibleSection title="Compression & Efficiency">
-          {/* Efficiency Score Badge */}
           <div className="efficiency-score-badge">
             <div className="eff-score-value">{Math.round((compressionMetrics.efficiency_score || 0) * 100)}</div>
             <div className="eff-score-label">Efficiency</div>
           </div>
-
-          {/* Score Breakdown */}
           <div className="compression-breakdown">
             {[
               { label: 'Prune Tol.', val: compressionMetrics.pruning_tolerance, color: '#24d1a0' },
@@ -363,12 +623,10 @@ function RunResultsPanel({
               </div>
             ))}
           </div>
-
-          {/* Pruning Tolerance Curve */}
           {compressionMetrics.pruning_curve?.length > 0 && (
             <div className="chart-container" style={{ marginTop: 8 }}>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>Pruning Curve</div>
-            <ResponsiveContainer width="100%" height={120}>
+              <ResponsiveContainer width="100%" height={120}>
                 <LineChart data={compressionMetrics.pruning_curve} margin={{ left: 10, right: 10, top: 4, bottom: 4 }}>
                   <XAxis dataKey="sparsity" tick={{ fill: '#8fa8c2', fontSize: 10 }} tickFormatter={v => (v * 100) + '%'} />
                   <YAxis tick={{ fill: '#8fa8c2', fontSize: 10 }} domain={[0, 'auto']} tickFormatter={v => v.toFixed(1) + 'x'} />
@@ -379,15 +637,13 @@ function RunResultsPanel({
                   />
                   <Line type="monotone" dataKey="loss_ratio" stroke="#a060ff" strokeWidth={2} dot={{ r: 3, fill: '#a060ff' }} />
                 </LineChart>
-            </ResponsiveContainer>
-            <ChartActionRail
-              insight={compressionMetrics.compression_ratio != null ? `Compression ratio: ${Number(compressionMetrics.compression_ratio).toFixed(2)}x` : null}
-              recommendation="Next best action: compare loss-vs-sparsity tradeoffs, then keep only sparse ops that preserve quality before another deep run."
-            />
-          </div>
+              </ResponsiveContainer>
+              <ChartActionRail
+                insight={compressionMetrics.compression_ratio != null ? `Compression ratio: ${Number(compressionMetrics.compression_ratio).toFixed(2)}x` : null}
+                recommendation="Next best action: compare loss-vs-sparsity tradeoffs, then keep only sparse ops that preserve quality before another deep run."
+              />
+            </div>
           )}
-
-          {/* Compression Metrics Grid */}
           <div className="metrics-grid" style={{ marginTop: 8 }}>
             <div className="stat">
               <div className="stat-val">{formatNum(compressionMetrics.compression_ratio?.toFixed(2))}x</div>
@@ -406,8 +662,6 @@ function RunResultsPanel({
               <div className="stat-label">INT4 Size</div>
             </div>
           </div>
-
-          {/* Sparse Op Badges */}
           {compressionMetrics.sparse_op_names?.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
               {compressionMetrics.sparse_op_names.map(name => (
@@ -418,7 +672,6 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* Fingerprint Summary */}
       {fingerprintMetrics && !fingerprintMetrics.skipped && (
         <CollapsibleSection title="Fingerprint">
           <div className="fingerprint-grid">
@@ -440,7 +693,6 @@ function RunResultsPanel({
         </CollapsibleSection>
       )}
 
-      {/* Novelty Scores */}
       {noveltyMetrics && !noveltyMetrics.skipped && (
         <CollapsibleSection title="Novelty">
           <div className="novelty-bars">
@@ -471,7 +723,6 @@ function RunResultsPanel({
             benchmarkObserved={benchmarkObserved}
             onBenchmarkObservedChange={onBenchmarkObservedChange}
           />
-
           {notMeasuredTargets.length > 0 && (
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.55 }}>
               {notMeasuredTargets.slice(0, 4).map((t) => (
@@ -481,7 +732,6 @@ function RunResultsPanel({
               ))}
             </div>
           )}
-
           {benchmarkMetrics.scaling_projection && (
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
               <div>

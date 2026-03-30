@@ -142,21 +142,29 @@ def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) ->
     return True
 
 
-def _pick_compatible_motif(
+def _compatible_from_classes(
     graph: ComputationGraph,
     node_id: int,
-    rng: random.Random,
-    motif_class: str,
-    weights: MotifWeights = None,
-) -> Optional[Motif]:
-    # _instantiate_motif auto-wraps REQUIRES_RESIDUAL_BYPASS ops with add,
-    # so bypass motifs are safe — no need to filter them out.
-    candidates = [
+    classes: Tuple[str, ...] | list[str],
+) -> list[Motif]:
+    """Return motifs from *classes* that are compatible at *node_id*."""
+    active_tpl = graph.metadata.get("_active_template")
+    pool: list[Motif] = []
+    for cls in classes:
+        pool.extend(MOTIFS_BY_CLASS.get(cls, []))
+    return [
         m
-        for m in MOTIFS_BY_CLASS.get(motif_class, [])
+        for m in pool
         if _motif_is_compatible(graph, node_id, m)
-        and _motif_allowed_in_template(m, graph.metadata.get("_active_template"))
+        and _motif_allowed_in_template(m, active_tpl)
     ]
+
+
+def _select_from_candidates(
+    candidates: list[Motif],
+    rng: random.Random,
+    weights: MotifWeights,
+) -> Optional[Motif]:
     if not candidates:
         return None
     if len(candidates) == 1:
@@ -167,6 +175,37 @@ def _pick_compatible_motif(
     return rng.choices(candidates, weights=candidate_weights, k=1)[0]
 
 
+def _pick_compatible_motif(
+    graph: ComputationGraph,
+    node_id: int,
+    rng: random.Random,
+    motif_class: str,
+    weights: MotifWeights = None,
+) -> Optional[Motif]:
+    wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    is_wildcard = wildcard_prob > 0 and rng.random() < wildcard_prob
+
+    if is_wildcard:
+        candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
+    else:
+        candidates = _compatible_from_classes(graph, node_id, (motif_class,))
+        # Fallback to wildcard when prescribed class yields zero candidates
+        if not candidates and wildcard_prob > 0:
+            candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
+            is_wildcard = True
+
+    selected = _select_from_candidates(candidates, rng, weights)
+    _record_slot_usage(
+        graph,
+        node_id=node_id,
+        slot_classes=(motif_class,),
+        candidates=candidates,
+        selected=selected,
+        wildcard=is_wildcard,
+    )
+    return selected
+
+
 def _pick_compatible_motif_from_classes(
     graph: ComputationGraph,
     node_id: int,
@@ -174,21 +213,73 @@ def _pick_compatible_motif_from_classes(
     classes: Tuple[str, ...] | list[str],
     weights: MotifWeights = None,
 ) -> Optional[Motif]:
-    pool = []
-    for cls in classes:
-        pool.extend(MOTIFS_BY_CLASS.get(cls, []))
-    candidates = [
-        m
-        for m in pool
-        if _motif_is_compatible(graph, node_id, m)
-        and _motif_allowed_in_template(m, graph.metadata.get("_active_template"))
-    ]
-    if not candidates:
-        return None
-    candidate_weights = [
-        weights.get(m.name, m.lift) if weights else m.lift for m in candidates
-    ]
-    return rng.choices(candidates, weights=candidate_weights, k=1)[0]
+    wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    is_wildcard = wildcard_prob > 0 and rng.random() < wildcard_prob
+
+    # Check for slot adaptations (learned class expansions from DB)
+    slot_adaptations = graph.metadata.get("_slot_adaptations")
+    if slot_adaptations:
+        slot_key = _current_slot_key(graph)
+        extra_classes = slot_adaptations.get(slot_key, ())
+        if extra_classes:
+            classes = tuple(set(classes) | set(extra_classes))
+
+    if is_wildcard:
+        candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
+    else:
+        candidates = _compatible_from_classes(graph, node_id, classes)
+        # Fallback to wildcard when prescribed classes yield zero candidates
+        if not candidates and wildcard_prob > 0:
+            candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
+            is_wildcard = True
+
+    selected = _select_from_candidates(candidates, rng, weights)
+    _record_slot_usage(
+        graph,
+        node_id=node_id,
+        slot_classes=tuple(classes),
+        candidates=candidates,
+        selected=selected,
+        wildcard=is_wildcard,
+    )
+    return selected
+
+
+def _current_slot_key(graph: ComputationGraph) -> str:
+    """Build the slot_key for the currently active template slot."""
+    tpl = graph.metadata.get("_active_template", "unknown")
+    idx = graph.metadata.get("_active_template_slot_counter", 0)
+    return f"{tpl}.slot{idx}"
+
+
+def _record_slot_usage(
+    graph: ComputationGraph,
+    node_id: int,
+    slot_classes: Tuple[str, ...] | list[str],
+    candidates: list[Motif],
+    selected: Optional[Motif],
+    wildcard: bool = False,
+) -> None:
+    template_name = graph.metadata.get("_active_template")
+    if not template_name:
+        return
+    slot_index = int(graph.metadata.get("_active_template_slot_counter", 0) or 0)
+    graph.metadata["_active_template_slot_counter"] = slot_index + 1
+    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
+    class_list = [str(cls) for cls in slot_classes]
+    entry = {
+        "template_name": str(template_name),
+        "template_instance": template_instance,
+        "slot_index": slot_index,
+        "slot_key": f"{template_name}[{template_instance}].slot{slot_index}",
+        "slot_classes": class_list,
+        "selected_motif": selected.name if selected else None,
+        "selected_motif_class": selected.motif_class if selected else None,
+        "candidate_count": len(candidates),
+        "input_node_id": int(node_id),
+        "wildcard": wildcard,
+    }
+    graph.metadata.setdefault("template_slot_usage", []).append(entry)
 
 
 def _fix_dim(graph: ComputationGraph, node_id: int) -> int:

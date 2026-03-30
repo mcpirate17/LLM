@@ -3,10 +3,14 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
+import math
+from pathlib import Path
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
 from ..json_utils import fast_loads as _json_loads
+from ..thresholds import GPT2_REF
 
 
 class _MiscMixin:
@@ -14,6 +18,635 @@ class _MiscMixin:
 
     __slots__ = ()
     _DASHBOARD_SUMMARY_TTL_S = 2.0
+
+    @staticmethod
+    def _percentile(values: List[float], pct: float) -> Optional[float]:
+        clean = sorted(v for v in values if v is not None and math.isfinite(v))
+        if not clean:
+            return None
+        if len(clean) == 1:
+            return float(clean[0])
+        pos = max(0.0, min(1.0, pct)) * (len(clean) - 1)
+        lo = int(math.floor(pos))
+        hi = int(math.ceil(pos))
+        if lo == hi:
+            return float(clean[lo])
+        frac = pos - lo
+        return float(clean[lo] + (clean[hi] - clean[lo]) * frac)
+
+    @staticmethod
+    def _infer_template_slot_counts() -> Dict[str, int]:
+        template_file = (
+            Path(__file__).resolve().parents[2] / "synthesis" / "templates.py"
+        )
+        try:
+            source = template_file.read_text(encoding="utf-8")
+        except Exception:
+            return {}
+        counts: Dict[str, int] = {}
+        matches = list(re.finditer(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", source, re.M))
+        for idx, match in enumerate(matches):
+            name = match.group(1)
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(source)
+            body = source[start:end]
+            counts[name] = body.count("_pick_compatible_motif_from_classes(")
+        return counts
+
+    def get_template_slot_observability(self, limit: int = 8) -> Dict[str, Any]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                experiment_id,
+                timestamp,
+                graph_json,
+                stage0_passed,
+                stage05_passed,
+                stage1_passed,
+                loss_ratio,
+                discovery_loss_ratio,
+                validation_loss_ratio,
+                novelty_score,
+                error_type,
+                stage_at_death,
+                failure_details_json,
+                routing_fast_lane_applied,
+                routing_fast_lane_status,
+                routing_fast_lane_score,
+                routing_fast_lane_ppl_improvement,
+                routing_fast_lane_slope,
+                routing_fast_lane_slope_consistent
+            FROM program_results
+            WHERE graph_json IS NOT NULL
+            """
+        ).fetchall()
+        if not rows:
+            return {
+                "top_templates": [],
+                "struggling_templates": [],
+                "motif_slots": [],
+                "loss_distribution": {},
+                "recommendations": [],
+                "summary": {},
+            }
+
+        slot_counts = self._infer_template_slot_counts()
+        template_stats: Dict[str, Dict[str, Any]] = {}
+        motif_stats: Dict[str, Dict[str, Any]] = {}
+        slot_stats: Dict[str, Dict[str, Any]] = {}
+        experiment_buckets: Dict[str, Dict[str, Any]] = {}
+        loss_values: List[float] = []
+        validation_losses: List[float] = []
+        discovery_losses: List[float] = []
+        motifs_per_graph: List[float] = []
+        templates_per_graph: List[float] = []
+
+        for row in rows:
+            try:
+                graph = _json_loads(row["graph_json"]) if row["graph_json"] else {}
+            except Exception:
+                graph = {}
+            metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
+            templates = metadata.get("templates_used") or []
+            motifs = metadata.get("motifs_used") or []
+            slot_usage = metadata.get("template_slot_usage") or []
+            experiment_id = str(row["experiment_id"] or "")
+            exp_bucket = experiment_buckets.setdefault(
+                experiment_id or f"exp_{len(experiment_buckets)}",
+                {
+                    "experiment_id": experiment_id or None,
+                    "timestamp": float(row["timestamp"] or 0.0),
+                    "templates": {},
+                    "slots": {},
+                    "training_losses": [],
+                    "validation_losses": [],
+                    "discovery_losses": [],
+                },
+            )
+            exp_bucket["timestamp"] = max(
+                float(exp_bucket.get("timestamp") or 0.0),
+                float(row["timestamp"] or 0.0),
+            )
+            if not isinstance(templates, list):
+                templates = []
+            if not isinstance(motifs, list):
+                motifs = []
+            if not isinstance(slot_usage, list):
+                slot_usage = []
+
+            motifs_per_graph.append(float(len(motifs)))
+            templates_per_graph.append(float(len(templates)))
+
+            loss_ratio = row["loss_ratio"]
+            validation_lr = row["validation_loss_ratio"]
+            discovery_lr = row["discovery_loss_ratio"]
+            novelty = row["novelty_score"]
+            if loss_ratio is not None and math.isfinite(loss_ratio):
+                loss_values.append(float(loss_ratio))
+                exp_bucket["training_losses"].append(float(loss_ratio))
+            if validation_lr is not None and math.isfinite(validation_lr):
+                validation_losses.append(float(validation_lr))
+                exp_bucket["validation_losses"].append(float(validation_lr))
+            if discovery_lr is not None and math.isfinite(discovery_lr):
+                discovery_losses.append(float(discovery_lr))
+                exp_bucket["discovery_losses"].append(float(discovery_lr))
+
+            failure_details = {}
+            raw_failure = row["failure_details_json"]
+            if raw_failure:
+                try:
+                    failure_details = (
+                        _json_loads(raw_failure)
+                        if isinstance(raw_failure, str)
+                        else raw_failure
+                    )
+                except Exception:
+                    failure_details = {}
+            root_cause = (
+                failure_details.get("root_cause_code")
+                or row["error_type"]
+                or row["stage_at_death"]
+                or "unknown"
+            )
+
+            for template in templates:
+                stat = template_stats.setdefault(
+                    str(template),
+                    {
+                        "name": str(template),
+                        "n_used": 0,
+                        "n_stage0": 0,
+                        "n_stage05": 0,
+                        "n_stage1": 0,
+                        "losses": [],
+                        "validation_losses": [],
+                        "discovery_losses": [],
+                        "novelties": [],
+                        "failure_reasons": {},
+                        "slot_count": slot_counts.get(str(template), 0),
+                        "routing_fast_lane_runs": 0,
+                        "routing_fast_lane_ok": 0,
+                        "routing_fast_lane_positive": 0,
+                        "routing_fast_lane_scores": [],
+                        "routing_fast_lane_improvements": [],
+                        "routing_fast_lane_slopes": [],
+                    },
+                )
+                stat["n_used"] += 1
+                stat["n_stage0"] += 1 if row["stage0_passed"] else 0
+                stat["n_stage05"] += 1 if row["stage05_passed"] else 0
+                stat["n_stage1"] += 1 if row["stage1_passed"] else 0
+                if loss_ratio is not None and math.isfinite(loss_ratio):
+                    stat["losses"].append(float(loss_ratio))
+                if validation_lr is not None and math.isfinite(validation_lr):
+                    stat["validation_losses"].append(float(validation_lr))
+                if discovery_lr is not None and math.isfinite(discovery_lr):
+                    stat["discovery_losses"].append(float(discovery_lr))
+                if novelty is not None and math.isfinite(novelty):
+                    stat["novelties"].append(float(novelty))
+                if row["routing_fast_lane_applied"]:
+                    stat["routing_fast_lane_runs"] += 1
+                    if row["routing_fast_lane_status"] == "ok":
+                        stat["routing_fast_lane_ok"] += 1
+                    lane_score = row["routing_fast_lane_score"]
+                    lane_improvement = row["routing_fast_lane_ppl_improvement"]
+                    lane_slope = row["routing_fast_lane_slope"]
+                    slope_consistent = bool(row["routing_fast_lane_slope_consistent"])
+                    if lane_score is not None and math.isfinite(lane_score):
+                        stat["routing_fast_lane_scores"].append(float(lane_score))
+                    if lane_improvement is not None and math.isfinite(lane_improvement):
+                        stat["routing_fast_lane_improvements"].append(
+                            float(lane_improvement)
+                        )
+                    if lane_slope is not None and math.isfinite(lane_slope):
+                        stat["routing_fast_lane_slopes"].append(float(lane_slope))
+                    if (
+                        lane_improvement is not None and float(lane_improvement) < 0.98
+                    ) or (
+                        lane_slope is not None
+                        and float(lane_slope) > 0
+                        and slope_consistent
+                    ):
+                        stat["routing_fast_lane_positive"] += 1
+                if not row["stage1_passed"]:
+                    stat["failure_reasons"][root_cause] = (
+                        stat["failure_reasons"].get(root_cause, 0) + 1
+                    )
+                exp_tpl = exp_bucket["templates"].setdefault(
+                    str(template),
+                    {"n": 0, "s1": 0, "losses": []},
+                )
+                exp_tpl["n"] += 1
+                exp_tpl["s1"] += 1 if row["stage1_passed"] else 0
+                if loss_ratio is not None and math.isfinite(loss_ratio):
+                    exp_tpl["losses"].append(float(loss_ratio))
+
+            for motif in motifs:
+                mstat = motif_stats.setdefault(
+                    str(motif),
+                    {
+                        "name": str(motif),
+                        "n_used": 0,
+                        "n_stage1": 0,
+                        "losses": [],
+                        "failure_reasons": {},
+                    },
+                )
+                mstat["n_used"] += 1
+                mstat["n_stage1"] += 1 if row["stage1_passed"] else 0
+                if loss_ratio is not None and math.isfinite(loss_ratio):
+                    mstat["losses"].append(float(loss_ratio))
+                if not row["stage1_passed"]:
+                    mstat["failure_reasons"][root_cause] = (
+                        mstat["failure_reasons"].get(root_cause, 0) + 1
+                    )
+
+            for slot in slot_usage:
+                if not isinstance(slot, dict):
+                    continue
+                slot_key = str(
+                    slot.get("slot_key")
+                    or f"{slot.get('template_name', 'unknown')}.slot{slot.get('slot_index', 0)}"
+                )
+                sstat = slot_stats.setdefault(
+                    slot_key,
+                    {
+                        "slot_key": slot_key,
+                        "template_name": str(slot.get("template_name") or "unknown"),
+                        "slot_index": int(slot.get("slot_index") or 0),
+                        "slot_classes": list(slot.get("slot_classes") or []),
+                        "n_used": 0,
+                        "n_stage1": 0,
+                        "losses": [],
+                        "failure_reasons": {},
+                        "selected_motifs": {},
+                    },
+                )
+                sstat["n_used"] += 1
+                sstat["n_stage1"] += 1 if row["stage1_passed"] else 0
+                if loss_ratio is not None and math.isfinite(loss_ratio):
+                    sstat["losses"].append(float(loss_ratio))
+                motif_name = slot.get("selected_motif")
+                if motif_name:
+                    sstat["selected_motifs"][str(motif_name)] = (
+                        sstat["selected_motifs"].get(str(motif_name), 0) + 1
+                    )
+                if not row["stage1_passed"]:
+                    sstat["failure_reasons"][root_cause] = (
+                        sstat["failure_reasons"].get(root_cause, 0) + 1
+                    )
+                exp_slot = exp_bucket["slots"].setdefault(
+                    slot_key,
+                    {"n": 0, "s1": 0, "losses": []},
+                )
+                exp_slot["n"] += 1
+                exp_slot["s1"] += 1 if row["stage1_passed"] else 0
+                if loss_ratio is not None and math.isfinite(loss_ratio):
+                    exp_slot["losses"].append(float(loss_ratio))
+
+        def summarize_template(stat: Dict[str, Any]) -> Dict[str, Any]:
+            losses = stat["losses"]
+            validation_vals = stat["validation_losses"]
+            discovery_vals = stat["discovery_losses"]
+            novelties = stat["novelties"]
+            reasons = stat["failure_reasons"]
+            fast_lane_scores = stat["routing_fast_lane_scores"]
+            fast_lane_improvements = stat["routing_fast_lane_improvements"]
+            fast_lane_slopes = stat["routing_fast_lane_slopes"]
+            top_reason = None
+            if reasons:
+                top_reason = max(reasons.items(), key=lambda item: item[1])[0]
+            return {
+                "name": stat["name"],
+                "n_used": stat["n_used"],
+                "s0_rate": stat["n_stage0"] / max(stat["n_used"], 1),
+                "s05_rate": stat["n_stage05"] / max(stat["n_used"], 1),
+                "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
+                "avg_loss_ratio": (sum(losses) / len(losses) if losses else None),
+                "best_loss_ratio": min(losses) if losses else None,
+                "avg_validation_loss_ratio": (
+                    sum(validation_vals) / len(validation_vals)
+                    if validation_vals
+                    else None
+                ),
+                "avg_discovery_loss_ratio": (
+                    sum(discovery_vals) / len(discovery_vals)
+                    if discovery_vals
+                    else None
+                ),
+                "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
+                "slot_count": int(stat.get("slot_count") or 0),
+                "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
+                "routing_fast_lane_ok_rate": (
+                    stat["routing_fast_lane_ok"]
+                    / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
+                    if stat.get("routing_fast_lane_runs")
+                    else None
+                ),
+                "routing_fast_lane_positive_rate": (
+                    stat["routing_fast_lane_positive"]
+                    / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
+                    if stat.get("routing_fast_lane_runs")
+                    else None
+                ),
+                "routing_fast_lane_avg_score": (
+                    sum(fast_lane_scores) / len(fast_lane_scores)
+                    if fast_lane_scores
+                    else None
+                ),
+                "routing_fast_lane_avg_improvement": (
+                    sum(fast_lane_improvements) / len(fast_lane_improvements)
+                    if fast_lane_improvements
+                    else None
+                ),
+                "routing_fast_lane_avg_slope": (
+                    sum(fast_lane_slopes) / len(fast_lane_slopes)
+                    if fast_lane_slopes
+                    else None
+                ),
+                "top_failure_reason": top_reason,
+                "failure_reasons": dict(
+                    sorted(reasons.items(), key=lambda item: -item[1])[:3]
+                ),
+            }
+
+        template_rows = [summarize_template(stat) for stat in template_stats.values()]
+        template_rows = [row for row in template_rows if row["n_used"] > 0]
+        top_templates = sorted(
+            template_rows,
+            key=lambda row: (
+                -(row["s1_rate"] or 0.0),
+                row["avg_validation_loss_ratio"]
+                if row["avg_validation_loss_ratio"] is not None
+                else row["avg_loss_ratio"]
+                if row["avg_loss_ratio"] is not None
+                else 999.0,
+                -(row["n_used"] or 0),
+            ),
+        )[:limit]
+        struggling_templates = sorted(
+            [row for row in template_rows if row["n_used"] >= 3],
+            key=lambda row: (
+                row["s1_rate"] or 0.0,
+                row["avg_validation_loss_ratio"]
+                if row["avg_validation_loss_ratio"] is not None
+                else row["avg_loss_ratio"]
+                if row["avg_loss_ratio"] is not None
+                else 999.0,
+                -(row["n_used"] or 0),
+            ),
+        )[:limit]
+
+        motif_rows = []
+        for stat in motif_stats.values():
+            losses = stat["losses"]
+            reasons = stat["failure_reasons"]
+            top_reason = (
+                max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
+            )
+            motif_rows.append(
+                {
+                    "name": stat["name"],
+                    "n_used": stat["n_used"],
+                    "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
+                    "avg_loss_ratio": sum(losses) / len(losses) if losses else None,
+                    "top_failure_reason": top_reason,
+                }
+            )
+        motif_rows = sorted(
+            [row for row in motif_rows if row["n_used"] >= 2],
+            key=lambda row: (-(row["n_used"] or 0), row["avg_loss_ratio"] or 999.0),
+        )[:limit]
+
+        slot_rows = []
+        for stat in slot_stats.values():
+            reasons = stat["failure_reasons"]
+            selected = stat["selected_motifs"]
+            top_reason = (
+                max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
+            )
+            top_motif = (
+                max(selected.items(), key=lambda item: item[1])[0] if selected else None
+            )
+            slot_rows.append(
+                {
+                    "slot_key": stat["slot_key"],
+                    "template_name": stat["template_name"],
+                    "slot_index": stat["slot_index"],
+                    "slot_classes": stat["slot_classes"],
+                    "n_used": stat["n_used"],
+                    "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
+                    "avg_loss_ratio": (
+                        sum(stat["losses"]) / len(stat["losses"])
+                        if stat["losses"]
+                        else None
+                    ),
+                    "top_failure_reason": top_reason,
+                    "top_selected_motif": top_motif,
+                }
+            )
+        slot_rows = sorted(
+            [row for row in slot_rows if row["n_used"] >= 2],
+            key=lambda row: (
+                row["s1_rate"] if row["s1_rate"] is not None else 1.0,
+                row["avg_loss_ratio"] if row["avg_loss_ratio"] is not None else 999.0,
+                -(row["n_used"] or 0),
+            ),
+        )[:limit]
+
+        loss_distribution = {
+            "training": {
+                "median": self._percentile(loss_values, 0.5),
+                "p25": self._percentile(loss_values, 0.25),
+                "p75": self._percentile(loss_values, 0.75),
+            },
+            "validation": {
+                "median": self._percentile(validation_losses, 0.5),
+                "p25": self._percentile(validation_losses, 0.25),
+                "p75": self._percentile(validation_losses, 0.75),
+            },
+            "discovery": {
+                "median": self._percentile(discovery_losses, 0.5),
+                "p25": self._percentile(discovery_losses, 0.25),
+                "p75": self._percentile(discovery_losses, 0.75),
+            },
+        }
+
+        recommendations: List[str] = []
+        weak = next(
+            (row for row in struggling_templates if (row["s1_rate"] or 0) < 0.15), None
+        )
+        if weak:
+            recommendations.append(
+                f"{weak['name']} is over-sampled relative to quality: S1 {(weak['s1_rate'] * 100):.1f}% over {weak['n_used']} runs. Reduce weight or harden motifs for {weak['top_failure_reason'] or 'unknown failures'}."
+            )
+        slot_heavy = next(
+            (
+                row
+                for row in struggling_templates
+                if (row.get("slot_count") or 0) >= 3
+                and (row.get("s1_rate") or 0) < 0.25
+            ),
+            None,
+        )
+        if slot_heavy:
+            recommendations.append(
+                f"Slot-heavy template {slot_heavy['name']} underperforms with {slot_heavy['slot_count']} inferred motif slots. Tighten slot compatibility checks or narrow allowed motifs."
+            )
+        val_median = loss_distribution["validation"]["median"]
+        train_median = loss_distribution["training"]["median"]
+        if (
+            val_median is not None
+            and train_median is not None
+            and val_median > train_median * 1.15
+        ):
+            recommendations.append(
+                f"Validation loss ratio median ({val_median:.3f}) is materially worse than training median ({train_median:.3f}). Improve generalization gates or reduce brittle template/motif combinations."
+            )
+        best = top_templates[0] if top_templates else None
+        if best:
+            best_loss = (
+                f"{best['avg_loss_ratio']:.3f}"
+                if best["avg_loss_ratio"] is not None
+                else "n/a"
+            )
+            recommendations.append(
+                f"Exploit {best['name']} more aggressively: S1 {(best['s1_rate'] * 100):.1f}% with avg loss {best_loss}."
+            )
+
+        weak_slot = next(
+            (row for row in slot_rows if (row["s1_rate"] or 0) < 0.15), None
+        )
+        if weak_slot:
+            recommendations.append(
+                f"Weak slot {weak_slot['slot_key']} is collapsing candidate quality: S1 {(weak_slot['s1_rate'] * 100):.1f}% with motif {weak_slot['top_selected_motif'] or 'none'} and failures dominated by {weak_slot['top_failure_reason'] or 'unknown'}."
+            )
+
+        routing_reprieve = next(
+            (
+                row
+                for row in struggling_templates
+                if (row.get("routing_fast_lane_runs") or 0) >= 3
+                and (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
+            ),
+            None,
+        )
+        if routing_reprieve:
+            recommendations.append(
+                f"{routing_reprieve['name']} looks under-credited by short S1: fast lane positive on {(routing_reprieve['routing_fast_lane_positive_rate'] * 100):.1f}% of routing probes across {routing_reprieve['routing_fast_lane_runs']} runs. Treat it as a slow starter, not a dead template."
+            )
+
+        zero_slot_templates = sorted(
+            [name for name, count in slot_counts.items() if count == 0]
+        )[:10]
+
+        sorted_buckets = sorted(
+            experiment_buckets.values(),
+            key=lambda item: float(item.get("timestamp") or 0.0),
+        )[-20:]
+        top_template_names = [row["name"] for row in top_templates[:3]]
+        weak_slot_keys = [row["slot_key"] for row in slot_rows[:3]]
+
+        template_trends = []
+        for name in top_template_names:
+            points = []
+            for bucket in sorted_buckets:
+                item = bucket["templates"].get(name)
+                if not item or not item["n"]:
+                    continue
+                points.append(
+                    {
+                        "timestamp": bucket["timestamp"],
+                        "experiment_id": bucket.get("experiment_id"),
+                        "s1_rate": item["s1"] / max(item["n"], 1),
+                        "avg_loss_ratio": (
+                            sum(item["losses"]) / len(item["losses"])
+                            if item["losses"]
+                            else None
+                        ),
+                    }
+                )
+            if points:
+                template_trends.append({"name": name, "points": points})
+
+        slot_trends = []
+        for key in weak_slot_keys:
+            points = []
+            for bucket in sorted_buckets:
+                item = bucket["slots"].get(key)
+                if not item or not item["n"]:
+                    continue
+                points.append(
+                    {
+                        "timestamp": bucket["timestamp"],
+                        "experiment_id": bucket.get("experiment_id"),
+                        "s1_rate": item["s1"] / max(item["n"], 1),
+                        "avg_loss_ratio": (
+                            sum(item["losses"]) / len(item["losses"])
+                            if item["losses"]
+                            else None
+                        ),
+                    }
+                )
+            if points:
+                slot_trends.append({"slot_key": key, "points": points})
+
+        loss_trends = []
+        for bucket in sorted_buckets:
+            loss_trends.append(
+                {
+                    "timestamp": bucket["timestamp"],
+                    "experiment_id": bucket.get("experiment_id"),
+                    "training_median": self._percentile(bucket["training_losses"], 0.5),
+                    "validation_median": self._percentile(
+                        bucket["validation_losses"], 0.5
+                    ),
+                    "discovery_median": self._percentile(
+                        bucket["discovery_losses"], 0.5
+                    ),
+                }
+            )
+
+        return {
+            "top_templates": top_templates,
+            "struggling_templates": struggling_templates,
+            "motif_slots": motif_rows,
+            "slot_observability": slot_rows,
+            "loss_distribution": loss_distribution,
+            "template_trends": template_trends,
+            "slot_trends": slot_trends,
+            "loss_trends": loss_trends,
+            "recommendations": recommendations[:4],
+            "summary": {
+                "avg_templates_per_graph": (
+                    sum(templates_per_graph) / len(templates_per_graph)
+                    if templates_per_graph
+                    else 0.0
+                ),
+                "avg_motifs_per_graph": (
+                    sum(motifs_per_graph) / len(motifs_per_graph)
+                    if motifs_per_graph
+                    else 0.0
+                ),
+                "templates_tracked": len(template_rows),
+                "motifs_tracked": len(motif_rows),
+                "zero_slot_templates": zero_slot_templates,
+                "routing_fast_lane_templates": sum(
+                    1
+                    for row in template_rows
+                    if (row.get("routing_fast_lane_runs") or 0) > 0
+                ),
+                "routing_fast_lane_runs": sum(
+                    int(row.get("routing_fast_lane_runs") or 0) for row in template_rows
+                ),
+                "routing_fast_lane_positive_templates": sum(
+                    1
+                    for row in template_rows
+                    if (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
+                    and (row.get("routing_fast_lane_runs") or 0) >= 3
+                ),
+            },
+        }
 
     # ── Training Curves ──
 
@@ -464,6 +1097,7 @@ class _MiscMixin:
                 (program_row["unique_fingerprints"] or 0) if program_row else 0
             ),
             "latest_dedup": latest_dedup,
+            "template_observability": self.get_template_slot_observability(),
         }
         self._dashboard_summary_cache = dict(summary)
         self._dashboard_summary_cache_expires_at = now + self._DASHBOARD_SUMMARY_TTL_S
@@ -635,7 +1269,7 @@ class _MiscMixin:
         MoE activates only a fraction of params per token.
         Returns dict with per-dimension ratios and ``geomean``, or None.
         """
-        ref = self._GPT2_REF
+        ref = GPT2_REF
         ratios: Dict[str, float] = {}
 
         # x_quality: ref_loss / cand_loss (lower loss = better)

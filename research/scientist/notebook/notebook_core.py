@@ -32,16 +32,6 @@ class _NotebookCore:
     _cached_code_version: Optional[str] = None
     _last_report_snapshot_cleanup_at: float = 0.0
 
-    # GPT-2 reference metrics (measured on our d_model=256, 6-layer config)
-    _GPT2_REF = {
-        "loss_ratio": 0.2646,
-        "param_count": 9_767_424,
-        "flops_forward": 19_534_848,
-        "throughput_tok_s": 1_200_845,
-        "peak_memory_mb": 115.0,
-        "forward_time_ms": 0.43,
-    }
-
     @staticmethod
     def resolve_db_path(db_path: str | Path) -> Path:
         """Resolve a database path to its absolute path, handling nested research/ cases.

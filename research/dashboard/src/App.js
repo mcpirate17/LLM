@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, startTransition } from 'react';
 import AriaAvatar from './components/AriaAvatar';
 import SummaryCards from './components/SummaryCards';
+import TemplateSlotObservability from './components/TemplateSlotObservability';
 import LiveFeed from './components/LiveFeed';
 import GlobalParetoChart from './components/GlobalParetoChart';
 import ActionQueue from './components/ActionQueue';
@@ -185,7 +186,7 @@ const NAV_CATEGORIES = {
   },
   diagnostics: {
     label: 'Diagnostics',
-    tabs: ['infrastructure', 'components', 'perf', 'references'],
+    tabs: ['templates', 'components', 'infrastructure', 'perf', 'references'],
   }
 };
 
@@ -196,6 +197,7 @@ function AppContent({ onRunningChange }) {
     experiments: 'Experiments',
     discoveries: 'Discoveries',
     comparison: 'Comparison',
+    templates: 'Template & Slots',
     infrastructure: 'Infrastructure',
     components: 'Components',
     perf: 'Optimization',
@@ -210,6 +212,7 @@ function AppContent({ onRunningChange }) {
     experiments: 'Browse all experiments and their results (3)',
     discoveries: 'Best architectures found so far, ranked by tier (4)',
     comparison: 'Side-by-side architecture comparison (5)',
+    templates: 'Dedicated page for template success, weak slots, fast-lane fairness, and structural trends',
     infrastructure: 'Pipeline health, alerts, live stream, throughput, resources',
     components: 'Component health, op analytics, grammar evolution, insights',
     perf: 'System performance and optimization metrics (6)',
@@ -237,6 +240,7 @@ function AppContent({ onRunningChange }) {
     refreshSharedData,
     refreshAnalyticsData,
     fetchTabData,
+    invalidateTabCache,
   } = useAriaData() || {};
 
   const fetchDashboard = refreshSharedData || (() => {});
@@ -374,18 +378,25 @@ function AppContent({ onRunningChange }) {
     setAllowAdvancedStartOverride(false);
   }, [activeOverviewStrategy?.id]);
 
-  // Use centralized tab data fetching
+  // Use centralized tab data fetching with polling
+  const tabDataKey = activeTab === 'experiments' ? 'experiments'
+    : activeTab === 'discoveries' ? 'programs'
+    : activeTab === 'log' ? 'entries'
+    : activeTab === 'trends' ? 'insights'
+    : null;
+
   useEffect(() => {
-    if (activeTab === 'experiments') {
-      fetchTabData('experiments');
-    } else if (activeTab === 'discoveries') {
-      fetchTabData('programs');
-    } else if (activeTab === 'log') {
-      fetchTabData('entries');
-    } else if (activeTab === 'trends') {
-      fetchTabData('insights');
-    }
-  }, [activeTab, fetchTabData]);
+    if (tabDataKey) fetchTabData(tabDataKey);
+  }, [tabDataKey, fetchTabData]);
+
+  useEffect(() => {
+    if (!tabDataKey) return;
+    const interval = setInterval(() => {
+      if (invalidateTabCache) invalidateTabCache(tabDataKey);
+      fetchTabData(tabDataKey);
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [tabDataKey, fetchTabData, invalidateTabCache]);
 
   const handleLoadMoreExperiments = useCallback(async () => {
     if (experimentsLoadingMore || !experimentsHasMore) return;
@@ -1652,6 +1663,18 @@ function AppContent({ onRunningChange }) {
           <Suspense fallback={<LazyFallback />}>
             <InfrastructureDashboard />
           </Suspense>
+        )}
+
+        {activeTab === 'templates' && (
+          <div style={{ display: 'grid', gap: 16 }}>
+            <div className="card" style={{ padding: 18 }}>
+              <div className="card-title" style={{ marginBottom: 8 }}>Template &amp; Slot Observability</div>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.6 }}>
+                Dedicated structural diagnostics for template families, weak slots, routing/MoE fast-lane fairness, and structural trend drift across recent experiments.
+              </p>
+            </div>
+            <TemplateSlotObservability />
+          </div>
         )}
 
         {activeTab === 'components' && (

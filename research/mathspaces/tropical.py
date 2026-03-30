@@ -217,9 +217,14 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     ):
         B, S, D = a.shape
         native_b = None
-        if b.is_contiguous() and b.shape[1] == D:
+        if b.is_contiguous() and b.shape[1] == D and b.shape[2] != D:
+            # b is (B, D, S) layout — use directly
             native_b = b
-        elif b.shape[2] == D:
+        elif b.shape[2] == D and b.shape[1] != D:
+            # b is (B, S2, D) — transpose to (B, D, S2) for C kernel
+            native_b = b.transpose(1, 2).contiguous()
+        elif b.is_contiguous() and b.shape == a.shape:
+            # Same shape as a: (B, S, D) — transpose to (B, D, S)
             native_b = b.transpose(1, 2).contiguous()
         if native_b is not None:
             result = aria_core.tropical_matmul_batched_f32(a, native_b)
@@ -229,9 +234,11 @@ def tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
                 return result
             # C kernel returned wrong shape; fall through to Python path
 
-    # Normalize b to (B, S2, D) layout
+    # Normalize b to (B, S2, D) layout.
+    # Only transpose when b is explicitly (B, D, S) — i.e. shape[1] matches
+    # a's feature dim AND shape[2] does NOT (avoids ambiguity when S == D).
     B, S1, D1 = a.shape
-    if b.ndim == 3 and b.shape[1] == D1:
+    if b.ndim == 3 and b.shape[1] == D1 and b.shape[2] != D1:
         b_val = b.transpose(1, 2)
     else:
         b_val = b

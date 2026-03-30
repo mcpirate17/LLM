@@ -205,7 +205,9 @@ class TemporalBayesianTracker:
         """Detect ops/pairs that had recent code fixes based on failure_signature changes.
 
         A "fix" is detected when a signature's success rate increases by >0.3
-        within the fix detection window.
+        within the fix detection window. Each op is reset AT MOST ONCE per
+        detection pass to prevent cascading resets (an op appearing in many
+        signatures would otherwise get reset N times, destroying its posterior).
 
         Args:
             failure_signatures: List of dicts with keys:
@@ -217,6 +219,13 @@ class TemporalBayesianTracker:
         now = time.time()
         window_seconds = _FIX_WINDOW_HOURS * 3600
         reset_entities: List[str] = []
+        already_reset: set = set()  # prevent cascading resets
+
+        # Aggregate: for each op, find the signature with the largest positive
+        # success-rate jump. Only use that single best signal for reset.
+        op_best_delta: Dict[str, float] = {}  # op -> max delta seen
+        op_best_sig: Dict[str, str] = {}  # op -> signature that caused it
+        op_best_rates: Dict[str, tuple] = {}  # op -> (prev_rate, current_rate)
 
         for sig in failure_signatures:
             signature = sig.get("signature", "")
@@ -224,13 +233,16 @@ class TemporalBayesianTracker:
             n_succ = sig.get("n_successes", 0)
             last_updated = sig.get("last_updated", 0)
 
-            if n_fail + n_succ == 0:
+            total = n_fail + n_succ
+            if total < 10:  # need minimum evidence
                 continue
 
-            current_rate = n_succ / (n_fail + n_succ)
+            current_rate = n_succ / total
             age = now - last_updated
 
-            # Extract op names from signature (format: "op_a->op_b")
+            if age > window_seconds:
+                continue
+
             parts = signature.split("->")
             for op_name in parts:
                 op_name = op_name.strip()
@@ -238,38 +250,56 @@ class TemporalBayesianTracker:
                     continue
 
                 p = self.op_posteriors[op_name]
-
-                # Check if this is a recent change (within window)
-                if age > window_seconds:
+                if p.prev_success_rate is None:
+                    p.prev_success_rate = current_rate
                     continue
 
-                # Check if success rate jumped significantly
-                if p.prev_success_rate is not None:
-                    delta = current_rate - p.prev_success_rate
-                    if delta > _FIX_DETECTION_THRESHOLD:
-                        # Detected a code fix! Partially reset posterior
-                        old_alpha, old_beta = p.alpha, p.beta
-                        p.alpha = _DEFAULT_ALPHA + _FIX_RETAIN_FRACTION * (
-                            p.alpha - _DEFAULT_ALPHA
-                        )
-                        p.beta = _DEFAULT_BETA + _FIX_RETAIN_FRACTION * (
-                            p.beta - _DEFAULT_BETA
-                        )
-                        logger.info(
-                            "Code fix detected for '%s': success rate %.2f → %.2f, "
-                            "posterior reset α=%.1f→%.1f β=%.1f→%.1f",
-                            op_name,
-                            p.prev_success_rate,
-                            current_rate,
-                            old_alpha,
-                            p.alpha,
-                            old_beta,
-                            p.beta,
-                        )
-                        reset_entities.append(op_name)
+                delta = current_rate - p.prev_success_rate
+                if delta > _FIX_DETECTION_THRESHOLD:
+                    if op_name not in op_best_delta or delta > op_best_delta[op_name]:
+                        op_best_delta[op_name] = delta
+                        op_best_sig[op_name] = signature
+                        op_best_rates[op_name] = (p.prev_success_rate, current_rate)
 
-                p.prev_success_rate = current_rate
-                p.prev_check_time = now
+        # Apply at most ONE reset per op, using the strongest signal
+        for op_name, delta in op_best_delta.items():
+            p = self.op_posteriors[op_name]
+            prev_rate, current_rate = op_best_rates[op_name]
+
+            old_alpha, old_beta = p.alpha, p.beta
+            p.alpha = _DEFAULT_ALPHA + _FIX_RETAIN_FRACTION * (
+                p.alpha - _DEFAULT_ALPHA
+            )
+            p.beta = _DEFAULT_BETA + _FIX_RETAIN_FRACTION * (
+                p.beta - _DEFAULT_BETA
+            )
+            logger.info(
+                "Code fix detected for '%s' (via %s): rate %.2f → %.2f, "
+                "posterior reset α=%.1f→%.1f β=%.1f→%.1f",
+                op_name,
+                op_best_sig[op_name],
+                prev_rate,
+                current_rate,
+                old_alpha,
+                p.alpha,
+                old_beta,
+                p.beta,
+            )
+            reset_entities.append(op_name)
+
+        # Update prev_success_rate for all ops seen (even if not reset)
+        for sig in failure_signatures:
+            signature = sig.get("signature", "")
+            n_fail = sig.get("n_failures", 0)
+            n_succ = sig.get("n_successes", 0)
+            total = n_fail + n_succ
+            if total == 0:
+                continue
+            current_rate = n_succ / total
+            for op_name in (part.strip() for part in signature.split("->")):
+                if op_name in self.op_posteriors:
+                    self.op_posteriors[op_name].prev_success_rate = current_rate
+                    self.op_posteriors[op_name].prev_check_time = now
 
         return reset_entities
 

@@ -26,6 +26,10 @@ import torch.nn.functional as F
 from research.env import aria_core
 from research.defaults import VOCAB_SIZE
 
+from .cka_references import get_default_store as _get_default_store
+from .hierarchy_probe import hierarchy_fitness as _hf
+from ..synthesis.grammar import _ROUTING_COMPRESSION_MOE_OPS
+
 logger = logging.getLogger(__name__)
 NOVELTY_REFERENCE_SCHEME_VERSION = "nv1"
 CKA_NOVELTY_WEIGHT = 0.75
@@ -198,8 +202,6 @@ def _populate_behavioral_probes(
             fp.rank_ratio = None
 
         try:
-            from .hierarchy_probe import hierarchy_fitness as _hf
-
             hf_result = _hf(reps, max_tokens=100)
             fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
             fp.gromov_delta = hf_result["gromov_delta"]
@@ -249,9 +251,7 @@ def _populate_cka(
         fp.novelty_validity_reason = "cka_deferred_post_investigation"
         return 0, False
 
-    from .cka_references import get_default_store
-
-    store = get_default_store()
+    store = _get_default_store()
     ref_activations = store.get_references()
     cka_meta = store.get_metadata()
 
@@ -446,8 +446,6 @@ def compute_lightning_fingerprint(
         if reps is not None:
             # Hierarchy detection — structural, does not require convergence
             try:
-                from .hierarchy_probe import hierarchy_fitness as _hf
-
                 hf_result = _hf(reps, max_tokens=100)
                 fp.hierarchy_fitness = hf_result["hierarchy_fitness"]
                 fp.gromov_delta = hf_result["gromov_delta"]
@@ -594,9 +592,7 @@ def complete_fingerprint_post_investigation(
 
     # Step 2 — Run CKA
     with torch.no_grad():
-        from .cka_references import get_default_store
-
-        store = get_default_store()
+        store = _get_default_store()
         ref_activations = store.get_references()
         cka_meta = store.get_metadata()
 
@@ -944,8 +940,6 @@ def _analyze_routing(
     # Identify if model has routing ops via its graph (if accessible)
     has_routing = False
     if hasattr(model, "graph") and model.graph is not None:
-        from ..synthesis.grammar import _ROUTING_COMPRESSION_MOE_OPS
-
         for node in model.graph.nodes.values():
             if not node.is_input and node.op_name in _ROUTING_COMPRESSION_MOE_OPS:
                 has_routing = True

@@ -10,7 +10,12 @@ export function StagePipeline({ program }) {
   return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
       {stages.map((stage, i) => {
-        const passed = program[stage.key];
+        let passed = program[stage.key];
+        // Infer: if a later stage passed, earlier stages must have too
+        if (passed == null) {
+          if (stage.key === 'stage05_passed' && program.stage1_passed) passed = 1;
+          if (stage.key === 'stage0_passed' && (program.stage05_passed || program.stage1_passed)) passed = 1;
+        }
         const color = passed ? 'var(--accent-green)' : 'var(--accent-red)';
         const bg = passed ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)';
         return (

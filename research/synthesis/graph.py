@@ -11,6 +11,7 @@ at construction time, so invalid graphs are rejected before compilation.
 
 from __future__ import annotations
 
+import heapq
 import xxhash
 import logging
 from collections import deque
@@ -26,6 +27,7 @@ from .primitives import (
     PRIMITIVE_REGISTRY,
     estimate_op_params,
     OPCODE_MAP,
+    REVERSE_OPCODE_MAP,
 )
 
 
@@ -113,7 +115,7 @@ class OpNode:
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class ComputationGraphIR:
     """Memory-contiguous representation of a computation graph.
     Designed for fast structural analysis and JIT-compiled execution.
@@ -201,8 +203,6 @@ class ComputationGraphIR:
         total = 0
         D = self.model_dim
         # We need REVERSE_OPCODE_MAP to get op names
-        from .primitives import REVERSE_OPCODE_MAP
-
         for i in range(self.n_nodes()):
             opcode = self.op_codes[i]
             if opcode == 0:  # input
@@ -505,8 +505,6 @@ class ComputationGraph:
                 children[iid].append(nid)
 
         # 3. Initialize queue with nodes having 0 in-degree
-        import heapq
-
         # Precompute static sort keys
         static_keys = {}
         for nid, node in self.nodes.items():

@@ -33,33 +33,28 @@ DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
 
 
 def get_template_counts(db_path: Path) -> Counter:
-    """Count how many program_results reference each template.
+    """Count S1-passed programs per template from template_stats.
 
-    Uses SQL LIKE to avoid fetching/parsing full graph_json blobs.
-    Templates are stored in metadata.templates_used inside graph_json,
-    so we extract via json_extract where available, falling back to LIKE.
+    Uses the pre-aggregated template_stats table (built by backfill_stats)
+    which tracks eval_count, s0_pass_count, and s1_pass_count per template.
+    We use s1_pass_count because that's the number of programs that actually
+    learned something — S0/S1 failures don't represent useful template data.
     """
     db = sqlite3.connect(str(db_path))
     counts: Counter = Counter()
 
-    # Try json_extract first (SQLite 3.38+)
     try:
         rows = db.execute(
-            "SELECT json_extract(graph_json, '$.metadata.templates_used') "
-            "FROM program_results WHERE graph_json IS NOT NULL"
+            "SELECT template_name, s1_pass_count FROM template_stats"
         ).fetchall()
-        for (tpl_json,) in rows:
-            if not tpl_json:
-                continue
-            try:
-                for t in set(json.loads(tpl_json)):
-                    counts[t] += 1
-            except (json.JSONDecodeError, TypeError):
-                pass
-    except Exception:
-        # Fallback: fetch and parse (older SQLite)
+        for name, s1 in rows:
+            counts[name] = s1 or 0
+    except sqlite3.OperationalError:
+        # table doesn't exist yet — fall back to graph_json scan
+        logger.warning("template_stats table missing, falling back to graph_json scan")
         rows = db.execute(
-            "SELECT graph_json FROM program_results WHERE graph_json IS NOT NULL"
+            "SELECT graph_json FROM program_results "
+            "WHERE graph_json IS NOT NULL AND stage1_passed = 1"
         ).fetchall()
         for (gj,) in rows:
             try:
@@ -116,6 +111,15 @@ def run_template_batch(
         "rwkv_block",
         "rwkv_double_norm",
         "rwkv_sparse_chain",
+        "token_merge_block",
+        "token_merge_conv",
+        "sparse_ffn",
+        "fused_gelu_ffn",
+        "bottleneck",
+        "normalized_matmul",
+        "gated_product",
+        "gated_residual",
+        "dense_cascade",
     }
     config = RunConfig(
         n_programs=n_programs,
@@ -224,6 +228,11 @@ def main():
         help="Category weight mode: uniform (all 1.0), random, or default (GrammarConfig defaults)",
     )
     parser.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="Skip ML model refresh after backfill (stats + Bayesian + graph predictor)",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         dest="list_all",
@@ -302,6 +311,30 @@ def main():
             f"\n\nInterrupted after {completed}/{len(needs_data)} templates. Partial results saved."
         )
         return
+
+    # ── Refresh ML models after backfill ──
+    if not args.no_refresh:
+        print("\nRefreshing analytics stats + ML models...")
+        try:
+            from research.tools.backfill_stats import backfill
+
+            backfill(args.db)
+            print("  Stats tables rebuilt (op_stats, template_stats, motif_stats)")
+        except Exception as e:
+            print(f"  Stats backfill failed: {e}")
+
+        try:
+            from research.tools.train_predictors import (
+                train_bayesian,
+                train_graph_predictor,
+            )
+
+            train_bayesian(save=True)
+            print("  Bayesian tracker refreshed")
+            train_graph_predictor()
+            print("  Graph predictor refreshed")
+        except Exception as e:
+            print(f"  ML model refresh failed: {e}")
 
     print("\nBackfill complete.")
 

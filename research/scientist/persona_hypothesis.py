@@ -5,6 +5,13 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+_RE_CONFIDENCE = re.compile(r"CONFIDENCE:\s*([\d.]+)")
+_RE_STATUS = re.compile(r"STATUS:\s*(\w+)", re.IGNORECASE)
+_RE_CODE_BLOCK = re.compile(r"```[\s\S]*?```")
+_RE_INLINE_CODE = re.compile(r"`[^`]*`")
+_RE_WHITESPACE = re.compile(r"\s+")
+_RE_WORD_TOKENS = re.compile(r"[a-z][a-z0-9_]{2,}")
+
 logger = logging.getLogger(__name__)
 
 
@@ -206,11 +213,10 @@ class _PersonaHypothesisMixin:
         """Strip code blocks and inline code from hypothesis text."""
         if not text:
             return text
-        import re as _re
 
-        cleaned = _re.sub(r"```[\s\S]*?```", "", text)
-        cleaned = _re.sub(r"`[^`]*`", "", cleaned)
-        cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = _RE_CODE_BLOCK.sub("", text)
+        cleaned = _RE_INLINE_CODE.sub("", cleaned)
+        cleaned = _RE_WHITESPACE.sub(" ", cleaned).strip()
         if len(cleaned) > 300:
             boundary = cleaned[:297].rfind(" ")
             if boundary > 150:
@@ -710,10 +716,8 @@ class _PersonaHypothesisMixin:
     @staticmethod
     def _tokenize_hypothesis(text: str) -> set:
         """Extract meaningful tokens from a hypothesis string."""
-        import re as _re
-
         text = text.lower()
-        tokens = set(_re.findall(r"[a-z][a-z0-9_]{2,}", text))
+        tokens = set(_RE_WORD_TOKENS.findall(text))
         return tokens - _PersonaHypothesisMixin._HYPOTHESIS_STOPWORDS
 
     @staticmethod
@@ -986,7 +990,7 @@ class _PersonaHypothesisMixin:
         if result.get("success_criteria") and not result.get("success_metric"):
             result["success_metric"] = result["success_criteria"]
 
-        conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", text)
+        conf_match = _RE_CONFIDENCE.search(text)
         if conf_match:
             try:
                 result["confidence"] = float(conf_match.group(1))
@@ -1036,7 +1040,7 @@ class _PersonaHypothesisMixin:
             "confidence_after": 0.5,
         }
 
-        status_match = re.search(r"STATUS:\s*(\w+)", text, re.IGNORECASE)
+        status_match = _RE_STATUS.search(text)
         if status_match:
             s = status_match.group(1).lower()
             if s in ("confirmed", "refuted", "inconclusive"):
@@ -1067,7 +1071,7 @@ class _PersonaHypothesisMixin:
             fu = follow_match.group(1).strip()
             result["follow_up"] = fu if fu.lower() != "none" else None
 
-        conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", text)
+        conf_match = _RE_CONFIDENCE.search(text)
         if conf_match:
             try:
                 result["confidence_after"] = float(conf_match.group(1))

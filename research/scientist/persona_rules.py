@@ -1,5 +1,11 @@
+import re
 from typing import Dict, List
 import logging
+
+_RE_LOSS_RATIO = re.compile(r"loss_ratio\s*[<>]=?\s*([\d.]+)")
+_RE_S1_RATE = re.compile(r"s1_pass_rate\s*[>]=?\s*([\d.]+)%?")
+_RE_LR_EVIDENCE = re.compile(r"loss_ratio=([\d.]+)")
+_RE_NOV_EVIDENCE = re.compile(r"novelty=([\d.]+)")
 
 logger = logging.getLogger(__name__)
 
@@ -1073,8 +1079,6 @@ class _PersonaRulesMixin:
         self, hypothesis: Dict, results: Dict
     ) -> Dict:
         """Metric-based hypothesis validation when LLM unavailable."""
-        import re as _re
-
         success_metric = hypothesis.get("success_metric", "")
         s1_passed = results.get("stage1_passed", 0)
 
@@ -1082,7 +1086,7 @@ class _PersonaRulesMixin:
         status = "inconclusive"
         evidence = f"S1 passed: {s1_passed}"
 
-        match = _re.match(r"loss_ratio\s*[<>]=?\s*([\d.]+)", success_metric)
+        match = _RE_LOSS_RATIO.match(success_metric)
         if match:
             threshold = float(match.group(1))
             best_lr = results.get("best_loss_ratio")
@@ -1090,7 +1094,7 @@ class _PersonaRulesMixin:
                 status = "confirmed" if best_lr < threshold else "refuted"
                 evidence = f"best_loss_ratio={best_lr:.4f} vs threshold {threshold}"
 
-        match = _re.match(r"s1_pass_rate\s*[>]=?\s*([\d.]+)%?", success_metric)
+        match = _RE_S1_RATE.match(success_metric)
         if match:
             threshold = float(match.group(1)) / 100
             total = results.get("total", 0)
@@ -1124,11 +1128,9 @@ class _PersonaRulesMixin:
         Parses metric values from evidence string and applies thresholds
         instead of rubber-stamping everything as 'go'.
         """
-        import re
-
         # Extract metrics from evidence string (e.g. "loss_ratio=0.45, novelty=0.6")
-        lr_match = re.search(r"loss_ratio=([\d.]+)", evidence)
-        nov_match = re.search(r"novelty=([\d.]+)", evidence)
+        lr_match = _RE_LR_EVIDENCE.search(evidence)
+        nov_match = _RE_NOV_EVIDENCE.search(evidence)
 
         loss_ratio = float(lr_match.group(1)) if lr_match else None
         novelty = float(nov_match.group(1)) if nov_match else None

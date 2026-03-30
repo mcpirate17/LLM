@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
 from ..leaderboard_scoring import build_score_kwargs
+from ..thresholds import TIER_RANK
 
 _LEADERBOARD_MANAGED_COLUMNS = frozenset(
     {
@@ -181,16 +182,8 @@ class _LeaderboardMixin:
         if notes is not None:
             d["notes"] = notes
         # Never downgrade tier — only allow promotion or same-tier updates
-        _TIER_RANK = {
-            "screened_out": 0,
-            "screening": 1,
-            "investigation_failed": 1,
-            "investigation": 2,
-            "validation": 3,
-            "breakthrough": 4,
-        }
         existing_tier = d.get("tier") or "screening"
-        if _TIER_RANK.get(tier, 0) >= _TIER_RANK.get(existing_tier, 0):
+        if TIER_RANK.get(tier, 0) >= TIER_RANK.get(existing_tier, 0):
             d["tier"] = tier
         else:
             import logging as _log
@@ -630,56 +623,39 @@ class _LeaderboardMixin:
             sets.append(f"{col} = ?")
             params.append(val)
 
-        # Recompute composite score
+        # Recompute composite score using canonical v7 scoring path
+        from ..leaderboard_scoring import (
+            _PR_SELECT_COLS,
+            _pr_dict_to_score_kwargs,
+            compute_composite_v7,
+        )
+
         row = self.conn.execute(
             "SELECT * FROM leaderboard WHERE entry_id = ?",
             (entry_id,),
         ).fetchone()
         if row:
             d = dict(row)
-            # Only update with non-None values from kwargs
+            # Apply pending updates so score reflects new tier + metrics
             d.update(dict(update_items))
-            # Look up novelty_confidence from linked program_results
+            d["tier"] = tier
+
+            # Fetch program_results with full column set needed for v7
+            pr_d: Dict[str, Any] = {}
             if d.get("result_id"):
                 pr = self.conn.execute(
-                    "SELECT novelty_confidence, behavioral_novelty, structural_novelty, "
-                    "fp_cka_vs_transformer, final_loss, param_count, n_train_steps, loss_ratio "
-                    "FROM program_results WHERE result_id = ?",
+                    f"SELECT {_PR_SELECT_COLS} FROM program_results WHERE result_id = ?",
                     (d["result_id"],),
                 ).fetchone()
                 if pr:
                     pr_d = dict(pr)
-            tags = str(d.get("tags") or "")
-            is_wiki_tik = "tiktoken_native" in tags and "wikitext103" in tags
-            composite = self.compute_composite_score(
-                wikitext_perplexity=d.get("wikitext_perplexity"),
-                final_loss=pr_d.get("final_loss") if pr else None,
-                is_wikitext_tiktoken=is_wiki_tik,
-                screening_lr=d.get("screening_loss_ratio"),
-                inv_lr=d.get("investigation_loss_ratio"),
-                val_lr=d.get("validation_loss_ratio"),
-                val_baseline=d.get("validation_baseline_ratio"),
-                val_std=d.get("validation_multi_seed_std"),
-                inv_robust=d.get("investigation_robustness"),
-                loss_ratio=pr_d.get("loss_ratio") if pr else None,
-                screening_nov=d.get("screening_novelty"),
-                novelty_confidence=pr_d.get("novelty_confidence") if pr else None,
-                behavioral_novelty=pr_d.get("behavioral_novelty") if pr else None,
-                structural_novelty=pr_d.get("structural_novelty") if pr else None,
-                cka_reference_quality=(
-                    pr is not None
-                    and pr_d.get("fp_cka_vs_transformer") is not None
-                    and (pr_d.get("fp_cka_vs_transformer") or 0) > 0
-                ),
-                is_reference=bool(d.get("is_reference")),
-                loss_improvement_rate=d.get("loss_improvement_rate"),
-                param_count=pr_d.get("param_count") if pr else None,
-                n_train_steps=pr_d.get("n_train_steps") if pr else None,
-                investigation_passed=d.get("investigation_passed"),
-                validation_passed=d.get("validation_passed"),
-                spectral_norm=d.get("fp_jacobian_spectral_norm"),
-                gpt2_raw_anchor=95.0,
+
+            score_kw = _pr_dict_to_score_kwargs(
+                pr_d, d, is_reference=bool(d.get("is_reference"))
             )
+            composite = compute_composite_v7(**score_kw)
+            if isinstance(composite, dict):
+                composite = composite["composite_score"]
             sets.append("composite_score = ?")
             params.append(composite)
 

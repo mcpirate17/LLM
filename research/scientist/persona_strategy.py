@@ -4,6 +4,11 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+_RE_MODE = re.compile(r"MODE:\s*(\w+)")
+_RE_CONFIDENCE = re.compile(r"CONFIDENCE:\s*([\d.]+)")
+_RE_JSON_BLOCK = re.compile(r"```json\s*(\{.+?\})\s*```", re.DOTALL)
+_RE_DECISION = re.compile(r"DECISION:\s*(\w+)", re.IGNORECASE)
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,14 +73,14 @@ class _PersonaStrategyMixin:
         if reasoning_match:
             result["reasoning"] = reasoning_match.group(1).strip()
 
-        conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", text)
+        conf_match = _RE_CONFIDENCE.search(text)
         if conf_match:
             try:
                 result["confidence"] = float(conf_match.group(1))
             except ValueError:
                 pass
 
-        json_match = re.search(r"```json\s*(\{.+?\})\s*```", text, re.DOTALL)
+        json_match = _RE_JSON_BLOCK.search(text)
         if json_match:
             try:
                 result["config"] = _json.loads(json_match.group(1))
@@ -307,7 +312,7 @@ class _PersonaStrategyMixin:
             "config": {},
         }
 
-        mode_match = re.search(r"MODE:\s*(\w+)", text)
+        mode_match = _RE_MODE.search(text)
         if mode_match:
             mode = mode_match.group(1).lower().strip()
             valid_modes = {
@@ -327,14 +332,14 @@ class _PersonaStrategyMixin:
         if reasoning_match:
             result["reasoning"] = reasoning_match.group(1).strip()
 
-        conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", text)
+        conf_match = _RE_CONFIDENCE.search(text)
         if conf_match:
             try:
                 result["confidence"] = float(conf_match.group(1))
             except ValueError:
                 pass
 
-        json_match = re.search(r"```json\s*(\{.+?\})\s*```", text, re.DOTALL)
+        json_match = _RE_JSON_BLOCK.search(text)
         if json_match:
             try:
                 result["config"] = _json.loads(json_match.group(1))
@@ -375,7 +380,7 @@ class _PersonaStrategyMixin:
             "next_steps": "",
         }
 
-        dec_match = re.search(r"DECISION:\s*(\w+)", text, re.IGNORECASE)
+        dec_match = _RE_DECISION.search(text)
         if dec_match:
             d = dec_match.group(1).lower()
             if d in ("go", "no_go", "pivot"):
@@ -428,7 +433,7 @@ class _PersonaStrategyMixin:
                 )
                 if match:
                     entry[field] = match.group(1).strip()
-            conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", block)
+            conf_match = _RE_CONFIDENCE.search(block)
             if conf_match:
                 try:
                     entry["confidence"] = float(conf_match.group(1))

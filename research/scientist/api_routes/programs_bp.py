@@ -107,6 +107,17 @@ def register_programs_routes(app, context: ApiRouteContext):
         if program is None:
             program = _leaderboard_backed_program_detail(nb, result_id)
         if program is None:
+            # Fallback: resolve fingerprint (architecture_desc) to result_id
+            row = nb.conn.execute(
+                "SELECT result_id FROM leaderboard WHERE architecture_desc = ? LIMIT 1",
+                (result_id,),
+            ).fetchone()
+            if row:
+                resolved_id = row[0] if isinstance(row, (tuple, list)) else row["result_id"]
+                program = nb.get_program_detail(resolved_id)
+                if program is None:
+                    program = _leaderboard_backed_program_detail(nb, resolved_id)
+        if program is None:
             return jsonify({"error": "Not found"}), 404
 
         try:

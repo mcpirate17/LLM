@@ -13,7 +13,18 @@ export function useWorkflowPipeline({
   importedBaseline, benchmarkObserved,
 }) {
   const [workflowStage, setWorkflowStage] = useState('idle')
-  const [evalState, setEvalState] = useState({ stages: [], status: null, totalTimeMs: null, error: null, benchmarking: null })
+  const [evalState, setEvalState] = useState({
+    runId: null,
+    workflowId: workflowMeta?.workflow_id || null,
+    stages: [],
+    status: null,
+    totalTimeMs: null,
+    error: null,
+    benchmarking: null,
+    semanticWarnings: [],
+    errorDetails: null,
+    discoveryUrl: null,
+  })
   const [validateUi, setValidateUi] = useState({ inProgress: false, last: 'idle', issues: 0 })
   const [stepStatus, setStepStatus] = useState({
     validate: 'idle',
@@ -301,7 +312,18 @@ export function useWorkflowPipeline({
     setStepStatus((s) => ({ ...s, run: 'running' }))
 
     const workflow = buildWorkflowJson(nodes, edges, workflowMeta)
-    setEvalState({ stages: [], status: 'running', totalTimeMs: null, error: null, benchmarking: null })
+    setEvalState({
+      runId: null,
+      workflowId: workflowMeta?.workflow_id || null,
+      stages: [],
+      status: 'running',
+      totalTimeMs: null,
+      error: null,
+      benchmarking: null,
+      semanticWarnings: [],
+      errorDetails: null,
+      discoveryUrl: null,
+    })
     setRightPanelTab('results')
     setStatusMsg('Run: starting...')
     setRunStatus({ phase: 'running', message: 'Run: starting...', metrics: null })
@@ -374,7 +396,17 @@ export function useWorkflowPipeline({
       } else {
         setStepStatus((s) => ({ ...s, run: 'fail' }))
         setStatusMsg(`Run failed: ${err.message}`)
-        setEvalState((prev) => ({ ...prev, status: 'error', error: err.message }))
+        setEvalState((prev) => ({
+          ...prev,
+          status: 'error',
+          error: err.message,
+          errorDetails: {
+            stage: 'transport',
+            error_type: 'transport_error',
+            error_message: err.message,
+            root_cause_code: 'transport_error',
+          },
+        }))
         setRunStatus({ phase: 'failed', message: `Run failed: ${err.message}`, metrics: null })
         setAllNodeEvalStatus('fail', err.message)
       }
@@ -383,6 +415,11 @@ export function useWorkflowPipeline({
     function processSSEEvent(eventType, payload) {
       if (eventType === 'run_id') {
         setEvalState((prev) => ({ ...prev, runId: payload.run_id }))
+      } else if (eventType === 'semantic_warnings') {
+        setEvalState((prev) => ({
+          ...prev,
+          semanticWarnings: Array.isArray(payload.warnings) ? payload.warnings : [],
+        }))
       } else if (eventType === 'stage') {
         setEvalState((prev) => {
           const existing = prev.stages.findIndex((s) => s.stage === payload.stage)
@@ -477,6 +514,9 @@ export function useWorkflowPipeline({
           benchmarking: benchmarking || prev.benchmarking || null,
           compositeScore: compositeScore ?? prev.compositeScore ?? null,
           graphFingerprint: graphFingerprint ?? prev.graphFingerprint ?? null,
+          discoveryUrl: payload.discovery_url ?? payload.result?.discovery_url ?? prev.discoveryUrl ?? null,
+          semanticWarnings: payload.result?.semantic_warnings ?? prev.semanticWarnings ?? [],
+          errorDetails: payload.error_details ?? payload.result?.error_details ?? prev.errorDetails ?? null,
         }))
         setStatusMsg(doneMsg)
         setRunStatus({

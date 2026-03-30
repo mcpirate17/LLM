@@ -16,9 +16,19 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..json_utils import json_safe
+from ..thresholds import TIER_RANK
 
 logger = logging.getLogger(__name__)
 _REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
+_ROUTING_FAST_LANE_OPS: frozenset[str] = frozenset(
+    {
+        "moe_topk",
+        "hetero_moe",
+        "arch_router",
+        "compute_budget_router",
+        "signal_conditioned_compression",
+    }
+)
 
 # ── Normalized loss_ratio ──
 # loss_ratio = final_loss / initial_loss is init-dependent: Kaiming init
@@ -482,6 +492,70 @@ def screening_wikitext_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         fields["screening_wikitext_elapsed_ms"] = elapsed
 
     return fields
+
+
+def routing_fast_lane_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract persisted routing fast-lane fields from a result dict."""
+    fields: Dict[str, Any] = {}
+    for key in (
+        "routing_fast_lane_applied",
+        "routing_fast_lane_status",
+        "routing_fast_lane_metric_version",
+        "routing_fast_lane_perplexity",
+        "routing_fast_lane_score",
+        "routing_fast_lane_pre_perplexity",
+        "routing_fast_lane_ppl_improvement",
+        "routing_fast_lane_elapsed_ms",
+        "routing_fast_lane_slope",
+        "routing_fast_lane_slope_consistent",
+    ):
+        value = row.get(key)
+        if value is not None:
+            fields[key] = value
+
+    budget = row.get("routing_fast_lane_budget")
+    if budget:
+        fields["routing_fast_lane_budget_json"] = json.dumps(
+            json_safe(budget),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    routing_ops = row.get("routing_fast_lane_routing_ops")
+    if routing_ops:
+        fields["routing_fast_lane_routing_ops_json"] = json.dumps(
+            sorted({str(op) for op in routing_ops if op}),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    return fields
+
+
+def graph_routing_ops(graph: Any) -> List[str]:
+    """Return sorted routing-related ops present in a graph-like object."""
+    nodes = getattr(graph, "nodes", None)
+    ops: Set[str] = set()
+    if isinstance(nodes, dict):
+        for node in nodes.values():
+            op_name = getattr(node, "op_name", None)
+            if op_name in _ROUTING_FAST_LANE_OPS:
+                ops.add(str(op_name))
+    elif isinstance(graph, dict):
+        raw_nodes = graph.get("nodes")
+        if isinstance(raw_nodes, dict):
+            iterable = raw_nodes.values()
+        elif isinstance(raw_nodes, list):
+            iterable = raw_nodes
+        else:
+            iterable = []
+        for node in iterable:
+            if not isinstance(node, dict):
+                continue
+            op_name = node.get("op_name")
+            if op_name in _ROUTING_FAST_LANE_OPS:
+                ops.add(str(op_name))
+    return sorted(ops)
 
 
 def trajectory_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -965,17 +1039,6 @@ def _submit_benchmark_eval(
     return _benchmark_pool.submit(_run)
 
 
-_TIER_RANK = {
-    "screened_out": 0,
-    "screening": 1,
-    "investigation_failed": 1,  # same rank as screening — allows transition from screening
-    "investigation_fingerprint_incomplete": 1,  # fingerprint failed — not promotable
-    "investigation": 2,
-    "validation": 3,
-    "breakthrough": 4,
-}
-
-
 def _safe_tier(nb, result_id: str, proposed: str) -> str:
     """Return the higher of existing tier and proposed tier to prevent downgrades."""
     try:
@@ -984,7 +1047,7 @@ def _safe_tier(nb, result_id: str, proposed: str) -> str:
         ).fetchone()
         if row:
             existing = str(row["tier"] or "screening")
-            if _TIER_RANK.get(existing, 0) > _TIER_RANK.get(proposed, 0):
+            if TIER_RANK.get(existing, 0) > TIER_RANK.get(proposed, 0):
                 return existing
     except Exception:
         pass
@@ -1162,6 +1225,380 @@ def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
 
 # ── SSE Log Bridge ──────────────────────────────────────────────────────
 # Bridges Python logging → SSE event queue so dashboard live feed shows
+# ── Baseline comparison helper ──
+# Replaces the 20-line recipe/compare block that was duplicated 6× across
+# execution_validation.py and continuous_validation.py.
+
+logger = logging.getLogger(__name__)
+
+
+def run_baseline_comparison(
+    *,
+    get_baseline,
+    resolve_recipe,
+    make_data_fn,
+    candidate_loss: float,
+    train_result: dict,
+    config,
+    dev_str: str,
+    split: str = "train",
+    normalized: bool = False,
+    program_params: int | None = None,
+) -> float | dict | None:
+    """Run a baseline comparison (raw or parameter-normalized).
+
+    Args:
+        get_baseline: callable returning the TransformerBaseline instance.
+        resolve_recipe: callable(train_result, default_lr) → recipe dict.
+        make_data_fn: callable(config, split) → (data_fn, data_tag, cache).
+        candidate_loss: the loss value to compare against baseline.
+        train_result: best seed dict with optimizer/lr/steps info.
+        config: RunConfig instance.
+        dev_str: device string ("cuda", "cpu").
+        split: data split ("train" or "val").
+        normalized: if True, call compare_normalized instead of compare.
+        program_params: required when normalized=True.
+
+    Returns:
+        float (loss ratio) for raw comparison, dict for normalized, or None on failure.
+    """
+    baseline = get_baseline()
+    steps = int(train_result.get("n_train_steps") or config.validation_steps)
+    recipe = resolve_recipe(train_result, default_lr=config.stage1_lr)
+    data_fn, data_tag, cache = make_data_fn(config, split)
+
+    kwargs = dict(
+        d_model=config.model_dim,
+        seq_len=min(128, config.validation_seq_len),
+        n_steps=max(1, steps),
+        vocab_size=config.vocab_size,
+        batch_size=config.validation_batch_size,
+        lr=recipe["lr"],
+        device=dev_str,
+        n_layers=config.n_layers,
+        optimizer_name=recipe["optimizer_name"],
+        weight_decay=recipe["weight_decay"],
+        momentum=recipe["momentum"],
+        betas=recipe["betas"],
+        data_fn=data_fn,
+        data_tag=data_tag,
+        cache_data_fn=cache,
+    )
+
+    if normalized:
+        return baseline.compare_normalized(
+            candidate_loss, program_params=int(program_params), **kwargs
+        )
+    return baseline.compare(candidate_loss, **kwargs)
+
+
+# ── Shared post-eval helpers ──
+# Deduplicate ~155 lines shared between _run_validation_thread
+# and _run_inline_validation.
+
+
+def build_validation_entry(
+    *,
+    source_result_id: str,
+    metrics,  # ValidationMetrics
+    ev_res,  # ExternalEvalResult
+    nov_conf: float,
+    config,  # RunConfig
+):
+    """Construct a ValidationEntry from metrics + eval result."""
+    from ._types import ValidationEntry
+
+    return ValidationEntry(
+        result_id=source_result_id,
+        val_loss_ratio=metrics.val_loss_ratio,
+        val_baseline_ratio=metrics.val_baseline_ratio,
+        val_normalized_ratio=metrics.val_normalized_ratio,
+        param_efficiency=metrics.val_param_efficiency,
+        multi_seed_std=metrics.multi_seed_std,
+        robustness_score=metrics.robustness_score,
+        is_unstable=metrics.is_unstable,
+        seeds_passed=len(metrics.passed_seeds),
+        total_seeds=int(getattr(config, "validation_n_seeds", 5) or 5),
+        is_breakthrough=ev_res.is_breakthrough,
+        flop_gated=ev_res.flop_gated,
+        quant_int8_retention=ev_res.quant_int8_retention,
+        quant_quality_per_byte=ev_res.quant_quality_per_byte,
+        long_context_score=ev_res.long_context_score,
+        noise_sensitivity_score=ev_res.noise_score,
+        init_sensitivity_std=metrics.init_sensitivity_std,
+        novelty_confidence=nov_conf,
+        ood_robustness=ev_res.ood_result,
+        sensitivity=ev_res.sensitivity_result,
+        activation_sparsity_score=ev_res.activation_sparsity_score,
+        dead_neuron_ratio=ev_res.dead_neuron_ratio,
+        routing_collapse_score=ev_res.routing_collapse_score,
+        wikitext_perplexity=ev_res.wikitext_perplexity,
+        wikitext_score=ev_res.wikitext_score,
+        tinystories_perplexity=ev_res.tinystories_perplexity,
+        tinystories_score=ev_res.tinystories_score,
+        cross_task_score=ev_res.cross_task_score,
+        efficiency_wall_score=ev_res.efficiency_wall_score,
+        max_viable_seq_len=ev_res.max_viable_seq_len,
+        scaling_regime=ev_res.scaling_regime,
+    )
+
+
+def promote_validation_candidate(
+    *,
+    nb,
+    source_result_id: str,
+    source: dict,
+    tier: str,
+    metrics,  # ValidationMetrics
+    ev_res,  # ExternalEvalResult
+    novelty_cap: float | None = None,
+) -> None:
+    """Promote candidate to tier on leaderboard + store benchmark payload.
+
+    Handles novelty capping (B3) and external benchmark storage.
+    """
+    from ..shared_utils import coerce_dict_payload
+
+    # B3: cap novelty if CKA was missing
+    if novelty_cap is not None:
+        _raw_novelty = source.get("novelty_score")
+        _raw_confidence = source.get("novelty_confidence")
+        if _raw_novelty is not None:
+            _raw_novelty = float(_raw_novelty) * novelty_cap
+        if _raw_confidence is not None:
+            _raw_confidence = float(_raw_confidence) * novelty_cap
+        logger.info(
+            "validation_novelty_capped: result_id=%s cap=%.2f novelty=%.4f confidence=%.4f",
+            source_result_id[:12],
+            novelty_cap,
+            _raw_novelty or 0.0,
+            _raw_confidence or 0.0,
+        )
+        cap_updates = []
+        if _raw_novelty is not None:
+            cap_updates.append(("novelty_score", _raw_novelty))
+        if _raw_confidence is not None:
+            cap_updates.append(("novelty_confidence", _raw_confidence))
+        if cap_updates:
+            try:
+                _set = ", ".join(f"{c} = ?" for c, _ in cap_updates)
+                _vals = [v for _, v in cap_updates] + [source_result_id]
+                nb._submit_write(
+                    f"UPDATE program_results SET {_set} WHERE result_id = ?",
+                    _vals,
+                )
+                nb.flush_writes()
+            except Exception as e:
+                logger.debug(
+                    "B3 novelty cap DB update failed for %s: %s",
+                    source_result_id[:12],
+                    e,
+                )
+
+    entry = nb.get_leaderboard_entry(source_result_id)
+    if not entry:
+        return
+
+    promote_kwargs = dict(
+        entry_id=entry["entry_id"],
+        tier=tier,
+        validation_loss_ratio=metrics.val_loss_ratio,
+        validation_baseline_ratio=metrics.val_baseline_ratio,
+        validation_multi_seed_std=metrics.multi_seed_std,
+        validation_robustness_score=metrics.robustness_score,
+        validation_is_unstable=int(metrics.is_unstable),
+        validation_passed=len(metrics.passed_seeds) > 0,
+        normalized_baseline_ratio=metrics.val_normalized_ratio,
+        param_efficiency=metrics.val_param_efficiency,
+        quant_int8_retention=ev_res.quant_int8_retention,
+        quant_quality_per_byte=ev_res.quant_quality_per_byte,
+        robustness_long_ctx_score=ev_res.long_context_score,
+        robustness_noise_score=ev_res.noise_score,
+        init_sensitivity_std=metrics.init_sensitivity_std,
+        fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+        scaling_param_efficiency=ev_res.scaling_param_efficiency,
+        scaling_d512_param_efficiency=ev_res.scaling_d512_param_efficiency,
+        scaling_flop_efficiency=ev_res.scaling_flop_efficiency,
+        scaling_gate_passed=ev_res.scaling_gate_passed_val,
+        scaling_best_family=ev_res.scaling_best_family,
+        scaling_confidence=ev_res.scaling_confidence,
+        activation_sparsity_score=ev_res.activation_sparsity_score,
+        dead_neuron_ratio=ev_res.dead_neuron_ratio,
+        routing_collapse_score=ev_res.routing_collapse_score,
+        wikitext_perplexity=ev_res.wikitext_perplexity,
+        wikitext_score=ev_res.wikitext_score,
+        tinystories_perplexity=ev_res.tinystories_perplexity,
+        tinystories_score=ev_res.tinystories_score,
+        cross_task_score=ev_res.cross_task_score,
+        efficiency_wall_score=ev_res.efficiency_wall_score,
+        max_viable_seq_len=ev_res.max_viable_seq_len,
+        scaling_regime=ev_res.scaling_regime,
+    )
+    if novelty_cap is not None:
+        _raw = source.get("novelty_score")
+        if _raw is not None:
+            promote_kwargs["screening_novelty"] = float(_raw) * novelty_cap
+    nb.promote_to_tier(**promote_kwargs)
+
+    # Store external benchmark payload
+    external = {}
+    sp = coerce_dict_payload(ev_res.scaling_result)
+    if sp is not None:
+        external.update(sp)
+        external["scaling_comparison"] = sp
+    if ev_res.long_context_details is not None:
+        external["long_context"] = ev_res.long_context_details
+    if external:
+        nb.set_external_benchmarks(source_result_id, external)
+
+
+def run_trajectory_probe(
+    *,
+    graph_json_str: str | None,
+    config,  # RunConfig
+    dev,  # torch.device
+    dev_str: str,
+    nb,
+    source_result_id: str,
+    tier: str,
+    passed_seeds: list,
+) -> float | None:
+    """Run wikitext trajectory probe and update leaderboard.
+
+    Returns trajectory_composite or None.
+    """
+    if not graph_json_str or len(passed_seeds) == 0:
+        return None
+
+    try:
+        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
+        from ...synthesis.serializer import graph_from_json
+        from ..native_runner import compile_model_native_first as _compile
+
+        traj_graph = graph_from_json(graph_json_str)
+        traj_layers = [traj_graph] * config.n_layers
+        traj_model = _compile(
+            traj_layers, vocab_size=config.vocab_size, max_seq_len=128
+        )
+        traj_model = traj_model.to(dev)
+        traj_result = evaluate_wikitext_trajectory(
+            traj_model,
+            config.vocab_size,
+            dev_str,
+            checkpoints=(200, 500, 1000, 2000, 4000),
+            seq_len=128,
+        )
+        del traj_model
+        clear_gpu_memory()
+
+        peak_ppl = traj_result.get("peak_ppl")
+        steps_div = traj_result.get("steps_to_divergence")
+        ckpts = traj_result.get("checkpoints", {})
+        ppl_500 = ckpts[500].get("ppl") if 500 in ckpts else None
+
+        entry = nb.get_leaderboard_entry(source_result_id)
+        trajectory_composite = None
+        if entry:
+            update = {}
+            if peak_ppl is not None:
+                update["peak_ppl"] = peak_ppl
+                vocab = config.vocab_size or 32000
+                ws = max(0.0, math.log(vocab / peak_ppl) / math.log(vocab))
+                update["wikitext_score"] = round(ws, 4)
+            if traj_result.get("peak_step") is not None:
+                update["peak_step"] = traj_result["peak_step"]
+            if steps_div is not None:
+                update["steps_to_divergence"] = steps_div
+            if ppl_500 is not None:
+                update["ppl_500"] = ppl_500
+            if update:
+                nb.promote_to_tier(entry_id=entry["entry_id"], tier=tier, **update)
+                row = nb.conn.execute(
+                    "SELECT composite_score FROM leaderboard WHERE entry_id = ?",
+                    (entry["entry_id"],),
+                ).fetchone()
+                if row:
+                    trajectory_composite = row["composite_score"]
+
+        logger.info(
+            "Trajectory probe %s: peak_ppl=%.1f steps_to_div=%s ppl_500=%s composite=%.1f",
+            source_result_id[:8],
+            peak_ppl or 0,
+            steps_div,
+            ppl_500,
+            trajectory_composite or 0,
+        )
+        return trajectory_composite
+    except Exception as e:
+        logger.warning("Trajectory probe failed for %s: %s", source_result_id[:8], e)
+        return None
+
+
+def handle_breakthrough(
+    *,
+    is_breakthrough: bool,
+    trajectory_composite: float | None,
+    aria,
+    nb,
+    exp_id: str,
+    source_result_id: str,
+    source: dict,
+    validation_entry,  # ValidationEntry
+    val_loss_ratio: float | None,
+    val_baseline_ratio: float | None,
+    multi_seed_std: float,
+    emit_event,
+) -> bool:
+    """Check trajectory-aware breakthrough and emit announcement.
+
+    Returns final is_breakthrough value.
+    """
+    from ..llm.context_experiment import build_validation_context
+    from ..notebook import ExperimentEntry
+
+    # [CALIBRATION] source: judgment — 300.0 hardcoded; no config key
+    if not is_breakthrough and trajectory_composite is not None:
+        if trajectory_composite > 300.0:
+            is_breakthrough = True
+            logger.info(
+                "Trajectory-aware breakthrough: %s composite=%.1f",
+                source_result_id[:8],
+                trajectory_composite,
+            )
+
+    if is_breakthrough:
+        entry_dict = (
+            validation_entry.to_dict()
+            if hasattr(validation_entry, "to_dict")
+            else validation_entry
+        )
+        ctx = build_validation_context([source], [entry_dict])
+        announcement = aria.announce_breakthrough(ctx)
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="insight",
+                title="BREAKTHROUGH DETECTED",
+                content=announcement,
+                experiment_id=exp_id,
+                tags=["breakthrough"],
+            )
+        )
+        emit_event(
+            "breakthrough_detected",
+            {
+                "experiment_id": exp_id,
+                "result_id": source_result_id,
+                "val_loss_ratio": val_loss_ratio,
+                "val_baseline_ratio": val_baseline_ratio,
+                "multi_seed_std": multi_seed_std,
+                "announcement": announcement,
+            },
+        )
+
+    return is_breakthrough
+
+
+# ── SSE log handler ──
 # log messages without modifying every call site.
 
 _SSE_LOG_DEDUP_WINDOW: float = 5.0  # seconds to suppress identical messages

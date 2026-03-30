@@ -41,7 +41,7 @@ class OpCategory(Enum):
 ShapeSym = Tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AlgebraicType:
     """Input/output algebraic contract for a primitive."""
 

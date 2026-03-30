@@ -87,6 +87,174 @@
   background: rgba(23, 163, 255, 0.2);
 }
 
+.run-history-toolbar,
+.run-meta-grid,
+.stage-failure-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.run-history-list,
+.warnings-list,
+.stage-failures {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-history-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #101b2b;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.run-history-item.active {
+  border-color: rgba(23, 163, 255, 0.6);
+  background: linear-gradient(180deg, rgba(23, 163, 255, 0.12), rgba(15, 26, 46, 0.96));
+}
+
+.run-history-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.run-history-main span,
+.run-history-meta,
+.run-meta-value {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+.run-history-pill,
+.run-meta-status,
+.failure-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(143, 168, 194, 0.25);
+  background: rgba(143, 168, 194, 0.08);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.tone-success {
+  color: #24d1a0;
+  border-color: rgba(36, 209, 160, 0.4);
+  background: rgba(36, 209, 160, 0.12);
+}
+
+.tone-running {
+  color: #17a3ff;
+  border-color: rgba(23, 163, 255, 0.4);
+  background: rgba(23, 163, 255, 0.12);
+}
+
+.tone-danger {
+  color: #ff7070;
+  border-color: rgba(255, 80, 80, 0.4);
+  background: rgba(255, 80, 80, 0.12);
+}
+
+.tone-neutral {
+  color: #d8e6f5;
+}
+
+.history-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #13243a;
+  color: #d8eeff;
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-history-empty,
+.run-history-error {
+  margin: 6px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.run-history-error,
+.failure-message {
+  color: #ffd3d3;
+}
+
+.run-meta-card,
+.failure-detail-card,
+.stage-failure-card,
+.warning-item {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #101b2b;
+}
+
+.run-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.failure-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.failure-message,
+.stage-failure-message {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.failure-kv {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.failure-traceback {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #0b1322;
+  color: #f2c5c5;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.warning-item {
+  color: #f3d58a;
+  background: rgba(240, 160, 48, 0.09);
+  border-color: rgba(240, 160, 48, 0.3);
+}
+
 .eval-stepper { display: flex; flex-direction: column; gap: 0; margin-bottom: 12px; }
 .eval-step {
   display: flex; align-items: center; gap: 8px;
@@ -172,3 +340,9 @@
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 .section-toggle:hover { color: var(--accent); }
+
+@media (max-width: 900px) {
+  .run-meta-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

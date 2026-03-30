@@ -742,19 +742,22 @@ class _ExecutionInvestigationMixin:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Investigation failed (%s): %s\n%s", exp_id, e, error)
-            self._invoke_code_healer(
-                nb=nb,
-                trigger_type="repeated_exception",
-                experiment_id=exp_id,
-                scope=f"Investigation failure: {str(e)[:240]}",
-                reproduction_steps=[
-                    'python -m pytest tests/test_integration.py -k "investigation" -x --tb=short'
-                ],
-                acceptance_tests=[
-                    'python -m pytest tests/test_integration.py -k "investigation" -x --tb=short'
-                ],
-                trigger_payload={"mode": "investigation", "error": str(e)},
-            )
+            try:
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="repeated_exception",
+                    experiment_id=exp_id,
+                    scope=f"Investigation failure: {str(e)[:240]}",
+                    reproduction_steps=[
+                        'python -m pytest tests/test_integration.py -k "investigation" -x --tb=short'
+                    ],
+                    acceptance_tests=[
+                        'python -m pytest tests/test_integration.py -k "investigation" -x --tb=short'
+                    ],
+                    trigger_payload={"mode": "investigation", "error": str(e)},
+                )
+            except Exception:
+                logger.warning("code_healer failed during investigation error handling", exc_info=True)
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -768,6 +771,21 @@ class _ExecutionInvestigationMixin:
                     "error": str(e),
                 },
             )
+        except BaseException as e:
+            logger.critical(
+                "Investigation thread KILLED (%s): %s\n%s",
+                exp_id, e, traceback.format_exc(),
+            )
+            try:
+                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            raise
         finally:
             self._live_training_context = None
             nb.close()

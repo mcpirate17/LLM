@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class ScalingCurvePoint:
     """A single (param_count, loss) measurement."""
 
@@ -42,7 +42,7 @@ class ScalingCurvePoint:
     source: str  # "kaplan2020", "gu2023", "local_train"
 
 
-@dataclass
+@dataclass(slots=True)
 class ScalingCurve:
     """A model family's loss-vs-params scaling behavior.
 
@@ -121,7 +121,7 @@ class ScalingCurve:
         return pts[-1].param_count * 2
 
 
-@dataclass
+@dataclass(slots=True)
 class FamilyComparison:
     """Comparison result for a single reference family."""
 
@@ -145,7 +145,7 @@ class FamilyComparison:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class ScalingComparisonResult:
     """Full scaling comparison output."""
 
@@ -306,12 +306,18 @@ class ScalingReferenceManager:
     def __init__(self, cache_path: str = "research/scaling_reference_cache.db"):
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.cache_path))
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_cache()
         self._published = PUBLISHED_CURVES
 
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
     def _init_cache(self):
-        conn = sqlite3.connect(str(self.cache_path))
-        conn.execute("""
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS reference_results (
                 config_key TEXT PRIMARY KEY,
                 family TEXT NOT NULL,
@@ -326,7 +332,7 @@ class ScalingReferenceManager:
                 trained_at REAL NOT NULL
             )
         """)
-        conn.execute("""
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS fitted_curves (
                 curve_key TEXT PRIMARY KEY,
                 family TEXT NOT NULL,
@@ -339,8 +345,7 @@ class ScalingReferenceManager:
                 fitted_at REAL NOT NULL
             )
         """)
-        conn.commit()
-        conn.close()
+        self._conn.commit()
 
     # ── Cache helpers ──
 
@@ -364,12 +369,10 @@ class ScalingReferenceManager:
         return f"{family}_{d_model}_{n_steps}_{seq_len}_{data_tag}"
 
     def _get_cached_loss(self, config_key: str) -> Optional[float]:
-        conn = sqlite3.connect(str(self.cache_path))
-        row = conn.execute(
+        row = self._conn.execute(
             "SELECT final_loss FROM reference_results WHERE config_key = ?",
             (config_key,),
         ).fetchone()
-        conn.close()
         return row[0] if row else None
 
     def _save_result(
@@ -385,8 +388,7 @@ class ScalingReferenceManager:
         seq_len: int,
         data_tag: str,
     ):
-        conn = sqlite3.connect(str(self.cache_path))
-        conn.execute(
+        self._conn.execute(
             """
             INSERT OR REPLACE INTO reference_results
             (config_key, family, d_model, n_layers, param_count,
@@ -407,8 +409,7 @@ class ScalingReferenceManager:
                 time.time(),
             ),
         )
-        conn.commit()
-        conn.close()
+        self._conn.commit()
 
     def _save_curve(
         self,
@@ -421,8 +422,7 @@ class ScalingReferenceManager:
         fit_r2: float,
         n_points: int,
     ):
-        conn = sqlite3.connect(str(self.cache_path))
-        conn.execute(
+        self._conn.execute(
             """
             INSERT OR REPLACE INTO fitted_curves
             (curve_key, family, d_model, data_tag, A, alpha, fit_r2, n_points, fitted_at)
@@ -440,8 +440,24 @@ class ScalingReferenceManager:
                 time.time(),
             ),
         )
-        conn.commit()
-        conn.close()
+        self._conn.commit()
+
+    def _get_cached_curve(self, curve_key: str, family: str) -> Optional[ScalingCurve]:
+        """Return a cached ScalingCurve if one exists with a valid fit."""
+        row = self._conn.execute(
+            "SELECT A, alpha, fit_r2, n_points FROM fitted_curves WHERE curve_key = ?",
+            (curve_key,),
+        ).fetchone()
+        if row is None or row[2] <= 0:  # no fit or bad R²
+            return None
+        A, alpha, fit_r2, n_points = row
+        if n_points < 2:
+            return None
+        logger.debug(
+            "Curve cache hit: %s A=%.3f alpha=%.4f R²=%.3f (%d points)",
+            curve_key, A, alpha, fit_r2, n_points,
+        )
+        return ScalingCurve(family=family, A=A, alpha=alpha, fit_r2=fit_r2)
 
     # ── Reference model training ──
 
@@ -459,11 +475,12 @@ class ScalingReferenceManager:
         data_fn: Optional[Callable] = None,
         data_tag: str = "random",
         n_seeds: int = 3,
+        cacheable: bool = False,
     ) -> Tuple[float, int]:
         """Train a reference model and return (final_loss, param_count).
 
         Averages over n_seeds for stability (same pattern as baseline.py).
-        Currently only supports GPT-2 (vanilla transformer) references.
+        When cacheable=True, results are cached even with real data (data_fn).
         """
         from .baseline import _BaselineTransformer
 
@@ -471,17 +488,14 @@ class ScalingReferenceManager:
             family, d_model, n_layers, seq_len, n_steps, vocab_size, data_tag
         )
 
-        # Check cache (skip for real data — data_fn is stateful)
-        if data_fn is None:
+        # Check cache — skip only for non-cacheable real data (e.g. hydra)
+        if data_fn is None or cacheable:
             cached = self._get_cached_loss(config_key)
             if cached is not None:
-                # Get param count from cache
-                conn = sqlite3.connect(str(self.cache_path))
-                row = conn.execute(
+                row = self._conn.execute(
                     "SELECT param_count FROM reference_results WHERE config_key = ?",
                     (config_key,),
                 ).fetchone()
-                conn.close()
                 return cached, row[0] if row else 0
 
         dev = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -569,9 +583,16 @@ class ScalingReferenceManager:
         data_fn: Optional[Callable] = None,
         data_tag: str = "random",
         layer_counts: Sequence[int] = (2, 4, 6, 8),
+        cacheable: bool = False,
     ) -> ScalingCurve:
         """Train reference at multiple layer counts and fit scaling curve."""
         curve_key = self._curve_key(family, d_model, n_steps, seq_len, data_tag)
+
+        # Check curve cache — skip training entirely if fitted curve exists
+        if data_fn is None or cacheable:
+            cached_curve = self._get_cached_curve(curve_key, family)
+            if cached_curve is not None:
+                return cached_curve
 
         points = []
         param_counts = []
@@ -591,6 +612,7 @@ class ScalingReferenceManager:
                 device,
                 data_fn=data_fn,
                 data_tag=data_tag,
+                cacheable=cacheable,
             )
             # Include any point where training produced finite loss.
             # On random data, models barely beat ln(vocab) but there IS
@@ -657,6 +679,7 @@ class ScalingReferenceManager:
         families: Sequence[str] = ("gpt2",),
         param_efficiency_target: float = 3.0,
         flop_ceiling: float = 2.0,
+        cacheable: bool = False,
     ) -> ScalingComparisonResult:
         """Compare candidate against reference scaling curves.
 
@@ -706,6 +729,7 @@ class ScalingReferenceManager:
                     device,
                     data_fn,
                     data_tag,
+                    cacheable=cacheable,
                 )
             except Exception as e:
                 logger.debug("Family %s comparison failed: %s", family_name, e)
@@ -751,6 +775,7 @@ class ScalingReferenceManager:
         device: str,
         data_fn: Optional[Callable],
         data_tag: str,
+        cacheable: bool = False,
     ) -> Optional[FamilyComparison]:
         """Compare candidate against one reference family."""
         # Build local scaling curve (trains references if needed)
@@ -765,6 +790,7 @@ class ScalingReferenceManager:
             device,
             data_fn=data_fn,
             data_tag=data_tag,
+            cacheable=cacheable,
         )
 
         if not curve.points and curve.A <= 0:

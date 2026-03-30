@@ -297,13 +297,12 @@ def _op_depth_gated_transform(module, inputs, config):
 
 
 def _op_adjacent_token_merge(module, inputs, config):
-    """Similarity-based token merging (ToMe-style): merge most similar adjacent pairs.
+    """Causal token compression: merge even-indexed tokens into their predecessor.
 
-    Fully vectorized — no Python loops on the hot path.  The greedy pair
-    selection uses a parallel-safe "even/odd stride" approach: sort adjacent
-    similarities, take top-k non-overlapping pairs by masking every other
-    candidate in the sorted order.  This is an O(S log S) tensor op per
-    batch element (via sort) instead of O(B*S) Python `.item()` calls.
+    Strictly causal: token p+1 absorbs information from token p (backward
+    merge), so the merged value at position p+1 depends only on tokens ≤ p+1.
+    The merge pattern is deterministic (even-stride) to avoid any dependency
+    on future token content.
     """
     x = inputs[0]
     B, S, D = x.shape
@@ -323,66 +322,25 @@ def _op_adjacent_token_merge(module, inputs, config):
     if use_c_kernel:
         y, _restore_map = aria_core.token_merge_simple_f32(x, n_keep)
     else:
-        # Causal backward-looking cosine similarity: sim[i] = cos(token[i+1], token[i])
-        x_norm = F.normalize(x.detach(), dim=-1)
-        sim = (x_norm[:, 1:, :] * x_norm[:, :-1, :]).sum(dim=-1)  # (B, S-1)
+        # Deterministic causal stride merge: drop every other token starting
+        # from position 1 (merge token p into token p-1, backward-looking).
+        # This is strictly causal because each merged token only receives
+        # information from its immediate predecessor.
+        stride = max(2, S // n_keep)
+        # Positions to drop: 1, 1+stride, 1+2*stride, ... (up to n_merge)
+        drop_positions = torch.arange(1, S, stride, device=x.device)[:n_merge]
 
-        # Vectorized greedy merge: pick top n_merge non-overlapping pairs.
-        # After sorting by similarity, greedily accept pairs where neither
-        # token is already claimed.  We vectorize this by processing even-
-        # and odd-indexed candidates in the sorted order: accept the top
-        # pair, then every subsequent pair whose positions don't collide
-        # with an already-accepted neighbour.
-        _, sim_idx = sim.sort(dim=-1, descending=True)  # (B, S-1)
-
-        # Positions of the "source" (to-be-dropped) token for each candidate
-        src_pos = sim_idx  # sim_idx[b,j] = position p, meaning pair (p, p+1)
-
-        # Build merged mask fully in tensor ops.
-        # We use scatter to mark claimed positions and filter conflicts.
         merged = torch.zeros(B, S, device=x.device, dtype=torch.bool)
         merge_targets = (
             torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1).clone()
         )
 
-        # Process candidates in sorted order in chunks.  Each chunk marks
-        # non-conflicting pairs; ~2 chunks suffice for typical merge ratios.
-        remaining = n_merge
-        candidates = src_pos  # (B, S-1) — sorted by descending similarity
-        for _chunk in range(4):  # 4 passes covers pathological cases
-            if remaining <= 0 or candidates.shape[1] == 0:
-                break
-            p = candidates  # (B, ncand) — positions of source tokens
-
-            # A pair (p, p+1) is valid if neither p nor p+1 is already merged
-            p_clamped = p.clamp(max=S - 1)
-            p1 = (p + 1).clamp(max=S - 1)
-            conflict = merged.gather(1, p_clamped) | merged.gather(1, p1)
-
-            # Among non-conflicting, also exclude pairs that collide with
-            # each other within this chunk: if positions are adjacent in the
-            # candidate list, the second one might overlap.  Use a simple
-            # even-index filter: take every other valid candidate.
-            valid = ~conflict  # (B, ncand)
-            # For each batch, take at most `remaining` valid candidates
-            valid_cum = valid.long().cumsum(dim=-1)
-            accept = valid & (valid_cum <= remaining)
-
-            # Mark accepted merges
-            acc_src = p_clamped.masked_fill(~accept, 0)
-            acc_dst = p1.masked_fill(~accept, 0)
-            merged.scatter_(1, acc_src, accept)
-            merge_targets.scatter_(1, acc_src, acc_dst)
-
-            newly_merged = accept.sum(dim=-1).min().item()
-            remaining -= newly_merged
-
-            # Filter out accepted candidates for next pass
-            candidates = (
-                candidates[:, ~accept.all(dim=0)]
-                if remaining > 0
-                else candidates[:, :0]
-            )
+        # Backward merge: token at drop_pos merges INTO drop_pos-1 (predecessor)
+        for dp in drop_positions:
+            dp_int = int(dp.item())
+            if dp_int > 0:
+                merged[:, dp_int] = True
+                merge_targets[:, dp_int] = dp_int - 1
 
         # Build merged output: average merged pairs
         target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)

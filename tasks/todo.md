@@ -1,51 +1,80 @@
-# Low-S1 Execution Program
-**Date**: 2026-03-21
-**Status**: In progress
+---
+status: active
+created: 2026-03-30
+author: claude-opus
+---
 
-## Working Rules
-- [x] Read required audit inputs: `CLAUDE.md`, `tasks/todo.md`, and low-S1 artifacts
-- [ ] Resolve missing `AGENTS.md` or record repo-level absence as a blocker/input gap
-- [x] Create shared coordination files under `artifacts/agent_sync/`
-- [x] Write execution plan before additional code changes
+# TODO — Next Session
 
-## Execution Plan
+## ACTIVE: Scale test running
+Champion c9c7075e at 177M params on FineWeb-Edu + UltraChat with Muon optimizer.
+- **Status**: Step 33K/50K (66%), avg loss 2.70, best 2.14, 0.41B tokens
+- **Restartable**: `python -m research.tools.scale_test` resumes from `research/artifacts/scale_test/latest.pt`
+- **Loss curve**: `research/artifacts/scale_test/loss_curve.png` + `loss_curve.json`
+- **ETA**: ~2 more hours to finish
 
-### P0. Context-rule enforcement layer
-- [ ] Encode component context intelligence into a single enforcement layer with explicit classifications: `general-use`, `restricted-use`, `structural`, `rehab`
-- [ ] Represent predecessor, successor, motif, causal, and residual constraints in code rather than only in audit markdown
-- [ ] Ensure enforcement decisions are evidence-backed and traceable to concrete components from the low-S1 audit
+### Loss trajectory:
+```
+Step   5K:  3.15
+Step  10K:  2.95
+Step  20K:  2.78
+Step  30K:  2.75
+Step  33K:  2.70  (current)
+Best:       2.14
+```
 
-### P1. Wire rules into search/builder flow
-- [ ] Apply context enforcement during graph generation/template instantiation
-- [ ] Apply the same restrictions during mutation grammar derivation and novelty/fresh insertion paths
-- [ ] Add validator coverage so invalid niche/structural placements are rejected or warned before compile/screening
+## 1. Fix scaling reference cache key (HIGH PRIORITY)
+Validation takes 60+ minutes because reference architectures are retrained every run.
+Cache key includes n_steps/vocab_size/data_tag — should just be family+d_model+n_layers.
+File: `research/eval/scaling_reference.py` line 357
 
-### P2. Lock `local_window_attn`
-- [ ] Verify the current `local_window_attn` implementation fix is present and keep it restricted to valid residual attention contexts
-- [ ] Reject or deprioritize bad default placements that still trigger OOR or invalid standalone use
+## 2. Add step-level progress to validation
+Show: `scaling reference comparison (d512) (14/15) — gpt2 8-layer: step 1200/10000 loss=1.83`
+Files: `research/eval/scaling_reference.py`, `research/scientist/runner/execution_validation.py`
 
-### P3. Reclassify components
-- [ ] Classify audited low-S1 components into `general-use`, `restricted-use`, `structural`, or `rehab`
-- [ ] Prevent structural ops from being judged or inserted as standalone learning carriers
-- [ ] Prevent niche ops from being inserted outside valid graph families
+## 3. Make validation writes incremental
+Currently writes all results at the end. Crash at step 14/15 = total loss.
+Write each result as it completes.
 
-### P4. Regression tests
-- [ ] Add unit/regression tests for context-rule enforcement in builder, mutation, and validator paths
-- [ ] Add tests that protect `local_window_attn` valid contexts and reject known-bad placements
-- [ ] Add tests that preserve S1 strictness and avoid metric gaming through deletion or dilution
+## 4. Compare validation vs investigation loss
+Fingerprint 606dacc0 was fixed this session — investigation_loss was garbage (0.576) but validation_loss was 0.009. Check other entries for same issue: investigation_loss_ratio that's much worse than screening or validation.
 
-### P5. Fresh evidence reruns
-- [ ] Identify polluted clusters that need fresh reruns after the rule-layer changes
-- [ ] Define exact rerun commands, contexts, and pass/fail interpretation for post-fix evidence
-- [ ] Record actual command outcomes in `artifacts/agent_sync/TEST_RESULTS.md`
+## 5. Scoring reality check
+`scaling_param_efficiency` drives ~375 of ~750 points. At small scale this rewards compression tricks. Should loss/PPL be weighted higher since MoE/MoD/MoR can be bolted on later? The core architecture's learning ability is the hard part.
 
-## Explicit Answer Targets
-- [ ] What gets fixed in code
-- [ ] What gets fixed in placement rules
-- [ ] What gets reclassified
-- [ ] What needs fresh reruns
-- [ ] What is blocked
-- [ ] What is highest ROI next
+## 6. Context rules (prompt for other Claude)
+- `tasks/fix_context_rules_prompt.md` — selective_scan, softmax_attention, transpose_sd
+- token_merge + adjacent_token_merge rules already added this session
 
-## Review
-- Pending
+## 7. Low-confidence op backfills
+```bash
+python -m research.tools.backfill_templates --templates sparse_moe_block routed_bottleneck --target 100
+```
+
+## Session Summary (March 29-30)
+### Built
+- 5 ML modules: interaction_analysis, temporal_bayesian, op_embeddings, interaction_model, gnn_predictor
+- Ensemble predictor with calibrated logistic regression (93% precision)
+- Bayesian tracker with temporal decay + code-fix detection
+- Op interaction heatmaps (7,754 pairs analyzed)
+- Targeted backfill tool (`research/tools/targeted_backfill.py`)
+- Scale test script (`research/tools/scale_test.py`) — restartable, Muon optimizer, live loss curve
+
+### Fixed
+- Cleared 5 false-positive failure signatures, adjusted 20 more
+- Added context rules for token_merge, adjacent_token_merge, and 7 routing ops
+- Fixed token_merge_block backfill (was failing due to routing_mandatory=True)
+- Fixed code-fix detection cascade (was resetting core op posteriors to 0)
+- Removed replication dampening from scoring (was penalizing tested entries)
+- Converted outlier penalty to needs_extended_training flag
+- Fixed investigation_robustness NULL for 14 investigation entries
+- Fixed wikitext_score JSON blob corruption
+- Backfilled n_routing_ops/n_sparse_ops/n_moe_ops for 1145 entries
+- Fixed 606dacc0 investigation_loss_ratio (0.576 → 0.009)
+- Rescored entire leaderboard 3 times with corrected data
+
+### Mutations tested
+- Champion baseline: PPL 4.4 (matched original)
+- Fix activation order: PPL 4.5 (no improvement)
+- Learned gate: PPL 6.7 (promising, still converging)
+- Full hybrid (sparse FFN + Mamba + sparse channel): PPL 12.1 (needs more steps)

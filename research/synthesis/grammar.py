@@ -173,6 +173,11 @@ class GrammarConfig:
     exploration_targets: FrozenSet[str] = field(default_factory=frozenset)
     exploration_boost_factor: float = 4.0  # Weight multiplier for target motifs
 
+    # ── Wildcard slot exploration ────────────────────────────────────
+    # Fraction of slots that proactively accept any motif class (exploration).
+    # Also used as fallback when a slot's prescribed classes yield zero candidates.
+    wildcard_slot_prob: float = 0.15
+
     # ── Routing-First Config (Phase 2) ────────────────────────────────
     routing_mandatory: bool = True  # Force routing structure in every graph
     routing_min_lanes: int = 2  # Minimum routing lanes (2 or 3)
@@ -476,6 +481,19 @@ class _DBTemplateWeightCache:
                 if tpl_name not in db_weights:
                     db_weights[tpl_name] = w
 
+            # Curiosity bonus: under-explored templates get up to 2x boost.
+            # Decays naturally as they accumulate evaluations.
+            eval_counts = {r[0]: r[1] for r in rows}
+            if eval_counts:
+                sorted_counts = sorted(eval_counts.values())
+                median_evals = sorted_counts[len(sorted_counts) // 2]
+                if median_evals > 0:
+                    for tpl_name in db_weights:
+                        n = eval_counts.get(tpl_name, 0)
+                        if n < median_evals:
+                            curiosity = 1.0 + (1.0 - n / median_evals)
+                            db_weights[tpl_name] *= curiosity
+
             self._weights = db_weights
             self._expires = now + self._ttl
             logger.info(
@@ -491,6 +509,99 @@ class _DBTemplateWeightCache:
 
 
 _db_weight_cache = _DBTemplateWeightCache(ttl=60.0)
+
+
+class _SlotAdaptationCache:
+    """TTL-bounded cache for slot class adaptations learned from wildcard fills."""
+
+    __slots__ = ("_adaptations", "_expires", "_ttl")
+
+    _MIN_EVALS = 5  # Minimum wildcard evals before promoting a class
+    _MAX_EXTRA_CLASSES = 2  # Cap additional classes per slot
+
+    def __init__(self, ttl: float = 120.0):
+        self._adaptations: Optional[Dict[str, list]] = None
+        self._expires: float = 0.0
+        self._ttl = ttl
+
+    def get(
+        self, db_path: str = "research/lab_notebook.db"
+    ) -> Dict[str, list]:
+        """Return slot_key → [additional motif classes] learned from wildcard success."""
+        import json as _json
+        import sqlite3
+        import time as _time
+
+        now = _time.time()
+        if self._adaptations is not None and now < self._expires:
+            return self._adaptations
+
+        adaptations: Dict[str, list] = {}
+        try:
+            from pathlib import Path
+
+            path = Path(db_path)
+            if not path.is_absolute():
+                cwd = Path.cwd()
+                if cwd.name == "research" and path.parts and path.parts[0] == "research":
+                    path = cwd.parent / db_path
+                else:
+                    path = path.resolve()
+            if not path.exists():
+                return adaptations
+
+            conn = sqlite3.connect(str(path), timeout=5.0)
+            conn.execute("PRAGMA busy_timeout=5000")
+            rows = conn.execute(
+                """SELECT slot_key, slot_classes, s1_pass_count, eval_count,
+                          wildcard_class_outcomes
+                   FROM slot_stats
+                   WHERE wildcard_count >= ?""",
+                (self._MIN_EVALS,),
+            ).fetchall()
+            conn.close()
+
+            for slot_key, slot_classes_json, s1_total, eval_total, wc_json in rows:
+                if not wc_json:
+                    continue
+                try:
+                    prescribed = set(_json.loads(slot_classes_json or "[]"))
+                    wc_outcomes = _json.loads(wc_json)
+                except (ValueError, TypeError):
+                    continue
+
+                baseline_s1_rate = s1_total / max(eval_total, 1)
+                extra: list = []
+                for cls, vals in wc_outcomes.items():
+                    if cls in prescribed:
+                        continue  # Already in the slot's class set
+                    n = vals.get("n", 0)
+                    s1 = vals.get("s1", 0)
+                    if n < self._MIN_EVALS:
+                        continue
+                    cls_s1_rate = s1 / n
+                    if cls_s1_rate > baseline_s1_rate:
+                        extra.append(cls)
+                    if len(extra) >= self._MAX_EXTRA_CLASSES:
+                        break
+
+                if extra:
+                    adaptations[slot_key] = extra
+
+            self._adaptations = adaptations
+            self._expires = now + self._ttl
+            if adaptations:
+                logger.info(
+                    "Loaded slot adaptations: %d slots with expanded classes",
+                    len(adaptations),
+                )
+        except Exception as e:
+            logger.debug("Failed to load slot adaptations: %s", e)
+
+        return adaptations
+
+
+_slot_adaptation_cache = _SlotAdaptationCache(ttl=120.0)
 
 
 class EfficiencyPrior:
@@ -654,6 +765,13 @@ def generate_layer_graph(
 
     motif_weights = motif_weights or None
     graph.metadata["context_rules_version"] = "low_s1_v1"
+    if config.wildcard_slot_prob > 0:
+        graph.metadata["_wildcard_slot_prob"] = config.wildcard_slot_prob
+    # Load learned slot class expansions from wildcard success data
+    if config.use_db_weights:
+        slot_adaptations = _slot_adaptation_cache.get()
+        if slot_adaptations:
+            graph.metadata["_slot_adaptations"] = slot_adaptations
 
     # High sparsity bias → force first template from efficiency pool
     _EFFICIENCY_TEMPLATES = {

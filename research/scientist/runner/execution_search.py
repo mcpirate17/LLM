@@ -275,19 +275,22 @@ class _ExecutionSearchMixin:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Evolution failed (%s): %s\n%s", exp_id, e, error)
-            self._invoke_code_healer(
-                nb=nb,
-                trigger_type="repeated_exception",
-                experiment_id=exp_id,
-                scope=f"Evolution failure: {str(e)[:240]}",
-                reproduction_steps=[
-                    'python -m pytest tests/test_integration.py -k "evolution" -x --tb=short'
-                ],
-                acceptance_tests=[
-                    'python -m pytest tests/test_integration.py -k "evolution" -x --tb=short'
-                ],
-                trigger_payload={"mode": "evolution", "error": str(e)},
-            )
+            try:
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="repeated_exception",
+                    experiment_id=exp_id,
+                    scope=f"Evolution failure: {str(e)[:240]}",
+                    reproduction_steps=[
+                        'python -m pytest tests/test_integration.py -k "evolution" -x --tb=short'
+                    ],
+                    acceptance_tests=[
+                        'python -m pytest tests/test_integration.py -k "evolution" -x --tb=short'
+                    ],
+                    trigger_payload={"mode": "evolution", "error": str(e)},
+                )
+            except Exception:
+                logger.warning("code_healer failed during evolution error handling", exc_info=True)
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -301,6 +304,21 @@ class _ExecutionSearchMixin:
                     "error": str(e),
                 },
             )
+        except BaseException as e:
+            logger.critical(
+                "Evolution thread KILLED (%s): %s\n%s",
+                exp_id, e, traceback.format_exc(),
+            )
+            try:
+                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            raise
         finally:
             nb.close()
             self._run_pending_scale_up()
@@ -617,19 +635,22 @@ class _ExecutionSearchMixin:
         except Exception as e:
             error = traceback.format_exc()
             logger.error("Novelty search failed (%s): %s\n%s", exp_id, e, error)
-            self._invoke_code_healer(
-                nb=nb,
-                trigger_type="repeated_exception",
-                experiment_id=exp_id,
-                scope=f"Novelty search failure: {str(e)[:240]}",
-                reproduction_steps=[
-                    'python -m pytest tests/test_integration.py -k "novelty" -x --tb=short'
-                ],
-                acceptance_tests=[
-                    'python -m pytest tests/test_integration.py -k "novelty" -x --tb=short'
-                ],
-                trigger_payload={"mode": "novelty", "error": str(e)},
-            )
+            try:
+                self._invoke_code_healer(
+                    nb=nb,
+                    trigger_type="repeated_exception",
+                    experiment_id=exp_id,
+                    scope=f"Novelty search failure: {str(e)[:240]}",
+                    reproduction_steps=[
+                        'python -m pytest tests/test_integration.py -k "novelty" -x --tb=short'
+                    ],
+                    acceptance_tests=[
+                        'python -m pytest tests/test_integration.py -k "novelty" -x --tb=short'
+                    ],
+                    trigger_payload={"mode": "novelty", "error": str(e)},
+                )
+            except Exception:
+                logger.warning("code_healer failed during novelty error handling", exc_info=True)
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -643,6 +664,21 @@ class _ExecutionSearchMixin:
                     "error": str(e),
                 },
             )
+        except BaseException as e:
+            logger.critical(
+                "Novelty thread KILLED (%s): %s\n%s",
+                exp_id, e, traceback.format_exc(),
+            )
+            try:
+                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._emit_event(
+                    "experiment_failed",
+                    {"experiment_id": exp_id, "error": f"FATAL: {e}"},
+                )
+            except Exception:
+                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            raise
         finally:
             nb.close()
             self._run_pending_scale_up()

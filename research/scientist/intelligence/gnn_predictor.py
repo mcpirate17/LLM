@@ -96,6 +96,7 @@ def extract_topology_features(
     graph_json: Any,
     op_profiles: Dict[str, Dict[str, float]],
     pair_stability: Dict[Tuple[str, str], float],
+    imodel: Optional[Any] = None,
 ) -> Optional[Dict[str, float]]:
     """Extract topology-aware features from a computation graph.
 
@@ -251,6 +252,31 @@ def extract_topology_features(
         features["pair_mean_stability"] = 0.5
         features["pair_frac_unstable"] = 0.5
 
+    # ── 4b. Learned pair interaction features (from InteractionModel) ──
+    # The profiling pair_stability above is static (5,979 pairs profiled once).
+    # The interaction model learns from 258K+ experiment observations with temporal decay.
+    if imodel is not None and hasattr(imodel, "_trained") and imodel._trained:
+        imodel_stabilities = []
+        imodel_losses = []
+        for idx in range(n):
+            for child_idx in children[idx]:
+                a, b = op_names[idx], op_names[child_idx]
+                if a and b and a != "input" and b != "input":
+                    imodel_stabilities.append(imodel.predict_stability(a, b))
+                    imodel_losses.append(imodel.predict_loss(a, b))
+        if imodel_stabilities:
+            features["imodel_min_stability"] = float(min(imodel_stabilities))
+            features["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
+            features["imodel_mean_loss"] = float(np.mean(imodel_losses))
+        else:
+            features["imodel_min_stability"] = 0.5
+            features["imodel_mean_stability"] = 0.5
+            features["imodel_mean_loss"] = 0.7
+    else:
+        features["imodel_min_stability"] = 0.5
+        features["imodel_mean_stability"] = 0.5
+        features["imodel_mean_loss"] = 0.7
+
     # ── 5. Neighbor profile aggregation ──
     # For each node, mean lipschitz of its children (amplification risk of downstream)
     child_lip_means = []
@@ -306,9 +332,13 @@ class GraphPredictor:
     feature_names: List[str] = field(default_factory=list)
     feature_mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
     feature_std: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # Loss prediction head
+    w_loss: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    b_loss: float = 0.7
     # Op data (cached for feature extraction)
     op_profiles: Dict[str, Dict[str, float]] = field(default_factory=dict)
     pair_stability: Dict[Tuple[str, str], float] = field(default_factory=dict)
+    imodel: Optional[Any] = None  # InteractionModel, cached for feature extraction
     # Metadata
     n_train: int = 0
     _trained: bool = False
@@ -319,7 +349,7 @@ class GraphPredictor:
 
     def _extract_and_normalize(self, graph_json: Any) -> Optional[np.ndarray]:
         feats = extract_topology_features(
-            graph_json, self.op_profiles, self.pair_stability
+            graph_json, self.op_profiles, self.pair_stability, imodel=self.imodel
         )
         if feats is None:
             return None
@@ -347,6 +377,15 @@ class GraphPredictor:
         log_ppl = float(x @ self.w_rank + self.b_rank)
         return float(np.exp(log_ppl))
 
+    def predict_loss(self, graph_json: Any) -> float:
+        """Predict loss_ratio for S1-passing graphs. Returns 0.7 if not fitted."""
+        if not self.is_fitted() or len(self.w_loss) == 0:
+            return 0.7
+        x = self._extract_and_normalize(graph_json)
+        if x is None:
+            return 0.7
+        return float(np.clip(x @ self.w_loss + self.b_loss, 0.0, 2.0))
+
     @classmethod
     def train(
         cls,
@@ -359,26 +398,41 @@ class GraphPredictor:
 
         Extracts topology features from each graph, then fits:
         - Logistic regression for gate (SGD)
-        - Ridge regression for rank
+        - Ridge regression for rank (wikitext ppl)
+        - Ridge regression for loss (loss_ratio of S1-passing graphs)
         """
         op_profiles = _load_op_profiles(profiling_db)
         pair_stability = _load_pair_stability(profiling_db)
 
-        if not notebook_db.exists():
-            return cls(
-                w_gate=np.zeros(0),
-                b_gate=0.0,
-                w_rank=np.zeros(0),
-                b_rank=5.0,
-                op_profiles=op_profiles,
-                pair_stability=pair_stability,
+        # Train interaction model for learned pair features
+        trained_imodel = None
+        try:
+            from .interaction_model import InteractionModel
+
+            trained_imodel = InteractionModel.train(
+                notebook_db=notebook_db, profiling_db=profiling_db, n_epochs=30,
             )
+            if not trained_imodel._trained:
+                trained_imodel = None
+        except Exception:
+            pass
+
+        _empty_kwargs = dict(
+            w_gate=np.zeros(0), b_gate=0.0,
+            w_rank=np.zeros(0), b_rank=5.0,
+            w_loss=np.zeros(0), b_loss=0.7,
+            op_profiles=op_profiles, pair_stability=pair_stability,
+            imodel=trained_imodel,
+        )
+
+        if not notebook_db.exists():
+            return cls(**_empty_kwargs)
 
         try:
             conn = sqlite3.connect(str(notebook_db), timeout=10)
             conn.execute("PRAGMA busy_timeout=10000")
             rows = conn.execute(
-                """SELECT graph_json, stage1_passed, wikitext_perplexity
+                """SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio
                    FROM program_results
                    WHERE graph_json IS NOT NULL
                    ORDER BY RANDOM() LIMIT 8000"""
@@ -386,22 +440,20 @@ class GraphPredictor:
             conn.close()
         except Exception as e:
             logger.warning("GraphPredictor training data query failed: %s", e)
-            return cls(
-                w_gate=np.zeros(0),
-                b_gate=0.0,
-                w_rank=np.zeros(0),
-                b_rank=5.0,
-                op_profiles=op_profiles,
-                pair_stability=pair_stability,
-            )
+            return cls(**_empty_kwargs)
 
         # Extract features
         feat_dicts: List[Dict[str, float]] = []
         gate_labels: List[int] = []
         rank_labels: List[float] = []
+        loss_labels: List[float] = []
 
-        for gj, s1, ppl in rows:
-            feats = extract_topology_features(gj, op_profiles, pair_stability)
+        for row in rows:
+            gj, s1, ppl = row[0], row[1], row[2]
+            lr = row[3] if len(row) > 3 else None
+            feats = extract_topology_features(
+                gj, op_profiles, pair_stability, imodel=trained_imodel
+            )
             if feats is None:
                 continue
             feat_dicts.append(feats)
@@ -409,6 +461,11 @@ class GraphPredictor:
             rank_labels.append(
                 float(ppl)
                 if ppl is not None and math.isfinite(float(ppl))
+                else float("nan")
+            )
+            loss_labels.append(
+                float(lr)
+                if s1 and lr is not None and math.isfinite(float(lr))
                 else float("nan")
             )
 
@@ -507,13 +564,30 @@ class GraphPredictor:
             except np.linalg.LinAlgError:
                 pass
 
+        # ── Loss: Ridge regression on loss_ratio (S1-passing only) ──
+        y_loss = np.array(loss_labels, dtype=np.float64)
+        loss_mask = np.isfinite(y_loss[train_idx])
+        w_loss = np.zeros(n_features, dtype=np.float64)
+        b_loss = 0.7
+        if loss_mask.sum() >= 20:
+            X_loss = X_tr[loss_mask]
+            y_lr = y_loss[train_idx][loss_mask]
+            XtX_l = X_loss.T @ X_loss + alpha * np.eye(n_features)
+            Xty_l = X_loss.T @ y_lr
+            try:
+                w_loss = np.linalg.solve(XtX_l, Xty_l)
+                b_loss = float(np.mean(y_lr - X_loss @ w_loss))
+            except np.linalg.LinAlgError:
+                pass
+
         logger.info(
-            "GraphPredictor trained: val_loss=%.4f val_acc=%.3f (%d train, %d val, %d features)",
+            "GraphPredictor trained: val_loss=%.4f val_acc=%.3f (%d train, %d val, %d features, imodel=%s)",
             val_loss,
             val_acc,
             len(X_tr),
             len(X_va),
             n_features,
+            trained_imodel is not None,
         )
 
         return cls(
@@ -521,11 +595,14 @@ class GraphPredictor:
             b_gate=float(b_gate),
             w_rank=w_rank.astype(np.float32),
             b_rank=float(b_rank),
+            w_loss=w_loss.astype(np.float32),
+            b_loss=float(b_loss),
             feature_names=feature_names,
             feature_mean=feat_mean.astype(np.float32),
             feature_std=feat_std.astype(np.float32),
             op_profiles=op_profiles,
             pair_stability=pair_stability,
+            imodel=trained_imodel,
             n_train=len(X_tr),
             _trained=True,
             _train_metrics={

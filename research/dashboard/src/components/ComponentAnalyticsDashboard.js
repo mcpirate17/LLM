@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiCall } from '../services/apiService';
+import MiniChart from './charts/MiniChart';
 
 const STATUS_COLORS = {
   healthy: '#22c55e',
@@ -21,6 +22,16 @@ const TIME_WINDOWS = [
   { value: '7d', label: '7d' },
   { value: 'all', label: 'All' },
 ];
+
+function fmtPct(value) {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function fmtLoss(value) {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  return Number(value).toFixed(3);
+}
 
 // ─── Health Summary ───
 function HealthSummary({ health }) {
@@ -514,6 +525,217 @@ function InsightEffectivenessPanel({ insights }) {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function StructuralDiagnosticsPanel({ data }) {
+  if (!data) return null;
+  const topTemplates = Array.isArray(data.top_templates) ? data.top_templates.slice(0, 5) : [];
+  const strugglingTemplates = Array.isArray(data.struggling_templates) ? data.struggling_templates.slice(0, 5) : [];
+  const weakSlots = Array.isArray(data.slot_observability) ? data.slot_observability.slice(0, 6) : [];
+  const templateTrends = Array.isArray(data.template_trends) ? data.template_trends.slice(0, 3) : [];
+  const slotTrends = Array.isArray(data.slot_trends) ? data.slot_trends.slice(0, 3) : [];
+  const lossTrends = Array.isArray(data.loss_trends) ? data.loss_trends : [];
+  const recommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
+  const loss = data.loss_distribution || {};
+  const summary = data.summary || {};
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-title">Structural Diagnostics</div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        Template and slot-level observability for the search grammar. This highlights which structural recipes survive, which slots are collapsing quality, and whether validation loss is drifting above training loss.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
+        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{Number(summary.templates_tracked || 0)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Templates tracked</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>{Number(summary.avg_templates_per_graph || 0).toFixed(2)} / graph</div>
+        </div>
+        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{Number(summary.avg_motifs_per_graph || 0).toFixed(2)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Avg motifs / graph</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>{Number(summary.motifs_tracked || 0)} motifs tracked</div>
+        </div>
+        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--accent-blue)' }}>{fmtLoss(loss.training?.median)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Median train LR</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>P75 {fmtLoss(loss.training?.p75)}</div>
+        </div>
+        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--accent-yellow)' }}>{fmtLoss(loss.validation?.median)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Median val LR</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>P75 {fmtLoss(loss.validation?.p75)}</div>
+        </div>
+        <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--accent-blue)' }}>{Number(summary.routing_fast_lane_templates || 0)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Routing fast-lane templates</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+            {Number(summary.routing_fast_lane_positive_templates || 0)} positive slow starters
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Highest Success Templates</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {topTemplates.length > 0 ? topTemplates.map((row) => (
+              <div key={row.name} style={{ padding: '8px 10px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{row.name}</span>
+                  <span style={{ fontSize: 12, color: '#22c55e', fontWeight: 700 }}>{fmtPct(row.s1_rate)}</span>
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+                  {row.n_used} runs · val LR {fmtLoss(row.avg_validation_loss_ratio ?? row.avg_loss_ratio)} · best {fmtLoss(row.best_loss_ratio)}
+                  {row.routing_fast_lane_runs ? ` · fast lane ${fmtPct(row.routing_fast_lane_positive_rate)}` : ''}
+                </div>
+              </div>
+            )) : <div className="ux-state ux-state-empty">No template diagnostics yet.</div>}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Templates To Fix</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {strugglingTemplates.length > 0 ? strugglingTemplates.map((row) => (
+              <div key={row.name} style={{ padding: '8px 10px', borderRadius: 6, background: '#ef444408', border: '1px solid #ef444422' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{row.name}</span>
+                  <span style={{ fontSize: 12, color: '#ef4444', fontWeight: 700 }}>{fmtPct(row.s1_rate)}</span>
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+                  {row.n_used} runs · slots {row.slot_count || 0} · fail {row.top_failure_reason || 'unknown'} · avg LR {fmtLoss(row.avg_validation_loss_ratio ?? row.avg_loss_ratio)}
+                  {row.routing_fast_lane_runs ? ` · fast lane ${fmtPct(row.routing_fast_lane_positive_rate)}` : ''}
+                </div>
+              </div>
+            )) : <div className="ux-state ux-state-empty">No struggling templates identified.</div>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 0.85fr', gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Weakest Slots</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data-table" style={{ fontSize: 11 }}>
+              <thead>
+                <tr><th>Slot</th><th>Template</th><th>S1</th><th>Avg LR</th><th>Motif</th><th>Failure</th></tr>
+              </thead>
+              <tbody>
+                {weakSlots.map((row) => (
+                  <tr key={row.slot_key}>
+                    <td style={{ fontFamily: 'monospace' }}>{row.slot_key}</td>
+                    <td>{row.template_name}</td>
+                    <td style={{ textAlign: 'right', color: (row.s1_rate || 0) < 0.15 ? '#ef4444' : '#eab308' }}>{fmtPct(row.s1_rate)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtLoss(row.avg_loss_ratio)}</td>
+                    <td style={{ fontFamily: 'monospace' }}>{row.top_selected_motif || '-'}</td>
+                    <td>{row.top_failure_reason || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {Array.isArray(summary.zero_slot_templates) && summary.zero_slot_templates.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>
+              Zero-slot templates: {summary.zero_slot_templates.slice(0, 6).join(', ')}
+              {summary.zero_slot_templates.length > 6 ? ` +${summary.zero_slot_templates.length - 6}` : ''}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Recommended Fixes</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {recommendations.length > 0 ? recommendations.map((item, idx) => (
+              <div key={idx} style={{ padding: '9px 10px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {item}
+              </div>
+            )) : <div className="ux-state ux-state-empty">No structural recommendations yet.</div>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 18 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Template Success Trends</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {templateTrends.length > 0 ? templateTrends.map((series) => (
+              <div key={series.name} style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+                <MiniChart
+                  data={series.points}
+                  valueKey="s1_rate"
+                  label={`${series.name} S1`}
+                  color="#22c55e"
+                  formatValue={(v) => `${(Number(v) * 100).toFixed(1)}%`}
+                  scaleKey="pass_rate"
+                  windowSize={12}
+                />
+              </div>
+            )) : <div className="ux-state ux-state-empty">Need more experiments for template trends.</div>}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Weak Slot Trends</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {slotTrends.length > 0 ? slotTrends.map((series) => (
+              <div key={series.slot_key} style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+                <MiniChart
+                  data={series.points}
+                  valueKey="s1_rate"
+                  label={`${series.slot_key} S1`}
+                  color="#ef4444"
+                  formatValue={(v) => `${(Number(v) * 100).toFixed(1)}%`}
+                  scaleKey="pass_rate"
+                  windowSize={12}
+                />
+              </div>
+            )) : <div className="ux-state ux-state-empty">Need more experiments for slot trends.</div>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Loss Drift Trends</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+            <MiniChart
+              data={lossTrends}
+              valueKey="training_median"
+              label="Median Train LR"
+              color="#58a6ff"
+              formatValue={(v) => Number(v).toFixed(3)}
+              scaleKey="loss_ratio"
+              windowSize={12}
+            />
+          </div>
+          <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+            <MiniChart
+              data={lossTrends}
+              valueKey="validation_median"
+              label="Median Val LR"
+              color="#d29922"
+              formatValue={(v) => Number(v).toFixed(3)}
+              scaleKey="loss_ratio"
+              windowSize={12}
+            />
+          </div>
+          <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+            <MiniChart
+              data={lossTrends}
+              valueKey="discovery_median"
+              label="Median Discovery LR"
+              color="#a855f7"
+              formatValue={(v) => Number(v).toFixed(3)}
+              scaleKey="loss_ratio"
+              windowSize={12}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

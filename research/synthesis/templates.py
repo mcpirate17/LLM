@@ -341,7 +341,13 @@ def apply_template(
         graph.metadata["_op_weights"] = op_weights
     graph.metadata.setdefault("templates_used", []).append(name)
     prev_template = graph.metadata.get("_active_template")
+    prev_slot_counter = graph.metadata.get("_active_template_slot_counter")
+    prev_template_instance = graph.metadata.get("_active_template_instance")
     graph.metadata["_active_template"] = name
+    graph.metadata["_active_template_slot_counter"] = 0
+    graph.metadata["_active_template_instance"] = len(
+        graph.metadata.get("templates_used", [])
+    ) - 1
     try:
         return fn(graph, input_id, rng, motif_weights)
     finally:
@@ -349,3 +355,11 @@ def apply_template(
             graph.metadata.pop("_active_template", None)
         else:
             graph.metadata["_active_template"] = prev_template
+        if prev_slot_counter is None:
+            graph.metadata.pop("_active_template_slot_counter", None)
+        else:
+            graph.metadata["_active_template_slot_counter"] = prev_slot_counter
+        if prev_template_instance is None:
+            graph.metadata.pop("_active_template_instance", None)
+        else:
+            graph.metadata["_active_template_instance"] = prev_template_instance

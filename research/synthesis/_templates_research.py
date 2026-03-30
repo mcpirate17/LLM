@@ -37,6 +37,7 @@ def tpl_cumulative_sequence(
     followed by normalization to prevent unbounded growth, then projection
     to learn from the accumulated signal.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -66,6 +67,7 @@ def tpl_sqrt_gated_ffn(
     while sigmoid provides a learned gate. The combination acts as a
     soft-magnitude attention over features.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -143,6 +145,7 @@ def tpl_fused_gelu_ffn(
     a parallel linear_proj with sigmoid provides the gate. The element-wise
     product lets the network selectively suppress features (SwiGLU-style).
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -173,6 +176,7 @@ def tpl_exp_gated_residual(
     rmsnorm after exp controls magnitude (prevents explosion during training),
     sigmoid gate selects which amplified features pass through.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -203,6 +207,7 @@ def tpl_integral_kernel_block(
     Integral transform kernel: continuous-domain convolution via learned
     kernel functions. Similar to SSM but with integral operator semantics.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -241,6 +246,7 @@ def tpl_windowed_attention(
     provides the downstream learning capacity (same pattern as
     local_attention_block).
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -322,6 +328,7 @@ def tpl_state_space_block(
     State-space model (selective scan): linear recurrence with gated updates.
     Efficient O(n log n) via parallel scan. Norm predecessor bounds scan input.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -459,6 +466,7 @@ def tpl_reciprocal_gated(
     confident features to ~1.0 and uncertain features to ~2.0, inverting
     the attention distribution. Sigmoid predecessor bounds reciprocal input.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -489,6 +497,7 @@ def tpl_log_gated(
     features pass through, preventing unbounded negative values from
     dominating the representation.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -523,6 +532,7 @@ def tpl_sign_ste_gated(
     which binarized features contribute, preventing sign from zeroing
     gradient signal entirely.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -587,6 +597,7 @@ def tpl_diff_attention_block(
     dual-softmax internally. Template provides normalized input, FFN
     capacity, and residual connection.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -618,6 +629,7 @@ def tpl_graph_attention_block(
     Graph attention: attention where edge weights are learned per node pair.
     Higher capacity than softmax attention (2.19x lift in top performers).
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -656,6 +668,7 @@ def tpl_chebyshev_block(
     Chebyshev polynomial spectral mixing — approximates arbitrary filters.
     Requires bounded input (norm ensures |x| ≤ O(1) for polynomial stability).
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -691,6 +704,7 @@ def tpl_kronecker_block(
     Kronecker-factored linear: parameter-efficient structured projection.
     Norm before Kronecker to prevent variance amplification.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -791,6 +805,7 @@ def tpl_rope_attention_block(
     RoPE (Rotary Position Embedding) + attention — standard in modern LLMs.
     rope_rotate injects relative position info before attention.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -802,8 +817,11 @@ def tpl_rope_attention_block(
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
+    # Data: sparse/routing motifs dramatically outperform random FFN here.
+    # routed_ternary 25% S1, bottleneck_sparse 17% vs 10% baseline.
+    _ROPE_FFN_CLASSES = ("sparse_core", "efficient_proj", "gate_core")
     ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+        graph, projected, rng, list(_ROPE_FFN_CLASSES), weights
     )
     if ffn:
         processed = _instantiate_motif(graph, projected, ffn, rng)
@@ -926,6 +944,7 @@ def tpl_hetero_moe_block(
     Pre-projection provides learnable routing features;
     post-FFN adds capacity to interpret routed output.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -960,6 +979,7 @@ def tpl_arch_router_block(
     Architecture router selects transformer/mamba/MLP styles per token.
     Pre-projection learns routing features; post-FFN interprets output.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -994,6 +1014,7 @@ def tpl_compute_budget_block(
     Compute budget router assigns tokens to cheap/medium/expensive tiers.
     Pre-projection provides routing signal; post-FFN processes routed output.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -1033,6 +1054,7 @@ def tpl_cross_dim_mixer(
     feature semantics before projection. Analogous to ShuffleNet's
     channel shuffle between group convolutions.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -1041,8 +1063,12 @@ def tpl_cross_dim_mixer(
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
-    # Channel-shuffle → mixer → channel-unshuffle
-    mixed = _shuffle_wrap(graph, proj_in, rng, _MIXER_CLASSES, weights)
+    # Channel-shuffle → mixer → channel-unshuffle.
+    # Data: SSM/conv motifs handle transposed features best (selective_scan 33%,
+    # gated_linear 100% on small n). Broad _MIXER_CLASSES picks random attention
+    # which fails on transposed layout.
+    _CROSS_DIM_MIXER_CLASSES = ("ssm_core", "conv_core", "gate_core")
+    mixed = _shuffle_wrap(graph, proj_in, rng, _CROSS_DIM_MIXER_CLASSES, weights)
 
     try:
         proj_out = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
@@ -1079,14 +1105,16 @@ def tpl_dual_axis_block(
     except ValueError:
         return tpl_residual_block(graph, input_id, rng, weights)
 
-    # Path A: sequence mixer on original feature order
+    # Path A: sequence mixer on original feature order (half dim from split2).
+    # Must use _BOTTLENECK_CLASSES — ops that adapt to input dim, not model_dim.
+    from ._template_helpers import _BOTTLENECK_CLASSES
     mixer = _pick_compatible_motif_from_classes(
-        graph, split_a, rng, _MIXER_CLASSES, weights
+        graph, split_a, rng, list(_BOTTLENECK_CLASSES), weights
     )
     path_a = _instantiate_motif(graph, split_a, mixer, rng) if mixer else split_a
 
-    # Path B: channel shuffle → FFN → channel unshuffle
-    path_b = _shuffle_wrap(graph, split_b, rng, _FFN_CLASSES, weights)
+    # Path B: channel shuffle → FFN → channel unshuffle (half dim from split2).
+    path_b = _shuffle_wrap(graph, split_b, rng, _BOTTLENECK_CLASSES, weights)
 
     try:
         merged = graph.add_op("concat", [path_a, path_b])
