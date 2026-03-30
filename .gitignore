@@ -42,6 +42,9 @@ research/dashboard/build/
 # PID files
 *.pid
 
+# Cython-generated C files
+research/runtime/native/cython/*.c
+
 # aria_core build artifacts
 aria_core/aria_core/*.so
 aria_core/build/
