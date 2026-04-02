@@ -1088,7 +1088,8 @@ class _ExecutionScreeningMixin:
 
         try:
             template_weights, motif_weights = _build_signal_weight_maps(nb)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Failed building signal weight maps: %s", e)
             template_weights, motif_weights = {}, {}
 
         # Data-driven op/template/motif weights from accumulated S1 pass rates.
@@ -1102,8 +1103,8 @@ class _ExecutionScreeningMixin:
                     since_ts=_window_cutoff
                 )
                 op_weights.update(learned_op_weights)
-            except Exception:
-                pass
+            except (TypeError, ValueError, KeyError) as e:
+                logger.debug("Failed computing learned op weights: %s", e)
             try:
                 learned_tpl_weights, learned_motif_weights = (
                     analytics.compute_template_and_motif_weights(
@@ -1114,8 +1115,8 @@ class _ExecutionScreeningMixin:
                     template_weights.update(learned_tpl_weights)
                 if learned_motif_weights:
                     motif_weights.update(learned_motif_weights)
-            except Exception:
-                pass
+            except (TypeError, ValueError, KeyError) as e:
+                logger.debug("Failed computing template/motif weights: %s", e)
             # Synergy-driven boosts: ops that co-occur in S1 survivors
             # get their motifs/templates boosted to encourage recombination.
             try:
@@ -1124,8 +1125,8 @@ class _ExecutionScreeningMixin:
                     motif_weights[name] = motif_weights.get(name, 1.0) * boost
                 for name, boost in syn_tpl_boosts.items():
                     template_weights[name] = template_weights.get(name, 1.0) * boost
-            except Exception:
-                pass
+            except (TypeError, ValueError, KeyError) as e:
+                logger.debug("Failed computing synergy boosts: %s", e)
 
         op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, op_weights=op_weights)
@@ -1242,8 +1243,8 @@ class _ExecutionScreeningMixin:
                             hf,
                             grammar.hyperbolic_promotion_threshold,
                         )
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug("Hierarchy fitness lookup failed: %s", e)
 
         # Synthesized loss/optimizer exploration (20% of screening experiments)
         if random.random() < 0.2:
@@ -1411,8 +1412,8 @@ class _ExecutionScreeningMixin:
                                     status="predictor_skip",
                                     metrics={"predicted_p_s1": float(p_pass)},
                                 )
-                            except Exception:
-                                pass
+                            except (TypeError, ValueError) as e:
+                                logger.debug("Failed recording predictor_skip result: %s", e)
                         else:
                             kept.append(g)
 
@@ -1515,7 +1516,7 @@ class _ExecutionScreeningMixin:
                         continue
                     try:
                         _prim = _get_primitive(_node.op_name)
-                    except Exception:
+                    except (KeyError, ValueError):
                         _prim = None
                     if _prim and getattr(_prim, "has_params", False):
                         _has_param_op = True
@@ -1679,8 +1680,8 @@ class _ExecutionScreeningMixin:
                     if i % 50 == 0:
                         try:
                             torch.compiler.reset()
-                        except (AttributeError, Exception):
-                            pass
+                        except (AttributeError, RuntimeError) as e:
+                            logger.debug("torch.compiler.reset() unavailable: %s", e)
 
                     time.sleep(0.1)
 
@@ -2035,10 +2036,11 @@ class _ExecutionScreeningMixin:
                                 "CUDA context recovered after fatal error on graph %d",
                                 i,
                             )
-                        except Exception:
+                        except (RuntimeError, OSError) as e_cuda:
                             logger.warning(
-                                "CUDA context unrecoverable after fatal error on graph %d",
+                                "CUDA context unrecoverable after fatal error on graph %d (reason: %s)",
                                 i,
+                                e_cuda,
                             )
                 continue
 

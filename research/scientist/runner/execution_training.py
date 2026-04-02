@@ -1214,7 +1214,7 @@ class _ExecutionTrainingMixin:
                         )
                         result["_behavioral_fingerprint"] = _fp.to_dict()
                         result["fingerprint_full_ran"] = full_ran
-                    except Exception as e_fp:
+                    except (RuntimeError, ValueError, TypeError) as e_fp:
                         logger.debug("Fingerprint failed in S1 worker: %s", e_fp)
 
                 # Fast WikiText perplexity at screening time
@@ -1259,7 +1259,7 @@ class _ExecutionTrainingMixin:
                             wt.get("wikitext_score") or 0,
                             wt.get("elapsed_ms") or 0,
                         )
-                    except Exception as e_wt:
+                    except (RuntimeError, ValueError, OSError) as e_wt:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
                 # Fast HellaSwag commonsense reasoning probe at screening time
@@ -1369,8 +1369,8 @@ class _ExecutionTrainingMixin:
                                 from ...synthesis.serializer import graph_from_json
 
                                 _graph_for_triage = graph_from_json(graph_json)
-                            except Exception:
-                                pass
+                            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                                logger.debug("Graph deserialization failed for triage: %s", e)
                         triage = run_triage(
                             model,
                             _graph_for_triage,
@@ -1395,6 +1395,7 @@ class _ExecutionTrainingMixin:
                         logger.debug("Triage eval skipped: %s", e_tri)
 
         except Exception as e:
+            logger.debug("Training failed (%s): %s", type(e).__name__, e)
             result["error"] = str(e)
             result["error_type"] = type(e).__name__
             # Op attribution: parse the traceback for the failing op
@@ -1474,7 +1475,8 @@ class _ExecutionTrainingMixin:
                     )
 
                 del pruned_model
-            except Exception as e:
+            except (RuntimeError, ValueError) as e:
+                logger.debug("Pruning eval failed: %s", e)
                 result["pruning_error"] = str(e)
 
         # Finalize performance reports
@@ -1498,12 +1500,13 @@ class _ExecutionTrainingMixin:
             )
             if "kernel_timing" in result:
                 result["kernel_timings_ms"] = result["kernel_timing"]
-        except Exception as e:
+        except (RuntimeError, KeyError, TypeError) as e:
+            logger.debug("Perf report finalization failed: %s", e)
             result["perf_error"] = str(e)
 
         try:
             result.update(self._extract_architecture_telemetry(model))
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             logger.debug("Architecture telemetry extract failed: %s", e)
 
         return result
@@ -1515,6 +1518,7 @@ class _ExecutionTrainingMixin:
         try:
             return self._micro_train(model, config, dev, seed=seed)
         except Exception as e:
+            logger.debug("Async micro-train failed (%s): %s", type(e).__name__, e)
             return {
                 "error": str(e),
                 "error_type": "training_exception",
@@ -1570,7 +1574,7 @@ class _ExecutionTrainingMixin:
             opt_fallback = False
             try:
                 optimizer = program.optimizer.create(model.parameters())
-            except Exception as exc:
+            except (RuntimeError, ValueError, TypeError) as exc:
                 logger.warning(
                     "program.optimizer.create() failed (%s); "
                     "falling back to AdamW via build_optimizer",
@@ -1650,8 +1654,8 @@ class _ExecutionTrainingMixin:
                             _batch,
                             _nlayers,
                         )
-                except Exception:
-                    pass
+                except RuntimeError as e:
+                    logger.debug("VRAM cap estimation failed: %s", e)
             safe_max_seq = min(config.max_seq_len, _static_cap)
             seq_len = min(128, safe_max_seq)
             # Apply curriculum seq_len schedule
@@ -1659,8 +1663,8 @@ class _ExecutionTrainingMixin:
                 base_seq = program.curriculum.get_seq_len(0, n_steps)
                 if base_seq and base_seq > 0:
                     seq_len = min(base_seq, safe_max_seq)
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug("Curriculum seq_len lookup failed: %s", e)
 
             for step in range(n_steps):
                 if self._stop_event.is_set():
@@ -1671,7 +1675,7 @@ class _ExecutionTrainingMixin:
                     curr_seq = program.curriculum.get_seq_len(step, n_steps)
                     if curr_seq and curr_seq > 0:
                         seq_len = min(curr_seq, safe_max_seq)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     pass
 
                 starvation_detector.start_wait()
@@ -1700,7 +1704,8 @@ class _ExecutionTrainingMixin:
                                 logits[:, :-1].reshape(-1, logits.shape[-1]),
                                 input_ids[:, 1:].reshape(-1),
                             )
-                        except Exception:
+                        except (RuntimeError, ValueError, TypeError) as e:
+                            logger.debug("Program loss failed, falling back to CE: %s", e)
                             loss = F.cross_entropy(
                                 logits[:, :-1].reshape(-1, logits.shape[-1]),
                                 input_ids[:, 1:].reshape(-1),
@@ -1874,6 +1879,7 @@ class _ExecutionTrainingMixin:
                 result.update(arch_telemetry)
 
         except Exception as e:
+            logger.debug("Program training failed (%s): %s", type(e).__name__, e)
             result["error"] = str(e)
 
         # Finalize performance reports
@@ -1888,7 +1894,8 @@ class _ExecutionTrainingMixin:
             result["starvation_report"] = starvation_detector.get_summary()
             if kernel_timer.enabled:
                 result["kernel_timings_ms"] = kernel_timer.synchronize_and_get_timings()
-        except Exception as e:
+        except (RuntimeError, KeyError, TypeError) as e:
+            logger.debug("Perf report finalization failed: %s", e)
             result["perf_error"] = str(e)
 
         return result

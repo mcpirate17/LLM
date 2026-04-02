@@ -665,30 +665,20 @@ def _moe_grouped_gemm_kernel(
         hidden += tl.sum(w_chunk * x_chunk[None, :], axis=1)
 
     # GELU (tanh approximation)
-    hidden = hidden * 0.5 * (1.0 + tl.libdevice.tanh(
+    hidden = hidden * 0.5 * (1.0 + tl.extra.cuda.libdevice.tanh(
         0.7978845608028654 * (hidden + 0.044715 * hidden * hidden * hidden)
     ))
 
     # Up-projection: out[d] = sum_h hidden[h] * W_up[expert, d, h]
-    # BLOCK_D covers all of D, iterate over H in BLOCK_H chunks
+    # BLOCK_H >= H (next_power_of_2), so hidden covers all of H in one vector.
     d_offs = tl.arange(0, BLOCK_D)
     d_mask = d_offs < D
-    out_val = tl.zeros([BLOCK_D], dtype=tl.float32)
 
-    for h_start in range(0, H, BLOCK_H):
-        h_inner = h_start + tl.arange(0, BLOCK_H)
-        h_inner_mask = h_inner < H
-        h_chunk = tl.load(
-            sorted_w_ptr + 0,  # just need the hidden values we already computed
-            mask=False, other=0.0,
-        )
-        # We need hidden[h_start:h_start+BLOCK_H] but can't slice registers in Triton.
-        # Solution: only enter this loop body once since BLOCK_H >= H.
-        # W_up[expert_id, d, h]: shape (BLOCK_D, BLOCK_H)
-        w_up_ptrs = W_up_ptr + expert_id * D * H + d_offs[:, None] * H + h_inner[None, :]
-        w_up_chunk = tl.load(w_up_ptrs, mask=d_mask[:, None] & h_inner_mask[None, :], other=0.0)
-        # hidden is already computed with BLOCK_H covering all of H
-        out_val += tl.sum(w_up_chunk * hidden[None, :], axis=1)
+    # W_up[expert_id, d, h]: load (BLOCK_D, BLOCK_H) tile
+    w_up_ptrs = W_up_ptr + expert_id * D * H + d_offs[:, None] * H + h_offs[None, :]
+    w_up_tile = tl.load(w_up_ptrs, mask=d_mask[:, None] & h_mask[None, :], other=0.0)
+    # (BLOCK_D, BLOCK_H) × (BLOCK_H,) → reduce over H → (BLOCK_D,)
+    out_val = tl.sum(w_up_tile * hidden[None, :], axis=1)
 
     # Scale by routing weight and store
     out_val = out_val * rw
