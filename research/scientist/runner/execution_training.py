@@ -63,7 +63,7 @@ def _sample_entropy_gate_output(
     return (sum(values) / len(values)) if values else None
 
 
-def _smoke_test_graph_structure(graph_json: str) -> Dict[str, Any]:
+def _smoke_test_graph_structure(graph_json) -> Dict[str, Any]:
     """Run fast C++ structural smoke test on a computation graph.
 
     Checks gradient flow, parameter presence, and unsafe op absence.
@@ -299,6 +299,17 @@ class _ExecutionTrainingMixin:
             OpKernelProfiler,
         )
 
+        # Parse graph JSON once upfront to avoid repeated deserialization
+        graph_data = (
+            (
+                json.loads(graph_json)
+                if isinstance(graph_json, str) and graph_json
+                else graph_json
+            )
+            if graph_json
+            else None
+        )
+
         trace_enabled = bool(getattr(config, "enable_perf_tracing", False))
         tracer = PerfTracer() if trace_enabled else None
         starvation_detector = GPUStarvationDetector(threshold_ms=2.0)
@@ -376,8 +387,8 @@ class _ExecutionTrainingMixin:
             trace_totals_ms["model_setup"] += (time.perf_counter() - setup_t0) * 1000.0
 
             # ── Structural smoke test (Phase 6.6) ──
-            if graph_json:
-                smoke = _smoke_test_graph_structure(graph_json)
+            if graph_data:
+                smoke = _smoke_test_graph_structure(graph_data)
                 if not smoke.get("ok"):
                     result["passed"] = False
                     result["smoke_test_failure"] = smoke.get("reason", "unknown")
@@ -430,16 +441,11 @@ class _ExecutionTrainingMixin:
 
             # Adaptive Budget for Novel Architectures (Task 2G)
             total_steps = int(config.stage1_steps)
-            if graph_json:
+            if graph_data:
                 try:
                     from ...synthesis.primitives import OpCategory
 
-                    _gj = (
-                        json.loads(graph_json)
-                        if isinstance(graph_json, str)
-                        else graph_json
-                    )
-                    _nodes = _gj.get("nodes", [])
+                    _nodes = graph_data.get("nodes", [])
                     exotic_categories = {
                         OpCategory.MATH_SPACE,
                         OpCategory.SPIKING,
@@ -577,6 +583,14 @@ class _ExecutionTrainingMixin:
                             or (step == total_steps - 1)
                             or (step % check_interval == 0)
                         )
+
+                        # Milestone steps need Python floats; all other steps
+                        # skip to `continue` below, so defer .item() to avoid
+                        # CPU-GPU sync on every step.
+                        is_milestone = step == 250 or step == 500
+                        if not should_check and not is_milestone:
+                            step += 1
+                            continue
 
                         loss_val = float(captured_loss.item())
                         grad_norm = float(captured_grad_norm.item())
@@ -744,7 +758,9 @@ class _ExecutionTrainingMixin:
                         aux_loss = _collect_routing_aux_loss(model)
                         if aux_loss is not None:
                             loss = loss + aux_loss
-                            step_state["routing_aux_loss"] = aux_loss.item()
+                            # Keep tensor in step_state; extract at
+                            # checkpoint only to avoid per-step GPU sync.
+                            step_state["routing_aux_loss_tensor"] = aux_loss.detach()
 
                         # Collect early-exit auxiliary loss: projects
                         # intermediate hidden states through shared lm_head.
@@ -753,7 +769,7 @@ class _ExecutionTrainingMixin:
                         )
                         if ee_loss is not None:
                             loss = loss + ee_loss
-                            step_state["early_exit_aux_loss"] = ee_loss.item()
+                            step_state["early_exit_aux_loss_tensor"] = ee_loss.detach()
 
                         bwd_t0 = time.perf_counter()
                         with _trace_ctx("backward_pass"):
@@ -797,9 +813,9 @@ class _ExecutionTrainingMixin:
 
                     loss_val = loss.item()
 
-                    _raux = step_state.get("routing_aux_loss")
-                    if _raux is not None:
-                        routing_aux_loss_sum += _raux
+                    _raux_t = step_state.get("routing_aux_loss_tensor")
+                    if _raux_t is not None:
+                        routing_aux_loss_sum += float(_raux_t.item())
                         routing_aux_loss_count += 1
 
                     if step == 250:
@@ -932,9 +948,11 @@ class _ExecutionTrainingMixin:
                             "phase": ctx.get("phase", ""),
                         }
                         # Append per-step routing telemetry when available
-                        _raux_step = step_state.get("routing_aux_loss")
-                        if _raux_step is not None:
-                            step_event["routing_aux_loss"] = round(_raux_step, 6)
+                        _raux_step_t = step_state.get("routing_aux_loss_tensor")
+                        if _raux_step_t is not None:
+                            step_event["routing_aux_loss"] = round(
+                                float(_raux_step_t.item()), 6
+                            )
                         if grad_norm > 0:
                             step_event["grad_norm"] = round(grad_norm, 4)
                         self._emit_event("training_step", step_event)
@@ -1238,6 +1256,102 @@ class _ExecutionTrainingMixin:
                         )
                     except Exception as e_wt:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
+
+                # Fast HellaSwag commonsense reasoning probe at screening time
+                if not getattr(config, "skip_screening_hellaswag", False):
+                    try:
+                        from ...eval.hellaswag_eval import screening_hellaswag_eval
+
+                        hs = screening_hellaswag_eval(
+                            model,
+                            config.vocab_size,
+                            str(dev),
+                        )
+                        result["hellaswag_acc"] = hs.get("hellaswag_acc")
+                        result["hellaswag_status"] = hs.get("hellaswag_status")
+                        if hs.get("hellaswag_acc") is not None:
+                            logger.info(
+                                "    Screening HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
+                                hs["hellaswag_acc"] * 100,
+                                hs.get("hellaswag_correct", 0),
+                                hs.get("hellaswag_total", 0),
+                                hs.get("elapsed_ms", 0),
+                            )
+                    except Exception as e_hs:
+                        logger.debug("Screening HellaSwag eval skipped: %s", e_hs)
+
+                # Binding probes: induction head + binding range (post micro-train)
+                if not getattr(config, "skip_binding_probes", False):
+                    try:
+                        from ...eval.induction_probe import induction_score
+                        from ...eval.binding_range import binding_range_profile
+
+                        ind = induction_score(
+                            model,
+                            gaps=(4, 8, 16, 32, 64),
+                            n_train_steps=1000,
+                            n_eval=100,
+                            batch_size=16,
+                            device=str(dev),
+                        )
+                        result["induction_auc"] = ind.auc
+                        result["induction_gap_accuracies"] = ind.gap_accuracies
+
+                        br = binding_range_profile(
+                            model,
+                            distances=(2, 4, 8, 16, 32, 64),
+                            n_eval=100,
+                            device=str(dev),
+                        )
+                        result["binding_auc"] = br.auc
+
+                        # AR probe skipped at screening (too slow, signal is weak)
+                        result["ar_auc"] = None
+
+                        # Binding composite: 3-signal weighted average
+                        # (ar_auc=None at screening, so only induction + binding_auc)
+                        bc = 0.3 * ind.auc + 0.3 * br.auc
+                        result["binding_composite"] = round(bc, 4)
+
+                        logger.info(
+                            "    Binding probes: induction_auc=%.3f binding_auc=%.3f bc=%.3f (%.0f+%.0fms)",
+                            ind.auc,
+                            br.auc,
+                            bc,
+                            ind.elapsed_ms,
+                            br.elapsed_ms,
+                        )
+
+                        # HIGH PRIORITY DISCOVERY: induction_auc > 0.20 without
+                        # standard causal attention. This would be a novel mechanism
+                        # for exact token retrieval across gaps.
+                        if ind.auc > 0.20:
+                            _has_attention = any(
+                                n.op_name
+                                in (
+                                    "softmax_attention",
+                                    "diff_attention",
+                                    "graph_attention",
+                                    "linear_attention",
+                                )
+                                for n in graph.nodes.values()
+                                if not n.is_input
+                            )
+                            if not _has_attention:
+                                logger.warning(
+                                    "*** HIGH PRIORITY DISCOVERY: %s induction_auc=%.3f "
+                                    "WITHOUT standard attention ops! Investigate immediately. "
+                                    "Graph ops: %s",
+                                    result.get("graph_fingerprint", "?")[:10],
+                                    ind.auc,
+                                    [
+                                        n.op_name
+                                        for n in graph.nodes.values()
+                                        if not n.is_input
+                                    ],
+                                )
+                    except Exception as e_bp:
+                        logger.debug("Binding probes skipped: %s", e_bp)
 
                 # Post-S1 triage: cheap evals for composite score dimensions
                 if result.get("passed") and model is not None:

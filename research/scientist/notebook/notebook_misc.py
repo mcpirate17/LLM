@@ -1315,15 +1315,15 @@ class _MiscMixin:
         Translates legacy parameter names to v7 equivalents for backward
         compatibility with callers that still use ``wikitext_perplexity``.
         """
-        from ..leaderboard_scoring import compute_composite_v7
+        from ..leaderboard_scoring import compute_composite
 
-        # Translate legacy kwargs → v7 parameter names
+        # Translate legacy kwargs → current scoring parameter names
         if "wikitext_perplexity" in kwargs and "ppl_screening" not in kwargs:
             kwargs["ppl_screening"] = kwargs.pop("wikitext_perplexity")
-        # wikitext_score has no direct v7 equivalent — drop silently
+        # wikitext_score has no direct scoring equivalent — drop silently
         kwargs.pop("wikitext_score", None)
 
-        result = compute_composite_v7(**kwargs)
+        result = compute_composite(**kwargs)
         return result if isinstance(result, (int, float)) else float(result)
 
     @staticmethod

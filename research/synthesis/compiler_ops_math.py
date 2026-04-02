@@ -216,11 +216,17 @@ def _op_norm_last(_, inputs, __):
 
 
 def _op_cumsum(_, inputs, __):
-    return torch.cumsum(inputs[0], dim=1)
+    x = inputs[0]
+    if _c(x):
+        return aria_core.cumsum_f32(x)
+    return torch.cumsum(x, dim=1)
 
 
 def _op_cumprod_safe(_, inputs, __):
-    return torch.cumprod(torch.clamp(inputs[0], -2, 2), dim=1)
+    x = inputs[0]
+    if _c(x):
+        return aria_core.cumprod_safe_f32(x, -2.0, 2.0)
+    return torch.cumprod(torch.clamp(x, -2, 2), dim=1)
 
 
 def _op_matmul(_, inputs, __):

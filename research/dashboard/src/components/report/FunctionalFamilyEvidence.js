@@ -1,13 +1,18 @@
-import React, { useMemo, useState } from 'react';
+import React from 'react';
 import { reliabilityBand } from './reportUtils';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export default function FunctionalFamilyEvidence({ coverage }) {
   const families = Array.isArray(coverage?.families) ? coverage.families : [];
   const totals = coverage?.totals || {};
-  const [sortKey, setSortKey] = useState('n_tested');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
+
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows, handleSort } = useInteractiveTable({
+    rows: families,
+    filterFields: ['family'],
+    initialSortKey: 'n_tested',
+    initialSortDesc: true,
+  });
 
   const functional = families.find(row => row.family === 'functional') || null;
   const exoticFamilies = families.filter(row => row.family !== 'euclidean');
@@ -16,30 +21,7 @@ export default function FunctionalFamilyEvidence({ coverage }) {
   const testedBand = reliabilityBand(functional?.n_tested || 0);
   const survivedBand = reliabilityBand(functional?.n_survived || 0);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(families, filterQuery, ['family'])
-  ), [families, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
   if (families.length === 0) return null;
-
-  const handleSort = (key) => {
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
 
   return (
     <div className="card">
@@ -88,15 +70,7 @@ export default function FunctionalFamilyEvidence({ coverage }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter families"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <div style={{ overflowX: 'auto' }}>
@@ -104,24 +78,24 @@ export default function FunctionalFamilyEvidence({ coverage }) {
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th onClick={() => handleSort('family')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Family{sortKey === 'family' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Family<SortIndicator active={sortKey === 'family'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('n_tested')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Tested{sortKey === 'n_tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Tested<SortIndicator active={sortKey === 'n_tested'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('n_survived')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Survived{sortKey === 'n_survived' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Survived<SortIndicator active={sortKey === 'n_survived'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('survival_rate')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                S1 Rate{sortKey === 'survival_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                S1 Rate<SortIndicator active={sortKey === 'survival_rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('tested_share')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Share of Tested{sortKey === 'tested_share' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Share of Tested<SortIndicator active={sortKey === 'tested_share'} desc={sortDesc} />
               </th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map(row => {
+            {sortedRows.map(row => {
               const isFunctional = row.family === 'functional';
               const testedShare = Number(row.tested_share || 0) * 100;
               const survivalRate = Number(row.survival_rate || 0) * 100;

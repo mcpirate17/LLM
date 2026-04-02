@@ -1,38 +1,12 @@
-import React, { useState, useMemo } from 'react';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
-
-const COMPRESSION_FACTORS = {
-  low_rank: 0.55, shared_basis: 0.5, hash_trick: 0.35,
-  structured_sparse: 0.4, kronecker: 0.5, polynomial: 0.6,
-  residual_quantized: 0.3,
-};
-
-const WEIGHT_STORAGE_LABELS = {
-  dense_matrix: 'Dense (baseline)', low_rank: 'Low-Rank (UV)',
-  hypernetwork: 'Hypernetwork', shared_basis: 'Shared Basis',
-  hash_trick: 'Hash Trick', kronecker: 'Kronecker',
-  polynomial: 'Polynomial', structured_sparse: 'Structured Sparse',
-};
-
-const TOKEN_REP_LABELS = {
-  standard_float: 'Standard Float', binary_hash: 'Binary Hash',
-  residual_quantized: 'Residual Quantized', complex_valued: 'Complex',
-  quaternion: 'Quaternion', multi_resolution: 'Multi-Resolution',
-  mixture_embedding: 'Mixture Embedding',
-};
-
-function parseArchSpec(value) {
-  if (!value || typeof value !== 'string') return null;
-  try {
-    const p = JSON.parse(value);
-    return p && typeof p === 'object' ? p : null;
-  } catch { return null; }
-}
+import React, { useMemo } from 'react';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
+import {
+  COMPRESSION_FACTORS, parseArchSpec,
+  WEIGHT_STORAGE_LABELS, TOKEN_REP_LABELS,
+} from '../report/reportUtils';
 
 export function CompressionCoverage({ data, programs }) {
-  const [sortKey, setSortKey] = useState('count');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     if (data && Array.isArray(data.techniques)) {
       const totals = data.totals || {};
@@ -95,27 +69,12 @@ export function CompressionCoverage({ data, programs }) {
     return { rows, denseCount, compressedCount, total: programs.length };
   }, [data, programs]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(analysis?.rows || [], filterQuery, ['technique', 'label'])
-  ), [analysis?.rows, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
-  };
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows: analysis?.rows || [],
+    filterFields: ['technique', 'label'],
+    initialSortKey: 'count',
+    initialSortDesc: true,
+  });
 
   if (!analysis || analysis.compressedCount === 0) {
     return (
@@ -153,15 +112,7 @@ export function CompressionCoverage({ data, programs }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter techniques"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <div style={{ maxHeight: 260, overflow: 'auto' }}>
@@ -169,31 +120,31 @@ export function CompressionCoverage({ data, programs }) {
           <thead>
             <tr>
               <th onClick={() => handleSort('label')} style={{ cursor: 'pointer' }}>
-                Technique{sortKey === 'label' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Technique<SortIndicator active={sortKey === 'label'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('tested')} style={{ cursor: 'pointer' }}>
-                Tested{sortKey === 'tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Tested<SortIndicator active={sortKey === 'tested'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('count')} style={{ cursor: 'pointer' }}>
-                N{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                N<SortIndicator active={sortKey === 'count'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('survivalRate')} style={{ cursor: 'pointer' }}>
-                Survival %{sortKey === 'survivalRate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Survival %<SortIndicator active={sortKey === 'survivalRate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgLoss')} style={{ cursor: 'pointer' }}>
-                Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Loss<SortIndicator active={sortKey === 'avgLoss'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('bestLoss')} style={{ cursor: 'pointer' }}>
-                Best Loss{sortKey === 'bestLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Best Loss<SortIndicator active={sortKey === 'bestLoss'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgRatio')} style={{ cursor: 'pointer' }}>
-                Avg Ratio{sortKey === 'avgRatio' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Ratio<SortIndicator active={sortKey === 'avgRatio'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgMemoryMb')} style={{ cursor: 'pointer' }}>
-                Avg Mem (MB){sortKey === 'avgMemoryMb' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Mem (MB)<SortIndicator active={sortKey === 'avgMemoryMb'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgRetention')} style={{ cursor: 'pointer' }}>
-                Quality Retention{sortKey === 'avgRetention' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Quality Retention<SortIndicator active={sortKey === 'avgRetention'} desc={sortDesc} />
               </th>
             </tr>
           </thead>

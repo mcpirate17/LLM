@@ -93,6 +93,8 @@ def test_component_contract(comp_path):
 
     try:
         outputs = handler.forward(inputs, config)
+    except NotImplementedError as e:
+        pytest.skip(f"Component {manifest['id']} has no Python fallback: {e}")
     except Exception as e:
         pytest.fail(f"Component {manifest['id']} failed forward pass: {e}")
     finally:

@@ -1,21 +1,8 @@
-"""Kernel handler for shared_basis_proj — dispatches to aria_core.linear_shared_basis_f32."""
+"""Kernel handler for shared_basis_proj — delegates to research.mathspaces.compression."""
 
-from components.base import NativeComponentHandler, _make_weight
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "linear_shared_basis"
-
-    def _ensure_weights(self, x, config):
-        D = x.shape[-1]
-        n_basis = config.get("n_basis", 8)
-        self._weights["basis"] = _make_weight((n_basis, D), fan_in=D)
-        self._weights["coeffs"] = _make_weight((D, n_basis), fan_in=n_basis)
-
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        return (x, self._weights["basis"], self._weights["coeffs"])
-
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+ComponentHandler = make_mathspace_unary_handler(
+    "shared_basis_proj",
+    "research.mathspaces.compression.execute_shared_basis_proj",
+)

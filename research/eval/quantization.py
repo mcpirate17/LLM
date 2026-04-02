@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 
 
-@dataclass
+@dataclass(slots=True)
 class FakeQuantResult:
     bits: int
     target_sparsity: float

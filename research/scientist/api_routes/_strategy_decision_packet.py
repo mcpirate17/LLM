@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from ._strategy_recommendations import (
     compute_cross_run_stability,
     compute_recommendation,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_decision_packet(nb, result_id: str) -> Optional[dict[str, Any]]:
@@ -67,7 +70,12 @@ def build_decision_packet(nb, result_id: str) -> Optional[dict[str, Any]]:
 def _get_leaderboard_entry(nb, result_id: str):
     try:
         return nb.get_leaderboard_entry(result_id)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "Failed to load leaderboard entry for result_id=%s: %s",
+            result_id,
+            exc,
+        )
         return None
 
 
@@ -76,11 +84,20 @@ def _get_failure_analysis(nb, experiment_id: Optional[str]) -> dict:
         return {"funnel": {}, "errors": {}, "stage_deaths": {}}
     try:
         nb.get_experiment(experiment_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "Experiment lookup failed during decision packet build for experiment_id=%s: %s",
+            experiment_id,
+            exc,
+        )
     try:
         return nb.get_failure_analysis(experiment_id)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "Failure analysis lookup failed for experiment_id=%s: %s",
+            experiment_id,
+            exc,
+        )
         return {"funnel": {}, "errors": {}, "stage_deaths": {}}
 
 
@@ -95,8 +112,12 @@ def _get_hypothesis_chain(nb, experiment_id: Optional[str]) -> list:
         if hyp_row:
             hid = hyp_row["hypothesis_id"] if isinstance(hyp_row, dict) else hyp_row[0]
             return nb.get_hypothesis_chain(hid)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "Hypothesis chain lookup failed for experiment_id=%s: %s",
+            experiment_id,
+            exc,
+        )
     return []
 
 
@@ -110,8 +131,12 @@ def _get_cross_run_stability(nb, result_id: str) -> dict:
                     "trend": c.get("trend", "unknown"),
                     "seen_runs": c.get("seen_runs", 0),
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "Cross-run stability lookup failed for result_id=%s: %s",
+            result_id,
+            exc,
+        )
     return {"trend": "unknown", "seen_runs": 0}
 
 

@@ -1,17 +1,8 @@
-"""Kernel handler for tropical_add — dispatches to aria_core.tropical_add_f32."""
+"""Kernel handler for tropical_add — delegates to research.mathspaces.tropical."""
 
-import torch
-import torch.nn as nn
-from components.base import SimpleBinaryOpHandler
+from runtime.fallback_templates import make_mathspace_binary_handler
 
-
-class TropicalAddModule(nn.Module):
-    def forward(self, a, b):
-        return torch.minimum(a, b)
-
-
-class ComponentHandler(SimpleBinaryOpHandler):
-    def __init__(self):
-        super().__init__(
-            TropicalAddModule, torch.minimum, native_op_name="tropical_add"
-        )
+ComponentHandler = make_mathspace_binary_handler(
+    "tropical_add",
+    "research.mathspaces.tropical.execute_tropical_add",
+)

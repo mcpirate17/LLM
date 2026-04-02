@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 
 from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
+from research.mathspaces._utils import causal_mask
 
 
 DEFAULT_P = 2
@@ -84,15 +85,6 @@ def padic_expansion(
     # Stack: (B, S, n_digits, 2, D) → reshape to (B, S, n_digits * 2 * D)
     paired = torch.stack([sin_parts, cos_parts], dim=-2)  # (B, S, n_digits, 2, D)
     return paired.reshape(x.shape[0], x.shape[1], -1)
-
-
-def padic_norm(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
-    """p-adic norm: |x|_p = p^(-v_p(x))
-
-    Small values have LARGE p-adic norm (opposite of usual).
-    """
-    val = padic_valuation(x, p)
-    return p ** (-val)
 
 
 def _padic_dist_chunk(x_q: torch.Tensor, x_j: torch.Tensor, p: int) -> torch.Tensor:
@@ -217,8 +209,7 @@ def ultrametric_attention(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
         x_j = x.unsqueeze(1)  # (B, 1, S, D)
         dist = padic_distance(x_i, x_j, p).mean(dim=-1)  # (B, S, S)
         if S > 1:
-            mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-            dist.masked_fill_(mask, float("inf"))
+            dist.masked_fill_(causal_mask(S, x.device), float("inf"))
         weights = torch.softmax(-dist, dim=-1)
         return torch.bmm(weights, x)
 
@@ -227,13 +218,6 @@ def ultrametric_attention(x: torch.Tensor, p: int = DEFAULT_P) -> torch.Tensor:
 
 
 # ── Primitive execution functions ─────────────────────────────────────
-
-
-def execute_padic_distance(
-    module: nn.Module, x: torch.Tensor, y: torch.Tensor
-) -> torch.Tensor:
-    """p-adic distance between two tensors."""
-    return padic_distance(x, y)
 
 
 def execute_padic_expand(module: nn.Module, x: torch.Tensor) -> torch.Tensor:

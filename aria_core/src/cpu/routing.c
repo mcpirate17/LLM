@@ -29,7 +29,8 @@ void aria_difficulty_scorer_f32(const float *x,
         }
     }
 
-    float *hidden = (float *)malloc((size_t)hidden_dim * sizeof(float));
+    arena_reset();
+    float *hidden = (float *)arena_alloc((size_t)hidden_dim * sizeof(float));
     if (!hidden) {
         return;
     }
@@ -55,7 +56,7 @@ void aria_difficulty_scorer_f32(const float *x,
         }
     }
 
-    free(hidden);
+    arena_free(hidden);
 }
 
 void aria_lane_router_threshold_f32(const float *scores,
@@ -112,10 +113,12 @@ void aria_load_balance_loss_f32(const int64_t *assignments,
         return;
     }
 
-    float *counts = (float *)calloc((size_t)lanes, sizeof(float));
+    arena_reset();
+    float *counts = (float *)arena_alloc((size_t)lanes * sizeof(float));
     if (!counts) {
         return;
     }
+    memset(counts, 0, (size_t)lanes * sizeof(float));
 
     for (int64_t i = 0; i < total; ++i) {
         int64_t lane = assignments[i];
@@ -136,5 +139,5 @@ void aria_load_balance_loss_f32(const int64_t *assignments,
     }
 
     *loss_out = loss_weight * loss;
-    free(counts);
+    arena_free(counts);
 }

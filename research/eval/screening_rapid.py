@@ -442,11 +442,19 @@ class RapidScreeningCheck:
     @staticmethod
     def _compute_grad_norm(model: nn.Module) -> float:
         """Compute total L2 gradient norm across all parameters."""
-        total = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                total += p.grad.data.float().norm().item() ** 2
-        return total**0.5
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        if not grads:
+            return 0.0
+        try:
+            norms = torch._foreach_norm(grads, 2)
+            norm_vec = torch.stack([n.detach() for n in norms])
+            return float(torch.linalg.vector_norm(norm_vec, ord=2).item())
+        except RuntimeError:
+            # Fallback for mixed-device or unsupported dtypes
+            total = 0.0
+            for g in grads:
+                total += g.data.float().norm().item() ** 2
+            return total**0.5
 
     @staticmethod
     def _detect_entropy_gate(model: nn.Module) -> bool:

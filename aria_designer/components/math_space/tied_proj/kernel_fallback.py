@@ -1,19 +1,8 @@
-"""Kernel handler for tied_proj — dispatches to aria_core.linear_tied_f32."""
+"""Kernel handler for tied_proj — delegates to research.mathspaces.compression."""
 
-from components.base import NativeComponentHandler, _make_weight
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "linear_tied"
-
-    def _ensure_weights(self, x, config):
-        D = x.shape[-1]
-        self._weights["w"] = _make_weight((D, D), fan_in=D)
-
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        return (x, self._weights["w"])
-
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+ComponentHandler = make_mathspace_unary_handler(
+    "tied_proj",
+    "research.mathspaces.compression.execute_tied_proj",
+)

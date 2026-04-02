@@ -1,5 +1,6 @@
-"""Python fallback kernel for cos (identity stub)."""
+"""Python fallback kernel for cos."""
 
+import torch
 from components.base import make_unary_handler
 
-ComponentHandler = make_unary_handler(lambda x: x)
+ComponentHandler = make_unary_handler(torch.cos, native_op_name="cos")

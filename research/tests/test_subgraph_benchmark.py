@@ -33,11 +33,11 @@ aria_scheduler = pytest.importorskip(
 
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.native_ir_converter import graph_to_native_ir_json
-from research.scientist.native_runner import (
+from research.scientist.native.dispatch import (
     dispatch_graph_native,
     dispatch_op_native,
-    SubgraphDispatcher,
 )
+from research.scientist.native.autograd import SubgraphDispatcher
 
 pytestmark = pytest.mark.native
 

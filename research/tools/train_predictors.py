@@ -99,7 +99,7 @@ def train_interaction(save: bool = False) -> dict:
     }
 
 
-def train_graph_predictor() -> dict:
+def train_graph_predictor(save: bool = False) -> dict:
     """Train topology-aware graph predictor."""
     from research.scientist.intelligence.gnn_predictor import GraphPredictor
 
@@ -109,6 +109,10 @@ def train_graph_predictor() -> dict:
 
     logger.info("Graph predictor: metrics=%s (%.1fs)", model._train_metrics, elapsed)
 
+    if save and model.is_fitted():
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        model.save(_STATE_DIR / "graph_predictor.npz")
+
     return {
         "component": "graph_predictor",
         "elapsed_s": elapsed,
@@ -116,7 +120,7 @@ def train_graph_predictor() -> dict:
     }
 
 
-def train_ensemble_full() -> dict:
+def train_ensemble_full(save: bool = False) -> dict:
     """Train full ensemble (all components)."""
     from research.scientist.intelligence.predictor import train_ensemble
 
@@ -129,6 +133,10 @@ def train_ensemble_full() -> dict:
 
     diag = ensemble.diagnostics()
     logger.info("Ensemble: %s (%.1fs)", diag, elapsed)
+
+    if save and ensemble.is_fitted():
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        ensemble.save(_STATE_DIR)
 
     return {"component": "ensemble", "elapsed_s": elapsed, **diag}
 
@@ -258,9 +266,9 @@ def main() -> None:
     if args.component in ("all", "interaction"):
         results["interaction"] = train_interaction(save=args.save_state)
     if args.component in ("all", "graph"):
-        results["graph"] = train_graph_predictor()
+        results["graph"] = train_graph_predictor(save=args.save_state)
     if args.component in ("all", "ensemble"):
-        results["ensemble"] = train_ensemble_full()
+        results["ensemble"] = train_ensemble_full(save=args.save_state)
     if args.component == "heatmaps" or args.heatmaps:
         generate_heatmaps()
 

@@ -20,7 +20,6 @@
 
 #define CHECK_CPU(x) TORCH_CHECK(!x.is_cuda(), #x " must be a CPU tensor")
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_DEVICE(x)
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_F32(x) TORCH_CHECK(x.dtype() == torch::kFloat32, #x " must be float32")
 #define CHECK_F16(x) TORCH_CHECK(x.dtype() == torch::kFloat16, #x " must be float16")
@@ -599,42 +598,6 @@ std::tuple<torch::Tensor, torch::Tensor> token_merge_simple_f32(torch::Tensor x,
     aria_token_merge_simple_f32(x.data_ptr<float>(), y.data_ptr<float>(), restore.data_ptr<int64_t>(),
                                 x.size(0), x.size(1), x.size(2), nk);
     return {y, restore};
-}
-
-torch::Tensor grouped_linear_f32(torch::Tensor x, torch::Tensor W, int64_t groups, int64_t group_dim) {
-    CHECK_INPUT(x); CHECK_INPUT(W);
-    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
-    auto y = torch::empty_like(x);
-    aria_grouped_linear_f32(x.data_ptr<float>(), W.data_ptr<float>(), y.data_ptr<float>(),
-                            x.size(0), x.size(1), x.size(2), groups, group_dim);
-    return y;
-}
-
-torch::Tensor bottleneck_proj_f32(torch::Tensor x, torch::Tensor down, torch::Tensor up) {
-    CHECK_INPUT(x); CHECK_INPUT(down); CHECK_INPUT(up);
-    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
-    auto y = torch::empty_like(x);
-    aria_bottleneck_proj_f32(x.data_ptr<float>(), down.data_ptr<float>(), up.data_ptr<float>(), y.data_ptr<float>(),
-                             x.size(0), x.size(1), x.size(2), down.size(0));
-    return y;
-}
-
-torch::Tensor shared_basis_proj_f32(torch::Tensor x, torch::Tensor mixing, torch::Tensor basis) {
-    CHECK_INPUT(x); CHECK_INPUT(mixing); CHECK_INPUT(basis);
-    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
-    auto y = torch::empty_like(x);
-    aria_shared_basis_proj_f32(x.data_ptr<float>(), mixing.data_ptr<float>(), basis.data_ptr<float>(), y.data_ptr<float>(),
-                               x.size(0), x.size(1), x.size(2), mixing.size(0));
-    return y;
-}
-
-torch::Tensor tied_proj_f32(torch::Tensor x, torch::Tensor W) {
-    CHECK_INPUT(x); CHECK_INPUT(W);
-    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
-    auto y = torch::empty_like(x);
-    aria_tied_proj_f32(x.data_ptr<float>(), W.data_ptr<float>(), y.data_ptr<float>(),
-                       x.size(0), x.size(1), x.size(2), W.size(0));
-    return y;
 }
 
 torch::Tensor linear_low_rank_f32(torch::Tensor x, torch::Tensor U, torch::Tensor V, c10::optional<torch::Tensor> bias) {
@@ -1640,11 +1603,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("route_lane_argmax_f32", &route_lane_argmax_f32);
     m.def("route_recursion_depth_f32", &route_recursion_depth_f32);
     m.def("token_merge_simple_f32", &token_merge_simple_f32);
-    m.def("grouped_linear_f32", &grouped_linear_f32);
-    m.def("bottleneck_proj_f32", &bottleneck_proj_f32);
-    m.def("shared_basis_proj_f32", &shared_basis_proj_f32);
-    m.def("tied_proj_f32", &tied_proj_f32);
-    
     // Phase 3 Compression (Standardized 2D Linear API)
     m.def("linear_low_rank_f32", &linear_low_rank_f32);
     m.def("linear_block_sparse_f32", &linear_block_sparse_f32);

@@ -44,4 +44,43 @@ static const float GELU_CUBIC = 0.044715f;
 /* Default numerical epsilon for stability */
 #define ARIA_EPSILON_DEFAULT 1e-8f
 
+/* ── Thread-Local Arena Allocator ────────────────────────────────────
+ * Replaces per-call malloc/free for temporary buffers that are allocated
+ * and freed within the same kernel call. arena_reset() is called at the
+ * top of each kernel entry point; all arena_alloc() memory is implicitly
+ * freed on the next reset. Falls back to malloc when the arena is full.
+ * ──────────────────────────────────────────────────────────────────── */
+
+static constexpr size_t ARENA_ALIGN = 16;
+static constexpr size_t MAX_TEMP_BYTES = 4u * 1024u * 1024u; /* 4 MiB */
+
+struct ArenaState {
+    alignas(ARENA_ALIGN) char buf[MAX_TEMP_BYTES];
+    size_t offset;
+};
+
+static thread_local ArenaState tl_arena = {{}, 0};
+
+static inline void arena_reset() {
+    tl_arena.offset = 0;
+}
+
+static inline void *arena_alloc(size_t n) {
+    size_t aligned = (n + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1);
+    size_t new_offset = tl_arena.offset + aligned;
+    if (new_offset <= MAX_TEMP_BYTES) {
+        void *ptr = tl_arena.buf + tl_arena.offset;
+        tl_arena.offset = new_offset;
+        return ptr;
+    }
+    return malloc(n);
+}
+
+static inline void arena_free(void *ptr) {
+    char *p = static_cast<char *>(ptr);
+    if (p < tl_arena.buf || p >= tl_arena.buf + MAX_TEMP_BYTES) {
+        free(ptr);
+    }
+}
+
 #endif /* ARIA_KERNELS_COMMON_H */

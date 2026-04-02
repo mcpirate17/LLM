@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -231,8 +232,8 @@ class _DashboardMixin:
         starvation = results.get("_gpu_starvation", []) or []
         kernel_samples = results.get("_kernel_timing", []) or []
 
-        trace_totals: Dict[str, float] = {}
-        trace_counts: Dict[str, int] = {}
+        trace_totals: Dict[str, float] = defaultdict(float)
+        trace_counts: Dict[str, int] = defaultdict(int)
         for trace_report in perf_traces:
             summary = (trace_report or {}).get("summary_ms", {})
             if not isinstance(summary, dict):
@@ -242,8 +243,8 @@ class _DashboardMixin:
                     val = float(value)
                 except Exception:
                     continue
-                trace_totals[name] = trace_totals.get(name, 0.0) + val
-                trace_counts[name] = trace_counts.get(name, 0) + 1
+                trace_totals[name] += val
+                trace_counts[name] += 1
 
         trace_avg_ms = {
             name: round(trace_totals[name] / max(1, trace_counts[name]), 4)

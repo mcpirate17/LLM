@@ -7,6 +7,7 @@ import { useAriaData } from '../hooks/useAriaData';
 import { LEADERBOARD_PREFS_KEY, COLUMNS } from './leaderboard/leaderboardConfig';
 import { candidateEligibility, toRetentionPercent } from './leaderboard/leaderboardUtils';
 import LeaderboardRow from './leaderboard/LeaderboardRow';
+import SortIndicator from './shared/SortIndicator';
 
 const thStyle = {
   padding: '6px 8px',
@@ -373,11 +374,7 @@ function Leaderboard({
                     aria-sort={ariaSortAttr(c.key)}
                   >
                     {c.label}
-                    {sortKey === c.key && c.key !== '_actions' && (
-                      <span className="th-sort-icon" aria-hidden="true">
-                        {sortDesc ? '\u25BC' : '\u25B2'}
-                      </span>
-                    )}
+                    {c.key !== '_actions' && <SortIndicator active={sortKey === c.key} desc={sortDesc} />}
                     <span
                       onMouseDown={(e) => onResizeStart(e, c.key)}
                       style={{

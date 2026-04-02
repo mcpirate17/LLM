@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, formatDuration } from '../utils/format';
 import apiService from '../services/apiService';
-import { filterRowsByQuery } from '../utils/tableFiltering';
 import { CHART_DEFAULTS } from '../utils/chartScales';
+import useInteractiveTable from './shared/useInteractiveTable';
+import SortIndicator from './shared/SortIndicator';
 
 const PERF_CHART_WINDOW = 30;
 
@@ -120,10 +121,6 @@ function PerfDashboard() {
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filterQuery, setFilterQuery] = useState('');
-  const [sortKey, setSortKey] = useState('avg_cuda_ms');
-  const [sortDesc, setSortDesc] = useState(true);
-
   useEffect(() => {
     apiService.getTrends()
       .then(data => {
@@ -148,34 +145,14 @@ function PerfDashboard() {
     }
   }, [trends]);
 
-  const filteredHotspots = useMemo(() => (
-    filterRowsByQuery(hotspots, filterQuery, ['op'])
-  ), [hotspots, filterQuery]);
-
-  const sortedHotspots = useMemo(() => {
-    const arr = [...filteredHotspots];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filteredHotspots, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDesc(!sortDesc);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  };
+  const {
+    sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sortedHotspots, handleSort,
+  } = useInteractiveTable({
+    rows: hotspots,
+    filterFields: ['op'],
+    initialSortKey: 'avg_cuda_ms',
+    initialSortDesc: true,
+  });
 
   if (loading) {
     return (
@@ -258,15 +235,7 @@ function PerfDashboard() {
                 onChange={(e) => setFilterQuery(e.target.value)}
                 placeholder="Filter kernels..."
                 aria-label="Filter kernel hotspots"
-                style={{
-                  fontSize: 12,
-                  padding: '5px 8px',
-                  borderRadius: 4,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-tertiary)',
-                  color: 'var(--text-primary)',
-                  minWidth: 160,
-                }}
+                className="filter-input"
               />
             )}
           </div>
@@ -303,11 +272,7 @@ function PerfDashboard() {
                       onClick={() => handleSort(col.key)}
                     >
                       {col.label}
-                      {sortKey === col.key && (
-                        <span className="th-sort-icon" aria-hidden="true">
-                          {sortDesc ? '\u25BC' : '\u25B2'}
-                        </span>
-                      )}
+                      <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                     </th>
                   ))}
                 </tr>

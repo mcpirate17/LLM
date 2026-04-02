@@ -231,8 +231,13 @@ def evolutionary_search(
                             gen + 1,
                         )
                         continue
-                except Exception:
-                    pass  # fall through to standard reproduction
+                except Exception as exc:
+                    logger.debug(
+                        "exploit_mutation failed for parent %s; falling back to standard reproduction: %s",
+                        parent.fingerprint[:16],
+                        exc,
+                        exc_info=True,
+                    )
 
             reproduction_mode = _choose_reproduction_mode(config, rng)
             mode_handlers = {
@@ -420,12 +425,13 @@ def _enforce_population_diversity(
 
     # If generation failed to refill entirely, append highest-ranked leftovers.
     if len(deduped) < config.population_size:
+        deduped_ids = {id(d.graph) for d in deduped}
         for ind in ranked:
             if len(deduped) >= config.population_size:
                 break
-            # Skip if already in deduped
-            if any(d.graph is ind.graph for d in deduped):
+            if id(ind.graph) in deduped_ids:
                 continue
+            deduped_ids.add(id(ind.graph))
             deduped.append(ind)
 
     deduped = deduped[: config.population_size]
@@ -936,6 +942,32 @@ def _derive_mutation_grammar(
     if parent_has_efficiency:
         sparsity_bias = max(sparsity_bias, 0.6)
 
+    op_weights = dict(base.op_weights)
+
+    # Binding range bias: if parent has only local-range mixers, boost
+    # templates and ops that provide full-range sequence mixing.
+    from ..synthesis.primitives import graph_binding_range_class
+
+    parent_binding = graph_binding_range_class(graph)
+    if parent_binding in ("local", "none"):
+        for tpl_key in ("transformer_block", "state_space_block"):
+            if tpl_key in template_weights:
+                template_weights[tpl_key] *= 2.5
+        _FULL_RANGE_OPS = frozenset(
+            {
+                "softmax_attention",
+                "linear_attention",
+                "graph_attention",
+                "diff_attention",
+                "state_space",
+                "selective_scan",
+                "rwkv_time_mixing",
+                "gated_delta",
+            }
+        )
+        for op_name in _FULL_RANGE_OPS:
+            op_weights[op_name] = op_weights.get(op_name, 1.0) * 3.0
+
     return GrammarConfig(
         model_dim=graph.model_dim,
         max_depth=max_depth,
@@ -949,6 +981,7 @@ def _derive_mutation_grammar(
             base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0
         ),
         category_weights=category_weights,
+        op_weights=op_weights,
         template_weights=template_weights,
         motif_weights=motif_weights,
         structured_sparsity_bias=sparsity_bias,
@@ -1022,6 +1055,32 @@ def _derive_crossover_grammar(
             sparsity_bias = max(sparsity_bias, 0.6)
             break
 
+    op_weights = dict(base.op_weights)
+
+    # Binding range bias: if both parents are local-only, boost full-range ops
+    from ..synthesis.primitives import graph_binding_range_class
+
+    g1_binding = graph_binding_range_class(g1)
+    g2_binding = graph_binding_range_class(g2)
+    if g1_binding in ("local", "none") and g2_binding in ("local", "none"):
+        for tpl_key in ("transformer_block", "state_space_block"):
+            if tpl_key in template_weights:
+                template_weights[tpl_key] *= 2.5
+        _FULL_RANGE_OPS = frozenset(
+            {
+                "softmax_attention",
+                "linear_attention",
+                "graph_attention",
+                "diff_attention",
+                "state_space",
+                "selective_scan",
+                "rwkv_time_mixing",
+                "gated_delta",
+            }
+        )
+        for op_name in _FULL_RANGE_OPS:
+            op_weights[op_name] = op_weights.get(op_name, 1.0) * 3.0
+
     return GrammarConfig(
         model_dim=g1.model_dim,
         max_depth=max_depth,
@@ -1041,6 +1100,7 @@ def _derive_crossover_grammar(
             base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0
         ),
         category_weights=category_weights,
+        op_weights=op_weights,
         template_weights=template_weights,
         motif_weights=motif_weights,
         structured_sparsity_bias=sparsity_bias,

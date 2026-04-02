@@ -1,28 +1,17 @@
-"""Kernel handler for lif_neuron — dispatches to aria_core.lif_neuron_f32."""
+"""Kernel handler for lif_neuron — delegates to research.mathspaces.spiking."""
 
-import torch
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
 
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "lif_neuron"
+def _native_args(inputs, config):
+    x = inputs["x"].detach().contiguous().float()
+    tau = config.get("tau", 20.0)
+    threshold = config.get("threshold", 1.0)
+    return (x, tau, threshold)
 
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        tau = config.get("tau", 20.0)
-        threshold = config.get("threshold", 1.0)
-        return (x, tau, threshold)
 
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        tau = config.get("tau", 20.0)
-        threshold = config.get("threshold", 1.0)
-        decay = torch.exp(torch.tensor(-1.0 / tau))
-        out = torch.zeros_like(x)
-        membrane = torch.zeros(*x.shape[:-2], x.shape[-1], device=x.device)
-        for t in range(x.shape[-2]):
-            membrane = decay * membrane + x[..., t, :]
-            spike = (membrane >= threshold).float()
-            out[..., t, :] = spike
-            membrane = membrane * (1 - spike)
-        return {"y": out}
+ComponentHandler = make_mathspace_unary_handler(
+    "lif_neuron",
+    "research.mathspaces.spiking.execute_lif",
+    native_args_fn=_native_args,
+)

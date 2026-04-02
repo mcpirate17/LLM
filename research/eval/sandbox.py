@@ -72,8 +72,8 @@ def _mapped_shared_token_ids(batch_size: int, seq_len: int, vocab_size: int):
     if torch.cuda.is_available():
         try:
             tensor = tensor.pin_memory()
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            logger.debug("pin_memory unavailable for shared token buffer: %s", exc)
     return tensor, arr, None
 
 
@@ -305,7 +305,11 @@ def safe_eval(
             )
             try:
                 parity_sample_rate = max(0.0, min(1.0, float(parity_sample_rate_raw)))
-            except Exception:
+            except ValueError:
+                logger.debug(
+                    "Invalid NATIVE_RUNNER_ABI_PARITY_SAMPLE_RATE=%r; defaulting to 0.0",
+                    parity_sample_rate_raw,
+                )
                 parity_sample_rate = 0.0
             parity_attempt = (
                 parity_sample_rate > 0.0 and random.random() < parity_sample_rate
@@ -317,7 +321,11 @@ def safe_eval(
             parity_threshold_raw = os.getenv("NATIVE_RUNNER_ABI_PARITY_MAX_ABS", "1.0")
             try:
                 parity_threshold = float(parity_threshold_raw)
-            except Exception:
+            except ValueError:
+                logger.debug(
+                    "Invalid NATIVE_RUNNER_ABI_PARITY_MAX_ABS=%r; defaulting to 1.0",
+                    parity_threshold_raw,
+                )
                 parity_threshold = 1.0
             parity_strict = os.getenv(
                 "NATIVE_RUNNER_ABI_PARITY_STRICT", "0"
@@ -429,7 +437,11 @@ def safe_eval(
                 total_norm = float(torch.linalg.vector_norm(norm_vec, ord=2).item())
                 has_nan = not bool(torch.isfinite(norm_vec).all().item())
                 has_zero = not bool((norm_vec > 1e-10).any().item())
-            except Exception:
+            except RuntimeError as exc:
+                logger.debug(
+                    "torch._foreach_norm failed during sandbox grad check; using scalar fallback: %s",
+                    exc,
+                )
                 for grad in grads:
                     pnorm = grad.data.norm(2).item()
                     total_norm += pnorm**2
@@ -573,8 +585,11 @@ def safe_eval(
                     _probe = torch.zeros(1, device="cuda")
                     del _probe
                     torch.cuda.synchronize()
-                except Exception:
-                    logger.warning("CUDA context unrecoverable after fatal error")
+                except Exception as recovery_exc:
+                    logger.warning(
+                        "CUDA context unrecoverable after fatal error: %s",
+                        recovery_exc,
+                    )
         else:
             tb = traceback.format_exc().strip().split("\n")
             result.error = "\n".join(tb[-3:])
@@ -631,16 +646,20 @@ def safe_eval(
         ):
             try:
                 torch.cuda.empty_cache()
-            except Exception:
-                pass  # CUDA context may be corrupted
+            except RuntimeError as exc:
+                logger.debug(
+                    "torch.cuda.empty_cache() failed during sandbox cleanup: %s", exc
+                )
         # Cleanup mapped shared-memory buffer
         try:
             if mapped_array is not None:
                 del mapped_array
             if mapped_path and os.path.exists(mapped_path):
                 os.remove(mapped_path)
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.debug(
+                "Failed to remove mapped sandbox buffer %s: %s", mapped_path, exc
+            )
         if force_gc_every > 0 and (_SAFE_EVAL_CALL_COUNT % force_gc_every == 0):
             gc.collect()
 
@@ -678,8 +697,8 @@ def _stability_probe(
                 out = model(ids)
             if not (torch.isnan(out).any() or torch.isinf(out).any()):
                 return out
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Stability probe forward failed: %s", exc, exc_info=True)
         return None
 
     # Test 1: Multiple random inputs (check consistency)

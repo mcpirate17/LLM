@@ -31,13 +31,3 @@ def register_knowledge_routes(app, context: ApiRouteContext):
             return jsonify([])
         entries = nb.search_knowledge(q)
         return jsonify(entries)
-
-    @app.route("/api/knowledge/backfill", methods=["POST"])
-    @wnb
-    def api_knowledge_backfill(nb=None):
-        """Backfill missing knowledge categories from measured experiment data."""
-        # _backfill_knowledge_from_real_data was never extracted from the
-        # monolith — stub until the actual implementation is located.
-        return jsonify(
-            {"status": "not_implemented", "detail": "Backfill helper not yet migrated"}
-        ), 501

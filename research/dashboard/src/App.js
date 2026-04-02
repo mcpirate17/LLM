@@ -24,6 +24,9 @@ import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
 import apiService, { apiCall } from './services/apiService';
 import useLocalStorage from './hooks/useLocalStorage';
+import useInvestigationQueue from './hooks/useInvestigationQueue';
+import useAutoRepair from './hooks/useAutoRepair';
+import useKeyboardShortcuts from './hooks/useKeyboardShortcuts';
 import './App.css';
 
 // Lazy-loaded components (only fetched when their tab/drawer is opened)
@@ -49,29 +52,7 @@ const LearningPanel = React.lazy(() => import('./components/LearningPanel'));
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
-const INVESTIGATION_QUEUE_KEY = 'aria_investigation_queue_v1';
-const AUTO_REPAIR_SHOW_COMPLETED_KEY = 'aria_auto_repair_show_completed_v1';
 const OVERRIDE_INELIGIBLE_ALWAYS_KEY = 'aria_override_ineligible_always_v1';
-const TAB_KEYS = ['command', 'trends', 'experiments', 'discoveries', 'perf', 'reports', 'log'];
-
-function normalizeQueue(items) {
-  if (!Array.isArray(items)) return [];
-  const seen = new Set();
-  const normalized = [];
-  for (const item of items) {
-    const resultId = item?.resultId;
-    if (!resultId || seen.has(resultId)) continue;
-    seen.add(resultId);
-    normalized.push({
-      resultId,
-      fingerprint: item?.fingerprint || null,
-      source: item?.source || 'unknown',
-      architectureFamily: item?.architectureFamily || null,
-      intent: item?.intent === 'validation' ? 'validation' : 'investigation',
-    });
-  }
-  return normalized;
-}
 
 function buildCandidateEligibility(entry) {
   if (!entry || typeof entry !== 'object') {
@@ -117,51 +98,6 @@ function buildEligibilityByResultId(entries) {
     map[resultId] = buildCandidateEligibility(entry);
   }
   return map;
-}
-
-function queueReasonLabel(reason) {
-  if (reason === 'already_investigated_unchanged') {
-    return 'Candidate already has investigation evidence and is unchanged.';
-  }
-  if (reason === 'not_investigation_passed') {
-    return 'Candidate is investigation-tier but has not passed robustness gate.';
-  }
-  if (reason === 'already_promoted') {
-    return 'Candidate is already in validation/breakthrough tier.';
-  }
-  if (reason === 'not_progression_eligible') {
-    return 'Candidate is not currently eligible for investigation/validation progression.';
-  }
-  return 'Candidate is not eligible for this queue action.';
-}
-
-function resolveQueueIntent(candidate, eligibility) {
-  if (candidate?.intent === 'investigation' || candidate?.intent === 'validation') {
-    return candidate.intent;
-  }
-  if (candidate?.validationEligible || eligibility?.validationEligible) {
-    return 'validation';
-  }
-  if (candidate?.investigationEligible || eligibility?.investigationEligible) {
-    return 'investigation';
-  }
-  return null;
-}
-
-function isTerminalAgentStatus(status) {
-  const normalized = String(status || '').toLowerCase();
-  return normalized === 'completed' || normalized === 'failed';
-}
-
-function mergeAutoRepairTask(existing, incoming, fallbackSource = 'start') {
-  if (!incoming || !incoming.task_id) return null;
-  return {
-    ...(existing || {}),
-    ...incoming,
-    source: incoming.source || existing?.source || fallbackSource,
-    status: incoming.status || existing?.status || 'queued',
-    updated_at: incoming.updated_at || Date.now() / 1000,
-  };
 }
 
 function App() {
@@ -241,10 +177,11 @@ function AppContent({ onRunningChange }) {
     refreshAnalyticsData,
     fetchTabData,
     invalidateTabCache,
+    pollTick,
+    slowPollTick,
   } = useAriaData() || {};
 
   const fetchDashboard = refreshSharedData || (() => {});
-  const setAriaCycle = () => {};  // ariaCycle is read from provider; refresh updates it
 
   const [activeTab, _setActiveTab] = useState('command');
   const setActiveTab = useCallback((tab) => startTransition(() => _setActiveTab(tab)), []);
@@ -276,8 +213,6 @@ function AppContent({ onRunningChange }) {
   // Action error state (replaces alert())
   const [actionError, setActionError] = useState(null);
   const [blockedConfig, setBlockedConfig] = useState(null);
-  const [autoRepairTasks, setAutoRepairTasks] = useState([]);
-  const [showCompletedAutoRepairTasks, setShowCompletedAutoRepairTasks] = useLocalStorage(AUTO_REPAIR_SHOW_COMPLETED_KEY, false);
   const [overrideIneligibleAlways, setOverrideIneligibleAlways] = useLocalStorage(OVERRIDE_INELIGIBLE_ALWAYS_KEY, false);
 
   // Architecture designer drawer
@@ -304,7 +239,6 @@ function AppContent({ onRunningChange }) {
   const [allowAdvancedStartOverride, setAllowAdvancedStartOverride] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [comparisonList, setComparisonList] = useState([]);
-  const [investigationQueue, setInvestigationQueue] = useLocalStorage(INVESTIGATION_QUEUE_KEY, []);
 
   const handleAddToComparison = useCallback((resultId) => {
     setComparisonList(prev => {
@@ -338,35 +272,42 @@ function AppContent({ onRunningChange }) {
   }, [ariaCycle]);
 
   // Global keyboard shortcuts
-  useEffect(() => {
-    const handler = (e) => {
-      const tag = (e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
-
-      if (e.key === '?') { e.preventDefault(); setShowHelp(h => !h); return; }
-      if (e.key === 'Escape') {
-        if (showHelp) { setShowHelp(false); return; }
-        if (showChat) { setShowChat(false); return; }
-        if (showSettings) { setShowSettings(false); return; }
-        if (designerSession.open) { closeDesigner(); return; }
-        if (selectedProgram) { setSelectedProgram(null); return; }
-        return;
-      }
-      const num = parseInt(e.key, 10);
-      if (num >= 1 && num <= TAB_KEYS.length) {
-        e.preventDefault();
-        setActiveTab(TAB_KEYS[num - 1]);
-        setSelectedExperiment(null);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [showHelp, showChat, showSettings, selectedProgram, designerSession.open, closeDesigner]);
+  useKeyboardShortcuts({
+    showHelp, setShowHelp,
+    showChat, setShowChat,
+    showSettings, setShowSettings,
+    selectedProgram,
+    closeSelectedProgram: () => setSelectedProgram(null),
+    designerSession, closeDesigner,
+    setActiveTab, setSelectedExperiment,
+  });
 
   const eligibilityByResultId = useMemo(
     () => buildEligibilityByResultId(leaderboardEntries || []),
     [leaderboardEntries],
   );
+
+  // Investigation queue hook
+  const {
+    investigationQueue,
+    addToInvestigationQueue: handleQueueAdd,
+    removeFromInvestigationQueue: handleQueueRemove,
+    clearInvestigationQueue: handleQueueClear,
+    queueBreakdown,
+  } = useInvestigationQueue({ eligibilityByResultId, setActionError });
+
+  // Auto-repair hook
+  const {
+    autoRepairTasks,
+    setAutoRepairTasks,
+    showCompletedRepairs: showCompletedAutoRepairTasks,
+    setShowCompletedRepairs: setShowCompletedAutoRepairTasks,
+    activeAutoRepairTasks,
+    completedAutoRepairCount,
+    visibleAutoRepairTasks,
+    handleResetAutoRepairStripPreferences,
+    emitAutoRepairStarted,
+  } = useAutoRepair({ pollTick });
 
   useEffect(() => {
     if (data?.is_running && overviewActivityTab !== 'live') {
@@ -391,12 +332,9 @@ function AppContent({ onRunningChange }) {
 
   useEffect(() => {
     if (!tabDataKey) return;
-    const interval = setInterval(() => {
-      if (invalidateTabCache) invalidateTabCache(tabDataKey);
-      fetchTabData(tabDataKey);
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [tabDataKey, fetchTabData, invalidateTabCache]);
+    if (invalidateTabCache) invalidateTabCache(tabDataKey);
+    fetchTabData(tabDataKey);
+  }, [tabDataKey, slowPollTick, fetchTabData, invalidateTabCache]);
 
   const handleLoadMoreExperiments = useCallback(async () => {
     if (experimentsLoadingMore || !experimentsHasMore) return;
@@ -451,126 +389,6 @@ function AppContent({ onRunningChange }) {
     }
     return deltas;
   }, [data?.deltas]);
-
-  const upsertAutoRepairTask = useCallback((detail, fallbackSource = 'start') => {
-    const task = detail?.task;
-    if (!task || !task.task_id) {
-      return false;
-    }
-
-    const nextTask = {
-      ...task,
-      source: detail?.source || fallbackSource,
-      error: detail?.error || '',
-      status: task.status || 'queued',
-      updated_at: task.updated_at || Date.now() / 1000,
-    };
-
-    setAutoRepairTasks((prev) => {
-      const idx = prev.findIndex((item) => item.task_id === nextTask.task_id);
-      if (idx < 0) {
-        return [nextTask, ...prev].slice(0, 8);
-      }
-      const merged = mergeAutoRepairTask(prev[idx], nextTask, fallbackSource);
-      if (!merged) return prev;
-      const updated = [...prev];
-      updated[idx] = merged;
-      return updated;
-    });
-    return true;
-  }, []);
-
-  useEffect(() => {
-    const onAutoRepairStarted = (event) => {
-      const detail = event?.detail || {};
-      upsertAutoRepairTask(detail, detail?.source || 'event');
-    };
-
-    window.addEventListener('aria-auto-repair-started', onAutoRepairStarted);
-    return () => {
-      window.removeEventListener('aria-auto-repair-started', onAutoRepairStarted);
-    };
-  }, [upsertAutoRepairTask]);
-
-  useEffect(() => {
-    const activeTaskIds = autoRepairTasks
-      .filter((task) => !isTerminalAgentStatus(task?.status))
-      .map((task) => task.task_id)
-      .filter(Boolean);
-
-    if (!activeTaskIds.length) return undefined;
-
-    const interval = setInterval(async () => {
-      await Promise.all(activeTaskIds.map(async (taskId) => {
-        try {
-          const res = await apiCall(`/api/aria/agent/status/${encodeURIComponent(taskId)}`);
-          const payload = await res.json();
-          if (!res.ok || !payload?.task) return;
-
-          const task = payload.task;
-          setAutoRepairTasks((prev) => {
-            const idx = prev.findIndex((item) => item.task_id === taskId);
-            if (idx < 0) return prev;
-            const merged = mergeAutoRepairTask(prev[idx], task, prev[idx]?.source || 'status_poll');
-            if (!merged) return prev;
-            const updated = [...prev];
-            updated[idx] = merged;
-            return updated;
-          });
-        } catch {
-          // Ignore transient polling failures.
-        }
-      }));
-    }, 2500);
-
-    return () => clearInterval(interval);
-  }, [autoRepairTasks]);
-
-  const activeAutoRepairTasks = useMemo(
-    () => autoRepairTasks.filter((task) => !isTerminalAgentStatus(task?.status)),
-    [autoRepairTasks],
-  );
-
-  const completedAutoRepairCount = useMemo(
-    () => autoRepairTasks.filter((task) => isTerminalAgentStatus(task?.status)).length,
-    [autoRepairTasks],
-  );
-
-  const visibleAutoRepairTasks = useMemo(() => {
-    if (showCompletedAutoRepairTasks) {
-      return autoRepairTasks;
-    }
-    return activeAutoRepairTasks;
-  }, [autoRepairTasks, activeAutoRepairTasks, showCompletedAutoRepairTasks]);
-
-
-  const handleResetAutoRepairStripPreferences = useCallback(() => {
-    setShowCompletedAutoRepairTasks(false);
-  }, [setShowCompletedAutoRepairTasks]);
-
-  const emitAutoRepairStarted = useCallback((payload, source = 'start') => {
-    const task = payload?.auto_repair_task;
-    if (!payload?.auto_repair_started || !task || !task.task_id) {
-      return false;
-    }
-    upsertAutoRepairTask({
-      source,
-      task,
-      error: payload?.error || '',
-    }, source);
-    try {
-      window.dispatchEvent(new CustomEvent('aria-auto-repair-started', {
-        detail: {
-          source,
-          task,
-          error: payload?.error || '',
-        },
-      }));
-    } catch {
-      // ignore UI event dispatch issues
-    }
-    return true;
-  }, [upsertAutoRepairTask]);
 
   const summarizePreflightBlock = useCallback((err, fallbackMessage) => {
     const preflight = err?.preflight || {};
@@ -737,9 +555,6 @@ function AppContent({ onRunningChange }) {
       } catch (_) {
         // Ignore — may not have a running experiment
       }
-      if (payload?.cycle) {
-        setAriaCycle(payload.cycle);
-      }
       setAutonomousMode(false);
       setActionError(null);
       fetchDashboard();
@@ -762,9 +577,6 @@ function AppContent({ onRunningChange }) {
       const payload = await res.json();
       if (!res.ok || payload?.error) {
         throw new Error(payload?.error || `Failed to ${action} cycle`);
-      }
-      if (payload?.cycle) {
-        setAriaCycle(payload.cycle);
       }
       if (action === 'start') {
         setAutonomousMode(true);
@@ -813,8 +625,11 @@ function AppContent({ onRunningChange }) {
       };
     }
     const eligibilityKey = mode === 'validation' ? 'validationEligible' : 'investigationEligible';
-    const eligibleIds = ids.filter(resultId => eligibilityByResultId[resultId]?.[eligibilityKey]);
-    const ineligibleIds = ids.filter(resultId => !eligibilityByResultId[resultId]?.[eligibilityKey]);
+    const eligibleIds = [];
+    const ineligibleIds = [];
+    for (const resultId of ids) {
+      (eligibilityByResultId[resultId]?.[eligibilityKey] ? eligibleIds : ineligibleIds).push(resultId);
+    }
     if (!eligibleIds.length) {
       const label = ineligibleIds.slice(0, 3).join(', ') || 'unknown';
       return {
@@ -834,205 +649,75 @@ function AppContent({ onRunningChange }) {
     return { ok: true, eligibleIds, message: null };
   }, [eligibilityByResultId]);
 
-  const handleInvestigate = async (resultIds) => {
-    const eligibility = filterEligibleResultIds('investigation', resultIds);
+  const startProgression = async (mode, resultIds) => {
+    const label = mode.charAt(0).toUpperCase() + mode.slice(1);
+    const eligibility = filterEligibleResultIds(mode, resultIds);
     const rawIds = Array.isArray(resultIds) ? resultIds.filter(Boolean) : [];
     const hasIneligible = rawIds.length > (eligibility.eligibleIds || []).length;
     const shouldForceAll = overrideIneligibleAlways && rawIds.length > 0;
-    if (!eligibility.ok) {
-      if (!rawIds.length) {
-        setActionError(eligibility.message);
-        return;
-      }
-      if (!shouldForceAll) {
-        const confirmOverride = window.confirm(
-          `${eligibility.message}\n\nForce override and start investigation anyway?`
-        );
-        if (!confirmOverride) {
-          setActionError(eligibility.message);
-          return;
-        }
-      }
+
+    const startForced = async (ids) => {
       try {
         const res = await apiCall(`/api/experiments/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'investigation',
-            result_ids: rawIds,
-            force: true,
-            override_ineligible: true,
-          }),
+          body: JSON.stringify({ mode, result_ids: ids, force: true, override_ineligible: true }),
         });
         if (!res.ok) {
           const err = await res.json();
-          setActionError(err.error || 'Failed to start forced investigation');
+          setActionError(err.error || `Failed to start forced ${mode}`);
           return;
         }
-        setActionError('Investigation started with override.');
+        setActionError(`${label} started with override.`);
         fetchDashboard();
       } catch (err) {
-        setActionError('Failed to start forced investigation: ' + err.message);
+        setActionError(`Failed to start forced ${mode}: ${err.message}`);
       }
+    };
+
+    if (!eligibility.ok) {
+      if (!rawIds.length) { setActionError(eligibility.message); return; }
+      if (!shouldForceAll) {
+        if (!window.confirm(`${eligibility.message}\n\nForce override and start ${mode} anyway?`)) {
+          setActionError(eligibility.message);
+          return;
+        }
+      }
+      await startForced(rawIds);
       return;
     }
     if (hasIneligible && rawIds.length) {
-      let confirmOverride = false;
-      if (shouldForceAll) {
-        confirmOverride = true;
-      } else {
-        confirmOverride = window.confirm(
-          `${eligibility.message}\n\nForce override and include the ineligible fingerprint(s) too?`
-        );
-      }
-      if (confirmOverride) {
-        try {
-          const res = await apiCall(`/api/experiments/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              mode: 'investigation',
-              result_ids: rawIds,
-              force: true,
-              override_ineligible: true,
-            }),
-          });
-          if (!res.ok) {
-            const err = await res.json();
-            setActionError(err.error || 'Failed to start forced investigation');
-            return;
-          }
-          setActionError('Investigation started with override.');
-          fetchDashboard();
-        } catch (err) {
-          setActionError('Failed to start forced investigation: ' + err.message);
-        }
-        return;
-      }
+      const confirmOverride = shouldForceAll || window.confirm(
+        `${eligibility.message}\n\nForce override and include the ineligible fingerprint(s) too?`
+      );
+      if (confirmOverride) { await startForced(rawIds); return; }
     }
     try {
       const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'investigation', result_ids: eligibility.eligibleIds }),
+        body: JSON.stringify({ mode, result_ids: eligibility.eligibleIds }),
       });
       if (!res.ok) {
         const err = await res.json();
-        const startedRepair = emitAutoRepairStarted(err, 'start_investigation');
+        const startedRepair = emitAutoRepairStarted(err, `start_${mode}`);
         if (startedRepair) {
           const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
-          setActionError(`${err.error || 'Failed to start investigation'} — auto-repair started (${taskId}).`);
+          setActionError(`${err.error || `Failed to start ${mode}`} — auto-repair started (${taskId}).`);
         } else {
-          setActionError(err.error || 'Failed to start investigation');
+          setActionError(err.error || `Failed to start ${mode}`);
         }
         return;
       }
       setActionError(eligibility.message || null);
       fetchDashboard();
     } catch (err) {
-      setActionError('Failed to start investigation: ' + err.message);
+      setActionError(`Failed to start ${mode}: ${err.message}`);
     }
   };
 
-  const handleValidate = async (resultIds) => {
-    const eligibility = filterEligibleResultIds('validation', resultIds);
-    const rawIds = Array.isArray(resultIds) ? resultIds.filter(Boolean) : [];
-    const hasIneligible = rawIds.length > (eligibility.eligibleIds || []).length;
-    const shouldForceAll = overrideIneligibleAlways && rawIds.length > 0;
-    if (!eligibility.ok) {
-      if (!rawIds.length) {
-        setActionError(eligibility.message);
-        return;
-      }
-      if (!shouldForceAll) {
-        const confirmOverride = window.confirm(
-          `${eligibility.message}\n\nForce override and start validation anyway?`
-        );
-        if (!confirmOverride) {
-          setActionError(eligibility.message);
-          return;
-        }
-      }
-      try {
-        const res = await apiCall(`/api/experiments/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'validation',
-            result_ids: rawIds,
-            force: true,
-            override_ineligible: true,
-          }),
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          setActionError(err.error || 'Failed to start forced validation');
-          return;
-        }
-        setActionError('Validation started with override.');
-        fetchDashboard();
-      } catch (err) {
-        setActionError('Failed to start forced validation: ' + err.message);
-      }
-      return;
-    }
-    if (hasIneligible && rawIds.length) {
-      let confirmOverride = false;
-      if (shouldForceAll) {
-        confirmOverride = true;
-      } else {
-        confirmOverride = window.confirm(
-          `${eligibility.message}\n\nForce override and include the ineligible fingerprint(s) too?`
-        );
-      }
-      if (confirmOverride) {
-        try {
-          const res = await apiCall(`/api/experiments/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              mode: 'validation',
-              result_ids: rawIds,
-              force: true,
-              override_ineligible: true,
-            }),
-          });
-          if (!res.ok) {
-            const err = await res.json();
-            setActionError(err.error || 'Failed to start forced validation');
-            return;
-          }
-          setActionError('Validation started with override.');
-          fetchDashboard();
-        } catch (err) {
-          setActionError('Failed to start forced validation: ' + err.message);
-        }
-        return;
-      }
-    }
-    try {
-      const res = await apiCall(`/api/experiments/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'validation', result_ids: eligibility.eligibleIds }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        const startedRepair = emitAutoRepairStarted(err, 'start_validation');
-        if (startedRepair) {
-          const taskId = String(err?.auto_repair_task?.task_id || '').slice(0, 12);
-          setActionError(`${err.error || 'Failed to start validation'} — auto-repair started (${taskId}).`);
-        } else {
-          setActionError(err.error || 'Failed to start validation');
-        }
-        return;
-      }
-      setActionError(eligibility.message || null);
-      fetchDashboard();
-    } catch (err) {
-      setActionError('Failed to start validation: ' + err.message);
-    }
-  };
+  const handleInvestigate = (resultIds) => startProgression('investigation', resultIds);
+  const handleValidate = (resultIds) => startProgression('validation', resultIds);
 
 
   const handleRunProductionTemplate = async (template) => {
@@ -1088,73 +773,6 @@ function AppContent({ onRunningChange }) {
     fetchDashboard();
   };
 
-  const handleQueueAdd = useCallback((candidate) => {
-    const resultId = candidate?.resultId;
-    if (!resultId) return;
-    const eligibility = eligibilityByResultId[resultId] || null;
-    if (candidate?.queueEligible === false && !eligibility?.queueEligible) {
-      setActionError(queueReasonLabel(candidate?.queueReason));
-      return;
-    }
-    const intent = resolveQueueIntent(candidate, eligibility);
-    if (!intent) {
-      setActionError(queueReasonLabel(candidate?.queueReason));
-      return;
-    }
-    setInvestigationQueue(prev => normalizeQueue([
-      ...prev.filter(item => item.resultId !== resultId),
-      {
-        resultId,
-        fingerprint: candidate?.fingerprint || null,
-        source: candidate?.source || 'unknown',
-        architectureFamily: candidate?.architectureFamily || null,
-        intent,
-      },
-    ]));
-  }, [eligibilityByResultId]);
-
-  const handleQueueRemove = useCallback((resultId) => {
-    setInvestigationQueue(prev => prev.filter(item => item.resultId !== resultId));
-  }, []);
-
-  const handleQueueClear = useCallback(() => {
-    setInvestigationQueue([]);
-  }, []);
-
-  useEffect(() => {
-    setInvestigationQueue(prev => {
-      let changed = false;
-      const next = [];
-      for (const item of prev) {
-        const intent = item?.intent === 'validation' ? 'validation' : 'investigation';
-        const eligibility = eligibilityByResultId[item.resultId];
-        if (!eligibility) {
-          if (item.intent !== intent) {
-            changed = true;
-            next.push({ ...item, intent });
-          } else {
-            next.push(item);
-          }
-          continue;
-        }
-        const stillEligibleForIntent = intent === 'validation'
-          ? eligibility.validationEligible
-          : eligibility.investigationEligible;
-        if (!stillEligibleForIntent) {
-          changed = true;
-          continue;
-        }
-        if (item.intent !== intent) {
-          changed = true;
-          next.push({ ...item, intent });
-        } else {
-          next.push(item);
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [eligibilityByResultId]);
-
   const handleQueueInvestigate = useCallback(() => {
     if (!investigationQueue.length) return;
     const queuedIds = investigationQueue
@@ -1182,17 +800,6 @@ function AppContent({ onRunningChange }) {
     }
     handleValidate(overrideIneligibleAlways ? queuedIds : eligibleIds);
   }, [investigationQueue, eligibilityByResultId, overrideIneligibleAlways, handleValidate]);
-
-  const queueBreakdown = useMemo(() => {
-    return investigationQueue.reduce((acc, item) => {
-      if (item.intent === 'validation') {
-        acc.validation += 1;
-      } else {
-        acc.investigation += 1;
-      }
-      return acc;
-    }, { investigation: 0, validation: 0 });
-  }, [investigationQueue]);
 
   const handleViewInLeaderboard = (resultId) => {
     setLeaderboardHighlight(resultId);

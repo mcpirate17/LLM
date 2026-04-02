@@ -303,17 +303,15 @@ def _op_local_window_attn(_, inputs, config):
     # OutOfResources. Conservatively cap at 16 for D >= 256.
     if D >= 256 and W > 16:
         W = 16
-    # Triton local attention is currently unreliable under autocast/bf16 in
-    # screening. Restrict the fast path to fp32 and fall back to a numerically
-    # stable implementation otherwise.
-    if HAS_KERNELS and x.is_cuda and x.dtype == torch.float32:
+    # Triton local attention: internal accumulation is fp32, so bf16/fp16 input
+    # is safe via conservative cast. Cast input to fp32, run kernel, cast back.
+    if HAS_KERNELS and x.is_cuda:
         try:
-            out = kernels.triton_local_attn(x, W)
+            x_f32 = x.float() if x.dtype != torch.float32 else x
+            out = kernels.triton_local_attn(x_f32, W)
             if torch.isfinite(out).all():
-                return out
+                return out.to(x.dtype)
         except Exception as e:
-            # Catch all Triton errors including OutOfResources (shared memory
-            # overflow), which is not a subclass of RuntimeError.
             record_kernel_fallback("triton_local_attn", e)
     x_work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
     scores = torch.bmm(x_work, x_work.transpose(-2, -1)) / math.sqrt(D)
@@ -334,6 +332,15 @@ def _op_sliding_window_mask(_, inputs, config):
 
     if _c(x):
         return aria_core.sliding_window_mask_f32(x, W)
+
+    # Triton banded kernel: O(S*W*D) instead of O(S²*D)
+    if HAS_KERNELS and x.is_cuda:
+        try:
+            x_f32 = x.float() if x.dtype != torch.float32 else x
+            out = kernels.triton_banded_sliding_window(x_f32, W)
+            return out.to(x.dtype)
+        except Exception as e:
+            record_kernel_fallback("banded_sliding_window", e)
 
     # Python Fallback: O(S^2) masking
     W_safe = min(W, S)

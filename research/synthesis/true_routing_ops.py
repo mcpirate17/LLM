@@ -62,27 +62,40 @@ def _dispatch_to_experts(
     # Record telemetry
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
 
-    # 2. Per-batch masked dispatch: each batch element's tokens are routed
-    # independently, preserving causality (changing future tokens in batch[i]
-    # cannot affect batch[j]'s routing, and within a batch element the gate
-    # is pointwise so token t's assignment depends only on x[b,t,:]).
-    result = torch.zeros_like(x)
-    idx_squeezed = indices.squeeze(-1)  # (B, S)
-    w_squeezed = weights  # (B, S, 1)
+    # 2. Batched gather-scatter dispatch: flatten B*S tokens, sort by expert,
+    # run each expert on its contiguous chunk, unsort back.  O(E) Python
+    # iterations instead of O(B*E).
+    idx_flat = indices.reshape(-1)  # (B*S, 1) → (B*S,) after squeeze
+    if idx_flat.dim() > 1:
+        idx_flat = idx_flat.squeeze(-1)
+    w_flat = weights.reshape(-1, 1)  # (B*S, 1)
+    x_flat = x.reshape(-1, D)  # (B*S, D)
 
-    for b in range(B):
-        x_b = x[b]  # (S, D)
-        idx_b = idx_squeezed[b]  # (S,)
-        w_b = w_squeezed[b]  # (S, 1)
-        for e_idx in range(n_experts):
-            mask = idx_b == e_idx  # (S,)
-            if not mask.any():
-                continue
-            chunk = x_b[mask]  # (N, D)
-            out = expert_fns[e_idx](chunk, module)  # (N, D)
-            result[b, mask] = out.to(result.dtype) * w_b[mask].to(result.dtype)
+    # Sort tokens by expert assignment for contiguous expert chunks
+    sort_order = idx_flat.argsort(stable=True)
+    x_sorted = x_flat[sort_order]  # (B*S, D)
+    w_sorted = w_flat[sort_order]  # (B*S, 1)
 
-    return result
+    # Find per-expert chunk boundaries
+    expert_counts = torch.bincount(idx_flat, minlength=n_experts).tolist()
+    x_chunks = x_sorted.split(expert_counts, dim=0)
+    w_chunks = w_sorted.split(expert_counts, dim=0)
+
+    # Run each expert on its contiguous chunk (E iterations, not B*E)
+    result_chunks = []
+    for e_idx in range(n_experts):
+        if expert_counts[e_idx] == 0:
+            result_chunks.append(x_sorted.new_empty(0, D))
+            continue
+        out = expert_fns[e_idx](x_chunks[e_idx], module)
+        result_chunks.append(out.to(x.dtype) * w_chunks[e_idx].to(x.dtype))
+
+    # Unsort back to original token order
+    result_sorted = torch.cat(result_chunks, dim=0)  # (B*S, D)
+    result_flat = torch.zeros_like(x_flat)
+    result_flat[sort_order] = result_sorted
+
+    return result_flat.reshape(B, S, D)
 
 
 # ── Mini-expert implementations ──────────────────────────────────

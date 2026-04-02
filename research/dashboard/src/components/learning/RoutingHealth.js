@@ -1,50 +1,17 @@
-import React, { useState, useMemo } from 'react';
-import { reliabilityColor } from '../../utils/colors';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import React from 'react';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
+import { MetricChipList } from '../shared/MetricChipBadge';
 
-function routingMetricChips(row) {
-  const conf = row.avg_confidence_mean;
-  return [
-    {
-      label: 'Routing',
-      source: 'telemetry',
-      reliability: conf != null
-        ? (conf >= 0.7 ? 'high' : conf >= 0.4 ? 'medium' : 'low')
-        : 'low',
-    },
-    {
-      label: 'Sample',
-      source: 'mode-aggregate',
-      reliability: (row.n_programs || 0) >= 80 ? 'high' : (row.n_programs || 0) >= 30 ? 'medium' : 'low',
-    },
-  ];
-}
+import { routingMetricChips } from '../../utils/metricChips';
 
 export function RoutingHealth({ data }) {
-  const [sortKey, setSortKey] = useState('n_programs');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
-
-  const handleSort = (key) => {
-    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
-  };
-
-  const filtered = useMemo(() => (
-    filterRowsByQuery(data?.by_mode || [], filterQuery, ['routing_mode'])
-  ), [data?.by_mode, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va = a[sortKey], vb = b[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows: data?.by_mode || [],
+    filterFields: ['routing_mode'],
+    initialSortKey: 'n_programs',
+    initialSortDesc: true,
+  });
 
   if (!data || data.available === false || !data.by_mode || data.by_mode.length === 0) {
     return (
@@ -80,15 +47,7 @@ export function RoutingHealth({ data }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter modes"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
@@ -123,11 +82,7 @@ export function RoutingHealth({ data }) {
                   aria-label={`Sort by ${col.label}`}
                 >
                   {col.label}
-                  {sortKey === col.key && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDesc ? '\u25BC' : '\u25B2'}
-                    </span>
-                  )}
+                  <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                 </th>
               ))}
             </tr>
@@ -147,25 +102,7 @@ export function RoutingHealth({ data }) {
                 <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{row.confidence_label || 'unknown'}</td>
                 <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{row.stability_label || 'unknown'}</td>
                 <td>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
-                    {chips.map(chip => (
-                      <span
-                        key={`${row.routing_mode}-${chip.label}`}
-                        title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                        style={{
-                          fontSize: 10,
-                          padding: '1px 5px',
-                          borderRadius: 4,
-                          border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                          color: reliabilityColor(chip.reliability),
-                          background: `${reliabilityColor(chip.reliability)}22`,
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {chip.label}: {chip.source}
-                      </span>
-                    ))}
-                  </div>
+                    <MetricChipList chips={chips} />
                 </td>
               </tr>
               );

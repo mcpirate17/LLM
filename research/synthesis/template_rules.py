@@ -15,7 +15,7 @@ Usage:
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 from .graph import ComputationGraph
 from .primitives import PRIMITIVE_REGISTRY
@@ -89,17 +89,13 @@ _BOTTLENECK_OPS = frozenset({"bottleneck_proj", "low_rank_proj", "linear_proj_do
 _UPPROJ_OPS = frozenset({"linear_proj_up", "linear_proj"})
 # Norm ops are expected inside bottlenecks (normalize before up-proj) — skip them.
 _BOTTLENECK_EXEMPT_OPS = frozenset({"rmsnorm", "layernorm"})
-_PARAMETRIC_OPS: Optional[frozenset] = None
+import functools
 
 
+@functools.lru_cache(maxsize=1)
 def _get_parametric_ops() -> frozenset:
     """Lazily build set of ops with learnable parameters."""
-    global _PARAMETRIC_OPS
-    if _PARAMETRIC_OPS is None:
-        _PARAMETRIC_OPS = frozenset(
-            name for name, op in PRIMITIVE_REGISTRY.items() if op.has_params
-        )
-    return _PARAMETRIC_OPS
+    return frozenset(name for name, op in PRIMITIVE_REGISTRY.items() if op.has_params)
 
 
 def _check_bottleneck_dimension(graph: ComputationGraph) -> List[str]:

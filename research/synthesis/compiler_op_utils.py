@@ -18,14 +18,6 @@ except ImportError:
     kernels = None
 
 try:
-    from . import cpu_ops
-
-    HAS_CPU_OPS = True
-except ImportError:
-    HAS_CPU_OPS = False
-    cpu_ops = None
-
-try:
     from research.env import aria_core, HAS_ARIA_CORE
 except ImportError:
     aria_core = None
@@ -41,13 +33,6 @@ def record_kernel_fallback(kernel_name: str, error: Exception) -> None:
     """Log a kernel fallback and set the module-level flag."""
     global _kernel_fallback_occurred
     _kernel_fallback_occurred = True
-    # Also set the flag on the main compiler module if already imported
-    import sys
-
-    compiler_mod = sys.modules.get("research.synthesis.compiler")
-    if compiler_mod is not None:
-        compiler_mod._kernel_fallback_occurred = True
-    # Log once per kernel to avoid spam during training loops
     if kernel_name not in _kernel_fallback_logged:
         _kernel_fallback_logged.add(kernel_name)
         logger.info(
@@ -59,11 +44,6 @@ def record_kernel_fallback(kernel_name: str, error: Exception) -> None:
 
 def kernel_fallback_occurred() -> bool:
     """Return whether any native kernel call fell back to Python this session."""
-    import sys
-
-    compiler_mod = sys.modules.get("research.synthesis.compiler")
-    if compiler_mod is not None and compiler_mod._kernel_fallback_occurred:
-        return True
     return _kernel_fallback_occurred
 
 
@@ -106,6 +86,20 @@ def _record_sparse_telemetry(
         stats["last_fallback_reason"] = fallback_reason
     telemetry[op_name] = stats
     setattr(module, "sparse_telemetry", telemetry)
+
+
+def _sparse_density_sampled(mask: torch.Tensor, module: nn.Module) -> float:
+    """Compute mask density with 1-in-8 sampling to avoid GPU→CPU sync.
+
+    Returns the cached density on non-sampled calls (no .item() sync).
+    """
+    counter = getattr(module, "_sparse_density_counter", -1) + 1
+    object.__setattr__(module, "_sparse_density_counter", counter)
+    if counter & 7 == 0:
+        val = float(mask.mean().item())
+        object.__setattr__(module, "_sparse_density_cached", val)
+        return val
+    return getattr(module, "_sparse_density_cached", 1.0)
 
 
 def _record_routing_telemetry(
@@ -168,9 +162,6 @@ def _record_routing_telemetry(
 def _build_nm_mask(weight: torch.Tensor, n: int, m: int) -> torch.Tensor:
     if n <= 0 or m <= 0 or n > m:
         return torch.ones_like(weight)
-
-    if HAS_CPU_OPS and weight.device.type == "cpu" and weight.dtype == torch.float32:
-        return cpu_ops.build_nm_mask_cpu(weight, n, m)
 
     rows, cols = weight.shape
     n_chunks = cols // m
@@ -268,3 +259,21 @@ def _c(x):
         and x.dim() >= 1
         and x.numel() > 0
     )
+
+
+def _get_stacked_params(
+    module: nn.Module, attr_name: str, n: int, dtype: torch.dtype
+) -> torch.Tensor:
+    """Stack n ParameterList entries into a single tensor, cached by dtype.
+
+    Avoids re-creating the stacked tensor on every forward pass. Cache is
+    invalidated when dtype changes (e.g. during autocast transitions).
+    """
+    cache_key = f"_stacked_{attr_name}_{dtype}"
+    cached = getattr(module, cache_key, None)
+    if cached is not None:
+        return cached
+    params = getattr(module, attr_name)
+    stacked = torch.stack([params[i].to(dtype) for i in range(n)])
+    object.__setattr__(module, cache_key, stacked)
+    return stacked

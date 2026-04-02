@@ -80,8 +80,12 @@ def _leaderboard_backed_program_detail(nb, result_id: str) -> Optional[Dict[str,
     if merged.get("graph_json") and isinstance(merged.get("graph_json"), str):
         try:
             merged["graph_json_parsed"] = json.loads(merged["graph_json"])
-        except Exception:
-            pass
+        except json.JSONDecodeError as exc:
+            logger.debug(
+                "Failed to parse graph_json for result_id=%s in leaderboard-backed detail: %s",
+                result_id,
+                exc,
+            )
 
     merged.setdefault("stage1_passed", 1 if merged.get("is_reference") else 0)
     merged.setdefault("has_training_curve", False)
@@ -113,7 +117,9 @@ def register_programs_routes(app, context: ApiRouteContext):
                 (result_id,),
             ).fetchone()
             if row:
-                resolved_id = row[0] if isinstance(row, (tuple, list)) else row["result_id"]
+                resolved_id = (
+                    row[0] if isinstance(row, (tuple, list)) else row["result_id"]
+                )
                 program = nb.get_program_detail(resolved_id)
                 if program is None:
                     program = _leaderboard_backed_program_detail(nb, resolved_id)
@@ -123,7 +129,10 @@ def register_programs_routes(app, context: ApiRouteContext):
         try:
             curve = nb.get_training_curve(result_id)
             program["has_training_curve"] = len(curve) > 0
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to load training curve for result_id=%s: %s", result_id, exc
+            )
             program["has_training_curve"] = False
 
         try:
@@ -146,8 +155,12 @@ def register_programs_routes(app, context: ApiRouteContext):
                             (explanation, result_id),
                         )
                         nb.conn.commit()
-                    except Exception:
-                        pass  # Column may not exist yet
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to cache llm_explanation for result_id=%s: %s",
+                            result_id,
+                            exc,
+                        )
         except Exception as e:
             logger.debug(f"LLM fingerprint explanation failed for {result_id}: {e}")
 
@@ -155,7 +168,10 @@ def register_programs_routes(app, context: ApiRouteContext):
 
         try:
             program["lineage_chain"] = program_lineage_chain(nb, result_id)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Failed to load lineage chain for result_id=%s: %s", result_id, exc
+            )
             program["lineage_chain"] = []
 
         return jsonify(json_safe(program))
@@ -241,8 +257,10 @@ def register_programs_routes(app, context: ApiRouteContext):
                 n_s1 = float(row.get("n_stage1_passed") or 0)
                 if n_used > 0:
                     op_success[str(row.get("op_name"))] = n_s1 / n_used
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to load op success rates for morph suggestions: %s", exc
+            )
 
         if body.get("use_analysis"):
             try:
@@ -272,9 +290,15 @@ def register_programs_routes(app, context: ApiRouteContext):
         for _ in range(pool_size):
             try:
                 child = _mutate_graph(parent_graph, grammar, rng)
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Morph candidate mutation failed for result_id=%s intent=%s: %s",
+                    result_id,
+                    intent,
+                    exc,
+                )
                 continue
-            child.prune_dead_branches()
+            child.prune_unreachable_nodes()
             validation = validate_graph(child, max_ops=30, max_depth=20)
             if not validation.valid:
                 continue
@@ -371,8 +395,12 @@ def register_programs_routes(app, context: ApiRouteContext):
                         child, workflow_id=fp[:12], name=f"morph_{fp[:8]}"
                     )
                     workflow_json = wf
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to convert morph candidate to workflow for fingerprint=%s: %s",
+                        fp[:12],
+                        exc,
+                    )
 
             candidates.append(
                 {

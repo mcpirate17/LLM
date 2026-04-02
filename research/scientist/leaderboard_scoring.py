@@ -10,12 +10,12 @@ import math
 from typing import Any, Dict, Optional, Sequence, Union
 
 from .thresholds import (
+    BINDING_AR_SOFT_GATE,
+    BINDING_BINDING_AUC_SOFT_GATE,
+    BINDING_INDUCTION_SOFT_GATE,
+    BINDING_LOCAL_ONLY_PENALTY,
     GPT2_REF,
     INSUFFICIENT_LEARNING_LR,
-    SPECTRAL_NORM_FLOOR,
-    STRUCTURAL_ONLY_NOVELTY_CAP,
-    WIKITEXT_REF_PPL_CEILING,
-    WIKITEXT_REF_SCORE_FLOOR,
 )
 
 
@@ -75,7 +75,10 @@ _PR_SELECT_COLS = (
     "depth_savings_ratio, recursion_depth_ratio, "
     "fp_jacobian_spectral_norm, validation_robustness_score, "
     "ncd_description_length_per_param, novelty_valid_for_promotion, "
-    "fingerprint_json"
+    "fingerprint_json, hellaswag_acc, ar_auc, ar_final_acc, ar_timed_out, "
+    "ar_above_chance, induction_auc, binding_auc, blimp_overall_accuracy, "
+    "tinystories_score, cross_task_score, diagnostic_score, "
+    "fp_gromov_delta, fp_hierarchy_fitness"
 )
 
 
@@ -147,6 +150,33 @@ def _pr_dict_to_score_kwargs(
         "quant_retention": d.get("quant_int8_retention"),
         "long_ctx_score": d.get("robustness_long_ctx_combined_score"),
         "is_reference": is_reference,
+        # Binding probes
+        "ar_auc": pr_dict.get("ar_auc") or d.get("ar_auc"),
+        "ar_timed_out": bool(pr_dict.get("ar_timed_out"))
+        if pr_dict.get("ar_timed_out") is not None
+        else None,
+        "ar_above_chance": bool(pr_dict.get("ar_above_chance"))
+        if pr_dict.get("ar_above_chance") is not None
+        else None,
+        "induction_auc": pr_dict.get("induction_auc") or d.get("induction_auc"),
+        "binding_auc": pr_dict.get("binding_auc") or d.get("binding_auc"),
+        # BLiMP
+        "blimp_accuracy": pr_dict.get("blimp_overall_accuracy")
+        or d.get("blimp_overall_accuracy"),
+        # HellaSwag commonsense reasoning
+        "hellaswag_acc_screening": pr_dict.get("hellaswag_acc")
+        or d.get("hellaswag_acc"),
+        "hellaswag_acc_investigation": d.get("hellaswag_acc")
+        if tier in _inv_tiers
+        else None,
+        "hellaswag_acc_validation": d.get("hellaswag_acc")
+        if tier in _val_tiers
+        else None,
+        # v8 understanding metrics
+        "tinystories_score": pr_dict.get("tinystories_score"),
+        "cross_task_score": pr_dict.get("cross_task_score"),
+        "diagnostic_score": pr_dict.get("diagnostic_score"),
+        "hierarchy_fitness": pr_dict.get("fp_hierarchy_fitness"),
     }
     if extra:
         kw.update(extra)
@@ -214,463 +244,6 @@ def build_score_kwargs_from_prefetch(
     Pass a copy if you need to reuse the pr_dict (fingerprint_json is popped).
     """
     return _pr_dict_to_score_kwargs(dict(pr_dict), d, is_reference, extra or None)
-
-
-def compute_composite_score(
-    screening_lr: Optional[float] = None,
-    screening_nov: Optional[float] = None,
-    inv_lr: Optional[float] = None,
-    inv_robust: Optional[float] = None,
-    val_lr: Optional[float] = None,
-    val_baseline: Optional[float] = None,
-    val_std: Optional[float] = None,
-    robustness_score: Optional[float] = None,
-    is_unstable: Optional[bool] = None,
-    novelty_confidence: Optional[float] = None,
-    scaling_param_efficiency: Optional[float] = None,
-    is_reference: bool = False,
-    routing_savings: Optional[float] = None,
-    compression_ratio: Optional[float] = None,
-    entropy: Optional[float] = None,
-    discovery_lr: Optional[float] = None,
-    spectral_norm: Optional[float] = None,
-    robustness_noise: Optional[float] = None,
-    quant_retention: Optional[float] = None,
-    long_ctx_score: Optional[float] = None,
-    init_std: Optional[float] = None,
-    loss_improvement_rate: Optional[float] = None,
-    quant_quality_per_byte: Optional[float] = None,
-    ncd_score: Optional[float] = None,
-    n_routing_ops: Optional[int] = None,
-    n_sparse_ops: Optional[int] = None,
-    n_moe_ops: Optional[int] = None,
-    recursion_savings: Optional[float] = None,
-    depth_savings: Optional[float] = None,
-    activation_sparsity: Optional[float] = None,
-    max_viable_seq_len: Optional[int] = None,
-    long_ctx_scaling: Optional[float] = None,
-    long_ctx_passkey: Optional[float] = None,
-    long_ctx_multi_hop: Optional[float] = None,
-    long_ctx_assoc: Optional[float] = None,
-    routing_expert_count: Optional[int] = None,
-    routing_confidence_mean: Optional[float] = None,
-    routing_drop_rate: Optional[float] = None,
-    routing_fast_fraction: Optional[float] = None,
-    routing_balance_score: Optional[float] = None,
-    replication_n: Optional[int] = None,
-    replication_loss_mean: Optional[float] = None,
-    replication_loss_std: Optional[float] = None,
-    replication_best_vs_mean_gap: Optional[float] = None,
-    wikitext_score: Optional[float] = None,
-    peak_ppl: Optional[float] = None,
-    ppl_500: Optional[float] = None,
-    steps_to_divergence: Optional[int] = None,
-    investigation_passed: Optional[bool] = None,
-    validation_passed: Optional[bool] = None,
-    decompose: bool = False,
-    **kwargs: Any,
-) -> Union[float, Dict[str, Any]]:
-    """Compute "Total Scientific Utility" -- an open-ended additive score.
-
-    Scoring Contract
-    ================
-    - The composite score is a **ranking signal**, not a scientific claim.
-    - Event occurrence (investigated, validated) does **not** affect score.
-      Only measurable outputs from evaluation stages affect score.
-    - **First-class contributors**: loss performance, novelty, routing
-      savings, sparsity, compression, learning efficiency, scaling.
-    - Loss is important but **not dominant** -- capped at 100pts in a
-      system where exotic architectures can reach 300+.
-    - **Novelty confidence** (``novelty_confidence``) scales the novelty
-      contribution -- structural-only novelty (conf=0.2) contributes at
-      most 8 of the 40 available novelty points.
-    - **Promotion eligibility** is separate from score. A high-scoring
-      entry can still be ``novelty_valid_for_promotion=False``.
-    - ``decompose=True`` returns a dict with per-component breakdown
-      for full auditability.
-
-    Score Budget (approximate maximums)
-    ------------------------------------
-    Performance:       100  |  Novelty:            40
-    Discovery:          20  |  Learning efficiency: 20
-    Scaling efficiency: ~90 |  Routing savings:     50
-    Compression:        30  |  NCD:                 15
-    Routing ops:        15  |  Sparsity:            30
-    MoE quality:       ~25  |  Adaptive compute:    25
-    Robustness:         40  |  Long context:        70
-    Seq-len bonus:      20  |
-    """
-    score = 0.0
-    _bd: Dict[str, float] = {} if decompose else None  # type: ignore[assignment]
-
-    def _track(key: str, before: float) -> None:
-        if _bd is not None:
-            _bd[key] = score - before
-
-    # 1. Performance Utility (Primary)
-    # When replicated evidence exists (n >= 3), replace the single-run
-    # screening_lr with loss_mean so ALL downstream references use the
-    # aggregate.  Higher tiers already have multi-run evidence.
-    _repl_n = int(replication_n or 0) if replication_n is not None else 0
-    if _repl_n >= 3 and replication_loss_mean is not None and not is_reference:
-        screening_lr = replication_loss_mean
-        if _bd is not None:
-            _bd["screening_lr_replaced_by_mean"] = True
-            _bd["original_screening_lr"] = kwargs.get(
-                "_original_screening_lr", screening_lr
-            )
-
-    _s0 = score
-    if val_baseline is not None:
-        perf_lr = val_baseline
-        perf_confidence = 1.0
-    elif val_lr is not None:
-        perf_lr = val_lr
-        perf_confidence = 1.0
-    elif inv_lr is not None:
-        perf_lr = inv_lr
-        perf_confidence = 0.85
-    elif screening_lr is not None:
-        perf_lr = screening_lr
-        perf_confidence = 0.65
-    else:
-        perf_lr = None
-        perf_confidence = 0.0
-
-    # HARD GATE: model that didn't learn cannot score high.
-    # loss_ratio is normalized (final_loss / ln(vocab_size)), so:
-    #   0.9 = model barely improved from random (10% reduction)
-    #   0.95 = essentially no learning
-    # Prevents inflated scores from novelty/routing when model is broken.
-    _insufficient_learning_cap: Optional[float] = None
-    if perf_lr is not None and perf_lr > INSUFFICIENT_LEARNING_LR:
-        _insufficient_learning_cap = 10.0
-    elif perf_lr is not None and perf_lr > 0.9:
-        _insufficient_learning_cap = 20.0
-
-    if perf_lr is not None:
-        perf_norm = max(0.0, min(1.0, 1.0 - perf_lr))
-        score += 100.0 * (perf_norm**1.6) * perf_confidence
-    _track("performance", _s0)
-
-    # Discovery channel (random tokens)
-    _s0 = score
-    if discovery_lr is not None:
-        score += 20.0 * max(0, 1.0 - discovery_lr)
-    _track("discovery", _s0)
-
-    # Learning Efficiency
-    _s0 = score
-    if loss_improvement_rate is not None:
-        score += 20.0 * max(0, min(1.0, loss_improvement_rate))
-    _track("learning_efficiency", _s0)
-
-    # 2. Novelty Utility — source-aware scoring
-    # Full CKA + behavioral blend: up to 40 points
-    # Structural-only (pre-completion or CKA degenerate): capped at 15 points
-    _s0 = score
-    eff_nov = (
-        1.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
-    )
-    conf = (
-        1.0
-        if is_reference
-        else (novelty_confidence if novelty_confidence is not None else 1.0)
-    )
-    novelty_gate = 1.0
-    if perf_lr is not None:
-        # Floor at 0.3: novel architectures that haven't converged still get
-        # 30% novelty credit. Without this floor, the gate creates a degenerate
-        # fitness landscape where novelty can never overcome a loss deficit.
-        novelty_gate = min(1.0, 0.3 + 0.7 * max(0.0, (0.9 - perf_lr) / 0.6))
-    _raw_novelty_pts = 40.0 * eff_nov * conf * novelty_gate
-    # Cap structural-only novelty: if post-investigation fingerprint has not
-    # been completed, or CKA is invalid, novelty contribution is capped.
-    # Calibrated against c9c7075e741a8790: structural_novelty=0.381 should
-    # produce ~5.7 pts, not ~32 pts from fake CKA inflation.
-    _novelty_cap = float(
-        kwargs.get("novelty_structural_only_cap", STRUCTURAL_ONLY_NOVELTY_CAP)
-    )
-    _fp_completed = bool(kwargs.get("fingerprint_completed_post_investigation"))
-    _novelty_valid = bool(kwargs.get("novelty_valid_for_promotion"))
-    if is_reference:
-        score += _raw_novelty_pts
-    elif _fp_completed and _novelty_valid:
-        # Full CKA + behavioral blend — uncapped
-        score += _raw_novelty_pts
-    else:
-        # Graduated scaling: partial probe completion earns partial credit.
-        _analyses_succeeded = int(kwargs.get("analyses_succeeded", 0))
-        _graduated = _raw_novelty_pts * (0.4 + 0.6 * (_analyses_succeeded / 4))
-        score += min(_graduated, 40.0)
-    _track("novelty", _s0)
-
-    # 3. Efficiency & Scaling Utility
-    _s0 = score
-    if scaling_param_efficiency is not None:
-        eff_above_1 = max(0.0, scaling_param_efficiency - 1.0)
-        score += 25.0 * math.sqrt(eff_above_1)
-        if scaling_param_efficiency >= 5.0:
-            score += 30.0
-        if scaling_param_efficiency >= 10.0:
-            score += 20.0
-    _track("scaling_efficiency", _s0)
-
-    # Compound efficiency bonus: routing + sparse + high efficiency
-    _s0 = score
-    if (
-        n_routing_ops is not None
-        and n_routing_ops >= 1
-        and n_sparse_ops is not None
-        and n_sparse_ops >= 1
-        and scaling_param_efficiency is not None
-        and scaling_param_efficiency >= 3.0
-    ):
-        score += 15.0
-    _track("compound_efficiency", _s0)
-
-    # Efficiency amplifier gate: reward extreme efficiency
-    if scaling_param_efficiency is not None and scaling_param_efficiency > 3.0:
-        amplifier = 1.0 + 0.05 * min(5, scaling_param_efficiency - 3.0)
-        score *= amplifier
-
-    _s0 = score
-    if routing_savings is not None:
-        score += 50.0 * routing_savings
-        # Routing overhead penalty: penalize wasteful routing that adds
-        # complexity without savings AND without improving loss.
-        if routing_savings < 0.05:
-            best_lr = (
-                val_baseline
-                if val_baseline is not None
-                else (
-                    val_lr
-                    if val_lr is not None
-                    else (inv_lr if inv_lr is not None else screening_lr)
-                )
-            )
-            if best_lr is not None and best_lr > INSUFFICIENT_LEARNING_LR:
-                waste = 0.05 - routing_savings
-                score -= 30.0 * waste  # max penalty ~1.5 at savings=0
-    _track("routing_savings", _s0)
-
-    # Routing efficiency bonus: reward models that route effectively
-    _s0 = score
-    if routing_fast_fraction is not None and routing_fast_fraction > 0.05:
-        # Up to 20pts for routing a significant fraction of tokens to fast paths
-        score += 20.0 * min(1.0, routing_fast_fraction)
-        # Balance bonus: up to 10pts for well-distributed routing
-        if routing_balance_score is not None and routing_balance_score > 0.5:
-            score += 10.0 * routing_balance_score
-        # Multiplicative efficiency bonus when routing saves compute AND loss is good
-        if scaling_param_efficiency is not None and scaling_param_efficiency > 1.0:
-            routing_eff = 1.0 + routing_fast_fraction * 0.5
-            score *= min(1.3, routing_eff)  # cap at 30% boost
-    _track("routing_efficiency", _s0)
-
-    _s0 = score
-    if compression_ratio is not None:
-        comp_score = 20.0 * max(0, 1.0 - (compression_ratio / 1.0))
-        if quant_quality_per_byte is not None:
-            comp_score += 10.0 * max(0, quant_quality_per_byte)
-        score += comp_score
-    _track("compression", _s0)
-
-    _s0 = score
-    if ncd_score is not None:
-        score += 15.0 * max(0, 1.0 - ncd_score)
-    _track("ncd", _s0)
-
-    # 3b. Structural complexity bonus
-    _s0 = score
-    if n_routing_ops is not None and n_routing_ops > 0:
-        score += min(15.0, n_routing_ops * 5.0)
-    _track("routing_ops", _s0)
-
-    # 3c. Sparsity bonus (max 30pts: 20 structural + 10 activation)
-    _s0 = score
-    if n_sparse_ops is not None and n_sparse_ops > 0:
-        score += min(20.0, n_sparse_ops * 6.0)
-    if activation_sparsity is not None and activation_sparsity > 0.3:
-        score += 10.0 * min(1.0, (activation_sparsity - 0.3) / 0.5)
-    _track("sparsity", _s0)
-
-    # 3d. MoE quality bonus (max ~25pts)
-    _s0 = score
-    if n_moe_ops is not None and n_moe_ops > 0:
-        moe_base = min(10.0, n_moe_ops * 5.0)
-        if routing_expert_count is not None and routing_expert_count > 1:
-            expert_mult = min(1.5, 1.0 + math.log2(routing_expert_count) / 6.0)
-            moe_base *= expert_mult
-        if routing_confidence_mean is not None and routing_confidence_mean > 0.5:
-            moe_base *= 1.0 + 0.3 * (routing_confidence_mean - 0.5)
-        if routing_drop_rate is not None and routing_drop_rate > 0.3:
-            moe_base *= max(0.5, 1.0 - (routing_drop_rate - 0.3))
-        score += moe_base
-    _track("moe_quality", _s0)
-
-    # 3e. Adaptive computation bonus (max 25pts)
-    _s0 = score
-    if recursion_savings is not None and recursion_savings > 0:
-        score += 15.0 * min(1.0, recursion_savings / 0.5)
-    if depth_savings is not None and depth_savings > 0:
-        score += 10.0 * min(1.0, depth_savings / 0.5)
-    _track("adaptive_computation", _s0)
-
-    # 4. Robustness & Stability Utility
-    _s0 = score
-    if spectral_norm is not None:
-        score += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
-    if robustness_noise is not None:
-        score += 15.0 * max(0, 1.0 - robustness_noise)
-    if robustness_score is not None:
-        score += 15.0 * robustness_score
-    if quant_retention is not None:
-        score += 15.0 * max(0, quant_retention - 0.5) / 0.5
-    _track("robustness", _s0)
-
-    # 4b. Expanded long-context scoring (total budget 50pts, up from 20)
-    _s0 = score
-    if long_ctx_score is not None:
-        score += 20.0 * long_ctx_score
-        if long_ctx_passkey is not None:
-            score += 10.0 * long_ctx_passkey
-        if long_ctx_multi_hop is not None:
-            score += 10.0 * long_ctx_multi_hop
-        if long_ctx_scaling is not None:
-            score += 5.0 * long_ctx_scaling
-        if long_ctx_assoc is not None:
-            score += 5.0 * long_ctx_assoc
-    if max_viable_seq_len is not None and max_viable_seq_len > 512:
-        score += 5.0 * min(4.0, math.log2(max_viable_seq_len / 512))
-    _track("long_context", _s0)
-
-    # 5. Generalization Utility (The "Anti-Cheat")
-    _s0 = score
-    wikitext_perplexity = kwargs.get("wikitext_perplexity")
-    # Use peak_ppl (best PPL at any trajectory checkpoint) when available;
-    # fall back to single-point wikitext_perplexity for entries without
-    # trajectory data.
-    effective_ppl = peak_ppl if peak_ppl is not None else wikitext_perplexity
-    if wikitext_score is not None:
-        score += 35.0 * max(0.0, min(1.0, wikitext_score))
-    # Trajectory capability bonus: reward models whose peak_ppl beats
-    # reference ceiling.  Up to +20 pts for peak_ppl approaching 1.0.
-    # Only applies when trajectory data exists (peak_ppl is not None).
-    # Score formula: log(vocab/ppl)/log(vocab), vocab=32000.
-    if peak_ppl is not None and peak_ppl > 0:
-        _vocab = 32000
-        _peak_score = max(0.0, math.log(_vocab / peak_ppl) / math.log(_vocab))
-        score += 20.0 * min(1.0, _peak_score)
-    # Generalization stability bonus: models that never diverge within
-    # their eval budget get a bonus.  NULL steps_to_divergence = stable.
-    if peak_ppl is not None and steps_to_divergence is None:
-        score += 10.0
-    if effective_ppl is not None:
-        if effective_ppl > 1000000:
-            if decompose:
-                _bd["generalization"] = 0.0
-                _bd["_disqualified"] = True  # type: ignore[assignment]
-                return {"composite_score": 0.0, "breakdown": _bd}
-            return 0.0
-        if effective_ppl > WIKITEXT_REF_PPL_CEILING:
-            over_ref = min(
-                2.0,
-                (effective_ppl - WIKITEXT_REF_PPL_CEILING)
-                / max(WIKITEXT_REF_PPL_CEILING, 1e-6),
-            )
-            score -= 20.0 * over_ref
-        if effective_ppl > 1000:
-            score -= 50.0 * math.log10(effective_ppl / 1000.0)
-    _track("generalization", _s0)
-
-    # 5b. Investigation robustness — positive signal + reliability penalty.
-    _s0 = score
-    # Positive: gracefully degrading reward for investigation robustness.
-    # +10 for fully robust (1.0), +3.3 for 1/3 pass rate, +0 for untested.
-    if inv_robust is not None and inv_robust > 0:
-        score += 10.0 * inv_robust
-    # Negative: penalty for investigation failure WITHOUT strong real-token
-    # evidence.  Models that fail investigation but beat references on
-    # WikiText should not be penalised as hard.
-    inv_failed = investigation_passed is False and validation_passed is not True
-    if inv_failed:
-        # Cap penalty for models with frontier-competitive WikiText scores
-        has_frontier_evidence = (
-            wikitext_score is not None and wikitext_score >= WIKITEXT_REF_SCORE_FLOOR
-        )
-        if inv_robust is not None and inv_robust < 0.5 and not has_frontier_evidence:
-            score -= 25.0 * min(1.0, (0.5 - inv_robust) / 0.5)
-        if wikitext_score is not None and wikitext_score < WIKITEXT_REF_SCORE_FLOOR:
-            score -= 20.0 * min(
-                1.0,
-                (WIKITEXT_REF_SCORE_FLOOR - wikitext_score)
-                / max(WIKITEXT_REF_SCORE_FLOOR, 1e-6),
-            )
-        elif wikitext_score is None and wikitext_perplexity is None:
-            score -= 8.0
-    _track("investigation_reliability", _s0)
-
-    # 6. Numerical Integrity (Spectral Floor)
-    _s0 = score
-    if spectral_norm is not None and spectral_norm < SPECTRAL_NORM_FLOOR:
-        score -= 40.0
-    _track("spectral_floor_penalty", _s0)
-
-    # 7. Penalties
-    _s0 = score
-    if val_std is not None and val_std > 0.1:
-        score -= 50.0 * min(2.0, val_std / 0.5)
-    if is_unstable:
-        score -= 40.0
-    if entropy is not None and entropy > 0.95:
-        score -= 5.0 * (entropy - 0.95)
-    _track("penalties", _s0)
-
-    # Scaling gate: mild penalty for sub-baseline efficiency (non-reference).
-    # Floor at 0.5 prevents crushing novel architectures that haven't been
-    # profiled yet. The old floor of 0.1 could destroy 90% of a score.
-    if (
-        not is_reference
-        and scaling_param_efficiency is not None
-        and scaling_param_efficiency < 1.0
-    ):
-        pre_gate = score
-        gate = max(0.5, scaling_param_efficiency)
-        score *= gate
-        if _bd is not None:
-            _bd["scaling_gate_multiplier"] = gate
-            _bd["scaling_gate_reduction"] = score - pre_gate
-
-    final = max(0.0, score)
-
-    # Apply insufficient-learning cap: prevents inflated scores from
-    # novelty/routing/scaling when the model didn't actually learn.
-    if _insufficient_learning_cap is not None:
-        final = min(final, _insufficient_learning_cap)
-        if _bd is not None:
-            _bd["insufficient_learning_cap"] = _insufficient_learning_cap
-
-    # Replication count is metadata, not a scoring signal. It tells us how
-    # many times we tested something — that's about our process, not the
-    # architecture. The outlier penalty below handles unreliable results.
-
-    # Seed variance flag: if best run differs significantly from mean,
-    # the architecture hasn't converged in the eval budget — it needs
-    # extended training, not a score penalty. Flag it for the runner.
-    if (
-        not is_reference
-        and replication_best_vs_mean_gap is not None
-        and _repl_n >= 2
-        and replication_best_vs_mean_gap > 0.1
-    ):
-        if _bd is not None:
-            _bd["needs_extended_training"] = True
-            _bd["seed_variance_gap"] = replication_best_vs_mean_gap
-
-    if decompose:
-        return {"composite_score": final, "breakdown": _bd}
-    return final
 
 
 def reference_novelty_for_display(novelty: Optional[float]) -> Optional[float]:
@@ -776,21 +349,69 @@ def compute_pre_investigation_score(
 
 
 # ---------------------------------------------------------------------------
-# v7 scoring: 13-component composite with perplexity anchors + additive
+# v7/v8 scoring: unified composite via _compute_composite_generic
 # See BASELINE_SCORING_DO_NOT_DELETE.md for full design rationale.
 # ---------------------------------------------------------------------------
 
-# Frontier reference averages (measured 2026-03-23 on wiki103)
-_V7_FRONTIER_PPL_1000 = 10.0  # screening anchor
-_V7_FRONTIER_PPL_2500 = 8.6  # investigation anchor
-_V7_FRONTIER_PPL_10000 = 5.6  # validation anchor
-_V7_FRONTIER_PARAM_EFF = (
-    1.09  # (frontier_ppl/model_ppl) * (frontier_params/model_params)
-)
-_V7_FRONTIER_LEARN_EFF = 1.13  # ppl@500 / ppl@1000
-_V7_FRONTIER_LONG_CTX = 0.375  # average long context score
-_V7_FRONTIER_AVG_PARAMS = 28_561_920  # average params across 4 refs
-_V7_FRONTIER_CONVERGENCE = 1.30  # avg ppl@100 / ppl@500 across 4 refs
+# Frontier reference values shared by v7 and v8 (measured 2026-03-23 on wiki103)
+_FRONTIER_COMMON: Dict[str, float] = {
+    "ppl_1000": 10.0,  # screening anchor
+    "ppl_2500": 8.6,  # investigation anchor
+    "ppl_10000": 5.6,  # validation anchor
+    "param_eff": 1.09,  # (frontier_ppl/model_ppl) * (frontier_params/model_params)
+    "learn_eff": 1.13,  # ppl@500 / ppl@1000
+    "long_ctx": 0.375,  # average long context score
+    "avg_params": 28_561_920,  # average params across 4 refs
+    "convergence": 1.30,  # avg ppl@100 / ppl@500 across 4 refs
+    "binding": 0.15,  # binding composite for refs at nano scale
+    "blimp": 0.60,  # BLiMP frontier at GPT-2 nano scale
+}
+
+_V7_CONFIG: Dict[str, float] = {
+    **_FRONTIER_COMMON,
+    # Component max points
+    "w_perf_short": 50.0,
+    "w_perf_medium": 75.0,
+    "w_perf_long": 100.0,
+    "w_param_eff": 50.0,
+    "w_learn_eff": 25.0,
+    "w_binding": 120.0,
+    # v8-only understanding components (0 = disabled in v7)
+    "w_tinystories": 0.0,
+    "w_cross_task": 0.0,
+    "w_diagnostic": 0.0,
+    "w_hellaswag": 0.0,
+    "w_hierarchy": 0.0,
+    # v8-only frontier values (unused when weight=0, present for type safety)
+    "tinystories": 0.45,
+    "cross_task": 0.60,
+    "diagnostic": 0.35,
+    "hellaswag": 0.30,
+    "hierarchy": 0.50,
+}
+
+_V8_CONFIG: Dict[str, float] = {
+    **_FRONTIER_COMMON,
+    # Component max points (reduced perplexity weights)
+    "w_perf_short": 35.0,
+    "w_perf_medium": 50.0,
+    "w_perf_long": 65.0,
+    "w_param_eff": 30.0,
+    "w_learn_eff": 20.0,
+    "w_binding": 85.0,
+    # v8-only understanding components
+    "w_tinystories": 30.0,
+    "w_cross_task": 30.0,
+    "w_diagnostic": 45.0,
+    "w_hellaswag": 30.0,
+    "w_hierarchy": 15.0,
+    # v8-only frontier values
+    "tinystories": 0.45,
+    "cross_task": 0.60,
+    "diagnostic": 0.35,
+    "hellaswag": 0.30,
+    "hierarchy": 0.50,
+}
 
 
 def _scurve(ratio: float, k: float = 4.0) -> float:
@@ -807,17 +428,34 @@ def _scurve(ratio: float, k: float = 4.0) -> float:
     return 1.0 / (1.0 + math.exp(-k * (ratio - 1.0)))
 
 
-def compute_composite_v7(
+# V7 frontier anchors — empirical reference metrics from 4 baseline architectures.
+_V7_FRONTIER_PPL_1000 = 10.0  # screening anchor
+_V7_FRONTIER_PPL_2500 = 8.6  # investigation anchor
+_V7_FRONTIER_PPL_10000 = 5.6  # validation anchor
+_V7_FRONTIER_PARAM_EFF = (
+    _V7_FRONTIER_PPL_1000 / 28_561_920
+)  # ppl/param ratio at screening
+_V7_FRONTIER_LEARN_EFF = 1.13  # ppl@500 / ppl@1000
+_V7_FRONTIER_LONG_CTX = 0.375  # average long context score
+_V7_FRONTIER_AVG_PARAMS = 28_561_920  # average params across 4 refs
+_V7_FRONTIER_CONVERGENCE = 1.30  # avg ppl@100 / ppl@500 across 4 refs
+_V7_FRONTIER_BINDING = 0.35  # composite binding score across 4 refs
+
+
+def _compute_composite_generic(
+    cfg: Dict[str, float],
+    *,
+    decompose: bool = False,
     # S-curved inputs (perplexity, efficiency)
-    ppl_screening: Optional[float] = None,  # wiki103 ppl at 1000 steps
-    ppl_investigation: Optional[float] = None,  # wiki103 ppl at 2500 steps
-    ppl_validation: Optional[float] = None,  # wiki103 ppl at 10000 steps
-    param_count: Optional[float] = None,  # total model parameters
-    ppl_at_100: Optional[float] = None,  # for early convergence
-    ppl_at_500: Optional[float] = None,  # for learning efficiency + convergence
-    ppl_at_1000: Optional[float] = None,  # for learning efficiency
-    long_ctx_score: Optional[float] = None,  # combined long context score
-    # Additive inputs (routing/compression/sparsity — from v5)
+    ppl_screening: Optional[float] = None,
+    ppl_investigation: Optional[float] = None,
+    ppl_validation: Optional[float] = None,
+    param_count: Optional[float] = None,
+    ppl_at_100: Optional[float] = None,
+    ppl_at_500: Optional[float] = None,
+    ppl_at_1000: Optional[float] = None,
+    long_ctx_score: Optional[float] = None,
+    # Additive inputs (routing/compression/sparsity)
     routing_savings: Optional[float] = None,
     routing_fast_fraction: Optional[float] = None,
     routing_balance_score: Optional[float] = None,
@@ -827,35 +465,47 @@ def compute_composite_v7(
     activation_sparsity: Optional[float] = None,
     recursion_savings: Optional[float] = None,
     depth_savings: Optional[float] = None,
-    # Novelty (from v5)
+    # Novelty
     screening_nov: Optional[float] = None,
     novelty_confidence: Optional[float] = None,
     is_reference: bool = False,
     # NCD
     ncd_score: Optional[float] = None,
-    # Robustness (from v5)
+    # Robustness
     spectral_norm: Optional[float] = None,
     robustness_noise: Optional[float] = None,
     robustness_score: Optional[float] = None,
     quant_retention: Optional[float] = None,
-    # Loss ratio fallback (for entries without ppl)
+    # Loss ratio fallback
     screening_lr: Optional[float] = None,
     # Speed/throughput
     throughput_tok_s: Optional[float] = None,
     forward_time_ms: Optional[float] = None,
-    # Tier context (controls which components are active)
-    tier: Optional[str] = None,  # "screening", "investigation", "validation"
-    # Control
-    decompose: bool = False,
+    # HellaSwag
+    hellaswag_acc_screening: Optional[float] = None,
+    hellaswag_acc_investigation: Optional[float] = None,
+    hellaswag_acc_validation: Optional[float] = None,
+    # Binding probes
+    ar_auc: Optional[float] = None,
+    ar_timed_out: Optional[bool] = None,
+    ar_above_chance: Optional[bool] = None,
+    induction_auc: Optional[float] = None,
+    binding_auc: Optional[float] = None,
+    # BLiMP
+    blimp_accuracy: Optional[float] = None,
+    # v8 understanding metrics (ignored when weights are 0)
+    tinystories_score: Optional[float] = None,
+    cross_task_score: Optional[float] = None,
+    diagnostic_score: Optional[float] = None,
+    hierarchy_fitness: Optional[float] = None,
+    # Tier context
+    tier: Optional[str] = None,
     **kwargs: Any,
 ) -> Union[float, Dict[str, Any]]:
-    """Composite score v7 — 16 components, 590pt max (before param penalty).
+    """Generic composite scoring -- parameterized by config dict.
 
-    6 S-curved components use frontier reference averages as anchor.
-    7 additive components use old v5 formulas (frontier refs score 0).
-    1 multiplicative param-size penalty for oversized models.
-
-    See BASELINE_SCORING_DO_NOT_DELETE.md for the full spec.
+    Both v7 and v8 delegate to this. The config dict controls component
+    weights and frontier reference values.
     """
     score = 0.0
     _bd: Optional[Dict[str, Any]] = {} if decompose else None
@@ -875,41 +525,49 @@ def compute_composite_v7(
             }
         return result
 
-    # Hard gate: screened_out or investigation_failed — model doesn't learn.
-    # Zero all performance components — only structural/novelty points survive.
+    # Hard gate: screened_out or investigation_failed
     _inv_failed = tier in ("investigation_failed", "screened_out")
 
-    # ── S-CURVED COMPONENTS ──────────────────────────────────────────
+    # Tier helpers
+    _is_investigated = (
+        tier in ("investigation", "validation", "breakthrough")
+        if tier
+        else (ppl_investigation is not None)
+    )
+    _is_validation = (
+        tier in ("validation", "breakthrough") if tier else (ppl_validation is not None)
+    )
 
-    # 1. Performance (short) — screening, 1000 steps, max 50pts
+    # -- S-CURVED COMPONENTS --
+
+    # 1. Performance (short)
     perf_short = 0.0
     if not _inv_failed:
         if ppl_screening is not None and ppl_screening > 0:
-            ratio = _V7_FRONTIER_PPL_1000 / ppl_screening
-            perf_short = 50.0 * _scurve(ratio)
+            ratio = cfg["ppl_1000"] / ppl_screening
+            perf_short = cfg["w_perf_short"] * _scurve(ratio)
         elif screening_lr is not None:
-            # Fallback: estimate from loss_ratio (rough mapping)
-            perf_short = 50.0 * _scurve(max(0.01, 1.0 - screening_lr))
+            perf_short = cfg["w_perf_short"] * _scurve(max(0.01, 1.0 - screening_lr))
     score += perf_short
     _track("perf_short", perf_short)
 
-    # 2. Performance (medium) — investigation, 2500 steps, max 75pts
+    # 2. Performance (medium)
     perf_med = 0.0
     if not _inv_failed and ppl_investigation is not None and ppl_investigation > 0:
-        ratio = _V7_FRONTIER_PPL_2500 / ppl_investigation
-        perf_med = 75.0 * _scurve(ratio)
+        ratio = cfg["ppl_2500"] / ppl_investigation
+        perf_med = cfg["w_perf_medium"] * _scurve(ratio)
     score += perf_med
     _track("perf_medium", perf_med)
 
-    # 3. Performance (long) — validation, 10000 steps, max 100pts
+    # 3. Performance (long)
     perf_long = 0.0
     if not _inv_failed and ppl_validation is not None and ppl_validation > 0:
-        ratio = _V7_FRONTIER_PPL_10000 / ppl_validation
-        perf_long = 100.0 * _scurve(ratio)
+        ratio = cfg["ppl_10000"] / ppl_validation
+        perf_long = cfg["w_perf_long"] * _scurve(ratio)
     score += perf_long
     _track("perf_long", perf_long)
 
-    # 4. Parameter efficiency — max 50pts
+    # 4. Parameter efficiency
     param_eff_pts = 0.0
     if (
         not _inv_failed
@@ -918,15 +576,15 @@ def compute_composite_v7(
         and ppl_screening is not None
         and ppl_screening > 0
     ):
-        model_eff = (_V7_FRONTIER_PPL_1000 / ppl_screening) * (
-            _V7_FRONTIER_AVG_PARAMS / param_count
+        model_eff = (cfg["ppl_1000"] / ppl_screening) * (
+            cfg["avg_params"] / param_count
         )
-        ratio = model_eff / _V7_FRONTIER_PARAM_EFF
-        param_eff_pts = 50.0 * _scurve(ratio)
+        ratio = model_eff / cfg["param_eff"]
+        param_eff_pts = cfg["w_param_eff"] * _scurve(ratio)
     score += param_eff_pts
     _track("param_efficiency", param_eff_pts)
 
-    # 5. Learning efficiency — max 25pts
+    # 5. Learning efficiency
     learn_eff_pts = 0.0
     if (
         not _inv_failed
@@ -935,21 +593,21 @@ def compute_composite_v7(
         and ppl_at_1000 > 0
     ):
         model_conv = ppl_at_500 / ppl_at_1000
-        ratio = model_conv / _V7_FRONTIER_LEARN_EFF
-        learn_eff_pts = 25.0 * _scurve(ratio)
+        ratio = model_conv / cfg["learn_eff"]
+        learn_eff_pts = cfg["w_learn_eff"] * _scurve(ratio)
     score += learn_eff_pts
     _track("learning_efficiency", learn_eff_pts)
 
-    # ── ADDITIVE COMPONENTS (from v5, unchanged) ─────────────────────
+    # -- ADDITIVE COMPONENTS --
 
-    # 6. Routing savings — max 50pts
+    # 6. Routing savings -- max 50pts
     routing_pts = 0.0
     if routing_savings is not None:
         routing_pts = 50.0 * routing_savings
     _track("routing_savings", routing_pts)
     score += routing_pts
 
-    # 7. Compression — max 30pts
+    # 7. Compression -- max 30pts
     comp_pts = 0.0
     if compression_ratio is not None:
         comp_pts = 20.0 * max(0, 1.0 - compression_ratio)
@@ -959,7 +617,7 @@ def compute_composite_v7(
     _track("compression", comp_pts)
     score += comp_pts
 
-    # 8. Activation sparsity — max 30pts (20 structural + 10 activation)
+    # 8. Activation sparsity -- max 30pts (20 structural + 10 activation)
     sparsity_pts = 0.0
     if n_sparse_ops is not None and n_sparse_ops > 0:
         sparsity_pts += min(20.0, n_sparse_ops * 6.0)
@@ -968,7 +626,7 @@ def compute_composite_v7(
     _track("sparsity", sparsity_pts)
     score += sparsity_pts
 
-    # 9. Adaptive computation — max 25pts
+    # 9. Adaptive computation -- max 25pts
     adaptive_pts = 0.0
     if recursion_savings is not None and recursion_savings > 0:
         adaptive_pts += 15.0 * min(1.0, recursion_savings / 0.5)
@@ -977,8 +635,7 @@ def compute_composite_v7(
     _track("adaptive_computation", adaptive_pts)
     score += adaptive_pts
 
-    # 10. Novelty — max 40pts (from v5 logic)
-    # References score 0 — they ARE the baseline, not novel.
+    # 10. Novelty -- max 40pts
     novelty_pts = 0.0
     eff_nov = (
         0.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
@@ -989,9 +646,6 @@ def compute_composite_v7(
         else (novelty_confidence if novelty_confidence is not None else 1.0)
     )
     raw_novelty_pts = 40.0 * eff_nov * conf
-    # Graduated novelty scaling: partial probe completion earns partial credit.
-    # analyses_succeeded=4 means full CKA+behavioral → full credit (scale=1.0).
-    # analyses_succeeded=0 means structural only → scale=0.4, capped at 15pts.
     _novelty_valid = bool(kwargs.get("novelty_valid_for_promotion"))
     if not is_reference and not _novelty_valid:
         _analyses_succeeded = int(kwargs.get("analyses_succeeded", 0))
@@ -1002,23 +656,15 @@ def compute_composite_v7(
     _track("novelty", novelty_pts)
     score += novelty_pts
 
-    # 11. NCD — max 15pts
-    # ncd_score is description_length_per_param: lower = more compressible = better
-    # None means no data → 0pts (not free max)
+    # 11. NCD -- max 15pts
     ncd_pts = 0.0
     if ncd_score is not None and ncd_score > 0:
         ncd_pts = 15.0 * max(0, 1.0 - ncd_score)
     _track("ncd", ncd_pts)
     score += ncd_pts
 
-    # 12. Robustness — max 40pts, investigation/validation only
-    # These metrics are only measured during investigation runs.
+    # 12. Robustness -- max 40pts, investigation+ only
     robust_pts = 0.0
-    _is_investigated = (
-        tier in ("investigation", "validation", "breakthrough")
-        if tier
-        else (ppl_investigation is not None)
-    )
     if _is_investigated:
         if spectral_norm is not None:
             robust_pts += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
@@ -1032,24 +678,20 @@ def compute_composite_v7(
     _track("robustness", robust_pts)
     score += robust_pts
 
-    # 13. Long context — S-curved, max 25pts, validation tier only
+    # 13. Long context -- S-curved, max 25pts, validation tier only
     long_ctx_pts = 0.0
-    _is_validation = (
-        tier in ("validation", "breakthrough") if tier else (ppl_validation is not None)
-    )
     if (
         _is_validation
         and long_ctx_score is not None
         and long_ctx_score > 0
-        and _V7_FRONTIER_LONG_CTX > 0
+        and cfg["long_ctx"] > 0
     ):
-        ratio = long_ctx_score / _V7_FRONTIER_LONG_CTX
+        ratio = long_ctx_score / cfg["long_ctx"]
         long_ctx_pts = 25.0 * _scurve(ratio)
     _track("long_context", long_ctx_pts)
     score += long_ctx_pts
 
-    # 14. Early convergence — max 10pts
-    # ppl@100 / ppl@500 ratio, S-curved against frontier avg of 1.30
+    # 14. Early convergence -- max 10pts
     convergence_pts = 0.0
     if (
         not _inv_failed
@@ -1058,13 +700,11 @@ def compute_composite_v7(
         and ppl_at_500 > 0
     ):
         conv_ratio = ppl_at_100 / ppl_at_500
-        convergence_pts = 10.0 * _scurve(conv_ratio / _V7_FRONTIER_CONVERGENCE)
+        convergence_pts = 10.0 * _scurve(conv_ratio / cfg["convergence"])
     _track("early_convergence", convergence_pts)
     score += convergence_pts
 
-    # 15. Speed/Latency — max 25pts
-    # Compares throughput or latency against GPT-2 reference.
-    # A model 5x slower than GPT-2 at same quality is not a win.
+    # 15. Speed/Latency -- max 25pts
     speed_pts = 0.0
     if not _inv_failed:
         if throughput_tok_s is not None and throughput_tok_s > 0:
@@ -1076,9 +716,133 @@ def compute_composite_v7(
     _track("speed", speed_pts)
     score += speed_pts
 
-    # 16. Param-size penalty — multiplicative, penalizes oversized models.
-    # A 3x-over-budget model gets ~15% score reduction; prevents capacity-
-    # driven wins where big models score high purely from having more params.
+    # 16. Binding probes
+    _effective_ar_auc = None if ar_timed_out else ar_auc
+    binding_pts = 0.0
+    if not _inv_failed:
+        _bc = 0.0
+        _bc_n = 0
+        if _effective_ar_auc is not None:
+            _bc += 0.4 * _effective_ar_auc
+            _bc_n += 1
+        if induction_auc is not None:
+            _bc += 0.3 * induction_auc
+            _bc_n += 1
+        if binding_auc is not None:
+            _bc += 0.3 * binding_auc
+            _bc_n += 1
+        if _bc > 0 and _bc_n > 0:
+            ratio = _bc / cfg["binding"]
+            binding_pts = cfg["w_binding"] * _scurve(ratio, k=6)
+    binding_pts = min(cfg["w_binding"], binding_pts)
+    _track("binding", binding_pts)
+    score += binding_pts
+
+    # 17. BLiMP linguistic competence -- max 40pts
+    blimp_pts = 0.0
+    if not _inv_failed and blimp_accuracy is not None and blimp_accuracy > 0.50:
+        ratio = blimp_accuracy / cfg["blimp"]
+        blimp_pts = 40.0 * _scurve(ratio, k=6)
+    blimp_pts = min(40.0, blimp_pts)
+    _track("blimp", blimp_pts)
+    score += blimp_pts
+
+    # -- v8 UNDERSTANDING COMPONENTS (weights are 0 in v7 config) --
+
+    # 18. TinyStories -- validation+ only
+    w_ts = cfg["w_tinystories"]
+    if w_ts > 0:
+        tinystories_pts = 0.0
+        if _is_validation and tinystories_score is not None and tinystories_score > 0:
+            ratio = tinystories_score / cfg["tinystories"]
+            tinystories_pts = w_ts * _scurve(ratio)
+        tinystories_pts = min(w_ts, tinystories_pts)
+        _track("tinystories", tinystories_pts)
+        score += tinystories_pts
+
+    # 19. Cross-task robustness -- investigation+ only
+    w_ct = cfg["w_cross_task"]
+    if w_ct > 0:
+        cross_task_pts = 0.0
+        if _is_investigated and cross_task_score is not None and cross_task_score > 0:
+            ratio = cross_task_score / cfg["cross_task"]
+            cross_task_pts = w_ct * _scurve(ratio)
+        cross_task_pts = min(w_ct, cross_task_pts)
+        _track("cross_task", cross_task_pts)
+        score += cross_task_pts
+
+    # 20. Diagnostic tasks -- validation+ only
+    w_diag = cfg["w_diagnostic"]
+    if w_diag > 0:
+        diag_pts = 0.0
+        if _is_validation and diagnostic_score is not None and diagnostic_score > 0:
+            ratio = diagnostic_score / cfg["diagnostic"]
+            diag_pts = w_diag * _scurve(ratio)
+        diag_pts = min(w_diag, diag_pts)
+        _track("diagnostic", diag_pts)
+        score += diag_pts
+
+    # 21. HellaSwag reasoning -- investigation+ only
+    w_hs = cfg["w_hellaswag"]
+    if w_hs > 0:
+        hellaswag_pts = 0.0
+        _hellaswag_acc = hellaswag_acc_investigation or hellaswag_acc_validation
+        if _is_investigated and _hellaswag_acc is not None and _hellaswag_acc > 0.26:
+            ratio = _hellaswag_acc / cfg["hellaswag"]
+            hellaswag_pts = w_hs * _scurve(ratio, k=6)
+        hellaswag_pts = min(w_hs, hellaswag_pts)
+        _track("hellaswag", hellaswag_pts)
+        score += hellaswag_pts
+
+    # 22. Hierarchy probe -- investigation+ only
+    w_hier = cfg["w_hierarchy"]
+    if w_hier > 0:
+        hierarchy_pts = 0.0
+        if _is_investigated and hierarchy_fitness is not None and hierarchy_fitness > 0:
+            ratio = hierarchy_fitness / cfg["hierarchy"]
+            hierarchy_pts = w_hier * _scurve(ratio)
+        hierarchy_pts = min(w_hier, hierarchy_pts)
+        _track("hierarchy", hierarchy_pts)
+        score += hierarchy_pts
+
+    # -- PENALTIES --
+
+    # Binding soft gate -- 3-signal AND
+    _binding_penalty = 1.0
+    _induction_below = (
+        induction_auc is not None and induction_auc < BINDING_INDUCTION_SOFT_GATE
+    )
+    _binding_below = (
+        binding_auc is not None and binding_auc < BINDING_BINDING_AUC_SOFT_GATE
+    )
+    _ar_below = (
+        _effective_ar_auc is not None
+        and _effective_ar_auc < BINDING_AR_SOFT_GATE
+        and not ar_above_chance
+    )
+    _binding_signals_measured = sum(
+        [
+            induction_auc is not None,
+            binding_auc is not None,
+            _effective_ar_auc is not None,
+        ]
+    )
+    _all_below = _binding_signals_measured >= 2 and all(
+        [
+            _induction_below or induction_auc is None,
+            _binding_below or binding_auc is None,
+            _ar_below or _effective_ar_auc is None,
+        ]
+    )
+    if not _inv_failed and _binding_signals_measured >= 2 and _all_below:
+        _binding_penalty = BINDING_LOCAL_ONLY_PENALTY
+        score *= _binding_penalty
+    _track(
+        "binding_local_only_penalty",
+        _binding_penalty if _binding_penalty < 1.0 else 0.0,
+    )
+
+    # Param-size penalty
     _TARGET_PARAMS = 5_000_000  # ~5M = GPT-2 small block budget
     param_penalty = 1.0
     if param_count is not None and param_count > _TARGET_PARAMS:
@@ -1096,3 +860,53 @@ def compute_composite_v7(
             _bd["param_size_penalty_multiplier"] = param_penalty  # type: ignore[assignment]
         return {"composite_score": final, "breakdown": _bd}
     return final
+
+
+def compute_composite_v7(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite score v7 -- 18 components, 710pt max (before penalties).
+
+    8 S-curved components use frontier reference averages as anchor.
+    7 additive components use old v5 formulas (frontier refs score 0).
+    1 binding range component (120pt, S-curved).
+    1 binding soft penalty (0.80x, 3-signal AND).
+    1 multiplicative param-size penalty for oversized models.
+
+    See BASELINE_SCORING_DO_NOT_DELETE.md for the full spec.
+    """
+    return _compute_composite_generic(_V7_CONFIG, decompose=decompose, **kw)
+
+
+def compute_composite_v8(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite score v8 -- rebalanced for understanding capability.
+
+    Key changes from v7:
+    - Perplexity-derived: 310pts -> 210pts (46% -> 26%)
+    - Binding probes: 120pts -> 85pts
+    - NEW: TinyStories (30pts), cross-task (30pts), diagnostic (45pts),
+      HellaSwag (30pts), hierarchy (15pts) = 150pts of new understanding
+    - Understanding hard gate added at promotion (separate from scoring)
+    """
+    return _compute_composite_generic(_V8_CONFIG, decompose=decompose, **kw)
+
+
+# ---------------------------------------------------------------------------
+# Version dispatcher
+# ---------------------------------------------------------------------------
+SCORING_VERSION = "v8"
+
+
+def compute_composite(
+    *, decompose: bool = False, **kw: Any
+) -> Union[float, Dict[str, Any]]:
+    """Dispatch to the active scoring version."""
+    if SCORING_VERSION == "v8":
+        return compute_composite_v8(decompose=decompose, **kw)
+    return compute_composite_v7(decompose=decompose, **kw)

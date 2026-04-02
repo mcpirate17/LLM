@@ -907,6 +907,7 @@ class _SynthesisMixin:
         while len(candidate_pool) < target_pool:
             added_this_round = 0
             for source_id, parent_graph, source_row in source_pairs:
+                parent_fp = parent_graph.fingerprint()
                 for _ in range(per_source):
                     if len(candidate_pool) >= target_pool:
                         break
@@ -917,7 +918,7 @@ class _SynthesisMixin:
 
                     # Z15: Prune dead branches (unreachable nodes) before validation
                     # to prevent redundant complexity from bloat mutations.
-                    child.prune_dead_branches()
+                    child.prune_unreachable_nodes()
 
                     validation = validate_graph(
                         child,
@@ -934,9 +935,7 @@ class _SynthesisMixin:
                     seen_fingerprints.add(fp)
                     child.metadata.setdefault("refinement", {})
                     child.metadata["refinement"]["source_result_id"] = source_id
-                    child.metadata["refinement"]["seed_fingerprint"] = (
-                        parent_graph.fingerprint()
-                    )
+                    child.metadata["refinement"]["seed_fingerprint"] = parent_fp
                     child.metadata["refinement"]["intent"] = intent
                     score, score_breakdown = self._score_refinement_candidate(
                         child,

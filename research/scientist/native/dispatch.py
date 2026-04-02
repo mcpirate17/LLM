@@ -332,6 +332,25 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
     raise ValueError(f"Unsupported op for native backward dispatch: '{op_name}'")
 
 
+def _prepare_graph_input(graph: Any, input_data: Any):
+    """Shared setup for graph dispatch: convert input + serialize IR.
+
+    Returns (x_np, graph_json) where x_np is a float32 numpy array
+    and graph_json is the serialized native IR JSON string.
+    """
+    from ..synthesis.native_ir_converter import graph_to_native_ir_json
+
+    import numpy as np
+
+    if hasattr(input_data, "detach"):
+        x_np = input_data.detach().cpu().numpy().astype(np.float32)
+    else:
+        x_np = np.asarray(input_data, dtype=np.float32)
+
+    graph_json = graph_to_native_ir_json(graph)
+    return x_np, graph_json
+
+
 def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     """Execute a full computation graph using the Rust scheduler.
 
@@ -346,23 +365,12 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     if rust is None:
         raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
 
-    # Lazy import to avoid circular dependency
-    from ..synthesis.native_ir_converter import graph_to_native_ir_json
-
     import numpy as np
 
-    if hasattr(input_data, "detach"):
-        # Convert torch tensor to numpy
-        x_np = input_data.detach().cpu().numpy().astype(np.float32)
-    else:
-        x_np = np.asarray(input_data, dtype=np.float32)
+    x_np, graph_json = _prepare_graph_input(graph, input_data)
 
     # Flatten input for the scheduler (expects Vec<f32>)
-    # Note: Current Rust execute implementation assumes a single flat input vector.
-    # In Aria, graphs usually process [Batch, Seq, Dim] tensors.
     x_flat = x_np.ravel().tolist()
-
-    graph_json = graph_to_native_ir_json(graph)
 
     try:
         global _last_profile_data
@@ -429,16 +437,9 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
           - ``"saved_activations"``: dict[int, numpy.ndarray] per-node activations.
           - ``"ir_json"``: the pre-serialized IR JSON (for backward call).
     """
-    from ..synthesis.native_ir_converter import graph_to_native_ir_json
-
     import numpy as np
 
-    if hasattr(input_data, "detach"):
-        x_np = input_data.detach().cpu().numpy().astype(np.float32)
-    else:
-        x_np = np.asarray(input_data, dtype=np.float32)
-
-    graph_json = graph_to_native_ir_json(graph)
+    x_np, graph_json = _prepare_graph_input(graph, input_data)
     topo = graph.topological_order()
 
     # Walk forward, saving every node's activation.

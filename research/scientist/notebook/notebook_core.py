@@ -23,6 +23,68 @@ from ._shared import (
 )
 
 
+class _ThreadSafeConnectionWrapper:
+    """Wraps a sqlite3.Connection so that all execute/cursor operations
+    are serialized via a lock.  This prevents ``InterfaceError: bad
+    parameter or other API misuse`` when Flask's threaded server fires
+    concurrent requests that share one LabNotebook instance.
+    """
+
+    __slots__ = ("_conn", "_lock")
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+        self._lock = threading.Lock()
+
+    # --- Serialized execute family ---
+    def execute(self, sql, parameters=()):
+        with self._lock:
+            return self._conn.execute(sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        with self._lock:
+            return self._conn.executemany(sql, seq_of_parameters)
+
+    def executescript(self, sql_script):
+        with self._lock:
+            return self._conn.executescript(sql_script)
+
+    def commit(self):
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self):
+        with self._lock:
+            self._conn.rollback()
+
+    def close(self):
+        with self._lock:
+            self._conn.close()
+
+    def cursor(self):
+        with self._lock:
+            return self._conn.cursor()
+
+    # --- Passthrough for attribute access (row_factory, etc.) ---
+    @property
+    def row_factory(self):
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self._conn.row_factory = value
+
+    @property
+    def total_changes(self):
+        return self._conn.total_changes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._conn.__exit__(*args)
+
+
 class _NotebookCore:
     """Core operations for the Lab Notebook."""
 
@@ -64,19 +126,17 @@ class _NotebookCore:
     ):
         self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(
+        raw_conn = sqlite3.connect(
             str(self.db_path),
             timeout=10.0,
             check_same_thread=check_same_thread,
         )
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        # Enable WAL mode for high-concurrency performance
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        # Busy timeout: wait up to 15s for locks instead of failing immediately.
-        # Without this, concurrent reader/writer access throws OperationalError.
-        self.conn.execute("PRAGMA busy_timeout=15000")
-        self.conn.row_factory = sqlite3.Row
+        raw_conn.execute("PRAGMA foreign_keys=ON")
+        raw_conn.execute("PRAGMA journal_mode=WAL")
+        raw_conn.execute("PRAGMA synchronous=NORMAL")
+        raw_conn.execute("PRAGMA busy_timeout=15000")
+        raw_conn.row_factory = sqlite3.Row
+        self.conn = _ThreadSafeConnectionWrapper(raw_conn)
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
         self._leaderboard_columns: Optional[set[str]] = None
@@ -299,6 +359,8 @@ class _NotebookCore:
             CREATE INDEX IF NOT EXISTS idx_programs_stage1_passed ON program_results(stage1_passed);
             CREATE INDEX IF NOT EXISTS idx_programs_graph_fingerprint ON program_results(graph_fingerprint);
             CREATE INDEX IF NOT EXISTS idx_programs_routing_mode ON program_results(routing_mode);
+            CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON program_results(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_programs_exp_ts ON program_results(experiment_id, timestamp);
         """)
         # Migrate decisions: add evidence_pack_json if missing
         try:
@@ -595,6 +657,14 @@ class _NotebookCore:
             "replication_loss_mean REAL",
             "replication_loss_std REAL",
             "replication_best_vs_mean_gap REAL",
+            # HellaSwag commonsense reasoning eval
+            "hellaswag_acc REAL",
+            # Binding probes
+            "ar_auc REAL",
+            "induction_auc REAL",
+            "binding_auc REAL",
+            "binding_composite REAL",
+            "local_only INTEGER DEFAULT 0",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:

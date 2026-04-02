@@ -100,16 +100,10 @@ class TropicalMoE(nn.Module):
         super().__init__()
         self.router = TropicalRouter(dim, n_experts)
         self.top_k = top_k
-        self.experts = (
-            nn.ModuleList([nn.Linear(dim, dim) for _ in range(n_experts)])
-            if n_experts <= 32
-            else None
-        )
 
-        if n_experts > 32:
-            self.expert_weights = nn.Parameter(
-                torch.randn(n_experts, dim, dim) / math.sqrt(dim)
-            )
+        # For small expert counts, use a single stacked parameter (no per-forward torch.stack)
+        self.expert_W = nn.Parameter(torch.randn(n_experts, dim, dim) / math.sqrt(dim))
+        self.expert_b = nn.Parameter(torch.zeros(n_experts, dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
@@ -118,29 +112,17 @@ class TropicalMoE(nn.Module):
         topk_weights, topk_indices = torch.topk(routing_weights, self.top_k, dim=-1)
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
-        if self.experts is not None:
-            # Gather-scatter: only run each expert on its assigned tokens
-            output = torch.zeros_like(x)
-            x_flat = x.reshape(B * S, D)
-            for k in range(self.top_k):
-                idx_flat = topk_indices[:, :, k].reshape(B * S)
-                w_flat = topk_weights[:, :, k].reshape(B * S, 1)
-                for e_idx in range(len(self.experts)):
-                    token_mask = idx_flat == e_idx
-                    if not token_mask.any():
-                        continue
-                    expert_out = self.experts[e_idx](x_flat[token_mask])
-                    output.view(B * S, D)[token_mask] += w_flat[token_mask] * expert_out
-        else:
-            # Batched gather: index expert weights per token
-            output = torch.zeros_like(x)
-            for k in range(self.top_k):
-                idx = topk_indices[:, :, k]
-                weight = topk_weights[:, :, k].unsqueeze(-1)
-                W = self.expert_weights[idx.reshape(-1)]
-                W = W.view(B, S, D, D)
-                expert_out = torch.einsum("bsd,bsde->bse", x, W)
-                output = output + weight * expert_out
+        output = torch.zeros_like(x)
+        x_flat = x.reshape(B * S, D)
+        for k in range(self.top_k):
+            idx_flat = topk_indices[:, :, k].reshape(B * S)
+            w_flat = topk_weights[:, :, k].reshape(B * S, 1)
+            W_sel = self.expert_W[idx_flat]  # (B*S, D, D)
+            b_sel = self.expert_b[idx_flat]  # (B*S, D)
+            expert_out = (
+                torch.bmm(x_flat.unsqueeze(1), W_sel.transpose(1, 2)).squeeze(1) + b_sel
+            )
+            output.view(B * S, D).add_(w_flat * expert_out)
 
         return output
 

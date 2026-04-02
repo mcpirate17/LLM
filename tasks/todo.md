@@ -1,80 +1,60 @@
 ---
 status: active
-created: 2026-03-30
+created: 2026-04-01
 author: claude-opus
 ---
 
-# TODO — Next Session
+# Scientist Hygiene Remediation
 
-## ACTIVE: Scale test running
-Champion c9c7075e at 177M params on FineWeb-Edu + UltraChat with Muon optimizer.
-- **Status**: Step 33K/50K (66%), avg loss 2.70, best 2.14, 0.41B tokens
-- **Restartable**: `python -m research.tools.scale_test` resumes from `research/artifacts/scale_test/latest.pt`
-- **Loss curve**: `research/artifacts/scale_test/loss_curve.png` + `loss_curve.json`
-- **ETA**: ~2 more hours to finish
+Full plan: `/home/tim/.claude/plans/jazzy-fluttering-book.md`
 
-### Loss trajectory:
-```
-Step   5K:  3.15
-Step  10K:  2.95
-Step  20K:  2.78
-Step  30K:  2.75
-Step  33K:  2.70  (current)
-Best:       2.14
-```
+## Phase 0: Foundation
+- [x] 0.1 Add SQLite indexes on program_results(timestamp, experiment_id+timestamp)
+- [x] 0.2 Cache PRAGMA table_info in analytics_experiments.py
 
-## 1. Fix scaling reference cache key (HIGH PRIORITY)
-Validation takes 60+ minutes because reference architectures are retrained every run.
-Cache key includes n_steps/vocab_size/data_tag — should just be family+d_model+n_layers.
-File: `research/eval/scaling_reference.py` line 357
+## Phase 1: Database & Caching
+- [x] 1.1 Fix N+1 query in analytics_experiments.py _s1_stats()
+- [x] 1.2 Cache get_reference_losses() with TTL
+- [x] 1.3 Batch DB ops in execution_screening.py:713-719
+- [x] 1.4 Add LIMIT to full-table scans in analytics_experiments.py
+- [x] 1.5 Cache count_discovery_tiers()
+- [x] 1.6 Cache gather_briefing_data()
 
-## 2. Add step-level progress to validation
-Show: `scaling reference comparison (d512) (14/15) — gpt2 8-layer: step 1200/10000 loss=1.83`
-Files: `research/eval/scaling_reference.py`, `research/scientist/runner/execution_validation.py`
+## Phase 2: Code Deduplication
+- [x] 2.1 Consolidate scoring v7/v8 → _compute_composite_generic()
+- [x] 2.2 Autograd function factory in native_autograd.py (472→316 lines)
+- [x] 2.3 Consolidate frontier constants (merged into config dicts)
+- [x] 2.4 Graph dispatch dedup in native/dispatch.py
+- [x] 2.5 LLM init dedup in persona*.py
+- [x] 2.6 Op extraction consolidation (N/A — already uses mixin inheritance, no duplication)
 
-## 3. Make validation writes incremental
-Currently writes all results at the end. Crash at step 14/15 = total loss.
-Write each result as it completes.
+## Phase 3: Dead Code & Hot Path
+- [ ] 3.1 Migrate callers + remove legacy compute_composite_score()
+- [ ] 3.2 Remove /api/observability/monitor endpoint
+- [ ] 3.3 Clean native_runner_canary.py MagicMock imports
+- [ ] 3.4 Label backfill functions as [MIGRATION TOOL]
+- [ ] 3.5 Fix duplicate mean in _helpers.py
+- [ ] 3.6 Single-pass seed aggregation in _helpers.py
+- [ ] 3.7 Fix double fingerprint call in synthesis.py
+- [ ] 3.8 Dashboard defaultdict
 
-## 4. Compare validation vs investigation loss
-Fingerprint 606dacc0 was fixed this session — investigation_loss was garbage (0.576) but validation_loss was 0.009. Check other entries for same issue: investigation_loss_ratio that's much worse than screening or validation.
+## Phase 4: Exception Handler Remediation (655 instances)
+- [ ] 4.1 Tier A: execution_screening.py (36 handlers)
+- [ ] 4.2 Tier A: execution_training.py (28 handlers)
+- [ ] 4.3 Tier B: observability_bp.py (30 handlers)
+- [ ] 4.4 Tier B: _helpers.py (24) + dashboard.py (21)
+- [ ] 4.5 Tier B: chat_bp.py (19 handlers)
+- [ ] 4.6 Tier C: execution_candidates.py (23 handlers)
+- [ ] 4.7 Tier C: remaining notebook/ + analytics/
+- [ ] 4.8 Tier D: everything else (opportunistic)
 
-## 5. Scoring reality check
-`scaling_param_efficiency` drives ~375 of ~750 points. At small scale this rewards compression tricks. Should loss/PPL be weighted higher since MoE/MoD/MoR can be bolted on later? The core architecture's learning ability is the hard part.
+## Phase 5: Structural Performance
+- [ ] 5.1 Profile + fix O(n^2) interaction scoring
+- [ ] 5.2 Streaming .fetchall() replacements
+- [ ] 5.3 Fix blocking HTTP in _designer.py
 
-## 6. Context rules (prompt for other Claude)
-- `tasks/fix_context_rules_prompt.md` — selective_scan, softmax_attention, transpose_sd
-- token_merge + adjacent_token_merge rules already added this session
+---
 
-## 7. Low-confidence op backfills
-```bash
-python -m research.tools.backfill_templates --templates sparse_moe_block routed_bottleneck --target 100
-```
-
-## Session Summary (March 29-30)
-### Built
-- 5 ML modules: interaction_analysis, temporal_bayesian, op_embeddings, interaction_model, gnn_predictor
-- Ensemble predictor with calibrated logistic regression (93% precision)
-- Bayesian tracker with temporal decay + code-fix detection
-- Op interaction heatmaps (7,754 pairs analyzed)
-- Targeted backfill tool (`research/tools/targeted_backfill.py`)
-- Scale test script (`research/tools/scale_test.py`) — restartable, Muon optimizer, live loss curve
-
-### Fixed
-- Cleared 5 false-positive failure signatures, adjusted 20 more
-- Added context rules for token_merge, adjacent_token_merge, and 7 routing ops
-- Fixed token_merge_block backfill (was failing due to routing_mandatory=True)
-- Fixed code-fix detection cascade (was resetting core op posteriors to 0)
-- Removed replication dampening from scoring (was penalizing tested entries)
-- Converted outlier penalty to needs_extended_training flag
-- Fixed investigation_robustness NULL for 14 investigation entries
-- Fixed wikitext_score JSON blob corruption
-- Backfilled n_routing_ops/n_sparse_ops/n_moe_ops for 1145 entries
-- Fixed 606dacc0 investigation_loss_ratio (0.576 → 0.009)
-- Rescored entire leaderboard 3 times with corrected data
-
-### Mutations tested
-- Champion baseline: PPL 4.4 (matched original)
-- Fix activation order: PPL 4.5 (no improvement)
-- Learned gate: PPL 6.7 (promising, still converging)
-- Full hybrid (sparse FFN + Mamba + sparse channel): PPL 12.1 (needs more steps)
+## Full Performance & Hygiene Audit (2026-04-01)
+See: `tasks/audit/performance_hygiene_audit_2026-04-01.md` (report)
+See: `tasks/audit/fix_plan.md` (prioritized fix plan, 7 phases, 40+ items)

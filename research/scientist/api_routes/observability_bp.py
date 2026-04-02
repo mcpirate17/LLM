@@ -283,8 +283,13 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
         idx = _build_op_index(notebook_path, window=window)
         stored_rates = idx.get("stored_rates", {})
         corrected_rates = idx.get("corrected_rates", {})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "Failed to build op index for observability health window=%s: %s",
+            window,
+            exc,
+            exc_info=True,
+        )
 
     # Total generated graphs (from op_success_rates): sum of n_used is an
     # over-count (each graph has multiple ops), but the MAX n_used across
@@ -349,8 +354,10 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
                     else None,
                     "profile_error": r["error"],
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "Failed to load component profiling health data: %s", exc, exc_info=True
+        )
 
     # Build per-component health
     components: List[Dict[str, Any]] = []
@@ -604,8 +611,8 @@ def _evaluate_alerts(
     nb = get_notebook(notebook_path)
     try:
         nb.get_dashboard_summary()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Dashboard summary prefetch failed for alerts: %s", exc)
 
     # Alert 1: S0 pass rate too low
     try:
@@ -630,7 +637,7 @@ def _evaluate_alerts(
                     }
                 )
     except Exception:
-        pass
+        logger.debug("Low S0 pass-rate alert evaluation failed", exc_info=True)
 
     # Alert 2: S1 pass rate critically low
     try:
@@ -655,7 +662,7 @@ def _evaluate_alerts(
                     }
                 )
     except Exception:
-        pass
+        logger.debug("Low S1 pass-rate alert evaluation failed", exc_info=True)
 
     # Alert 3: Routing collapse detected
     try:
@@ -681,7 +688,7 @@ def _evaluate_alerts(
                     }
                 )
     except Exception:
-        pass
+        logger.debug("Routing collapse alert evaluation failed", exc_info=True)
 
     # Alert 4: Broken components
     health = _get_component_health(notebook_path)
@@ -723,7 +730,7 @@ def _evaluate_alerts(
                     }
                 )
     except Exception:
-        pass
+        logger.debug("Stale pipeline alert evaluation failed", exc_info=True)
 
     alerts.sort(key=lambda a: {"critical": 0, "warning": 1, "info": 2}[a["severity"]])
     return alerts
@@ -805,8 +812,11 @@ def register_observability_routes(app, context: ApiRouteContext):
                             curve = runner.get_live_loss_curve()
                             if curve:
                                 prog_dict["loss_curve_tail"] = curve[-20:]
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug(
+                                "Failed to read live loss curve for observability stream: %s",
+                                exc,
+                            )
                         data = _json_dumps(prog_dict, safe=True)
                         yield f"event: progress\ndata: {data}\n\n"
 
@@ -816,13 +826,20 @@ def register_observability_routes(app, context: ApiRouteContext):
                         if alerts:
                             alert_data = _json_dumps({"alerts": alerts}, safe=True)
                             yield f"event: alerts\ndata: {alert_data}\n\n"
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to emit observability alerts event: %s",
+                            exc,
+                            exc_info=True,
+                        )
 
                     time.sleep(3)
                 except GeneratorExit:
                     return
-                except Exception:
+                except Exception as exc:
+                    logger.debug(
+                        "Observability event stream tick failed: %s", exc, exc_info=True
+                    )
                     time.sleep(5)
                     yield "event: keepalive\ndata: {}\n\n"
 
@@ -845,145 +862,6 @@ def register_observability_routes(app, context: ApiRouteContext):
             max_fail_rate=float(request.args.get("max_fail_rate", 0.90)),
         )
         return jsonify({"blocklist": blocklist, "count": len(blocklist)})
-
-    @app.route("/api/observability/monitor")
-    @wnb
-    def api_monitor(nb=None):
-        """Compact CLI monitoring endpoint — single JSON with all key telemetry.
-
-        Designed for: `curl -s .../api/observability/monitor | jq .`
-        or `watch -n 3 'curl -s .../api/observability/monitor | jq .'`
-        """
-        result: Dict[str, Any] = {"ts": time.time()}
-
-        # 1. Runner progress
-        runner = get_runner(notebook_path)
-        try:
-            progress = runner.progress
-            if progress is not None:
-                p = progress.to_dict() if hasattr(progress, "to_dict") else {}
-                result["run"] = {
-                    "status": p.get("status", "idle"),
-                    "program": f"{p.get('current_program', 0)}/{p.get('total_programs', '?')}",
-                    "s0": p.get("stage0_passed", 0),
-                    "s1": p.get("stage1_passed", 0),
-                    "best_lr": p.get("best_loss_ratio"),
-                    "elapsed_m": round(p.get("elapsed_seconds", 0) / 60, 1),
-                    "stage": p.get("current_stage", ""),
-                }
-            else:
-                result["run"] = {"status": "idle"}
-        except Exception:
-            result["run"] = {"status": "unknown"}
-
-        # 2. Live training step (most recent from loss curve)
-        try:
-            curve = runner.get_live_loss_curve()
-            if curve:
-                last = curve[-1]
-                result["train"] = {
-                    "step": last.get("step"),
-                    "loss": last.get("loss"),
-                    "total_steps": last.get("total_steps"),
-                    "routing_aux_loss": last.get("routing_aux_loss"),
-                    "grad_norm": last.get("grad_norm"),
-                    "phase": last.get("phase", ""),
-                }
-        except Exception:
-            pass
-
-        # 3. Alerts (compact)
-        try:
-            alerts = _evaluate_alerts(notebook_path, _DEFAULT_THRESHOLDS)
-            if alerts:
-                result["alerts"] = [
-                    {"severity": a["severity"][0].upper(), "msg": a["title"]}
-                    for a in alerts
-                ]
-            else:
-                result["alerts"] = []
-        except Exception:
-            result["alerts"] = []
-
-        # 4. Component health (counts only)
-        try:
-            health = _get_component_health(notebook_path)
-            result["components"] = {
-                "total": health["total"],
-                "ok": health["healthy"],
-                "warn": health["degraded"],
-                "fail": health["broken"],
-            }
-        except Exception:
-            pass
-
-        # 5. Recent routing telemetry from last S1 result
-        try:
-            row = nb.conn.execute(
-                "SELECT routing_mode, routing_confidence_mean, routing_drop_rate, "
-                "routing_utilization_entropy, routing_aux_loss_mean, routing_tokens_total "
-                "FROM program_results "
-                "WHERE stage1_passed = 1 AND routing_mode IS NOT NULL "
-                "ORDER BY timestamp DESC LIMIT 1"
-            ).fetchone()
-            if row and row["routing_mode"]:
-                result["routing"] = {
-                    "mode": row["routing_mode"],
-                    "confidence": round(float(row["routing_confidence_mean"]), 3)
-                    if row["routing_confidence_mean"]
-                    else None,
-                    "drop_rate": round(float(row["routing_drop_rate"]), 3)
-                    if row["routing_drop_rate"]
-                    else None,
-                    "entropy": round(float(row["routing_utilization_entropy"]), 3)
-                    if row["routing_utilization_entropy"]
-                    else None,
-                    "aux_loss": round(float(row["routing_aux_loss_mean"]), 4)
-                    if row["routing_aux_loss_mean"]
-                    else None,
-                }
-        except Exception:
-            pass
-
-        # Support text format for plain CLI: ?format=text
-        fmt = request.args.get("format", "json")
-        if fmt == "text":
-            lines = []
-            r = result.get("run", {})
-            lines.append(
-                f"status={r.get('status', '?')}  prog={r.get('program', '?')}  s0={r.get('s0', 0)}  s1={r.get('s1', 0)}  best_lr={r.get('best_lr', '?')}  elapsed={r.get('elapsed_m', 0)}m"
-            )
-            t = result.get("train", {})
-            if t:
-                parts = [
-                    f"step={t.get('step', '?')}/{t.get('total_steps', '?')}  loss={t.get('loss', '?')}"
-                ]
-                if t.get("routing_aux_loss") is not None:
-                    parts.append(f"raux={t['routing_aux_loss']}")
-                if t.get("grad_norm") is not None:
-                    parts.append(f"gnorm={t['grad_norm']}")
-                lines.append("  ".join(parts))
-            c = result.get("components", {})
-            if c:
-                lines.append(
-                    f"components: {c.get('ok', 0)} ok / {c.get('warn', 0)} warn / {c.get('fail', 0)} fail"
-                )
-            rt = result.get("routing", {})
-            if rt:
-                parts = [f"routing={rt.get('mode', '?')}"]
-                if rt.get("confidence") is not None:
-                    parts.append(f"conf={rt['confidence']}")
-                if rt.get("drop_rate") is not None:
-                    parts.append(f"drop={rt['drop_rate']}")
-                if rt.get("entropy") is not None:
-                    parts.append(f"ent={rt['entropy']}")
-                lines.append("  ".join(parts))
-            al = result.get("alerts", [])
-            if al:
-                lines.append(f"ALERTS: {', '.join(a['msg'] for a in al)}")
-            return Response("\n".join(lines) + "\n", mimetype="text/plain")
-
-        return jsonify(result)
 
     # ── P0: Error log ──────────────────────────────────────────────────
 

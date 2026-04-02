@@ -1018,4 +1018,22 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "llm_explanation": "TEXT",
     # Failure attribution (parsed from traceback)
     "failure_op": "TEXT",
+    # HellaSwag commonsense reasoning eval
+    "hellaswag_acc": "REAL",
+    "hellaswag_status": "TEXT",
+    "hellaswag_n_examples": "INTEGER",
+    # Binding probes (associative recall, induction head, binding range)
+    "ar_auc": "REAL",
+    "ar_final_acc": "REAL",
+    "ar_timed_out": "INTEGER",
+    "ar_above_chance": "INTEGER",
+    "induction_auc": "REAL",
+    "binding_auc": "REAL",
+    "binding_composite": "REAL",
+    "local_only": "INTEGER",
+    # BLiMP linguistic minimal pairs
+    "blimp_overall_accuracy": "REAL",
+    "blimp_subtask_accuracies_json": "TEXT",
+    "blimp_n_subtasks": "INTEGER",
+    "blimp_status": "TEXT",
 }

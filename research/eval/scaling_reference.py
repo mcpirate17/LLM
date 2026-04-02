@@ -259,30 +259,25 @@ def fit_power_law(
 
     Returns (A, alpha, r_squared).
     """
+    import numpy as np
+
     if len(params) < 2 or len(losses) < 2:
         return 0.0, 0.0, 0.0
 
-    log_ns = [math.log(max(n, 1)) for n in params]
-    log_ls = [math.log(max(l, 1e-10)) for l in losses]
-    n = len(log_ns)
+    log_ns = np.log(np.maximum(params, 1).astype(np.float64))
+    log_ls = np.log(np.maximum(losses, 1e-10).astype(np.float64))
 
-    # Simple linear regression: log(L) = log(A) - alpha * log(N)
-    mean_x = sum(log_ns) / n
-    mean_y = sum(log_ls) / n
-    ss_xx = sum((x - mean_x) ** 2 for x in log_ns)
-    ss_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(log_ns, log_ls))
-    ss_yy = sum((y - mean_y) ** 2 for y in log_ls)
-
-    if ss_xx < 1e-15:
-        return 0.0, 0.0, 0.0
-
-    slope = ss_xy / ss_xx  # -alpha
-    intercept = mean_y - slope * mean_x  # log(A)
+    # log(L) = log(A) - alpha * log(N)
+    coeffs = np.polynomial.polynomial.polyfit(log_ns, log_ls, 1)
+    intercept, slope = coeffs[0], coeffs[1]
     alpha = -slope
     A = math.exp(intercept)
 
-    # R² for goodness of fit
-    r2 = (ss_xy**2) / max(ss_xx * ss_yy, 1e-15) if ss_yy > 1e-15 else 0.0
+    # R² computed directly
+    predicted = intercept + slope * log_ns
+    ss_res = float(np.sum((log_ls - predicted) ** 2))
+    ss_tot = float(np.sum((log_ls - np.mean(log_ls)) ** 2))
+    r2 = 1.0 - ss_res / max(ss_tot, 1e-15) if ss_tot > 1e-15 else 0.0
 
     return A, alpha, r2
 
@@ -455,7 +450,11 @@ class ScalingReferenceManager:
             return None
         logger.debug(
             "Curve cache hit: %s A=%.3f alpha=%.4f R²=%.3f (%d points)",
-            curve_key, A, alpha, fit_r2, n_points,
+            curve_key,
+            A,
+            alpha,
+            fit_r2,
+            n_points,
         )
         return ScalingCurve(family=family, A=A, alpha=alpha, fit_r2=fit_r2)
 

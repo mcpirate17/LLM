@@ -10,6 +10,7 @@ Splits the 682-line api_strategy_briefing handler into four focused functions:
 from __future__ import annotations
 
 import logging
+import time as _time
 from typing import Any, Optional
 
 from ._strategy_preflight import (
@@ -29,6 +30,11 @@ from ._helpers import normalize_result_ids
 logger = logging.getLogger(__name__)
 
 
+_briefing_cache: dict[str, Any] = {}
+_briefing_cache_ts: float = 0.0
+_BRIEFING_CACHE_TTL: float = 60.0
+
+
 def gather_briefing_data(
     nb,
     analytics,
@@ -41,6 +47,11 @@ def gather_briefing_data(
     sparse_coverage_data, sparse_coverage_overview, pipeline, data_block,
     recommendation_evidence, completed, avg_recent_s1, ref_comparison.
     """
+    global _briefing_cache, _briefing_cache_ts
+    now = _time.monotonic()
+    if _briefing_cache and (now - _briefing_cache_ts) < _BRIEFING_CACHE_TTL:
+        return _briefing_cache
+
     summary = nb.get_dashboard_summary()
     trajectory = analytics.learning_trajectory() or {}
     compression_coverage = analytics.compression_coverage() or {}
@@ -111,7 +122,7 @@ def gather_briefing_data(
     )
     ref_comparison = _build_ref_comparison(nb)
 
-    return {
+    result = {
         "summary": summary,
         "trajectory": trajectory,
         "tiers": tiers,
@@ -128,6 +139,9 @@ def gather_briefing_data(
         "recent_s1_rates": recent_s1_rates,
         "ref_comparison": ref_comparison,
     }
+    _briefing_cache = result
+    _briefing_cache_ts = now
+    return result
 
 
 def _build_recommendation_evidence(

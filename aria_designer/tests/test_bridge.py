@@ -283,12 +283,6 @@ def test_passthrough_lowering_component_is_supported():
     speculative_info = get_component_execution_capability("routing/cheap_verify_blend")
     assert speculative_info["bridge_supported"] is True
     assert speculative_info["primitive_name"] == "cheap_verify_blend"
-    # token_difficulty_proj has no primitive — remains passthrough
-    difficulty_info = get_component_execution_capability(
-        "routing/token_difficulty_proj"
-    )
-    assert difficulty_info["bridge_supported"] is True
-    assert difficulty_info["primitive_name"] is None
     router_info = get_component_execution_capability("routing/difficulty_blend_3way")
     assert router_info["bridge_supported"] is True
     assert router_info["primitive_name"] == "difficulty_blend_3way"
@@ -492,43 +486,6 @@ def test_workflow_with_adaptive_and_speculative_passthrough():
     graph = workflow_to_graph(wf, model_dim=256)
     # depth_weighted_proj + cheap_verify_blend are real primitives, plus gelu = 3 ops
     assert graph.n_ops() == 3
-
-
-def test_workflow_with_difficulty_lane_dispatch_passthrough():
-    wf = {
-        "nodes": [
-            {"id": "n0", "component_type": "graph_input", "params": {}},
-            {
-                "id": "n1",
-                "component_type": "routing/token_difficulty_proj",
-                "params": {},
-            },
-            {
-                "id": "n2",
-                "component_type": "routing/difficulty_blend_3way",
-                "params": {"num_lanes": 2},
-            },
-            {
-                "id": "n3",
-                "component_type": "structural/conditional_dispatch",
-                "params": {"num_lanes": 2, "lane": 0},
-            },
-            {"id": "n4", "component_type": "gelu", "params": {}},
-            {"id": "n5", "component_type": "graph_output", "params": {}},
-        ],
-        "edges": [
-            {"id": "e0", "source": "n0", "target": "n1"},
-            {"id": "e1", "source": "n1", "target": "n2"},
-            {"id": "e2", "source": "n2", "target": "n3"},
-            {"id": "e3", "source": "n3", "target": "n4"},
-            {"id": "e4", "source": "n4", "target": "n5"},
-        ],
-    }
-    graph = workflow_to_graph(wf, model_dim=256)
-    # difficulty_blend_3way is a real op,
-    # token_difficulty_proj and conditional_dispatch are passthroughs,
-    # so we get: difficulty_blend_3way + gelu = 2 ops
-    assert graph.n_ops() == 2
 
 
 def test_workflow_with_data_source_lowering():

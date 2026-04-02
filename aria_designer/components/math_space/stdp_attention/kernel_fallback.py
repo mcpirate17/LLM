@@ -1,17 +1,17 @@
-"""Kernel handler for stdp_attention — dispatches to aria_core.stdp_attention_f32."""
+"""Kernel handler for stdp_attention — delegates to research.mathspaces.spiking."""
 
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
 
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "stdp_attention"
+def _native_args(inputs, config):
+    x = inputs["x"].detach().contiguous().float()
+    tau_plus = config.get("tau_plus", 20.0)
+    tau_minus = config.get("tau_minus", 20.0)
+    return (x, tau_plus, tau_minus)
 
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        tau_plus = config.get("tau_plus", 20.0)
-        tau_minus = config.get("tau_minus", 20.0)
-        return (x, tau_plus, tau_minus)
 
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+ComponentHandler = make_mathspace_unary_handler(
+    "stdp_attention",
+    "research.mathspaces.spiking.execute_stdp_attention",
+    native_args_fn=_native_args,
+)

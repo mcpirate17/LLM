@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
+from ..leaderboard_scoring import compute_composite
 
 
 class _ProgramsMixin:
@@ -831,41 +832,21 @@ class _ProgramsMixin:
             merged["tier"] = highest_tier
 
         # Build v6 score kwargs from merged fingerprint data + program_results
-        tags = str(merged.get("tags") or "")
-        is_wiki_tik = "tiktoken_native" in tags and "wikitext103" in tags
         # Best program_results row for v6 fields
         best_pr = (
             max(pr_rows, key=lambda r: r.get("n_train_steps") or 0) if pr_rows else {}
         )
-        composite = self.compute_composite_score(
-            wikitext_perplexity=merged.get("wikitext_perplexity"),
-            final_loss=best_pr.get("final_loss"),
-            is_wikitext_tiktoken=is_wiki_tik,
+        composite = compute_composite(
+            ppl_screening=merged.get("wikitext_perplexity"),
             screening_lr=merged.get("screening_loss_ratio"),
-            inv_lr=merged.get("investigation_loss_ratio"),
-            val_lr=merged.get("validation_loss_ratio"),
-            val_baseline=merged.get("validation_baseline_ratio"),
-            val_std=merged.get("validation_multi_seed_std"),
-            inv_robust=merged.get("investigation_robustness"),
-            loss_ratio=best_pr.get("loss_ratio"),
             screening_nov=merged.get("screening_novelty"),
             novelty_confidence=self._best_max(pr_rows, "novelty_confidence"),
-            behavioral_novelty=best_pr.get("behavioral_novelty"),
-            structural_novelty=best_pr.get("structural_novelty"),
-            cka_reference_quality=(
-                best_pr.get("fp_cka_vs_transformer") is not None
-                and (best_pr.get("fp_cka_vs_transformer") or 0) > 0
-            ),
             is_reference=bool(merged.get("is_reference")),
-            loss_improvement_rate=merged.get("loss_improvement_rate"),
             param_count=best_pr.get("param_count"),
-            n_train_steps=best_pr.get("n_train_steps"),
-            investigation_passed=merged.get("investigation_passed"),
-            validation_passed=merged.get("validation_passed"),
             spectral_norm=merged.get("fp_jacobian_spectral_norm"),
+            robustness_score=merged.get("investigation_robustness"),
             throughput_tok_s=best_pr.get("throughput_tok_s"),
             forward_time_ms=best_pr.get("forward_time_ms"),
-            gpt2_raw_anchor=95.0,
         )
         # Monotonic safeguard: fingerprint aggregate should not score below its
         # historical best leaderboard score when incorporating additional runs.
@@ -950,7 +931,7 @@ class _ProgramsMixin:
             )
 
     def backfill_fingerprint_aggregates(self) -> int:
-        """Recompute fingerprint-level leaderboard aggregates for all entries."""
+        """[MIGRATION TOOL] Recompute fingerprint-level leaderboard aggregates for all entries."""
         rows = self.conn.execute(
             """
             SELECT DISTINCT l.result_id
@@ -1159,7 +1140,7 @@ class _ProgramsMixin:
         experiment_types: Optional[List[str]] = None,
         limit: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Backfill screening leaderboard entries for uncovered screening survivors."""
+        """[MIGRATION TOOL] Backfill screening leaderboard entries for uncovered screening survivors."""
         experiment_types = experiment_types or [
             "synthesis",
             "novelty",

@@ -48,6 +48,7 @@ from pathlib import Path
 # ── Finding dataclass ─────────────────────────────────────────────────────────
 
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+_SEVERITY_ORDER = {s: i for i, s in enumerate(SEVERITIES)}
 AGENTS = ("aria-architect", "aria-scientist", "aria-kernel", "aria-bridge")
 
 
@@ -1944,7 +1945,7 @@ def generate_markdown_report(findings: list[AuditFinding], root: Path) -> str:
     for category in sorted(set(f.category for f in findings)):
         cat_findings = [f for f in findings if f.category == category]
         lines.append(f"### {category} ({len(cat_findings)} findings)\n")
-        for f in sorted(cat_findings, key=lambda x: SEVERITIES.index(x.severity)):
+        for f in sorted(cat_findings, key=lambda x: _SEVERITY_ORDER[x.severity]):
             lines.append(f"#### [{f.severity}] `{f.location}` → *{f.agent}*\n")
             lines.append(f"**Finding:** {f.finding}\n")
             lines.append(f"**Suggestion:** {f.suggestion}\n")
@@ -1986,7 +1987,7 @@ def generate_agent_json(findings: list[AuditFinding]) -> dict:
     for agent in AGENTS:
         agent_findings = sorted(
             [asdict(f) for f in findings if f.agent == agent],
-            key=lambda x: SEVERITIES.index(x["severity"]),
+            key=lambda x: _SEVERITY_ORDER[x["severity"]],
         )
         by_agent[agent] = {
             "total": len(agent_findings),
@@ -2009,7 +2010,7 @@ def generate_agent_json(findings: list[AuditFinding]) -> dict:
         "by_agent": by_agent,
         "all_findings": [
             asdict(f)
-            for f in sorted(findings, key=lambda x: SEVERITIES.index(x.severity))
+            for f in sorted(findings, key=lambda x: _SEVERITY_ORDER[x.severity])
         ],
     }
 
@@ -2188,7 +2189,7 @@ def main():
         audit_motif_composition(motifs_source)
 
     # ── Sort and output ───────────────────────────────────────────────────────
-    findings.sort(key=lambda f: SEVERITIES.index(f.severity))
+    findings.sort(key=lambda f: _SEVERITY_ORDER[f.severity])
     print(f"\n[aria_audit] Total findings: {len(findings)}")
     for sev in SEVERITIES:
         n = sum(1 for f in findings if f.severity == sev)

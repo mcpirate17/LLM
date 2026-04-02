@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import logging
 import random
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from research.scientist.native_runner import compile_model_native_first
+from research.scientist.native.telemetry import reset_native_runner_telemetry
 
-from research.scientist.native_runner import (
-    compile_model_native_first,
-    reset_native_runner_telemetry,
-)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,16 +31,20 @@ def _set_seed(seed: int) -> None:
         import numpy as np
 
         np.random.seed(seed)
-    except Exception:
-        pass
+    except ImportError:
+        logger.debug(
+            "NumPy unavailable; skipping NumPy seeding in native runner canary"
+        )
     try:
         import torch
 
         torch.manual_seed(seed)
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-    except Exception:
-        pass
+    except ImportError:
+        logger.debug(
+            "Torch unavailable; skipping Torch seeding in native runner canary"
+        )
 
 
 def _make_fake_graph(op_names: List[str]) -> Any:
@@ -83,7 +86,7 @@ def run_selective_canary_latency_benchmark(
 
     class _FakeNativeLib:
         def __init__(self):
-            self.nk_is_registered = MagicMock(return_value=1)
+            self.nk_is_registered = lambda *_args, **_kw: 1
 
         @staticmethod
         def aria_relu_f32(x, y, n):

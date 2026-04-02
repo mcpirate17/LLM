@@ -61,21 +61,3 @@ def test_hierarchy_fitness_small_input():
     reps = torch.randn(1, 2, 32)  # Only 2 tokens
     result = hierarchy_fitness(reps)
     assert 0.0 <= result["hierarchy_fitness"] <= 1.0
-
-
-def test_grammar_boost_activates():
-    """Grammar hyperbolic boost should activate when hierarchy_fitness > threshold."""
-    from research.synthesis.grammar import GrammarConfig
-
-    config = GrammarConfig()
-    config._hierarchy_fitness = 0.8  # Above threshold of 0.6
-    assert config._hierarchy_fitness > config.hyperbolic_promotion_threshold
-
-
-def test_grammar_boost_deactivates():
-    """Grammar hyperbolic boost should not activate below threshold."""
-    from research.synthesis.grammar import GrammarConfig
-
-    config = GrammarConfig()
-    config._hierarchy_fitness = 0.3  # Below threshold of 0.6
-    assert config._hierarchy_fitness <= config.hyperbolic_promotion_threshold

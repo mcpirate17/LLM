@@ -1,11 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { parseArchSpec, COMPRESSION_FACTORS, WEIGHT_STORAGE_LABELS, TOKEN_REP_LABELS } from './reportUtils';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export default function CompressionTechniqueCoverage({ programs }) {
-  const [sortKey, setSortKey] = useState('count');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     const byTechnique = {};
     let denseCount = 0;
@@ -54,30 +52,12 @@ export default function CompressionTechniqueCoverage({ programs }) {
     return { rows, denseCount, compressedCount, total: programs.length };
   }, [programs]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(analysis.rows, filterQuery, ['technique', 'label', 'bestFingerprint'])
-  ), [analysis.rows, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a[sortKey];
-      const vb = b[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows, handleSort } = useInteractiveTable({
+    rows: analysis.rows,
+    filterFields: ['technique', 'label', 'bestFingerprint'],
+    initialSortKey: 'count',
+    initialSortDesc: true,
+  });
 
   if (analysis.compressedCount === 0) return null;
 
@@ -116,15 +96,7 @@ export default function CompressionTechniqueCoverage({ programs }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter techniques"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <div style={{ overflowX: 'auto' }}>
@@ -132,30 +104,30 @@ export default function CompressionTechniqueCoverage({ programs }) {
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th onClick={() => handleSort('label')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Technique{sortKey === 'label' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Technique<SortIndicator active={sortKey === 'label'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('count')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                N{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                N<SortIndicator active={sortKey === 'count'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('s1Rate')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                S1 Rate{sortKey === 's1Rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                S1 Rate<SortIndicator active={sortKey === 's1Rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Loss<SortIndicator active={sortKey === 'avgLoss'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgParams')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Avg Params{sortKey === 'avgParams' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Params<SortIndicator active={sortKey === 'avgParams'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('factor')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Est. Ratio{sortKey === 'factor' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Est. Ratio<SortIndicator active={sortKey === 'factor'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('bestLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Best (Loss){sortKey === 'bestLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Best (Loss)<SortIndicator active={sortKey === 'bestLoss'} desc={sortDesc} />
               </th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map(row => (
+            {sortedRows.map(row => (
               <tr key={row.technique} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px 8px', fontWeight: 600, color: row.factor < 1 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>
                   {row.label}

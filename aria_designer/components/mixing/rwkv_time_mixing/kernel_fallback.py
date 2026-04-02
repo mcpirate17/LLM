@@ -1,7 +1,7 @@
 """Kernel handler for rwkv_time_mixing — dispatches to aria_core.rwkv_time_mixing_f32."""
 
 import torch
-from components.base import NativeComponentHandler, _make_weight
+from components.base import NativeComponentHandler, _make_weight, unsupported_fallback
 
 
 class ComponentHandler(NativeComponentHandler):
@@ -27,5 +27,6 @@ class ComponentHandler(NativeComponentHandler):
         )
 
     def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+        unsupported_fallback(
+            "rwkv_time_mixing", reason="no Torch parity implementation"
+        )

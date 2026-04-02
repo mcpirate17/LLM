@@ -41,20 +41,6 @@ class _SigmoidSTE(torch.autograd.Function):
         return grad_output * sig * (1 - sig)
 
 
-class _BernoulliSTE(torch.autograd.Function):
-    """Bernoulli sampling with straight-through estimator."""
-
-    @staticmethod
-    def forward(ctx, probs):
-        ctx.save_for_backward(probs)
-        return torch.bernoulli(probs)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # STE: pass gradient straight through
-        return grad_output
-
-
 # ── Spiking primitives ──
 
 
@@ -72,6 +58,41 @@ def _apply_grad_scale(tensor: torch.Tensor, module: nn.Module | None) -> torch.T
     if tensor.requires_grad and scale < 0.999:
         tensor.register_hook(lambda grad: grad * scale)
     return tensor
+
+
+@torch.jit.script
+def _lif_membrane_loop(
+    x: torch.Tensor, threshold: torch.Tensor, decay: float
+) -> torch.Tensor:
+    """JIT-compiled LIF membrane dynamics with STE surrogate gradient.
+
+    Runs the sequential recurrence (membrane accumulation, spike, reset)
+    without Python-loop overhead.  The straight-through estimator uses
+    sigmoid(5·(membrane − threshold)) as surrogate gradient.
+
+    Args:
+        x: (B, S, D) input current.
+        threshold: (B, S, D) per-position adaptive threshold.
+        decay: membrane leak factor (0 < decay < 1).
+
+    Returns:
+        (B, S, D) spike tensor with STE gradient.
+    """
+    B, S, D = x.shape
+    membrane = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    output = torch.empty_like(x)
+
+    for t in range(S):
+        xt = x[:, t, :]
+        thr = threshold[:, t, :]
+        membrane = decay * membrane + xt
+        spike_surr = torch.sigmoid(5.0 * (membrane - thr))
+        spike_hard = (membrane >= thr).float()
+        # STE: hard spike forward, sigmoid surrogate backward
+        output[:, t, :] = spike_hard + spike_surr - spike_surr.detach()
+        membrane = membrane * (1.0 - spike_hard)
+
+    return output
 
 
 def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
@@ -106,34 +127,18 @@ def execute_lif(module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
 
     B, S, D = x.shape
 
-    membrane = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-    spike_list = []
-    # Causal running variance for adaptive threshold. At each timestep t,
-    # threshold depends only on positions 0..t (never peeks at future).
-    running_sum = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-    running_sq_sum = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+    # ── Vectorised threshold computation ──
+    # Running variance via cumsum (no Python loop, fully parallel).
+    x_det = x.detach()  # threshold stats don't need gradients
+    cumsum = x_det.cumsum(dim=1)  # (B, S, D)
+    cumsq = (x_det * x_det).cumsum(dim=1)  # (B, S, D)
+    counts = torch.arange(1, S + 1, device=x.device, dtype=x.dtype).view(1, S, 1)
+    running_var = (cumsq / counts - (cumsum / counts) ** 2).clamp(min=1e-12)
+    causal_std = running_var.sqrt()  # (B, S, D)
+    threshold = causal_std / (1.0 - decay**2) ** 0.5 * 1.5  # (B, S, D)
 
-    for t in range(S):
-        xt = x[:, t, :]
-        # Update causal running stats
-        running_sum = running_sum + xt.detach()
-        running_sq_sum = running_sq_sum + (xt.detach() ** 2)
-        n = t + 1
-        running_var = (running_sq_sum / n - (running_sum / n) ** 2).clamp(min=1e-12)
-        causal_std = running_var.sqrt()  # (B, D)
-        # Steady-state membrane std ≈ input_std / sqrt(1 - decay²)
-        threshold = causal_std / (1.0 - decay**2) ** 0.5 * 1.5
-
-        membrane = decay * membrane + xt
-        # Surrogate spike: sigmoid of shifted membrane (differentiable)
-        spike_surr = torch.sigmoid(5.0 * (membrane - threshold))
-        # Hard spike for forward, surrogate for backward (STE)
-        spike_hard = (membrane >= threshold).float()
-        spike = spike_hard + spike_surr - spike_surr.detach()  # straight-through
-        spike_list.append(spike)
-        membrane = membrane * (1.0 - spike_hard)  # reset on fire
-
-    output = torch.stack(spike_list, dim=1)
+    # ── Sequential membrane dynamics (JIT-scripted) ──
+    output = _lif_membrane_loop(x, threshold, decay)
     return _apply_grad_scale(output, module)
 
 

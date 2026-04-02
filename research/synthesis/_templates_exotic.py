@@ -17,6 +17,7 @@ from ._template_helpers import (
     _motif_is_compatible,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
+    _tpl_norm_dual_op_residual,
 )
 from ._templates_core import tpl_residual_block
 
@@ -33,26 +34,8 @@ def tpl_normalized_matmul(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm_a → norm_b → matmul(a,b) → linear_proj → residual.
-
-    Both inputs normalized ⇒ bounded spectral norm for matmul.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        product = graph.add_op("matmul", [proj_a, proj_b])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    product = _fix_dim(graph, product)
-    try:
-        return graph.add_op("add", [input_id, product])
-    except ValueError:
-        return product
+    """norm → proj_a → proj_b → matmul → fix_dim → residual."""
+    return _tpl_norm_dual_op_residual(graph, input_id, rng, weights, merge_op="matmul")
 
 
 def tpl_gated_product(
@@ -119,26 +102,10 @@ def tpl_cosine_scoring(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm_a → norm_b → cosine_similarity(a,b) → linear_proj_up → residual.
-
-    Both from norm layers ⇒ non-zero vectors guaranteed.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        proj_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        proj_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        scores = graph.add_op("cosine_similarity", [proj_a, proj_b])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    scores = _fix_dim(graph, scores)
-    try:
-        return graph.add_op("add", [input_id, scores])
-    except ValueError:
-        return scores
+    """norm → proj_a → proj_b → cosine_similarity → fix_dim → residual."""
+    return _tpl_norm_dual_op_residual(
+        graph, input_id, rng, weights, merge_op="cosine_similarity"
+    )
 
 
 def tpl_decay_sequence(

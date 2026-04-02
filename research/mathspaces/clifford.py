@@ -24,11 +24,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
+from research.mathspaces._utils import causal_mask
 
 
 # Cl(3,0) has 8 basis elements
 # We pack them into groups of 8 within the feature dimension
 N_BASIS = 8
+
+# Cl(3,0) metric signs: [+,+,+,+,-,-,-,-] for scalar product computation
+_CL30_SIGNS = torch.tensor([1, 1, 1, 1, -1, -1, -1, -1], dtype=torch.float32)
 
 
 def _pack_multivector(x: torch.Tensor) -> torch.Tensor:
@@ -167,6 +171,14 @@ def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.stack([r0, r1, r2, r3, r12, r13, r23, r123], dim=-1)
 
 
+_GRADE_MASKS: dict[int, list[int]] = {
+    0: [0],
+    1: [1, 2, 3],
+    2: [4, 5, 6],
+    3: [7],
+}
+
+
 def grade_select(mv: torch.Tensor, grade: int) -> torch.Tensor:
     """Select specific grade from a multivector.
 
@@ -175,17 +187,9 @@ def grade_select(mv: torch.Tensor, grade: int) -> torch.Tensor:
     Grade 2: bivectors (indices 4,5,6)
     Grade 3: pseudoscalar (index 7)
     """
-    grade_indices = {
-        0: [0],
-        1: [1, 2, 3],
-        2: [4, 5, 6],
-        3: [7],
-    }
-    idx = grade_indices[grade]
-    result = torch.zeros_like(mv)
-    for i in idx:
-        result[..., i] = mv[..., i]
-    return result
+    mask = torch.zeros(N_BASIS, device=mv.device, dtype=mv.dtype)
+    mask[_GRADE_MASKS[grade]] = 1.0
+    return mv * mask
 
 
 def clifford_norm(mv: torch.Tensor) -> torch.Tensor:
@@ -358,8 +362,7 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     # Efficient: compute scalar part of geometric product without full product
     # Scalar = sum over basis of a_b * b_b * sign_b
     # For Cl(3,0): signs are [+,+,+,+,-,-,-,-]
-    signs = torch.tensor([1, 1, 1, 1, -1, -1, -1, -1], device=x.device, dtype=x.dtype)
-    # (B, S, K, 8) * signs -> (B, S, K, 8), then sum over 8 for scalar contribution
+    signs = _CL30_SIGNS.to(device=x.device, dtype=x.dtype)
     q_signed = mv_q * signs  # (B, S, K, 8)
     # q_signed summed over basis -> (B, S, K)
     q_scalar = q_signed.sum(dim=-1)  # (B, S, K)
@@ -371,8 +374,7 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
 
     # Apply causal mask if S > 1
     if S > 1:
-        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-        scores.masked_fill_(mask, float("-inf"))
+        scores.masked_fill_(causal_mask(S, x.device), float("-inf"))
 
     weights = torch.softmax(scores / scale, dim=-1)
     out = torch.bmm(weights, x_padded)  # (B, S, D_padded)
@@ -380,52 +382,3 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     if pad > 0:
         out = out[..., :D]
     return out.to(orig_dtype)
-
-
-# ── nn.Module wrappers ──────────────────────────────────────────────
-
-
-class CliffordLinear(nn.Module):
-    """Clifford Algebra linear layer operating on Cl(3,0) multivectors.
-
-    Applies a learned tensor contraction over multivector components,
-    capturing rotations, reflections, and projections in a single operation.
-
-    Input: (B, S, D) where D is divisible by 8.
-    Output: (B, S, D)
-
-    Reference: ARIA_NEXT_GEN_ARCHITECTURE.md §1.1
-    """
-
-    def __init__(self, dim: int):
-        super().__init__()
-        assert dim % N_BASIS == 0, f"dim must be divisible by {N_BASIS}"
-        self.dim = dim
-        k = dim // N_BASIS
-        self.weight = nn.Parameter(torch.randn(k, N_BASIS, N_BASIS) / (N_BASIS**0.5))
-        self.bias = nn.Parameter(torch.zeros(k, N_BASIS))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, S, D) -> (B, S, K, 8)
-        mv = _pack_multivector(x)
-        # Learned contraction: out[..., j] = sum_i W[k, j, i] * mv[..., k, i]
-        out = torch.einsum("bski,kij->bskj", mv, self.weight) + self.bias
-        return _unpack_multivector(out)
-
-
-def execute_clifford_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Execute CliffordLinear with module's weight parameter."""
-    B, S, D = x.shape
-    pad = (N_BASIS - D % N_BASIS) % N_BASIS
-    if pad > 0:
-        x = F.pad(x, (0, pad))
-    D_padded = x.shape[-1]
-    layer = CliffordLinear(D_padded).to(x.device)
-    if hasattr(module, "weight") and module.weight.numel() >= layer.weight.numel():
-        layer.weight.data = module.weight[: layer.weight.numel()].reshape(
-            layer.weight.shape
-        )
-    out = layer(x)
-    if pad > 0:
-        out = out[..., :D]
-    return out

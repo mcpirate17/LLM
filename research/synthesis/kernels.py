@@ -537,123 +537,82 @@ def triton_local_attn(x: torch.Tensor, window_size: int = 32) -> torch.Tensor:
     return out
 
 
+# ── Banded Sliding Window ─────────────────────────────────────────────
+
+
 @triton.jit
-def _linear_cross_entropy_kernel(
+def _banded_sliding_window_kernel(
     x_ptr,
-    w_ptr,
-    labels_ptr,
-    loss_ptr,
-    stride_xm,
-    stride_xk,
-    stride_wn,
-    stride_wk,
-    M,
-    N,
-    K,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
+    out_ptr,
+    stride_b,
+    stride_s,
+    stride_d,
+    B: tl.constexpr,
+    S: tl.constexpr,
+    D: tl.constexpr,
+    W: tl.constexpr,
+    decay_rate: tl.constexpr,
+    BLOCK_D: tl.constexpr,
 ):
-    """
-    Fused Linear + Cross Entropy (Forward only).
-    Computes Loss = -log(softmax(x @ w.T)[labels])
-    We only materialize the logsumexp and the logit for the correct label per row.
-    """
-    row_idx = tl.program_id(0)
+    """Causal banded sliding window: each position is a decay-weighted
+    average of the previous W positions. O(S*W*D) instead of O(S²*D)."""
+    batch = tl.program_id(0)
+    row = tl.program_id(1)
 
-    # Load row of x
-    x_row_ptr = x_ptr + row_idx * stride_xm
-    # Load label
-    label = tl.load(labels_ptr + row_idx)
+    offs_d = tl.arange(0, BLOCK_D)
+    d_mask = offs_d < D
 
-    # Online max and sum for logsumexp
-    m_i = -float("inf")
-    l_i = 0.0
+    # Compute decay-weighted sum over [max(0, row-W+1) .. row]
+    acc = tl.zeros([BLOCK_D], dtype=tl.float32)
+    weight_sum = 0.0
 
-    # Value of the logit at the label position
+    col_start = row - W + 1
+    if col_start < 0:
+        col_start = 0
 
-    # Iterate over columns of W (the vocab dimension N)
-    for n_start in range(0, N, BLOCK_SIZE_N):
-        # We need to compute x_row @ W[n_start:n_start+BLOCK_SIZE_N, :].T
-        # which is sum_k x[row, k] * W[n_start:n_start+BLOCK_SIZE_N, k]
+    for col in range(col_start, row + 1):
+        dist = row - col
+        w = tl.exp(-dist / decay_rate)
+        x_off = batch * stride_b + col * stride_s
+        vals = tl.load(x_ptr + x_off + offs_d * stride_d, mask=d_mask, other=0.0)
+        acc += w * vals
+        weight_sum += w
 
-        # Initialize logits for this block of vocab
-        logits = tl.zeros([BLOCK_SIZE_N], dtype=tl.float32)
-
-        # Inner loop over K
-        for k_start in range(0, K, BLOCK_SIZE_K):
-            offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
-            x_vals = tl.load(x_row_ptr + offs_k, mask=offs_k < K, other=0.0)
-
-            # W is (N, K)
-            offs_n = n_start + tl.arange(0, BLOCK_SIZE_N)
-            w_ptrs = w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :] * stride_wk
-            w_vals = tl.load(
-                w_ptrs, mask=(offs_n[:, None] < N) & (offs_k[None, :] < K), other=0.0
-            )
-
-            logits += tl.sum(x_vals[None, :] * w_vals, axis=1)
-
-        # Update online softmax stats for this block of logits
-        m_ij = tl.max(logits, axis=0)
-        tl.exp(logits - tl.maximum(m_i, m_ij))  # Approximate exp for stability
-
-        # More robust online softmax
-        m_new = tl.maximum(m_i, m_ij)
-        l_i = l_i * tl.exp(m_i - m_new) + tl.sum(tl.exp(logits - m_new), axis=0)
-        m_i = m_new
-
-        # Check if target label is in this block
-        # This is tricky in Triton, usually we'd just re-compute the target logit at the end
-        # or use a mask.
-
-    # Re-compute only the target logit for accuracy
-    target_l = 0.0
-    for k_start in range(0, K, BLOCK_SIZE_K):
-        offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
-        x_vals = tl.load(x_row_ptr + offs_k, mask=offs_k < K, other=0.0)
-        w_target_ptrs = w_ptr + label * stride_wn + offs_k
-        w_target_vals = tl.load(w_target_ptrs, mask=offs_k < K, other=0.0)
-        target_l += tl.sum(x_vals * w_target_vals)
-
-    # Final loss for this row
-    loss = tl.log(l_i) + m_i - target_l
-    tl.store(loss_ptr + row_idx, loss)
+    # Normalize
+    acc = acc / tl.maximum(weight_sum, 1e-8)
+    out_off = batch * stride_b + row * stride_s
+    tl.store(out_ptr + out_off + offs_d * stride_d, acc, mask=d_mask)
 
 
-def fused_linear_cross_entropy(
-    x: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor
+def triton_banded_sliding_window(
+    x: torch.Tensor, window_size: int = 32
 ) -> torch.Tensor:
+    """Sparse banded sliding window: O(S*W*D) instead of O(S²*D).
+
+    For S=2048, W=32, this is ~64x less work than the dense fallback.
     """
-    Memory-efficient Linear + CrossEntropy loss.
-    Avoids materializing (Batch*Seq, Vocab) logits.
-    """
-    # x: (M, K), weight: (N, K), labels: (M)
-    M, K = x.shape
-    N, _ = weight.shape
+    B, S, D = x.shape
+    out = torch.empty_like(x)
+    W = min(window_size, S)
+    decay_rate = max(W / 4.0, 1.0)
 
-    loss_per_row = torch.empty(M, device=x.device, dtype=torch.float32)
+    BLOCK_D = triton.next_power_of_2(D)
 
-    BLOCK_SIZE_N = 1024  # Vocab block
-    BLOCK_SIZE_K = 32
-
-    grid = (M,)
-    _linear_cross_entropy_kernel[grid](
+    grid = (B, S)
+    _banded_sliding_window_kernel[grid](
         x,
-        weight,
-        labels,
-        loss_per_row,
+        out,
         x.stride(0),
         x.stride(1),
-        weight.stride(0),
-        weight.stride(1),
-        M,
-        N,
-        K,
-        BLOCK_SIZE_N=BLOCK_SIZE_N,
-        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        x.stride(2),
+        B,
+        S,
+        D,
+        W,
+        decay_rate,
+        BLOCK_D=BLOCK_D,
     )
-
-    return loss_per_row.mean()
+    return out
 
 
 # ── Dispatch Table ────────────────────────────────────────────────────

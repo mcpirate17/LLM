@@ -1,19 +1,8 @@
-"""Kernel handler for spike_rate_code — dispatches to aria_core.spike_rate_code_f32."""
+"""Kernel handler for spike_rate_code — delegates to research.mathspaces.spiking."""
 
-import torch
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "spike_rate_code"
-
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        n_steps = config.get("n_steps", 10)
-        return (x, n_steps)
-
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        n_steps = config.get("n_steps", 10)
-        probs = torch.sigmoid(x)
-        return {"y": (probs * n_steps) / n_steps}
+ComponentHandler = make_mathspace_unary_handler(
+    "spike_rate_code",
+    "research.mathspaces.spiking.execute_spike_rate_code",
+)

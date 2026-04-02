@@ -44,10 +44,15 @@ def safe_parse_float(value: Any) -> Optional[float]:
     return safe_float(value, default=None)
 
 
+def tokenize_string(text: str, vocab_size: int) -> List[int]:
+    """Tokenize a string into a list of integers (UTF-8 bytes modulo vocab_size)."""
+    return [b % vocab_size for b in text.encode("utf-8", errors="ignore")]
+
+
 def tokenize_file(path: Path, vocab_size: int) -> List[int]:
     """Tokenize a text file into a list of integers (UTF-8 bytes modulo vocab_size)."""
     text = path.read_text(encoding="utf-8", errors="ignore")
-    return [b % vocab_size for b in text.encode("utf-8", errors="ignore")]
+    return tokenize_string(text, vocab_size)
 
 
 def make_batches(
@@ -64,11 +69,14 @@ def make_batches(
     t = torch.tensor(tokens, dtype=torch.long)
     gen = torch.Generator().manual_seed(seed)
     max_start = len(tokens) - seq_len - 1
-    batches = []
-    for _ in range(n_batches):
-        starts = torch.randint(0, max_start, (batch_size,), generator=gen)
-        batches.append(torch.stack([t[s : s + seq_len] for s in starts]).to(device))
-    return batches
+    # Pre-compute all start indices at once
+    all_starts = torch.randint(0, max_start, (n_batches, batch_size), generator=gen)
+    # Build index matrix: (n_batches, batch_size, seq_len)
+    offsets = torch.arange(seq_len).unsqueeze(0).unsqueeze(0)  # (1, 1, S)
+    indices = all_starts.unsqueeze(-1) + offsets  # (N, B, S)
+    # Gather all batches at once, then move to device
+    all_tokens = t[indices.reshape(-1)].reshape(n_batches, batch_size, seq_len)
+    return [all_tokens[i].to(device) for i in range(n_batches)]
 
 
 def micro_train_loop(
@@ -144,6 +152,46 @@ def micro_train_loop(
                     pass
         result = _run(model, lr * 0.1)
     return result
+
+
+def measure_loss(
+    model: nn.Module,
+    input_batches: List[torch.Tensor],
+    device: torch.device,
+    vocab_size: int = 0,
+) -> Optional[float]:
+    """Measure average cross-entropy loss over batches without training.
+
+    If vocab_size is 0 or not provided, uses the model's output dimension.
+    """
+    if not input_batches:
+        return None
+    model.eval()
+    losses: List[float] = []
+    with torch.no_grad():
+        for batch in input_batches:
+            try:
+                batch = batch.to(device)
+                logits = model(batch)
+                v = vocab_size if vocab_size > 0 else logits.shape[-1]
+                loss = F.cross_entropy(
+                    logits[:, :-1].reshape(-1, v),
+                    batch[:, 1:].reshape(-1),
+                )
+                if torch.isfinite(loss):
+                    losses.append(loss.item())
+            except Exception:
+                continue
+    return sum(losses) / len(losses) if losses else None
+
+
+def cleanup_model(device: torch.device) -> None:
+    """Standard cleanup after model training/eval — clear CUDA cache + gc."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    import gc
+
+    gc.collect()
 
 
 def compute_perplexity(

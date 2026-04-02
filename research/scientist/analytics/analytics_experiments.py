@@ -209,6 +209,59 @@ class _ExperimentsMixin:
         """Per-motif weights from S1 success rates via contrast amplification."""
         return self._compute_metadata_weights("motifs_used", since_ts, min_used)
 
+    def compute_template_and_motif_weights(
+        self, since_ts: float = 0.0, min_used: int = 3
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Compute template and motif weights in a single DB query pass."""
+        rows = self.nb.conn.execute(
+            "SELECT graph_json, stage1_passed FROM program_results "
+            "WHERE stage0_passed = 1 AND timestamp >= ? "
+            "AND graph_json IS NOT NULL AND graph_json != '{}'",
+            (since_ts,),
+        ).fetchall()
+
+        results: Dict[str, Dict[str, float]] = {}
+        for metadata_key in ("templates_used", "motifs_used"):
+            counts: Dict[str, int] = defaultdict(int)
+            s1_counts: Dict[str, int] = defaultdict(int)
+            for row in rows:
+                try:
+                    meta = json.loads(row[0]).get("metadata", {})
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                items = meta.get(metadata_key)
+                if not isinstance(items, list):
+                    continue
+                passed = bool(row[1])
+                for item in items:
+                    if not isinstance(item, str):
+                        continue
+                    counts[item] += 1
+                    if passed:
+                        s1_counts[item] += 1
+            stats = {
+                name: {"n_used": n, "s1_rate": s1_counts.get(name, 0) / n}
+                for name, n in counts.items()
+                if n >= min_used
+            }
+            if not stats:
+                results[metadata_key] = {}
+                continue
+            mean_s1 = sum(s["s1_rate"] for s in stats.values()) / len(stats)
+            if mean_s1 < 1e-6:
+                results[metadata_key] = {}
+                continue
+            weights: Dict[str, float] = {}
+            for name, s in stats.items():
+                relative = s["s1_rate"] / mean_s1
+                amplified = relative**1.5
+                confidence = min(1.0, s["n_used"] / 30.0)
+                blended = confidence * amplified + (1.0 - confidence) * 1.0
+                weights[name] = round(max(0.3, min(5.0, blended)), 3)
+            results[metadata_key] = weights
+
+        return results.get("templates_used", {}), results.get("motifs_used", {})
+
     def compute_synergy_boosts(
         self,
         min_lift: float = 1.5,
@@ -486,6 +539,7 @@ class _ExperimentsMixin:
                    best_novelty_score, best_loss_ratio, duration_seconds
             FROM experiments
             WHERE status = 'completed' AND n_programs_generated > 0
+            ORDER BY timestamp DESC LIMIT 2000
         """).fetchall()
 
         if len(rows) < 3:
@@ -999,17 +1053,31 @@ class _ExperimentsMixin:
         if len(control_exps) < 2 or len(learned_exps) < 2:
             return None
 
-        def _s1_for_exp(exp_id: str) -> tuple[int, int]:
-            """Return (total_programs, s1_passed) for one experiment."""
-            r = self.nb.conn.execute(
-                """
-                SELECT COUNT(*) as total,
+        def _s1_bulk(exp_ids: list[str]) -> dict[str, tuple[int, int]]:
+            """Return {exp_id: (total, s1_passed)} for all exp_ids in one query."""
+            if not exp_ids:
+                return {}
+            placeholders = ",".join("?" for _ in exp_ids)
+            rows = self.nb.conn.execute(
+                f"""
+                SELECT experiment_id,
+                       COUNT(*) as total,
                        SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1
-                FROM program_results WHERE experiment_id = ?
+                FROM program_results
+                WHERE experiment_id IN ({placeholders})
+                GROUP BY experiment_id
             """,
-                (exp_id,),
-            ).fetchone()
-            return (r["total"] or 0, r["s1"] or 0)
+                exp_ids,
+            ).fetchall()
+            return {r["experiment_id"]: (r["total"] or 0, r["s1"] or 0) for r in rows}
+
+        all_exp_ids = list(
+            {eid for eid, _ in control_exps} | {eid for eid, _ in learned_exps}
+        )
+        s1_cache = _s1_bulk(all_exp_ids)
+
+        def _s1_for_exp(exp_id: str) -> tuple[int, int]:
+            return s1_cache.get(exp_id, (0, 0))
 
         def _s1_stats(exp_ids: list[str]) -> dict:
             total = s1 = 0
@@ -1314,6 +1382,7 @@ class _ExperimentsMixin:
             SELECT stage1_passed, graph_json, arch_spec_json
             FROM program_results
             WHERE graph_json IS NOT NULL OR arch_spec_json IS NOT NULL
+            ORDER BY timestamp DESC LIMIT 5000
         """).fetchall()
 
         family_order = [
@@ -1450,13 +1519,17 @@ class _ExperimentsMixin:
         Reports tested counts, S1/validation pass rates, novelty signal,
         and baseline-win rates for each math-space operator family.
         """
-        columns = {
-            row["name"]
-            for row in self.nb.conn.execute(
-                "PRAGMA table_info(program_results)"
-            ).fetchall()
-            if row and row["name"]
-        }
+        cached = getattr(self.nb, "_program_results_columns", None)
+        if cached is None:
+            cached = {
+                row["name"]
+                for row in self.nb.conn.execute(
+                    "PRAGMA table_info(program_results)"
+                ).fetchall()
+                if row and row["name"]
+            }
+            self.nb._program_results_columns = cached
+        columns = cached
         validation_col = (
             "validation_passed"
             if "validation_passed" in columns

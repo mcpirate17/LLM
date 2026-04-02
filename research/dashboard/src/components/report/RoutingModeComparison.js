@@ -1,10 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import React, { useMemo } from 'react';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export default function RoutingModeComparison({ programs, comparison }) {
-  const [sortKey, setSortKey] = useState('count');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     if (comparison && Array.isArray(comparison.by_mode)) {
       const rows = [...comparison.by_mode]
@@ -79,30 +77,14 @@ export default function RoutingModeComparison({ programs, comparison }) {
     return { rows, routedCount, uniformCount, total: programs.length };
   }, [programs, comparison]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(analysis.rows, filterQuery, ['mode'])
-  ), [analysis.rows, filterQuery]);
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows, handleSort } = useInteractiveTable({
+    rows: analysis.rows,
+    filterFields: ['mode'],
+    initialSortKey: 'count',
+    initialSortDesc: true,
+  });
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
-
-  if (sorted.length === 0) return null;
+  if (sortedRows.length === 0) return null;
 
   return (
     <div className="card">
@@ -139,15 +121,7 @@ export default function RoutingModeComparison({ programs, comparison }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter modes"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <div style={{ overflowX: 'auto' }}>
@@ -155,25 +129,25 @@ export default function RoutingModeComparison({ programs, comparison }) {
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
               <th onClick={() => handleSort('mode')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Mode{sortKey === 'mode' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Mode<SortIndicator active={sortKey === 'mode'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('count')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                N{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                N<SortIndicator active={sortKey === 'count'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('sampleLabel')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Sample{sortKey === 'sampleLabel' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Sample<SortIndicator active={sortKey === 'sampleLabel'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('s1Rate')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                S1 Rate{sortKey === 's1Rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                S1 Rate<SortIndicator active={sortKey === 's1Rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Loss<SortIndicator active={sortKey === 'avgLoss'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgDrop')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Drop %{sortKey === 'avgDrop' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Drop %<SortIndicator active={sortKey === 'avgDrop'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avgEntropy')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-                Entropy{sortKey === 'avgEntropy' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Entropy<SortIndicator active={sortKey === 'avgEntropy'} desc={sortDesc} />
               </th>
               <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Confidence</th>
               <th style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11 }}>Conf Label</th>
@@ -182,7 +156,7 @@ export default function RoutingModeComparison({ programs, comparison }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map(row => (
+            {sortedRows.map(row => (
               <tr key={row.mode} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px 8px', color: 'var(--accent-blue)', fontWeight: 600 }}>{row.mode}</td>
                 <td style={{ padding: '6px 8px' }}>{row.count}</td>

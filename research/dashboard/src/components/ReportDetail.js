@@ -2,7 +2,8 @@ import { apiCall } from "../services/apiService";
 import React, { useState, useEffect } from 'react';
 import { useAriaData } from '../hooks/useAriaData';
 import { promotionEvidence } from '../utils/scoringEngine';
-import { filterRowsByQuery } from '../utils/tableFiltering';
+import useInteractiveTable from './shared/useInteractiveTable';
+import SortIndicator from './shared/SortIndicator';
 import {
   reliabilityBand, wilsonInterval, decisionGate,
   reproducibilityPacketStatus,
@@ -49,9 +50,7 @@ function ReportDetail({
   const [trend, setTrend] = useState(scope?.params?.trend || 'all');
   const [queryLimit, setQueryLimit] = useState(20);
   const [declutterMode, setDeclutterMode] = useState(false);
-  const [stabilityFilter, setStabilityFilter] = useState('');
-  const [stabilitySortKey, setStabilitySortKey] = useState('latest_rank');
-  const [stabilitySortDesc, setStabilitySortDesc] = useState(true);
+  // stabilityTable hook is called below after stabilityCandidates is derived
 
   const isAllTime = !scope?.params;
 
@@ -195,29 +194,19 @@ function ReportDetail({
   const stabilitySummary = crossRunStability.summary || {};
   const stabilityCandidates = crossRunStability.candidates || [];
 
-  const filteredStabilityCandidates = filterRowsByQuery(stabilityCandidates, stabilityFilter, [
-    'graph_fingerprint',
-    'trend',
-    'latest_rank',
-    'previous_rank',
-  ]);
-
-  const sortedStabilityCandidates = [...filteredStabilityCandidates].sort((a, b) => {
-    const va = a?.[stabilitySortKey];
-    const vb = b?.[stabilitySortKey];
-    if (va == null && vb == null) return 0;
-    if (va == null) return 1;
-    if (vb == null) return -1;
-    if (typeof va === 'string') {
-      return stabilitySortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-    }
-    return stabilitySortDesc ? vb - va : va - vb;
+  const {
+    sortKey: stabilitySortKey,
+    sortDesc: stabilitySortDesc,
+    filterQuery: stabilityFilter,
+    setFilterQuery: setStabilityFilter,
+    sortedRows: sortedStabilityCandidates,
+    handleSort: handleStabilitySort,
+  } = useInteractiveTable({
+    rows: stabilityCandidates,
+    filterFields: ['graph_fingerprint', 'trend', 'latest_rank', 'previous_rank'],
+    initialSortKey: 'latest_rank',
+    initialSortDesc: true,
   });
-
-  const handleStabilitySort = (key) => {
-    if (stabilitySortKey === key) setStabilitySortDesc(!stabilitySortDesc);
-    else { setStabilitySortKey(key); setStabilitySortDesc(true); }
-  };
 
   const totalProg = s.total_programs_evaluated || 0;
   const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;
@@ -600,15 +589,7 @@ function ReportDetail({
               value={stabilityFilter}
               onChange={(e) => setStabilityFilter(e.target.value)}
               placeholder="Filter fingerprints"
-              style={{
-                fontSize: 11,
-                padding: '4px 8px',
-                borderRadius: 4,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-primary)',
-                minWidth: 160,
-              }}
+              className="filter-input"
             />
           </div>
           <div style={{ overflowX: 'auto' }}>
@@ -616,19 +597,19 @@ function ReportDetail({
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
                   <th scope="col" onClick={() => handleStabilitySort('graph_fingerprint')} style={{ padding: '6px', cursor: 'pointer' }}>
-                    Fingerprint{stabilitySortKey === 'graph_fingerprint' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                    Fingerprint<SortIndicator active={stabilitySortKey === 'graph_fingerprint'} desc={stabilitySortDesc} />
                   </th>
                   <th scope="col" onClick={() => handleStabilitySort('trend')} style={{ padding: '6px', cursor: 'pointer' }}>
-                    Trend{stabilitySortKey === 'trend' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                    Trend<SortIndicator active={stabilitySortKey === 'trend'} desc={stabilitySortDesc} />
                   </th>
                   <th scope="col" onClick={() => handleStabilitySort('latest_rank')} style={{ padding: '6px', cursor: 'pointer' }}>
-                    Latest Rank{stabilitySortKey === 'latest_rank' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                    Latest Rank<SortIndicator active={stabilitySortKey === 'latest_rank'} desc={stabilitySortDesc} />
                   </th>
                   <th scope="col" onClick={() => handleStabilitySort('previous_rank')} style={{ padding: '6px', cursor: 'pointer' }}>
-                    Previous Rank{stabilitySortKey === 'previous_rank' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                    Previous Rank<SortIndicator active={stabilitySortKey === 'previous_rank'} desc={stabilitySortDesc} />
                   </th>
                   <th scope="col" onClick={() => handleStabilitySort('seen_runs')} style={{ padding: '6px', cursor: 'pointer' }}>
-                    Seen Runs{stabilitySortKey === 'seen_runs' && <span style={{ marginLeft: 4, fontSize: 10 }}>{stabilitySortDesc ? '\u25BC' : '\u25B2'}</span>}
+                    Seen Runs<SortIndicator active={stabilitySortKey === 'seen_runs'} desc={stabilitySortDesc} />
                   </th>
                 </tr>
               </thead>

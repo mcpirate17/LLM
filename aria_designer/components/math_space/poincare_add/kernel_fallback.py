@@ -1,18 +1,17 @@
-"""Kernel handler for poincare_add — dispatches to aria_core.poincare_add_f32."""
+"""Kernel handler for poincare_add — delegates to research.mathspaces.hyperbolic."""
 
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
 
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "poincare_add"
+def _native_args(inputs, config):
+    x = inputs.get("x", inputs.get("a")).detach().contiguous().float()
+    y = inputs.get("y", inputs.get("b", x)).detach().contiguous().float()
+    c = config.get("curvature", 1.0)
+    return (x, y, c)
 
-    def _get_native_args(self, inputs, config):
-        x = inputs.get("x", inputs.get("a")).detach().contiguous().float()
-        y = inputs.get("y", inputs.get("b", x)).detach().contiguous().float()
-        c = config.get("curvature", 1.0)
-        return (x, y, c)
 
-    def _fallback(self, inputs, config):
-        x = inputs.get("x", inputs.get("a"))
-        y = inputs.get("y", inputs.get("b", x))
-        return {"y": x + y}
+ComponentHandler = make_mathspace_unary_handler(
+    "poincare_add",
+    "research.mathspaces.hyperbolic.execute_poincare_add",
+    native_args_fn=_native_args,
+)

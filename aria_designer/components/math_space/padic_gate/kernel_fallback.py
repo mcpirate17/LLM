@@ -1,22 +1,16 @@
-"""Kernel handler for padic_gate — dispatches to aria_core.padic_gate_f32."""
+"""Kernel handler for padic_gate — delegates to research.mathspaces.padic."""
 
-import torch
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
 
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "padic_gate"
+def _native_args(inputs, config):
+    x = inputs["x"].detach().contiguous().float()
+    p = config.get("p", 2.0)
+    return (x, p)
 
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        p = config.get("p", 2.0)
-        return (x, p)
 
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        p = config.get("p", 2.0)
-        abs_x = torch.clamp(x.abs(), min=1e-10)
-        valuation = -(torch.log(abs_x) / torch.log(torch.tensor(p)))
-        valuation = torch.clamp(valuation, -10.0, 10.0)
-        gate = torch.sigmoid(valuation)
-        return {"y": x * gate}
+ComponentHandler = make_mathspace_unary_handler(
+    "padic_gate",
+    "research.mathspaces.padic.execute_padic_gate",
+    native_args_fn=_native_args,
+)

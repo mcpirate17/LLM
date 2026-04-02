@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiCall } from '../services/apiService';
 import MiniChart from './charts/MiniChart';
+import { fmtPct as _fmtPct, fmtLoss } from '../utils/format';
+import { TIER_COLORS } from '../utils/scoringEngine';
+import { useAriaData } from '../hooks/useAriaData';
+import useInteractiveTable from './shared/useInteractiveTable';
+import SortIndicator from './shared/SortIndicator';
+
+const fmtPct = (v) => _fmtPct(v, 1);
 
 const STATUS_COLORS = {
   healthy: '#22c55e',
@@ -22,16 +29,6 @@ const TIME_WINDOWS = [
   { value: '7d', label: '7d' },
   { value: 'all', label: 'All' },
 ];
-
-function fmtPct(value) {
-  if (value == null || !Number.isFinite(Number(value))) return '—';
-  return `${(Number(value) * 100).toFixed(1)}%`;
-}
-
-function fmtLoss(value) {
-  if (value == null || !Number.isFinite(Number(value))) return '—';
-  return Number(value).toFixed(3);
-}
 
 // ─── Health Summary ───
 function HealthSummary({ health }) {
@@ -72,52 +69,25 @@ const SORT_COLUMNS = [
 
 const STATUS_ORDER = { broken: 0, degraded: 1, structural: 2, healthy: 3 };
 
-function sortComponents(list, sortKey, sortDir) {
-  if (!sortKey) return list;
-  return [...list].sort((a, b) => {
-    let va = a[sortKey];
-    let vb = b[sortKey];
-    // Status sorts by severity
-    if (sortKey === 'status') {
-      va = STATUS_ORDER[va] ?? 3;
-      vb = STATUS_ORDER[vb] ?? 3;
-    }
-    // Issues sorts by count
-    if (sortKey === 'reasons') {
-      va = Array.isArray(va) ? va.length : 0;
-      vb = Array.isArray(vb) ? vb.length : 0;
-    }
-    // Nulls always sort last
-    if (va == null && vb == null) return 0;
-    if (va == null) return 1;
-    if (vb == null) return -1;
-    if (typeof va === 'string') {
-      const cmp = va.localeCompare(vb);
-      return sortDir === 'asc' ? cmp : -cmp;
-    }
-    return sortDir === 'asc' ? va - vb : vb - va;
-  });
+function getComponentSortValue(row, key) {
+  if (key === 'status') return STATUS_ORDER[row.status] ?? 3;
+  if (key === 'reasons') return Array.isArray(row.reasons) ? row.reasons.length : 0;
+  return row[key];
+}
+
+function getComponentInitialSortDesc(key) {
+  return key !== 'op';
+}
+
+function getPairInitialSortDesc(key) {
+  return key !== 'op_a' && key !== 'op_b';
 }
 
 // ─── Component Health Grid ───
 function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
-  const [sortKey, setSortKey] = useState('n_used');
-  const [sortDir, setSortDir] = useState('desc');
-
-  const handleSort = useCallback((key) => {
-    setSortKey(prev => {
-      if (prev === key) {
-        setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-        return key;
-      }
-      setSortDir(key === 'op' ? 'asc' : 'desc');
-      return key;
-    });
-  }, []);
-
-  const filtered = useMemo(() => {
+  // Pre-filter rows before passing to the hook (custom filtering not suited to filterRowsByQuery)
+  const preFiltered = useMemo(() => {
     let list = components || [];
-    // Deduplicate by op name (keep first occurrence — highest priority from backend sort)
     const seen = new Set();
     list = list.filter(c => {
       if (seen.has(c.op)) return false;
@@ -130,17 +100,21 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
       const q = searchTerm.toLowerCase();
       list = list.filter(c => c.op.toLowerCase().includes(q));
     }
-    return sortComponents(list, sortKey, sortDir);
-  }, [components, filter, searchTerm, sourceFilter, sortKey, sortDir]);
+    return list;
+  }, [components, filter, searchTerm, sourceFilter]);
+
+  const { sortKey, sortDesc, sortedRows: filtered, handleSort } = useInteractiveTable({
+    rows: preFiltered,
+    filterFields: [],
+    initialSortKey: 'n_used',
+    initialSortDesc: true,
+    getSortValue: getComponentSortValue,
+    getInitialSortDesc: getComponentInitialSortDesc,
+  });
 
   if (filtered.length === 0) {
     return <p className="ux-state ux-state-empty">No components match the current filter.</p>;
   }
-
-  const sortArrow = (key) => {
-    if (sortKey !== key) return <span style={{ opacity: 0.25, marginLeft: 2 }}>↕</span>;
-    return <span style={{ marginLeft: 2 }}>{sortDir === 'asc' ? '↑' : '↓'}</span>;
-  };
 
   return (
     <div style={{ overflowX: 'auto', maxHeight: 600, overflowY: 'auto' }}>
@@ -153,7 +127,8 @@ function ComponentGrid({ components, filter, searchTerm, sourceFilter }) {
                 onClick={() => handleSort(col.key)}
                 style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
               >
-                {col.label}{sortArrow(col.key)}
+                {col.label}
+                <SortIndicator active={sortKey === col.key} desc={sortDesc} />
               </th>
             ))}
           </tr>
@@ -254,30 +229,15 @@ const PAIR_COLUMNS = [
 ];
 
 function OpPairHeatmap({ pairs }) {
-  const [sortKey, setSortKey] = useState('n');
-  const [sortDir, setSortDir] = useState('desc');
-
-  const handleSort = useCallback((key) => {
-    setSortKey(prev => {
-      if (prev === key) {
-        setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-        return key;
-      }
-      setSortDir(key === 'op_a' || key === 'op_b' ? 'asc' : 'desc');
-      return key;
-    });
-  }, []);
-
-  const sorted = useMemo(() => {
-    return sortComponents(pairs || [], sortKey, sortDir);
-  }, [pairs, sortKey, sortDir]);
+  const { sortKey, sortDesc, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows: pairs || [],
+    filterFields: [],
+    initialSortKey: 'n',
+    initialSortDesc: true,
+    getInitialSortDesc: getPairInitialSortDesc,
+  });
 
   if (!sorted || sorted.length === 0) return null;
-
-  const sortArrow = (key) => {
-    if (sortKey !== key) return <span style={{ opacity: 0.25, marginLeft: 2 }}>↕</span>;
-    return <span style={{ marginLeft: 2 }}>{sortDir === 'asc' ? '↑' : '↓'}</span>;
-  };
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
@@ -292,7 +252,8 @@ function OpPairHeatmap({ pairs }) {
                   onClick={() => handleSort(col.key)}
                   style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', background: 'var(--bg-primary)' }}
                 >
-                  {col.label}{sortArrow(col.key)}
+                  {col.label}
+                  <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                 </th>
               ))}
             </tr>
@@ -435,7 +396,7 @@ function FailurePatternPanel({ patterns }) {
 function LeaderboardDynamicsPanel({ daily, recentPromotions }) {
   if ((!daily || Object.keys(daily).length === 0) && (!recentPromotions || recentPromotions.length === 0)) return null;
 
-  const tierColors = { screening: '#3b82f6', investigation: '#eab308', validation: '#22c55e', breakthrough: '#a855f7' };
+  const tierColors = TIER_COLORS;
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
@@ -757,6 +718,7 @@ export default function ComponentAnalyticsDashboard() {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const { slowPollTick } = useAriaData();
 
   const fetchData = useCallback(async () => {
     try {
@@ -798,9 +760,7 @@ export default function ComponentAnalyticsDashboard() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, slowPollTick]);
 
   if (loading) {
     return <div className="card"><p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading component analytics...</p></div>;

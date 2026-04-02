@@ -14,7 +14,6 @@ on positions where the correct answer is known.
 
 from __future__ import annotations
 
-import copy
 import gc
 import time
 from dataclasses import dataclass, field, asdict
@@ -41,7 +40,7 @@ DIAG_EVAL_BATCHES = 4  # batches for eval pass
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class DiagnosticTaskResult:
     task_name: str
     accuracy: float = 0.0
@@ -53,7 +52,7 @@ class DiagnosticTaskResult:
         return asdict(self)
 
 
-@dataclass
+@dataclass(slots=True)
 class DiagnosticSuiteResult:
     tasks: List[DiagnosticTaskResult] = field(default_factory=list)
     diagnostic_score: float = 0.0
@@ -434,15 +433,21 @@ def run_diagnostic_suite(
     t0 = time.time()
     suite = DiagnosticSuiteResult()
 
+    # For ComputationGraph inputs, compile once and save initial state for reset.
+    # For pre-compiled models, save state dict to avoid expensive deepcopy per task.
+    is_graph = isinstance(model_or_graph, ComputationGraph)
+    if is_graph:
+        base_model = compile_graph(model_or_graph)
+    else:
+        base_model = model_or_graph
+    original_state = base_model.state_dict()
+
     for task_name, task_fn in DIAGNOSTIC_TASKS.items():
-        # Compile a fresh model per task to ensure clean weights and avoid deepcopy issues
-        if isinstance(model_or_graph, ComputationGraph):
-            model = compile_graph(model_or_graph)
-        else:
-            model = copy.deepcopy(model_or_graph)
+        # Reset to clean weights for each task
+        base_model.load_state_dict(original_state)
 
         task_result = _train_and_eval_task(
-            model,
+            base_model,
             task_fn,
             task_name,
             device=device,
@@ -450,9 +455,11 @@ def run_diagnostic_suite(
             seed=seed,
         )
         suite.tasks.append(task_result)
-        del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # Restore original state after all tasks
+    base_model.load_state_dict(original_state)
 
     # Compute mean accuracy across non-errored tasks
     accs = [t.accuracy for t in suite.tasks if t.error is None]

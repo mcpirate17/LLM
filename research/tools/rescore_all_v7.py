@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from research.scientist.notebook import LabNotebook
 from research.scientist.leaderboard_scoring import (
     build_score_kwargs_from_prefetch,
+    compute_composite,
     prefetch_program_results,
 )
 
@@ -57,7 +58,7 @@ def main():
             d = dict(existing)
             pr_dict = pr_cache.get(result_id, {})
             score_kwargs = build_score_kwargs_from_prefetch(pr_dict, d, is_ref)
-            new_score = nb.compute_composite_score(**score_kwargs)
+            new_score = compute_composite(**score_kwargs)
 
             if new_score != old_score:
                 cur.execute(

@@ -51,33 +51,9 @@ export function compressionSummary(program) {
   };
 }
 
-export function metricChips(program) {
-  const chips = [];
-  const primaryLoss = resolveLossRatio(program);
-  chips.push({ label: 'Loss', source: primaryLoss != null ? 'validation' : 'measured', reliability: primaryLoss != null ? 'high' : 'low' });
-  chips.push({
-    label: 'Novelty',
-    source: program.cka_source === 'artifact' ? 'artifact-backed' : 'heuristic',
-    reliability: program.novelty_confidence != null
-      ? (program.novelty_confidence >= 0.7 ? 'high' : program.novelty_confidence >= 0.4 ? 'medium' : 'low')
-      : 'low',
-  });
-  chips.push({
-    label: 'Baseline',
-    source: program.baseline_loss_ratio != null ? 'baseline-run' : 'not-available',
-    reliability: program.baseline_loss_ratio != null ? 'medium' : 'low',
-  });
-  if (program.routing_confidence_mean != null) {
-    chips.push({
-      label: 'Routing',
-      source: 'telemetry',
-      reliability: program.routing_confidence_mean >= 0.7 ? 'high' : program.routing_confidence_mean >= 0.4 ? 'medium' : 'low',
-    });
-  }
-  return chips;
-}
+export { programMetricChips as metricChips } from '../../utils/metricChips';
 
-export const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
+const QKV_OPS = new Set(['local_window_attn', 'sliding_window_mask', 'multi_head_mix']);
 
 export const TOKEN_MIXING_FAMILIES = {
   local_window_attn: 'attention',
@@ -140,50 +116,8 @@ export function classifyTokenMixing(program) {
   }
 }
 
-export function qkvUsageDescriptor(program) {
-  const usage = program?.qkv_usage;
-  if (usage === 'qkv_free') {
-    return {
-      label: 'QKV-free',
-      detail: 'No Q/K/V attention path; relies on alternatives like SSM/conv/frequency/functional.',
-      color: 'var(--accent-green)',
-    };
-  }
-  if (usage === 'q_eq_k_eq_v') {
-    return {
-      label: 'Q=K=V',
-      detail: 'Shared-projection attention variant (reduced attention parameterization).',
-      color: 'var(--accent-yellow)',
-    };
-  }
-  if (usage === 'full_qkv') {
-    return {
-      label: 'Full QKV',
-      detail: 'Standard Q/K/V attention primitives are present.',
-      color: 'var(--accent-blue)',
-    };
-  }
-  const inferred = classifyTokenMixing(program).qkvFree;
-  if (inferred === true) {
-    return {
-      label: 'QKV-free*',
-      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
-      color: 'var(--accent-green)',
-    };
-  }
-  if (inferred === false) {
-    return {
-      label: 'Uses QKV*',
-      detail: 'Inferred from graph ops when qkv_usage enum is unavailable.',
-      color: 'var(--accent-yellow)',
-    };
-  }
-  return {
-    label: 'QKV unknown',
-    detail: 'Insufficient graph/payload info to classify QKV usage.',
-    color: 'var(--text-muted)',
-  };
-}
+// qkvUsageDescriptor consolidated into utils/architecture.js
+export { qkvUsageDescriptor } from '../../utils/architecture';
 
 export const WEIGHT_STORAGE_LABELS = {
   dense_matrix: 'Dense (baseline)',

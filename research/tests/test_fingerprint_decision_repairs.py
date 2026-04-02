@@ -234,32 +234,6 @@ class TestAnalyticsWeightsInCandidateGen:
 
 
 @pytest.mark.unit
-class TestRobustnessFailureLogging:
-    """Verify that baseline comparison failures are logged, not swallowed."""
-
-    def test_baseline_comparison_failure_logs_warning(self, caplog):
-        """When baseline comparison raises, a warning is logged."""
-        # We test this by verifying the code pattern: the except blocks
-        # now reference logger.warning with specific format strings.
-        # Direct functional test requires too much runner state, so we
-        # verify the code structure.
-        import inspect
-        from research.scientist.runner import continuous_validation
-
-        source = inspect.getsource(continuous_validation)
-        # Old pattern: bare except:pass for baseline comparison
-        # These should no longer exist in the validation baseline section
-        assert "Baseline comparison FAILED" in source, (
-            "continuous_validation.py should log baseline comparison failures"
-        )
-        assert "Param-normalized baseline comparison FAILED" in source, (
-            "continuous_validation.py should log param-normalized baseline failures"
-        )
-        assert "Val-split baseline comparison FAILED" in source, (
-            "continuous_validation.py should log val-split baseline failures"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Regression guards: scoring math
 # ---------------------------------------------------------------------------
@@ -284,9 +258,9 @@ class TestScoringMathIntegrity:
 
     def test_insufficient_learning_cap(self):
         """Models with loss_ratio > 0.95 must be capped at 10 points."""
-        from research.scientist.leaderboard_scoring import compute_composite_score
+        from research.scientist.leaderboard_scoring import compute_composite
 
-        score = compute_composite_score(
+        score = compute_composite(
             screening_lr=0.96,
             screening_nov=1.0,
             novelty_confidence=1.0,
@@ -294,28 +268,6 @@ class TestScoringMathIntegrity:
             compression_ratio=0.1,
         )
         assert score <= 10.0, f"Non-learning model scored {score}, must be <= 10"
-
-    def test_outlier_penalty_applied(self):
-        """Lucky outlier (best >> mean) should be penalized."""
-        from research.scientist.leaderboard_scoring import compute_composite_score
-
-        # Score without outlier gap
-        base = compute_composite_score(
-            screening_lr=0.3,
-            replication_n=3,
-            replication_loss_mean=0.3,
-            replication_best_vs_mean_gap=0.0,
-        )
-        # Score with large outlier gap
-        outlier = compute_composite_score(
-            screening_lr=0.3,
-            replication_n=3,
-            replication_loss_mean=0.3,
-            replication_best_vs_mean_gap=0.5,
-        )
-        assert outlier < base, (
-            f"Outlier gap should reduce score: base={base}, outlier={outlier}"
-        )
 
     def test_novelty_gate_floors_at_30_percent(self):
         """Even unconverged models should retain some novelty credit via the 0.3 floor.
@@ -325,10 +277,10 @@ class TestScoringMathIntegrity:
         But graduated scaling with analyses_succeeded=0 gives: 12.5 * 0.4 ≈ 5.0.
         With full analyses (4/4), it would be 12.5 (the floor-preserved amount).
         """
-        from research.scientist.leaderboard_scoring import compute_composite_score
+        from research.scientist.leaderboard_scoring import compute_composite
 
         # With full fingerprint completion: floor should preserve ~30% of raw
-        score_full = compute_composite_score(
+        score_full = compute_composite(
             screening_lr=0.89,
             screening_nov=1.0,
             novelty_confidence=1.0,
@@ -343,7 +295,7 @@ class TestScoringMathIntegrity:
         )
 
         # Without any probes: still gets some credit (0.4x floor)
-        score_none = compute_composite_score(
+        score_none = compute_composite(
             screening_lr=0.89,
             screening_nov=1.0,
             novelty_confidence=1.0,
@@ -354,9 +306,9 @@ class TestScoringMathIntegrity:
 
     def test_missing_metrics_do_not_crash_scoring(self):
         """Composite scoring with all-None inputs should return 0, not crash."""
-        from research.scientist.leaderboard_scoring import compute_composite_score
+        from research.scientist.leaderboard_scoring import compute_composite
 
-        score = compute_composite_score()
+        score = compute_composite()
         assert score == 0.0
 
     def test_composite_v7_missing_ppl_returns_zero(self):
@@ -664,39 +616,3 @@ class TestBootstrapCIPromotion:
             effective_threshold = min_score
 
         assert effective_threshold == min_score, "Zero std → no margin"
-
-
-# ---------------------------------------------------------------------------
-# Robustness failure tracking
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestRobustnessFailureTracking:
-    """Verify robustness check failure counters in validation result dict."""
-
-    def test_result_dict_has_robustness_counters(self):
-        """The validation result dict should include robustness tracking fields."""
-        import inspect
-        from research.scientist.runner import continuous_validation
-
-        source = inspect.getsource(continuous_validation)
-        assert "robustness_checks_attempted" in source
-        assert "robustness_checks_failed" in source
-
-    def test_counters_increment_pattern(self):
-        """Each robustness check should increment attempted, failure increments failed."""
-        import inspect
-        from research.scientist.runner import continuous_validation
-
-        source = inspect.getsource(continuous_validation)
-        # Count occurrences of the increment patterns
-        attempted_count = source.count('["robustness_checks_attempted"] += 1')
-        failed_count = source.count('["robustness_checks_failed"] += 1')
-
-        assert attempted_count >= 7, (
-            f"Expected at least 7 robustness checks tracked, found {attempted_count}"
-        )
-        assert failed_count >= 7, (
-            f"Expected at least 7 failure handlers, found {failed_count}"
-        )

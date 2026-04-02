@@ -232,29 +232,29 @@ def validate_ir(
 
     result.n_params_estimate = ir.n_params_estimate()
 
-    # Reachability detection (NumPy accelerated)
+    # Reachability detection — BFS backward from output: O(n + edges)
     if ir.output_node_idx != -1:
         n = ir.n_nodes()
-        adj_back = np.zeros((n, n), dtype=bool)
+        # Build reverse adjacency list: node → list of nodes that feed into it
+        reverse_adj: list = [[] for _ in range(n)]
         for i in range(n):
             for j in range(2):
-                inp_idx = ir.input_indices[i, j]
+                inp_idx = int(ir.input_indices[i, j])
                 if inp_idx != -1:
-                    adj_back[i, inp_idx] = True
+                    reverse_adj[i].append(inp_idx)
 
-        reachable = np.zeros(n, dtype=bool)
-        reachable[ir.output_node_idx] = True
-        for _ in range(n):
-            new_reachable = (
-                reachable | np.any(adj_back[reachable, :], axis=0)
-                if np.any(reachable)
-                else reachable
-            )
-            if np.array_equal(new_reachable, reachable):
-                break
-            reachable = new_reachable
+        # BFS from output node, following reverse edges
+        reachable = set()
+        queue = [ir.output_node_idx]
+        reachable.add(ir.output_node_idx)
+        while queue:
+            node = queue.pop()
+            for dep in reverse_adj[node]:
+                if dep not in reachable:
+                    reachable.add(dep)
+                    queue.append(dep)
 
-        n_reachable = int(np.sum(reachable))
+        n_reachable = len(reachable)
         if n_reachable < n:
             result.add_error(
                 f"IR contains {n - n_reachable} unreachable nodes (dead branches)"

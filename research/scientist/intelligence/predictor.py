@@ -11,15 +11,27 @@ eval, enabling cheap rejection of hopeless graphs at screening time:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_STATE_DIR = Path("research/runtime/learning")
+_GBM_GATE_MODEL_PATH = _STATE_DIR / "gbm_gate_model.txt"
+_GBM_RANK_MODEL_PATH = _STATE_DIR / "gbm_rank_model.txt"
+_GBM_META_PATH = _STATE_DIR / "gbm_predictor.json"
+_GRAPH_PREDICTOR_PATH = _STATE_DIR / "graph_predictor.npz"
+_INTERACTION_MODEL_PATH = _STATE_DIR / "interaction_model.npz"
+_BAYESIAN_STATE_PATH = _STATE_DIR / "bayesian_state.json"
+_ENSEMBLE_STATE_PATH = _STATE_DIR / "ensemble_state.npz"
+_ENSEMBLE_META_PATH = _STATE_DIR / "ensemble_state.json"
 
 # 16 fingerprint features + 2 novelty features = 18D
 _FINGERPRINT_KEYS = [
@@ -464,6 +476,58 @@ class GBMPredictor:
         except Exception:
             return 1e6
 
+    def save(self, state_dir: Path) -> None:
+        """Persist LightGBM models plus feature metadata."""
+        if not self.is_fitted():
+            return
+        state_dir = Path(state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        self.gate_model.save_model(str(state_dir / _GBM_GATE_MODEL_PATH.name))
+        if self.rank_model is not None:
+            self.rank_model.save_model(str(state_dir / _GBM_RANK_MODEL_PATH.name))
+        with open(state_dir / _GBM_META_PATH.name, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "feature_names": self.feature_names,
+                    "n_train": self.n_train,
+                    "gate_importance": self.gate_importance,
+                    "rank_importance": self.rank_importance,
+                    "has_rank_model": self.rank_model is not None,
+                },
+                f,
+                indent=2,
+            )
+
+    @classmethod
+    def load(cls, state_dir: Path) -> "GBMPredictor":
+        """Load persisted LightGBM models and metadata from disk."""
+        state_dir = Path(state_dir)
+        meta_path = state_dir / _GBM_META_PATH.name
+        gate_model_path = state_dir / _GBM_GATE_MODEL_PATH.name
+        if not meta_path.exists() or not gate_model_path.exists():
+            return cls()
+        try:
+            import lightgbm as lgb
+        except ImportError:
+            logger.info("lightgbm not installed, persisted GBM predictor unavailable")
+            return cls()
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        gate_model = lgb.Booster(model_file=str(gate_model_path))
+        rank_model = None
+        if meta.get("has_rank_model"):
+            rank_model_path = state_dir / _GBM_RANK_MODEL_PATH.name
+            if rank_model_path.exists():
+                rank_model = lgb.Booster(model_file=str(rank_model_path))
+        return cls(
+            gate_model=gate_model,
+            rank_model=rank_model,
+            feature_names=list(meta.get("feature_names", [])),
+            n_train=int(meta.get("n_train", 0)),
+            gate_importance=meta.get("gate_importance"),
+            rank_importance=meta.get("rank_importance"),
+        )
+
 
 def train_gbm(
     db_path: str = "research/lab_notebook.db",
@@ -887,7 +951,7 @@ class EnsemblePredictor:
         # Learned blend weights (calibrated logistic regression on component scores)
         if self.w_ensemble.size > 0 and self._n_score_dims > 0:
             x = np.zeros(self._n_score_dims, dtype=np.float64)
-            for i, s in enumerate(scores[:self._n_score_dims]):
+            for i, s in enumerate(scores[: self._n_score_dims]):
                 x[i] = s
             # Standardize using training stats
             if self._score_mean.size == self._n_score_dims:
@@ -964,6 +1028,109 @@ class EnsemblePredictor:
             "calibrated": self.w_ensemble.size > 0,
             "n_score_dims": self._n_score_dims,
         }
+
+    def save(self, state_dir: Path) -> None:
+        """Persist ensemble calibration plus any fitted submodels."""
+        state_dir = Path(state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        if self.gbm is not None and self.gbm.is_fitted():
+            self.gbm.save(state_dir)
+        if self.graph_pred is not None and self.graph_pred.is_fitted():
+            self.graph_pred.save(state_dir / _GRAPH_PREDICTOR_PATH.name)
+        if self.bayesian is not None:
+            self.bayesian.save_state(state_dir / _BAYESIAN_STATE_PATH.name)
+        if self.interaction is not None and self.interaction._trained:
+            self.interaction.save(state_dir / _INTERACTION_MODEL_PATH.name)
+        np.savez_compressed(
+            str(state_dir / _ENSEMBLE_STATE_PATH.name),
+            w_ensemble=self.w_ensemble,
+            score_mean=self._score_mean,
+            score_std=self._score_std,
+        )
+        with open(state_dir / _ENSEMBLE_META_PATH.name, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "b_ensemble": self.b_ensemble,
+                    "n_score_dims": self._n_score_dims,
+                },
+                f,
+                indent=2,
+            )
+
+    @classmethod
+    def load(
+        cls,
+        state_dir: Path = _STATE_DIR,
+        profiling_db: str = "research/profiling/component_profiles.db",
+    ) -> "EnsemblePredictor":
+        """Load persisted ensemble state without retraining."""
+        state_dir = Path(state_dir)
+        ensemble = cls()
+
+        gbm = GBMPredictor.load(state_dir)
+        if gbm.is_fitted():
+            ensemble.gbm = gbm
+
+        try:
+            from .gnn_predictor import GraphPredictor
+
+            graph_path = state_dir / _GRAPH_PREDICTOR_PATH.name
+            if graph_path.exists():
+                ensemble.graph_pred = GraphPredictor.load(
+                    graph_path, profiling_db=Path(profiling_db)
+                )
+        except Exception as exc:
+            logger.debug("GraphPredictor load skipped: %s", exc)
+
+        try:
+            from .temporal_bayesian import TemporalBayesianTracker
+
+            bayes_path = state_dir / _BAYESIAN_STATE_PATH.name
+            if bayes_path.exists():
+                ensemble.bayesian = TemporalBayesianTracker.load_state(bayes_path)
+        except Exception as exc:
+            logger.debug("Bayesian state load skipped: %s", exc)
+
+        try:
+            from .interaction_model import InteractionModel
+
+            interaction_path = state_dir / _INTERACTION_MODEL_PATH.name
+            if interaction_path.exists():
+                ensemble.interaction = InteractionModel.load(interaction_path)
+        except Exception as exc:
+            logger.debug("Interaction model load skipped: %s", exc)
+
+        ensemble_state_path = state_dir / _ENSEMBLE_STATE_PATH.name
+        ensemble_meta_path = state_dir / _ENSEMBLE_META_PATH.name
+        if ensemble_state_path.exists() and ensemble_meta_path.exists():
+            try:
+                data = np.load(str(ensemble_state_path))
+                with open(ensemble_meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                ensemble.w_ensemble = data["w_ensemble"]
+                ensemble._score_mean = data["score_mean"]
+                ensemble._score_std = data["score_std"]
+                ensemble.b_ensemble = float(meta.get("b_ensemble", 0.0))
+                ensemble._n_score_dims = int(meta.get("n_score_dims", 0))
+            except Exception as exc:
+                logger.debug("Ensemble calibration load skipped: %s", exc)
+
+        return ensemble
+
+
+@functools.lru_cache(maxsize=4)
+def load_runtime_ensemble(
+    state_dir: str = str(_STATE_DIR),
+    profiling_db: str = "research/profiling/component_profiles.db",
+) -> EnsemblePredictor:
+    """Load persisted ensemble state for runtime use.
+
+    This path is intentionally load-only. Training belongs in offline tooling.
+    """
+    return EnsemblePredictor.load(
+        state_dir=Path(state_dir),
+        profiling_db=profiling_db,
+    )
 
 
 def train_ensemble(
@@ -1067,7 +1234,11 @@ def _calibrate_ensemble(
         return
 
     # Collect component scores for each graph
-    from ...synthesis.graph_features import extract_graph_features, enrich_with_op_stats, load_op_stats
+    from ...synthesis.graph_features import (
+        extract_graph_features,
+        enrich_with_op_stats,
+        load_op_stats,
+    )
 
     op_stats_cache = load_op_stats(db_path)
     score_rows: list = []
@@ -1086,7 +1257,11 @@ def _calibrate_ensemble(
             feats = extract_graph_features(gj_dict)
             if feats:
                 nodes = gj_dict.get("nodes") or {}
-                ops = [n.get("op_name", "") for n in nodes.values() if n.get("op_name", "") != "input"]
+                ops = [
+                    n.get("op_name", "")
+                    for n in nodes.values()
+                    if n.get("op_name", "") != "input"
+                ]
                 enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
                 scores.append(ensemble.gbm.predict_gate(feats))
             else:
@@ -1103,8 +1278,11 @@ def _calibrate_ensemble(
         # Bayesian worst-op score
         if ensemble.bayesian is not None:
             nodes = gj_dict.get("nodes") or {}
-            ops = [n.get("op_name", "") for n in nodes.values()
-                   if n.get("op_name", "") and n.get("op_name") != "input"]
+            ops = [
+                n.get("op_name", "")
+                for n in nodes.values()
+                if n.get("op_name", "") and n.get("op_name") != "input"
+            ]
             if ops:
                 op_weights = ensemble.bayesian.op_weights(mode="mean")
                 worst = min(op_weights.get(op, 0.5) for op in ops)
@@ -1117,11 +1295,18 @@ def _calibrate_ensemble(
         # Interaction model score
         if ensemble.interaction is not None and ensemble.interaction._trained:
             nodes = gj_dict.get("nodes") or {}
-            ops = [n.get("op_name", "") for n in nodes.values()
-                   if n.get("op_name", "") and n.get("op_name") != "input"]
+            ops = [
+                n.get("op_name", "")
+                for n in nodes.values()
+                if n.get("op_name", "") and n.get("op_name") != "input"
+            ]
             if len(ops) >= 2:
-                stabs = [ensemble.interaction.predict_stability(a, b)
-                         for a in ops for b in ops if a != b]
+                stabs = [
+                    ensemble.interaction.predict_stability(a, b)
+                    for a in ops
+                    for b in ops
+                    if a != b
+                ]
                 scores.append(float(np.mean(stabs)) if stabs else 0.5)
             else:
                 scores.append(0.5)
@@ -1168,7 +1353,7 @@ def _calibrate_ensemble(
     for _ in range(n_epochs):
         perm = rng.permutation(len(X_tr))
         for start in range(0, len(X_tr), 128):
-            idx = perm[start:start + 128]
+            idx = perm[start : start + 128]
             x_b = X_tr[idx]
             y_b = y_tr[idx]
             preds = _sig(x_b @ w + b)
@@ -1190,7 +1375,10 @@ def _calibrate_ensemble(
     logger.info(
         "Ensemble calibrated: %d-dim logistic regression, val_acc=%.3f, "
         "weights=[%s], bias=%.3f (%d train, %d val)",
-        n_dims, val_acc,
+        n_dims,
+        val_acc,
         ", ".join(f"{wi:.3f}" for wi in w),
-        b, len(X_tr), len(X_va),
+        b,
+        len(X_tr),
+        len(X_va),
     )

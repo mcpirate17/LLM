@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+import time as _time
+
 from ..notebook import LabNotebook
 from ..shared_utils import safe_float
 
@@ -23,12 +25,21 @@ def infer_tier_for_program(nb: LabNotebook, program: dict) -> str:
     return row["tier"] if row else "screening"
 
 
+_tier_cache: dict = {}
+_tier_cache_ts: float = 0.0
+_TIER_CACHE_TTL: float = 60.0
+
+
 def count_discovery_tiers(nb: LabNotebook) -> dict:
     """Count discovery rows by tier, excluding references from stage buckets.
 
     Uses stage-based counting: entries that *passed* a stage count for that
     stage, even if their tier column has since been promoted further.
     """
+    global _tier_cache, _tier_cache_ts
+    now = _time.monotonic()
+    if _tier_cache and (now - _tier_cache_ts) < _TIER_CACHE_TTL:
+        return _tier_cache
     _NON_REF = "COALESCE(is_reference, 0) = 0"
     rows = nb.conn.execute(
         f"SELECT tier, COUNT(*) AS cnt FROM leaderboard WHERE {_NON_REF} GROUP BY tier"
@@ -69,6 +80,8 @@ def count_discovery_tiers(nb: LabNotebook) -> dict:
         "SELECT COUNT(*) AS cnt FROM program_results WHERE stage1_passed = 1"
     ).fetchone()
     counts["total_survivors"] = total_s1["cnt"] if total_s1 else 0
+    _tier_cache = counts
+    _tier_cache_ts = now
     return counts
 
 
@@ -825,23 +838,25 @@ def compute_action_queue(nb, analytics=None) -> List[Dict[str, Any]]:
 
     try:
         _append_breakthrough_actions(actions, nb)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Failed to append breakthrough actions: %s", exc, exc_info=True)
 
     try:
         _append_stalled_run_warning(actions, nb)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Failed to append stalled-run warning: %s", exc, exc_info=True)
 
     try:
         _append_healer_actions(actions, nb)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Failed to append healer actions: %s", exc, exc_info=True)
 
     try:
         _append_first_run_strategy(actions, nb)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug(
+            "Failed to append first-run strategy action: %s", exc, exc_info=True
+        )
 
     actions = [a for a in actions if a["id"] not in _DISMISSED_ACTIONS]
     actions.sort(key=lambda a: a.get("priority", 10))
@@ -867,8 +882,8 @@ def attach_long_context_breakdown(nb: LabNotebook, entries: list) -> None:
             rid = entry.get("result_id")
             if rid and rid in score_map:
                 entry["long_context_score"] = score_map[rid]
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Failed to attach long-context breakdown: %s", exc, exc_info=True)
 
 
 def enrich_program_detail(nb: LabNotebook, program: dict) -> dict:
@@ -939,6 +954,11 @@ def program_lineage_chain(nb: LabNotebook, result_id: str) -> List[Dict[str, Any
                 if isinstance(source, str) and source.strip():
                     parent_result_id = source.strip()
             except Exception:
+                _logger.debug(
+                    "Failed to infer parent_result_id from graph_json for result_id=%s",
+                    current_id,
+                    exc_info=True,
+                )
                 parent_result_id = None
 
         chain.append(
@@ -1013,8 +1033,8 @@ def compute_sparse_evidence(nb: LabNotebook) -> Dict[str, Any]:
                 if rows["avg_nm"] is not None
                 else None,
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("Failed to compute sparse evidence: %s", exc, exc_info=True)
     return {"n_sparse_programs": 0, "avg_density_mean": None, "avg_nm_compliance": None}
 
 

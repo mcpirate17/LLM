@@ -18,7 +18,10 @@ import ast
 import operator
 from dataclasses import dataclass, field
 from enum import Enum
+import logging
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class OpCategory(Enum):
@@ -89,6 +92,10 @@ class PrimitiveOp:
     # Backward-compatible coarse algebraic space tag.
     algebraic_space: str = "euclidean"
     algebraic_type: AlgebraicType = field(default_factory=lambda: _EUCLIDEAN_TYPE)
+    # Token binding range: how far back this op can see in the sequence.
+    # "full" = full sequence (attention, SSM), "medium" = windowed (local_window),
+    # "local" = k<=3 neighbors (conv, token_merge), "none" = non-mixer op.
+    binding_range_class: str = "none"
 
     def __hash__(self):
         return hash(self.name)
@@ -608,6 +615,7 @@ _register(
         param_formula="D*4",
         description="SSM-style input-dependent state scan",
         numerically_risky=True,
+        binding_range_class="full",
     )
 )
 _register(
@@ -619,6 +627,7 @@ _register(
         has_params=True,
         param_formula="D*3",
         description="Depthwise 1D convolution (kernel=3) along seq dim",
+        binding_range_class="local",
     )
 )
 _register(
@@ -708,6 +717,7 @@ _register(
         "identity",
         description="Local windowed causal self-attention (Q=K=V)",
         config_keys=("window_size",),
+        binding_range_class="medium",
     )
 )
 _register(
@@ -718,6 +728,7 @@ _register(
         "causal_mask",
         description="Exponential distance decay mask for windowed composition",
         config_keys=("window_size",),
+        binding_range_class="medium",
     )
 )
 # ── Mixing Operations ─────────────────────────────────────────────────
@@ -731,6 +742,7 @@ _register(
         has_params=True,
         param_formula="D*D*3",
         description="Standard Softmax Self-Attention",
+        binding_range_class="full",
     )
 )
 _register(
@@ -742,6 +754,7 @@ _register(
         has_params=True,
         param_formula="D*D*3",
         description="Linear-complexity Attention (kernel-based)",
+        binding_range_class="full",
     )
 )
 _register(
@@ -753,6 +766,7 @@ _register(
         has_params=True,
         param_formula="D*D",
         description="Graph-based sequence mixing with learned adjacency",
+        binding_range_class="full",
     )
 )
 _register(
@@ -764,6 +778,7 @@ _register(
         has_params=True,
         param_formula="D*D*4",
         description="Differential attention: two softmax maps subtracted to cancel noise (ICLR 2025)",
+        binding_range_class="full",
     )
 )
 # Removed fourier_mixing as it inherently breaks causality in an autoregressive context.
@@ -778,6 +793,7 @@ _register(
         has_params=True,
         param_formula="D*4",
         description="State-space sequence mixer (Mamba-style)",
+        binding_range_class="full",
     )
 )
 _register(
@@ -789,6 +805,7 @@ _register(
         has_params=True,
         param_formula="D*3",
         description="Depthwise convolutional sequence mixer",
+        binding_range_class="local",
     )
 )
 _register(
@@ -800,6 +817,7 @@ _register(
         has_params=True,
         param_formula="D*D*4",
         description="Gated delta rule: linear recurrence with decay + update gates for targeted state writes (ICLR 2025)",
+        binding_range_class="full",
     )
 )
 
@@ -928,6 +946,7 @@ _register(
         has_params=True,
         param_formula="D*D*3",
         description="RWKV WKV linear attention with learned decay",
+        binding_range_class="full",
     )
 )
 
@@ -977,6 +996,7 @@ _register(
         description="Similarity-based token merging with seq_len restore: (B,S,D) -> (B,S,D)",
         config_keys=("n_keep",),
         byte_safe=True,  # kernel restores seq_len via nearest-neighbor mapping
+        binding_range_class="local",
     )
 )
 
@@ -1397,8 +1417,8 @@ try:
     )
     if _DESIGNER_COMPONENTS.exists():
         load_primitives_from_designer(_DESIGNER_COMPONENTS)
-except Exception:
-    pass
+except Exception as _e:
+    logger.warning("Failed to load designer primitives: %s", _e)
 
 
 # ── Algebraic Space Tags ──────────────────────────────────────────────
@@ -1750,6 +1770,27 @@ def get_primitive(name: str) -> PrimitiveOp:
             f"Unknown primitive: {name}. Available: {list(PRIMITIVE_REGISTRY.keys())}"
         )
     return PRIMITIVE_REGISTRY[resolved]
+
+
+_BINDING_PRIORITY = {"full": 3, "medium": 2, "local": 1, "none": 0}
+_BINDING_PRIORITY_REV = {v: k for k, v in _BINDING_PRIORITY.items()}
+
+
+def graph_binding_range_class(graph: "ComputationGraph") -> str:
+    """Return the maximum binding range class across all ops in a graph.
+
+    Priority: full > medium > local > none.
+    """
+    best = 0
+    for node in graph.nodes.values():
+        if node.is_input:
+            continue
+        op = PRIMITIVE_REGISTRY.get(node.op_name)
+        if op is not None:
+            best = max(best, _BINDING_PRIORITY.get(op.binding_range_class, 0))
+            if best == 3:  # full — can't go higher
+                return "full"
+    return _BINDING_PRIORITY_REV.get(best, "none")
 
 
 def list_primitives(category: Optional[OpCategory] = None) -> List[PrimitiveOp]:

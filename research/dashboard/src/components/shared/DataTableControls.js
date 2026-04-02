@@ -1,4 +1,5 @@
 import React from 'react';
+import SortIndicator from './SortIndicator';
 
 export function TableFilterInput({
   value,
@@ -48,11 +49,7 @@ export function SortableHeader({
       style={{ whiteSpace: 'nowrap', ...style }}
     >
       {label}
-      {isActive && (
-        <span className="th-sort-icon">
-          {sortDesc ? '\u25BC' : '\u25B2'}
-        </span>
-      )}
+      <SortIndicator active={isActive} desc={sortDesc} />
     </th>
   );
 }

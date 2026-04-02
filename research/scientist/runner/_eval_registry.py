@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable
 
-from ._types import ExternalEvalResult, RunConfig
+from ._types import ExternalEvalResult
 
 logger = logging.getLogger(__name__)
 
@@ -59,15 +59,22 @@ class EvalSpec:
 
 def _run_ood(ctx: EvalContext) -> dict[str, Any]:
     n_steps = min(100, max(20, int(ctx.config.validation_steps) // 50))
-    return {"ood_result": ctx.ood_check(ctx.model_factory, ctx.config, ctx.dev, n_steps=n_steps)}
+    return {
+        "ood_result": ctx.ood_check(
+            ctx.model_factory, ctx.config, ctx.dev, n_steps=n_steps
+        )
+    }
 
 
 def _run_sensitivity(ctx: EvalContext) -> dict[str, Any]:
     n_steps = min(100, max(20, int(ctx.config.validation_steps) // 50))
     return {
         "sensitivity_result": ctx.sensitivity_check(
-            ctx.model_factory, ctx.config, ctx.dev,
-            base_loss_ratio=float(ctx.val_loss_ratio), n_steps=n_steps,
+            ctx.model_factory,
+            ctx.config,
+            ctx.dev,
+            base_loss_ratio=float(ctx.val_loss_ratio),
+            n_steps=n_steps,
         )
     }
 
@@ -77,8 +84,11 @@ def _run_wikitext(ctx: EvalContext) -> dict[str, Any]:
 
     seq_len = min(128, ctx.config.validation_seq_len)
     wt = evaluate_wikitext_perplexity(
-        ctx.model, ctx.config.vocab_size, ctx.dev_str,
-        n_train_steps=200, seq_len=seq_len,
+        ctx.model,
+        ctx.config.vocab_size,
+        ctx.dev_str,
+        n_train_steps=200,
+        seq_len=seq_len,
     )
     return {
         "wikitext_perplexity": wt.get("wikitext_perplexity"),
@@ -91,8 +101,11 @@ def _run_tinystories(ctx: EvalContext) -> dict[str, Any]:
 
     seq_len = min(128, ctx.config.validation_seq_len)
     ts = evaluate_tinystories(
-        ctx.model, ctx.config.vocab_size, ctx.dev_str,
-        n_train_steps=200, seq_len=seq_len,
+        ctx.model,
+        ctx.config.vocab_size,
+        ctx.dev_str,
+        n_train_steps=200,
+        seq_len=seq_len,
     )
     return {
         "tinystories_perplexity": ts.get("tinystories_perplexity"),
@@ -106,11 +119,15 @@ def _run_long_context(ctx: EvalContext) -> dict[str, Any]:
     base_loss = ctx.base_final_loss or max(float(ctx.val_loss_ratio or 1.0), 1e-6)
     lr = (
         float(ctx.best_seed.get("optimizer_lr") or ctx.config.stage1_lr)
-        if ctx.best_seed else float(ctx.config.stage1_lr)
+        if ctx.best_seed
+        else float(ctx.config.stage1_lr)
     )
     lc = run_long_context_sweep(
-        ctx.model_factory, ctx.config.vocab_size, ctx.dev,
-        base_loss=base_loss, seq_lens=(512, 1024),
+        ctx.model_factory,
+        ctx.config.vocab_size,
+        ctx.dev,
+        base_loss=base_loss,
+        seq_lens=(512, 1024),
         n_steps=min(60, max(20, int(ctx.config.validation_steps) // 100)),
         batch_size=max(1, min(2, ctx.config.validation_batch_size)),
         lr=lr,
@@ -126,7 +143,9 @@ def _run_noise(ctx: EvalContext) -> dict[str, Any]:
     from ...eval.noise_sensitivity import evaluate_noise_sensitivity
 
     nr = evaluate_noise_sensitivity(
-        ctx.model, ctx.input_batches, ctx.dev,
+        ctx.model,
+        ctx.input_batches,
+        ctx.dev,
         vocab_size=int(ctx.config.vocab_size),
     )
     return {"noise_score": nr.get("noise_sensitivity_score")}
@@ -180,7 +199,9 @@ def _run_cross_task(ctx: EvalContext) -> dict[str, Any]:
     from ...eval.cross_task_eval import evaluate_cross_task_robustness
 
     ct = evaluate_cross_task_robustness(
-        ctx.model_factory, vocab_size=int(ctx.config.vocab_size), device=ctx.dev,
+        ctx.model_factory,
+        vocab_size=int(ctx.config.vocab_size),
+        device=ctx.dev,
         n_train_steps=min(80, max(20, int(ctx.config.validation_steps) // 100)),
         batch_size=max(1, min(4, ctx.config.validation_batch_size)),
         seq_len=min(128, ctx.config.validation_seq_len),
@@ -188,11 +209,65 @@ def _run_cross_task(ctx: EvalContext) -> dict[str, Any]:
     return {"cross_task_score": ct.get("cross_task_score")}
 
 
+def _run_hierarchy(ctx: EvalContext) -> dict[str, Any]:
+    import torch
+    from ...eval.hierarchy_probe import hierarchy_fitness
+
+    model = ctx.model
+    if model is None:
+        return {}
+
+    # Generate random input and extract hidden states via forward hook
+    vocab_size = int(ctx.config.vocab_size)
+    seq_len = min(64, ctx.config.validation_seq_len)
+    input_ids = torch.randint(0, vocab_size, (2, seq_len), device=ctx.dev)
+
+    hidden_states = []
+
+    def _hook(module, _input, output):
+        # Capture output of the last layer before the head
+        out = output[0] if isinstance(output, (tuple, list)) else output
+        if isinstance(out, torch.Tensor) and out.ndim == 3:
+            hidden_states.append(out.detach())
+
+    # Register hook on the last child module (before output projection)
+    hooks = []
+    children = list(model.children())
+    if children:
+        hooks.append(
+            children[-2].register_forward_hook(_hook)
+            if len(children) >= 2
+            else children[-1].register_forward_hook(_hook)
+        )
+
+    try:
+        with torch.no_grad():
+            model(input_ids)
+    except Exception:
+        pass
+    finally:
+        for h in hooks:
+            h.remove()
+
+    if not hidden_states:
+        return {}
+
+    result = hierarchy_fitness(hidden_states[-1], max_tokens=100)
+    return {
+        "fp_gromov_delta": result.get("gromov_delta"),
+        "fp_hierarchy_fitness": result.get("hierarchy_fitness"),
+    }
+
+
 def _run_scaling_d256(ctx: EvalContext) -> dict[str, Any]:
     payload = ctx.scaling_compare(
-        config=ctx.config, dev_str=ctx.dev_str, best_seed=ctx.best_seed,
-        val_loss_ratio=ctx.val_loss_ratio, source_params=ctx.source_params,
-        source=ctx.source, d_model=int(ctx.config.model_dim),
+        config=ctx.config,
+        dev_str=ctx.dev_str,
+        best_seed=ctx.best_seed,
+        val_loss_ratio=ctx.val_loss_ratio,
+        source_params=ctx.source_params,
+        source=ctx.source,
+        d_model=int(ctx.config.model_dim),
     )
     if payload is None:
         return {}
@@ -210,9 +285,13 @@ def _run_scaling_d512(ctx: EvalContext) -> dict[str, Any]:
     if not bool(getattr(ctx.config, "scaling_d512_enabled", True)):
         return {}
     payload = ctx.scaling_compare(
-        config=ctx.config, dev_str=ctx.dev_str, best_seed=ctx.best_seed,
-        val_loss_ratio=ctx.val_loss_ratio, source_params=ctx.source_params,
-        source=ctx.source, d_model=512,
+        config=ctx.config,
+        dev_str=ctx.dev_str,
+        best_seed=ctx.best_seed,
+        val_loss_ratio=ctx.val_loss_ratio,
+        source_params=ctx.source_params,
+        source=ctx.source,
+        d_model=512,
     )
     if payload is None:
         return {}
@@ -230,13 +309,15 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
     EvalSpec(
         name="OOD robustness check",
         result_keys=("ood_result",),
-        requires_loss_ratio=True, is_robustness_check=True,
+        requires_loss_ratio=True,
+        is_robustness_check=True,
         run=_run_ood,
     ),
     EvalSpec(
         name="sensitivity check",
         result_keys=("sensitivity_result",),
-        requires_loss_ratio=True, is_robustness_check=True,
+        requires_loss_ratio=True,
+        is_robustness_check=True,
         run=_run_sensitivity,
     ),
     EvalSpec(
@@ -259,38 +340,53 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
     ),
     EvalSpec(
         name="long-context sweep",
-        result_keys=("long_context_score", "long_context_details", "max_viable_seq_len"),
+        result_keys=(
+            "long_context_score",
+            "long_context_details",
+            "max_viable_seq_len",
+        ),
         requires_model=True,
         run=_run_long_context,
     ),
     EvalSpec(
         name="noise sensitivity",
         result_keys=("noise_score",),
-        requires_model=True, is_robustness_check=True,
+        requires_model=True,
+        is_robustness_check=True,
         run=_run_noise,
     ),
     EvalSpec(
         name="activation sparsity",
         result_keys=("activation_sparsity_score", "dead_neuron_ratio"),
-        requires_model=True, is_robustness_check=True,
+        requires_model=True,
+        is_robustness_check=True,
         run=_run_sparsity,
     ),
     EvalSpec(
         name="routing heatmap",
         result_keys=("routing_collapse_score",),
-        requires_model=True, is_robustness_check=True,
+        requires_model=True,
+        is_robustness_check=True,
         run=_run_routing,
     ),
     EvalSpec(
         name="quantization quality",
         result_keys=("quant_int8_retention", "quant_quality_per_byte"),
-        requires_model=True, is_robustness_check=True,
+        requires_model=True,
+        is_robustness_check=True,
         run=_run_quant,
     ),
     EvalSpec(
         name="efficiency wall",
-        result_keys=("efficiency_wall_score", "scaling_regime", "scaling_flop_efficiency", "max_viable_seq_len"),
-        requires_model=True, requires_scaling=True, is_robustness_check=True,
+        result_keys=(
+            "efficiency_wall_score",
+            "scaling_regime",
+            "scaling_flop_efficiency",
+            "max_viable_seq_len",
+        ),
+        requires_model=True,
+        requires_scaling=True,
+        is_robustness_check=True,
         run=_run_efficiency_wall,
     ),
     EvalSpec(
@@ -300,9 +396,21 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
         run=_run_cross_task,
     ),
     EvalSpec(
+        name="hierarchy probe",
+        result_keys=("fp_gromov_delta", "fp_hierarchy_fitness"),
+        requires_model=True,
+        run=_run_hierarchy,
+    ),
+    EvalSpec(
         name="scaling reference comparison (d256)",
-        result_keys=("scaling_result", "scaling_param_efficiency", "scaling_flop_efficiency",
-                      "scaling_best_family", "scaling_gate_passed_val", "scaling_confidence"),
+        result_keys=(
+            "scaling_result",
+            "scaling_param_efficiency",
+            "scaling_flop_efficiency",
+            "scaling_best_family",
+            "scaling_gate_passed_val",
+            "scaling_confidence",
+        ),
         requires_scaling=True,
         run=_run_scaling_d256,
     ),
@@ -347,8 +455,10 @@ def apply_breakthrough_logic(
     # Confidence fallbacks
     if result.scaling_confidence is None:
         result.scaling_confidence = (
-            "disabled" if not scaling_enabled
-            else "high" if scaling_gate_passed
+            "disabled"
+            if not scaling_enabled
+            else "high"
+            if scaling_gate_passed
             else "low"
         )
     if result.scaling_best_family is None:
@@ -371,16 +481,23 @@ def apply_breakthrough_logic(
 
     # Breakthrough determination
     raw_threshold = float(getattr(config, "breakthrough_raw_threshold", 0.70) or 0.70)
-    norm_threshold = float(getattr(config, "breakthrough_normalized_threshold", 0.85) or 0.85)
+    norm_threshold = float(
+        getattr(config, "breakthrough_normalized_threshold", 0.85) or 0.85
+    )
     raw_passed = val_loss_ratio is not None and float(val_loss_ratio) <= raw_threshold
-    norm_passed = val_normalized_ratio is not None and float(val_normalized_ratio) >= norm_threshold
+    norm_passed = (
+        val_normalized_ratio is not None
+        and float(val_normalized_ratio) >= norm_threshold
+    )
 
     seeds_count = len(passed_seeds) if passed_seeds else 0
     seeds_total = int(getattr(config, "validation_n_seeds", 5) or 5)
     seeds_can_promote = (seeds_total < 3) or (seeds_count >= 1)
 
     if (
-        raw_passed and norm_passed and scaling_gate_passed
+        raw_passed
+        and norm_passed
+        and scaling_gate_passed
         and (val_baseline_ratio is None or float(val_baseline_ratio) < 1.0)
         and seeds_can_promote
     ):
@@ -390,7 +507,10 @@ def apply_breakthrough_logic(
         logger.info(
             "breakthrough_blocked_seeds_passed_zero: result_id=%s "
             "val_loss_ratio=%s seeds_passed=%d seeds_total=%d",
-            source_result_id[:12], val_loss_ratio, seeds_count, seeds_total,
+            source_result_id[:12],
+            val_loss_ratio,
+            seeds_count,
+            seeds_total,
         )
     else:
         result.is_breakthrough = False
@@ -464,7 +584,9 @@ def run_eval_suite(
                     result.robustness_checks_failed += 1
                 logger.warning(
                     "%s FAILED for %s: %s",
-                    spec.name, ctx.source_result_id[:8], exc,
+                    spec.name,
+                    ctx.source_result_id[:8],
+                    exc,
                 )
     finally:
         if model is not None:

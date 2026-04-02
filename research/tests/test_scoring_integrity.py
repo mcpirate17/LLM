@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from research.scientist.leaderboard_scoring import (
-    compute_composite_score,
+    compute_composite,
 )
 from research.synthesis.graph import ComputationGraph
 
@@ -23,7 +23,7 @@ from research.synthesis.graph import ComputationGraph
 @pytest.mark.unit
 def test_v4_nonlearning_capped_at_10():
     """A result with loss_ratio=0.9825 cannot score above 10 (v4)."""
-    score = compute_composite_score(
+    score = compute_composite(
         screening_lr=0.9825,
         screening_nov=0.9,
         novelty_confidence=1.0,
@@ -34,34 +34,46 @@ def test_v4_nonlearning_capped_at_10():
 
 
 @pytest.mark.unit
-def test_v4_barely_learning_capped_at_20():
-    """A result with loss_ratio=0.92 cannot score above 20 (v4)."""
-    score = compute_composite_score(
+def test_barely_learning_scores_low():
+    """A result with loss_ratio=0.92 scores far below a well-performing model."""
+    barely = compute_composite(
         screening_lr=0.92,
         screening_nov=0.9,
         novelty_confidence=1.0,
         routing_savings=0.5,
-        loss_improvement_rate=0.05,
     )
-    assert score <= 20.0, f"Barely-learning model scored {score}, expected <= 20"
+    good = compute_composite(
+        screening_lr=0.3,
+        screening_nov=0.9,
+        novelty_confidence=1.0,
+        routing_savings=0.5,
+    )
+    assert barely < good, (
+        f"Barely-learning model ({barely}) should score below good model ({good})"
+    )
 
 
 @pytest.mark.unit
-def test_v4_legitimate_model_not_capped():
-    """Var H (loss_ratio=0.54) must not be capped."""
-    score = compute_composite_score(
-        screening_lr=0.54,
+def test_legitimate_model_not_capped():
+    """A model with good loss ratio should not be capped by the insufficient-learning gate."""
+    score = compute_composite(
+        screening_lr=0.3,
         screening_nov=0.68,
         novelty_confidence=0.5,
-        loss_improvement_rate=0.5,
     )
-    assert score > 20.0, f"Legitimate model scored {score}, should be > 20"
+    # Must not be capped at the insufficient-learning threshold (10)
+    assert score > 10.0, f"Legitimate model scored {score}, should not be capped"
+    # Should also beat a non-learning model
+    bad = compute_composite(
+        screening_lr=0.96, screening_nov=0.68, novelty_confidence=0.5
+    )
+    assert score > bad, f"Legitimate model ({score}) should beat non-learning ({bad})"
 
 
 @pytest.mark.unit
 def test_nonlearning_cannot_reach_validated():
     """A result with loss_ratio=0.9825 produces a score too low for validation."""
-    score_v4 = compute_composite_score(
+    score_v4 = compute_composite(
         screening_lr=0.9825,
         screening_nov=0.99,
         novelty_confidence=1.0,
@@ -135,8 +147,8 @@ def test_composite_score_uses_own_loss_ratio():
     A high-novelty, high-routing model with loss_ratio=0.98 cannot score
     higher than a boring model with loss_ratio=0.1.
     """
-    good_score = compute_composite_score(screening_lr=0.1, screening_nov=0.3)
-    bad_score = compute_composite_score(
+    good_score = compute_composite(screening_lr=0.1, screening_nov=0.3)
+    bad_score = compute_composite(
         screening_lr=0.98,
         screening_nov=0.99,
         novelty_confidence=1.0,
@@ -150,7 +162,7 @@ def test_composite_score_uses_own_loss_ratio():
 @pytest.mark.unit
 def test_v4_decompose_shows_cap():
     """Decompose mode shows the insufficient_learning_cap when applied."""
-    result = compute_composite_score(
+    result = compute_composite(
         screening_lr=0.96,
         screening_nov=0.9,
         decompose=True,

@@ -157,16 +157,29 @@ void aria_square_f32(const float *x, float *y, int64_t n) {
 }
 
 void aria_abs_f32(const float *x, float *y, int64_t n) {
+#if defined(ARIA_SIMD_WIDTH)
+    /* Clear sign bit via AND with 0x7FFFFFFF */
+    int64_t vec_end = n - (n % ARIA_SIMD_WIDTH);
+    aria_simd_ps abs_mask = aria_simd_castsi_ps(aria_simd_set1_epi32(0x7FFFFFFF));
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
+#endif
+    for (int64_t i = 0; i < vec_end; i += ARIA_SIMD_WIDTH) {
+        aria_simd_ps vx = aria_simd_loadu_ps(x + i);
+        aria_simd_storeu_ps(y + i, aria_simd_and_ps(vx, abs_mask));
+    }
+    for (int64_t i = vec_end; i < n; i++) { y[i] = fabsf(x[i]); }
+#else
 #ifdef ARIA_HAS_OPENMP
     #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
 #endif
     for (int64_t i = 0; i < n; i++) { y[i] = fabsf(x[i]); }
+#endif
 }
 
 void aria_neg_f32(const float *x, float *y, int64_t n) {
 #if defined(ARIA_SIMD_WIDTH)
     int64_t vec_end = n - (n % ARIA_SIMD_WIDTH);
-    aria_simd_ps sign_mask = aria_simd_set1_ps(-0.0f);
 #ifdef ARIA_HAS_OPENMP
     #pragma omp parallel for if(n > ARIA_OMP_THRESHOLD) schedule(static)
 #endif

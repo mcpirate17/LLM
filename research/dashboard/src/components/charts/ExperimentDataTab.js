@@ -4,7 +4,9 @@ import { lossColor, noveltyColor } from '../../utils/colors';
 import { trendScore, trendScoreBreakdown } from '../../utils/scoringEngine';
 import useCopyToClipboard from '../../hooks/useCopyToClipboard';
 import apiService from '../../services/apiService';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
+import { useAriaData } from '../../hooks/useAriaData';
 
 const DATA_SORT_PREFS_KEY = 'aria_trend_data_sort_v1';
 
@@ -61,33 +63,12 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
   const [trends, setTrends] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [sortKey, setSortKey] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(DATA_SORT_PREFS_KEY) || '{}');
-      const validKeys = new Set(DATA_COLUMNS.map((c) => c.key));
-      if (typeof stored.sortKey === 'string' && validKeys.has(stored.sortKey)) return stored.sortKey;
-    } catch {}
-    return '_score';
-  });
-  const [sortDesc, setSortDesc] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(DATA_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortDesc === 'boolean') return stored.sortDesc;
-    } catch {}
-    return true;
-  });
-  const [filterQuery, setFilterQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [outcomeFilter, setOutcomeFilter] = useState('all');
   const [rerunningIds, setRerunningIds] = useState(new Set());
   const [copiedValue, copyText] = useCopyToClipboard();
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(DATA_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
-    } catch {}
-  }, [sortKey, sortDesc]);
+  const { slowPollTick } = useAriaData();
 
   useEffect(() => {
     let active = true;
@@ -104,19 +85,8 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
       }
     };
     fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => { active = false; clearInterval(interval); };
-  }, []);
-
-  const handleSort = (key) => {
-    if (key === '_actions') return;
-    if (sortKey === key) {
-      setSortDesc(!sortDesc);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  };
+    return () => { active = false; };
+  }, [slowPollTick]);
 
   const handleRerun = async (experimentId) => {
     if (!experimentId || !onRerunExperiment) return; 
@@ -169,24 +139,20 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
     })
   ), [augmented, statusFilter, typeFilter, outcomeFilter]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(statusTypeOutcomeFiltered, filterQuery, [
-      'experiment_id', 'hypothesis', 'experiment_type', 'status',
-    ])
-  ), [statusTypeOutcomeFiltered, filterQuery]);
+  const {
+    sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort: _handleSort,
+  } = useInteractiveTable({
+    rows: statusTypeOutcomeFiltered,
+    filterFields: ['experiment_id', 'hypothesis', 'experiment_type', 'status'],
+    initialSortKey: '_score',
+    initialSortDesc: true,
+    storageKey: DATA_SORT_PREFS_KEY,
+  });
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va = a[sortKey], vb = b[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+  const handleSort = (key) => {
+    if (key === '_actions') return;
+    _handleSort(key);
+  };
 
   const hasActiveFilters = (
     filterQuery.trim().length > 0 ||
@@ -282,11 +248,7 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Search experiments..."
-          style={{
-            fontSize: 11, padding: '4px 8px', borderRadius: 4,
-            border: '1px solid var(--border)', background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)', minWidth: 160,
-          }}
+          className="filter-input"
         />
         <button
           className="refresh-btn"
@@ -320,11 +282,7 @@ export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFil
                   }}
                 >
                   {col.label}
-                  {sortKey === col.key && col.sortable !== false && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDesc ? '\u25BC' : '\u25B2'}
-                    </span>
-                  )}
+                  {col.sortable !== false && <SortIndicator active={sortKey === col.key} desc={sortDesc} />}
                 </th>
               ))}
             </tr>

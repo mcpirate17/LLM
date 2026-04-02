@@ -8,36 +8,7 @@ export function toRetentionPercent(value) {
   return num <= 1.0 ? num * 100 : num;
 }
 
-export function metricChips(entry) {
-  const chips = [];
-  chips.push({
-    label: 'Loss',
-    source: 'measured',
-    reliability: entry.validation_loss_ratio != null ? 'high' : entry.investigation_loss_ratio != null ? 'medium' : 'low',
-  });
-  chips.push({
-    label: 'Novelty',
-    source: entry.cka_source === 'artifact' ? 'artifact-backed' : 'heuristic',
-    reliability: entry.novelty_confidence != null
-      ? (entry.novelty_confidence >= 0.7 ? 'high' : entry.novelty_confidence >= 0.4 ? 'medium' : 'low')
-      : 'low',
-  });
-  chips.push({
-    label: 'Baseline',
-    source: entry.validation_baseline_ratio != null ? 'baseline-run' : 'not-available',
-    reliability: entry.validation_multi_seed_std != null
-      ? (entry.validation_multi_seed_std <= 0.12 ? 'high' : 'medium')
-      : 'low',
-  });
-  if (entry.routing_confidence_mean != null) {
-    chips.push({
-      label: 'Routing',
-      source: 'telemetry',
-      reliability: entry.routing_confidence_mean >= 0.7 ? 'high' : entry.routing_confidence_mean >= 0.4 ? 'medium' : 'low',
-    });
-  }
-  return chips;
-}
+export { leaderboardMetricChips as metricChips } from '../../utils/metricChips';
 
 export function qualityFlags(entry) {
   const flags = [];

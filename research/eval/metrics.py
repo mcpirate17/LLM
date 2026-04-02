@@ -7,11 +7,14 @@ how novel a synthesized program actually is.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Novelty Metric Constants
 EXPECTED_CATEGORIES = 8.0
@@ -36,7 +39,7 @@ from ..synthesis.graph import ComputationGraph
 from .fingerprint import BehavioralFingerprint
 
 
-@dataclass
+@dataclass(slots=True)
 class NoveltyMetrics:
     """Comprehensive novelty assessment."""
 
@@ -66,7 +69,9 @@ class NoveltyMetrics:
     category_histogram: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
-        return self.__dict__.copy()
+        from dataclasses import fields
+
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
 
 def _reference_similarity_penalty(max_cka_similarity: float) -> float:
@@ -92,9 +97,7 @@ def novelty_score(
     """Compute novelty metrics for a synthesized program."""
     ir = graph.lower_to_ir()
     if ir.is_stale(graph):
-        import logging
-
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "stale_ir_used: graph_version=%d ir_version=%d",
             graph._ir_version,
             ir.source_version,
@@ -166,8 +169,8 @@ def batch_novelty_scores(
             continue
         try:
             opcode_to_cat[code] = get_primitive(name).category.value
-        except Exception:
-            pass
+        except (AttributeError, KeyError, ValueError) as exc:
+            logger.debug("Novelty metric category lookup failed for %s: %s", name, exc)
 
     all_categories = sorted(list(set(opcode_to_cat.values())))
     cat_to_idx = {cat: i for i, cat in enumerate(all_categories)}
@@ -242,8 +245,12 @@ def batch_novelty_scores(
                         metrics.category_histogram[cat] = (
                             metrics.category_histogram.get(cat, 0) + int(count)
                         )
-                    except Exception:
-                        pass
+                    except (AttributeError, KeyError, ValueError) as exc:
+                        logger.debug(
+                            "Novelty histogram category lookup failed for %s: %s",
+                            name,
+                            exc,
+                        )
 
         # Behavioral
         fp_obj = fingerprints[i] if fingerprints and i < len(fingerprints) else None

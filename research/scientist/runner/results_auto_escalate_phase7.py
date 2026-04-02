@@ -34,6 +34,9 @@ from ..thresholds import (
     EMPIRICAL_OVERRIDE_BEST_LR,
     EMPIRICAL_OVERRIDE_ROBUSTNESS,
     EMPIRICAL_OVERRIDE_SCORE_MULT,
+    HELLASWAG_RANDOM_CHANCE_GATE,
+    UNDERSTANDING_MIN_BINDING,
+    UNDERSTANDING_MIN_DIAGNOSTIC,
     V7_INVESTIGATION_THRESHOLD,
     V7_SCREENING_THRESHOLD,
     VALIDATION_BEST_LR_HARD,
@@ -163,18 +166,25 @@ class _ResultsAutoEscalatePhase7Mixin:
             )
         try:
             before = len(top)
-            qualified = []
-            for p in top:
-                rid = p.get("result_id")
-                if not rid:
-                    continue
-                lb_row = nb.conn.execute(
-                    "SELECT composite_score FROM leaderboard WHERE result_id = ?",
-                    (rid,),
-                ).fetchone()
-                cs = float(lb_row[0]) if lb_row and lb_row[0] else 0.0
-                if cs >= _screening_threshold:
-                    qualified.append(p)
+            # Batch-fetch composite scores (avoids N+1 per-candidate queries)
+            _top_rids = [p.get("result_id") for p in top if p.get("result_id")]
+            _cs_map: Dict[str, float] = {}
+            if _top_rids:
+                _cs_ph = ",".join("?" for _ in _top_rids)
+                _cs_rows = nb.conn.execute(
+                    f"SELECT result_id, composite_score FROM leaderboard "
+                    f"WHERE result_id IN ({_cs_ph})",
+                    tuple(_top_rids),
+                ).fetchall()
+                _cs_map = {
+                    r["result_id"]: float(r["composite_score"] or 0) for r in _cs_rows
+                }
+            qualified = [
+                p
+                for p in top
+                if p.get("result_id")
+                and _cs_map.get(p["result_id"], 0.0) >= _screening_threshold
+            ]
             if qualified:
                 top = qualified
                 logger.info(
@@ -266,17 +276,23 @@ class _ResultsAutoEscalatePhase7Mixin:
 
         if config.auto_go_no_go and config.enable_campaigns:
             approved_ids = []
+            # Hoist decision lookup out of loop — same campaign_id every iteration
+            try:
+                _existing_decisions = nb.get_decisions(
+                    campaign_id=self._active_campaign_id
+                )
+            except Exception:
+                _existing_decisions = []
+            _already_decided_rids = {
+                rid
+                for d in _existing_decisions
+                for rid in (d.get("evidence_ids") or [])
+            }
             for p in selected_rows:
                 if p["result_id"] not in candidate_ids:
                     continue
                 try:
-                    existing_decisions = nb.get_decisions(
-                        campaign_id=self._active_campaign_id
-                    )
-                    already_decided = any(
-                        p["result_id"] in (d.get("evidence_ids") or [])
-                        for d in existing_decisions
-                    )
+                    already_decided = p["result_id"] in _already_decided_rids
                     if already_decided:
                         approved_ids.append(p["result_id"])
                         continue
@@ -472,6 +488,28 @@ class _ResultsAutoEscalatePhase7Mixin:
                 for row in score_rows
             }
 
+        # Batch-fetch binding probe + understanding data for gates
+        _understanding_data: Dict[str, Dict[str, float]] = {}
+        if inv_id_list:
+            _bp_rows = nb.conn.execute(
+                f"SELECT result_id, ar_auc, induction_auc, binding_auc, "
+                f"diagnostic_score, hellaswag_acc FROM program_results "
+                f"WHERE result_id IN ({ph})",
+                tuple(inv_id_list),
+            ).fetchall()
+            _understanding_data = {
+                row["result_id"]: {
+                    "ar_auc": float(row["ar_auc"] or 0),
+                    "induction_auc": float(row["induction_auc"] or 0),
+                    "binding_auc": float(row["binding_auc"] or 0),
+                    "diagnostic_score": float(row["diagnostic_score"] or 0),
+                    "hellaswag_acc": float(row["hellaswag_acc"] or 0),
+                }
+                for row in _bp_rows
+            }
+        # Backward compat alias
+        _binding_data = _understanding_data
+
         strong = []
         blocked_incomplete_fingerprint = 0
         for r in inv_results:
@@ -567,6 +605,33 @@ class _ResultsAutoEscalatePhase7Mixin:
                 candidate_score,
                 min_score,
             )
+            # v8 understanding gate: at least ONE understanding signal above noise.
+            # OR gate — lenient. Blocks pure local-only perplexity models (conv-3).
+            # Mamba/SSM may pass via hellaswag or diagnostic even if induction=0.
+            _und = _understanding_data.get(rid, {})
+            _und_diag = _und.get("diagnostic_score", 0)
+            _und_binding_comp = (
+                0.4 * _und.get("ar_auc", 0)
+                + 0.3 * _und.get("induction_auc", 0)
+                + 0.3 * _und.get("binding_auc", 0)
+            )
+            _und_hella = _und.get("hellaswag_acc", 0)
+            _has_understanding = (
+                _und_diag >= UNDERSTANDING_MIN_DIAGNOSTIC
+                or _und_binding_comp >= UNDERSTANDING_MIN_BINDING
+                or _und_hella > HELLASWAG_RANDOM_CHANCE_GATE
+            )
+            if not _has_understanding:
+                logger.info(
+                    "escalation_blocked_no_understanding: result_id=%s "
+                    "diag=%.3f bind_comp=%.3f hella=%.3f",
+                    (rid or "?")[:12],
+                    _und_diag,
+                    _und_binding_comp,
+                    _und_hella,
+                )
+                continue
+
             if (
                 r.get("robustness", 0) >= config.auto_validate_min_robustness
                 and (r.get("best_loss_ratio") or 1.0) < VALIDATION_BEST_LR_HARD

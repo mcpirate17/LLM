@@ -11,6 +11,7 @@ from .compiler_op_utils import (
     aria_core,
     _c,
     _flatten_for_kernel,
+    _get_stacked_params,
     _record_routing_telemetry,
     _unflatten_from_kernel,
     record_kernel_fallback,
@@ -96,6 +97,114 @@ def _op_topk_gate(module, inputs, _):
     return out
 
 
+def _moe_sequential_dispatch(
+    x: torch.Tensor,
+    experts: torch.nn.ModuleList,
+    n_actual: int,
+    weights: torch.Tensor,
+    indices: torch.Tensor,
+    top_k: int,
+) -> torch.Tensor:
+    """Sequential MoE dispatch via sort + bincount + split.
+
+    Processes only the tokens assigned to each expert (no redundant compute).
+    Faster than batched einsum on CPU where parallelism is limited.
+    """
+    B, S, D = x.shape
+    BS = B * S
+    output = torch.zeros_like(x)
+    x_flat = x.reshape(BS, D)
+    idx_flat = indices.reshape(BS, top_k)
+    w_flat = weights.reshape(BS, top_k)
+
+    for k_idx in range(top_k):
+        expert_ids = idx_flat[:, k_idx]
+        slot_weights = w_flat[:, k_idx].unsqueeze(-1)
+
+        sort_order = expert_ids.argsort(stable=True)
+        sorted_x = x_flat[sort_order]
+        sorted_w = slot_weights[sort_order]
+
+        expert_counts = torch.bincount(expert_ids, minlength=n_actual).tolist()
+        x_chunks = sorted_x.split(expert_counts, dim=0)
+        w_chunks = sorted_w.split(expert_counts, dim=0)
+
+        result_chunks = []
+        for e_idx in range(n_actual):
+            if expert_counts[e_idx] == 0:
+                result_chunks.append(sorted_x.new_empty(0, D))
+                continue
+            out = experts[e_idx](x_chunks[e_idx])
+            result_chunks.append(out.to(x.dtype) * w_chunks[e_idx].to(x.dtype))
+
+        result_sorted = torch.cat(result_chunks, dim=0)
+        result_flat = torch.zeros(BS, D, device=x.device, dtype=x.dtype)
+        result_flat[sort_order] = result_sorted
+        output.view(BS, D).add_(result_flat)
+
+    return output
+
+
+def _moe_batched_expert_forward(
+    x: torch.Tensor,
+    W_down: torch.Tensor,
+    W_up: torch.Tensor,
+    weights: torch.Tensor,
+    indices: torch.Tensor,
+    top_k: int,
+) -> torch.Tensor:
+    """Batched MoE forward: compute all experts in parallel via einsum.
+
+    Instead of looping over experts and processing token subsets, this stacks
+    all expert weights and computes ALL expert outputs for ALL tokens in a
+    single batched matmul. Only the top-k expert outputs per token are kept,
+    weighted by the routing weights.
+
+    This trades O(E) redundant compute for eliminating the Python expert loop.
+    For typical n_experts (4-8), the GPU parallelism gain far exceeds the
+    wasted compute.
+
+    Args:
+        x: (B, S, D) input tokens
+        W_down: (E, H, D) stacked expert down-projection weights
+        W_up: (E, D, H) stacked expert up-projection weights
+        weights: (B, S, top_k) routing weights per token
+        indices: (B, S, top_k) expert indices per token
+        top_k: number of experts per token
+    """
+    # All experts in parallel: x @ W_down^T → GELU → @ W_up^T
+    # (B,S,D) @ (E,H,D)^T → (B,S,E,H)
+    hidden = torch.einsum("bsd,ehd->bseh", x, W_down)
+    hidden = F.gelu(hidden)
+    # (B,S,E,H) @ (E,D,H)^T → (B,S,E,D)
+    expert_outs = torch.einsum("bseh,edh->bsed", hidden, W_up)
+
+    # Gather only the top-k expert outputs per token
+    # indices: (B,S,top_k) → expand to (B,S,top_k,D)
+    idx_expanded = indices.unsqueeze(-1).expand(-1, -1, -1, x.shape[-1])
+    selected = torch.gather(expert_outs, dim=2, index=idx_expanded)  # (B,S,K,D)
+
+    # Weight and sum: (B,S,K,1) * (B,S,K,D) → sum → (B,S,D)
+    return (weights.unsqueeze(-1) * selected).sum(dim=2)
+
+
+def _moe_get_stacked_weights(module, n_experts: int, dtype: torch.dtype):
+    """Stack expert Linear→GELU→Linear weights into batched tensors, cached."""
+    cache_key = f"_moe_stacked_{dtype}"
+    cached = getattr(module, cache_key, None)
+    if cached is not None:
+        return cached
+    W_downs = []
+    W_ups = []
+    for i in range(n_experts):
+        expert = module.experts[i]
+        W_downs.append(expert[0].weight.to(dtype))  # Linear(D, H).weight is (H, D)
+        W_ups.append(expert[2].weight.to(dtype))  # Linear(H, D).weight is (D, H)
+    stacked = (torch.stack(W_downs), torch.stack(W_ups))  # (E,H,D), (E,D,H)
+    object.__setattr__(module, cache_key, stacked)
+    return stacked
+
+
 def _op_moe_topk(module, inputs, config):
     """Sparse Mixture-of-Experts channel mixer."""
     x = inputs[0]
@@ -115,52 +224,21 @@ def _op_moe_topk(module, inputs, config):
     # Record routing telemetry
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
 
-    # Dispatch to experts via gather-scatter (no per-expert Python loop)
-    output = torch.zeros_like(x)
-    if hasattr(module, "experts"):
-        n_actual = len(module.experts)
-        BS = B * S
-        x_flat = x.reshape(BS, D)
-        idx_flat = indices.reshape(BS, top_k)
-        w_flat = weights.reshape(BS, top_k)
+    if not hasattr(module, "experts"):
+        return F.linear(x, module.weight) if hasattr(module, "weight") else x
 
-        # Process each top-k slot (top_k is small, typically 1-2)
-        for k_idx in range(top_k):
-            expert_ids = idx_flat[:, k_idx]  # (BS,)
-            slot_weights = w_flat[:, k_idx].unsqueeze(-1)  # (BS, 1)
-            # Group tokens by expert via sort for contiguous access
-            sorted_ids, sort_perm = expert_ids.sort()
-            sorted_x = x_flat[sort_perm]
-            sorted_w = slot_weights[sort_perm]
-            # Find boundaries between expert groups
-            boundaries = torch.cat(
-                [
-                    torch.tensor([0], device=x.device),
-                    (sorted_ids[1:] != sorted_ids[:-1])
-                    .nonzero(as_tuple=False)
-                    .squeeze(-1)
-                    + 1,
-                    torch.tensor([BS], device=x.device),
-                ]
-            )
-            result = torch.zeros_like(sorted_x)
-            for seg in range(len(boundaries) - 1):
-                start, end = boundaries[seg].item(), boundaries[seg + 1].item()
-                if start >= end:
-                    continue
-                e_idx = sorted_ids[start].item()
-                if e_idx < n_actual:
-                    result[start:end] = module.experts[e_idx](sorted_x[start:end]).to(
-                        result.dtype
-                    ) * sorted_w[start:end].to(result.dtype)
-            # Unsort back
-            inv_perm = torch.empty_like(sort_perm)
-            inv_perm[sort_perm] = torch.arange(BS, device=x.device)
-            output.view(BS, D).add_(result[inv_perm])
-    else:
-        output = F.linear(x, module.weight) if hasattr(module, "weight") else x
+    n_actual = len(module.experts)
 
-    return output
+    # GPU: batched einsum computes all experts in parallel (trades redundant
+    # compute for eliminating the Python loop — net win on GPU).
+    # CPU: sequential dispatch is faster (no redundant compute).
+    if x.is_cuda:
+        W_down, W_up = _moe_get_stacked_weights(module, n_actual, x.dtype)
+        return _moe_batched_expert_forward(x, W_down, W_up, weights, indices, top_k)
+
+    return _moe_sequential_dispatch(
+        x, module.experts, n_actual, weights, indices, top_k
+    )
 
 
 def _op_moe_2expert(module, inputs, config):
@@ -254,9 +332,7 @@ def _op_gated_lane_blend(module, inputs, config):
 
     # 2. Per-lane transforms: batched via einsum over stacked projections
     if hasattr(module, "lane_projs") and len(module.lane_projs) >= n_lanes:
-        W_all = torch.stack(
-            [module.lane_projs[i].to(dt) for i in range(n_lanes)]
-        )  # (L, D_out, D_in)
+        W_all = _get_stacked_params(module, "lane_projs", n_lanes, dt)
         all_outs = torch.einsum("bsd,lod->bslo", x, W_all)  # (B, S, L, D_out)
         return (lane_weights.unsqueeze(-1) * all_outs).sum(dim=2)
     # Fallback: identity for all lanes
@@ -287,9 +363,7 @@ def _op_depth_gated_transform(module, inputs, config):
 
     # 2. Per-depth transforms: batched via einsum over stacked projections
     if hasattr(module, "depth_projs") and len(module.depth_projs) >= max_depth:
-        W_all = torch.stack(
-            [module.depth_projs[i].to(dt) for i in range(max_depth)]
-        )  # (K, D_out, D_in)
+        W_all = _get_stacked_params(module, "depth_projs", max_depth, dt)
         all_outs = torch.einsum("bsd,kod->bsko", x, W_all)  # (B, S, K, D_out)
         return (depth_weights.unsqueeze(-1) * all_outs).sum(dim=2)
     # Fallback: identity for all depths
@@ -335,12 +409,10 @@ def _op_adjacent_token_merge(module, inputs, config):
             torch.arange(S, device=x.device).unsqueeze(0).expand(B, -1).clone()
         )
 
-        # Backward merge: token at drop_pos merges INTO drop_pos-1 (predecessor)
-        for dp in drop_positions:
-            dp_int = int(dp.item())
-            if dp_int > 0:
-                merged[:, dp_int] = True
-                merge_targets[:, dp_int] = dp_int - 1
+        # Backward merge: token at drop_pos merges INTO drop_pos-1 (vectorized)
+        valid_drops = drop_positions[drop_positions > 0]
+        merged[:, valid_drops] = True
+        merge_targets[:, valid_drops] = valid_drops - 1
 
         # Build merged output: average merged pairs
         target_idx = merge_targets.unsqueeze(-1).expand(-1, -1, D)
@@ -514,7 +586,7 @@ def _op_depth_weighted_proj(module, inputs, config):
         )
         # Apply per-step transforms weighted by depth probability — batched einsum
         if hasattr(module, "step_projs") and len(module.step_projs) >= max_depth:
-            W_all = torch.stack([module.step_projs[i].to(dt) for i in range(max_depth)])
+            W_all = _get_stacked_params(module, "step_projs", max_depth, dt)
             all_outs = torch.einsum("bsd,kod->bsko", x, W_all)
             return (depth_weights.unsqueeze(-1) * all_outs).sum(dim=2)
         return x
@@ -625,16 +697,11 @@ def _op_relu_gated_moe(module, inputs, config):
         module, n_experts, gate_scores.argmax(dim=-1), logits=gate_scores
     )
 
-    # Dispatch to learned expert projections
+    # Dispatch to learned expert projections — batched via einsum
     if hasattr(module, "expert_weights"):
-        # Pre-cast weights once, use local references for speed
-        weights_list = [w.to(dt) for w in module.expert_weights]
-        output = torch.zeros_like(x)
-        _linear = F.linear
-        for i in range(n_experts):
-            w = gate_weights[..., i : i + 1]
-            output = output + w * _linear(x, weights_list[i])
-        return output
+        W_all = _get_stacked_params(module, "expert_weights", n_experts, dt)
+        expert_outs = torch.einsum("bsd,eod->bseo", x, W_all)
+        return (gate_weights.unsqueeze(-1) * expert_outs).sum(dim=2)
     # Fallback for legacy models: scale by total gate activation
     return gate_scores.sum(dim=-1, keepdim=True).expand_as(x) * x
 

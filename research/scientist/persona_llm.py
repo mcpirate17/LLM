@@ -3,22 +3,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _init_llm_backend(is_analyst: bool):
+    """Create an LLM backend, returning None on failure.
+
+    Shared by _get_llm (primary) and _get_analyst_llm (analyst).
+    """
+    try:
+        from .llm import create_backend
+
+        backend = create_backend(is_analyst=is_analyst)
+        if backend:
+            label = "Analyst" if is_analyst else "Primary"
+            logger.info(
+                f"Aria {label} LLM backend: {backend.name} ({getattr(backend, 'model', 'default')})"
+            )
+        return backend
+    except Exception as e:
+        label = "Analyst" if is_analyst else "Primary"
+        logger.debug(f"{label} LLM backend init failed: {e}")
+        return None
+
+
 class _PersonaLLMMixin:
     def _get_llm(self):
         """Lazy-init primary LLM backend (only try once)."""
         if not self._llm_initialized:
             self._llm_initialized = True
-            try:
-                from .llm import create_backend
-
-                self._llm = create_backend(is_analyst=False)
-                if self._llm:
-                    logger.info(
-                        f"Aria Primary LLM backend: {self._llm.name} ({getattr(self._llm, 'model', 'default')})"
-                    )
-            except Exception as e:
-                logger.debug(f"Primary LLM backend init failed: {e}")
-                self._llm = None
+            self._llm = _init_llm_backend(is_analyst=False)
         return self._llm
 
     def _track_cost(self, resp):

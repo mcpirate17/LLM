@@ -20,7 +20,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from research.synthesis.graph import ComputationGraph
-from research.scientist.native_runner import SubgraphDispatcher
+from research.scientist.native.autograd import SubgraphDispatcher
 
 pytestmark = pytest.mark.native
 

@@ -11,9 +11,9 @@ Also includes an op-level comparison table (relu, gelu, matmul) across all backe
 
 Usage:
     source /home/tim/venvs/llm/bin/activate
-    cd /home/tim/Projects/LLM/research
-    python runtime/native/bench/bench_e2e.py
-    python runtime/native/bench/bench_e2e.py --quick   # fewer iterations for CI
+    cd /home/tim/Projects/LLM
+    python -m research.runtime.native.bench.bench_e2e
+    python -m research.runtime.native.bench.bench_e2e --quick   # fewer iterations for CI
 """
 
 from __future__ import annotations
@@ -23,6 +23,14 @@ import os
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
+
+# Ensure the LLM project root is on sys.path so fully-qualified
+# research.* imports work (matches convention in research/tools/).
+_PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import numpy as np
 
@@ -52,14 +60,7 @@ def bench_fn(fn: Callable, *, warmup: int = 5, iterations: int = 100) -> float:
 
 def _make_relu_graph(model_dim: int = 64):
     """Create a minimal computation graph: input -> relu -> output."""
-    # Ensure the research dir is on sys.path (imports are e.g. synthesis.graph).
-    research_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-    if research_root not in sys.path:
-        sys.path.insert(0, research_root)
-
-    from synthesis.graph import ComputationGraph
+    from research.synthesis.graph import ComputationGraph
 
     g = ComputationGraph(model_dim=model_dim)
     inp = g.add_input()
@@ -70,13 +71,7 @@ def _make_relu_graph(model_dim: int = 64):
 
 def _make_multi_op_graph(model_dim: int = 64):
     """input -> relu -> gelu -> add(relu, gelu) -> output."""
-    research_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-    if research_root not in sys.path:
-        sys.path.insert(0, research_root)
-
-    from synthesis.graph import ComputationGraph
+    from research.synthesis.graph import ComputationGraph
 
     g = ComputationGraph(model_dim=model_dim)
     inp = g.add_input()
@@ -104,7 +99,9 @@ def bench_pytorch_forward(
     """Benchmark 1: PyTorch compiled model forward pass."""
     try:
         import torch
-        from scientist.native_runner import compile_model_native_first as compile_model
+        from research.scientist.native_runner import (
+            compile_model_native_first as compile_model,
+        )
     except ImportError:
         return None
 
@@ -127,7 +124,7 @@ def bench_pytorch_layer_forward(
     """Benchmark PyTorch compiled layer (no embed/lm_head overhead)."""
     try:
         import torch
-        from synthesis.compiler import CompiledLayer
+        from research.synthesis.compiler import CompiledLayer
     except ImportError:
         return None
 
@@ -147,7 +144,7 @@ def bench_native_per_op(
 ) -> Optional[float]:
     """Benchmark 2: Per-op native dispatch via NativeForwardWrapper path."""
     try:
-        from scientist.native_runner import dispatch_op_native
+        from research.scientist.native_runner import dispatch_op_native
     except (ImportError, RuntimeError):
         return None
 
@@ -208,7 +205,7 @@ def bench_rust_scheduler(
 ) -> Optional[float]:
     """Benchmark 4: Rust scheduler full graph execution."""
     try:
-        from scientist.native_runner import dispatch_graph_native
+        from research.scientist.native_runner import dispatch_graph_native
     except (ImportError, RuntimeError):
         return None
 
@@ -450,13 +447,6 @@ def main() -> int:
     batch = 1
 
     np.random.seed(42)
-
-    # Ensure research package is importable
-    research_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    )
-    if research_root not in sys.path:
-        sys.path.insert(0, research_root)
 
     # Build graph
     print(f"Building graph: input(dim={model_dim}) -> relu -> output")

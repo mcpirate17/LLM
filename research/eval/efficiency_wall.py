@@ -69,9 +69,8 @@ def _measure_forward(
         peak_mb = sum(p.nelement() * p.element_size() for p in model.parameters()) / (
             1024 * 1024
         )
-        # Add rough activation estimate: batch_size * seq_len * dim * 4 bytes * n_layers
-        sum(p.numel() for p in model.parameters())
-        peak_mb += input_ids.numel() * 4 * 8 / (1024 * 1024)  # rough
+        # Add rough activation estimate
+        peak_mb += input_ids.numel() * 4 * 8 / (1024 * 1024)
 
     avg_time = sum(times) / len(times) if times else 0.0
 

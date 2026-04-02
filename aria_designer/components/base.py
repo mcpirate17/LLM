@@ -13,6 +13,15 @@ except ImportError:
     _HAS_ARIA_CORE = False
 
 
+def unsupported_fallback(op_name, *, reason=None):
+    """Raise a hard failure for components without an honest Python fallback."""
+    detail = f" ({reason})" if reason else ""
+    raise NotImplementedError(
+        f"Python fallback for {op_name} is unavailable{detail}; "
+        "enable the native kernel or remove this component from the workflow."
+    )
+
+
 def _try_native(op_name, *tensors):
     """Try to dispatch a simple op through aria_core. Returns None on failure."""
     if not _HAS_ARIA_CORE:

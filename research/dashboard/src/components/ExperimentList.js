@@ -1,10 +1,13 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { apiCall } from '../services/apiService';
 import { formatTime, formatDuration } from '../utils/format';
-import { noveltyColor, reliabilityColor } from '../utils/colors';
-import { experimentScore } from '../utils/scoringEngine';
-import { filterRowsByQuery } from '../utils/tableFiltering';
+import { noveltyColor } from '../utils/colors';
+import { MetricChipList } from './shared/MetricChipBadge';
+
+import useInteractiveTable from './shared/useInteractiveTable';
+import SortIndicator from './shared/SortIndicator';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import useVirtualRows from '../hooks/useVirtualRows';
 
 function metricText(value, fallbackReason, formatter) {
   if (value == null) return fallbackReason;
@@ -130,28 +133,7 @@ function ExperimentKpiStrip({ experiments }) {
 }
 
 
-function experimentMetricChips(exp) {
-  const nPrograms = exp.n_programs_generated || 0;
-  const s1 = exp.n_stage1_passed || 0;
-  const evidenceReliability = nPrograms >= 100 ? 'high' : nPrograms >= 30 ? 'medium' : 'low';
-  return [
-    {
-      label: 'Loss',
-      source: exp.best_loss_ratio != null ? 'measured' : 'not-evaluated',
-      reliability: exp.best_loss_ratio != null ? evidenceReliability : 'low',
-    },
-    {
-      label: 'Novelty',
-      source: exp.best_novelty_score != null ? 'heuristic' : 'insufficient-data',
-      reliability: s1 > 0 ? evidenceReliability : 'low',
-    },
-    {
-      label: 'Baseline',
-      source: 'not-available',
-      reliability: 'low',
-    },
-  ];
-}
+import { experimentMetricChips } from '../utils/metricChips';
 
 const COLUMNS = [
   { key: 'experiment_id', label: 'ID' },
@@ -221,27 +203,7 @@ function ExperimentList({
       return false;
     }
   });
-  const [hideLowScore, setHideLowScore] = useState(true);
 
-  const [sortKey, setSortKey] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_LIST_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortKey === 'string' && COLUMNS.some((column) => column.key === stored.sortKey)) {
-        return stored.sortKey;
-      }
-    } catch {}
-    return 'timestamp';
-  });
-  const [sortDesc, setSortDesc] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_LIST_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortDesc === 'boolean') {
-        return stored.sortDesc;
-      }
-    } catch {}
-    return true;
-  });
-  const [filterQuery, setFilterQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [outcomeFilter, setOutcomeFilter] = useState('all');
@@ -365,32 +327,15 @@ function ExperimentList({
   };
 
   useEffect(() => {
-    localStorage.setItem(EXPERIMENT_LIST_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
-  }, [sortKey, sortDesc]);
-
-  useEffect(() => {
     localStorage.setItem(EXPERIMENT_LIST_EXPERT_KEY, String(showExpertColumns));
   }, [showExpertColumns]);
 
   const signalKeys = new Set(['n_stage1_passed', 'best_loss_ratio', 'best_novelty_score', 'status', 'timestamp', 'experiment_id']);
   const visibleColumns = COLUMNS.filter(col => showExpertColumns || signalKeys.has(col.key));
 
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDesc(!sortDesc);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  };
-
-  // Augment experiments with computed score
   const augmented = useMemo(() => {
     if (!experiments) return [];
-    return experiments.map(exp => ({
-      ...exp,
-      _score: experimentScore(exp),
-    }));
+    return [...experiments];
   }, [experiments]);
 
   const experimentTypes = useMemo(() => {
@@ -403,19 +348,8 @@ function ExperimentList({
     return unique;
   }, [augmented]);
 
-  const queryFiltered = useMemo(() => (
-    filterRowsByQuery(augmented, filterQuery, [
-      'experiment_id',
-      'experiment_type',
-      'hypothesis',
-      'status',
-      'aria_summary',
-    ])
-  ), [augmented, filterQuery]);
-
-  const filtered = useMemo(() => (
-    queryFiltered.filter((exp) => {
-      if (hideLowScore && exp._score < 5 && exp.status !== 'running' && exp.experiment_type !== 'backfill') return false;
+  const dropdownFiltered = useMemo(() => (
+    augmented.filter((exp) => {
       if (statusFilter !== 'all' && exp.status !== statusFilter) return false;
       if (typeFilter !== 'all' && exp.experiment_type !== typeFilter) return false;
       if (outcomeFilter === 'has_s1' && (exp.n_stage1_passed || 0) <= 0) return false;
@@ -423,7 +357,25 @@ function ExperimentList({
       if (outcomeFilter === 'unevaluated' && !(exp.status === 'completed' && (exp.n_stage1_passed || 0) === 0 && exp.best_loss_ratio == null)) return false;
       return true;
     })
-  ), [queryFiltered, statusFilter, typeFilter, outcomeFilter, hideLowScore]);
+  ), [augmented, statusFilter, typeFilter, outcomeFilter]);
+
+  const {
+    sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort,
+  } = useInteractiveTable({
+    rows: dropdownFiltered,
+    filterFields: ['experiment_id', 'experiment_type', 'hypothesis', 'status', 'aria_summary'],
+    initialSortKey: 'timestamp',
+    initialSortDesc: true,
+    storageKey: EXPERIMENT_LIST_SORT_PREFS_KEY,
+    getSortValue: (row, key) => {
+      if (key === 'stage_funnel') {
+        return (row.n_programs_generated || 0) > 0
+          ? (row.n_stage0_passed || 0) / row.n_programs_generated
+          : 0;
+      }
+      return row?.[key];
+    },
+  });
 
   const hasActiveFilters = (
     filterQuery.trim().length > 0 ||
@@ -439,28 +391,12 @@ function ExperimentList({
     setOutcomeFilter('all');
   };
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va, vb;
-      if (sortKey === 'stage_funnel') {
-        // Sort by compilation rate (stage0/generated)
-        va = (a.n_programs_generated || 0) > 0 ? (a.n_stage0_passed || 0) / a.n_programs_generated : 0;
-        vb = (b.n_programs_generated || 0) > 0 ? (b.n_stage0_passed || 0) / b.n_programs_generated : 0;
-      } else {
-        va = a[sortKey]; vb = b[sortKey];
-      }
-      // Nulls/undefined sort to bottom
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+  const { containerProps: virtualContainerProps, visibleRows: virtualSorted, topPadding, bottomPadding, startIndex: virtualStartIndex } = useVirtualRows({
+    rows: sorted,
+    rowHeight: 40,
+    overscan: 10,
+    containerHeight: 700,
+  });
 
   const toggleSelected = useCallback((id, e) => {
     if (e) e.stopPropagation();
@@ -606,14 +542,6 @@ function ExperimentList({
           >
             {showExpertColumns ? 'Hide noise' : 'Show expert columns'}
           </button>
-          <button
-            className="refresh-btn"
-            style={{ fontSize: 11, padding: '3px 10px', color: hideLowScore ? 'var(--text-muted)' : 'var(--accent-yellow)' }}
-            onClick={() => setHideLowScore(!hideLowScore)}
-            title="Filter out experiments with very low scores (failed synthesis or no learning)"
-          >
-            {hideLowScore ? 'Show low-signal' : 'Hide low-signal'}
-          </button>
           {selectedIds.size > 0 && (
             <button
               className="refresh-btn"
@@ -644,8 +572,9 @@ function ExperimentList({
         </div>
       )}
       <ExperimentKpiStrip experiments={sorted} />
+      <div {...virtualContainerProps} style={{ ...virtualContainerProps.style, overflowX: 'auto', maxHeight: 'calc(100vh - 340px)' }}>
       <table className="data-table" style={{ tableLayout: Object.keys(columnWidths).length > 0 ? 'fixed' : 'auto' }}>
-        <thead>
+        <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
           <tr>
             <th style={{ width: 30, textAlign: 'center', padding: '4px 2px' }}>
               <input
@@ -668,11 +597,7 @@ function ExperimentList({
                 }}
               >
                 {col.label}
-                {sortKey === col.key && (
-                  <span style={{ marginLeft: 4, fontSize: 10 }}>
-                    {sortDesc ? '\u25BC' : '\u25B2'}
-                  </span>
-                )}
+                <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                 <span
                   onMouseDown={(e) => onResizeStart(e, col.key)}
                   style={{
@@ -690,7 +615,8 @@ function ExperimentList({
           </tr>
         </thead>
         <tbody>
-          {sorted.map(exp => {
+          {topPadding > 0 && <tr style={{ height: topPadding }} />}
+          {virtualSorted.map(exp => {
             const nUsed = exp.n_programs_generated || 0;
             const s1Count = exp.n_stage1_passed || 0;
             const chips = experimentMetricChips(exp);
@@ -895,24 +821,8 @@ function ExperimentList({
                           (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'insufficient data',
                           (v) => v.toFixed(3),
                         )}
-                        <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
-                          {chips.map(chip => (
-                            <span
-                              key={`${exp.experiment_id}-${chip.label}`}
-                              title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                              style={{
-                                fontSize: 10,
-                                padding: '1px 5px',
-                                borderRadius: 4,
-                                border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                                color: reliabilityColor(chip.reliability),
-                                background: `${reliabilityColor(chip.reliability)}22`,
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {chip.label}: {chip.source}
-                            </span>
-                          ))}
+                        <div style={{ marginTop: 4 }}>
+                          <MetricChipList chips={chips} />
                         </div>
                       </td>
                     );
@@ -951,8 +861,10 @@ function ExperimentList({
               </tr>
             );
           })}
+          {bottomPadding > 0 && <tr style={{ height: bottomPadding }} />}
         </tbody>
       </table>
+      </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, display: 'flex', gap: 16 }}>
         <span><span style={{ color: 'var(--accent-green)' }}>Green</span> = good results (learnable architectures found)</span>
         <span><span style={{ color: 'var(--accent-yellow)' }}>Amber</span> = some results (limited learning)</span>

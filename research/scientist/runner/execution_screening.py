@@ -65,6 +65,46 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Gate 5 constant: routing/MoE/sparse/compression ops required for efficiency scoring.
+# Module-level to avoid re-instantiation per graph in the screening loop.
+_EFFICIENCY_OPS = frozenset(
+    {
+        "arch_router",
+        "compute_budget_router",
+        "difficulty_blend_3way",
+        "depth_weighted_proj",
+        "block_sparse_linear",
+        "learned_token_gate",
+        "dual_compression_blend",
+        "confidence_token_gate",
+        "gated_delta",
+        "gated_linear",
+        "gather_topk",
+        "hetero_moe",
+        "latent_attention_compressor",
+        "score_depth_blend",
+        "depth_token_mask",
+        "moe_2expert",
+        "moe_topk",
+        "sparse_bottleneck_moe",
+        "nm_sparse_linear",
+        "padic_gate",
+        "adaptive_rank_gate",
+        "relu_gated_moe",
+        "route_lanes",
+        "route_recursion",
+        "route_topk",
+        "signal_conditioned_compression",
+        "sparse_threshold",
+        "ternary_projection",
+        "adjacent_token_merge",
+        "topk_gate",
+        "tropical_gate",
+        "tropical_moe",
+        "tropical_router",
+    }
+)
+
 from ._types import RunConfig, LiveProgress
 from ._helpers import (
     _native_proactive_gating,
@@ -711,12 +751,13 @@ class _ExecutionScreeningMixin:
             # update_op_success_rates (program_results scan) when no in-memory
             # counts exist (e.g. investigation/validation modes).
             s0_op_counts = results.pop("_s0_op_counts", None)
-            if s0_op_counts:
-                nb.merge_op_failure_counts(s0_op_counts)
-            else:
-                nb.update_op_success_rates(exp_id)
-            nb.strip_graph_json_for_failures(exp_id)
-            nb.update_failure_signatures(exp_id)
+            with nb.batch():
+                if s0_op_counts:
+                    nb.merge_op_failure_counts(s0_op_counts)
+                else:
+                    nb.update_op_success_rates(exp_id)
+                nb.strip_graph_json_for_failures(exp_id)
+                nb.update_failure_signatures(exp_id)
 
             # Periodic op rehabilitation: test excluded ops in isolation
             try:
@@ -792,7 +833,9 @@ class _ExecutionScreeningMixin:
                     trigger_payload={"mode": "synthesis", "error": str(e)},
                 )
             except Exception:
-                logger.warning("code_healer failed during experiment error handling", exc_info=True)
+                logger.warning(
+                    "code_healer failed during experiment error handling", exc_info=True
+                )
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -809,7 +852,9 @@ class _ExecutionScreeningMixin:
         except BaseException as e:
             logger.critical(
                 "Experiment thread KILLED (%s): %s\n%s",
-                exp_id, e, traceback.format_exc(),
+                exp_id,
+                e,
+                traceback.format_exc(),
             )
             try:
                 nb.fail_experiment(exp_id, f"FATAL: {e}")
@@ -819,7 +864,9 @@ class _ExecutionScreeningMixin:
                     {"experiment_id": exp_id, "error": f"FATAL: {e}"},
                 )
             except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             raise
         finally:
             nb.close()
@@ -1037,7 +1084,10 @@ class _ExecutionScreeningMixin:
         except Exception:
             template_weights, motif_weights = {}, {}
 
-        # Data-driven op/template weights from accumulated S1 pass rates
+        # Data-driven op/template/motif weights from accumulated S1 pass rates.
+        # Template and motif weights share the same DB query internally
+        # (_compute_metadata_weights), so computing them back-to-back is
+        # efficient — the DB page cache serves the second query from memory.
         if analytics is not None:
             _window_cutoff = time.time() - 604800  # 7 days
             try:
@@ -1048,17 +1098,13 @@ class _ExecutionScreeningMixin:
             except Exception:
                 pass
             try:
-                learned_tpl_weights = analytics.compute_template_weights(
-                    since_ts=_window_cutoff
+                learned_tpl_weights, learned_motif_weights = (
+                    analytics.compute_template_and_motif_weights(
+                        since_ts=_window_cutoff
+                    )
                 )
                 if learned_tpl_weights:
                     template_weights.update(learned_tpl_weights)
-            except Exception:
-                pass
-            try:
-                learned_motif_weights = analytics.compute_motif_weights(
-                    since_ts=_window_cutoff
-                )
                 if learned_motif_weights:
                     motif_weights.update(learned_motif_weights)
             except Exception:
@@ -1304,9 +1350,7 @@ class _ExecutionScreeningMixin:
         if config.gbm_prescreener_enabled and graphs:
             try:
                 from ..intelligence.predictor import (
-                    train_gbm,
-                    train_ensemble,
-                    EnsemblePredictor,
+                    load_runtime_ensemble,
                 )
                 from ...synthesis.graph_features import (
                     extract_graph_features,
@@ -1321,14 +1365,7 @@ class _ExecutionScreeningMixin:
                 )
                 profiling_db = "research/profiling/component_profiles.db"
 
-                try:
-                    _ensemble = train_ensemble(
-                        db_path=db_path, profiling_db=profiling_db
-                    )
-                except Exception:
-                    _gbm_only = train_gbm(db_path=db_path)
-                    if _gbm_only.is_fitted():
-                        _ensemble = EnsemblePredictor(gbm=_gbm_only)
+                _ensemble = load_runtime_ensemble(profiling_db=profiling_db)
 
                 if _ensemble is not None and _ensemble.is_fitted():
                     _op_stats_cache = load_op_stats(db_path)
@@ -1392,6 +1429,10 @@ class _ExecutionScreeningMixin:
                         len(kept),
                         _diag.get("n_components", 1),
                     )
+                else:
+                    logger.debug(
+                        "Ensemble pre-screener disabled: no persisted predictor artifacts loaded"
+                    )
             except Exception as e:
                 logger.debug("Ensemble pre-screener unavailable: %s", e)
 
@@ -1399,6 +1440,12 @@ class _ExecutionScreeningMixin:
 
         # Track ops from S0 failures for op_success_rates (not stored in DB)
         _s0_op_counts: Dict[str, Dict[str, int]] = {}  # op -> {n_used, n_s0, n_s05}
+
+        # Pre-import outside graph loop to avoid per-node import overhead
+        try:
+            from ...synthesis.primitives import get_primitive as _get_primitive
+        except ImportError:
+            _get_primitive = None
 
         for i, graph in enumerate(graphs):
             if self._stop_event.is_set():
@@ -1455,19 +1502,17 @@ class _ExecutionScreeningMixin:
 
             # Gate 4: at least one parameterized op required to learn.
             _has_param_op = False
-            for _nid, _node in graph.nodes.items():
-                if _node.is_input or getattr(_node, "is_output", False):
-                    continue
-                _prim = None
-                try:
-                    from ...synthesis.primitives import get_primitive
-
-                    _prim = get_primitive(_node.op_name)
-                except Exception:
-                    pass
-                if _prim and getattr(_prim, "has_params", False):
-                    _has_param_op = True
-                    break
+            if _get_primitive is not None:
+                for _nid, _node in graph.nodes.items():
+                    if _node.is_input or getattr(_node, "is_output", False):
+                        continue
+                    try:
+                        _prim = _get_primitive(_node.op_name)
+                    except Exception:
+                        _prim = None
+                    if _prim and getattr(_prim, "has_params", False):
+                        _has_param_op = True
+                        break
             if not _has_param_op:
                 results["funnel_counts"].setdefault("dropped_structural_gate", 0)
                 results["funnel_counts"]["dropped_structural_gate"] += 1
@@ -1477,43 +1522,6 @@ class _ExecutionScreeningMixin:
 
             # Gate 5: must contain at least one routing/MoE/sparse/compression op.
             # Models without these can never score on the 135pt efficiency budget.
-            _EFFICIENCY_OPS = frozenset(
-                {
-                    "arch_router",
-                    "compute_budget_router",
-                    "difficulty_blend_3way",
-                    "depth_weighted_proj",
-                    "block_sparse_linear",
-                    "learned_token_gate",
-                    "dual_compression_blend",
-                    "confidence_token_gate",
-                    "gated_delta",
-                    "gated_linear",
-                    "gather_topk",
-                    "hetero_moe",
-                    "latent_attention_compressor",
-                    "score_depth_blend",
-                    "depth_token_mask",
-                    "moe_2expert",
-                    "moe_topk",
-                    "sparse_bottleneck_moe",
-                    "nm_sparse_linear",
-                    "padic_gate",
-                    "adaptive_rank_gate",
-                    "relu_gated_moe",
-                    "route_lanes",
-                    "route_recursion",
-                    "route_topk",
-                    "signal_conditioned_compression",
-                    "sparse_threshold",
-                    "ternary_projection",
-                    "adjacent_token_merge",
-                    "topk_gate",
-                    "tropical_gate",
-                    "tropical_moe",
-                    "tropical_router",
-                }
-            )
             _graph_ops = {
                 node.op_name
                 for node in graph.nodes.values()
@@ -1926,8 +1934,8 @@ class _ExecutionScreeningMixin:
                         fast_lane["routing_fast_lane_pre_perplexity"] = fast_lane.get(
                             "wikitext_pre_perplexity"
                         )
-                        fast_lane["routing_fast_lane_ppl_improvement"] = (
-                            fast_lane.get("wikitext_ppl_improvement")
+                        fast_lane["routing_fast_lane_ppl_improvement"] = fast_lane.get(
+                            "wikitext_ppl_improvement"
                         )
                         fast_lane["routing_fast_lane_elapsed_ms"] = fast_lane.get(
                             "elapsed_ms"
@@ -1956,6 +1964,22 @@ class _ExecutionScreeningMixin:
                                 else ""
                             ),
                         )
+                        # HellaSwag fast lane probe (25 examples)
+                        try:
+                            from ...eval.hellaswag_eval import screening_hellaswag_eval
+
+                            hs_fl = screening_hellaswag_eval(
+                                fast_lane_model,
+                                config.vocab_size,
+                                "cpu",
+                                n_examples=25,
+                            )
+                            program_metrics["routing_fast_lane_hellaswag_acc"] = (
+                                hs_fl.get("hellaswag_acc")
+                            )
+                        except Exception as e_hs_fl:
+                            logger.debug("Fast lane HellaSwag skipped: %s", e_hs_fl)
+
                         del fast_lane_model
                     except Exception as e_fast_lane:
                         logger.warning("Routing fast lane failed: %s", e_fast_lane)

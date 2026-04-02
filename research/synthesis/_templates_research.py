@@ -16,6 +16,8 @@ from ._template_helpers import (
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
     _shuffle_wrap,
+    _tpl_norm_op_motif_residual,
+    _tpl_norm_op_residual,
 )
 from ._templates_core import tpl_residual_block, tpl_transformer_block
 
@@ -31,28 +33,10 @@ def tpl_cumulative_sequence(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → cumsum → norm → proj → residual_add.
-
-    Cumulative sum creates position-aware running statistics. Must be
-    followed by normalization to prevent unbounded growth, then projection
-    to learn from the accumulated signal.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        accumulated = graph.add_op("cumsum", [normed])
-        # Norm after cumsum to bound the growing sum
-        renormed = graph.add_op("rmsnorm", [accumulated])
-        projected = graph.add_op("linear_proj", [renormed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, projected])
-    except ValueError:
-        return projected
+    """norm → cumsum → rmsnorm → proj → residual_add."""
+    return _tpl_norm_op_residual(
+        graph, input_id, rng, weights, op_name="cumsum", post_norm=True
+    )
 
 
 def tpl_sqrt_gated_ffn(
@@ -202,35 +186,10 @@ def tpl_integral_kernel_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → integral_kernel → proj → [FFN motif] → residual_add.
-
-    Integral transform kernel: continuous-domain convolution via learned
-    kernel functions. Similar to SSM but with integral operator semantics.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        mixed = graph.add_op("integral_kernel", [normed])
-        projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    # Optional FFN after
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    """norm → integral_kernel → proj → [FFN motif] → residual_add."""
+    return _tpl_norm_op_motif_residual(
+        graph, input_id, rng, weights, op_name="integral_kernel"
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_windowed_attention(
@@ -239,40 +198,15 @@ def tpl_windowed_attention(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → sliding_window_mask → proj → [FFN motif] → residual_add.
-
-    Sliding window applies local context mixing via exponential-decay
-    weighted sum. The mask has zero learnable params, so an FFN motif
-    provides the downstream learning capacity (same pattern as
-    local_attention_block).
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        windowed = graph.add_op(
-            "sliding_window_mask",
-            [normed],
-            config={"window_size": rng.choice([8, 16, 32])},
-        )
-        projected = graph.add_op("linear_proj", [windowed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    """norm → sliding_window_mask → proj → [FFN motif] → residual_add."""
+    return _tpl_norm_op_motif_residual(
+        graph,
+        input_id,
+        rng,
+        weights,
+        op_name="sliding_window_mask",
+        op_config={"window_size": rng.choice([8, 16, 32])},
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_local_attention_block(
@@ -281,40 +215,17 @@ def tpl_local_attention_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → local_window_attn → proj → [FFN motif] → residual_add.
-
-    Local window attention: efficient O(n*w) attention within sliding windows.
-    Caps window_size to avoid Triton shared memory overflow.
-    """
+    """norm → local_window_attn → proj → [FFN motif] → residual_add."""
     D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    # Cap window_size based on dim to avoid shared memory overflow
     choices = [8, 16] if D >= 256 else [8, 16, 32]
-    try:
-        attended = graph.add_op(
-            "local_window_attn",
-            [normed],
-            config={"window_size": rng.choice(choices)},
-        )
-        projected = graph.add_op("linear_proj", [attended], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    return _tpl_norm_op_motif_residual(
+        graph,
+        input_id,
+        rng,
+        weights,
+        op_name="local_window_attn",
+        op_config={"window_size": rng.choice(choices)},
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_state_space_block(
@@ -323,34 +234,10 @@ def tpl_state_space_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → state_space → proj → [FFN motif] → residual_add.
-
-    State-space model (selective scan): linear recurrence with gated updates.
-    Efficient O(n log n) via parallel scan. Norm predecessor bounds scan input.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        ssm_out = graph.add_op("state_space", [normed])
-        projected = graph.add_op("linear_proj", [ssm_out], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    """norm → state_space → proj → [FFN motif] → residual_add."""
+    return _tpl_norm_op_motif_residual(
+        graph, input_id, rng, weights, op_name="state_space"
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_rwkv_block(
@@ -590,32 +477,10 @@ def tpl_diff_attention_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → diff_attention → proj → [FFN motif] → residual_add.
-
-    Differential attention (Microsoft, ICLR 2025): two softmax maps
-    subtracted to cancel noise. The op handles Q/K/V projection and
-    dual-softmax internally. Template provides normalized input, FFN
-    capacity, and residual connection.
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        attended = graph.add_op("diff_attention", [normed])
-        projected = graph.add_op("linear_proj", [attended], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    """norm → diff_attention → proj → [FFN motif] → residual_add."""
+    return _tpl_norm_op_motif_residual(
+        graph, input_id, rng, weights, op_name="diff_attention"
     )
-    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_graph_attention_block(
@@ -624,34 +489,10 @@ def tpl_graph_attention_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → graph_attention → proj → [FFN motif] → residual_add.
-
-    Graph attention: attention where edge weights are learned per node pair.
-    Higher capacity than softmax attention (2.19x lift in top performers).
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        attended = graph.add_op("graph_attention", [normed])
-        projected = graph.add_op("linear_proj", [attended], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    """norm → graph_attention → proj → [FFN motif] → residual_add."""
+    return _tpl_norm_op_motif_residual(
+        graph, input_id, rng, weights, op_name="graph_attention"
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 # ── Phase 3: Zero-coverage + reference templates ───────────────────
@@ -663,34 +504,10 @@ def tpl_chebyshev_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → chebyshev_spectral_mix → proj → [FFN motif] → residual_add.
-
-    Chebyshev polynomial spectral mixing — approximates arbitrary filters.
-    Requires bounded input (norm ensures |x| ≤ O(1) for polynomial stability).
-    """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        mixed = graph.add_op("chebyshev_spectral_mix", [normed])
-        projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    """norm → chebyshev_spectral_mix → proj → [FFN motif] → residual_add."""
+    return _tpl_norm_op_motif_residual(
+        graph, input_id, rng, weights, op_name="chebyshev_spectral_mix"
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_kronecker_block(
@@ -699,34 +516,16 @@ def tpl_kronecker_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → kronecker_linear → proj → [FFN motif] → residual_add.
-
-    Kronecker-factored linear: parameter-efficient structured projection.
-    Norm before Kronecker to prevent variance amplification.
-    """
+    """norm → kronecker_linear → proj → [FFN motif] → residual_add."""
     D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    try:
-        kron = graph.add_op("kronecker_linear", [normed], config={"out_dim": D})
-        projected = graph.add_op("linear_proj", [kron], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    return _tpl_norm_op_motif_residual(
+        graph,
+        input_id,
+        rng,
+        weights,
+        op_name="kronecker_linear",
+        op_config={"out_dim": D},
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
-
-    processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
 
 
 def tpl_multi_head_mix_block(
@@ -1108,6 +907,7 @@ def tpl_dual_axis_block(
     # Path A: sequence mixer on original feature order (half dim from split2).
     # Must use _BOTTLENECK_CLASSES — ops that adapt to input dim, not model_dim.
     from ._template_helpers import _BOTTLENECK_CLASSES
+
     mixer = _pick_compatible_motif_from_classes(
         graph, split_a, rng, list(_BOTTLENECK_CLASSES), weights
     )

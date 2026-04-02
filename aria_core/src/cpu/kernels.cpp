@@ -27,7 +27,33 @@
 #include "fingerprint_metrics.cpp"
 
 extern "C" {
-void aria_argsort_seq_f32(const float *x, int64_t *indices, int64_t batch, int64_t seq, int64_t dim) {}
+void aria_argsort_seq_f32(const float *x, int64_t *indices, int64_t batch, int64_t seq, int64_t dim) {
+    /* Argsort along sequence dim by L2 norm of each token. Stable insertion sort. */
+    for (int64_t b = 0; b < batch; b++) {
+        const float *xb = x + b * seq * dim;
+        int64_t *ib = indices + b * seq;
+        /* Initialize indices */
+        for (int64_t s = 0; s < seq; s++) ib[s] = s;
+        /* Compute norms inline and sort by them (stable insertion sort) */
+        for (int64_t i = 1; i < seq; i++) {
+            int64_t ki = ib[i];
+            /* Compute norm for key element */
+            float key_norm = 0.0f;
+            const float *ki_row = xb + ki * dim;
+            for (int64_t d = 0; d < dim; d++) key_norm += ki_row[d] * ki_row[d];
+            int64_t j = i - 1;
+            while (j >= 0) {
+                float j_norm = 0.0f;
+                const float *ji_row = xb + ib[j] * dim;
+                for (int64_t d = 0; d < dim; d++) j_norm += ji_row[d] * ji_row[d];
+                if (j_norm <= key_norm) break;
+                ib[j + 1] = ib[j];
+                j--;
+            }
+            ib[j + 1] = ki;
+        }
+    }
+}
 void aria_embedding_lookup_f32(const float *table, const int32_t *indices, const float *pos_embed, float *y, int64_t batch, int64_t dim, int64_t vocab_size) {
     for (int64_t i = 0; i < batch; i++) {
         int32_t idx = indices[i];

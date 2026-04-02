@@ -130,7 +130,7 @@ function ActionQueue({
   const [showActivity, setShowActivity] = useState(false);
   const eventBus = useEventBus();
   const subscribe = eventBus?.subscribe;
-  const { leaderboardEntries, learningTrajectory, mathFamilyCoverage } = useAriaData() || {};
+  const { leaderboardEntries, learningTrajectory, mathFamilyCoverage, slowPollTick } = useAriaData() || {};
   const fetchRef = useRef(0);
 
   // Fetch computed action queue
@@ -201,12 +201,12 @@ function ActionQueue({
   useEffect(() => {
     fetchActions();
     fetchAutonomyConfig();
-    const interval = setInterval(() => {
-      fetchActions();
-      if (showActivity) fetchActivity();
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [fetchActions, fetchAutonomyConfig, fetchActivity, showActivity]);
+  }, [fetchActions, fetchAutonomyConfig]);
+
+  useEffect(() => {
+    fetchActions();
+    if (showActivity) fetchActivity();
+  }, [fetchActions, fetchActivity, showActivity, slowPollTick]);
 
   useEffect(() => {
     if (typeof subscribe !== 'function') return undefined;

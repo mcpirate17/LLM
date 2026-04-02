@@ -1,20 +1,28 @@
-"""Kernel handler for grouped_linear — dispatches to aria_core.linear_grouped_f32."""
+"""Kernel handler for grouped_linear — delegates to research.mathspaces.compression."""
 
-from components.base import NativeComponentHandler, _make_weight
+import torch
+import torch.nn as nn
+from components.base import NativeComponentHandler
 
 
 class ComponentHandler(NativeComponentHandler):
-    native_op_name = "linear_grouped"
-
-    def _ensure_weights(self, x, config):
-        D = x.shape[-1]
-        self._weights["w"] = _make_weight((D, D), fan_in=D)
+    native_op_name = "grouped_linear"
 
     def _get_native_args(self, inputs, config):
         x = inputs["x"].detach().contiguous().float()
-        n_groups = config.get("n_groups", 4)
-        return (x, self._weights["w"], n_groups, None)
+        return (x,)
 
     def _fallback(self, inputs, config):
+        from research.mathspaces.compression import execute_grouped_linear
+
         x = inputs["x"]
-        return {"y": x}
+        D = x.shape[-1]
+        g = config.get("n_groups", 4)
+        group_dim = D // g
+        stub = nn.Module()
+        stub.n_groups = g
+        stub.weight = nn.Parameter(
+            torch.randn(g, group_dim, group_dim, device=x.device, dtype=x.dtype)
+            * (group_dim**-0.5)
+        )
+        return {"y": execute_grouped_linear(stub, x)}

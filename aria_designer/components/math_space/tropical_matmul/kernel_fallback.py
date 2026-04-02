@@ -1,16 +1,8 @@
-"""Kernel handler for tropical_matmul — dispatches to aria_core.tropical_matmul_f32."""
+"""Kernel handler for tropical_matmul — delegates to research.mathspaces.tropical."""
 
-import torch.nn as nn
-from components.base import SimpleBinaryOpHandler
+from runtime.fallback_templates import make_mathspace_binary_handler
 
-
-class TropicalMatmulModule(nn.Module):
-    def forward(self, a, b):
-        return a @ b  # Approximate; real tropical matmul in aria_core
-
-
-class ComponentHandler(SimpleBinaryOpHandler):
-    def __init__(self):
-        super().__init__(
-            TropicalMatmulModule, lambda a, b: a @ b, native_op_name="tropical_matmul"
-        )
+ComponentHandler = make_mathspace_binary_handler(
+    "tropical_matmul",
+    "research.mathspaces.tropical.execute_tropical_matmul",
+)

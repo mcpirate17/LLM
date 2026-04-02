@@ -1,22 +1,25 @@
-"""Kernel handler for hyp_linear — dispatches to aria_core.hyp_linear_f32."""
+"""Kernel handler for hyp_linear — delegates to research.mathspaces.hyperbolic."""
 
+import math
 import torch
-from components.base import NativeComponentHandler, _make_weight
+import torch.nn as nn
+from components.base import NativeComponentHandler
 
 
 class ComponentHandler(NativeComponentHandler):
     native_op_name = "hyp_linear"
 
-    def _ensure_weights(self, x, config):
-        D = x.shape[-1]
-        out_dim = config.get("out_dim", D)
-        self._weights["w"] = _make_weight((out_dim, D), fan_in=D)
-
     def _get_native_args(self, inputs, config):
         x = inputs["x"].detach().contiguous().float()
-        c = config.get("curvature", 1.0)
-        return (x, self._weights["w"], None, c)
+        return (x,)
 
     def _fallback(self, inputs, config):
+        from research.mathspaces.hyperbolic import execute_hyp_linear
+
         x = inputs["x"]
-        return {"y": torch.nn.functional.linear(x, self._weights["w"])}
+        D = x.shape[-1]
+        stub = nn.Module()
+        stub.weight = nn.Parameter(
+            torch.randn(D, D, device=x.device, dtype=x.dtype) / math.sqrt(D)
+        )
+        return {"y": execute_hyp_linear(stub, x)}

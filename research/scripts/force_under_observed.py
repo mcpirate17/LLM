@@ -131,6 +131,11 @@ def run_exploration(
                 for op in hits:
                     stats["rapid_screen_fail"][op] += 1
 
+        # Release model to prevent OOM on long runs
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     stats["elapsed_s"] = round(time.monotonic() - start, 1)
     stats["seeds_tried"] = seed
     return stats

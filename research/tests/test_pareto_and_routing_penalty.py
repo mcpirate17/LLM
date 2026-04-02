@@ -250,21 +250,5 @@ class TestParetoFrontier3D(unittest.TestCase):
         self.assertNotIn("worst", ids)
 
 
-class TestDashboardRoutingPenalty(unittest.TestCase):
-    """Verify scoringEngine.js has the routing overhead penalty."""
-
-    def test_penalty_function_exists(self):
-        js_path = (
-            Path(__file__).resolve().parent.parent
-            / "dashboard"
-            / "src"
-            / "utils"
-            / "scoringEngine.js"
-        )
-        content = js_path.read_text()
-        self.assertIn("computeRoutingOverheadPenalty", content)
-        self.assertIn("routingOverheadPenalty", content)
-
-
 if __name__ == "__main__":
     unittest.main()

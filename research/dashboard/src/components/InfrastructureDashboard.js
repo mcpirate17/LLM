@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiCall } from '../services/apiService';
+import { useAriaData } from '../hooks/useAriaData';
 
 const SEVERITY_COLORS = {
   critical: '#ef4444',
@@ -398,6 +399,7 @@ export default function InfrastructureDashboard() {
   const backoffRef = useRef(1000);
   const heartbeatRef = useRef(Date.now());
   const reconnectRef = useRef(null);
+  const { slowPollTick } = useAriaData();
 
   const fetchData = useCallback(async () => {
     try {
@@ -469,8 +471,10 @@ export default function InfrastructureDashboard() {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData, slowPollTick]);
+
+  useEffect(() => {
     connectSSE();
-    const interval = setInterval(fetchData, 30000);
 
     // Heartbeat staleness check
     const heartbeatInterval = setInterval(() => {
@@ -480,12 +484,11 @@ export default function InfrastructureDashboard() {
     }, 5000);
 
     return () => {
-      clearInterval(interval);
       clearInterval(heartbeatInterval);
       if (sseRef.current) sseRef.current.close();
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
     };
-  }, [fetchData, connectSSE]);
+  }, [connectSSE]);
 
   const handleCleanup = useCallback(async () => {
     try {

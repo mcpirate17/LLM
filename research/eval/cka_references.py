@@ -78,7 +78,8 @@ def load_manifest(artifact_dir: Path) -> ArtifactManifest:
         "probe_protocol_hash",
         "activation_shape",
     ]
-    missing = [k for k in required if k not in raw]
+    raw_keys = set(raw)
+    missing = [k for k in required if k not in raw_keys]
     if missing:
         raise ValueError(f"Manifest missing required fields: {missing}")
 

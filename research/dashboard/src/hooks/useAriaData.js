@@ -4,6 +4,7 @@ import { apiCall } from '../services/apiService';
 
 const AriaDataContext = createContext(null);
 const ANALYTICS_STALE_MS = 15000;
+const SLOW_TICK_DIVISOR = 3; // slowPollTick increments every Nth core poll (~9-30s)
 
 /**
  * Provider that owns the shared analytics and dashboard endpoints.
@@ -30,6 +31,10 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const [cycleHistory, setCycleHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const [pollTick, setPollTick] = useState(0);
+  const pollCountRef = useRef(0);
+  const [slowPollTick, setSlowPollTick] = useState(0);
 
   const apiBaseRef = useRef(apiBase);
   apiBaseRef.current = apiBase;
@@ -65,6 +70,12 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
 
       setLastUpdated(Date.now());
       setError(null);
+      // Increment coordinated poll ticks so subscribers refresh in sync
+      setPollTick(t => t + 1);
+      pollCountRef.current += 1;
+      if (pollCountRef.current % SLOW_TICK_DIVISOR === 0) {
+        setSlowPollTick(t => t + 1);
+      }
     } catch (err) {
       if (err.name !== 'AbortError') {
         setError(err.message);
@@ -236,6 +247,8 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       refreshAnalyticsData: fetchAnalyticsData,
       fetchTabData,
       invalidateTabCache,
+      pollTick,
+      slowPollTick,
     }}>
       {children}
     </AriaDataContext.Provider>

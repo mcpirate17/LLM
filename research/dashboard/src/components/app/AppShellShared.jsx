@@ -5,6 +5,7 @@ import InsightsPanel from '../InsightsPanel';
 import TrendCharts, { ExperimentDataTab } from '../TrendCharts';
 import StabilityQualityQuadrant from '../charts/StabilityQualityQuadrant';
 import { apiCall } from '../../services/apiService';
+import { useAriaData } from '../../hooks/useAriaData';
 
 export class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -90,6 +91,7 @@ function TabSelector({ activeKey, options, onChange }) {
 }
 
 function ReferenceBaselinesPanel() {
+  const { slowPollTick } = useAriaData();
   const [refs, setRefs] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -110,12 +112,8 @@ function ReferenceBaselinesPanel() {
     }
 
     fetchRefs();
-    const intervalId = setInterval(fetchRefs, 30000);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-  }, []);
+    return () => { cancelled = true; };
+  }, [slowPollTick]);
 
   if (loading || refs.length === 0) return null;
 

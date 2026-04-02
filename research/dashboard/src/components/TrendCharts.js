@@ -3,8 +3,8 @@ import { formatTime, formatDuration, scoreColor } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
 import { trendScore, trendScoreBreakdown } from '../utils/scoringEngine';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import { useAriaData } from '../hooks/useAriaData';
 import apiService, { apiCall } from '../services/apiService';
-import { filterRowsByQuery } from '../utils/tableFiltering';
 import { CHART_DEFAULTS, clampToScale, getFixedScale } from '../utils/chartScales';
 import ChartActions from './ChartActions';
 
@@ -20,6 +20,7 @@ export { ExperimentDataTab };
  * plus a sortable data table with per-experiment scores.
  */
 function TrendCharts({ onSelectExperiment }) {
+  const { slowPollTick } = useAriaData();
   const [trends, setTrends] = useState(null);
   const [weightEvents, setWeightEvents] = useState([]);
   const [frontier, setFrontier] = useState([]);
@@ -55,10 +56,8 @@ function TrendCharts({ onSelectExperiment }) {
   }, []);
 
   useEffect(() => {
-    fetchData(false);
-    const interval = setInterval(() => fetchData(true), 30000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    fetchData(slowPollTick > 0);
+  }, [fetchData, slowPollTick]);
 
   if (loading) {
     return (

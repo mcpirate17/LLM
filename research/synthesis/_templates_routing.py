@@ -18,6 +18,25 @@ from ._template_helpers import (
 )
 from ._templates_core import tpl_residual_block
 
+import logging
+from collections import defaultdict
+
+_logger = logging.getLogger(__name__)
+
+# Counts per-template fallbacks for observability. Read via
+# _templates_routing.TEMPLATE_FALLBACK_COUNTS from diagnostics/tests.
+TEMPLATE_FALLBACK_COUNTS: defaultdict = defaultdict(int)
+
+
+def _record_fallback(template_name: str) -> None:
+    """Record a template fallback and log at DEBUG level."""
+    TEMPLATE_FALLBACK_COUNTS[template_name] += 1
+    _logger.debug(
+        "template fallback: %s (count=%d)",
+        template_name,
+        TEMPLATE_FALLBACK_COUNTS[template_name],
+    )
+
 
 # ── Routing-First Templates (Phase 2) ──────────────────────────────
 #
@@ -66,6 +85,7 @@ def tpl_difficulty_routed_block(
         )
         difficulty = graph.add_op("token_entropy", [class_logits])
     except (ValueError, KeyError):
+        _record_fallback("tpl_difficulty_gated_residual.classify")
         return tpl_residual_block(graph, input_id, rng, weights)
 
     # Fast path: cheap linear projection (always runs on all tokens)
@@ -74,6 +94,7 @@ def tpl_difficulty_routed_block(
             "linear_proj", [normed], config={"out_dim": graph.model_dim}
         )
     except ValueError:
+        _record_fallback("tpl_difficulty_gated_residual.fast_path")
         fast_out = normed
 
     # Slow path: expensive motif (attention/SSM/MoE + FFN)

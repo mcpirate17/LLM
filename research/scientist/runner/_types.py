@@ -486,6 +486,8 @@ class ExternalEvalResult:
     scaling_confidence: Optional[str] = None
     scaling_result: Optional[Dict] = None
     scaling_d512_param_efficiency: Optional[float] = None
+    fp_gromov_delta: Optional[float] = None
+    fp_hierarchy_fitness: Optional[float] = None
     robustness_checks_attempted: int = 0
     robustness_checks_failed: int = 0
 

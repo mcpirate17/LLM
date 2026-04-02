@@ -65,23 +65,23 @@ def test_tropical_moe_forward_backward():
 
 
 def test_tropical_moe_small_experts():
-    """TropicalMoE with <=32 experts uses ModuleList path."""
+    """TropicalMoE with few experts produces correct output shape."""
     from research.mathspaces.tropical_routing import TropicalMoE
 
     moe = TropicalMoE(dim=32, n_experts=8, top_k=2)
-    assert moe.experts is not None
+    assert hasattr(moe, "expert_W")
     x = torch.randn(1, 4, 32)
     out = moe(x)
     assert out.shape == (1, 4, 32)
 
 
 def test_tropical_moe_large_experts():
-    """TropicalMoE with >32 experts uses batched matmul path."""
+    """TropicalMoE with many experts produces correct output shape."""
     from research.mathspaces.tropical_routing import TropicalMoE
 
     moe = TropicalMoE(dim=32, n_experts=64, top_k=2)
-    assert moe.experts is None
-    assert hasattr(moe, "expert_weights")
+    assert hasattr(moe, "expert_W")
+    assert moe.expert_W.shape == (64, 32, 32)
     x = torch.randn(1, 4, 32)
     out = moe(x)
     assert out.shape == (1, 4, 32)

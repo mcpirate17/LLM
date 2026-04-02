@@ -12,9 +12,9 @@ from typing import Dict, List, Sequence
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from research.defaults import VOCAB_SIZE
+from .utils import measure_loss as _measure_loss_util
 
 logger = logging.getLogger(__name__)
 
@@ -112,18 +112,4 @@ def _measure_loss(
     vocab_size: int,
 ) -> float | None:
     """Measure average cross-entropy loss over batches."""
-    losses = []
-    with torch.no_grad():
-        for batch in input_batches:
-            try:
-                batch = batch.to(device)
-                logits = model(batch)
-                loss = F.cross_entropy(
-                    logits[:, :-1].reshape(-1, vocab_size),
-                    batch[:, 1:].reshape(-1),
-                )
-                if torch.isfinite(loss):
-                    losses.append(loss.item())
-            except Exception:
-                continue
-    return sum(losses) / len(losses) if losses else None
+    return _measure_loss_util(model, input_batches, device, vocab_size)

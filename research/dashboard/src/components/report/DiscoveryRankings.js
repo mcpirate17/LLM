@@ -2,9 +2,10 @@ import React, { useState, useEffect, useMemo } from 'react';
 import useCopyToClipboard from '../../hooks/useCopyToClipboard';
 import { discoveryScore, discoveryScoreBreakdown, promotionEvidence } from '../../utils/scoringEngine';
 import { scoreColor } from '../../utils/format';
-import { reliabilityColor } from '../../utils/colors';
+import { MetricChipList } from '../shared/MetricChipBadge';
 import RatingBadge from './RatingBadge';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 import {
   compressionSummary, metricChips, qkvUsageDescriptor,
   resolveLossRatio,
@@ -33,34 +34,8 @@ export default function DiscoveryRankings({
     } catch {}
     return 'grouped';
   });
-  const [sortKey, setSortKey] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(REPORT_DISCOVERY_SORT_PREFS_KEY) || '{}');
-      const validKeys = new Set([...DISC_COLUMNS.map((column) => column.key), '_ratingOrder']);
-      if (typeof stored.sortKey === 'string' && validKeys.has(stored.sortKey)) {
-        return stored.sortKey;
-      }
-    } catch {}
-    return '_score';
-  });
-  const [sortDesc, setSortDesc] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(REPORT_DISCOVERY_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortDesc === 'boolean') {
-        return stored.sortDesc;
-      }
-    } catch {}
-    return true;
-  });
-  const [filterQuery, setFilterQuery] = useState('');
   const [copiedValue, copyText] = useCopyToClipboard();
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(REPORT_DISCOVERY_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
-    } catch {}
-  }, [sortKey, sortDesc]);
 
   useEffect(() => {
     try {
@@ -80,30 +55,8 @@ export default function DiscoveryRankings({
   const rerunRows = expandedRows.filter(p => Number(p.group_repeat_count || p.repeat_count || 1) > 1).length;
   const rerunRatio = expandedTotal > 0 ? Math.round((rerunRows / expandedTotal) * 100) : 0;
 
-  const sortAriaValue = (columnKey) => {
-    const normalized = columnKey === 'rating' ? '_ratingOrder' : columnKey;
-    if (sortKey !== normalized) return 'none';
-    return sortDesc ? 'descending' : 'ascending';
-  };
-
-  const handleSort = (key) => {
-    if (key === 'rating') key = '_ratingOrder';
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
-
-  const filtered = useMemo(() => (
-    filterRowsByQuery(sourceRows, filterQuery, [
-      'graph_fingerprint',
-      'result_id',
-      'display_name',
-      'architecture_family',
-      'most_similar_to',
-    ])
-  ), [sourceRows, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const aug = filtered.map(p => {
+  const augmentedRows = useMemo(() => (
+    sourceRows.map(p => {
       const repeatCount = Number(p.repeat_count || p.group_repeat_count || 1);
       const repeatIndex = Number(p.group_repeat_index || 1);
       const lr = resolveLossRatio(p) ?? p.loss_ratio;
@@ -137,21 +90,24 @@ export default function DiscoveryRankings({
         _reproPacket: reproPacket,
         _qkvDescriptor: qkv,
       };
-    });
-    aug.sort((a, b) => {
-      let va, vb;
-      if (sortKey === 'graph_fingerprint' || sortKey === 'most_similar_to') {
-        va = a[sortKey] || ''; vb = b[sortKey] || '';
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      va = a[sortKey]; vb = b[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return sortDesc ? vb - va : va - vb;
-    });
-    return aug;
-  }, [filtered, sortKey, sortDesc]);
+    })
+  ), [sourceRows]);
+
+  const getSortValue = (row, key) => (key === 'rating' ? row._ratingOrder : row[key]);
+
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows, handleSort } = useInteractiveTable({
+    rows: augmentedRows,
+    filterFields: ['graph_fingerprint', 'result_id', 'display_name', 'architecture_family', 'most_similar_to'],
+    initialSortKey: '_score',
+    initialSortDesc: true,
+    storageKey: REPORT_DISCOVERY_SORT_PREFS_KEY,
+    getSortValue,
+  });
+
+  const sortAriaValue = (columnKey) => {
+    if (sortKey !== columnKey) return 'none';
+    return sortDesc ? 'descending' : 'ascending';
+  };
 
   return (
     <div className="card">
@@ -239,17 +195,13 @@ export default function DiscoveryRankings({
                   style={{ padding: '8px 6px', color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                 >
                   {col.label}
-                  {(sortKey === col.key || (col.key === 'rating' && sortKey === '_ratingOrder')) && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDesc ? '\u25BC' : '\u25B2'}
-                    </span>
-                  )}
+                  <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {sorted.map((p, i) => {
+            {sortedRows.map((p, i) => {
               const gate = decisionGate(p);
               const lrRaw = resolveLossRatio(p) ?? p.loss_ratio;
               const lr = Number.isFinite(Number(lrRaw)) ? Number(lrRaw) : null;
@@ -364,25 +316,7 @@ export default function DiscoveryRankings({
                   </div>
                 </td>
                 <td style={{ padding: '6px' }}>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
-                    {(p._metricQuality || []).map(chip => (
-                      <span
-                        key={`${p.result_id || i}-${chip.label}`}
-                        title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                        style={{
-                          fontSize: 10,
-                          padding: '1px 5px',
-                          borderRadius: 4,
-                          border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                          color: reliabilityColor(chip.reliability),
-                          background: `${reliabilityColor(chip.reliability)}22`,
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {chip.label}: {chip.source}
-                      </span>
-                    ))}
-                  </div>
+                  <MetricChipList chips={p._metricQuality || []} />
                   <div
                     style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: p._promotionEvidence?.color || 'var(--text-muted)' }}
                     title={`Evidence checks ${p._promotionEvidence?.evidenceCount || 0}/${p._promotionEvidence?.totalChecks || 0}`}

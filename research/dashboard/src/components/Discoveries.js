@@ -2,6 +2,7 @@ import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { scoreColor } from '../utils/format';
 import { lossColor, noveltyColor, reliabilityColor } from '../utils/colors';
+import { useAriaData } from '../hooks/useAriaData';
 import { candidateScore, TIER_COLORS, TIER_LABELS, TIER_ORDER, bestLoss, percentOfReference } from '../utils/scoringEngine';
 import {
   ExpandedDetail,
@@ -10,6 +11,8 @@ import {
   StatusBadge,
   SummaryBar,
 } from './discoveries/DiscoveryUiBits';
+import SortIndicator from './shared/SortIndicator';
+import useVirtualRows from '../hooks/useVirtualRows';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
 const QUALITY_FLOOR_THRESHOLD = 0.8;
@@ -77,6 +80,8 @@ function Discoveries({
   eligibilityByResultId,
   onOpenInDesigner,
 }) {
+  const { slowPollTick } = useAriaData();
+
   const isPinnedReferenceRow = useCallback((entry) => (
     Boolean(entry?.is_reference)
     || String(entry?.model_source || '').toLowerCase() === 'reference'
@@ -206,9 +211,10 @@ function Discoveries({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       // Only update state if data actually changed — prevents scroll reset
-      const jsonStr = JSON.stringify(json);
-      if (jsonStr !== lastDataRef.current) {
-        lastDataRef.current = jsonStr;
+      const entries = json?.entries || [];
+      const fingerprint = `${entries.length}:${entries[0]?.entry_id || ''}:${entries[entries.length - 1]?.entry_id || ''}:${entries[0]?.composite_score ?? ''}`;
+      if (fingerprint !== lastDataRef.current) {
+        lastDataRef.current = fingerprint;
         setData(json);
         setLastUpdated(new Date());
       }
@@ -220,10 +226,8 @@ function Discoveries({
   }, [activeTier, debouncedSearchQuery]);
 
   useEffect(() => {
-    fetchData(false);
-    const interval = setInterval(() => fetchData(true), 60000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    fetchData(slowPollTick > 0);
+  }, [fetchData, slowPollTick]);
 
   const handleSort = (key) => {
     if (key === '_actions') return;
@@ -363,11 +367,9 @@ function Discoveries({
     return refs;
   }, [data?.references]);
 
-  const visibilityFiltered = useMemo(() => sorted, [sorted]);
-
   const failedFiltered = useMemo(() => {
-    if (!hideFailed) return visibilityFiltered;
-    return visibilityFiltered.filter(e => {
+    if (!hideFailed) return sorted;
+    return sorted.filter(e => {
       if (e.is_reference) return true;
       const tier = String(e.tier || '').toLowerCase();
       // Tier-based failures
@@ -379,12 +381,12 @@ function Discoveries({
       if (tier === 'validation' && e.validation_baseline_ratio != null && !e.validation_passed) return false;
       return true;
     });
-  }, [visibilityFiltered, hideFailed]);
+  }, [sorted, hideFailed]);
 
   const failedHiddenCount = useMemo(() => {
     if (!hideFailed) return 0;
-    return Math.max(0, (visibilityFiltered?.length || 0) - (failedFiltered?.length || 0));
-  }, [hideFailed, visibilityFiltered, failedFiltered]);
+    return Math.max(0, (sorted?.length || 0) - (failedFiltered?.length || 0));
+  }, [hideFailed, sorted, failedFiltered]);
 
   const qualityFiltered = useMemo(() => {
     if (!qualityFloorEnabled) return failedFiltered;
@@ -401,6 +403,13 @@ function Discoveries({
   }, [qualityFloorEnabled, failedFiltered, qualityFiltered]);
 
   const filtered = qualityFiltered;
+
+  const { containerProps: virtualContainerProps, visibleRows, topPadding, bottomPadding, startIndex } = useVirtualRows({
+    rows: filtered,
+    rowHeight: 40,
+    overscan: 10,
+    containerHeight: 700,
+  });
 
   const counts = data?.counts || data?.tier_counts || {};
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
@@ -656,7 +665,7 @@ function Discoveries({
           )}
         </div>
       ) : (
-        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+        <div {...virtualContainerProps} style={{ ...virtualContainerProps.style, overflowX: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
           <table className="data-table table-wide">
             <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
@@ -678,18 +687,16 @@ function Discoveries({
                     }}
                   >
                     {col.label}
-                    {sortKey === col.key && (
-                      <span style={{ marginLeft: 4, fontSize: 10 }}>
-                        {sortDesc ? '\u25BC' : '\u25B2'}
-                      </span>
-                    )}
+                    <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.map((entry, i) => {
-                const rowId = entry.entry_id || entry.result_id || i;
+              {topPadding > 0 && <tr style={{ height: topPadding }} />}
+              {visibleRows.map((entry, i) => {
+                const globalIndex = startIndex + i;
+                const rowId = entry.entry_id || entry.result_id || globalIndex;
                 const isExpanded = expandedRowId === rowId;
                 const isHighlighted = highlightId && entry.result_id === highlightId;
                 const isQueued = !!entry.result_id && queuedSet.has(entry.result_id);
@@ -697,10 +704,10 @@ function Discoveries({
                 const eligibility = eligibilityByResultId?.[entry.result_id] || null;
                 const displayName = entry.display_name || entry.architecture_desc || entry.graph_fingerprint?.slice(0, 10) || '--';
                 return (
-                  <DiscoveryRow 
+                  <DiscoveryRow
                     key={rowId}
                     entry={entry}
-                    i={i}
+                    i={globalIndex}
                     rowId={rowId}
                     isExpanded={isExpanded}
                     isHighlighted={isHighlighted}
@@ -729,6 +736,7 @@ function Discoveries({
                   />
                 );
               })}
+              {bottomPadding > 0 && <tr style={{ height: bottomPadding }} />}
             </tbody>
           </table>
         </div>

@@ -122,6 +122,13 @@ def _evaluate_mode_eligibility(
 ) -> Optional[Dict[str, Any]]:
     if mode == "investigation":
         if tier == "screening":
+            if lb.get("investigation_loss_ratio") is not None:
+                return {
+                    "result_id": result_id,
+                    "reason": "already_investigated_unchanged",
+                    "detail": "Investigation evidence already exists for this screening-tier result.",
+                    "tier": tier,
+                }
             return None
         return {
             "result_id": result_id,

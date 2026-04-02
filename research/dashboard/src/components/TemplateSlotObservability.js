@@ -1,15 +1,8 @@
 import React from 'react';
 import { useAriaData } from '../hooks/useAriaData';
+import { fmtPct as _fmtPct, fmtLoss } from '../utils/format';
 
-function fmtPct(value) {
-  if (value == null || !Number.isFinite(Number(value))) return '—'
-  return `${(Number(value) * 100).toFixed(1)}%`
-}
-
-function fmtLoss(value) {
-  if (value == null || !Number.isFinite(Number(value))) return '—'
-  return Number(value).toFixed(3)
-}
+const fmtPct = (v) => _fmtPct(v, 1);
 
 function TemplateRow({ row, tone = 'good' }) {
   const color = tone === 'bad' ? 'var(--accent-red)' : tone === 'warn' ? 'var(--accent-yellow)' : 'var(--accent-green)'

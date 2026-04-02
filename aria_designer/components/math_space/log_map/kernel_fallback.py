@@ -1,18 +1,8 @@
-"""Kernel handler for log_map — dispatches to aria_core.log_map_f32."""
+"""Kernel handler for log_map — delegates to research.mathspaces.hyperbolic."""
 
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "log_map"
-
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        y = inputs.get("y", x).detach().contiguous().float()
-        c = config.get("curvature", 1.0)
-        return (x, y, c)
-
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        y = inputs.get("y", x)
-        return {"y": y - x}
+ComponentHandler = make_mathspace_unary_handler(
+    "log_map",
+    "research.mathspaces.hyperbolic.execute_log_map",
+)

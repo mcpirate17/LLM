@@ -84,9 +84,19 @@ def _corpus_type_from_config(config: Any) -> str:
     return "unknown"
 
 
+_ref_losses_cache: Dict[str, float] = {}
+_ref_losses_ts: float = 0.0
+_REF_LOSSES_TTL: float = 300.0
+
+
 def get_reference_losses(db_path: str) -> Dict[str, float]:
-    """Pull latest reference losses for gate calibration."""
+    """Pull latest reference losses for gate calibration (cached 300s)."""
+    global _ref_losses_cache, _ref_losses_ts
     import sqlite3
+
+    now = time.monotonic()
+    if _ref_losses_cache and (now - _ref_losses_ts) < _REF_LOSSES_TTL:
+        return _ref_losses_cache
 
     ref: Dict[str, float] = {}
     try:
@@ -106,6 +116,8 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
         conn.close()
     except Exception as exc:
         logger.debug("get_reference_losses failed: %s", exc)
+    _ref_losses_cache = ref
+    _ref_losses_ts = now
     return ref
 
 
@@ -414,7 +426,7 @@ def compute_seed_metrics(
     is_unstable = False
 
     if len(loss_ratios) > 1:
-        mean_lr = sum(loss_ratios) / len(loss_ratios)
+        mean_lr = val_loss_ratio
         variance = sum((lr - mean_lr) ** 2 for lr in loss_ratios) / len(loss_ratios)
         multi_seed_std = variance**0.5
         if variance > 0.15:
@@ -424,16 +436,17 @@ def compute_seed_metrics(
 
     # Init sensitivity: std between default and xavier seeds
     init_sensitivity_std = None
-    default_losses = [
-        r["loss_ratio"]
-        for r in seed_results
-        if r.get("init_scheme") == "default" and r.get("loss_ratio") is not None
-    ]
-    xavier_losses = [
-        r["loss_ratio"]
-        for r in seed_results
-        if r.get("init_scheme") == "xavier_uniform" and r.get("loss_ratio") is not None
-    ]
+    default_losses: List[float] = []
+    xavier_losses: List[float] = []
+    for r in seed_results:
+        lr = r.get("loss_ratio")
+        if lr is None:
+            continue
+        scheme = r.get("init_scheme")
+        if scheme == "default":
+            default_losses.append(lr)
+        elif scheme == "xavier_uniform":
+            xavier_losses.append(lr)
     if default_losses and xavier_losses:
         default_mean = sum(default_losses) / len(default_losses)
         xavier_mean = sum(xavier_losses) / len(xavier_losses)
@@ -964,6 +977,130 @@ def _evaluate_investigation_benchmarks(
     except Exception as exc:
         logger.debug("Investigation TinyStories eval skipped: %s", exc)
 
+    try:
+        from ...eval.hellaswag_eval import evaluate_hellaswag
+
+        hs_result = evaluate_hellaswag(
+            model,
+            config.vocab_size,
+            dev,
+            n_examples=100,
+        )
+        result["hellaswag_acc"] = hs_result.get("hellaswag_acc")
+        result["hellaswag_status"] = hs_result.get("hellaswag_status")
+        if result["hellaswag_acc"] is not None:
+            logger.info(
+                "Investigation HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
+                result["hellaswag_acc"] * 100,
+                hs_result.get("hellaswag_correct", 0),
+                hs_result.get("hellaswag_total", 0),
+                hs_result.get("elapsed_ms", 0),
+            )
+    except Exception as exc:
+        logger.debug("Investigation HellaSwag eval skipped: %s", exc)
+
+    # BLiMP linguistic minimal pairs (investigation: 50 per subtask)
+    try:
+        from ...eval.blimp_eval import evaluate_blimp
+
+        blimp = evaluate_blimp(model, config.vocab_size, dev, n_per_subtask=50)
+        result["blimp_overall_accuracy"] = blimp.overall_accuracy
+        result["blimp_subtask_accuracies_json"] = json.dumps(blimp.subtask_accuracies)
+        result["blimp_n_subtasks"] = blimp.n_subtasks
+        result["blimp_status"] = blimp.status
+        if blimp.overall_accuracy > 0:
+            logger.info(
+                "Investigation BLiMP acc=%.1f%% (%d subtasks, %d examples, %.0fms)",
+                blimp.overall_accuracy * 100,
+                blimp.n_subtasks,
+                blimp.n_examples,
+                blimp.elapsed_ms,
+            )
+    except Exception as exc:
+        logger.debug("Investigation BLiMP eval skipped: %s", exc)
+
+    # Binding probes: AR + induction + binding range (full suite at investigation)
+    try:
+        from ...eval.associative_recall import associative_recall_score
+        from ...eval.induction_probe import induction_score
+        from ...eval.binding_range import binding_range_profile
+
+        ar = associative_recall_score(
+            model, n_pairs=20, n_eval=200, n_train_steps=500, batch_size=16, device=dev
+        )
+        result["ar_auc"] = ar.auc
+        result["ar_final_acc"] = ar.final_acc
+        result["ar_timed_out"] = ar.timed_out
+        result["ar_above_chance"] = ar.above_chance
+
+        ind = induction_score(
+            model,
+            gaps=(4, 8, 16, 32, 64),
+            n_train_steps=1000,
+            n_eval=200,
+            batch_size=32,
+            device=dev,
+        )
+        result["induction_auc"] = ind.auc
+        result["induction_gap_accuracies"] = ind.gap_accuracies
+
+        br = binding_range_profile(
+            model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=dev
+        )
+        result["binding_auc"] = br.auc
+        result["binding_distance_accuracies"] = br.distance_accuracies
+
+        bc = 0.4 * ar.auc + 0.3 * ind.auc + 0.3 * br.auc
+        result["binding_composite"] = round(bc, 4)
+
+        # 3-signal AND: penalty only when ALL signals near zero (conv-3 case).
+        # Mamba/RWKV fail induction+AR but may score on binding_auc — no penalty.
+        from ...scientist.thresholds import (
+            BINDING_AR_SOFT_GATE,
+            BINDING_INDUCTION_SOFT_GATE,
+            BINDING_BINDING_AUC_SOFT_GATE,
+        )
+
+        result["local_only"] = int(
+            ar.auc < BINDING_AR_SOFT_GATE
+            and ind.auc < BINDING_INDUCTION_SOFT_GATE
+            and br.auc < BINDING_BINDING_AUC_SOFT_GATE
+        )
+
+        logger.info(
+            "Investigation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local_only=%s "
+            "(%.0f+%.0f+%.0fms)",
+            ar.auc,
+            ind.auc,
+            br.auc,
+            bc,
+            bool(result["local_only"]),
+            ar.elapsed_ms,
+            ind.elapsed_ms,
+            br.elapsed_ms,
+        )
+
+        # Discovery: high AR without standard attention is a priority find
+        _attn_ops = {
+            "softmax_attention",
+            "linear_attention",
+            "diff_attention",
+            "graph_attention",
+            "local_window_attention",
+        }
+        _graph_str = graph_json_str or ""
+        _has_attn = any(op in _graph_str for op in _attn_ops)
+        if ar.auc > 0.15 and not _has_attn:
+            logger.warning(
+                "DISCOVERY: High AR score without full attention — "
+                "ar_auc=%.3f, model_source=%s, graph=%s",
+                ar.auc,
+                model_source,
+                _graph_str[:200],
+            )
+    except Exception as exc:
+        logger.debug("Investigation binding probes skipped: %s", exc)
+
     del model
     return result
 
@@ -1094,6 +1231,19 @@ def _record_investigation_result(
             best_tp_json = existing_inv["investigation_best_training"] or best_tp_json
             investigation_passed = True
 
+    # HellaSwag hard gate: DISABLED — doesn't differentiate at nano scale.
+
+    # Binding probe: informational logging only. No hard gate — probes are
+    # too noisy at nano scale (Mamba fluctuates 0.01-0.13 across runs).
+    # The soft penalty in compute_composite_v7 handles score reduction.
+    _bp_ind = benchmark_result.get("induction_auc")
+    if _bp_ind is not None and _bp_ind < 0.03:
+        logger.info(
+            "Binding probe: %s ind=%.3f (local-only signal, soft penalty applied in scoring)",
+            source_result_id[:8],
+            _bp_ind,
+        )
+
     trajectory_fields = trajectory_probe_fields(benchmark_result)
     nb.upsert_leaderboard(
         result_id=source_result_id,
@@ -1126,6 +1276,12 @@ def _record_investigation_result(
         depth_savings_ratio=source.get("depth_savings_ratio"),
         compression_ratio=source.get("compression_ratio"),
         loss_improvement_rate=source.get("loss_improvement_rate"),
+        hellaswag_acc=benchmark_result.get("hellaswag_acc"),
+        ar_auc=benchmark_result.get("ar_auc"),
+        induction_auc=benchmark_result.get("induction_auc"),
+        binding_auc=benchmark_result.get("binding_auc"),
+        binding_composite=benchmark_result.get("binding_composite"),
+        local_only=benchmark_result.get("local_only"),
         **trajectory_fields,
     )
 
@@ -1156,6 +1312,9 @@ def _record_investigation_result(
         wikitext_ppl_500=benchmark_result.get("wikitext_ppl_500"),
         wikitext_improvement_ratio=benchmark_result.get("wikitext_improvement_ratio"),
         wikitext_eval_steps=benchmark_result.get("wikitext_eval_steps"),
+        hellaswag_acc=benchmark_result.get("hellaswag_acc"),
+        hellaswag_status=benchmark_result.get("hellaswag_status"),
+        hellaswag_n_examples=benchmark_result.get("hellaswag_total"),
     )
     source_updates = {
         "wikitext_perplexity": benchmark_result.get("inv_wikitext_ppl"),
@@ -1166,6 +1325,17 @@ def _record_investigation_result(
             "wikitext_improvement_ratio"
         ),
         "wikitext_eval_steps": benchmark_result.get("wikitext_eval_steps"),
+        "hellaswag_acc": benchmark_result.get("hellaswag_acc"),
+        "hellaswag_status": benchmark_result.get("hellaswag_status"),
+        "hellaswag_n_examples": benchmark_result.get("hellaswag_total"),
+        "ar_auc": benchmark_result.get("ar_auc"),
+        "ar_final_acc": benchmark_result.get("ar_final_acc"),
+        "ar_timed_out": benchmark_result.get("ar_timed_out"),
+        "ar_above_chance": benchmark_result.get("ar_above_chance"),
+        "induction_auc": benchmark_result.get("induction_auc"),
+        "binding_auc": benchmark_result.get("binding_auc"),
+        "binding_composite": benchmark_result.get("binding_composite"),
+        "local_only": benchmark_result.get("local_only"),
     }
     set_parts = []
     set_params: List[Any] = []
@@ -1488,6 +1658,88 @@ def run_trajectory_probe(
             checkpoints=(200, 500, 1000, 2000, 4000),
             seq_len=128,
         )
+
+        # HellaSwag validation probe (200 examples)
+        _val_hellaswag_acc = None
+        try:
+            from ...eval.hellaswag_eval import evaluate_hellaswag
+
+            hs_val = evaluate_hellaswag(
+                traj_model, config.vocab_size, dev_str, n_examples=200
+            )
+            _val_hellaswag_acc = hs_val.get("hellaswag_acc")
+            if _val_hellaswag_acc is not None:
+                logger.info(
+                    "Validation HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
+                    _val_hellaswag_acc * 100,
+                    hs_val.get("hellaswag_correct", 0),
+                    hs_val.get("hellaswag_total", 0),
+                    hs_val.get("elapsed_ms", 0),
+                )
+        except Exception as exc_hs:
+            logger.debug("Validation HellaSwag eval skipped: %s", exc_hs)
+
+        # Validation binding probes (full suite, more examples than investigation)
+        _val_ar_auc = None
+        _val_ind_auc = None
+        _val_binding_auc = None
+        _val_local_only = None
+        try:
+            from ...eval.associative_recall import associative_recall_score
+            from ...eval.induction_probe import induction_score as _ind_score
+            from ...eval.binding_range import binding_range_profile
+
+            _v_ar = associative_recall_score(
+                traj_model,
+                n_pairs=20,
+                n_eval=200,
+                n_train_steps=500,
+                batch_size=16,
+                device=dev_str,
+            )
+            _val_ar_auc = _v_ar.auc
+
+            _v_ind = _ind_score(
+                traj_model,
+                gaps=(4, 8, 16, 32, 64),
+                n_train_steps=1000,
+                n_eval=200,
+                batch_size=32,
+                device=dev_str,
+            )
+            _val_ind_auc = _v_ind.auc
+
+            _v_br = binding_range_profile(
+                traj_model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=dev_str
+            )
+            _val_binding_auc = _v_br.auc
+
+            from ...scientist.thresholds import (
+                BINDING_AR_SOFT_GATE,
+                BINDING_INDUCTION_SOFT_GATE,
+                BINDING_BINDING_AUC_SOFT_GATE,
+            )
+
+            _val_local_only = int(
+                _val_ar_auc < BINDING_AR_SOFT_GATE
+                and _val_ind_auc < BINDING_INDUCTION_SOFT_GATE
+                and _val_binding_auc < BINDING_BINDING_AUC_SOFT_GATE
+            )
+            _val_bc = 0.4 * _val_ar_auc + 0.3 * _val_ind_auc + 0.3 * _val_binding_auc
+            logger.info(
+                "Validation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local=%s (%.0f+%.0f+%.0fms)",
+                _val_ar_auc,
+                _val_ind_auc,
+                _val_binding_auc,
+                _val_bc,
+                bool(_val_local_only),
+                _v_ar.elapsed_ms,
+                _v_ind.elapsed_ms,
+                _v_br.elapsed_ms,
+            )
+        except Exception as exc_bp:
+            logger.debug("Validation binding probes skipped: %s", exc_bp)
+
         del traj_model
         clear_gpu_memory()
 
@@ -1511,6 +1763,29 @@ def run_trajectory_probe(
                 update["steps_to_divergence"] = steps_div
             if ppl_500 is not None:
                 update["ppl_500"] = ppl_500
+            if _val_hellaswag_acc is not None:
+                update["hellaswag_acc"] = _val_hellaswag_acc
+            # Binding probe data
+            if _val_ar_auc is not None:
+                update["ar_auc"] = _val_ar_auc
+                update["ar_final_acc"] = _v_ar.final_acc
+                update["ar_timed_out"] = int(_v_ar.timed_out)
+                update["ar_above_chance"] = int(_v_ar.above_chance)
+            if _val_ind_auc is not None:
+                update["induction_auc"] = _val_ind_auc
+            if _val_binding_auc is not None:
+                update["binding_auc"] = _val_binding_auc
+            if _val_local_only is not None:
+                update["local_only"] = _val_local_only
+                update["binding_composite"] = round(
+                    0.4 * (_val_ar_auc or 0)
+                    + 0.3 * (_val_ind_auc or 0)
+                    + 0.3 * (_val_binding_auc or 0),
+                    4,
+                )
+            # No hard gate — soft penalty in scoring handles local-only models.
+            # Mamba (frontier SSM) fluctuates across the induction threshold,
+            # so a hard gate would produce false positives at nano scale.
             if update:
                 nb.promote_to_tier(entry_id=entry["entry_id"], tier=tier, **update)
                 row = nb.conn.execute(

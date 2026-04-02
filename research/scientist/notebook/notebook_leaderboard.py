@@ -8,7 +8,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
-from ..leaderboard_scoring import build_score_kwargs
+from ..leaderboard_scoring import build_score_kwargs, compute_composite
 from ..thresholds import TIER_RANK
 
 _LEADERBOARD_MANAGED_COLUMNS = frozenset(
@@ -251,7 +251,7 @@ class _LeaderboardMixin:
             score_kwargs["replication_best_vs_mean_gap"] = agg.get(
                 "replication_best_vs_mean_gap"
             )
-        composite = self.compute_composite_score(**score_kwargs)
+        composite = compute_composite(**score_kwargs)
 
         # Compute efficiency_multiple from program_results operational metrics.
         # MoE models: skip param count penalty (active params < total params).
@@ -623,11 +623,11 @@ class _LeaderboardMixin:
             sets.append(f"{col} = ?")
             params.append(val)
 
-        # Recompute composite score using canonical v7 scoring path
+        # Recompute composite score using active scoring version
         from ..leaderboard_scoring import (
             _PR_SELECT_COLS,
             _pr_dict_to_score_kwargs,
-            compute_composite_v7,
+            compute_composite,
         )
 
         row = self.conn.execute(
@@ -653,7 +653,7 @@ class _LeaderboardMixin:
             score_kw = _pr_dict_to_score_kwargs(
                 pr_d, d, is_reference=bool(d.get("is_reference"))
             )
-            composite = compute_composite_v7(**score_kw)
+            composite = compute_composite(**score_kw)
             if isinstance(composite, dict):
                 composite = composite["composite_score"]
             sets.append("composite_score = ?")

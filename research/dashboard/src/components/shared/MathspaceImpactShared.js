@@ -1,36 +1,20 @@
-import React, { useState, useMemo } from 'react';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import React from 'react';
+import useInteractiveTable from './useInteractiveTable';
+import SortIndicator from './SortIndicator';
 
 export function MathspaceImpact({ data }) {
   const rows = Array.isArray(data?.by_operator) ? data.by_operator : [];
   const families = Array.isArray(data?.by_family) ? data.by_family : [];
   const topTrust = Array.isArray(data?.top_trustworthy_operators) ? data.top_trustworthy_operators : [];
   const totals = data?.totals || {};
-  const [sortKey, setSortKey] = useState('n_tested');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
-
-  const filtered = useMemo(() => (
-    filterRowsByQuery(rows, filterQuery, ['op_name'])
-  ), [rows, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
-  };
+  const {
+    sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort,
+  } = useInteractiveTable({
+    rows,
+    filterFields: ['op_name'],
+    initialSortKey: 'n_tested',
+    initialSortDesc: true,
+  });
 
   if (!data || data.available === false || rows.length === 0) {
     return (
@@ -84,15 +68,7 @@ export function MathspaceImpact({ data }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter operators"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <div style={{ maxHeight: 220, overflow: 'auto', marginBottom: 10 }}>
@@ -100,25 +76,25 @@ export function MathspaceImpact({ data }) {
           <thead>
             <tr>
               <th onClick={() => handleSort('op_name')} style={{ cursor: 'pointer' }}>
-                Operator{sortKey === 'op_name' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Operator<SortIndicator active={sortKey === 'op_name'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('n_tested')} style={{ cursor: 'pointer' }}>
-                Tested{sortKey === 'n_tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Tested<SortIndicator active={sortKey === 'n_tested'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('stage1_pass_rate')} style={{ cursor: 'pointer' }}>
-                S1 %{sortKey === 'stage1_pass_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                S1 %<SortIndicator active={sortKey === 'stage1_pass_rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('validation_pass_rate')} style={{ cursor: 'pointer' }}>
-                Validation %{sortKey === 'validation_pass_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Validation %<SortIndicator active={sortKey === 'validation_pass_rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('baseline_win_rate')} style={{ cursor: 'pointer' }}>
-                Baseline Win %{sortKey === 'baseline_win_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Baseline Win %<SortIndicator active={sortKey === 'baseline_win_rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('trust_score')} style={{ cursor: 'pointer' }}>
-                Trust %{sortKey === 'trust_score' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Trust %<SortIndicator active={sortKey === 'trust_score'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('avg_novelty_score')} style={{ cursor: 'pointer' }}>
-                Avg Novelty{sortKey === 'avg_novelty_score' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Avg Novelty<SortIndicator active={sortKey === 'avg_novelty_score'} desc={sortDesc} />
               </th>
             </tr>
           </thead>

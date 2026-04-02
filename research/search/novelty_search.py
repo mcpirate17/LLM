@@ -246,12 +246,11 @@ class BehaviorArchive:
         if median_dist <= 0:
             return self.top_by_fitness(k)
 
-        # For each individual, count neighbors within median_dist radius
-        neighbor_counts: List[int] = []
-        for i in range(n):
-            diff = fm[:n] - fm[i]
-            dists = np.sqrt(np.mean(np.square(diff), axis=1))
-            neighbor_counts.append(int(np.sum(dists < median_dist)) - 1)  # exclude self
+        # Count neighbors within median_dist radius (vectorized)
+        fm_n = fm[:n]
+        diffs = fm_n[:, np.newaxis, :] - fm_n[np.newaxis, :, :]
+        dist_matrix = np.sqrt(np.mean(np.square(diffs), axis=2))
+        neighbor_counts = (np.sum(dist_matrix < median_dist, axis=1) - 1).tolist()
 
         # Score: high fitness, low neighbor count (under-explored)
         candidates: List[Tuple[float, int]] = []

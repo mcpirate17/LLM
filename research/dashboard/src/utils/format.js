@@ -40,3 +40,8 @@ export function fmtPct(value, digits = 0) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   return `${(Number(value) * 100).toFixed(digits)}%`;
 }
+
+export function fmtLoss(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return Number(value).toFixed(3);
+}

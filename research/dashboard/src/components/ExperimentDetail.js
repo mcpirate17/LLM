@@ -5,7 +5,8 @@ import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
 import { lossColor, noveltyColor } from '../utils/colors';
 import { candidateScore } from '../utils/scoringEngine';
-import { filterRowsByQuery } from '../utils/tableFiltering';
+import useInteractiveTable from './shared/useInteractiveTable';
+import SortIndicator from './shared/SortIndicator';
 
 
 /**
@@ -152,8 +153,22 @@ function ExperimentSummaryHeader({ experiment, programs }) {
   );
 }
 
-function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram }) {
-  const [filterQuery, setFilterQuery] = useState('');
+const PROG_FILTER_FIELDS = [
+  'graph_fingerprint',
+  'result_id',
+  'architecture_name',
+  'program_id',
+  'notes',
+  '_arch',
+];
+
+function getProgSortValue(row, key) {
+  if (key === '_score') return candidateScore(row);
+  if (key === 'rating') return ROW_RATING_ORDER[programRowRating(row).label] || 0;
+  return row[key];
+}
+
+function ProgramsTable({ programs, onSelectProgram }) {
   const [colWidths, setColWidths] = useState(() =>
     Object.fromEntries(PROG_COLUMNS.map(c => [c.key, c.initWidth]))
   );
@@ -184,33 +199,19 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
     [programs]
   );
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(augmented, filterQuery, [
-      'graph_fingerprint',
-      'result_id',
-      'architecture_name',
-      'program_id',
-      'notes',
-      '_arch',
-    ])
-  ), [augmented, filterQuery]);
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows, handleSort } = useInteractiveTable({
+    rows: augmented,
+    filterFields: PROG_FILTER_FIELDS,
+    initialSortKey: '_score',
+    initialSortDesc: true,
+    storageKey: EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY,
+    getSortValue: getProgSortValue,
+  });
 
-  const sorted = useMemo(() => {
-    const aug = filtered.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) }));
-    aug.sort((a, b) => {
-      let va, vb;
-      if (sortKey === '_score') { va = a._score; vb = b._score; }
-      else if (sortKey === 'rating') { va = ROW_RATING_ORDER[a._rating.label] || 0; vb = ROW_RATING_ORDER[b._rating.label] || 0; }
-      else if (sortKey === 'graph_fingerprint') { va = a.graph_fingerprint || ''; vb = b.graph_fingerprint || ''; return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb); }
-      else if (sortKey === '_arch') { va = a._arch || ''; vb = b._arch || ''; return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb); }
-      else { va = a[sortKey]; vb = b[sortKey]; }
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return sortDesc ? vb - va : va - vb;
-    });
-    return aug;
-  }, [filtered, sortKey, sortDesc]);
+  const sorted = useMemo(() =>
+    sortedRows.map(p => ({ ...p, _score: candidateScore(p), _rating: programRowRating(p) })),
+    [sortedRows]
+  );
 
   const cellStyle = (key) => ({
     width: colWidths[key],
@@ -230,15 +231,7 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter programs"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
@@ -265,14 +258,10 @@ function ProgramsTable({ programs, sortKey, sortDesc, onSort, onSelectProgram })
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
                   }}
-                  onClick={() => onSort(col.key)}
+                  onClick={() => handleSort(col.key)}
                 >
                   {col.label}
-                  {sortKey === col.key && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDesc ? '\u25BC' : '\u25B2'}
-                    </span>
-                  )}
+                  <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                   {/* Resize handle */}
                   <span
                     onMouseDown={(e) => onResizeStart(e, col.key)}
@@ -361,34 +350,6 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
   const [selectedProgramId, setSelectedProgramId] = useState(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunConfirm, setRerunConfirm] = useState(false);
-  const [progSortKey, setProgSortKey] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY) || '{}');
-      const validKeys = new Set(PROG_COLUMNS.map((column) => column.key));
-      if (typeof stored.progSortKey === 'string' && validKeys.has(stored.progSortKey)) {
-        return stored.progSortKey;
-      }
-    } catch {}
-    return '_score';
-  });
-  const [progSortDesc, setProgSortDesc] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.progSortDesc === 'boolean') {
-        return stored.progSortDesc;
-      }
-    } catch {}
-    return true;
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY,
-        JSON.stringify({ progSortKey, progSortDesc }),
-      );
-    } catch {}
-  }, [progSortKey, progSortDesc]);
 
   useEffect(() => {
     if (!experimentId) return;
@@ -526,12 +487,6 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
         {/* Programs Table */}
         <ProgramsTable
           programs={programs}
-          sortKey={progSortKey}
-          sortDesc={progSortDesc}
-          onSort={(key) => {
-            if (progSortKey === key) setProgSortDesc(!progSortDesc);
-            else { setProgSortKey(key); setProgSortDesc(true); }
-          }}
           onSelectProgram={setSelectedProgramId}
         />
       </div>

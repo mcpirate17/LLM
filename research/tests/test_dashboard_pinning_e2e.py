@@ -1,6 +1,7 @@
 import json
 import pytest
 from research.scientist.api import create_app
+from research.scientist.api_routes.deps import get_notebook
 from research.scientist.notebook import LabNotebook
 
 pytestmark = pytest.mark.e2e
@@ -47,6 +48,7 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
         architecture_desc="Candidate 2",
         screening_loss_ratio=0.4,
     )
+    nb.flush_writes()
     nb.close()
 
     app = create_app(notebook_path=db_path)
@@ -59,12 +61,16 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
     assert entries[1]["result_id"] == res1
     assert not entries[0].get("is_pinned")
 
-    # Pin res1
+    # Pin res1 via API
     pin_resp = client.post(
         "/api/leaderboard/pin", json={"entry_id": entry1, "pinned": True}
     )
     assert pin_resp.status_code == 200
     assert pin_resp.get_json()["pinned"] is True
+
+    # Flush the async write so the next read sees it
+    shared_nb = get_notebook(db_path)
+    shared_nb.flush_writes()
 
     # Check sorting: res1 should now be at the top despite worse loss
     resp = client.get("/api/leaderboard?limit=50")
@@ -74,7 +80,9 @@ def test_dashboard_pinning_api_and_sorting(tmp_path):
     assert entries[1]["result_id"] == res2
 
     # Unpin res1
-    client.post("/api/leaderboard/pin", json={"result_id": res1, "pinned": False})
+    client.post("/api/leaderboard/pin", json={"entry_id": entry1, "pinned": False})
+    shared_nb.flush_writes()
+
     resp = client.get("/api/leaderboard?limit=50")
     entries = resp.get_json().get("entries", [])
     assert entries[0]["result_id"] == res2

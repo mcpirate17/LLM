@@ -1,34 +1,14 @@
-import React, { useState, useMemo } from 'react';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import React from 'react';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export function ExperimentClusters({ clustersData }) {
-  const [sortKey, setSortKey] = useState('avg_s1_rate');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
-
-  const handleSort = (key) => {
-    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
-  };
-
-  const filtered = useMemo(() => (
-    filterRowsByQuery(clustersData?.clusters || [], filterQuery, [
-      'cluster_id',
-      'description',
-    ])
-  ), [clustersData?.clusters, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va = a[sortKey], vb = b[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows: clustersData?.clusters || [],
+    filterFields: ['cluster_id', 'description'],
+    initialSortKey: 'avg_s1_rate',
+    initialSortDesc: true,
+  });
 
   const clusterCols = [
     { key: 'cluster_id', label: 'Cluster' },
@@ -57,15 +37,7 @@ export function ExperimentClusters({ clustersData }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter clusters"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
@@ -91,11 +63,7 @@ export function ExperimentClusters({ clustersData }) {
                   aria-label={`Sort by ${col.label}`}
                 >
                   {col.label}
-                  {sortKey === col.key && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDesc ? '\u25BC' : '\u25B2'}
-                    </span>
-                  )}
+                  <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                 </th>
               ))}
             </tr>

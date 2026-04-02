@@ -23,7 +23,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
+
+from research.tools._data_prefetch import get_data_iterator
+from research.tools._lm_benchmarks import run_benchmarks
+from research.tools._muon_optimizer import get_muon_optimizer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,20 +41,16 @@ def _configure_cuda():
     """Enable hardware-level fast paths before any tensor allocation."""
     if not torch.cuda.is_available():
         return
-    # Allow cuDNN to benchmark and cache the fastest convolution algorithms
     torch.backends.cudnn.benchmark = True
-    # TF32 on Ampere+ gives ~3x matmul throughput at negligible precision cost
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    # Reduce CPU-side overhead from CUDA allocator
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 # ── Model builder ────────────────────────────────────────────────────
-def build_champion(d: int):
-    """Build the champion architecture at dimension d."""
+def _make_champion_graph(d: int, layer_idx: int):
+    """Build one champion layer graph with its own parameters."""
     from research.synthesis.graph import ComputationGraph
-    from research.synthesis.compiler import compile_model
 
     g = ComputationGraph(model_dim=d)
     inp = g.add_input()
@@ -73,236 +72,22 @@ def build_champion(d: int):
     gl = n("gelu", [s2])
     g.set_output(n("add", [r2, gl]))
 
-    g.metadata["mutation_name"] = "champion_c9c7075e_scaled"
-    return compile_model([g])
+    g.metadata["mutation_name"] = f"champion_c9c7075e_L{layer_idx}"
+    return g
 
 
-# ── Muon optimizer ───────────────────────────────────────────────────
-class _MuonGroup:
-    """Newton-Schulz orthogonalized momentum SGD for 2D+ parameters.
+def build_champion(d: int, n_layers: int = 1, vocab_size: int = 100277):
+    """Build the champion architecture at dimension d with n_layers."""
+    from research.synthesis.compiler import compile_model
 
-    Applies NS iteration to approximate the matrix square root of the
-    second moment, giving natural-gradient-like updates without Adam's
-    memory cost.
-    """
-    __slots__ = ("params", "lr", "momentum", "wd", "ns_steps", "buffers")
-
-    def __init__(self, params, lr, momentum, wd, ns_steps=5):
-        self.params = params
-        self.lr = lr
-        self.momentum = momentum
-        self.wd = wd
-        self.ns_steps = ns_steps
-        self.buffers = [torch.zeros_like(p) for p in params]
-
-    @torch.no_grad()
-    def step(self):
-        for p, buf in zip(self.params, self.buffers):
-            if p.grad is None:
-                continue
-            g = p.grad
-
-            if g.ndim >= 2:
-                shape = g.shape
-                g2d = g.reshape(shape[0], -1) if g.ndim > 2 else g
-                g2d = g2d.float()
-                g2d = g2d / (g2d.norm() + 1e-8)
-
-                rows, cols = g2d.shape
-                X = g2d
-                if rows <= cols:
-                    for _ in range(self.ns_steps):
-                        A = X @ X.T
-                        X = 1.5 * X - 0.5 * A @ X
-                else:
-                    for _ in range(self.ns_steps):
-                        A = X.T @ X
-                        X = 1.5 * X - 0.5 * X @ A
-
-                g = X.reshape(shape).to(p.dtype)
-
-            buf.mul_(self.momentum).add_(g)
-            p.mul_(1 - self.lr * self.wd)
-            p.add_(buf, alpha=-self.lr)
-
-
-class _CombinedOptimizer:
-    __slots__ = ("muon", "adamw", "_all_muon_params")
-
-    def __init__(self, muon, adamw):
-        self.muon = muon
-        self.adamw = adamw
-        self._all_muon_params = muon.params
-
-    def step(self):
-        self.muon.step()
-        self.adamw.step()
-
-    def zero_grad(self):
-        # set_to_none=True avoids memset-to-zero, lets allocator reuse memory
-        for p in self._all_muon_params:
-            p.grad = None
-        self.adamw.zero_grad(set_to_none=True)
-
-
-def get_muon_optimizer(model, lr=0.02, momentum=0.95, wd=0.01):
-    """Muon optimizer: Newton-Schulz orthogonalized momentum SGD."""
-    params_2d = []
-    params_other = []
-
-    for _name, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        if p.ndim >= 2:
-            params_2d.append(p)
-        else:
-            params_other.append(p)
-
-    muon = _MuonGroup(params_2d, lr=lr, momentum=momentum, wd=wd)
-    adamw = torch.optim.AdamW(params_other, lr=lr * 0.1, weight_decay=wd)
-    return _CombinedOptimizer(muon, adamw)
-
-
-# ── Async data prefetch ──────────────────────────────────────────────
-def get_data_iterator(batch_size: int, seq_len: int, device: str):
-    """Streaming FineWeb-Edu + UltraChat with background prefetch.
-
-    Uses a background thread for tokenization + batch assembly,
-    pin_memory for async H2D transfer, and a numpy ring buffer
-    instead of a Python list.
-    """
-    from datasets import load_dataset
-    import tiktoken
-
-    enc = tiktoken.get_encoding("cl100k_base")
-    vocab_size = 100277
-    tokens_per_batch = batch_size * (seq_len + 1)
-
-    # ── Streaming dataset iterators ──
-    logger.info("Loading FineWeb-Edu (streaming)...")
-    fw_ds = load_dataset(
-        "HuggingFaceFW/fineweb-edu",
-        name="sample-10BT",
-        split="train",
-        streaming=True,
-    )
-
-    logger.info("Loading UltraChat (streaming)...")
-    uc_ds = load_dataset(
-        "stingning/ultrachat",
-        split="train",
-        streaming=True,
-    )
-
-    fw_iter = iter(fw_ds)
-    uc_iter = iter(uc_ds)
-    logger.info(f"Tokenizer: cl100k_base, vocab_size={vocab_size}")
-
-    # ── Ring buffer (numpy for O(1) slicing) ──
-    buf_capacity = tokens_per_batch * 16
-    ring = np.empty(buf_capacity, dtype=np.int32)
-    ring_len = 0
-    step_counter = 0
-
-    def _next_text():
-        nonlocal fw_iter, uc_iter, step_counter
-        step_counter += 1
-        use_ultrachat = step_counter % 10 < 3
-
-        if use_ultrachat:
-            try:
-                example = next(uc_iter)
-                messages = example.get("data") or example.get("messages") or []
-                if isinstance(messages, list):
-                    return "\n".join(str(m) for m in messages)
-                return str(messages)
-            except StopIteration:
-                uc_iter = iter(load_dataset(
-                    "stingning/ultrachat", split="train", streaming=True,
-                ))
-                return _next_text()
-        else:
-            try:
-                return next(fw_iter).get("text", "")
-            except StopIteration:
-                fw_iter = iter(load_dataset(
-                    "HuggingFaceFW/fineweb-edu", name="sample-10BT",
-                    split="train", streaming=True,
-                ))
-                return _next_text()
-
-    def _fill_ring():
-        nonlocal ring, ring_len, buf_capacity
-        target = tokens_per_batch * 8
-        while ring_len < target:
-            text = _next_text()
-            if len(text) < 50:
-                continue
-            tokens = enc.encode(text)
-            n_tok = len(tokens)
-            # Grow ring if needed
-            if ring_len + n_tok > buf_capacity:
-                buf_capacity = max(buf_capacity * 2, ring_len + n_tok)
-                new_ring = np.empty(buf_capacity, dtype=np.int32)
-                new_ring[:ring_len] = ring[:ring_len]
-                ring = new_ring
-            ring[ring_len:ring_len + n_tok] = tokens
-            ring_len += n_tok
-
-    def _extract_batch_np():
-        """Extract one batch from the ring buffer. Returns numpy array."""
-        nonlocal ring_len
-        if ring_len < tokens_per_batch:
-            _fill_ring()
-        batch = ring[:tokens_per_batch].copy()
-        # Shift remaining data (memmove — fast C-level copy)
-        remaining = ring_len - tokens_per_batch
-        if remaining > 0:
-            ring[:remaining] = ring[tokens_per_batch:tokens_per_batch + remaining]
-        ring_len = remaining
-        return batch
-
-    # Initial fill
-    _fill_ring()
-    logger.info(f"Buffer ready: {ring_len:,} tokens (70% FineWeb-Edu + 30% UltraChat)")
-
-    # ── Prefetch queue: background thread assembles batches ──
-    prefetch_q: queue.Queue = queue.Queue(maxsize=4)
-    _stop_event = threading.Event()
-
-    def _prefetch_worker():
-        """Background thread: tokenize → batch → pin_memory."""
-        use_cuda = device.startswith("cuda")
-        while not _stop_event.is_set():
-            try:
-                batch_np = _extract_batch_np()
-                t = torch.from_numpy(batch_np).long().reshape(batch_size, seq_len + 1)
-                if use_cuda:
-                    t = t.pin_memory()
-                prefetch_q.put(t, timeout=5.0)
-            except queue.Full:
-                continue
-            except Exception as e:
-                logger.error(f"Prefetch worker error: {e}")
-                break
-
-    worker = threading.Thread(target=_prefetch_worker, daemon=True)
-    worker.start()
-
-    def _get_batch():
-        t = prefetch_q.get()
-        non_blocking = device.startswith("cuda")
-        t = t.to(device, non_blocking=non_blocking)
-        return t[:, :seq_len], t[:, 1:seq_len + 1]
-
-    # Attach cleanup so caller can stop the thread
-    _get_batch.stop = lambda: _stop_event.set()
-    return _get_batch, vocab_size
+    graphs = [_make_champion_graph(d, i) for i in range(n_layers)]
+    return compile_model(graphs, vocab_size=vocab_size)
 
 
 # ── Async checkpoint saving ──────────────────────────────────────────
 class _AsyncCheckpointer:
     """Save checkpoints in a background thread to avoid blocking training."""
+
     __slots__ = ("_thread", "_queue")
 
     def __init__(self):
@@ -321,147 +106,11 @@ class _AsyncCheckpointer:
             os.replace(str(tmp), str(path))
 
     def save(self, path: Path, data: dict):
-        """Queue a checkpoint save. Blocks only if 2 saves already queued."""
         self._queue.put((path, data))
 
     def shutdown(self):
         self._queue.put(None)
         self._thread.join(timeout=60)
-
-
-# ── Benchmarks ───────────────────────────────────────────────────────
-def run_benchmarks(model, step: int, ckpt_dir: Path, device: str = "cuda"):
-    """Run standard LM benchmarks: WikiText-103 PPL, HellaSwag, LAMBADA, ARC-Easy."""
-    from lm_eval import simple_evaluate
-    from lm_eval.api.model import LM
-    import tiktoken
-
-    logger.info(f"Running benchmarks at step {step}...")
-    model.eval()
-
-    class AriaLM(LM):
-        def __init__(self, model, device, max_length=1024):
-            super().__init__()
-            self._model = model
-            self._device = device
-            self._max_length = max_length
-            self._enc = tiktoken.get_encoding("cl100k_base")
-            self._vocab_size = 100277
-
-        @property
-        def eot_token_id(self):
-            return self._enc.eot_token
-
-        @property
-        def max_length(self):
-            return self._max_length
-
-        @property
-        def max_gen_toks(self):
-            return 256
-
-        @property
-        def batch_size(self):
-            return 4
-
-        @property
-        def device(self):
-            return self._device
-
-        def tok_encode(self, string, **kwargs):
-            return self._enc.encode(string)
-
-        def tok_decode(self, tokens, **kwargs):
-            return self._enc.decode(tokens)
-
-        def _model_call(self, inps):
-            with torch.no_grad():
-                return self._model(inps.to(self._device))
-
-        def _model_generate(self, context, max_length, eos_token_id):
-            raise NotImplementedError("Generation not supported")
-
-        def loglikelihood(self, requests):
-            results = []
-            for ctx, cont in [req.args for req in requests]:
-                ctx_ids = self._enc.encode(ctx) if ctx else []
-                cont_ids = self._enc.encode(cont)
-                all_ids = (ctx_ids + cont_ids)[-self._max_length:]
-                input_ids = torch.tensor([all_ids], device=self._device)
-                with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                    logits = self._model(input_ids)
-                log_probs = F.log_softmax(logits[0].float(), dim=-1)
-                cont_start = len(all_ids) - len(cont_ids)
-                total_ll = 0.0
-                greedy_match = True
-                for i, tok in enumerate(cont_ids):
-                    pos = cont_start + i - 1
-                    if 0 <= pos < log_probs.size(0):
-                        total_ll += log_probs[pos, tok].item()
-                        if log_probs[pos].argmax().item() != tok:
-                            greedy_match = False
-                results.append((total_ll, greedy_match))
-            return results
-
-        def loglikelihood_rolling(self, requests):
-            results = []
-            for (string,) in [req.args for req in requests]:
-                tokens = self._enc.encode(string)
-                total_ll = 0.0
-                for start in range(0, len(tokens), self._max_length):
-                    chunk = tokens[start:start + self._max_length]
-                    input_ids = torch.tensor([chunk], device=self._device)
-                    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                        logits = self._model(input_ids)
-                    log_probs = F.log_softmax(logits[0].float(), dim=-1)
-                    for i in range(1, len(chunk)):
-                        total_ll += log_probs[i - 1, chunk[i]].item()
-                results.append(total_ll)
-            return results
-
-        def generate_until(self, requests):
-            return [""] * len(requests)
-
-    lm = AriaLM(model, device)
-
-    benchmarks = ["wikitext", "hellaswag", "lambada_openai"]
-    try:
-        import lm_eval.evaluator as _ev
-        _ev.add_env_info = lambda results: None
-        _ev.add_tokenizer_info = lambda results, lm: None
-
-        eval_results = simple_evaluate(
-            model=lm,
-            tasks=benchmarks,
-            batch_size=4,
-            device=device,
-        )
-
-        results_dict = {}
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"BENCHMARKS at step {step}")
-        logger.info(f"{'=' * 60}")
-
-        for task_name, task_results in eval_results.get("results", {}).items():
-            for metric, value in task_results.items():
-                if isinstance(value, (int, float)) and "stderr" not in metric:
-                    results_dict[f"{task_name}/{metric}"] = value
-                    logger.info(f"  {task_name}/{metric}: {value:.4f}")
-
-        results_path = ckpt_dir / f"benchmarks_step_{step}.json"
-        with open(results_path, "w") as f:
-            json.dump({"step": step, "results": results_dict}, f, indent=2)
-        logger.info(f"  Saved to {results_path}")
-
-        return results_dict
-
-    except Exception as e:
-        logger.error(f"Benchmark eval failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
-    finally:
-        model.train()
 
 
 # ── Loss plot (numpy-vectorized smoothing) ───────────────────────────
@@ -476,9 +125,10 @@ def _save_loss_plot(
     tokens_seen: int,
     eta_str: str,
 ):
-    """Save loss curve PNG with O(n) numpy smoothing instead of O(n²) list comp."""
+    """Save loss curve PNG with O(n) numpy smoothing."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
@@ -489,17 +139,22 @@ def _save_loss_plot(
         fig, ax = plt.subplots(figsize=(12, 5))
         if n > 200:
             stride = 10
-            ax.plot(xs[::stride], raw[::stride], alpha=0.15, color="blue", linewidth=0.5)
-            # O(n) cumsum-based rolling average
+            ax.plot(
+                xs[::stride], raw[::stride], alpha=0.15, color="blue", linewidth=0.5
+            )
             w = 100
             cumsum = np.cumsum(raw)
             cumsum = np.insert(cumsum, 0, 0.0)
-            # Smoothed at every stride-th point
             indices = np.arange(0, n, stride)
             starts = np.maximum(indices - w + 1, 0)
             smoothed = (cumsum[indices + 1] - cumsum[starts]) / (indices - starts + 1)
-            ax.plot(xs[::stride][:len(smoothed)], smoothed, color="blue", linewidth=2,
-                    label=f"avg100={smoothed[-1]:.4f}")
+            ax.plot(
+                xs[::stride][: len(smoothed)],
+                smoothed,
+                color="blue",
+                linewidth=2,
+                label=f"avg100={smoothed[-1]:.4f}",
+            )
         else:
             ax.plot(xs, raw, color="blue", linewidth=1, label=f"loss={raw[-1]:.4f}")
 
@@ -519,39 +174,134 @@ def _save_loss_plot(
         pass
 
 
+# ── Checkpoint data builder ──────────────────────────────────────────
+def _make_ckpt_data(
+    model,
+    optimizer,
+    step,
+    loss_val,
+    best_loss,
+    tokens_seen,
+    loss_history,
+    args,
+    n_params,
+):
+    """Build checkpoint dict. Single source of truth for checkpoint format."""
+    raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+    return {
+        "step": step,
+        "model_state_dict": raw_model.state_dict(),
+        "optimizer_muon_buffers": [b.cpu().clone() for b in optimizer.muon.buffers],
+        "loss": loss_val,
+        "best_loss": best_loss,
+        "tokens_seen": tokens_seen,
+        "loss_history": loss_history,
+        "config": {
+            "dim": args.dim,
+            "layers": args.layers,
+            "vocab_size": args.vocab,
+            "n_params": n_params,
+            "architecture": "champion_c9c7075e",
+        },
+    }
+
+
+def _save_loss_json(ckpt_dir: Path, loss_history: list):
+    with open(ckpt_dir / "loss_curve.json", "w") as f:
+        json.dump(
+            {"steps": list(range(1, len(loss_history) + 1)), "loss": loss_history}, f
+        )
+
+
 # ── Main training loop ───────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Scale test: champion at 177M")
+    parser = argparse.ArgumentParser(description="Scale test: champion architecture")
     parser.add_argument("--dim", type=int, default=1536, help="Model dimension")
-    parser.add_argument("--steps", type=int, default=50000, help="Training steps")
+    parser.add_argument("--layers", type=int, default=4, help="Number of layers")
+    parser.add_argument(
+        "--vocab",
+        type=int,
+        default=50257,
+        help="Vocabulary size (50257=GPT-2, 100277=cl100k)",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=0,
+        help="Training steps (0=auto Chinchilla-optimal)",
+    )
     parser.add_argument("--bs", type=int, default=12, help="Batch size")
     parser.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
     parser.add_argument("--lr", type=float, default=0.02, help="Muon learning rate")
     parser.add_argument("--warmup", type=int, default=1000, help="Warmup steps")
-    parser.add_argument("--log-every", type=int, default=10, help="Log loss every N steps")
-    parser.add_argument("--save-every", type=int, default=2000, help="Save checkpoint every N steps")
-    parser.add_argument("--keep-checkpoints", type=int, default=3, help="Keep only the last N checkpoints")
+    parser.add_argument(
+        "--log-every", type=int, default=10, help="Log loss every N steps"
+    )
+    parser.add_argument(
+        "--save-every", type=int, default=2000, help="Save checkpoint every N steps"
+    )
+    parser.add_argument(
+        "--keep-checkpoints",
+        type=int,
+        default=3,
+        help="Keep only the last N checkpoints",
+    )
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--checkpoint-dir", default="research/artifacts/scale_test")
-    parser.add_argument("--plot", action="store_true", default=True, help="Live loss plot")
-    parser.add_argument("--eval-every", type=int, default=10000, help="Run benchmarks every N steps")
-    parser.add_argument("--eval-only", action="store_true", help="Just run evals on existing checkpoint")
-    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
+    parser.add_argument("--checkpoint-dir", default="")
+    parser.add_argument(
+        "--plot", action="store_true", default=True, help="Live loss plot"
+    )
+    parser.add_argument(
+        "--eval-every", type=int, default=10000, help="Run benchmarks every N steps"
+    )
+    parser.add_argument(
+        "--eval-only", action="store_true", help="Just run evals on existing checkpoint"
+    )
+    parser.add_argument(
+        "--no-compile", action="store_true", help="Disable torch.compile"
+    )
+    parser.add_argument(
+        "--grad-accum", type=int, default=1, help="Gradient accumulation steps"
+    )
     args = parser.parse_args()
 
-    # CUDA tuning — must happen before any tensor allocation
     _configure_cuda()
+
+    tokenizer_name = "gpt2" if args.vocab <= 50257 else "cl100k_base"
+
+    if not args.checkpoint_dir:
+        args.checkpoint_dir = (
+            f"research/artifacts/scale_test_{args.layers}L_{args.vocab}v"
+        )
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # Build model
-    logger.info(f"Building champion at d={args.dim}...")
-    model = build_champion(args.dim).to(args.device)
+    logger.info(
+        f"Building champion: d={args.dim}, layers={args.layers}, vocab={args.vocab}..."
+    )
+    model = build_champion(args.dim, n_layers=args.layers, vocab_size=args.vocab).to(
+        args.device
+    )
     n_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"Model: {n_params:,} params ({n_params / 1e6:.1f}M)")
+    embed_params = args.vocab * args.dim
+    compute_params = n_params - embed_params
+    logger.info(
+        f"Model: {n_params:,} params ({n_params / 1e6:.1f}M) — "
+        f"embed={embed_params / 1e6:.1f}M, compute={compute_params / 1e6:.1f}M"
+    )
 
-    # torch.compile — fuses ops, eliminates Python overhead
+    # Auto-compute Chinchilla-optimal steps
+    tokens_per_step = args.bs * args.seq_len
+    if args.steps == 0:
+        chinchilla_tokens = n_params * 20
+        args.steps = chinchilla_tokens // tokens_per_step
+        logger.info(
+            f"Auto steps: {args.steps:,} (Chinchilla-optimal for {n_params / 1e6:.0f}M params)"
+        )
+
+    # torch.compile
     use_compile = (
         not args.no_compile
         and args.device.startswith("cuda")
@@ -565,10 +315,14 @@ def main():
     optimizer = get_muon_optimizer(model, lr=args.lr)
     logger.info(f"Optimizer: Muon (lr={args.lr}, momentum=0.95)")
 
-    # AMP scaler for mixed precision
+    # AMP
     use_amp = args.device.startswith("cuda")
-    amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and amp_dtype == torch.float16)
+    amp_dtype = (
+        torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
+    )
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=use_amp and amp_dtype == torch.float16
+    )
     if use_amp:
         logger.info(f"AMP enabled: {amp_dtype}")
 
@@ -582,20 +336,23 @@ def main():
     if resume_path.exists():
         logger.info(f"Resuming from {resume_path}...")
         ckpt = torch.load(resume_path, map_location=args.device, weights_only=False)
-        # Handle compiled model state dict (keys may have _orig_mod. prefix)
         state = ckpt["model_state_dict"]
         try:
             model.load_state_dict(state)
         except RuntimeError:
             cleaned = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
-            (model._orig_mod if hasattr(model, "_orig_mod") else model).load_state_dict(cleaned)
+            (model._orig_mod if hasattr(model, "_orig_mod") else model).load_state_dict(
+                cleaned
+            )
         start_step = ckpt["step"]
         loss_history = ckpt.get("loss_history", [])
         tokens_seen = ckpt.get("tokens_seen", 0)
         best_loss = ckpt.get("best_loss", float("inf"))
         optimizer = get_muon_optimizer(model, lr=args.lr)
         if "optimizer_muon_buffers" in ckpt:
-            for buf, saved in zip(optimizer.muon.buffers, ckpt["optimizer_muon_buffers"]):
+            for buf, saved in zip(
+                optimizer.muon.buffers, ckpt["optimizer_muon_buffers"]
+            ):
                 buf.copy_(saved)
         logger.info(
             f"Resumed: step {start_step}, best_loss={best_loss:.4f}, "
@@ -603,7 +360,9 @@ def main():
         )
 
     # Data
-    get_batch, vocab_size = get_data_iterator(args.bs, args.seq_len, args.device)
+    get_batch, vocab_size = get_data_iterator(
+        args.bs, args.seq_len, args.device, tokenizer_name
+    )
     tokens_per_step = args.bs * args.seq_len
     total_tokens = args.steps * tokens_per_step
     logger.info(
@@ -617,7 +376,7 @@ def main():
 
     if args.eval_only:
         logger.info("Eval-only mode \u2014 running benchmarks on current checkpoint")
-        run_benchmarks(model, start_step, ckpt_dir, args.device)
+        run_benchmarks(model, start_step, ckpt_dir, args.device, tokenizer_name)
         return
 
     if start_step >= args.steps:
@@ -629,18 +388,33 @@ def main():
     if args.plot:
         try:
             import matplotlib
+
             matplotlib.use("Agg")
             logger.info(f"Loss plot: {plot_path} (updates every 50 steps)")
         except Exception as e:
             logger.warning(f"Plot unavailable: {e}")
             args.plot = False
 
-    # Async checkpointer
     checkpointer = _AsyncCheckpointer()
 
-    # Pre-cache LR schedule values (avoid repeated math in hot loop)
+    # Pre-cache LR schedule values
     warmup_inv = 1.0 / args.warmup if args.warmup > 0 else 1.0
     decay_denom = max(args.steps - args.warmup, 1)
+
+    # Graceful Ctrl+C
+    import signal
+
+    _stop_requested = False
+
+    def _sigint_handler(signum, frame):
+        nonlocal _stop_requested
+        if _stop_requested:
+            logger.info("Second Ctrl+C — forcing exit")
+            raise SystemExit(1)
+        _stop_requested = True
+        logger.info("Ctrl+C caught — will save checkpoint after current step")
+
+    signal.signal(signal.SIGINT, _sigint_handler)
 
     # Training loop
     model.train()
@@ -653,37 +427,47 @@ def main():
     )
     logger.info("=" * 80)
 
-    # Rolling average window (O(1) update via deque)
     avg_window: deque = deque(maxlen=100)
     for v in loss_history[-100:]:
         avg_window.append(v)
 
+    grad_accum = args.grad_accum
+    loss_val = 0.0
+
     for step in range(start_step + 1, args.steps + 1):
-        # Warmup + cosine decay
+        # LR schedule: warmup + cosine decay
         if step <= args.warmup:
             lr_mult = step * warmup_inv
         else:
-            progress = (step - args.warmup) / decay_denom
+            progress = min((step - args.warmup) / decay_denom, 1.0)
             lr_mult = 0.5 * (1.0 + math.cos(math.pi * progress))
         current_lr = args.lr * lr_mult
 
-        # Update LRs
         optimizer.muon.lr = current_lr
         for pg in optimizer.adamw.param_groups:
             pg["lr"] = current_lr * 0.1
 
-        # Forward + backward with AMP
-        inputs, targets = get_batch()
-        with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
-            logits = model(inputs)
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+        # Forward + backward with AMP and gradient accumulation
+        accum_loss = 0.0
+        for _micro in range(grad_accum):
+            inputs, targets = get_batch()
+            with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
+                logits = model(inputs)
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)), targets.reshape(-1)
+                )
+                if grad_accum > 1:
+                    loss = loss / grad_accum
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            accum_loss += loss.item() * (grad_accum if grad_accum > 1 else 1)
 
         if scaler.is_enabled():
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer.adamw)  # unscale for grad clipping
+            scaler.unscale_(optimizer.adamw)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            # Muon operates on unscaled grads (AdamW already unscaled above)
-            # For Muon params, manually unscale
             inv_scale = 1.0 / scaler.get_scale()
             for p in optimizer.muon.params:
                 if p.grad is not None:
@@ -692,16 +476,15 @@ def main():
             optimizer.muon.step()
             scaler.update()
         else:
-            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
         optimizer.zero_grad()
 
-        loss_val = loss.item()
+        loss_val = accum_loss / grad_accum if grad_accum > 1 else accum_loss
         loss_history.append(loss_val)
         avg_window.append(loss_val)
-        tokens_seen += tokens_per_step
+        tokens_seen += tokens_per_step * grad_accum
         best_loss = min(best_loss, loss_val)
 
         # Log
@@ -710,7 +493,9 @@ def main():
             tok_per_sec = tokens_seen / elapsed
             eta = (args.steps - step) * elapsed / max(step - start_step, 1)
             eta_str = f"{eta / 3600:.1f}h" if eta > 3600 else f"{eta / 60:.0f}m"
-            elapsed_str = f"{elapsed / 3600:.1f}h" if elapsed > 3600 else f"{elapsed / 60:.0f}m"
+            elapsed_str = (
+                f"{elapsed / 3600:.1f}h" if elapsed > 3600 else f"{elapsed / 60:.0f}m"
+            )
 
             avg = sum(avg_window) / len(avg_window)
 
@@ -723,50 +508,73 @@ def main():
 
             if args.plot and step % 50 == 0:
                 _save_loss_plot(
-                    plot_path, loss_history, start_step, step,
-                    args.steps, best_loss, n_params, tokens_seen, eta_str,
+                    plot_path,
+                    loss_history,
+                    start_step,
+                    step,
+                    args.steps,
+                    best_loss,
+                    n_params,
+                    tokens_seen,
+                    eta_str,
                 )
 
         # Checkpoint (async)
         if step % args.save_every == 0:
-            raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
-            ckpt_data = {
-                "step": step,
-                "model_state_dict": raw_model.state_dict(),
-                "optimizer_muon_buffers": [b.cpu().clone() for b in optimizer.muon.buffers],
-                "loss": loss_val,
-                "best_loss": best_loss,
-                "tokens_seen": tokens_seen,
-                "loss_history": loss_history,
-                "config": {
-                    "dim": args.dim,
-                    "n_params": n_params,
-                    "architecture": "champion_c9c7075e",
-                },
-            }
-            # Save step checkpoint + latest (async)
+            ckpt_data = _make_ckpt_data(
+                model,
+                optimizer,
+                step,
+                loss_val,
+                best_loss,
+                tokens_seen,
+                loss_history,
+                args,
+                n_params,
+            )
             ckpt_path = ckpt_dir / f"step_{step}.pt"
             checkpointer.save(ckpt_path, ckpt_data)
             checkpointer.save(ckpt_dir / "latest.pt", ckpt_data)
-
-            # Save loss curve JSON (small, fine to do sync)
-            with open(ckpt_dir / "loss_curve.json", "w") as f:
-                json.dump({"steps": list(range(1, len(loss_history) + 1)), "loss": loss_history}, f)
+            _save_loss_json(ckpt_dir, loss_history)
 
             # Prune old checkpoints
-            existing = sorted(ckpt_dir.glob("step_*.pt"), key=lambda p: int(p.stem.split("_")[1]))
+            existing = sorted(
+                ckpt_dir.glob("step_*.pt"), key=lambda p: int(p.stem.split("_")[1])
+            )
             while len(existing) > args.keep_checkpoints:
                 old = existing.pop(0)
                 old.unlink()
 
-            logger.info(f"  Checkpoint saved: step {step} (keeping last {args.keep_checkpoints})")
+            logger.info(
+                f"  Checkpoint saved: step {step} (keeping last {args.keep_checkpoints})"
+            )
 
             # Benchmarks
             if args.eval_every > 0 and step % args.eval_every == 0:
                 try:
-                    run_benchmarks(model, step, ckpt_dir, args.device)
+                    run_benchmarks(model, step, ckpt_dir, args.device, tokenizer_name)
                 except Exception as e:
                     logger.warning(f"Benchmark eval failed (training continues): {e}")
+
+        # Graceful stop
+        if _stop_requested:
+            logger.info(f"Graceful stop at step {step} — saving checkpoint...")
+            ckpt_data = _make_ckpt_data(
+                model,
+                optimizer,
+                step,
+                loss_val,
+                best_loss,
+                tokens_seen,
+                loss_history,
+                args,
+                n_params,
+            )
+            torch.save(ckpt_data, ckpt_dir / f"step_{step}.pt")
+            torch.save(ckpt_data, ckpt_dir / "latest.pt")
+            _save_loss_json(ckpt_dir, loss_history)
+            logger.info(f"  Checkpoint saved at step {step}. Exiting.")
+            break
 
     # Cleanup
     get_batch.stop()
@@ -781,7 +589,7 @@ def main():
     logger.info(f"  Tokens: {tokens_seen:,} ({tokens_seen / 1e9:.2f}B)")
     logger.info(f"  Throughput: {tokens_seen / elapsed:.0f} tok/s")
 
-    # Save final checkpoint
+    # Final checkpoint
     raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
     torch.save(
         {
@@ -793,25 +601,26 @@ def main():
             "loss_history": loss_history,
             "config": {
                 "dim": args.dim,
+                "layers": args.layers,
+                "vocab_size": args.vocab,
                 "n_params": n_params,
                 "architecture": "champion_c9c7075e",
             },
         },
         ckpt_dir / "final.pt",
     )
-
-    with open(ckpt_dir / "loss_curve.json", "w") as f:
-        json.dump({"steps": list(range(1, len(loss_history) + 1)), "loss": loss_history}, f)
-
+    _save_loss_json(ckpt_dir, loss_history)
     logger.info(f"  Saved to {args.checkpoint_dir}/")
 
     # Final benchmarks
     logger.info("Running final benchmarks...")
     try:
-        run_benchmarks(model, args.steps, ckpt_dir, args.device)
+        run_benchmarks(model, args.steps, ckpt_dir, args.device, tokenizer_name)
     except Exception as e:
         logger.warning(f"Final benchmark eval failed: {e}")
-        logger.info("Run benchmarks separately with: python -m research.tools.scale_test --eval-only")
+        logger.info(
+            "Run benchmarks separately with: python -m research.tools.scale_test --eval-only"
+        )
 
 
 if __name__ == "__main__":

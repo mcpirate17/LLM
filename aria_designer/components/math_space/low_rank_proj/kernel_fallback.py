@@ -1,22 +1,8 @@
-"""Python fallback kernel for low_rank_proj.
+"""Kernel handler for low_rank_proj — delegates to research.mathspaces.compression."""
 
-Current behavior is an identity pass-through placeholder so workflows remain
-executable in preview/eval when a native implementation is unavailable.
-"""
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-import torch.nn as nn
-
-
-class ComponentHandler:
-    """Fallback handler for low_rank_proj."""
-
-    def validate_config(self, config):
-        return []
-
-    def build(self, config):
-        # Placeholder until parameterized low-rank projection is implemented.
-        return nn.Identity()
-
-    def forward(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+ComponentHandler = make_mathspace_unary_handler(
+    "low_rank_proj",
+    "research.mathspaces.compression.execute_low_rank_proj",
+)

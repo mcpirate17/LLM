@@ -1,17 +1,8 @@
-"""Kernel handler for hyp_tangent_nonlinear — dispatches to aria_core.hyp_tangent_nonlinear_f32."""
+"""Kernel handler for hyp_tangent_nonlinear — delegates to research.mathspaces.hyperbolic."""
 
-import torch
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "hyp_tangent_nonlinear"
-
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        c = config.get("curvature", 1.0)
-        return (x, c)
-
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": torch.tanh(x)}
+ComponentHandler = make_mathspace_unary_handler(
+    "hyp_tangent_nonlinear",
+    "research.mathspaces.hyperbolic.execute_hyp_tangent_nonlinear",
+)

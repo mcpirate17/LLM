@@ -1,11 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { classifyTokenMixing, FAMILY_LABELS, FAMILY_COLORS } from './reportUtils';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export default function AlternativesToAttention({ programs }) {
-  const [sortKey, setSortKey] = useState('count');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
   const analysis = useMemo(() => {
     const familyStats = {};
     let qkvFreeCount = 0;
@@ -47,30 +45,14 @@ export default function AlternativesToAttention({ programs }) {
     return { rows, qkvFreeCount, qkvCount, unknownCount, total: programs.length };
   }, [programs]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(analysis.rows, filterQuery, ['family'])
-  ), [analysis.rows, filterQuery]);
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows, handleSort } = useInteractiveTable({
+    rows: analysis.rows,
+    filterFields: ['family'],
+    initialSortKey: 'count',
+    initialSortDesc: true,
+  });
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
-
-  if (sorted.length === 0) return null;
+  if (sortedRows.length === 0) return null;
 
   return (
     <div className="card">
@@ -118,39 +100,31 @@ export default function AlternativesToAttention({ programs }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter mechanisms"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <table className="data-table table-compact">
         <thead>
           <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
             <th onClick={() => handleSort('family')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-              Mechanism{sortKey === 'family' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              Mechanism<SortIndicator active={sortKey === 'family'} desc={sortDesc} />
             </th>
             <th onClick={() => handleSort('count')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-              Programs{sortKey === 'count' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              Programs<SortIndicator active={sortKey === 'count'} desc={sortDesc} />
             </th>
             <th onClick={() => handleSort('avgLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-              Avg Loss{sortKey === 'avgLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              Avg Loss<SortIndicator active={sortKey === 'avgLoss'} desc={sortDesc} />
             </th>
             <th onClick={() => handleSort('avgNovelty')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-              Avg Novelty{sortKey === 'avgNovelty' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              Avg Novelty<SortIndicator active={sortKey === 'avgNovelty'} desc={sortDesc} />
             </th>
             <th onClick={() => handleSort('bestLoss')} style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
-              Best (Loss){sortKey === 'bestLoss' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+              Best (Loss)<SortIndicator active={sortKey === 'bestLoss'} desc={sortDesc} />
             </th>
           </tr>
         </thead>
         <tbody>
-          {sorted.map(row => (
+          {sortedRows.map(row => (
             <tr key={row.family} style={{ borderBottom: '1px solid var(--border)' }}>
               <td style={{ padding: '6px 8px' }}>
                 <span style={{

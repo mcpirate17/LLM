@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 
 
 ADAPTIVE_MANIFESTS = [
-    Path("components/routing/difficulty_scorer/manifest.yaml"),
-    Path("components/routing/adaptive_lane_mixer/manifest.yaml"),
+    Path("components/routing/token_difficulty_proj/manifest.yaml"),
+    Path("components/routing/difficulty_blend_3way/manifest.yaml"),
 ]
 
 ADAPTIVE_EXAMPLES = [

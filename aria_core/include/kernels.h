@@ -430,19 +430,6 @@ void aria_token_merge_simple_f32(const float *x, float *y, int64_t *restore_map,
 
 /* ── Compression Kernels (CPU reference) ───────────────────────────── */
 
-void aria_grouped_linear_f32(const float *x, const float *W, float *y,
-                               int64_t batch, int64_t seq, int64_t dim,
-                               int64_t groups, int64_t group_dim);
-
-void aria_bottleneck_proj_f32(const float *x, const float *down, const float *up, float *y,
-                                int64_t batch, int64_t seq, int64_t dim, int64_t rank);
-
-void aria_shared_basis_proj_f32(const float *x, const float *mixing, const float *basis, float *y,
-                                  int64_t batch, int64_t seq, int64_t dim, int64_t k);
-
-void aria_tied_proj_f32(const float *x, const float *W, float *y,
-                          int64_t batch, int64_t seq, int64_t dim, int64_t rank);
-
 /* ── Compression Kernels (CPU reference) ────────────────────────────── */
 
 /** Low-rank factorized linear: y = x @ (V @ U) + bias */
@@ -628,12 +615,7 @@ void aria_cumsum_f32(const float *x, float *y, int64_t batch, int64_t dim);
 void aria_cumprod_safe_f32(const float *x, float *y, int64_t batch, int64_t dim,
                             float clamp_min, float clamp_max);
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* ARIA_KERNELS_H */
-
+/** Tropical matmul batched backward with softmin approximation (temperature tau). */
 void aria_tropical_matmul_batched_backward_f32(
     const float *grad_out,
     const float *a,
@@ -643,3 +625,9 @@ void aria_tropical_matmul_batched_backward_f32(
     int64_t batch, int64_t M, int64_t K, int64_t N,
     float tau
 );
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ARIA_KERNELS_H */

@@ -53,6 +53,46 @@ class BatchGenerateResult:
     n_rejected_dedup: int  # duplicate fingerprints
 
 
+# ── Motif weight cache (avoids recomputing geometric means every generation) ──
+
+import threading
+
+_motif_weight_lock = threading.Lock()
+_motif_weight_cache_key: Optional[tuple] = None
+_motif_weight_cache_val: Dict[str, float] = {}
+
+
+def _compute_motif_weights_from_op_weights(
+    op_weights: Dict[str, float],
+) -> Dict[str, tuple]:
+    """Geometric mean of op weights per motif, cached by op_weights content.
+
+    Returns {motif_name: (factor, default_lift)} so callers can apply
+    ``motif_weights.get(name, lift) * factor``.
+    """
+    global _motif_weight_cache_key, _motif_weight_cache_val
+    cache_key = tuple(sorted(op_weights.items()))
+    with _motif_weight_lock:
+        if cache_key == _motif_weight_cache_key:
+            return _motif_weight_cache_val
+
+    import math as _math
+    from .motifs import ALL_MOTIFS
+
+    result: Dict[str, tuple] = {}
+    for motif in ALL_MOTIFS:
+        motif_ops = [step.op_name for step in motif.steps]
+        factors = [op_weights.get(op, 1.0) for op in motif_ops]
+        factor = _math.exp(sum(_math.log(max(f, 0.01)) for f in factors) / len(factors))
+        factor = max(0.1, min(8.0, factor))
+        result[motif.name] = (factor, motif.lift)
+
+    with _motif_weight_lock:
+        _motif_weight_cache_key = cache_key
+        _motif_weight_cache_val = result
+    return result
+
+
 # ── Algebraic Space Compatibility ────────────────────────────────────
 
 
@@ -245,6 +285,10 @@ class GrammarConfig:
                 "moe_2expert": 3.0,
                 "gated_linear": 2.5,
                 "swiglu_mlp": 2.0,
+                # Quarantine: Python-loop ops without native kernels.
+                # Avoids wasting screening GPU time on slow fallback paths.
+                "tropical_router": 0.01,
+                "tropical_moe": 0.01,
             },
         )
 
@@ -380,6 +424,9 @@ class GrammarConfig:
                 "relu_gated_moe": 2.5,
                 "swiglu_mlp": 2.0,
                 "gated_linear": 2.0,
+                # Quarantine: Python-loop ops without native kernels.
+                "tropical_router": 0.01,
+                "tropical_moe": 0.01,
             },
         )
 
@@ -524,9 +571,7 @@ class _SlotAdaptationCache:
         self._expires: float = 0.0
         self._ttl = ttl
 
-    def get(
-        self, db_path: str = "research/lab_notebook.db"
-    ) -> Dict[str, list]:
+    def get(self, db_path: str = "research/lab_notebook.db") -> Dict[str, list]:
         """Return slot_key → [additional motif classes] learned from wildcard success."""
         import json as _json
         import sqlite3
@@ -543,7 +588,11 @@ class _SlotAdaptationCache:
             path = Path(db_path)
             if not path.is_absolute():
                 cwd = Path.cwd()
-                if cwd.name == "research" and path.parts and path.parts[0] == "research":
+                if (
+                    cwd.name == "research"
+                    and path.parts
+                    and path.parts[0] == "research"
+                ):
                     path = cwd.parent / db_path
                 else:
                     path = path.resolve()
@@ -673,19 +722,13 @@ def generate_layer_graph(
     # Bridge op_weights → motif_weights: geometric mean of constituent op weights.
     # Always applied (not just boosts) so penalties propagate through motifs.
     if config.op_weights or config.exploration_targets:
-        import math as _math
         from .motifs import ALL_MOTIFS
 
     if config.op_weights:
-        for motif in ALL_MOTIFS:
-            motif_ops = [step.op_name for step in motif.steps]
-            factors = [config.op_weights.get(op, 1.0) for op in motif_ops]
-            factor = _math.exp(
-                sum(_math.log(max(f, 0.01)) for f in factors) / len(factors)
-            )
-            factor = max(0.1, min(8.0, factor))
-            current = motif_weights.get(motif.name, motif.lift)
-            motif_weights[motif.name] = current * factor
+        cached_factors = _compute_motif_weights_from_op_weights(config.op_weights)
+        for motif_name, (factor, default_lift) in cached_factors.items():
+            current = motif_weights.get(motif_name, default_lift)
+            motif_weights[motif_name] = current * factor
 
     # Boost motifs containing under-observed ops (exploration targets)
     if config.exploration_targets:
@@ -830,9 +873,16 @@ def generate_layer_graph(
                     depth_weights[tpl_name] = base_w
             _iter_weights = depth_weights
 
-        trial_graph = graph.copy()
+        # Snapshot graph state for lightweight rollback instead of full copy.
+        # Only need to track node IDs added and metadata changes.
+        prev_node_ids = set(graph.nodes.keys())
+        prev_next_id = graph._next_id
+        prev_output_id = graph._output_node_id
+        prev_metadata = dict(graph.metadata)
+        graph._cache.clear()
+
         trial_current = apply_template(
-            trial_graph,
+            graph,
             current,
             rng,
             template_weights=_iter_weights,
@@ -840,9 +890,16 @@ def generate_layer_graph(
             op_weights=config.op_weights or None,
         )
 
-        if _graph_exceeds_final_budget(trial_graph, config):
+        if _graph_exceeds_final_budget(graph, config):
+            # Rollback: remove added nodes, restore metadata
+            added_ids = set(graph.nodes.keys()) - prev_node_ids
+            for nid in added_ids:
+                del graph.nodes[nid]
+            graph._next_id = prev_next_id
+            graph._output_node_id = prev_output_id
+            graph.metadata = prev_metadata
+            graph._cache.clear()
             break
-        graph = trial_graph
         current = trial_current
 
     # Record depth placement for leaderboard analysis

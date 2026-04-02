@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from .compiler_op_utils import (
     aria_core,
     _c,
+    _flatten_for_kernel,
+    _unflatten_from_kernel,
     record_kernel_fallback,
 )
 
@@ -270,6 +272,94 @@ def _op_spectral_filter(module, inputs, config):
     return torch.fft.irfft(X_f, n=x.shape[-1], dim=-1)
 
 
+# ── Compression ops ──
+
+
+def _op_low_rank_proj(module, inputs, _):
+    from ..mathspaces.compression import execute_low_rank_proj
+
+    if not hasattr(module, "U") or not hasattr(module, "V"):
+        return inputs[0]
+    if _c(inputs[0]):
+        bias = getattr(module, "bias", None)
+        x, orig_shape = _flatten_for_kernel(inputs[0])
+        out = aria_core.linear_low_rank_f32(
+            x, module.U.t().contiguous(), module.V.t().contiguous(), bias
+        )
+        return _unflatten_from_kernel(out, orig_shape)
+    return execute_low_rank_proj(module, inputs[0])
+
+
+def _op_grouped_linear(module, inputs, _):
+    from ..mathspaces.compression import execute_grouped_linear
+
+    if not hasattr(module, "weight"):
+        return inputs[0]
+    if _c(inputs[0]):
+        bias = getattr(module, "bias", None)
+        x, orig_shape = _flatten_for_kernel(inputs[0])
+        out = aria_core.linear_grouped_f32(x, module.weight, bias, module.n_groups)
+        return _unflatten_from_kernel(out, orig_shape)
+    return execute_grouped_linear(module, inputs[0])
+
+
+def _op_bottleneck_proj(module, inputs, _):
+    from ..mathspaces.compression import execute_bottleneck_proj
+
+    if not hasattr(module, "down") or not hasattr(module, "up"):
+        return inputs[0]
+    if _c(inputs[0]):
+        b_down = getattr(module, "bias_down", None)
+        b_up = getattr(module, "bias_up", None)
+        x, orig_shape = _flatten_for_kernel(inputs[0])
+        out = aria_core.linear_bottleneck_f32(x, module.down, module.up, b_down, b_up)
+        return _unflatten_from_kernel(out, orig_shape)
+    return execute_bottleneck_proj(module, inputs[0])
+
+
+def _op_shared_basis_proj(module, inputs, _):
+    from ..mathspaces.compression import execute_shared_basis_proj
+
+    if not hasattr(module, "mixing") or not hasattr(module, "basis"):
+        return inputs[0]
+    if _c(inputs[0]):
+        x, orig_shape = _flatten_for_kernel(inputs[0])
+        out = aria_core.linear_shared_basis_f32(
+            x, module.mixing.T.contiguous(), module.basis
+        )
+        return _unflatten_from_kernel(out, orig_shape)
+    return execute_shared_basis_proj(module, inputs[0])
+
+
+def _op_tied_proj(module, inputs, _):
+    from ..mathspaces.compression import execute_tied_proj
+
+    if not hasattr(module, "tied_weight"):
+        return inputs[0]
+    if _c(inputs[0]):
+        b_down = getattr(module, "bias_down", None)
+        b_up = getattr(module, "bias_up", None)
+        x, orig_shape = _flatten_for_kernel(inputs[0])
+        out = aria_core.linear_tied_f32(x, module.tied_weight, b_down, b_up)
+        return _unflatten_from_kernel(out, orig_shape)
+    return execute_tied_proj(module, inputs[0])
+
+
+# ── Tropical routing ops ──
+
+
+def _op_tropical_router(module, inputs, config):
+    from ..mathspaces.tropical_routing import execute_tropical_router
+
+    return execute_tropical_router(module, inputs[0])
+
+
+def _op_tropical_moe(module, inputs, config):
+    from ..mathspaces.tropical_routing import execute_tropical_moe
+
+    return execute_tropical_moe(module, inputs[0])
+
+
 OP_IMPLS: Dict[str, Callable] = {
     "poincare_add": _op_poincare_add,
     "exp_map": _op_exp_map,
@@ -300,4 +390,11 @@ OP_IMPLS: Dict[str, Callable] = {
     "integral_kernel": _op_integral_kernel,
     "fixed_point_iter": _op_fixed_point_iter,
     "ultrametric_attention": _op_ultrametric_attention,
+    "low_rank_proj": _op_low_rank_proj,
+    "grouped_linear": _op_grouped_linear,
+    "bottleneck_proj": _op_bottleneck_proj,
+    "shared_basis_proj": _op_shared_basis_proj,
+    "tied_proj": _op_tied_proj,
+    "tropical_router": _op_tropical_router,
+    "tropical_moe": _op_tropical_moe,
 }

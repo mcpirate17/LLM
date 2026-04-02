@@ -15,8 +15,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .utils import measure_loss as _measure_loss_shared
 
-@dataclass
+
+@dataclass(slots=True)
 class OneShotPruneResult:
     method: str
     target_sparsity: float
@@ -104,26 +106,7 @@ def estimate_lm_ce_loss(
     device: torch.device,
 ) -> Optional[float]:
     """Estimate average CE loss on provided token batches without training."""
-    if not input_batches:
-        return None
-
-    model.eval()
-    losses: List[float] = []
-    with torch.no_grad():
-        for batch in input_batches:
-            input_ids = batch.to(device)
-            logits = model(input_ids)
-            loss = F.cross_entropy(
-                logits[:, :-1].reshape(-1, logits.shape[-1]),
-                input_ids[:, 1:].reshape(-1),
-            )
-            if torch.isnan(loss) or torch.isinf(loss):
-                continue
-            losses.append(float(loss.item()))
-
-    if not losses:
-        return None
-    return float(sum(losses) / len(losses))
+    return _measure_loss_shared(model, input_batches, device)
 
 
 def run_dense_vs_structured_sparse_ablation(

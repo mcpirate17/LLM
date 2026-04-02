@@ -25,6 +25,7 @@ import torch
 import torch.nn as nn
 
 from research.env import aria_core, HAS_ARIA_CORE as _HAS_ARIA_CORE
+from research.mathspaces._utils import causal_mask
 
 try:
     from ..synthesis.kernels import triton_tropical_matmul
@@ -92,11 +93,6 @@ def tropical_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return _smooth_min(x, y)
 
 
-def tropical_mul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Tropical multiplication: element-wise standard addition."""
-    return x + y
-
-
 class _TropicalMatmulFn(torch.autograd.Function):
     """Memory-efficient tropical matmul: min_k(a_ik + b_kj) via chunking.
 
@@ -137,7 +133,6 @@ class _TropicalMatmulFn(torch.autograd.Function):
         a, b_val = ctx.saved_tensors
         chunk_size = ctx.chunk_size
         B, S1, D = a.shape
-        b_val.shape[1]
 
         adaptive_tau = _adaptive_temperature(ctx.tau, D)
 
@@ -281,8 +276,7 @@ def tropical_attention(
     # Apply causal mask if S > 1
     S = q.shape[1]
     if S > 1:
-        mask = torch.triu(torch.ones(S, S, device=q.device), diagonal=1).bool()
-        distances.masked_fill_(mask, float("inf"))
+        distances.masked_fill_(causal_mask(S, q.device), float("inf"))
 
     # Softmin: attend to closest tokens
     weights = tropical_softmax(distances, dim=-1)  # (B, S, S)
@@ -316,9 +310,7 @@ def execute_tropical_matmul(
 
     # Apply causal mask if S > 1
     if S > 1:
-        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-        # For tropical softmax (distance-based), we set future distances to infinity
-        scores.masked_fill_(mask, float("inf"))
+        scores.masked_fill_(causal_mask(S, x.device), float("inf"))
 
     weights = tropical_softmax(scores, dim=-1)
     return torch.bmm(weights, y)  # (B, S, D)
@@ -382,8 +374,7 @@ def execute_tropical_gate(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
     # Apply causal mask if S > 1
     if S > 1:
-        mask = torch.triu(torch.ones(S, S, device=x.device), diagonal=1).bool()
-        distances.masked_fill_(mask, float("inf"))
+        distances.masked_fill_(causal_mask(S, x.device), float("inf"))
 
     gate_scores = tropical_softmax(distances, dim=-1)  # (B, S, S)
     gated = torch.bmm(gate_scores, x)  # (B, S, D)

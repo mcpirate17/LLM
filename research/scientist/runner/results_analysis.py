@@ -242,114 +242,74 @@ class _ResultsAnalysisMixin:
 
         try:
             conn = nb.conn
-            for tpl in templates:
-                row = conn.execute(
-                    "SELECT eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss FROM template_stats WHERE template_name = ?",
-                    (tpl,),
-                ).fetchone()
-                if row:
-                    ec, s0c, s1c, ml, mnl = row
-                    ec2 = ec + 1
-                    new_mean = (
-                        (ml * ec + loss_ratio) / ec2
-                        if valid_loss and ml is not None
-                        else (loss_ratio if valid_loss else ml)
+            loss_val = loss_ratio if valid_loss else None
+
+            def _batch_upsert_stats(
+                table: str,
+                name_col: str,
+                names: list,
+            ) -> None:
+                """Batch-upsert stats: one SELECT for all names, then batch UPDATE/INSERT."""
+                if not names:
+                    return
+                placeholders = ",".join("?" for _ in names)
+                rows = conn.execute(
+                    f"SELECT {name_col}, eval_count, s0_pass_count, s1_pass_count, "
+                    f"mean_loss, min_loss FROM {table} WHERE {name_col} IN ({placeholders})",
+                    names,
+                ).fetchall()
+                existing = {r[0]: r[1:] for r in rows}
+
+                updates = []
+                inserts = []
+                for name in names:
+                    if name in existing:
+                        ec, s0c, s1c, ml, mnl = existing[name]
+                        ec2 = ec + 1
+                        new_mean = (
+                            (ml * ec + loss_ratio) / ec2
+                            if valid_loss and ml is not None
+                            else (loss_ratio if valid_loss else ml)
+                        )
+                        new_min = (
+                            min(mnl, loss_ratio)
+                            if valid_loss and mnl is not None
+                            else (loss_ratio if valid_loss else mnl)
+                        )
+                        updates.append(
+                            (
+                                ec2,
+                                s0c + s0_inc,
+                                s1c + s1_inc,
+                                new_mean,
+                                new_min,
+                                now,
+                                name,
+                            )
+                        )
+                    else:
+                        inserts.append(
+                            (name, 1, s0_inc, s1_inc, loss_val, loss_val, now)
+                        )
+
+                if updates:
+                    conn.executemany(
+                        f"UPDATE {table} SET eval_count=?, s0_pass_count=?, "
+                        f"s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? "
+                        f"WHERE {name_col}=?",
+                        updates,
                     )
-                    new_min = (
-                        min(mnl, loss_ratio)
-                        if valid_loss and mnl is not None
-                        else (loss_ratio if valid_loss else mnl)
-                    )
-                    conn.execute(
-                        "UPDATE template_stats SET eval_count=?, s0_pass_count=?, s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? WHERE template_name=?",
-                        (ec2, s0c + s0_inc, s1c + s1_inc, new_mean, new_min, now, tpl),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT INTO template_stats (template_name, eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss, last_updated) VALUES (?,?,?,?,?,?,?)",
-                        (
-                            tpl,
-                            1,
-                            s0_inc,
-                            s1_inc,
-                            loss_ratio if valid_loss else None,
-                            loss_ratio if valid_loss else None,
-                            now,
-                        ),
+                if inserts:
+                    conn.executemany(
+                        f"INSERT INTO {table} ({name_col}, eval_count, s0_pass_count, "
+                        f"s1_pass_count, mean_loss, min_loss, last_updated) "
+                        f"VALUES (?,?,?,?,?,?,?)",
+                        inserts,
                     )
 
-            # Incremental motif_stats updates (same pattern as template_stats)
-            for mot in motifs:
-                row = conn.execute(
-                    "SELECT eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss FROM motif_stats WHERE motif_name = ?",
-                    (mot,),
-                ).fetchone()
-                if row:
-                    ec, s0c, s1c, ml, mnl = row
-                    ec2 = ec + 1
-                    new_mean = (
-                        (ml * ec + loss_ratio) / ec2
-                        if valid_loss and ml is not None
-                        else (loss_ratio if valid_loss else ml)
-                    )
-                    new_min = (
-                        min(mnl, loss_ratio)
-                        if valid_loss and mnl is not None
-                        else (loss_ratio if valid_loss else mnl)
-                    )
-                    conn.execute(
-                        "UPDATE motif_stats SET eval_count=?, s0_pass_count=?, s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? WHERE motif_name=?",
-                        (ec2, s0c + s0_inc, s1c + s1_inc, new_mean, new_min, now, mot),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT INTO motif_stats (motif_name, eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss, last_updated) VALUES (?,?,?,?,?,?,?)",
-                        (
-                            mot,
-                            1,
-                            s0_inc,
-                            s1_inc,
-                            loss_ratio if valid_loss else None,
-                            loss_ratio if valid_loss else None,
-                            now,
-                        ),
-                    )
-
-            for op in ops:
-                row = conn.execute(
-                    "SELECT eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss FROM op_stats WHERE op_name = ?",
-                    (op,),
-                ).fetchone()
-                if row:
-                    ec, s0c, s1c, ml, mnl = row
-                    ec2 = ec + 1
-                    new_mean = (
-                        (ml * ec + loss_ratio) / ec2
-                        if valid_loss and ml is not None
-                        else (loss_ratio if valid_loss else ml)
-                    )
-                    new_min = (
-                        min(mnl, loss_ratio)
-                        if valid_loss and mnl is not None
-                        else (loss_ratio if valid_loss else mnl)
-                    )
-                    conn.execute(
-                        "UPDATE op_stats SET eval_count=?, s0_pass_count=?, s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? WHERE op_name=?",
-                        (ec2, s0c + s0_inc, s1c + s1_inc, new_mean, new_min, now, op),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT INTO op_stats (op_name, eval_count, s0_pass_count, s1_pass_count, mean_loss, min_loss, last_updated) VALUES (?,?,?,?,?,?,?)",
-                        (
-                            op,
-                            1,
-                            s0_inc,
-                            s1_inc,
-                            loss_ratio if valid_loss else None,
-                            loss_ratio if valid_loss else None,
-                            now,
-                        ),
-                    )
+            _batch_upsert_stats("template_stats", "template_name", templates)
+            _batch_upsert_stats("motif_stats", "motif_name", motifs)
+            _batch_upsert_stats("op_stats", "op_name", list(ops))
             conn.commit()
         except Exception:
             logger.debug("Failed to update analytics stats", exc_info=True)

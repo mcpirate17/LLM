@@ -45,7 +45,11 @@ def register_chat_routes(app, context: ApiRouteContext):
         """Expose chat action/summarization guardrail metrics."""
         try:
             window = int(request.args.get("window", 200))
-        except Exception:
+        except ValueError:
+            logger.debug(
+                "Invalid chat guardrails window=%r; defaulting to 200",
+                request.args.get("window"),
+            )
             window = 200
         return jsonify(chat_guardrail_snapshot(window=window))
 
@@ -271,8 +275,12 @@ def register_chat_routes(app, context: ApiRouteContext):
                         text=concise_reply,
                         label="Aria",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to persist concise Aria reply for session_id=%s: %s",
+                        session_id,
+                        exc,
+                    )
             record_chat_guardrail_event(
                 actionable=bool(actions_taken or code_agent_task),
                 advice_only=not bool(actions_taken or code_agent_task),
@@ -303,8 +311,12 @@ def register_chat_routes(app, context: ApiRouteContext):
                     text=question,
                     label="You",
                 )
-            except Exception:
-                pass  # Non-fatal — don't block chat on persistence failure
+            except Exception as exc:
+                logger.debug(
+                    "Failed to persist user chat message for session_id=%s: %s",
+                    session_id,
+                    exc,
+                )
 
         # Build history lines: prefer DB history when session_id given
         history_lines: List[str] = []
@@ -318,8 +330,12 @@ def register_chat_routes(app, context: ApiRouteContext):
                         continue
                     label = "ARIA" if role in {"aria", "assistant"} else role.upper()
                     history_lines.append(f"{label}: {text}")
-            except Exception:
-                pass  # Fall through to request-body history
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load DB chat history for session_id=%s; falling back to request history: %s",
+                    session_id,
+                    exc,
+                )
         if not history_lines and isinstance(history_raw, list):
             for entry in history_raw[-8:]:
                 if not isinstance(entry, dict):
@@ -466,8 +482,12 @@ def register_chat_routes(app, context: ApiRouteContext):
                                             context_lines.append(
                                                 f"Indexed files: {files_hint}"
                                             )
-                                    except Exception:
-                                        pass
+                                    except Exception as exc:
+                                        logger.debug(
+                                            "Failed to query file index for chat goal=%r: %s",
+                                            goal[:120],
+                                            exc,
+                                        )
                                     history_tail = (
                                         " | ".join(history_lines[-3:])
                                         if history_lines
@@ -581,8 +601,12 @@ def register_chat_routes(app, context: ApiRouteContext):
                                 text=reply_text,
                                 label="Aria",
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug(
+                                "Failed to persist Aria chat reply for session_id=%s: %s",
+                                session_id,
+                                exc,
+                            )
                     return jsonify(
                         {
                             "reply": reply_text,
@@ -633,8 +657,12 @@ def register_chat_routes(app, context: ApiRouteContext):
                     text=fallback_reply,
                     label=f"Aria (fallback: {fallback_reason})",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to persist fallback Aria chat reply for session_id=%s: %s",
+                    session_id,
+                    exc,
+                )
         record_chat_guardrail_event(
             actionable=False,
             advice_only=True,

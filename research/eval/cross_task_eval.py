@@ -117,6 +117,8 @@ def _download_nl_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
     combined = "\n".join(t for t in texts if t.strip())
     if len(combined) > max_chars:
         combined = combined[:max_chars]
+    path.write_text(combined, encoding="utf-8")
+    return path
 
 
 def evaluate_cross_task_robustness(

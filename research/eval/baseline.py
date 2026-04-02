@@ -286,10 +286,7 @@ class TransformerBaseline:
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
 
-                loss_val = loss.item()
-                if step == 0:
-                    pass
-                final_loss = loss_val
+                final_loss = loss.item()
 
         finally:
             del model, optimizer
@@ -328,7 +325,7 @@ class TransformerBaseline:
             batch_size,
             lr,
             device,
-            n_layers=2,
+            n_layers=n_layers,
             optimizer_name=optimizer_name,
             weight_decay=weight_decay,
             momentum=momentum,

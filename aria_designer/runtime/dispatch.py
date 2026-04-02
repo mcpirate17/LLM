@@ -4,7 +4,6 @@ from collections import deque
 
 import numpy as np
 import torch
-from typing import Optional
 
 from research.defaults import ROPE_THETA_BASE
 
@@ -18,12 +17,21 @@ except ImportError:
 
 def _np_to_torch(x):
     """Convert numpy array to contiguous float32 torch tensor."""
+    if isinstance(x, torch.Tensor):
+        return x.float().contiguous()
     return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))
 
 
 def _torch_to_np(t):
     """Convert torch tensor to numpy."""
     return t.numpy()
+
+
+def _to_output(t, *, like):
+    """Return tensor in the same format as the input (numpy or torch)."""
+    if isinstance(like, torch.Tensor):
+        return t if isinstance(t, torch.Tensor) else torch.from_numpy(t)
+    return t.numpy() if isinstance(t, torch.Tensor) else t
 
 
 class KernelDispatcher:
@@ -107,129 +115,135 @@ class KernelDispatcher:
     # ── Kernel dispatch methods ───────────────────────────────────────
     # Each method tries: aria_core → Python/torch fallback
 
-    def relu(self, x: np.ndarray) -> np.ndarray:
+    def relu(self, x):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.relu_f32(_np_to_torch(x)))
-        return torch.relu(torch.from_numpy(x)).numpy()
+            return _to_output(aria_core.relu_f32(_np_to_torch(x)), like=x)
+        return _to_output(torch.relu(_np_to_torch(x)), like=x)
 
-    def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def matmul(self, a, b):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.matmul_f32(_np_to_torch(a), _np_to_torch(b)))
-        return (torch.from_numpy(a) @ torch.from_numpy(b)).numpy()
+            return _to_output(
+                aria_core.matmul_f32(_np_to_torch(a), _np_to_torch(b)), like=a
+            )
+        return _to_output(_np_to_torch(a) @ _np_to_torch(b), like=a)
 
-    def tropical_add(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def tropical_add(self, a, b):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.tropical_add_f32(_np_to_torch(a), _np_to_torch(b))
+            return _to_output(
+                aria_core.tropical_add_f32(_np_to_torch(a), _np_to_torch(b)), like=a
+            )
+        if isinstance(a, torch.Tensor):
+            return torch.minimum(
+                a, b if isinstance(b, torch.Tensor) else _np_to_torch(b)
             )
         return np.minimum(a, b)
 
-    def tropical_matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def tropical_matmul(self, a, b):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.tropical_matmul_f32(_np_to_torch(a), _np_to_torch(b))
+            return _to_output(
+                aria_core.tropical_matmul_f32(_np_to_torch(a), _np_to_torch(b)), like=a
             )
+        if isinstance(a, torch.Tensor):
+            bt = b if isinstance(b, torch.Tensor) else _np_to_torch(b)
+            return torch.min(a[:, :, None] + bt[None, :, :], dim=1).values
         return np.min(a[:, :, None] + b[None, :, :], axis=1).astype(np.float32)
 
-    def tropical_center(self, x: np.ndarray) -> np.ndarray:
+    def tropical_center(self, x):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.tropical_center_f32(_np_to_torch(x)))
+            return _to_output(aria_core.tropical_center_f32(_np_to_torch(x)), like=x)
+        if isinstance(x, torch.Tensor):
+            return x - torch.min(x, dim=1, keepdim=True).values
         baseline = np.min(x, axis=1, keepdims=True)
         return x - baseline
 
-    def hyp_distance(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    def hyp_distance(self, x, y):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.hyp_distance_f32(_np_to_torch(x), _np_to_torch(y))
+            return _to_output(
+                aria_core.hyp_distance_f32(_np_to_torch(x), _np_to_torch(y)), like=x
             )
+        if isinstance(x, torch.Tensor):
+            yt = y if isinstance(y, torch.Tensor) else _np_to_torch(y)
+            return torch.linalg.norm(x - yt, dim=-1)
         return np.linalg.norm(x - y, axis=-1)
 
     # ── Reference Architecture Ops ──
 
-    def embedding_lookup(
-        self, table: np.ndarray, idx: np.ndarray, pe: Optional[np.ndarray] = None
-    ) -> np.ndarray:
+    def embedding_lookup(self, table, idx, pe=None):
         if _HAS_ARIA_CORE and self.use_native:
             pe_t = _np_to_torch(pe) if pe is not None else None
-            return _torch_to_np(
-                aria_core.embedding_lookup_f32(
-                    _np_to_torch(table), torch.from_numpy(idx.astype(np.int32)), pe_t
-                )
+            idx_t = (
+                idx
+                if isinstance(idx, torch.Tensor)
+                else torch.from_numpy(idx.astype(np.int32))
             )
-        t = torch.from_numpy(table)
-        i = torch.from_numpy(idx.astype(np.int64))
+            return _to_output(
+                aria_core.embedding_lookup_f32(_np_to_torch(table), idx_t.int(), pe_t),
+                like=table,
+            )
+        t = _np_to_torch(table)
+        i = (
+            idx
+            if isinstance(idx, torch.Tensor)
+            else torch.from_numpy(idx.astype(np.int64))
+        )
+        i = i.long()
         res = t[i]
         if pe is not None:
-            res += torch.from_numpy(pe)
-        return res.numpy()
+            res = res + _np_to_torch(pe)
+        return _to_output(res, like=table)
 
-    def rope_rotate(
-        self, x: np.ndarray, theta_base: float = ROPE_THETA_BASE
-    ) -> np.ndarray:
+    def rope_rotate(self, x, theta_base: float = ROPE_THETA_BASE):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base))
+            return _to_output(
+                aria_core.rope_rotate_f32(_np_to_torch(x), float(theta_base)), like=x
             )
         # RoPE: rotate pairs of dimensions by position-dependent angles
         # x shape: (..., seq_len, d) where d is even
-        *batch, seq_len, d = x.shape
+        xt = _np_to_torch(x)
+        *batch, seq_len, d = xt.shape
         half_d = d // 2
-        positions = np.arange(seq_len, dtype=np.float32)
-        dim_indices = np.arange(half_d, dtype=np.float32)
+        positions = torch.arange(seq_len, dtype=torch.float32)
+        dim_indices = torch.arange(half_d, dtype=torch.float32)
         freqs = positions[:, None] / (theta_base ** (dim_indices[None, :] / half_d))
-        cos_f = np.cos(freqs).astype(np.float32)
-        sin_f = np.sin(freqs).astype(np.float32)
-        x1 = x[..., :half_d]
-        x2 = x[..., half_d:]
-        return np.concatenate(
-            [x1 * cos_f - x2 * sin_f, x1 * sin_f + x2 * cos_f], axis=-1
-        )
+        cos_f = torch.cos(freqs)
+        sin_f = torch.sin(freqs)
+        x1 = xt[..., :half_d]
+        x2 = xt[..., half_d:]
+        result = torch.cat([x1 * cos_f - x2 * sin_f, x1 * sin_f + x2 * cos_f], dim=-1)
+        return _to_output(result, like=x)
 
-    def gated_linear(
-        self,
-        x: np.ndarray,
-        w: np.ndarray,
-        b: Optional[np.ndarray],
-        wg: np.ndarray,
-        bg: Optional[np.ndarray],
-    ) -> np.ndarray:
+    def gated_linear(self, x, w, b, wg, bg):
         if _HAS_ARIA_CORE and self.use_native:
             bt = _np_to_torch(b) if b is not None else None
             bgt = _np_to_torch(bg) if bg is not None else None
-            return _torch_to_np(
+            return _to_output(
                 aria_core.gated_linear_f32(
                     _np_to_torch(x), _np_to_torch(w), bt, _np_to_torch(wg), bgt
-                )
+                ),
+                like=x,
             )
-        xt = torch.from_numpy(x)
-        res = torch.nn.functional.linear(
-            xt, torch.from_numpy(w), torch.from_numpy(b) if b is not None else None
-        )
-        gate = torch.nn.functional.linear(
-            xt, torch.from_numpy(wg), torch.from_numpy(bg) if bg is not None else None
-        )
-        return (res * torch.sigmoid(gate)).numpy()
+        xt = _np_to_torch(x)
+        wt = _np_to_torch(w)
+        wgt = _np_to_torch(wg)
+        bt = _np_to_torch(b) if b is not None else None
+        bgt = _np_to_torch(bg) if bg is not None else None
+        res = torch.nn.functional.linear(xt, wt, bt)
+        gate = torch.nn.functional.linear(xt, wgt, bgt)
+        return _to_output(res * torch.sigmoid(gate), like=x)
 
-    def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    def cosine_similarity(self, a, b):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.cosine_similarity_f32(_np_to_torch(a), _np_to_torch(b))
+            return _to_output(
+                aria_core.cosine_similarity_f32(_np_to_torch(a), _np_to_torch(b)),
+                like=a,
             )
-        at = torch.from_numpy(a)
-        bt = torch.from_numpy(b)
-        return torch.nn.functional.cosine_similarity(at, bt, dim=-1).numpy()
+        at = _np_to_torch(a)
+        bt = _np_to_torch(b)
+        return _to_output(torch.nn.functional.cosine_similarity(at, bt, dim=-1), like=a)
 
-    def rwkv_time_mixing(
-        self,
-        x: np.ndarray,
-        decay: np.ndarray,
-        bonus: np.ndarray,
-        wk: np.ndarray,
-        wv: np.ndarray,
-        wr: np.ndarray,
-    ) -> np.ndarray:
+    def rwkv_time_mixing(self, x, decay, bonus, wk, wv, wr):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
+            return _to_output(
                 aria_core.rwkv_time_mixing_f32(
                     _np_to_torch(x),
                     _np_to_torch(decay),
@@ -237,36 +251,49 @@ class KernelDispatcher:
                     _np_to_torch(wk),
                     _np_to_torch(wv),
                     _np_to_torch(wr),
-                )
+                ),
+                like=x,
             )
         # RWKV time-mixing: linear attention with exponential decay
         # x: (batch, seq_len, d), decay/bonus: (d,), wk/wv/wr: (d, d)
-        k = x @ wk  # (batch, seq_len, d)
-        v = x @ wv
-        r = 1.0 / (1.0 + np.exp(-(x @ wr)))  # receptance gate (sigmoid)
+        x_np = x.numpy() if isinstance(x, torch.Tensor) else x
+        decay_np = decay.numpy() if isinstance(decay, torch.Tensor) else decay
+        bonus_np = bonus.numpy() if isinstance(bonus, torch.Tensor) else bonus
+        wk_np = wk.numpy() if isinstance(wk, torch.Tensor) else wk
+        wv_np = wv.numpy() if isinstance(wv, torch.Tensor) else wv
+        wr_np = wr.numpy() if isinstance(wr, torch.Tensor) else wr
+
+        k = x_np @ wk_np
+        v = x_np @ wv_np
+        r = 1.0 / (1.0 + np.exp(-(x_np @ wr_np)))
 
         b, seq_len, d = k.shape
-        out = np.zeros_like(x, dtype=np.float32)
+        out = np.zeros_like(x_np, dtype=np.float32)
         state = np.zeros((b, d), dtype=np.float32)
         for t in range(seq_len):
             kt = k[:, t, :]
             vt = v[:, t, :]
-            bonus_term = np.exp(bonus + kt) * vt
+            bonus_term = np.exp(bonus_np + kt) * vt
             out[:, t, :] = r[:, t, :] * (state + bonus_term)
-            state = np.exp(decay) * state + np.exp(kt) * vt
-        return out
+            state = np.exp(decay_np) * state + np.exp(kt) * vt
+        return _to_output(torch.from_numpy(out), like=x)
 
-    def causal_mask(self, x: np.ndarray) -> np.ndarray:
+    def causal_mask(self, x):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.causal_mask_f32(_np_to_torch(x)))
-        xt = torch.from_numpy(x)
+            return _to_output(aria_core.causal_mask_f32(_np_to_torch(x)), like=x)
+        xt = _np_to_torch(x).clone()
         mask = torch.triu(torch.ones(xt.size(-2), xt.size(-1)), diagonal=1).bool()
         xt.masked_fill_(mask, float("-inf"))
-        return xt.numpy()
+        return _to_output(xt, like=x)
 
-    def padic_gate(self, x: np.ndarray, p: float = 2.0) -> np.ndarray:
+    def padic_gate(self, x, p: float = 2.0):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(aria_core.padic_gate_f32(_np_to_torch(x), p))
+            return _to_output(aria_core.padic_gate_f32(_np_to_torch(x), p), like=x)
+        if isinstance(x, torch.Tensor):
+            abs_x = torch.clamp(x.abs(), min=1e-10)
+            valuation = -(torch.log(abs_x) / np.log(p))
+            valuation = torch.clamp(valuation, -10.0, 10.0)
+            return x * torch.sigmoid(valuation)
         abs_x = np.maximum(np.abs(x), 1e-10)
         valuation = -(np.log(abs_x) / np.log(p))
         valuation = np.clip(valuation, -10.0, 10.0)
@@ -274,27 +301,36 @@ class KernelDispatcher:
         return x * gate
 
     @staticmethod
-    def _tropical_distance_weights(x: np.ndarray, temperature: float) -> np.ndarray:
+    def _tropical_distance_weights(x, temperature: float):
         """Tropical distance matrix + softmax weights. x: (b, s, d)."""
+        if isinstance(x, torch.Tensor):
+            dist = torch.min(x[:, :, None, :] + x[:, None, :, :], dim=-1).values
+            weights = torch.exp(-dist / temperature)
+            return weights / weights.sum(dim=-1, keepdim=True)
         dist = np.min(x[:, :, None, :] + x[:, None, :, :], axis=-1)
         weights = np.exp(-dist / temperature)
         weights /= np.sum(weights, axis=-1, keepdims=True)
         return weights
 
-    def tropical_attention(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+    def tropical_attention(self, x, temperature: float = 0.1):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.tropical_attention_f32(_np_to_torch(x), temperature)
+            return _to_output(
+                aria_core.tropical_attention_f32(_np_to_torch(x), temperature), like=x
             )
         weights = self._tropical_distance_weights(x, temperature)
+        if isinstance(x, torch.Tensor):
+            return torch.einsum("brc,bcd->brd", weights, x)
         return np.einsum("brc,bcd->brd", weights, x).astype(np.float32)
 
-    def tropical_gate(self, x: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+    def tropical_gate(self, x, temperature: float = 0.1):
         if _HAS_ARIA_CORE and self.use_native:
-            return _torch_to_np(
-                aria_core.tropical_gate_f32(_np_to_torch(x), temperature)
+            return _to_output(
+                aria_core.tropical_gate_f32(_np_to_torch(x), temperature), like=x
             )
         weights = self._tropical_distance_weights(x, temperature)
+        if isinstance(x, torch.Tensor):
+            gated = torch.einsum("brc,bcd->brd", weights, x)
+            return x * torch.sigmoid(gated)
         gated = np.einsum("brc,bcd->brd", weights, x)
         return (x * (1.0 / (1.0 + np.exp(-gated)))).astype(np.float32)
 

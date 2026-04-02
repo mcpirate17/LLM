@@ -25,10 +25,8 @@ from research.synthesis.primitives import (
     PRIMITIVE_REGISTRY,
     algebraic_types_compatible,
 )
-from research.synthesis.templates import (
-    TEMPLATES,
-    _MIXER_CLASSES,
-)
+from research.synthesis.templates import TEMPLATES
+from research.synthesis._template_helpers import _MIXER_CLASSES
 
 
 # ── Target ops under test ──────────────────────────────────────────

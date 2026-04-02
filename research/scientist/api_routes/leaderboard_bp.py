@@ -217,16 +217,25 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "composite_score": entry.get("composite_score"),
         "loss_ratio": entry.get("loss_ratio"),
         "screening_loss_ratio": entry.get("screening_loss_ratio"),
+        "screening_novelty": entry.get("screening_novelty"),
         "investigation_loss_ratio": entry.get("investigation_loss_ratio"),
         "investigation_robustness": entry.get("investigation_robustness"),
         "investigation_passed": entry.get("investigation_passed"),
+        "validation_loss_ratio": entry.get("validation_loss_ratio"),
+        "validation_baseline_ratio": entry.get("validation_baseline_ratio"),
+        "validation_multi_seed_std": entry.get("validation_multi_seed_std"),
         "validation_passed": entry.get("validation_passed"),
+        "discovery_loss_ratio": entry.get("discovery_loss_ratio"),
         "novelty_score": entry.get("novelty_score"),
         "novelty_confidence": entry.get("novelty_confidence"),
         "novelty_valid_for_promotion": entry.get("novelty_valid_for_promotion"),
         "param_count": entry.get("param_count"),
         "graph_n_params_estimate": entry.get("graph_n_params_estimate"),
         "throughput_tok_s": entry.get("throughput_tok_s"),
+        "forward_time_ms": entry.get("forward_time_ms"),
+        "flops_forward": entry.get("flops_forward"),
+        "flops_per_param": entry.get("flops_per_param"),
+        "peak_memory_mb": entry.get("peak_memory_mb"),
         "sample_efficiency": entry.get("sample_efficiency"),
         "architecture_family": entry.get("architecture_family"),
         "graph_fingerprint": entry.get("graph_fingerprint"),
@@ -237,6 +246,36 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "model_source": entry.get("model_source"),
         "reference_name": entry.get("reference_name"),
         "timestamp": entry.get("timestamp"),
+        "tags": entry.get("tags"),
+        # Scaling & efficiency (needed by candidateScore)
+        "scaling_param_efficiency": entry.get("scaling_param_efficiency"),
+        "scaling_gate_passed": entry.get("scaling_gate_passed"),
+        # Routing & sparsity (needed by candidateScore)
+        "routing_savings_ratio": entry.get("routing_savings_ratio"),
+        "routing_utilization_entropy": entry.get("routing_utilization_entropy"),
+        "n_routing_ops": entry.get("n_routing_ops"),
+        "n_sparse_ops": entry.get("n_sparse_ops"),
+        "compression_ratio": entry.get("compression_ratio"),
+        "ncd_score": entry.get("ncd_score"),
+        "depth_savings_ratio": entry.get("depth_savings_ratio"),
+        "recursion_savings_ratio": entry.get("recursion_savings_ratio"),
+        "activation_sparsity_score": entry.get("activation_sparsity_score"),
+        # Robustness (needed by candidateScore)
+        "fp_jacobian_spectral_norm": entry.get("fp_jacobian_spectral_norm"),
+        "robustness_noise_score": entry.get("robustness_noise_score"),
+        "quant_int8_retention": entry.get("quant_int8_retention"),
+        "robustness_long_ctx_score": entry.get("robustness_long_ctx_score"),
+        "robustness_long_ctx_scaling_score": entry.get(
+            "robustness_long_ctx_scaling_score"
+        ),
+        "robustness_long_ctx_assoc_score": entry.get("robustness_long_ctx_assoc_score"),
+        "robustness_long_ctx_multi_hop_score": entry.get(
+            "robustness_long_ctx_multi_hop_score"
+        ),
+        "robustness_long_ctx_passkey_score": entry.get(
+            "robustness_long_ctx_passkey_score"
+        ),
+        "max_viable_seq_len": entry.get("max_viable_seq_len"),
         # Real-token eval fields (needed by StabilityQualityQuadrant)
         "wikitext_perplexity": entry.get("wikitext_perplexity"),
         "wikitext_ppl": entry.get("wikitext_ppl"),
@@ -245,6 +284,25 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "robustness_grade": entry.get("robustness_grade"),
         "evaluation_stage": entry.get("evaluation_stage"),
         "steps_to_divergence": entry.get("steps_to_divergence"),
+        "loss_improvement_rate": entry.get("loss_improvement_rate"),
+        "baseline_loss_ratio": entry.get("baseline_loss_ratio"),
+        # HellaSwag commonsense reasoning
+        "hellaswag_acc": entry.get("hellaswag_acc"),
+        # Binding probes
+        "ar_auc": entry.get("ar_auc"),
+        "ar_final_acc": entry.get("ar_final_acc"),
+        "ar_timed_out": bool(entry.get("ar_timed_out"))
+        if entry.get("ar_timed_out") is not None
+        else None,
+        "ar_above_chance": bool(entry.get("ar_above_chance"))
+        if entry.get("ar_above_chance") is not None
+        else None,
+        "induction_auc": entry.get("induction_auc"),
+        "binding_auc": entry.get("binding_auc"),
+        "binding_composite": entry.get("binding_composite"),
+        "local_only": entry.get("local_only"),
+        # BLiMP linguistic minimal pairs
+        "blimp_overall_accuracy": entry.get("blimp_overall_accuracy"),
     }
 
 

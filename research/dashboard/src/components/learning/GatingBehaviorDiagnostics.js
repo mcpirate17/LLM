@@ -1,7 +1,17 @@
-import React, { useState, useMemo } from 'react';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import React from 'react';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export function GatingBehaviorDiagnostics({ data }) {
+  const rows = Array.isArray(data?.by_mode) ? data.by_mode : [];
+
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows,
+    filterFields: ['routing_mode'],
+    initialSortKey: 'n_programs',
+    initialSortDesc: true,
+  });
+
   if (!data || data.available === false) {
     return (
       <div className="card">
@@ -12,33 +22,6 @@ export function GatingBehaviorDiagnostics({ data }) {
       </div>
     );
   }
-
-  const rows = Array.isArray(data.by_mode) ? data.by_mode : [];
-  const [sortKey, setSortKey] = useState('n_programs');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
-
-  const filtered = useMemo(() => (
-    filterRowsByQuery(rows, filterQuery, ['routing_mode'])
-  ), [rows, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
-  };
   return (
     <div className="card">
       <div className="card-title">Gating Behavior Diagnostics</div>
@@ -67,15 +50,7 @@ export function GatingBehaviorDiagnostics({ data }) {
             value={filterQuery}
             onChange={(e) => setFilterQuery(e.target.value)}
             placeholder="Filter modes"
-            style={{
-              fontSize: 11,
-              padding: '4px 8px',
-              borderRadius: 4,
-              border: '1px solid var(--border)',
-              background: 'var(--bg-tertiary)',
-              color: 'var(--text-primary)',
-              minWidth: 160,
-            }}
+            className="filter-input"
           />
         </div>
       )}
@@ -85,19 +60,19 @@ export function GatingBehaviorDiagnostics({ data }) {
             <thead>
               <tr>
                 <th onClick={() => handleSort('routing_mode')} style={{ cursor: 'pointer' }}>
-                  Mode{sortKey === 'routing_mode' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  Mode<SortIndicator active={sortKey === 'routing_mode'} desc={sortDesc} />
                 </th>
                 <th onClick={() => handleSort('n_programs')} style={{ cursor: 'pointer' }}>
-                  N{sortKey === 'n_programs' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  N<SortIndicator active={sortKey === 'n_programs'} desc={sortDesc} />
                 </th>
                 <th onClick={() => handleSort('avg_gate_entropy')} style={{ cursor: 'pointer' }}>
-                  Entropy{sortKey === 'avg_gate_entropy' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  Entropy<SortIndicator active={sortKey === 'avg_gate_entropy'} desc={sortDesc} />
                 </th>
                 <th onClick={() => handleSort('collapse_risk_label')} style={{ cursor: 'pointer' }}>
-                  Collapse Risk{sortKey === 'collapse_risk_label' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  Collapse Risk<SortIndicator active={sortKey === 'collapse_risk_label'} desc={sortDesc} />
                 </th>
                 <th onClick={() => handleSort('avg_token_retention')} style={{ cursor: 'pointer' }}>
-                  Retention (avg){sortKey === 'avg_token_retention' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                  Retention (avg)<SortIndicator active={sortKey === 'avg_token_retention'} desc={sortDesc} />
                 </th>
                 <th>Retention Curve</th>
               </tr>

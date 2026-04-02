@@ -410,7 +410,9 @@ class GraphPredictor:
             from .interaction_model import InteractionModel
 
             trained_imodel = InteractionModel.train(
-                notebook_db=notebook_db, profiling_db=profiling_db, n_epochs=30,
+                notebook_db=notebook_db,
+                profiling_db=profiling_db,
+                n_epochs=30,
             )
             if not trained_imodel._trained:
                 trained_imodel = None
@@ -418,10 +420,14 @@ class GraphPredictor:
             pass
 
         _empty_kwargs = dict(
-            w_gate=np.zeros(0), b_gate=0.0,
-            w_rank=np.zeros(0), b_rank=5.0,
-            w_loss=np.zeros(0), b_loss=0.7,
-            op_profiles=op_profiles, pair_stability=pair_stability,
+            w_gate=np.zeros(0),
+            b_gate=0.0,
+            w_rank=np.zeros(0),
+            b_rank=5.0,
+            w_loss=np.zeros(0),
+            b_loss=0.7,
+            op_profiles=op_profiles,
+            pair_stability=pair_stability,
             imodel=trained_imodel,
         )
 
@@ -613,4 +619,59 @@ class GraphPredictor:
                 "n_features": n_features,
                 "n_positive": int(y_gate.sum()),
             },
+        )
+
+    def save(self, path: Path) -> None:
+        """Save model weights/normalization metadata to npz + JSON."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            str(path),
+            w_gate=self.w_gate,
+            w_rank=self.w_rank,
+            w_loss=self.w_loss,
+            feature_mean=self.feature_mean,
+            feature_std=self.feature_std,
+        )
+        with open(path.with_suffix(".json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "b_gate": self.b_gate,
+                    "b_rank": self.b_rank,
+                    "b_loss": self.b_loss,
+                    "feature_names": self.feature_names,
+                    "n_train": self.n_train,
+                    "trained": self._trained,
+                    "train_metrics": self._train_metrics,
+                },
+                f,
+                indent=2,
+            )
+
+    @classmethod
+    def load(
+        cls,
+        path: Path,
+        profiling_db: Path = _DEFAULT_PROFILING_DB,
+    ) -> "GraphPredictor":
+        """Load model weights/metadata from disk and refresh profiling caches."""
+        path = Path(path)
+        data = np.load(str(path))
+        with open(path.with_suffix(".json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        return cls(
+            w_gate=data["w_gate"],
+            b_gate=float(meta.get("b_gate", 0.0)),
+            w_rank=data["w_rank"],
+            b_rank=float(meta.get("b_rank", 5.0)),
+            w_loss=data["w_loss"],
+            b_loss=float(meta.get("b_loss", 0.7)),
+            feature_names=list(meta.get("feature_names", [])),
+            feature_mean=data["feature_mean"],
+            feature_std=data["feature_std"],
+            op_profiles=_load_op_profiles(profiling_db),
+            pair_stability=_load_pair_stability(profiling_db),
+            n_train=int(meta.get("n_train", 0)),
+            _trained=bool(meta.get("trained", False)),
+            _train_metrics=dict(meta.get("train_metrics", {})),
         )

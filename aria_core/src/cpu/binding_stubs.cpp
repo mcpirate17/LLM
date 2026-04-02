@@ -14,10 +14,8 @@
  * Kernels using arena_alloc (malloc/free removed):
  *   aria_sort_seq_f32, aria_topk_gate_f32, aria_sparse_threshold_f32,
  *   aria_gather_topk_f32, aria_rwkv_time_mixing_f32,
- *   aria_bottleneck_proj_f32, aria_shared_basis_proj_f32,
- *   aria_tied_proj_f32, aria_linear_low_rank_f32,
- *   aria_linear_bottleneck_f32, aria_linear_shared_basis_f32,
- *   aria_linear_tied_f32
+ *   aria_linear_low_rank_f32, aria_linear_bottleneck_f32,
+ *   aria_linear_shared_basis_f32, aria_linear_tied_f32
  * ──────────────────────────────────────────────────────────────────────
  */
 #include "kernels_common.h"
@@ -25,45 +23,7 @@
 #include <cstdlib>
 #include <cstddef>
 
-/* ══════════════════════════════════════════════════════════════════════
- * Thread-Local Arena Allocator
- * ══════════════════════════════════════════════════════════════════════ */
-
-static constexpr size_t ARENA_ALIGN = 16;  /* 16-byte alignment for SIMD */
-static constexpr size_t MAX_TEMP_BYTES = 4u * 1024u * 1024u; /* 4 MiB */
-
-struct ArenaState {
-    alignas(ARENA_ALIGN) char buf[MAX_TEMP_BYTES];
-    size_t offset;
-};
-
-static thread_local ArenaState tl_arena = {{}, 0};
-
-static inline void arena_reset() {
-    tl_arena.offset = 0;
-}
-
-static inline void *arena_alloc(size_t n) {
-    /* Round up to ARENA_ALIGN boundary */
-    size_t aligned = (n + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1);
-    size_t new_offset = tl_arena.offset + aligned;
-    if (new_offset <= MAX_TEMP_BYTES) {
-        void *ptr = tl_arena.buf + tl_arena.offset;
-        tl_arena.offset = new_offset;
-        return ptr;
-    }
-    /* Arena exhausted — fall back to heap */
-    return malloc(n);
-}
-
-/* Free only if the pointer came from the heap (outside the arena). */
-static inline void arena_free(void *ptr) {
-    char *p = static_cast<char *>(ptr);
-    if (p < tl_arena.buf || p >= tl_arena.buf + MAX_TEMP_BYTES) {
-        free(ptr);
-    }
-    /* Arena memory is freed by arena_reset() — nothing to do. */
-}
+/* Arena allocator now defined in kernels_common.h */
 
 /* ══════════════════════════════════════════════════════════════════════
  * Masking / Structural
@@ -216,8 +176,78 @@ void aria_layernorm_residual_f32(const float *x, const float *residual,
                                   const float *gamma, const float *beta,
                                   float *y, int64_t rows, int64_t cols,
                                   float eps) {
-    for (int64_t i = 0; i < rows * cols; i++) y[i] = x[i] + residual[i];
-    aria_layernorm_f32(y, gamma, beta, y, rows, cols, eps);
+    /* Fused add + layernorm in 2 passes instead of 4 (add + mean + var + norm).
+     * Pass 1: add + compute mean. Pass 2: variance + normalize + scale + shift. */
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for if(rows > ARIA_OMP_BATCH_THRESHOLD) schedule(static)
+#endif
+    for (int64_t r = 0; r < rows; r++) {
+        const float *xr = x + r * cols;
+        const float *rr = residual + r * cols;
+        float *yr = y + r * cols;
+
+        /* Pass 1: fused add + mean */
+        double sum = 0.0;
+        int64_t i = 0;
+#ifdef __AVX2__
+        __m256 vsum = _mm256_setzero_ps();
+        for (; i <= cols - 8; i += 8) {
+            __m256 vx = _mm256_loadu_ps(xr + i);
+            __m256 vr = _mm256_loadu_ps(rr + i);
+            __m256 vs = _mm256_add_ps(vx, vr);
+            _mm256_storeu_ps(yr + i, vs);
+            vsum = _mm256_add_ps(vsum, vs);
+        }
+        float tmp[8];
+        _mm256_storeu_ps(tmp, vsum);
+        for (int j = 0; j < 8; j++) sum += (double)tmp[j];
+#endif
+        for (; i < cols; i++) {
+            yr[i] = xr[i] + rr[i];
+            sum += (double)yr[i];
+        }
+        float mean = (float)(sum / (double)cols);
+
+        /* Pass 2: variance + normalize + scale + shift */
+        double var = 0.0;
+        i = 0;
+#ifdef __AVX2__
+        __m256 vmean = _mm256_set1_ps(mean);
+        __m256 vvar = _mm256_setzero_ps();
+        for (; i <= cols - 8; i += 8) {
+            __m256 vy = _mm256_loadu_ps(yr + i);
+            __m256 vd = _mm256_sub_ps(vy, vmean);
+            vvar = _mm256_fmadd_ps(vd, vd, vvar);
+        }
+        _mm256_storeu_ps(tmp, vvar);
+        for (int j = 0; j < 8; j++) var += (double)tmp[j];
+#endif
+        for (; i < cols; i++) {
+            double d = (double)yr[i] - (double)mean;
+            var += d * d;
+        }
+        float inv_std = 1.0f / sqrtf((float)(var / (double)cols) + eps);
+
+        i = 0;
+#ifdef __AVX2__
+        __m256 vinv = _mm256_set1_ps(inv_std);
+        for (; i <= cols - 8; i += 8) {
+            __m256 vy = _mm256_loadu_ps(yr + i);
+            __m256 vg = _mm256_loadu_ps(gamma + i);
+            __m256 normed = _mm256_mul_ps(_mm256_sub_ps(vy, vmean), vinv);
+            __m256 result = _mm256_mul_ps(normed, vg);
+            if (beta) {
+                __m256 vb = _mm256_loadu_ps(beta + i);
+                result = _mm256_add_ps(result, vb);
+            }
+            _mm256_storeu_ps(yr + i, result);
+        }
+#endif
+        for (; i < cols; i++) {
+            float normed = (yr[i] - mean) * inv_std;
+            yr[i] = normed * gamma[i] + (beta ? beta[i] : 0.0f);
+        }
+    }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -546,7 +576,27 @@ void aria_cosine_similarity_f32(const float *a, const float *b, float *out,
         const float *ar = a + bs * dim;
         const float *br = b + bs * dim;
         float dot = 0.0f, na = 0.0f, nb = 0.0f;
-        for (int64_t d = 0; d < dim; d++) {
+        int64_t d = 0;
+#ifdef __AVX2__
+        __m256 vdot = _mm256_setzero_ps();
+        __m256 vna = _mm256_setzero_ps();
+        __m256 vnb = _mm256_setzero_ps();
+        for (; d <= dim - 8; d += 8) {
+            __m256 va = _mm256_loadu_ps(ar + d);
+            __m256 vb = _mm256_loadu_ps(br + d);
+            vdot = _mm256_fmadd_ps(va, vb, vdot);
+            vna = _mm256_fmadd_ps(va, va, vna);
+            vnb = _mm256_fmadd_ps(vb, vb, vnb);
+        }
+        float tmp[8];
+        _mm256_storeu_ps(tmp, vdot);
+        for (int j = 0; j < 8; j++) dot += tmp[j];
+        _mm256_storeu_ps(tmp, vna);
+        for (int j = 0; j < 8; j++) na += tmp[j];
+        _mm256_storeu_ps(tmp, vnb);
+        for (int j = 0; j < 8; j++) nb += tmp[j];
+#endif
+        for (; d < dim; d++) {
             dot += ar[d] * br[d];
             na += ar[d] * ar[d];
             nb += br[d] * br[d];
@@ -682,92 +732,14 @@ void aria_rwkv_time_mixing_f32(const float *x,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * Compression Projections
+ * Compression Kernels (Tier 2) — Standardized 2D linear API
+ *
+ * The old 3D (batch,seq,dim) variants (aria_grouped_linear_f32,
+ * aria_bottleneck_proj_f32, aria_shared_basis_proj_f32,
+ * aria_tied_proj_f32) were removed — they duplicated the linear_*
+ * versions below and had no external callers.
  * ══════════════════════════════════════════════════════════════════════ */
 
-void aria_grouped_linear_f32(const float *x, const float *W, float *y,
-                               int64_t batch, int64_t seq, int64_t dim,
-                               int64_t groups, int64_t group_dim) {
-    /* Block-diagonal grouped linear: each group handles group_dim channels.
-     * W: [groups, group_dim, group_dim] */
-    int64_t total = batch * seq;
-    int64_t gd = group_dim > 0 ? group_dim : (dim / (groups > 0 ? groups : 1));
-    int64_t ng = groups > 0 ? groups : 1;
-#ifdef ARIA_HAS_OPENMP
-    #pragma omp parallel for if(total > 32) schedule(static)
-#endif
-    for (int64_t bs = 0; bs < total; bs++) {
-        const float *xr = x + bs * dim;
-        float *yr = y + bs * dim;
-        for (int64_t g = 0; g < ng; g++) {
-            int64_t offset = g * gd;
-            const float *Wg = W + g * gd * gd;
-            for (int64_t o = 0; o < gd && offset + o < dim; o++) {
-                float acc = 0.0f;
-                for (int64_t i = 0; i < gd && offset + i < dim; i++) {
-                    acc += xr[offset + i] * Wg[o * gd + i];
-                }
-                yr[offset + o] = acc;
-            }
-        }
-    }
-}
-
-void aria_bottleneck_proj_f32(const float *x, const float *down, const float *up, float *y,
-                                int64_t batch, int64_t seq, int64_t dim, int64_t rank) {
-    /* Bottleneck: y = GELU(x @ down^T) @ up^T
-     * down: [rank, dim], up: [dim, rank] */
-    arena_reset();
-    int64_t total = batch * seq;
-    float *tmp = (float *)arena_alloc(total * rank * sizeof(float));
-    if (!tmp) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
-    aria_linear_f32(x, down, NULL, tmp, total, dim, rank);
-    aria_gelu_f32(tmp, tmp, total * rank);
-    aria_linear_f32(tmp, up, NULL, y, total, rank, dim);
-    arena_free(tmp);
-}
-
-void aria_shared_basis_proj_f32(const float *x, const float *mixing, const float *basis, float *y,
-                                  int64_t batch, int64_t seq, int64_t dim, int64_t k) {
-    /* Shared basis: y = (x @ mixing^T) @ basis^T
-     * mixing: [k, dim], basis: [dim, k] */
-    arena_reset();
-    int64_t total = batch * seq;
-    float *tmp = (float *)arena_alloc(total * k * sizeof(float));
-    if (!tmp) { if (x != y) memcpy(y, x, total * dim * sizeof(float)); return; }
-    aria_linear_f32(x, mixing, NULL, tmp, total, dim, k);
-    aria_linear_f32(tmp, basis, NULL, y, total, k, dim);
-    arena_free(tmp);
-}
-
-void aria_tied_proj_f32(const float *x, const float *W, float *y,
-                          int64_t batch, int64_t seq, int64_t dim, int64_t rank) {
-    /* Tied: y = GELU(x @ W^T) @ W
-     * W: [rank, dim]. Down = W^T: [dim, rank], Up = W: [rank, dim] → need W transposed for up. */
-    arena_reset();
-    int64_t total = batch * seq;
-    float *tmp = (float *)arena_alloc(total * rank * sizeof(float));
-    float *WT = (float *)arena_alloc(dim * rank * sizeof(float));
-    if (!tmp || !WT) {
-        if (x != y) memcpy(y, x, total * dim * sizeof(float));
-        arena_free(tmp); arena_free(WT);
-        return;
-    }
-    /* W: [rank, dim] → down projection: x[total, dim] @ W^T[dim, rank] = tmp[total, rank] */
-    aria_linear_f32(x, W, NULL, tmp, total, dim, rank);
-    aria_gelu_f32(tmp, tmp, total * rank);
-    /* Up projection: tmp[total, rank] @ W[rank, dim] — need W as [dim, rank] transposed for aria_linear_f32
-     * aria_linear_f32(input, weight, bias, out, batch, dim_in, dim_out) does input @ weight^T
-     * We want tmp @ W where W is [rank, dim]. So we need a transposed version. */
-    aria_transpose2d_f32(W, WT, rank, dim); /* WT: [dim, rank] */
-    aria_linear_f32(tmp, WT, NULL, y, total, rank, dim);
-    arena_free(tmp);
-    arena_free(WT);
-}
-
-/* ══════════════════════════════════════════════════════════════════════
- * Compression Kernels (Tier 2)
- * ══════════════════════════════════════════════════════════════════════ */
 
 void aria_linear_low_rank_f32(const float *x, const float *U, const float *V, const float *bias,
                                 float *y, int64_t batch, int64_t dim_in, int64_t dim_out, int64_t rank) {

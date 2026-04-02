@@ -1,17 +1,16 @@
-"""Kernel handler for ultrametric_attention — dispatches to aria_core.ultrametric_attention_f32."""
+"""Kernel handler for ultrametric_attention — delegates to research.mathspaces.padic."""
 
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
 
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "ultrametric_attention"
+def _native_args(inputs, config):
+    x = inputs["x"].detach().contiguous().float()
+    p = config.get("p", 2)
+    return (x, float(p))
 
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        p = config.get("p", 2)
-        n_digits = config.get("n_digits", 4)
-        return (x, p, n_digits)
 
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+ComponentHandler = make_mathspace_unary_handler(
+    "ultrametric_attention",
+    "research.mathspaces.padic.execute_ultrametric_attn",
+    native_args_fn=_native_args,
+)

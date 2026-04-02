@@ -15,9 +15,10 @@ pytestmark = pytest.mark.native
 
 # Skip entire module if the Rust scheduler is not available.
 try:
-    from scientist import native_runner
+    from research.scientist.native import core as _native_core
+    from research.scientist.native import profiling as _native_profiling
 
-    rust = native_runner._try_import_rust_scheduler()
+    rust = _native_core._try_import_rust_scheduler()
     if rust is None:
         pytest.skip(
             "Rust scheduler (aria_scheduler) not available", allow_module_level=True
@@ -155,17 +156,17 @@ class TestProfiledExecution:
 
 
 class TestPythonHelpers:
-    """Test the Python-level profiling API in native_runner.py."""
+    """Test the Python-level profiling API."""
 
     def test_enable_native_profiling(self):
-        result = native_runner.enable_native_profiling(True)
+        result = _native_profiling.enable_native_profiling(True)
         assert result is True
-        result = native_runner.enable_native_profiling(False)
+        result = _native_profiling.enable_native_profiling(False)
         assert result is False
 
     def test_get_native_profile_returns_none_when_disabled(self):
-        native_runner.enable_native_profiling(False)
+        _native_profiling.enable_native_profiling(False)
         # Reset cached data
-        native_runner._last_profile_data = None
-        profile = native_runner.get_native_profile()
+        _native_profiling._last_profile_data = None
+        profile = _native_profiling.get_native_profile()
         assert profile is None

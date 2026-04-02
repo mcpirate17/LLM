@@ -153,17 +153,9 @@ class Aria(
         """Lazy-init fast analyst LLM backend."""
         if not self._analyst_llm_initialized:
             self._analyst_llm_initialized = True
-            try:
-                from .llm import create_backend
+            from .persona_llm import _init_llm_backend
 
-                self._analyst_llm = create_backend(is_analyst=True)
-                if self._analyst_llm:
-                    logger.info(
-                        f"Aria Analyst LLM backend: {self._analyst_llm.name} ({getattr(self._analyst_llm, 'model', 'default')})"
-                    )
-            except Exception as e:
-                logger.debug(f"Analyst LLM backend init failed: {e}")
-                self._analyst_llm = None
+            self._analyst_llm = _init_llm_backend(is_analyst=True)
 
         # If no analyst backend configured, fall back to primary
         return self._analyst_llm or self._get_llm()

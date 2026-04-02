@@ -34,7 +34,7 @@ export const TIER_LABELS = {
 
 // ── GPT-2 reference metrics (measured on d_model=256, 6-layer config) ──
 
-export const GPT2_REF = {
+const GPT2_REF = {
   loss_ratio: 0.2646,
   param_count: 9_767_424,
   flops_forward: 19_534_848,
@@ -48,7 +48,7 @@ export const GPT2_REF = {
  * All ratios >1.0 = better than GPT-2.
  * Requires at least 3 of 6 dimensions. Returns null if insufficient data.
  */
-export function computeEfficiencyMultiple(entry) {
+function computeEfficiencyMultiple(entry) {
   const ref = GPT2_REF;
   const ratios = {};
 
@@ -107,7 +107,7 @@ export function percentOfReference(entryLoss, refLoss) {
 
 // ── Shared normalizers ──────────────────────────────────────────────
 
-export function clamp01(value) {
+function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
@@ -123,7 +123,7 @@ function roundScore(score) {
  * Normalize a loss ratio to 0-1 where lower loss = higher score.
  * Linear: 0.0 → 1.0, 0.5 → 0.5, 1.0 → 0.0. No floor — every improvement counts.
  */
-export function normalizeLossRatio(lossRatio) {
+function normalizeLossRatio(lossRatio) {
   return lossRatio != null ? clamp01(1 - lossRatio) : 0;
 }
 
@@ -136,6 +136,8 @@ const BONUS_WEIGHTS = {
   externalComparison: 6,
   robustness: 7,
   referenceDelta: 8,
+  binding: 10,
+  blimp: 5,
 };
 
 // Maximum total bonus contribution (prevents bonus stacking from inflating scores)
@@ -531,6 +533,35 @@ function computeRoutingOverheadPenalty(entry) {
   return -3 * (1.0 - savings / 0.05);  // Up to -3 points on 100-point scale
 }
 
+/** Sigmoid S-curve centered at ratio=1.0. Mirrors Python _scurve(). */
+function _scurve(ratio, k = 4) {
+  return 1.0 / (1.0 + Math.exp(-k * (ratio - 1.0)));
+}
+
+/** Binding probe bonus: 0.4*ar + 0.3*induction + 0.3*binding_auc, S-curved. */
+function computeBindingBonus(entry) {
+  const ar = entry?.ar_auc;
+  const ind = entry?.induction_auc;
+  const bind = entry?.binding_auc;
+
+  if (ar == null && ind == null && bind == null) return null;
+
+  let bc = 0;
+  if (ar != null) bc += 0.4 * ar;
+  if (ind != null) bc += 0.3 * ind;
+  if (bind != null) bc += 0.3 * bind;
+
+  if (bc <= 0) return 0;
+  return _scurve(bc / 0.15, 6) * BONUS_WEIGHTS.binding;
+}
+
+/** BLiMP linguistic minimal pairs bonus. 50% = chance, S-curved at 60% frontier. */
+function computeBlimpBonus(entry) {
+  const acc = entry?.blimp_overall_accuracy;
+  if (acc == null || acc <= 0.50) return 0;
+  return _scurve(acc / 0.60, 6) * BONUS_WEIGHTS.blimp;
+}
+
 function computeBonusBreakdown(entry) {
   const raw = {
     efficiencyBonus: computeEfficiencyBonus(entry) ?? 0,
@@ -541,6 +572,8 @@ function computeBonusBreakdown(entry) {
     externalComparisonBonus: computeExternalComparisonBonus(entry) ?? 0,
     robustnessBonus: computeRobustnessBonus(entry) ?? 0,
     referenceDeltaBonus: computeReferenceDeltaBonus(entry) ?? 0,
+    bindingBonus: computeBindingBonus(entry) ?? 0,
+    blimpBonus: computeBlimpBonus(entry) ?? 0,
     routingOverheadPenalty: computeRoutingOverheadPenalty(entry),
   };
 
@@ -554,6 +587,26 @@ function computeBonusBreakdown(entry) {
   }
 
   return raw;
+}
+
+/**
+ * Scale bonus breakdown values to 0-100 range for display in ScoreBreakdown.
+ * Raw bonus values are 0-10 (per-weight max), but core metrics use 0-100.
+ * Without scaling, bonuses are invisible slivers in the proportional bar.
+ */
+function scaleBonusesForDisplay(bonuses) {
+  const scaled = {};
+  for (const [key, val] of Object.entries(bonuses)) {
+    if (val === 0) continue;
+    const maxWeight = BONUS_WEIGHTS[key.replace('Bonus', '').replace('Penalty', '')] || 10;
+    if (val < 0) {
+      // Penalties: scale negative values to -100..0 range
+      scaled[key] = Math.round((val / maxWeight) * 100);
+    } else {
+      scaled[key] = Math.round((val / maxWeight) * 100);
+    }
+  }
+  return scaled;
 }
 
 // ── Candidate score (programs + leaderboard entries) ────────────────
@@ -584,29 +637,18 @@ function tieredBreakdown(entry, tierOrder) {
   const consistency = entry.validation_multi_seed_std != null ? Math.max(0, 1 - entry.validation_multi_seed_std * 10) : 0;
   const tierBonus = (tierOrder[entry.tier] || 0) / 4;
   const tier = entry.tier || 'screening';
-  const bonus = computeBonusBreakdown(entry);
+  const bonus = scaleBonusesForDisplay(computeBonusBreakdown(entry));
 
   if (tier === 'breakthrough' || tier === 'validation') {
-    const raw = {
-      sLoss: screeningLoss * 10,
-      novelty: novelty * 10,
-      iLoss: investigationLoss * 10,
-      robust: robustness * 10,
-      vBase: validationBaseline * 25,
-      consistency: consistency * 15,
-      tierBonus: tierBonus * 20,
-      ...bonus,
-    };
-    // Normalize breakdown components to 0-100 by dividing by each category's max
     return {
-      ...raw,
       sLoss: Math.round(screeningLoss * 100),
       novelty: Math.round(novelty * 100),
       iLoss: Math.round(investigationLoss * 100),
       robust: Math.round(robustness * 100),
-      vBase: Math.round(validationBaseline / 1 * 100),
+      vBase: Math.round(validationBaseline * 100),
       consistency: Math.round(consistency * 100),
       tierBonus: Math.round(tierBonus * 100),
+      ...bonus,
     };
   }
 
@@ -640,7 +682,7 @@ function flatBreakdown(program) {
   const noveltyScore = program.novelty_score != null ? Math.min(program.novelty_score, 1.0) : 0;
   const baselineScore = program.baseline_loss_ratio != null ? clamp01(1.5 - program.baseline_loss_ratio) : 0;
   const throughputScore = program.throughput_tok_s != null ? Math.min(program.throughput_tok_s / 25000, 1.0) : 0;
-  const bonus = computeBonusBreakdown(program);
+  const bonus = scaleBonusesForDisplay(computeBonusBreakdown(program));
   // Penalize programs that explicitly failed S1 (passed S0 but couldn't learn)
   const s1Penalty = program.stage1_passed === false || program.stage1_passed === 0 ? 0.5 : 1.0;
 
@@ -895,7 +937,7 @@ export function discoveryScore(program) {
  * Score an experiment run 0-100.
  * Weights: S1 pass rate (40%), best loss (30%), best novelty (20%), completion (10%).
  */
-export function experimentScoreBreakdown(exp) {
+function experimentScoreBreakdown(exp) {
   if (exp?.status === 'running' && exp?.experiment_type === 'validation') {
     return { passRate: 10, loss: 0, novelty: 0, completion: 5, quality: 0 };
   }
@@ -931,7 +973,7 @@ export function experimentScoreBreakdown(exp) {
   return { passRate, quality, completion, discovery, total };
 }
 
-export function experimentScore(exp) {
+function experimentScore(exp) {
   const b = experimentScoreBreakdown(exp);
   return roundScore(b.total);
 }

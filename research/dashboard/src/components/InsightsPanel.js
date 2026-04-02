@@ -4,7 +4,8 @@ import { formatTime, scoreColor } from '../utils/format';
 import { confidenceColor } from '../utils/colors';
 import { insightScore } from '../utils/scoringEngine';
 import useRenderPerf from '../hooks/useRenderPerf';
-import { filterRowsByQuery } from '../utils/tableFiltering';
+import useInteractiveTable from './shared/useInteractiveTable';
+import SortIndicator from './shared/SortIndicator';
 
 
 const CATEGORY_COLORS = {
@@ -267,45 +268,30 @@ function NegativeResultsSection() {
 function InsightsPanel({ insights, compact }) {
   useRenderPerf(compact ? 'InsightsPanel(compact)' : 'InsightsPanel');
 
-  const [sortKey, setSortKey] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(INSIGHTS_SORT_PREFS_KEY) || '{}');
-      const validKeys = new Set([...COLUMNS_FULL, ...COLUMNS_COMPACT].map((column) => column.key));
-      if (typeof stored.sortKey === 'string' && validKeys.has(stored.sortKey)) {
-        return stored.sortKey;
-      }
-    } catch {}
-    return '_score';
-  });
-  const [sortDesc, setSortDesc] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(INSIGHTS_SORT_PREFS_KEY) || '{}');
-      if (typeof stored.sortDesc === 'boolean') {
-        return stored.sortDesc;
-      }
-    } catch {}
-    return true;
-  });
-  const [filterQuery, setFilterQuery] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [boostingId, setBoostingId] = useState(null);
   const [boostedIds, setBoostedIds] = useState(() => new Set());
   const [boostError, setBoostError] = useState(null);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(INSIGHTS_SORT_PREFS_KEY, JSON.stringify({ sortKey, sortDesc }));
-    } catch {}
-  }, [sortKey, sortDesc]);
+  const augmented = useMemo(() => {
+    if (!insights) return [];
+    return insights.map(ins => ({ ...ins, _score: insightScore(ins) }));
+  }, [insights]);
 
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDesc(!sortDesc);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  };
+  const {
+    sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort,
+  } = useInteractiveTable({
+    rows: augmented,
+    filterFields: ['category', 'content', 'status'],
+    initialSortKey: '_score',
+    initialSortDesc: true,
+    storageKey: INSIGHTS_SORT_PREFS_KEY,
+    getSortValue: (row, key) => {
+      if (key === 'category') return CATEGORY_ORDER[row.category] || 0;
+      if (key === 'status') return STATUS_ORDER[row.status] || 0;
+      return row?.[key];
+    },
+  });
 
   const handleBoost = async (insight) => {
     const insightId = insight?.insight_id || null;
@@ -331,45 +317,6 @@ function InsightsPanel({ insights, compact }) {
       setBoostingId(null);
     }
   };
-
-  const augmented = useMemo(() => {
-    if (!insights) return [];
-    return insights.map(ins => ({ ...ins, _score: insightScore(ins) }));
-  }, [insights]);
-
-  const filtered = useMemo(() => (
-    filterRowsByQuery(augmented, filterQuery, [
-      'category',
-      'content',
-      'status',
-    ])
-  ), [augmented, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va, vb;
-      if (sortKey === '_score') {
-        va = a._score; vb = b._score;
-      } else if (sortKey === 'category') {
-        va = CATEGORY_ORDER[a.category] || 0;
-        vb = CATEGORY_ORDER[b.category] || 0;
-      } else if (sortKey === 'status') {
-        va = STATUS_ORDER[a.status] || 0;
-        vb = STATUS_ORDER[b.status] || 0;
-      } else {
-        va = a[sortKey]; vb = b[sortKey];
-      }
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') {
-        return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      }
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
 
   const columns = compact ? COLUMNS_COMPACT : COLUMNS_FULL;
   const latestTimestamp = useMemo(() => {
@@ -397,15 +344,7 @@ function InsightsPanel({ insights, compact }) {
                 value={filterQuery}
                 onChange={(e) => setFilterQuery(e.target.value)}
                 placeholder="Filter insights"
-                style={{
-                  fontSize: 11,
-                  padding: '4px 8px',
-                  borderRadius: 4,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-tertiary)',
-                  color: 'var(--text-primary)',
-                  minWidth: 160,
-                }}
+                className="filter-input"
               />
             )}
           </div>
@@ -435,11 +374,7 @@ function InsightsPanel({ insights, compact }) {
                       style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
                     >
                       {col.label}
-                      {sortKey === col.key && (
-                        <span style={{ marginLeft: 4, fontSize: 10 }}>
-                          {sortDesc ? '\u25BC' : '\u25B2'}
-                        </span>
-                      )}
+                      <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                     </th>
                   ))}
                 </tr>

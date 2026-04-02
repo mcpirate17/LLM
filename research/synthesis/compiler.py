@@ -8,10 +8,9 @@ parameters allocated for parameterized ops.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import math
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Tuple, Callable
 
 import torch
 import torch.nn as nn
@@ -31,13 +30,13 @@ from .compiler_op_utils import (
     _flatten_for_kernel,
     _unflatten_from_kernel,
     _build_block_sparse_mask,
+    _record_sparse_telemetry,
+    _record_routing_telemetry,
+    _sparse_density_sampled,
+    _c,
 )
 
 logger = logging.getLogger(__name__)
-
-# Module-level kernel fallback state — set True on first native kernel fallback.
-# Importable by other modules (e.g. fingerprint.py) to condition validity flags.
-_kernel_fallback_occurred: bool = False
 
 
 try:
@@ -47,14 +46,17 @@ try:
 except ImportError:
     HAS_KERNELS = False
 
-HAS_CPU_OPS = importlib.util.find_spec("research.synthesis.cpu_ops") is not None
-
 from research.defaults import VOCAB_SIZE, MODEL_DIM, VALIDATION_SEQ_LEN
 from research.env import aria_core, HAS_ARIA_CORE
 
 
 # ── Math-space op names (frozen at import time) ──────────────────────
 _MATHSPACE_OPS: frozenset = frozenset(_ALGEBRAIC_SPACE_TAGS)
+
+# ── Performance tuning ────────────────────────────────────────────────
+# N:M mask is expensive (topk + scatter). Relative weight ordering rarely
+# changes between optimizer steps, so refresh every N forward calls.
+_NM_MASK_REFRESH_INTERVAL: int = 100
 
 # ── Registry System ───────────────────────────────────────────────────
 
@@ -148,112 +150,7 @@ def register_op(name: str):
     return decorator
 
 
-def _record_sparse_telemetry(
-    module: nn.Module,
-    op_name: str,
-    density: float,
-    fallback_reason: Optional[str] = None,
-) -> None:
-    telemetry = getattr(module, "sparse_telemetry", None)
-    if telemetry is None:
-        telemetry = {}
-        module.sparse_telemetry = telemetry
-    stats = telemetry.get(op_name)
-    if stats is None:
-        stats = {
-            "calls": 0,
-            "fallback_calls": 0,
-            "density_sum": 0.0,
-            "last_density": 1.0,
-            "last_fallback_reason": None,
-        }
-    stats["calls"] += 1
-    stats["density_sum"] += float(density)
-    stats["last_density"] = float(density)
-    if fallback_reason is not None:
-        stats["fallback_calls"] += 1
-        stats["last_fallback_reason"] = fallback_reason
-    telemetry[op_name] = stats
-    setattr(module, "sparse_telemetry", telemetry)
-
-
-def _record_routing_telemetry(
-    module: nn.Module,
-    n_experts: int,
-    selected_experts: torch.Tensor,
-    logits: Optional[torch.Tensor] = None,
-) -> None:
-    """Record MoE routing statistics: entropy, expert utilization, drop rate.
-
-    Samples every 8th call to reduce overhead while maintaining statistical accuracy.
-    """
-    telemetry = getattr(module, "routing_telemetry", None)
-    if telemetry is None:
-        telemetry = {
-            "tokens_total": 0,
-            "tokens_processed": 0,
-            "expert_counts": torch.zeros(n_experts, device=selected_experts.device),
-            "entropy_sum": 0.0,
-            "count": 0,
-            "heatmap": None,
-            "_call_count": -1,
-        }
-        module.routing_telemetry = telemetry
-
-    telemetry["_call_count"] += 1
-    B, S = selected_experts.shape[:2]
-    total_tokens = B * S
-    telemetry["tokens_total"] += total_tokens
-    telemetry["tokens_processed"] += total_tokens
-
-    # Sample every 8th call for expensive histogram + entropy (first call always records)
-    if telemetry["_call_count"] & 7 != 0:
-        telemetry["count"] += 1
-        setattr(module, "routing_telemetry", telemetry)
-        return
-
-    # Expert utilization
-    counts = torch.histc(
-        selected_experts.float(), bins=n_experts, min=0, max=n_experts - 1
-    )
-    telemetry["expert_counts"] += counts
-
-    # Entropy if logits provided
-    if logits is not None:
-        probs = F.softmax(logits, dim=-1)
-        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1).mean().item()
-        telemetry["entropy_sum"] += entropy
-        telemetry["count"] += 1
-
-    # Z13: Savings and Depth ratios
-    # If selected_experts contains indices of active tokens (e.g. top-k),
-    # we can estimate savings.
-    # For now, we'll just track if any tokens were skipped.
-
-    # Optional heatmap capture (first batch element only)
-    if getattr(module, "_capture_heatmap", False) and telemetry["heatmap"] is None:
-        telemetry["heatmap"] = selected_experts[0].detach().cpu().numpy().tolist()
-
-    setattr(module, "routing_telemetry", telemetry)
-
-
 # ── Op Implementations ──────────────────────────────────────────────
-
-
-def _c(x):
-    """Check if tensor is eligible for aria_core C kernels.
-
-    C kernels don't support autograd, so skip them when gradients are needed.
-    Requires at least 2D tensor with reasonable dimensions.
-    """
-    return (
-        HAS_ARIA_CORE
-        and x.device.type == "cpu"
-        and x.dtype == torch.float32
-        and not x.requires_grad
-        and x.dim() >= 1
-        and x.numel() > 0
-    )
 
 
 @register_op("selective_scan")
@@ -479,9 +376,13 @@ def _op_gated_delta(module, inputs, _):
     decay_h = eff_decay.reshape(B, S, H, d).permute(0, 2, 1, 3)
     beta_h = beta.reshape(B, S, H, d).permute(0, 2, 1, 3)
 
-    # Chunked scan over sequence — state is (B, H, d, d) per chunk boundary
+    # ── Parallel chunked scan ──
+    # The recurrence h[t] = decay[t] * h[t-1] + bvk[t] has (BH, d, d) state.
+    # decay[t] is (BH, d) — scales each row of h independently.  Each of the
+    # d rows of h is a d-vector whose d entries share the same scalar decay.
+    # We flatten rows into the batch dimension → BH*d independent d-vector
+    # scans, then apply Kogge-Stone parallel prefix over the chunk.
     CHUNK = min(32, S)
-    # State: (B*H, d, d) for efficient bmm
     BH = B * H
     h = torch.zeros(BH, d, d, device=x.device, dtype=x.dtype)
     outputs = []
@@ -507,11 +408,58 @@ def _op_gated_delta(module, inputs, _):
         # Precompute scaled outer products: (BH, C, d, d)
         bvk_c = beta_c.unsqueeze(-1) * (v_c.unsqueeze(-1) * k_c.unsqueeze(-2))
 
-        # Sequential scan within chunk
-        chunk_outs = torch.empty(BH, c_len, d, device=x.device, dtype=x.dtype)
-        for t in range(c_len):
-            h = decay_c[:, t, :].unsqueeze(-1) * h + bvk_c[:, t]
-            chunk_outs[:, t] = torch.bmm(q_c[:, t : t + 1, :], h).squeeze(1)
+        # ── Parallel scan within chunk ──
+        # Fold cross-chunk state h into bvk at t=0: h' = decay[0]*h + bvk[0]
+        # Then run a zero-initial-state parallel scan over the modified chunk.
+        bvk_mod = bvk_c.clone()
+        bvk_mod[:, 0] = bvk_mod[:, 0] + decay_c[:, 0, :].unsqueeze(-1) * h
+
+        # Reshape for parallel scan:
+        #   decay_c: (BH, C, d) → permute → (BH, d, C) → (BH*d, C)
+        #   bvk_mod: (BH, C, d, d) → permute → (BH, d, d, C) → (BH*d, d, C)
+        # Scan runs along last dim (C = chunk sequence length).
+        a_flat = decay_c.permute(0, 2, 1).reshape(BH * d, c_len)  # (BH*d, C)
+        b_flat = (
+            bvk_mod.permute(0, 2, 3, 1).reshape(  # (BH, d, d, C)
+                BH * d, d, c_len
+            )  # (BH*d, d, C)
+        )
+
+        # Kogge-Stone parallel prefix scan: h[t] = a[t]*h[t-1] + b[t]
+        # with a as scalar broadcast over the d-vector b.
+        log_a = torch.log(a_flat.clamp(min=1e-8))  # (BH*d, C)
+        scan_a = torch.exp(log_a)
+        scan_h = b_flat  # (BH*d, d, C)
+        stride = 1
+        while stride < c_len:
+            scan_h = torch.cat(
+                [
+                    scan_h[..., :stride],
+                    scan_a[:, None, stride:] * scan_h[..., :-stride]
+                    + scan_h[..., stride:],
+                ],
+                dim=-1,
+            )
+            scan_a = torch.cat(
+                [
+                    scan_a[..., :stride],
+                    scan_a[..., stride:] * scan_a[..., :-stride],
+                ],
+                dim=-1,
+            )
+            scan_a = scan_a.clamp(max=1.0)
+            stride *= 2
+
+        # scan_h: (BH*d, d, C) → (BH, d, d, C) → (BH, C, d, d)
+        h_all = scan_h.reshape(BH, d, d, c_len).permute(0, 3, 1, 2)
+
+        # Update cross-chunk state to last timestep's state
+        h = h_all[:, -1]  # (BH, d, d)
+
+        # Output: q[t] @ h[t] for each t → (BH, C, d)
+        # q_c: (BH, C, d), h_all: (BH, C, d, d)
+        # Batched matmul: (BH, C, 1, d) @ (BH, C, d, d) → (BH, C, 1, d) → (BH, C, d)
+        chunk_outs = torch.matmul(q_c.unsqueeze(2), h_all).squeeze(2)
 
         outputs.append(chunk_outs)
 
@@ -532,24 +480,26 @@ def _op_nm_sparse_linear(module, inputs, config):
     n = int(getattr(module, "sparsity_n", config.get("n", 2)))
     m = int(getattr(module, "sparsity_m", config.get("m", 4)))
     if m <= 0 or n <= 0 or n > m or (module.weight.shape[1] % m != 0):
-        _record_sparse_telemetry(
-            module, "nm_sparse_linear", 1.0, "invalid_nm_configuration"
-        )
         return _safe_linear(inputs[0], module.weight)
 
-    if (
-        HAS_ARIA_CORE
-        and inputs[0].device.type == "cpu"
-        and inputs[0].dtype == torch.float32
-    ):
-        mask = aria_core.nm_sparse_mask_f32(module.weight, n, m)
-        _record_sparse_telemetry(
-            module, "nm_sparse_linear", float(mask.float().mean().item())
-        )
-        return _safe_linear(inputs[0], module.weight * mask.float())
+    # Cache the N:M mask. Recompute every _NM_MASK_REFRESH_INTERVAL calls
+    # since relative weight ordering rarely changes between optimizer steps.
+    cache = getattr(module, "_nm_mask_cache", None)
+    call_count = getattr(module, "_nm_call_count", 0) + 1
+    module._nm_call_count = call_count
+    if cache is None or call_count % _NM_MASK_REFRESH_INTERVAL == 0:
+        if (
+            HAS_ARIA_CORE
+            and inputs[0].device.type == "cpu"
+            and inputs[0].dtype == torch.float32
+        ):
+            mask = aria_core.nm_sparse_mask_f32(module.weight, n, m).float()
+        else:
+            mask = _build_nm_mask(module.weight, n=n, m=m)
+        module._nm_mask_cache = mask
+    else:
+        mask = cache
 
-    mask = _build_nm_mask(module.weight, n=n, m=m)
-    _record_sparse_telemetry(module, "nm_sparse_linear", float(mask.mean().item()))
     return _safe_linear(inputs[0], module.weight * mask)
 
 
@@ -580,12 +530,14 @@ def _op_block_sparse_linear(module, inputs, config):
             )
             out = _unflatten_from_kernel(out, orig_shape)
             _record_sparse_telemetry(
-                module, "block_sparse_linear", float(mask.mean().item())
+                module, "block_sparse_linear", _sparse_density_sampled(mask, module)
             )
             return out
 
     mask = _build_block_sparse_mask(module.weight, block_size, block_density)
-    _record_sparse_telemetry(module, "block_sparse_linear", float(mask.mean().item()))
+    _record_sparse_telemetry(
+        module, "block_sparse_linear", _sparse_density_sampled(mask, module)
+    )
 
     if HAS_KERNELS and inputs[0].is_cuda:
         # Pass through to Triton kernel optimization
@@ -599,94 +551,6 @@ def _op_block_sparse_linear(module, inputs, config):
     return _safe_linear(inputs[0], module.weight * mask)
 
 
-@register_op("low_rank_proj")
-def _op_low_rank_proj(module, inputs, _):
-    if not hasattr(module, "U") or not hasattr(module, "V"):
-        return inputs[0]
-    if _c(inputs[0]):
-        bias = getattr(module, "bias", None)
-        x, orig_shape = _flatten_for_kernel(inputs[0])
-        # C kernel expects U:[rank, dim_in], V:[dim_out, rank] but Python stores
-        # U:[dim_in, rank], V:[rank, dim_out] — transpose both for the kernel
-        out = aria_core.linear_low_rank_f32(
-            x, module.U.t().contiguous(), module.V.t().contiguous(), bias
-        )
-        return _unflatten_from_kernel(out, orig_shape)
-    # PyTorch fallback
-    out = _safe_linear(_safe_linear(inputs[0], module.U.t()), module.V.t())
-    if hasattr(module, "bias"):
-        out = out + module.bias
-    return out
-
-
-@register_op("grouped_linear")
-def _op_grouped_linear(module, inputs, _):
-    if not hasattr(module, "weight"):
-        return inputs[0]
-    if _c(inputs[0]):
-        bias = getattr(module, "bias", None)
-        x, orig_shape = _flatten_for_kernel(inputs[0])
-        out = aria_core.linear_grouped_f32(x, module.weight, bias, module.n_groups)
-        return _unflatten_from_kernel(out, orig_shape)
-    # PyTorch fallback
-    x = inputs[0]
-    B, S, D = x.shape
-    g = module.n_groups
-    group_dim = D // g
-    usable = group_dim * g
-    x_groups = x[..., :usable].view(B, S, g, group_dim)
-    out_groups = torch.einsum("bsgd,gde->bsge", x_groups, module.weight)
-    out = out_groups.reshape(B, S, usable)
-    if usable < D:
-        out = torch.cat([out, x[..., usable:]], dim=-1)
-    return out
-
-
-@register_op("bottleneck_proj")
-def _op_bottleneck_proj(module, inputs, _):
-    if not hasattr(module, "down") or not hasattr(module, "up"):
-        return inputs[0]
-    if _c(inputs[0]):
-        b_down = getattr(module, "bias_down", None)
-        b_up = getattr(module, "bias_up", None)
-        x, orig_shape = _flatten_for_kernel(inputs[0])
-        out = aria_core.linear_bottleneck_f32(x, module.down, module.up, b_down, b_up)
-        return _unflatten_from_kernel(out, orig_shape)
-    # PyTorch fallback
-    hidden = F.gelu(_safe_linear(inputs[0], module.down))
-    return _safe_linear(hidden, module.up)
-
-
-@register_op("shared_basis_proj")
-def _op_shared_basis_proj(module, inputs, _):
-    if not hasattr(module, "mixing") or not hasattr(module, "basis"):
-        return inputs[0]
-    if _c(inputs[0]):
-        x, orig_shape = _flatten_for_kernel(inputs[0])
-        # C kernel expects mixing as (k, D) but we store (D, k) — transpose
-        out = aria_core.linear_shared_basis_f32(
-            x, module.mixing.T.contiguous(), module.basis
-        )
-        return _unflatten_from_kernel(out, orig_shape)
-    # PyTorch fallback: x @ (D,k) @ (k,D) -> (B,S,D)
-    return inputs[0] @ module.mixing @ module.basis
-
-
-@register_op("tied_proj")
-def _op_tied_proj(module, inputs, _):
-    if not hasattr(module, "tied_weight"):
-        return inputs[0]
-    if _c(inputs[0]):
-        b_down = getattr(module, "bias_down", None)
-        b_up = getattr(module, "bias_up", None)
-        x, orig_shape = _flatten_for_kernel(inputs[0])
-        out = aria_core.linear_tied_f32(x, module.tied_weight, b_down, b_up)
-        return _unflatten_from_kernel(out, orig_shape)
-    # PyTorch fallback
-    hidden = F.gelu(_safe_linear(inputs[0], module.tied_weight))
-    return _safe_linear(hidden, module.tied_weight.t())
-
-
 @register_op("semi_structured_2_4_linear")
 def _op_semi_structured_2_4_linear(module, inputs, config):
     if not hasattr(module, "weight"):
@@ -698,7 +562,7 @@ def _op_semi_structured_2_4_linear(module, inputs, config):
         return _safe_linear(inputs[0], module.weight)
     mask = _build_nm_mask(module.weight, n=2, m=4)
     _record_sparse_telemetry(
-        module, "semi_structured_2_4_linear", float(mask.mean().item())
+        module, "semi_structured_2_4_linear", _sparse_density_sampled(mask, module)
     )
     return _safe_linear(inputs[0], module.weight * mask)
 
@@ -828,37 +692,40 @@ def _op_sparse_bottleneck_moe(module, inputs, config):
     topk_vals, topk_idx = gate_logits.topk(top_k, dim=-1)
     gate_weights = F.softmax(topk_vals, dim=-1)
 
-    # Precompute per-expert routing weights via vectorized scatter (eliminates inner loop)
-    # expert_weights: (B, S, n_ways) — how much each expert contributes to each token
+    # Precompute per-expert routing weights via single vectorized scatter_add_.
+    # topk_idx: (B, S, top_k), gate_weights: (B, S, top_k) — scatter all k
+    # selections at once instead of looping over top_k.
     expert_weights = torch.zeros(B, S, n_ways, device=x.device, dtype=x.dtype)
-    for k_idx in range(top_k):
-        idx = topk_idx[:, :, k_idx].unsqueeze(-1)  # (B, S, 1)
-        # Under CUDA autocast, softmax/topk can promote weights while the
-        # accumulator tensor stays at the input dtype. scatter_add_ requires
-        # exact dtype match, so normalize the source explicitly.
-        src = gate_weights[:, :, k_idx].unsqueeze(-1).to(expert_weights.dtype)
-        expert_weights.scatter_add_(2, idx, src)
+    expert_weights.scatter_add_(2, topk_idx, gate_weights.to(expert_weights.dtype))
 
-    # Collect all expert weights, then batch compute
-    W_downs = []
-    W_ups = []
-    for i in range(n_ways):
-        if hasattr(module, f"expert_down_{i}"):
-            W_downs.append(getattr(module, f"expert_down_{i}"))
-            W_ups.append(getattr(module, f"expert_up_{i}"))
-        else:
-            gen_e = torch.Generator(device="cpu")
-            gen_e.manual_seed(D * 1000 + i * 100 + 1)
-            W_downs.append(
-                (torch.randn(D, hidden, generator=gen_e) * (D**-0.5)).to(
-                    device=x.device, dtype=x.dtype
+    # Collect all expert weights, then batch compute.
+    # Use pre-built lists if available (set at init), else fall back to
+    # dynamic lookup for backward compat with modules created before this opt.
+    cached_downs = getattr(module, "_expert_downs", None)
+    cached_ups = getattr(module, "_expert_ups", None)
+    if cached_downs is not None and len(cached_downs) == n_ways:
+        W_downs = list(cached_downs)
+        W_ups = list(cached_ups)
+    else:
+        W_downs = []
+        W_ups = []
+        for i in range(n_ways):
+            if hasattr(module, f"expert_down_{i}"):
+                W_downs.append(getattr(module, f"expert_down_{i}"))
+                W_ups.append(getattr(module, f"expert_up_{i}"))
+            else:
+                gen_e = torch.Generator(device="cpu")
+                gen_e.manual_seed(D * 1000 + i * 100 + 1)
+                W_downs.append(
+                    (torch.randn(D, hidden, generator=gen_e) * (D**-0.5)).to(
+                        device=x.device, dtype=x.dtype
+                    )
                 )
-            )
-            W_ups.append(
-                (torch.randn(hidden, D, generator=gen_e) * (hidden**-0.5)).to(
-                    device=x.device, dtype=x.dtype
+                W_ups.append(
+                    (torch.randn(hidden, D, generator=gen_e) * (hidden**-0.5)).to(
+                        device=x.device, dtype=x.dtype
+                    )
                 )
-            )
     # Stack: (n_ways, D, hidden), (n_ways, hidden, D)
     W_down_all = torch.stack(W_downs)  # (E, D, H)
     W_up_all = torch.stack(W_ups)  # (E, H, D)
@@ -1040,18 +907,24 @@ def _execute_op(
     if op_name in _OP_DISPATCH:
         result = _OP_DISPATCH[op_name](module, inputs, config)
 
-        # Telemetry for registered math space ops (if any)
+        # Telemetry for math-space ops: nan_to_num safety + optional telemetry.
+        # The isfinite check forces GPU→CPU sync (.item()), so only run when
+        # telemetry is explicitly requested (dashboard / profiler sets this).
         if op_name.startswith("math_"):
-            nonfinite = int((~torch.isfinite(result)).sum().item())
-            if nonfinite > 0:
+            if getattr(module, "collect_telemetry", False):
+                nonfinite = int((~torch.isfinite(result)).sum().item())
+                if nonfinite > 0:
+                    result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+                    telemetry = getattr(module, "mathspace_telemetry", {})
+                    if len(telemetry) < 256:
+                        stats = telemetry.get(op_name, {"calls": 0, "nonfinite": 0})
+                        stats["calls"] += 1
+                        stats["nonfinite"] += nonfinite
+                        telemetry[op_name] = stats
+                        setattr(module, "mathspace_telemetry", telemetry)
+            else:
+                # Lightweight nan_to_num without GPU sync
                 result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
-                telemetry = getattr(module, "mathspace_telemetry", {})
-                if len(telemetry) < 256:
-                    stats = telemetry.get(op_name, {"calls": 0, "nonfinite": 0})
-                    stats["calls"] += 1
-                    stats["nonfinite"] += nonfinite
-                    telemetry[op_name] = stats
-                    setattr(module, "mathspace_telemetry", telemetry)
         return result
 
     # Fallback for dynamic math space ops not in _OP_DISPATCH
@@ -1064,24 +937,24 @@ def _execute_op(
                 f"Check that _register_split_op_modules() completed without errors."
             )
         result = prim.execute_fn(module, *inputs)
-        # Sanitize non-finite values and record telemetry
+        # Sanitize non-finite values — always apply nan_to_num for safety.
+        # Telemetry (GPU→CPU sync) only when explicitly requested.
         if isinstance(result, torch.Tensor):
-            nonfinite = int((~torch.isfinite(result)).sum().item())
-            telemetry = getattr(module, "mathspace_telemetry", {})
-            stats = telemetry.get(
-                op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0}
-            )
-            stats["calls"] = stats.get("calls", 0) + 1
-
-            if nonfinite > 0:
-                result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
-                stats["nonfinite_elements"] = (
-                    stats.get("nonfinite_elements", 0) + nonfinite
+            result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+            if getattr(module, "collect_telemetry", False):
+                nonfinite = int((~torch.isfinite(result)).sum().item())
+                telemetry = getattr(module, "mathspace_telemetry", {})
+                stats = telemetry.get(
+                    op_name, {"calls": 0, "nonfinite_elements": 0, "sanitized_calls": 0}
                 )
-                stats["sanitized_calls"] = stats.get("sanitized_calls", 0) + 1
-
-            telemetry[op_name] = stats
-            setattr(module, "mathspace_telemetry", telemetry)
+                stats["calls"] = stats.get("calls", 0) + 1
+                if nonfinite > 0:
+                    stats["nonfinite_elements"] = (
+                        stats.get("nonfinite_elements", 0) + nonfinite
+                    )
+                    stats["sanitized_calls"] = stats.get("sanitized_calls", 0) + 1
+                telemetry[op_name] = stats
+                setattr(module, "mathspace_telemetry", telemetry)
 
         # Tropical routing telemetry for route-collapse detection.
         # Gated: only runs when collect_telemetry is True on the module (set
@@ -1131,10 +1004,24 @@ class CompiledOp(nn.Module):
         self.input_shape = input_shape
         self.output_shape = output_shape
         self.model_dim = model_dim
+        # Caches for hot-path lookups
+        self._cached_native_wrapper = (
+            None  # Synced via __setattr__ when _native_wrapper is set
+        )
+        self._last_cast_dtype = None
+        # Pre-bind dispatch function to avoid per-call dict lookup
+        self._cached_dispatch_fn = _OP_DISPATCH.get(op_name)
+        self._is_math_op = op_name.startswith("math_")
 
         op = get_primitive(op_name)
         if op.has_params:
             self._init_params(op, config, input_shape)
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        # Sync cache when external code sets _native_wrapper
+        if name == "_native_wrapper":
+            super().__setattr__("_cached_native_wrapper", value)
 
     def _make_param(self, shape: Tuple[int, ...], std: float = 0.02) -> nn.Parameter:
         """Create a parameter without per-parameter filesystem I/O."""
@@ -1650,6 +1537,9 @@ class CompiledOp(nn.Module):
                 self, f"expert_down_{i}", self._make_param((d_in, hidden), std=0.02)
             )
             setattr(self, f"expert_up_{i}", self._make_param((hidden, d_in), std=0.02))
+        # Pre-build expert lists to avoid f-string + hasattr per forward
+        self._expert_downs = [getattr(self, f"expert_down_{i}") for i in range(n_ways)]
+        self._expert_ups = [getattr(self, f"expert_up_{i}") for i in range(n_ways)]
 
     # ── True routing op inits ────────────────────────────────────────
 
@@ -1711,6 +1601,9 @@ class CompiledOp(nn.Module):
         autocast permanently converts params to bf16 and subsequent non-autocast
         forward passes crash with dtype mismatch.
         """
+        # Fast path: skip if dtype hasn't changed since last cast
+        if getattr(self, "_last_cast_dtype", None) == dtype:
+            return
         # Direct parameters (raw nn.Parameter attrs used with F.linear)
         for param in self._parameters.values():
             if param is not None and param.dtype != dtype:
@@ -1721,6 +1614,7 @@ class CompiledOp(nn.Module):
                 for param in child:
                     if param.dtype != dtype:
                         param.data = param.data.to(dtype)
+        self._last_cast_dtype = dtype
 
     def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         """Execute this primitive operation."""
@@ -1729,11 +1623,35 @@ class CompiledOp(nn.Module):
         # nn.Parameter tensors does not get autocast coverage.
         if inputs and inputs[0].is_floating_point():
             self._cast_params_to(inputs[0].dtype)
-        wrapper = getattr(self, "_native_wrapper", None)
+        # Cache wrapper lookup (avoids getattr hash lookup every forward)
+        wrapper = self._cached_native_wrapper
         if wrapper is not None:
             result = wrapper.dispatch(self.op_name, *inputs)
             if result is not None:
                 return result
+        # Use pre-bound dispatch function to skip per-call dict lookup
+        dispatch_fn = self._cached_dispatch_fn
+        if dispatch_fn is not None:
+            result = dispatch_fn(self, inputs, self.config)
+            if self._is_math_op:
+                if getattr(self, "collect_telemetry", False):
+                    nonfinite = int((~torch.isfinite(result)).sum().item())
+                    if nonfinite > 0:
+                        result = torch.nan_to_num(
+                            result, nan=0.0, posinf=1e4, neginf=-1e4
+                        )
+                        telemetry = getattr(self, "mathspace_telemetry", {})
+                        if len(telemetry) < 256:
+                            stats = telemetry.get(
+                                self.op_name, {"calls": 0, "nonfinite": 0}
+                            )
+                            stats["calls"] += 1
+                            stats["nonfinite"] += nonfinite
+                            telemetry[self.op_name] = stats
+                            setattr(self, "mathspace_telemetry", telemetry)
+                else:
+                    result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+            return result
         return _execute_op(self, self.op_name, inputs, self.config)
 
 
@@ -1745,12 +1663,20 @@ class CompiledLayer(nn.Module):
         self.graph = graph
         self.topo_order = graph.topological_order()
 
-        # Track consumer counts for memory reclamation
-        self.consumer_counts = {}
+        # Track consumer counts for memory reclamation.
+        # Use a flat list indexed by node ID for O(1) lookup and
+        # zero-allocation in-place reset on each forward pass.
+        _counts_dict: Dict[int, int] = {}
         for nid in self.topo_order:
             node = graph.nodes[nid]
             for iid in node.input_ids:
-                self.consumer_counts[iid] = self.consumer_counts.get(iid, 0) + 1
+                _counts_dict[iid] = _counts_dict.get(iid, 0) + 1
+        _max_nid = max(_counts_dict.keys()) + 1 if _counts_dict else 0
+        self._counts_size = _max_nid
+        self._counts_original = [0] * _max_nid
+        for nid, cnt in _counts_dict.items():
+            self._counts_original[nid] = cnt
+        self._counts_buf = list(self._counts_original)
 
         self.ops = nn.ModuleDict()
         for nid in self.topo_order:
@@ -1829,7 +1755,8 @@ class CompiledLayer(nn.Module):
                 return result
 
         node_outputs: Dict[int, torch.Tensor] = {}
-        counts = self.consumer_counts.copy()
+        counts = self._counts_buf
+        counts[:] = self._counts_original  # in-place reset, no allocation
         output_id = self.graph._output_node_id
         if output_id is None:
             raise RuntimeError("Graph has no output node")

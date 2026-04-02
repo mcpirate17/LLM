@@ -434,3 +434,118 @@ def _instantiate_motif(
     if current != node_id:
         graph.metadata.setdefault("motifs_used", []).append(motif.name)
     return current
+
+
+# ── Template Factories ──────────────────────────────────────────────
+#
+# These cover the three most common template patterns, eliminating
+# copy-paste boilerplate across _templates_*.py.
+
+
+def _tpl_norm_op_residual(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+    *,
+    op_name: str,
+    op_config: Optional[dict] = None,
+    post_norm: bool = False,
+) -> int:
+    """Factory: norm → op → fix_dim → add(input).
+
+    Covers ~13 templates that apply a single op with residual connection.
+    Falls back to tpl_residual_block on error.
+    """
+    from ._templates_core import tpl_residual_block
+
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    try:
+        processed = graph.add_op(op_name, [normed], config=op_config or {})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+    if post_norm:
+        try:
+            processed = graph.add_op("rmsnorm", [processed])
+        except (ValueError, KeyError):
+            pass
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed
+
+
+def _tpl_norm_dual_op_residual(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+    *,
+    merge_op: str,
+    path_a_config: Optional[dict] = None,
+    path_b_config: Optional[dict] = None,
+) -> int:
+    """Factory: norm → proj_a → proj_b → merge_op → fix_dim → add(input).
+
+    Covers ~8 binary-op templates (matmul, gated product, cosine, tropical, etc.).
+    Falls back to tpl_residual_block on error.
+    """
+    from ._templates_core import tpl_residual_block
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    try:
+        proj_a = graph.add_op(
+            "linear_proj", [normed], config=path_a_config or {"out_dim": D}
+        )
+        proj_b = graph.add_op(
+            "linear_proj", [normed], config=path_b_config or {"out_dim": D}
+        )
+        merged = graph.add_op(merge_op, [proj_a, proj_b])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+    projected = _fix_dim(graph, merged)
+    try:
+        return graph.add_op("add", [input_id, projected])
+    except ValueError:
+        return projected
+
+
+def _tpl_norm_op_motif_residual(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+    *,
+    op_name: str,
+    op_config: Optional[dict] = None,
+    motif_classes: Tuple[str, ...] = _FFN_CLASSES,
+) -> int:
+    """Factory: norm → op → proj → motif_slot → fix_dim → add(input).
+
+    Covers ~6 templates that apply a fixed op then a motif slot
+    (integral_kernel, windowed_attention, local_attention, state_space, etc.).
+    Falls back to tpl_residual_block on error.
+    """
+    from ._templates_core import tpl_residual_block
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    try:
+        mixed = graph.add_op(op_name, [normed], config=op_config or {})
+        projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+    ffn = _pick_compatible_motif_from_classes(
+        graph, projected, rng, motif_classes, weights
+    )
+    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
+    processed = _fix_dim(graph, processed)
+    try:
+        return graph.add_op("add", [input_id, processed])
+    except ValueError:
+        return processed

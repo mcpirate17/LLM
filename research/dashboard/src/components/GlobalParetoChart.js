@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import ChartActions from './ChartActions';
+import { bestLoss } from '../utils/scoringEngine';
 
 const PALETTE = [
   '#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#f47067',
@@ -31,15 +32,7 @@ function noveltyValue(program) {
   return structural ?? behavioral ?? 0;
 }
 
-function bestLossRatio(program) {
-  const candidates = [
-    finiteOrNull(program.validation_loss_ratio),
-    finiteOrNull(program.investigation_loss_ratio),
-    finiteOrNull(program.screening_loss_ratio),
-    finiteOrNull(program.loss_ratio),
-  ];
-  return candidates.find((value) => value != null) ?? null;
-}
+const bestLossRatio = bestLoss;
 
 function GlobalParetoChart({
   programs,

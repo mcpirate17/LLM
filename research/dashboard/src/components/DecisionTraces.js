@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime } from '../utils/format';
+import { useAriaData } from '../hooks/useAriaData';
 import apiService from '../services/apiService';
 
 /**
@@ -8,6 +9,7 @@ import apiService from '../services/apiService';
  * Displays recent decision traces: what was generated/promoted/rejected and why.
  */
 export function DecisionTraces() {
+  const { slowPollTick } = useAriaData();
   const [decisions, setDecisions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -20,12 +22,12 @@ export function DecisionTraces() {
         const data = await apiService.getLeaderboard('?limit=100');
         // We also want actual decision events if available
         const resp = await apiService.getDashboardSummary();
-        
+
         if (!active) return;
-        
+
         // Flatten various decision types into a unified "trace"
         const traces = [];
-        
+
         // 1. From decisions table (via campaigns or direct)
         const campaignDecisions = await apiService.getCampaignDecisions('latest').catch(() => []);
         if (Array.isArray(campaignDecisions)) {
@@ -50,9 +52,8 @@ export function DecisionTraces() {
     };
 
     fetchDecisions();
-    const interval = setInterval(fetchDecisions, 30000);
-    return () => { active = false; clearInterval(interval); };
-  }, []);
+    return () => { active = false; };
+  }, [slowPollTick]);
 
   if (loading && decisions.length === 0) {
     return <div className="card ux-state-loading"><span className="ux-spinner" /> Loading traces...</div>;

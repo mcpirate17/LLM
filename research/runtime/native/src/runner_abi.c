@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #define NR_MAX_HANDLES 1024
 #define NR_MAX_VOCAB_SIZE 262144
@@ -41,6 +42,8 @@ static float g_handle_rmsnorm_w1[NR_MAX_HANDLES];
 static float g_handle_rmsnorm_eps[NR_MAX_HANDLES];
 static const char* g_handle_unary_names[NR_MAX_HANDLES];
 static int32_t g_handle_count = 0;
+
+static pthread_mutex_t g_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const char* g_supported_ops[ARIA_MAX_KERNELS];
 
@@ -757,11 +760,13 @@ nr_status_t nr_runtime_init(void) {
 }
 
 void nr_runtime_shutdown(void) {
+  pthread_mutex_lock(&g_handle_mutex);
   for (int32_t i = 0; i < g_handle_count; i++) {
     _release_handle_index(i);
   }
   g_runtime_initialized = 0;
   g_handle_count = 0;
+  pthread_mutex_unlock(&g_handle_mutex);
 }
 
 nr_status_t nr_query_capabilities(nr_capability_t* out) {
@@ -840,33 +845,27 @@ nr_compile_response_t nr_compile(const nr_compile_request_t* req) {
     return res;
   }
 
+  pthread_mutex_lock(&g_handle_mutex);
+
   if (g_handle_count >= NR_MAX_HANDLES) {
     res.status = NR_ERR_INTERNAL;
     res.message = "handle_capacity_exceeded";
+    pthread_mutex_unlock(&g_handle_mutex);
     return res;
   }
 
   const int64_t handle = g_next_handle++;
   float* logits = (float*)calloc((size_t)req->vocab_size, sizeof(float));
-  if (logits == NULL) {
-    res.status = NR_ERR_INTERNAL;
-    res.message = "logit_buffer_alloc_failed";
-    return res;
-  }
-  float* add_vec = (float*)calloc((size_t)req->vocab_size, sizeof(float));
-  if (add_vec == NULL) {
-    free(logits);
-    res.status = NR_ERR_INTERNAL;
-    res.message = "add_vector_alloc_failed";
-    return res;
-  }
-  float* mul_vec = (float*)calloc((size_t)req->vocab_size, sizeof(float));
+  float* add_vec = logits ? (float*)calloc((size_t)req->vocab_size, sizeof(float)) : NULL;
+  float* mul_vec = add_vec ? (float*)calloc((size_t)req->vocab_size, sizeof(float)) : NULL;
   if (mul_vec == NULL) {
     free(add_vec);
     free(logits);
     res.status = NR_ERR_INTERNAL;
-    res.message = "mul_vector_alloc_failed";
-    return res;
+    res.message = logits == NULL ? "logit_buffer_alloc_failed"
+                : add_vec == NULL ? "add_vector_alloc_failed"
+                : "mul_vector_alloc_failed";
+    goto compile_unlock;
   }
 
   g_handles[g_handle_count] = handle;
@@ -879,87 +878,69 @@ nr_compile_response_t nr_compile(const nr_compile_request_t* req) {
   nk_unary_f32_fn unary_fn = NULL;
   const char* unary_name = NULL;
   if (!_resolve_supported_unary_family(req->ir_json, req->ir_json_len, &unary_fn, &unary_name)) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "unsupported_graph_family_unary_family_unavailable";
-    return res;
+    goto compile_unlock;
   }
   if (!_has_add_mul_matmul_linear_softmax_rmsnorm_sub_exp_family_markers(req->ir_json, req->ir_json_len)) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "unsupported_graph_family_required_chain_invalid";
-    return res;
+    goto compile_unlock;
   }
   nk_binary_f32_fn add_fn = NULL;
   if (!aria_registry_lookup_binary("add", &add_fn) || add_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_add_kernel";
-    return res;
+    goto compile_unlock;
   }
   nk_binary_f32_fn mul_fn = NULL;
   if (!aria_registry_lookup_binary("mul", &mul_fn) || mul_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_mul_kernel";
-    return res;
+    goto compile_unlock;
   }
   nk_binary_f32_fn sub_fn = NULL;
   if (!aria_registry_lookup_binary("sub", &sub_fn) || sub_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_sub_kernel";
-    return res;
+    goto compile_unlock;
   }
   const nk_registration_t* matmul_reg = nk_dispatch("matmul");
   nk_matmul_f32_fn matmul_fn = (matmul_reg != NULL) ? matmul_reg->matmul_fn : NULL;
   if (matmul_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_matmul_kernel";
-    return res;
+    goto compile_unlock;
   }
   const nk_registration_t* linear_reg = nk_dispatch("linear");
   nk_linear_f32_fn linear_fn = (linear_reg != NULL) ? linear_reg->linear_fn : NULL;
   if (linear_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_linear_kernel";
-    return res;
+    goto compile_unlock;
   }
   const nk_registration_t* softmax_reg = nk_dispatch("softmax");
   nk_softmax_f32_fn softmax_fn = (softmax_reg != NULL) ? softmax_reg->softmax_fn : NULL;
   if (softmax_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_softmax_kernel";
-    return res;
+    goto compile_unlock;
   }
   const nk_registration_t* rmsnorm_reg = nk_dispatch("rmsnorm");
   nk_rmsnorm_f32_fn rmsnorm_fn = (rmsnorm_reg != NULL) ? rmsnorm_reg->rmsnorm_fn : NULL;
   if (rmsnorm_fn == NULL) {
-    free(mul_vec);
-    free(add_vec);
-    free(logits);
+    free(mul_vec); free(add_vec); free(logits);
     res.status = NR_ERR_COMPILE_FAILURE;
     res.message = "missing_rmsnorm_kernel";
-    return res;
+    goto compile_unlock;
   }
   for (int32_t v = 0; v < req->vocab_size; v++) {
     const uint32_t mix = ((uint32_t)v * 2246822519u) ^ g_handle_ir_hash[g_handle_count];
@@ -990,6 +971,9 @@ nr_compile_response_t nr_compile(const nr_compile_request_t* req) {
 
   res.model_handle = handle;
   res.message = unary_name != NULL ? unary_name : "ok";
+
+compile_unlock:
+  pthread_mutex_unlock(&g_handle_mutex);
   return res;
 }
 
@@ -1173,8 +1157,10 @@ nr_execute_response_t nr_execute(const nr_execute_request_t* req) {
 }
 
 void nr_release_model(int64_t model_handle) {
+  pthread_mutex_lock(&g_handle_mutex);
   const int idx = _find_handle_index(model_handle);
   if (idx < 0) {
+    pthread_mutex_unlock(&g_handle_mutex);
     return;
   }
 
@@ -1231,4 +1217,5 @@ void nr_release_model(int64_t model_handle) {
   g_handle_rmsnorm_w1[g_handle_count] = 0.0f;
   g_handle_rmsnorm_eps[g_handle_count] = 0.0f;
   g_handle_unary_names[g_handle_count] = NULL;
+  pthread_mutex_unlock(&g_handle_mutex);
 }

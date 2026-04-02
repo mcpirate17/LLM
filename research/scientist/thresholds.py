@@ -128,6 +128,82 @@ WIKITEXT_REF_PPL_CEILING: float = 72.68
 # Tier ranking (for preventing tier downgrades)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# HellaSwag commonsense reasoning gate
+# ---------------------------------------------------------------------------
+
+# Accuracy at or below this = random chance → hard score cap.
+# Random chance on 4-choice = 25%; 28% allows minimal signal above noise.
+# Calibrated 2026-03-31.
+HELLASWAG_RANDOM_CHANCE_GATE: float = 0.28
+
+# Score cap applied when hellaswag_acc <= HELLASWAG_RANDOM_CHANCE_GATE.
+# Prevents perplexity-only optimizers from dominating the leaderboard.
+HELLASWAG_RANDOM_CHANCE_CAP: float = 25.0
+
+# GPT-2 Small HellaSwag acc_norm (~31%) — frontier anchor for S-curve.
+# Measured on d_model=768, 12-layer, 124M param reference.
+HELLASWAG_FRONTIER_ACC: float = 0.31
+
+# Investigation hard gate: 100 examples → lower variance than screening.
+# Models still at random chance with 100 examples → investigation_failed.
+# Calibrated 2026-03-31. Slightly below screening gate because more
+# examples reduce noise (binomial std ~4.3% at n=100 vs ~6% at n=50).
+HELLASWAG_INVESTIGATION_GATE: float = 0.27
+
+# Validation hard gate: 200 examples → even lower variance.
+# Blocks investigation→validation promotion for random-chance models.
+# Calibrated 2026-03-31.
+HELLASWAG_VALIDATION_GATE: float = 0.27
+
+# ---------------------------------------------------------------------------
+# Binding probe thresholds (associative recall + induction head)
+# ---------------------------------------------------------------------------
+
+# Soft gate at ALL tiers: fires only when ALL measured binding signals are
+# near zero simultaneously (3-signal AND). This is the pure conv-3 case.
+#
+# CRITICAL: The induction probe measures exact token retrieval across a gap.
+# Only full attention reliably passes it. Mamba/SSM/RWKV score ~0 on
+# induction but their failure mechanism is fundamentally different from
+# conv-3 — state compression cannot do exact retrieval, but these models
+# still have real non-local perplexity capability. Do NOT penalize them.
+#
+# Expected scores at nano scale (d_model=256, 1000 training steps):
+#   Causal transformer (attention): induction=0.5-0.6, binding_auc>0.3, ar>0.01
+#   Mamba/SSM/recurrent:            induction≈0.0-0.05, binding_auc>0.1, ar≈0.0-0.05
+#   RWKV:                           induction≈0.0-0.05, binding_auc>0.1, ar≈0.0-0.05
+#   Champion c9c7075e (conv-3):     induction≈0.003, binding_auc<0.01, ar<0.01
+#
+# The penalty fires for conv-3 (all three below) but NOT for Mamba/RWKV
+# (binding_auc above threshold).
+BINDING_AR_SOFT_GATE: float = 0.05
+BINDING_INDUCTION_SOFT_GATE: float = 0.05
+BINDING_BINDING_AUC_SOFT_GATE: float = 0.10
+BINDING_LOCAL_ONLY_PENALTY: float = 0.80  # multiply composite by this
+
+# ---------------------------------------------------------------------------
+# v8 understanding gate (investigation → validation)
+# At least ONE of these must be met for promotion. OR gate — lenient.
+# Calibrated 2026-04-01: diagnostic≥0.15 catches any model that can do
+# at least one synthetic task; binding≥0.05 means non-trivial composite;
+# hellaswag > random means above-chance commonsense reasoning.
+# ---------------------------------------------------------------------------
+UNDERSTANDING_MIN_DIAGNOSTIC: float = 0.15
+UNDERSTANDING_MIN_BINDING: float = 0.05
+# UNDERSTANDING_MIN_HELLASWAG uses HELLASWAG_RANDOM_CHANCE_GATE (0.28)
+
+# ---------------------------------------------------------------------------
+# v8 scoring thresholds (placeholder — calibrate after backfill)
+# These will be set by running backfill_v8_scores.py on frontier references.
+# ---------------------------------------------------------------------------
+V8_SCREENING_THRESHOLD: float = 50.0  # placeholder, ~90% of v8 frontier avg
+V8_INVESTIGATION_THRESHOLD: float = 95.0  # placeholder, ~90% of v8 frontier avg
+
+# ---------------------------------------------------------------------------
+# Tier ranking (for preventing tier downgrades)
+# ---------------------------------------------------------------------------
+
 TIER_RANK = {
     "screened_out": 0,
     "screening": 1,

@@ -1,17 +1,8 @@
-"""Kernel handler for grade_mix — dispatches to aria_core.grade_mix_f32."""
+"""Kernel handler for grade_mix — delegates to research.mathspaces.clifford."""
 
-import torch
-from components.base import NativeComponentHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class ComponentHandler(NativeComponentHandler):
-    native_op_name = "grade_mix"
-
-    def _get_native_args(self, inputs, config):
-        x = inputs["x"].detach().contiguous().float()
-        weights = torch.ones(x.shape[-1])
-        return (x, weights)
-
-    def _fallback(self, inputs, config):
-        x = inputs["x"]
-        return {"y": x}
+ComponentHandler = make_mathspace_unary_handler(
+    "grade_mix",
+    "research.mathspaces.clifford.execute_grade_mix",
+)

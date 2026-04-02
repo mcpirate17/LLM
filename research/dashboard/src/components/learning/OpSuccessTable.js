@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { scoreColor } from '../../utils/format';
-import { reliabilityColor } from '../../utils/colors';
 import { opScore, opScoreBreakdown } from '../../utils/scoringEngine';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
+import { MetricChipList } from '../shared/MetricChipBadge';
 import Tooltip from '../shared/Tooltip';
 
 /** Rate an op's contribution: green (strong), amber (some), red (weak) */
@@ -39,34 +40,14 @@ function opReliability(stats) {
   return { label: 'Very Low', color: 'var(--accent-red)', order: 0, tip: 'Very low confidence: treat as exploratory only' };
 }
 
-function opMetricChips(row) {
-  const confidence = row.avg_novelty_confidence;
-  return [
-    {
-      label: 'S1',
-      source: 'measured',
-      reliability: (row.n_used || 0) >= 100 ? 'high' : (row.n_used || 0) >= 40 ? 'medium' : 'low',
-    },
-    {
-      label: 'Novelty',
-      source: confidence != null && confidence >= 0.5 ? 'artifact-backed' : 'heuristic',
-      reliability: confidence != null
-        ? (confidence >= 0.7 ? 'high' : confidence >= 0.4 ? 'medium' : 'low')
-        : 'low',
-    },
-  ];
+import { opMetricChips } from '../../utils/metricChips';
+
+function getOpSortValue(row, key) {
+  if (key === 'rating') return RATING_ORDER[row._rating.label] || 0;
+  return row?.[key];
 }
 
 export function OpSuccessTable({ opRates }) {
-  const [sortKey, setSortKey] = useState('_score');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
-
-  const handleSort = (key) => {
-    if (sortKey === key) setSortDesc(!sortDesc);
-    else { setSortKey(key); setSortDesc(true); }
-  };
-
   const augmented = useMemo(() => {
     if (!opRates || Object.keys(opRates).length === 0) return [];
     return Object.entries(opRates).map(([op, stats]) => ({
@@ -80,27 +61,13 @@ export function OpSuccessTable({ opRates }) {
     }));
   }, [opRates]);
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(augmented, filterQuery, ['op'])
-  ), [augmented, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let va, vb;
-      if (sortKey === '_score') { va = a._score; vb = b._score; }
-      else if (sortKey === '_reliabilityOrder') { va = a._reliabilityOrder || 0; vb = b._reliabilityOrder || 0; }
-      else if (sortKey === 'rating') { va = RATING_ORDER[a._rating.label] || 0; vb = RATING_ORDER[b._rating.label] || 0; }
-      else if (sortKey === 'op') { va = a.op; vb = b.op; }
-      else { va = a[sortKey]; vb = b[sortKey]; }
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows: augmented,
+    filterFields: ['op'],
+    initialSortKey: '_score',
+    initialSortDesc: true,
+    getSortValue: getOpSortValue,
+  });
 
   if (!opRates || Object.keys(opRates).length === 0) {
     return (
@@ -119,15 +86,7 @@ export function OpSuccessTable({ opRates }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter ops"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
@@ -153,11 +112,7 @@ export function OpSuccessTable({ opRates }) {
                       <span>{col.label}</span>
                     </Tooltip>
                   ) : col.label}
-                  {sortKey === col.key && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDesc ? '\u25BC' : '\u25B2'}
-                    </span>
-                  )}
+                  <SortIndicator active={sortKey === col.key} desc={sortDesc} />
                 </th>
               ))}
             </tr>
@@ -220,25 +175,7 @@ Appeared in ${nUsed} architectures, ${s1Count} learned.`}>
                     {row.avg_novelty != null ? row.avg_novelty.toFixed(3) : 'not computed'}
                   </td>
                   <td>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 220 }}>
-                      {chips.map(chip => (
-                        <span
-                          key={`${row.op}-${chip.label}`}
-                          title={`${chip.label}: ${chip.source}, ${chip.reliability} reliability`}
-                          style={{
-                            fontSize: 10,
-                            padding: '1px 5px',
-                            borderRadius: 4,
-                            border: `1px solid ${reliabilityColor(chip.reliability)}55`,
-                            color: reliabilityColor(chip.reliability),
-                            background: `${reliabilityColor(chip.reliability)}22`,
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {chip.label}: {chip.source}
-                        </span>
-                      ))}
-                    </div>
+                    <MetricChipList chips={chips} />
                   </td>
                 </tr>
               );

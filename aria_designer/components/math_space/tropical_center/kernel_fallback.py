@@ -1,19 +1,8 @@
-"""Kernel handler for tropical_center — dispatches to aria_core.tropical_center_f32."""
+"""Kernel handler for tropical_center — delegates to research.mathspaces.tropical."""
 
-import torch.nn as nn
-from components.base import SimpleUnaryOpHandler
+from runtime.fallback_templates import make_mathspace_unary_handler
 
-
-class TropicalCenterModule(nn.Module):
-    def forward(self, x):
-        baseline = x.min(dim=-2, keepdim=True).values
-        return x - baseline
-
-
-class ComponentHandler(SimpleUnaryOpHandler):
-    def __init__(self):
-        super().__init__(
-            TropicalCenterModule,
-            lambda x: x - x.min(dim=-2, keepdim=True).values,
-            native_op_name="tropical_center",
-        )
+ComponentHandler = make_mathspace_unary_handler(
+    "tropical_center",
+    "research.mathspaces.tropical.execute_tropical_center",
+)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from collections import deque
 from typing import Dict, FrozenSet, Iterable, List, Optional
 
 from .graph import ComputationGraph
@@ -121,7 +122,11 @@ _MIXING_OPS: FrozenSet[str] = frozenset(
 )
 
 # Math-space ops — different algebraic metrics, must not directly chain
-# across spaces without normalization
+# across spaces without normalization.
+# NOTE: This is a curated subset of primitives._ALGEBRAIC_SPACE_TAGS (34 ops).
+# Only ops with cross-space chaining risks are listed here. If you add a new
+# algebraic-space op to _ALGEBRAIC_SPACE_TAGS, check whether it needs a
+# chaining constraint here too.
 _MATH_SPACE_OPS: FrozenSet[str] = frozenset(
     {
         "clifford_attention",
@@ -464,28 +469,6 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         forbidden_predecessors=_REDUCE_OPS,
         forbidden_successors=_GATING_OPS | _STRUCTURAL_SPLIT_OPS,
     ),
-    "moe_topk": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
-        forbidden_successors=_ROUTING_OPS
-        | frozenset(
-            {
-                "rmsnorm",
-                "layernorm",  # 100% fail: norm after MoE kills expert signals
-            }
-        ),
-    ),
-    "moe_2expert": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=_REDUCE_OPS | _SPARSE_LINEAR_OPS,
-        forbidden_successors=_ROUTING_OPS
-        | frozenset(
-            {
-                "rmsnorm",
-                "layernorm",
-            }
-        ),
-    ),
     "signal_conditioned_compression": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
@@ -565,31 +548,6 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         requires_residual_context=True,
     ),
     # ── High-value ops with strict placement requirements ────────
-    # token_merge: 89% S0 fail (causality gate) in random placement.
-    # 75% S1 success in token_merge_block template, 100% in sparse_ffn.
-    # Destroys token ordering — anything causal downstream will fail.
-    "token_merge": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=_REDUCE_OPS
-        | frozenset(
-            {
-                "split2",
-                "split3",  # dim mismatch after split
-            }
-        ),
-        forbidden_successors=_CAUSAL_SENSITIVE_OPS
-        | frozenset(
-            {
-                "output_head",
-                "softmax_attention",  # attention needs original token order
-                "linear_attention",
-                "selective_scan",  # SSM needs causal token ordering
-                "state_space",
-                "conv1d_seq",  # conv assumes original sequence order
-            }
-        ),
-        requires_residual_context=True,  # merged output needs skip connection to preserve info
-    ),
     # selective_scan: 54% S0 fail (causality), 90% S1 fail when S0 passes.
     # Every success with loss < 0.05 has norm → conv1d_seq → silu → selective_scan → add.
     "selective_scan": ContextRule(
@@ -752,22 +710,6 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         ),
         requires_residual_context=True,
     ),
-    "adjacent_token_merge": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=_REDUCE_OPS | _STRUCTURAL_SPLIT_OPS,
-        forbidden_successors=_CAUSAL_SENSITIVE_OPS
-        | frozenset(
-            {
-                "output_head",
-                "softmax_attention",
-                "linear_attention",
-                "selective_scan",
-                "state_space",
-                "identity",
-            }
-        ),
-        requires_residual_context=True,
-    ),
     # ── Routing ops: require linear_proj predecessor ──────────────
     # Data (2026-03-29): These routing ops only succeed when preceded by
     # a projection. Direct norm→router: 0-5% S1. proj→router: 10-70%.
@@ -796,18 +738,10 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
             {"rmsnorm", "layernorm"}  # 0% consec S1 (13 samples) — needs proj between
         )
         | _REDUCE_OPS,
-        forbidden_successors=frozenset({"output_head", "linear_proj"}),  # 0% (15 samples)
+        forbidden_successors=frozenset(
+            {"output_head", "linear_proj"}
+        ),  # 0% (15 samples)
         requires_residual_context=True,
-    ),
-    # gated_linear: norm→gated_linear 4% consec but 26% co-occur —
-    # needs projection input to gate against (data: linear_proj_down→gated_linear 0.244 loss)
-    "gated_linear": ContextRule(
-        search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(
-            {"rmsnorm", "layernorm"}  # 4% consec S1 vs 26% co-occur — needs proj between
-        )
-        | _REDUCE_OPS,
-        forbidden_successors=frozenset({"output_head"}),
     ),
     # moe_topk: norm→moe_topk 5% consec, only works after linear_proj (data: 2/2 S1)
     "moe_topk": ContextRule(
@@ -824,7 +758,10 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     "moe_2expert": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=frozenset(
-            {"rmsnorm", "layernorm"}  # 4% consec S1 (28 samples) — needs activation/proj between
+            {
+                "rmsnorm",
+                "layernorm",
+            }  # 4% consec S1 (28 samples) — needs activation/proj between
         )
         | _REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}),
@@ -1483,10 +1420,10 @@ def _has_descendant_op(
 ) -> bool:
     children = children or _child_map(graph)
     allowed = set(allowed_ops)
-    queue = list(children.get(start_id, ()))
-    seen = set()
-    while queue:
-        nid = queue.pop()
+    q = deque(children.get(start_id, ()))
+    seen: set = set()
+    while q:
+        nid = q.popleft()
         if nid in seen:
             continue
         seen.add(nid)
@@ -1495,7 +1432,7 @@ def _has_descendant_op(
             continue
         if node.op_name in allowed:
             return True
-        queue.extend(children.get(nid, ()))
+        q.extend(children.get(nid, ()))
     return False
 
 
@@ -1508,10 +1445,10 @@ def _has_ancestor_op(
     start_node = graph.nodes.get(start_id)
     if start_node is None:
         return False
-    queue = list(start_node.input_ids)
-    seen = set()
-    while queue:
-        nid = queue.pop()
+    q = deque(start_node.input_ids)
+    seen: set = set()
+    while q:
+        nid = q.popleft()
         if nid in seen:
             continue
         seen.add(nid)
@@ -1520,7 +1457,7 @@ def _has_ancestor_op(
             continue
         if node.op_name in allowed:
             return True
-        queue.extend(node.input_ids)
+        q.extend(node.input_ids)
     return False
 
 
@@ -1558,15 +1495,9 @@ def _has_immediate_successor_op(
 
 def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
     violations: List[str] = []
-    successors: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
-    for nid, node in graph.nodes.items():
-        if node.is_input:
-            continue
-        for pid in node.input_ids:
-            if pid in successors:
-                successors[pid].append(nid)
-
-    children = _child_map(graph)
+    # Build child (successor) map once — used for both successor checks and
+    # descendant traversals. Previously built twice (successors + _child_map).
+    children: Dict[int, List[int]] = _child_map(graph)
     non_input_nodes = [node for node in graph.nodes.values() if not node.is_input]
 
     for nid in graph.topological_order():
@@ -1587,7 +1518,7 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
                             f"Context rule: {parent.op_name} (id={pid}) -> {node.op_name} (id={nid}) is forbidden"
                         )
             if rule.forbidden_successors:
-                for sid in successors.get(nid, ()):
+                for sid in children.get(nid, ()):
                     succ = graph.nodes.get(sid)
                     if succ is not None and succ.op_name in rule.forbidden_successors:
                         violations.append(

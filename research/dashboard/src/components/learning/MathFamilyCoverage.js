@@ -1,34 +1,17 @@
-import React, { useState, useMemo } from 'react';
-import { filterRowsByQuery } from '../../utils/tableFiltering';
+import React from 'react';
+import useInteractiveTable from '../shared/useInteractiveTable';
+import SortIndicator from '../shared/SortIndicator';
 
 export function MathFamilyCoverage({ data }) {
   const rows = Array.isArray(data?.families) ? data.families : [];
   const totals = data?.totals || {};
-  const [sortKey, setSortKey] = useState('n_tested');
-  const [sortDesc, setSortDesc] = useState(true);
-  const [filterQuery, setFilterQuery] = useState('');
 
-  const filtered = useMemo(() => (
-    filterRowsByQuery(rows, filterQuery, ['family'])
-  ), [rows, filterQuery]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      const va = a?.[sortKey];
-      const vb = b?.[sortKey];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      if (typeof va === 'string') return sortDesc ? vb.localeCompare(va) : va.localeCompare(vb);
-      return sortDesc ? vb - va : va - vb;
-    });
-    return arr;
-  }, [filtered, sortKey, sortDesc]);
-
-  const handleSort = (key) => {
-    if (sortKey === key) { setSortDesc(!sortDesc); } else { setSortKey(key); setSortDesc(true); }
-  };
+  const { sortKey, sortDesc, filterQuery, setFilterQuery, sortedRows: sorted, handleSort } = useInteractiveTable({
+    rows,
+    filterFields: ['family'],
+    initialSortKey: 'n_tested',
+    initialSortDesc: true,
+  });
 
   if (rows.length === 0) {
     return (
@@ -57,15 +40,7 @@ export function MathFamilyCoverage({ data }) {
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
           placeholder="Filter families"
-          style={{
-            fontSize: 11,
-            padding: '4px 8px',
-            borderRadius: 4,
-            border: '1px solid var(--border)',
-            background: 'var(--bg-tertiary)',
-            color: 'var(--text-primary)',
-            minWidth: 160,
-          }}
+          className="filter-input"
         />
       </div>
       <div style={{ maxHeight: 260, overflow: 'auto' }}>
@@ -73,22 +48,22 @@ export function MathFamilyCoverage({ data }) {
           <thead>
             <tr>
               <th onClick={() => handleSort('family')} style={{ cursor: 'pointer' }}>
-                Family{sortKey === 'family' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Family<SortIndicator active={sortKey === 'family'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('n_tested')} style={{ cursor: 'pointer' }}>
-                Tested{sortKey === 'n_tested' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Tested<SortIndicator active={sortKey === 'n_tested'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('n_survived')} style={{ cursor: 'pointer' }}>
-                Survivors{sortKey === 'n_survived' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Survivors<SortIndicator active={sortKey === 'n_survived'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('survival_rate')} style={{ cursor: 'pointer' }}>
-                Survival %{sortKey === 'survival_rate' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Survival %<SortIndicator active={sortKey === 'survival_rate'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('tested_share')} style={{ cursor: 'pointer' }}>
-                Test Share{sortKey === 'tested_share' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Test Share<SortIndicator active={sortKey === 'tested_share'} desc={sortDesc} />
               </th>
               <th onClick={() => handleSort('survivor_share')} style={{ cursor: 'pointer' }}>
-                Survivor Share{sortKey === 'survivor_share' && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDesc ? '\u25BC' : '\u25B2'}</span>}
+                Survivor Share<SortIndicator active={sortKey === 'survivor_share'} desc={sortDesc} />
               </th>
             </tr>
           </thead>

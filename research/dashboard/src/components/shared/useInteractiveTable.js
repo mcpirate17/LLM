@@ -8,6 +8,7 @@ export default function useInteractiveTable({
   initialSortDesc = true,
   storageKey,
   getSortValue,
+  getInitialSortDesc,
 }) {
   const [sortKey, setSortKey] = useState(() => {
     if (!storageKey || typeof window === 'undefined') return initialSortKey;
@@ -65,7 +66,7 @@ export default function useInteractiveTable({
       return;
     }
     setSortKey(key);
-    setSortDesc(true);
+    setSortDesc(getInitialSortDesc ? getInitialSortDesc(key) : true);
   };
 
   return {

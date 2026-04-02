@@ -14,9 +14,8 @@ from __future__ import annotations
 import heapq
 import xxhash
 import logging
-from collections import deque
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -593,6 +592,8 @@ class ComputationGraph:
             del self.nodes[nid]
         self._ir_version += 1
         self._cache.clear()
+        if self._input_node_id in dead:
+            self._input_node_id = None
         return len(dead)
 
     def depth(self) -> int:
@@ -701,51 +702,6 @@ class ComputationGraph:
         g._output_node_id = d.get("output_node_id")
         g.metadata = d.get("metadata", {})
         return g
-
-    def get_reachable_node_ids(self) -> Set[int]:
-        """Find all node IDs that contribute to the output via backward traversal.
-
-        Returns a set of node IDs reachable from the designated output node.
-        If no output node is set, returns an empty set.
-        """
-        if self._output_node_id is None:
-            return set()
-
-        reachable = {self._output_node_id}
-        queue = deque([self._output_node_id])
-
-        while queue:
-            curr_id = queue.popleft()
-            node = self.nodes[curr_id]
-            for input_id in node.input_ids:
-                if input_id not in reachable:
-                    reachable.add(input_id)
-                    queue.append(input_id)
-        return reachable
-
-    def prune_dead_branches(self) -> int:
-        """Remove all nodes that are not reachable from the output.
-
-        Returns the number of nodes removed.
-        """
-        if self._output_node_id is None:
-            return 0
-
-        reachable = self.get_reachable_node_ids()
-        all_ids = set(self.nodes.keys())
-        dead_ids = all_ids - reachable
-
-        for nid in dead_ids:
-            del self.nodes[nid]
-
-        if dead_ids:
-            self._ir_version += 1
-            self._cache.clear()
-            # If input was pruned, reset it
-            if self._input_node_id in dead_ids:
-                self._input_node_id = None
-
-        return len(dead_ids)
 
     def lower_to_ir(self) -> ComputationGraphIR:
         """Lower the graph to its compact IR representation. Cached.

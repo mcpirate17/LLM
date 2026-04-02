@@ -10,10 +10,13 @@ Performance target: <5ms per graph.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
-from collections import Counter
+from collections import Counter, deque
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Op categories matching synthesis/primitives.py registry
 _CATEGORY_NAMES = (
@@ -83,46 +86,44 @@ def _build_adjacency(
 
 
 def _longest_path(nodes: Dict[str, dict], fwd: Dict[str, List[str]]) -> int:
-    """Compute longest path (depth) via topological DP."""
-    dist: Dict[str, int] = {}
+    """Compute longest path (depth) via iterative topological DP.
 
-    def _dp(nid: str) -> int:
-        if nid in dist:
-            return dist[nid]
-        children = fwd.get(nid, [])
-        if not children:
-            dist[nid] = 0
-            return 0
-        d = 1 + max(_dp(c) for c in children)
-        dist[nid] = d
-        return d
+    Uses Kahn's algorithm to process nodes in topological order,
+    avoiding stack overflow on deep graphs.
+    """
+    # Compute in-degrees
+    in_degree: Dict[str, int] = {nid: 0 for nid in nodes}
+    for nid, children in fwd.items():
+        for c in children:
+            if c in in_degree:
+                in_degree[c] += 1
 
-    # Find roots (nodes with no inputs)
+    # Kahn's: start from roots (in_degree == 0)
+    queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
+    dist: Dict[str, int] = {nid: 0 for nid in queue}
+
+    while queue:
+        nid = queue.popleft()
+        for c in fwd.get(nid, []):
+            new_d = dist[nid] + 1
+            if new_d > dist.get(c, 0):
+                dist[c] = new_d
+            in_degree[c] -= 1
+            if in_degree[c] == 0:
+                queue.append(c)
+
+    return max(dist.values(), default=0)
+
+
+def _compute_depth_map(
+    nodes: Dict[str, dict], fwd: Dict[str, List[str]]
+) -> Dict[str, int]:
+    """BFS depth assignment from root nodes. Shared by width/skip-connection features."""
     roots = [nid for nid, node in nodes.items() if not (node.get("input_ids") or [])]
-    if not roots:
-        roots = list(nodes.keys())[:1]
-
-    max_depth = 0
-    for r in roots:
-        try:
-            max_depth = max(max_depth, _dp(r))
-        except RecursionError:
-            return len(nodes)
-    return max_depth
-
-
-def _width_at_depths(nodes: Dict[str, dict], fwd: Dict[str, List[str]]) -> int:
-    """Max number of nodes at the same depth level (BFS width)."""
-    # BFS from roots
-    roots = [nid for nid, node in nodes.items() if not (node.get("input_ids") or [])]
-    if not roots:
-        return 1
-
     depth_map: Dict[str, int] = {}
     queue = list(roots)
     for r in queue:
         depth_map[r] = 0
-
     i = 0
     while i < len(queue):
         nid = queue[i]
@@ -131,30 +132,19 @@ def _width_at_depths(nodes: Dict[str, dict], fwd: Dict[str, List[str]]) -> int:
             if child not in depth_map:
                 depth_map[child] = depth_map[nid] + 1
                 queue.append(child)
+    return depth_map
 
+
+def _width_at_depths(depth_map: Dict[str, int]) -> int:
+    """Max number of nodes at the same depth level."""
     if not depth_map:
         return 1
     counts = Counter(depth_map.values())
     return max(counts.values())
 
 
-def _count_skip_connections(nodes: Dict[str, dict], fwd: Dict[str, List[str]]) -> int:
+def _count_skip_connections(nodes: Dict[str, dict], depth_map: Dict[str, int]) -> int:
     """Count 'add' nodes whose inputs come from different depths (skip connections)."""
-    # Quick BFS depth assignment
-    roots = [nid for nid, node in nodes.items() if not (node.get("input_ids") or [])]
-    depth_map: Dict[str, int] = {}
-    queue = list(roots)
-    for r in queue:
-        depth_map[r] = 0
-    i = 0
-    while i < len(queue):
-        nid = queue[i]
-        i += 1
-        for child in fwd.get(nid, []):
-            if child not in depth_map:
-                depth_map[child] = depth_map[nid] + 1
-                queue.append(child)
-
     count = 0
     for nid, node in nodes.items():
         if node.get("op_name") != "add":
@@ -215,10 +205,11 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     features["n_nodes"] = float(n_nodes)
     features["n_edges"] = float(n_edges)
     features["n_ops"] = float(n_ops)
+    depth_map = _compute_depth_map(nodes, fwd)
     features["depth"] = float(_longest_path(nodes, fwd))
-    features["width"] = float(_width_at_depths(nodes, fwd))
+    features["width"] = float(_width_at_depths(depth_map))
     features["n_unique_ops"] = float(len(op_set))
-    features["n_skip_connections"] = float(_count_skip_connections(nodes, fwd))
+    features["n_skip_connections"] = float(_count_skip_connections(nodes, depth_map))
     features["edge_density"] = n_edges / max(n_nodes, 1)
 
     # ── Op histogram (top ops as individual features) ──
@@ -265,19 +256,36 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     return features
 
 
+_op_stats_cache: Dict[str, Tuple[Dict[str, Tuple[float, float]], float]] = {}
+_OP_STATS_TTL: float = 60.0  # seconds
+
+
 def load_op_stats(
     db_path: str = "research/lab_notebook.db",
 ) -> Dict[str, Tuple[float, float]]:
-    """Load op_stats table once. Returns dict of op_name → (s1_rate, mean_loss)."""
+    """Load op_stats table with TTL cache (60s). Returns dict of op_name → (s1_rate, mean_loss)."""
+    import time
+
+    now = time.monotonic()
+    cached = _op_stats_cache.get(db_path)
+    if cached is not None:
+        data, ts = cached
+        if now - ts < _OP_STATS_TTL:
+            return data
+
+    conn: Optional[sqlite3.Connection] = None
     try:
         conn = sqlite3.connect(db_path, timeout=2.0)
         conn.execute("PRAGMA busy_timeout=2000")
         rows = conn.execute(
             "SELECT op_name, eval_count, s1_pass_count, mean_loss FROM op_stats"
         ).fetchall()
-        conn.close()
-    except Exception:
+    except sqlite3.Error as exc:
+        logger.debug("load_op_stats failed for %s: %s", db_path, exc)
         return {}
+    finally:
+        if conn is not None:
+            conn.close()
 
     stats: Dict[str, Tuple[float, float]] = {}
     for op_name, eval_count, s1_count, mean_loss in rows:
@@ -289,6 +297,7 @@ def load_op_stats(
             else 1.0
         )
         stats[op_name] = (s1_rate, ml)
+    _op_stats_cache[db_path] = (stats, now)
     return stats
 
 

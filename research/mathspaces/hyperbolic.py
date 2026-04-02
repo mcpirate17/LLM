@@ -48,7 +48,8 @@ def _module_curvature(module: nn.Module | None, default: float = DEFAULT_C) -> f
 def _clamp_norm(x: torch.Tensor, max_norm: float = 1.0 - 1e-3) -> torch.Tensor:
     """Clamp vectors to stay inside the Poincare ball."""
     norm = x.norm(dim=-1, keepdim=True).clamp(min=EPS)
-    return x / norm * norm.clamp(max=max_norm)
+    scale = (max_norm / norm).clamp(max=1.0)
+    return x * scale
 
 
 def mobius_add(x: torch.Tensor, y: torch.Tensor, c: float = DEFAULT_C) -> torch.Tensor:
@@ -198,83 +199,6 @@ def execute_hyp_tangent_nonlinear(module: nn.Module, x: torch.Tensor) -> torch.T
     euclidean = log_map(x, c=c)
     bounded = torch.tanh(euclidean)
     return exp_map(bounded, c=c)
-
-
-class PoincareDistanceRouting(nn.Module):
-    """Routes information based on hyperbolic distance in the Poincare ball.
-
-    Learns centroids in the Poincare ball and computes routing weights based
-    on hyperbolic distance from each token to each centroid. Tokens closer
-    to a centroid (in hyperbolic distance) get stronger routing to that head.
-
-    This naturally captures hierarchical structure: centroids near the origin
-    route broadly, centroids near the boundary route narrowly.
-
-    Input: (B, S, D)
-    Output: (B, S, D) — features weighted by centroid routing
-
-    Reference: ARIA_NEXT_GEN_ARCHITECTURE.md §1.2
-    """
-
-    def __init__(self, dim: int, n_heads: int = 8, c: float = DEFAULT_C):
-        super().__init__()
-        self._c_raw = nn.Parameter(
-            torch.tensor(_curvature_raw_init(c), dtype=torch.float32)
-        )
-        self.n_heads = n_heads
-        self.dim = dim
-        # Initialize centroids near origin for stability
-        self.centroids = nn.Parameter(torch.randn(n_heads, dim) * 1e-3)
-        # Per-head projection back to dim
-        self.head_proj = nn.Parameter(torch.randn(n_heads, dim) / math.sqrt(dim))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, S, D = x.shape
-        c = float(_positive_curvature(self._c_raw).item())
-        # Clamp input and centroids inside the ball
-        x_clamped = _clamp_norm(x)
-        centroids = _clamp_norm(self.centroids)
-
-        # Compute hyperbolic distance from each token to each centroid
-        # Use inline Mobius addition to avoid aria_core 2D restriction
-        x_neg = -x_clamped  # (B, S, D)
-        x_exp = x_neg.unsqueeze(2)  # (B, S, 1, D)
-        c_exp = centroids.unsqueeze(0).unsqueeze(0)  # (1, 1, H, D)
-
-        # Inline Mobius add: (-x) +_M centroid
-        x_sq = (x_exp * x_exp).sum(dim=-1, keepdim=True)
-        c_sq = (c_exp * c_exp).sum(dim=-1, keepdim=True)
-        xc = (x_exp * c_exp).sum(dim=-1, keepdim=True)
-        num = (1 + 2 * c * xc + c * c_sq) * x_exp + (1 - c * x_sq) * c_exp
-        denom = (1 + 2 * c * xc + c * c * x_sq * c_sq).clamp(min=EPS)
-        diff = _clamp_norm(num / denom)
-
-        diff_norm = diff.norm(dim=-1).clamp(min=EPS)  # (B, S, H)
-        sqrt_c = math.sqrt(c)
-        dist = (2.0 / sqrt_c) * torch.atanh(
-            (sqrt_c * diff_norm).clamp(max=1.0 - EPS)
-        ).clamp(-10, 10)  # (B, S, H)
-
-        # Routing weights: closer = stronger
-        routing_weights = torch.softmax(-dist, dim=-1)  # (B, S, H)
-
-        # Weighted combination via head projections
-        # routing_weights: (B, S, H), head_proj: (H, D)
-        out = torch.einsum("bsh,hd->bsd", routing_weights, self.head_proj)
-        return x + out  # Residual connection
-
-
-def execute_poincare_routing(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
-    """Apply Poincare distance routing with learned centroids."""
-    B, S, D = x.shape
-    n_heads = getattr(module, "_routing_heads", 8)
-    router = PoincareDistanceRouting(
-        dim=D, n_heads=n_heads, c=_module_curvature(module)
-    ).to(x.device)
-    if hasattr(module, "weight") and module.weight.numel() >= router.centroids.numel():
-        n = router.centroids.numel()
-        router.centroids.data = module.weight[:n].reshape(router.centroids.shape)
-    return router(x)
 
 
 def execute_hyperbolic_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:

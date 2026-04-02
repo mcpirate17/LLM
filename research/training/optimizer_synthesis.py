@@ -588,7 +588,6 @@ class ContrastiveLocalOptimizer(torch.optim.Optimizer):
                     state["m"] = torch.zeros_like(grad)
 
                 state["step"] += 1
-                state["prev_grad"]
                 prev_update = state["prev_update"]
                 m = state["m"]
 
@@ -614,12 +613,11 @@ class ContrastiveLocalOptimizer(torch.optim.Optimizer):
                 if wd > 0:
                     p.data.mul_(1 - lr * wd)
 
-                update = m.clone()
-                p.data.add_(update, alpha=-lr)
+                p.data.add_(m, alpha=-lr)
 
-                # Store for next step
-                state["prev_grad"] = grad.clone()
-                state["prev_update"] = update.clone()
+                # Store for next step (detach to avoid graph retention)
+                state["prev_grad"] = grad.detach()
+                state["prev_update"] = m.detach().clone()
 
         return loss
 
