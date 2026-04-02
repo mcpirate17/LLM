@@ -285,7 +285,8 @@ def _apply_insight_adjustments(
             insight_level="structural",
             limit=20,
         )
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.debug("Failed fetching structural insights: %s", e)
         structural = []
 
     for ins in structural:
@@ -302,7 +303,8 @@ def _apply_insight_adjustments(
                 import json as _json
 
                 evidence = _json.loads(evidence)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                logger.debug("Malformed structural evidence JSON: %s", e)
                 evidence = {}
         if not isinstance(evidence, dict):
             evidence = {}
@@ -358,7 +360,8 @@ def _apply_insight_adjustments(
             insight_level="template",
             limit=20,
         )
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.debug("Failed fetching template insights: %s", e)
         template_insights = []
 
     for ins in template_insights:
@@ -387,7 +390,8 @@ def _apply_insight_adjustments(
             insight_level="composition",
             limit=50,
         )
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.debug("Failed fetching composition insights: %s", e)
         composition = []
 
     for ins in composition:
@@ -404,7 +408,8 @@ def _apply_insight_adjustments(
                 import json as _json
 
                 evidence = _json.loads(evidence)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                logger.debug("Malformed composition evidence JSON: %s", e)
                 evidence = {}
         if not isinstance(evidence, dict):
             evidence = {}
@@ -533,7 +538,8 @@ def _build_signal_weight_maps(
     try:
         op_pair_priors = nb.get_op_pair_priors(min_support=5, limit=50)
         fingerprint_buckets = nb.get_fingerprint_buckets(limit=5)
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.debug("Failed fetching signal weight data: %s", e)
         return {}, {}
     if not op_pair_priors and not fingerprint_buckets:
         return {}, {}
@@ -596,8 +602,8 @@ def _judgment_rerank(
                     if peers:
                         # Shallow copy to avoid mutating shared dict
                         candidate_signals = {**signals, "nearest_peers": peers}
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, KeyError) as e:
+                    logger.debug("nearest_peers lookup failed: %s", e)
 
             # Determine fingerprint bucket from candidate ops
             ctx_bucket = ""
@@ -633,7 +639,8 @@ def _judgment_rerank(
 
             ctx = JudgmentContext(fingerprint_bucket=ctx_bucket)
             result = score_candidate(graph, ctx, candidate_signals)
-        except Exception:
+        except Exception as e:
+            logger.debug("score_candidate failed, using neutral score: %s", e)
             scored.append((graph, 0.5, 0))  # neutral score on error
             continue
 
@@ -683,8 +690,8 @@ def _judgment_rerank(
             score_mean=round(sum(scores) / len(scores), 3),
             n_explore=n_explore,
         )
-    except Exception:
-        pass
+    except (TypeError, ValueError, AttributeError) as e:
+        logger.debug("Failed logging judgment_rerank event: %s", e)
 
     return [(t[0], t[1]) for t in scored]
 

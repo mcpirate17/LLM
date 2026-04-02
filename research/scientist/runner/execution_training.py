@@ -54,8 +54,8 @@ def _sample_entropy_gate_output(
     with torch.no_grad():
         try:
             model(input_ids)
-        except Exception:
-            pass
+        except RuntimeError as e:
+            logger.debug("Entropy gate forward pass failed: %s", e)
         finally:
             for h in hooks:
                 h.remove()
@@ -460,7 +460,7 @@ class _ExecutionTrainingMixin:
 
                                 if get_primitive(op_name).category in exotic_categories:
                                     exotic_count += 1
-                            except Exception:
+                            except (KeyError, ValueError, AttributeError):
                                 pass
                     if exotic_count >= 2:
                         total_steps *= 2
@@ -656,7 +656,8 @@ class _ExecutionTrainingMixin:
 
                         step += 1
                     ran_cuda_graph = True
-                except Exception as e:
+                except RuntimeError as e:
+                    logger.debug("CUDA graph capture failed, falling back: %s", e)
                     result["cuda_graph_fallback_reason"] = str(e)
 
             # Entropy gate trajectory (sampled at key steps during training)
@@ -736,7 +737,8 @@ class _ExecutionTrainingMixin:
                                             logits[:, :-1],
                                             input_ids[:, 1:],
                                         )
-                                    except Exception:
+                                    except (RuntimeError, ValueError, TypeError) as e:
+                                        logger.debug("Synthesized loss failed, falling back to CE: %s", e)
                                         loss = F.cross_entropy(
                                             logits[:, :-1].reshape(
                                                 -1, logits.shape[-1]
@@ -988,7 +990,8 @@ class _ExecutionTrainingMixin:
                     seq_len=seq_len,
                     seed=seed,
                 )
-            except Exception as e:
+            except RuntimeError as e:
+                logger.debug("Validation loss eval failed: %s", e)
                 result["validation_loss_error"] = str(e)
 
             # Optional discovery loss on random tokens (fast triage signal)
@@ -1002,7 +1005,8 @@ class _ExecutionTrainingMixin:
                     seq_len=seq_len,
                     seed=seed,
                 )
-            except Exception as e:
+            except RuntimeError as e:
+                logger.debug("Discovery loss eval failed: %s", e)
                 result["discovery_loss_error"] = str(e)
 
             if validation_loss is not None and initial_loss:
@@ -1061,7 +1065,8 @@ class _ExecutionTrainingMixin:
                     ref_losses = get_reference_losses(
                         str(getattr(self, "notebook_path", "research/lab_notebook.db"))
                     )
-                except Exception:
+                except (OSError, ValueError, KeyError) as e:
+                    logger.debug("Reference loss lookup failed: %s", e)
                     ref_losses = {}
                 # Gate uses raw final/initial ratio for divergence checks,
                 # NOT normalized_loss_ratio which measures a different thing.
@@ -1190,8 +1195,8 @@ class _ExecutionTrainingMixin:
                                 from ...synthesis.serializer import graph_from_json
 
                                 _graph_obj = graph_from_json(graph_json)
-                            except Exception:
-                                pass
+                            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                                logger.debug("Graph deserialization failed for fingerprint: %s", e)
 
                         _fp, full_ran = compute_gated_fingerprint(
                             model,

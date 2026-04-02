@@ -615,6 +615,121 @@ def triton_banded_sliding_window(
     return out
 
 
+# ── Grouped GEMM for MoE ─────────────────────────────────────────────
+
+
+@triton.jit
+def _moe_grouped_gemm_kernel(
+    x_ptr,
+    W_down_ptr,
+    W_up_ptr,
+    out_ptr,
+    expert_offsets_ptr,
+    sorted_w_ptr,
+    D: tl.constexpr,
+    H: tl.constexpr,
+    E: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+):
+    """Per-token MoE: each program computes one token through its assigned expert.
+
+    Tokens are pre-sorted by expert. expert_offsets maps token index → expert.
+    Computes: x @ W_down^T → GELU → @ W_up^T, scaled by routing weight.
+    """
+    token_idx = tl.program_id(0)
+
+    # Find which expert this token belongs to (linear scan, E is small)
+    expert_id = 0
+    for e in range(E):
+        off = tl.load(expert_offsets_ptr + e + 1)
+        if token_idx >= off:
+            expert_id = e + 1
+
+    # Load routing weight
+    rw = tl.load(sorted_w_ptr + token_idx)
+
+    # Down-projection: hidden[h] = sum_d x[d] * W_down[expert, h, d]
+    # BLOCK_H covers all of H, iterate over D in BLOCK_D chunks
+    h_offs = tl.arange(0, BLOCK_H)
+    h_mask = h_offs < H
+    hidden = tl.zeros([BLOCK_H], dtype=tl.float32)
+
+    for d_start in range(0, D, BLOCK_D):
+        d_offs = d_start + tl.arange(0, BLOCK_D)
+        d_mask = d_offs < D
+        x_chunk = tl.load(x_ptr + token_idx * D + d_offs, mask=d_mask, other=0.0)
+        # W_down[expert_id, h, d]: shape (BLOCK_H, BLOCK_D)
+        w_ptrs = W_down_ptr + expert_id * H * D + h_offs[:, None] * D + d_offs[None, :]
+        w_chunk = tl.load(w_ptrs, mask=h_mask[:, None] & d_mask[None, :], other=0.0)
+        hidden += tl.sum(w_chunk * x_chunk[None, :], axis=1)
+
+    # GELU (tanh approximation)
+    hidden = hidden * 0.5 * (1.0 + tl.libdevice.tanh(
+        0.7978845608028654 * (hidden + 0.044715 * hidden * hidden * hidden)
+    ))
+
+    # Up-projection: out[d] = sum_h hidden[h] * W_up[expert, d, h]
+    # BLOCK_D covers all of D, iterate over H in BLOCK_H chunks
+    d_offs = tl.arange(0, BLOCK_D)
+    d_mask = d_offs < D
+    out_val = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+    for h_start in range(0, H, BLOCK_H):
+        h_inner = h_start + tl.arange(0, BLOCK_H)
+        h_inner_mask = h_inner < H
+        h_chunk = tl.load(
+            sorted_w_ptr + 0,  # just need the hidden values we already computed
+            mask=False, other=0.0,
+        )
+        # We need hidden[h_start:h_start+BLOCK_H] but can't slice registers in Triton.
+        # Solution: only enter this loop body once since BLOCK_H >= H.
+        # W_up[expert_id, d, h]: shape (BLOCK_D, BLOCK_H)
+        w_up_ptrs = W_up_ptr + expert_id * D * H + d_offs[:, None] * H + h_inner[None, :]
+        w_up_chunk = tl.load(w_up_ptrs, mask=d_mask[:, None] & h_inner_mask[None, :], other=0.0)
+        # hidden is already computed with BLOCK_H covering all of H
+        out_val += tl.sum(w_up_chunk * hidden[None, :], axis=1)
+
+    # Scale by routing weight and store
+    out_val = out_val * rw
+    tl.store(out_ptr + token_idx * D + d_offs, out_val, mask=d_mask)
+
+
+def triton_moe_grouped_gemm(
+    x_sorted: torch.Tensor,
+    W_down: torch.Tensor,
+    W_up: torch.Tensor,
+    expert_offsets: torch.Tensor,
+    sorted_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Sparse MoE dispatch via grouped GEMM: only computes assigned expert per token.
+
+    Args:
+        x_sorted: (BS, D) tokens pre-sorted by expert assignment
+        W_down: (E, H, D) stacked expert down-projection weights
+        W_up: (E, D, H) stacked expert up-projection weights
+        expert_offsets: (E+1,) cumulative token counts [0, n0, n0+n1, ..., BS]
+        sorted_weights: (BS,) routing weights per token
+
+    Returns:
+        (BS, D) expert outputs in sorted order (caller must unsort)
+    """
+    BS, D = x_sorted.shape
+    E, H, _ = W_down.shape
+    out = torch.empty_like(x_sorted)
+
+    BLOCK_D = triton.next_power_of_2(D)
+    BLOCK_H = triton.next_power_of_2(H)
+
+    _moe_grouped_gemm_kernel[(BS,)](
+        x_sorted, W_down, W_up, out,
+        expert_offsets, sorted_weights,
+        D, H, E,
+        BLOCK_D=BLOCK_D, BLOCK_H=BLOCK_H,
+    )
+    return out
+
+
 # ── Dispatch Table ────────────────────────────────────────────────────
 
 

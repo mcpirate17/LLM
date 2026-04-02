@@ -29,14 +29,14 @@ Full plan: `/home/tim/.claude/plans/jazzy-fluttering-book.md`
 - [x] 2.6 Op extraction consolidation (N/A — already uses mixin inheritance, no duplication)
 
 ## Phase 3: Dead Code & Hot Path
-- [ ] 3.1 Migrate callers + remove legacy compute_composite_score()
-- [ ] 3.2 Remove /api/observability/monitor endpoint
-- [ ] 3.3 Clean native_runner_canary.py MagicMock imports
-- [ ] 3.4 Label backfill functions as [MIGRATION TOOL]
-- [ ] 3.5 Fix duplicate mean in _helpers.py
-- [ ] 3.6 Single-pass seed aggregation in _helpers.py
-- [ ] 3.7 Fix double fingerprint call in synthesis.py
-- [ ] 3.8 Dashboard defaultdict
+- [x] 3.1 Migrate callers + remove legacy compute_composite_score() (~457 lines deleted)
+- [x] 3.2 Remove /api/observability/monitor endpoint (~140 lines deleted)
+- [x] 3.3 Clean native_runner_canary.py MagicMock imports
+- [x] 3.4 Label backfill functions as [MIGRATION TOOL]
+- [x] 3.5 Fix duplicate mean in _helpers.py
+- [x] 3.6 Single-pass seed aggregation in _helpers.py
+- [x] 3.7 Fix double fingerprint call in synthesis.py
+- [x] 3.8 Dashboard defaultdict
 
 ## Phase 4: Exception Handler Remediation (655 instances)
 - [ ] 4.1 Tier A: execution_screening.py (36 handlers)
