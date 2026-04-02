@@ -180,6 +180,8 @@ class _SelectionMixin:
                 stat = interaction_map.get((insight_id, insight_id))
                 if stat and int(stat.get("n_trials") or 0) >= 2:
                     rewards.append(self._to_float(stat.get("mean_reward"), default=0.5))
+            # O(n^2) pairwise loop — acceptable because |matched| is the number
+            # of insights supporting a single result, typically 2-5 items.
             for i in range(len(matched)):
                 for j in range(i + 1, len(matched)):
                     a, b = matched[i], matched[j]

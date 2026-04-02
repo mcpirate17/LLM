@@ -150,15 +150,15 @@ class _ExperimentsMixin:
         from ``graph_json.metadata`` and computes per-item S1 success rates.
         Returns ``{item_name: weight}`` clamped to ``[0.1, 8.0]``.
         """
-        rows = self.nb.conn.execute(
+        cursor = self.nb.conn.execute(
             "SELECT graph_json, stage1_passed FROM program_results "
             "WHERE stage0_passed = 1 AND timestamp >= ? "
             "AND graph_json IS NOT NULL AND graph_json != '{}'",
             (since_ts,),
-        ).fetchall()
+        )
         counts: Dict[str, int] = defaultdict(int)
         s1_counts: Dict[str, int] = defaultdict(int)
-        for row in rows:
+        for row in cursor:
             try:
                 meta = json.loads(row[0]).get("metadata", {})
             except (json.JSONDecodeError, TypeError):
@@ -213,32 +213,43 @@ class _ExperimentsMixin:
         self, since_ts: float = 0.0, min_used: int = 3
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Compute template and motif weights in a single DB query pass."""
-        rows = self.nb.conn.execute(
+        cursor = self.nb.conn.execute(
             "SELECT graph_json, stage1_passed FROM program_results "
             "WHERE stage0_passed = 1 AND timestamp >= ? "
             "AND graph_json IS NOT NULL AND graph_json != '{}'",
             (since_ts,),
-        ).fetchall()
+        )
 
-        results: Dict[str, Dict[str, float]] = {}
-        for metadata_key in ("templates_used", "motifs_used"):
-            counts: Dict[str, int] = defaultdict(int)
-            s1_counts: Dict[str, int] = defaultdict(int)
-            for row in rows:
-                try:
-                    meta = json.loads(row[0]).get("metadata", {})
-                except (json.JSONDecodeError, TypeError):
-                    continue
+        # Single-pass: accumulate counts for both keys simultaneously
+        all_counts: Dict[str, Dict[str, int]] = {
+            "templates_used": defaultdict(int),
+            "motifs_used": defaultdict(int),
+        }
+        all_s1: Dict[str, Dict[str, int]] = {
+            "templates_used": defaultdict(int),
+            "motifs_used": defaultdict(int),
+        }
+        for row in cursor:
+            try:
+                meta = json.loads(row[0]).get("metadata", {})
+            except (json.JSONDecodeError, TypeError):
+                continue
+            passed = bool(row[1])
+            for metadata_key in ("templates_used", "motifs_used"):
                 items = meta.get(metadata_key)
                 if not isinstance(items, list):
                     continue
-                passed = bool(row[1])
                 for item in items:
                     if not isinstance(item, str):
                         continue
-                    counts[item] += 1
+                    all_counts[metadata_key][item] += 1
                     if passed:
-                        s1_counts[item] += 1
+                        all_s1[metadata_key][item] += 1
+
+        results: Dict[str, Dict[str, float]] = {}
+        for metadata_key in ("templates_used", "motifs_used"):
+            counts = all_counts[metadata_key]
+            s1_counts = all_s1[metadata_key]
             stats = {
                 name: {"n_used": n, "s1_rate": s1_counts.get(name, 0) / n}
                 for name, n in counts.items()

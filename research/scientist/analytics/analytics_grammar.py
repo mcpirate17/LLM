@@ -143,12 +143,12 @@ class _GrammarMixin:
         per_fingerprint_cap: float,
     ) -> Tuple[Dict[str, Dict], Dict[str, float]]:
         """Build op success rates with capped contribution per architecture fingerprint."""
-        rows = self.nb.conn.execute(
+        cursor = self.nb.conn.execute(
             """SELECT result_id, graph_fingerprint, graph_json, stage1_passed,
                       novelty_score, novelty_confidence
                FROM program_results
                WHERE graph_json IS NOT NULL"""
-        ).fetchall()
+        )
 
         extracted_rows: List[Dict] = []
         fingerprint_counts: Dict[str, int] = defaultdict(int)
@@ -156,7 +156,7 @@ class _GrammarMixin:
         # Z13: Identify Pareto winners for weighting boost
         pareto_ids = set(self.pareto_optimal_programs())
 
-        for row in rows:
+        for row in cursor:
             graph_json = row["graph_json"]
             if not graph_json:
                 continue
@@ -387,14 +387,14 @@ class _GrammarMixin:
 
     def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
         """Load per-program factors for attribution analysis."""
-        rows = self.nb.conn.execute(
+        cursor = self.nb.conn.execute(
             """SELECT result_id, experiment_id, graph_json, stage1_passed,
                       graph_depth, graph_uses_math_spaces
                FROM program_results
                WHERE graph_json IS NOT NULL"""
-        ).fetchall()
+        )
         parsed: List[Dict[str, Any]] = []
-        for row in rows:
+        for row in cursor:
             graph_json = row["graph_json"]
             ops = self._extract_ops_fast(graph_json)
             if ops is None:
@@ -818,17 +818,21 @@ class _GrammarMixin:
         Returns a penalty multiplier [0.5, 1.0] for each category.
         Categories that frequently cause instability get lower multipliers.
         """
-        rows = self.nb.conn.execute("""
+        count_row = self.nb.conn.execute(
+            "SELECT COUNT(*) FROM program_results "
+            "WHERE fp_jacobian_spectral_norm IS NOT NULL"
+        ).fetchone()
+        if (count_row[0] or 0) < 10:
+            return {}
+
+        cursor = self.nb.conn.execute("""
             SELECT graph_json, fp_jacobian_spectral_norm
             FROM program_results
             WHERE fp_jacobian_spectral_norm IS NOT NULL
-        """).fetchall()
-
-        if len(rows) < 10:
-            return {}
+        """)
 
         cat_norms = defaultdict(list)
-        for r in rows:
+        for r in cursor:
             ops = self._extract_ops_fast(r["graph_json"])
             norm = float(r["fp_jacobian_spectral_norm"])
             if not ops:
