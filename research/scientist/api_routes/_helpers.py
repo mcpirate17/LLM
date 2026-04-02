@@ -539,9 +539,11 @@ def load_persisted_llm_config(notebook_path: str):
         if not backend:
             return
         aria = get_aria()
+        api_key_env = str(data.get("api_key_env", "")).strip()
+        api_key = os.environ.get(api_key_env, "") if api_key_env else str(data.get("api_key", "")).strip()
         aria.configure_llm(
             backend_name=backend,
-            api_key=str(data.get("api_key", "")).strip(),
+            api_key=api_key,
             model=str(data.get("model", "")).strip(),
             host=str(data.get("host", "")).strip(),
         )

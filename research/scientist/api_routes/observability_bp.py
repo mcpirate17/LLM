@@ -615,7 +615,7 @@ def _evaluate_alerts(
     nb = get_notebook(notebook_path)
     try:
         nb.get_dashboard_summary()
-    except Exception as exc:
+    except (sqlite3.OperationalError, KeyError, TypeError) as exc:
         logger.debug("Dashboard summary prefetch failed for alerts: %s", exc)
 
     # Alert 1: S0 pass rate too low
@@ -691,7 +691,7 @@ def _evaluate_alerts(
                         "timestamp": now,
                     }
                 )
-    except Exception:
+    except sqlite3.OperationalError:
         logger.debug("Routing collapse alert evaluation failed", exc_info=True)
 
     # Alert 4: Broken components
@@ -733,7 +733,7 @@ def _evaluate_alerts(
                         "timestamp": now,
                     }
                 )
-    except Exception:
+    except sqlite3.OperationalError:
         logger.debug("Stale pipeline alert evaluation failed", exc_info=True)
 
     alerts.sort(key=lambda a: {"critical": 0, "warning": 1, "info": 2}[a["severity"]])
@@ -816,7 +816,7 @@ def register_observability_routes(app, context: ApiRouteContext):
                             curve = runner.get_live_loss_curve()
                             if curve:
                                 prog_dict["loss_curve_tail"] = curve[-20:]
-                        except Exception as exc:
+                        except (AttributeError, KeyError, TypeError) as exc:
                             logger.debug(
                                 "Failed to read live loss curve for observability stream: %s",
                                 exc,
@@ -830,7 +830,7 @@ def register_observability_routes(app, context: ApiRouteContext):
                         if alerts:
                             alert_data = _json_dumps({"alerts": alerts}, safe=True)
                             yield f"event: alerts\ndata: {alert_data}\n\n"
-                    except Exception as exc:
+                    except (sqlite3.OperationalError, KeyError, TypeError) as exc:
                         logger.debug(
                             "Failed to emit observability alerts event: %s",
                             exc,
@@ -841,6 +841,7 @@ def register_observability_routes(app, context: ApiRouteContext):
                 except GeneratorExit:
                     return
                 except Exception as exc:
+                    # Outer SSE loop: keep broad to prevent stream death
                     logger.debug(
                         "Observability event stream tick failed: %s", exc, exc_info=True
                     )
@@ -1083,7 +1084,8 @@ def register_observability_routes(app, context: ApiRouteContext):
             else:
                 result["gpu_allocated_gb"] = None
                 result["gpu_reserved_gb"] = None
-        except Exception:
+        except (ImportError, RuntimeError) as exc:
+            logger.debug("GPU info unavailable: %s", exc)
             result["gpu_allocated_gb"] = None
             result["gpu_reserved_gb"] = None
 
@@ -1262,7 +1264,8 @@ def register_observability_routes(app, context: ApiRouteContext):
                 )
             else:
                 result["wal_size_mb"] = 0.0
-        except Exception:
+        except OSError as exc:
+            logger.debug("DB file size check failed: %s", exc)
             result["db_size_mb"] = None
             result["wal_size_mb"] = None
 
@@ -1281,10 +1284,11 @@ def register_observability_routes(app, context: ApiRouteContext):
                 try:
                     row = nb.conn.execute(f"SELECT COUNT(*) as c FROM {t}").fetchone()
                     row_counts[t] = row["c"] if row else 0
-                except Exception:
+                except sqlite3.OperationalError:
                     row_counts[t] = None
             result["row_counts"] = row_counts
-        except Exception as e:
+        except (sqlite3.OperationalError, KeyError, TypeError) as e:
+            logger.debug("DB health row count query failed: %s", e)
             result["row_counts"] = {}
             result["error"] = str(e)
 

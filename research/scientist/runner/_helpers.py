@@ -723,7 +723,8 @@ def _rebuild_graph_with_overrides(
         new_inputs = [id_map[i] for i in node.input_ids]
         try:
             new_id = rebuilt.add_op(op_name, new_inputs, config=config)
-        except Exception:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
+            logger.debug("Graph rebuild add_op failed: %s", e)
             return None
         id_map[old_id] = new_id
 
@@ -735,7 +736,8 @@ def _rebuild_graph_with_overrides(
         return None
     try:
         rebuilt.set_output(out_new)
-    except Exception:
+    except (ValueError, KeyError, RuntimeError) as e:
+        logger.debug("Graph rebuild set_output failed: %s", e)
         return None
     rebuilt.metadata = dict(getattr(candidate_graph, "metadata", {}) or {})
     return rebuilt
@@ -764,7 +766,8 @@ def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
         try:
             prim = get_primitive(node.op_name)
             category = prim.category.value
-        except Exception:
+        except (KeyError, ValueError) as e:
+            logger.debug("get_primitive failed for %s: %s", node.op_name, e)
             category = ""
         if node.op_name in hyp or category in hyp:
             target_nodes.append(nid)
@@ -785,7 +788,7 @@ def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
         node = candidate_graph.nodes[nid]
         try:
             prim = get_primitive(node.op_name)
-        except Exception:
+        except (KeyError, ValueError):
             continue
         key = (prim.n_inputs, prim.shape_rule)
         candidates = [
@@ -803,7 +806,7 @@ def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
                 if get_primitive(name).category != prim.category:
                     replacement = name
                     break
-            except Exception:
+            except (KeyError, ValueError):
                 continue
         rebuilt = _rebuild_graph_with_overrides(
             candidate_graph,
@@ -813,7 +816,7 @@ def propose_ablation_suite(candidate_graph, hypothesis) -> List[Any]:
             continue
         try:
             fp = rebuilt.fingerprint()
-        except Exception:
+        except (ValueError, RuntimeError):
             continue
         if fp in seen:
             continue
@@ -1186,8 +1189,8 @@ def _safe_tier(nb, result_id: str, proposed: str) -> str:
             existing = str(row["tier"] or "screening")
             if TIER_RANK.get(existing, 0) > TIER_RANK.get(proposed, 0):
                 return existing
-    except Exception:
-        pass
+    except (OSError, RuntimeError) as e:
+        logger.debug("_safe_tier lookup failed: %s", e)
     return proposed
 
 
@@ -1361,8 +1364,8 @@ def _record_investigation_result(
             nb.set_external_benchmarks(result_id, payload)
             if source_result_id != result_id:
                 nb.set_external_benchmarks(source_result_id, payload)
-    except Exception:
-        pass
+    except (ImportError, OSError, ValueError) as e:
+        logger.debug("Trajectory wikitext payload persist failed: %s", e)
 
 
 def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
@@ -1558,7 +1561,7 @@ def promote_validation_candidate(
                     _vals,
                 )
                 nb.flush_writes()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug(
                     "B3 novelty cap DB update failed for %s: %s",
                     source_result_id[:12],
@@ -1676,7 +1679,7 @@ def run_trajectory_probe(
                     hs_val.get("hellaswag_total", 0),
                     hs_val.get("elapsed_ms", 0),
                 )
-        except Exception as exc_hs:
+        except (ImportError, RuntimeError, ValueError) as exc_hs:
             logger.debug("Validation HellaSwag eval skipped: %s", exc_hs)
 
         # Validation binding probes (full suite, more examples than investigation)
@@ -1737,7 +1740,7 @@ def run_trajectory_probe(
                 _v_ind.elapsed_ms,
                 _v_br.elapsed_ms,
             )
-        except Exception as exc_bp:
+        except (ImportError, RuntimeError, ValueError) as exc_bp:
             logger.debug("Validation binding probes skipped: %s", exc_bp)
 
         del traj_model
@@ -1804,7 +1807,7 @@ def run_trajectory_probe(
             trajectory_composite or 0,
         )
         return trajectory_composite
-    except Exception as e:
+    except Exception as e:  # top-level error boundary: probe must not crash caller
         logger.warning("Trajectory probe failed for %s: %s", source_result_id[:8], e)
         return None
 
@@ -1956,4 +1959,4 @@ class SSELogHandler(logging.Handler):
         except queue.Full:
             pass  # drop log events silently when queue is saturated
         except Exception:
-            pass  # never break the logging pipeline
+            pass  # top-level error boundary: never break the logging pipeline

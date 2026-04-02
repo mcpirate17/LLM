@@ -241,7 +241,7 @@ class _DashboardMixin:
             for name, value in summary.items():
                 try:
                     val = float(value)
-                except Exception:
+                except (TypeError, ValueError):
                     continue
                 trace_totals[name] += val
                 trace_counts[name] += 1
@@ -579,7 +579,8 @@ class _DashboardMixin:
                 "gate_health": analytics.gate_health_daily(n_days=7),
                 "hierarchy_fitness": analytics.recent_hierarchy_fitness(),
             }
-        except Exception:
+        except Exception as e:  # top-level error boundary: analytics must not crash experiment loop
+            logger.debug("_gather_analytics_data failed: %s", e)
             return {}
 
     def _gather_designer_telemetry(self) -> Dict:
@@ -593,8 +594,8 @@ class _DashboardMixin:
             r = requests.get(f"{base}/api/v1/integration/bridge-gap-report", timeout=3)
             if r.ok:
                 result["bridge_gap_report"] = r.json()
-        except Exception:
-            pass
+        except (OSError, ValueError) as e:
+            logger.debug("Designer bridge-gap-report fetch failed: %s", e)
         try:
             r = requests.get(
                 f"{base}/api/v1/blocks/builtin", params={"model_dim": 256}, timeout=3
@@ -606,8 +607,8 @@ class _DashboardMixin:
                     for b in blocks
                     if isinstance(b, dict) and b.get("name")
                 ]
-        except Exception:
-            pass
+        except (OSError, ValueError) as e:
+            logger.debug("Designer builtin-blocks fetch failed: %s", e)
         return result
 
     def _compression_focus_override(
@@ -711,8 +712,8 @@ class _DashboardMixin:
                     }
                 )
                 seen_texts.add(content[:80].lower())
-        except Exception:
-            pass  # insights table may not exist in older notebooks
+        except (OSError, RuntimeError) as e:
+            logger.debug("Refuted insights fetch failed: %s", e)  # table may not exist in older notebooks
 
         return past
 
@@ -813,7 +814,8 @@ class _DashboardMixin:
                     )
                 else:
                     fitness = 0.1
-            except Exception:
+            except Exception as e:  # top-level error boundary: fitness eval must not crash evolution
+                logger.debug("Fitness evaluation failed for %s: %s", fp[:10], e)
                 fitness = 0.0
 
             if fitness_cache is not None:
@@ -942,8 +944,8 @@ class _DashboardMixin:
             )
             if eff:
                 program_metrics["efficiency_multiple"] = eff["geomean"]
-        except Exception:
-            pass
+        except (ImportError, TypeError, ValueError) as e:
+            logger.debug("Efficiency multiple computation failed: %s", e)
 
         # Merge traces
         perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
@@ -1055,8 +1057,8 @@ class _DashboardMixin:
                             program_metrics["validation_baseline_ratio"] = (
                                 v_baseline_ratio
                             )
-                        except Exception:
-                            pass
+                        except (RuntimeError, ValueError, TypeError) as e:
+                            logger.debug("Validation baseline comparison failed: %s", e)
 
                     # 3. Standard Baseline (for backward compatibility / fallback)
                     baseline_ratio = baseline.compare(

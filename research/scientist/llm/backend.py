@@ -115,7 +115,8 @@ def _load_persisted_config() -> Optional["LLMBackend"]:
 
             data = _json.loads(candidate.read_text())
             backend_name = str(data.get("backend", "")).strip().lower()
-            api_key = str(data.get("api_key", "")).strip()
+            api_key_env = str(data.get("api_key_env", "")).strip()
+            api_key = os.environ.get(api_key_env, "") if api_key_env else str(data.get("api_key", "")).strip()
             model = str(data.get("model", "")).strip()
             host = str(data.get("host", "")).strip()
             if not backend_name:

@@ -246,7 +246,7 @@ def _build_block_sparse_mask(
 
 
 def _c(x):
-    """Check if tensor is eligible for aria_core C kernels.
+    """Check if tensor is eligible for aria_core C kernels (fp32).
 
     C kernels don't support autograd, so skip them when gradients are needed.
     Requires at least 2D tensor with reasonable dimensions.
@@ -255,6 +255,18 @@ def _c(x):
         HAS_ARIA_CORE
         and x.device.type == "cpu"
         and x.dtype == torch.float32
+        and not x.requires_grad
+        and x.dim() >= 1
+        and x.numel() > 0
+    )
+
+
+def _c16(x):
+    """Check if tensor is eligible for aria_core fp16 C kernels."""
+    return (
+        HAS_ARIA_CORE
+        and x.device.type == "cpu"
+        and x.dtype == torch.float16
         and not x.requires_grad
         and x.dim() >= 1
         and x.numel() > 0

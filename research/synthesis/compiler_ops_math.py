@@ -11,6 +11,7 @@ from .compiler_op_utils import (
     aria_core,
     kernels,
     _c,
+    _c16,
     _flatten_for_kernel,
     _unflatten_from_kernel,
 )
@@ -23,60 +24,72 @@ from .compiler_op_utils import (
 # (clamp, softplus, STE, etc.) remain as explicit functions below.
 
 
-def _make_unary_op(torch_fn, native_name):
-    """Generate a unary op: aria_core.{native_name}(x) when eligible, else torch_fn(x)."""
-    native_fn = None  # resolved lazily since aria_core may be None
+def _make_unary_op(torch_fn, native_name, native_f16_name=None):
+    """Generate a unary op with f32 and optional f16 C kernel dispatch."""
+    native_fn = None
+    native_f16_fn = None
 
     def op(_, inputs, __):
-        nonlocal native_fn
+        nonlocal native_fn, native_f16_fn
         x = inputs[0]
         if _c(x):
             if native_fn is None:
                 native_fn = getattr(aria_core, native_name)
             return native_fn(x)
+        if native_f16_name and _c16(x):
+            if native_f16_fn is None:
+                native_f16_fn = getattr(aria_core, native_f16_name, None)
+            if native_f16_fn is not None:
+                return native_f16_fn(x)
         return torch_fn(x)
 
     return op
 
 
-def _make_binary_op(torch_fn, native_name):
-    """Generate a binary op: aria_core.{native_name}(a, b) when eligible, else torch_fn(a, b)."""
+def _make_binary_op(torch_fn, native_name, native_f16_name=None):
+    """Generate a binary op with f32 and optional f16 C kernel dispatch."""
     native_fn = None
+    native_f16_fn = None
 
     def op(_, inputs, __):
-        nonlocal native_fn
+        nonlocal native_fn, native_f16_fn
         a, b = inputs[0], inputs[1]
         if _c(a):
             if native_fn is None:
                 native_fn = getattr(aria_core, native_name)
             return native_fn(a, b)
+        if native_f16_name and _c16(a):
+            if native_f16_fn is None:
+                native_f16_fn = getattr(aria_core, native_f16_name, None)
+            if native_f16_fn is not None:
+                return native_f16_fn(a, b)
         return torch_fn(a, b)
 
     return op
 
 
-# name -> (torch_fn, aria_core attr name)
+# name -> (torch_fn, aria_core f32 name, optional f16 name)
 _SIMPLE_UNARY_OPS = {
-    "abs": (torch.abs, "abs_f32"),
-    "sin": (torch.sin, "sin_f32"),
-    "cos": (torch.cos, "cos_f32"),
-    "tanh": (torch.tanh, "tanh_f32"),
-    "sigmoid": (torch.sigmoid, "sigmoid_f32"),
-    "relu": (F.relu, "relu_f32"),
-    "gelu": (F.gelu, "gelu_f32"),
-    "silu": (F.silu, "silu_f32"),
+    "abs": (torch.abs, "abs_f32", None),
+    "sin": (torch.sin, "sin_f32", None),
+    "cos": (torch.cos, "cos_f32", None),
+    "tanh": (torch.tanh, "tanh_f32", None),
+    "sigmoid": (torch.sigmoid, "sigmoid_f32", "sigmoid_f16"),
+    "relu": (F.relu, "relu_f32", "relu_f16"),
+    "gelu": (F.gelu, "gelu_f32", "gelu_f16"),
+    "silu": (F.silu, "silu_f32", "silu_f16"),
 }
 
 _SIMPLE_BINARY_OPS = {
-    "sub": (lambda a, b: a - b, "sub_f32"),
+    "sub": (lambda a, b: a - b, "sub_f32", None),
 }
 
 # Generate op functions from tables
 _TABLE_OPS: Dict[str, Callable] = {}
-for _name, (_tfn, _nname) in _SIMPLE_UNARY_OPS.items():
-    _TABLE_OPS[_name] = _make_unary_op(_tfn, _nname)
-for _name, (_tfn, _nname) in _SIMPLE_BINARY_OPS.items():
-    _TABLE_OPS[_name] = _make_binary_op(_tfn, _nname)
+for _name, (_tfn, _nname, _nname16) in _SIMPLE_UNARY_OPS.items():
+    _TABLE_OPS[_name] = _make_unary_op(_tfn, _nname, _nname16)
+for _name, (_tfn, _nname, _nname16) in _SIMPLE_BINARY_OPS.items():
+    _TABLE_OPS[_name] = _make_binary_op(_tfn, _nname, _nname16)
 
 
 # ── Custom ops that need special logic ───────────────────────────────
@@ -176,15 +189,21 @@ def _op_reciprocal(_, inputs, __):
 
 def _op_add(_, inputs, __):
     a, b = inputs[0], inputs[1]
-    if _c(a) and a.numel() == b.numel():
-        return aria_core.add_f32(a, b)
+    if a.numel() == b.numel():
+        if _c(a):
+            return aria_core.add_f32(a, b)
+        if _c16(a):
+            return aria_core.add_f16(a, b)
     return a + b
 
 
 def _op_mul(_, inputs, __):
     a, b = inputs[0], inputs[1]
-    if _c(a) and a.numel() == b.numel():
-        return aria_core.mul_f32(a, b)
+    if a.numel() == b.numel():
+        if _c(a):
+            return aria_core.mul_f32(a, b)
+        if _c16(a):
+            return aria_core.mul_f16(a, b)
     return a * b
 
 

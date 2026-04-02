@@ -72,7 +72,7 @@ def register_config_routes(app, context: ApiRouteContext):
                 notebook_path,
                 {
                     "backend": backend_name,
-                    "api_key": api_key,
+                    "api_key_env": "ANTHROPIC_API_KEY" if backend_name == "anthropic" else "",
                     "model": model,
                     "host": host,
                 },

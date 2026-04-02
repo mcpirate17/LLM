@@ -539,6 +539,9 @@ class _ExecutionTrainingMixin:
                         captured_grad_norm.copy_(
                             torch.as_tensor(grad_norm_t, device=dev).detach()
                         )
+                        # Bail early if model produces NaN/Inf during warmup
+                        if not torch.isfinite(captured_loss):
+                            break
 
                     torch.cuda.synchronize(dev)
                     graph = torch.cuda.CUDAGraph()
