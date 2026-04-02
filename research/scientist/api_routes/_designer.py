@@ -59,9 +59,21 @@ _DESIGNER_LAST_ACTIVITY_REASON = "startup"
 _DESIGNER_LAST_AUTOSTOP_TS: Optional[float] = None
 _DESIGNER_IDLE_WATCHDOG_STARTED = False
 
+# TTL cache for health-check results to avoid blocking HTTP on every call.
+_HEALTH_CACHE_TTL_S = 3.0
+_health_cache: Optional[Dict[str, Any]] = None
+_health_cache_ts: float = 0.0
+_health_cache_lock = threading.Lock()
+
 
 def designer_service_status() -> Dict[str, Any]:
-    """Probe aria_designer API/UI health."""
+    """Probe aria_designer API/UI health (cached for 3s to avoid blocking)."""
+    global _health_cache, _health_cache_ts
+    now = time.time()
+    with _health_cache_lock:
+        if _health_cache is not None and (now - _health_cache_ts) < _HEALTH_CACHE_TTL_S:
+            return _health_cache
+
     api_up = False
     ui_up = False
     try:
@@ -74,13 +86,17 @@ def designer_service_status() -> Dict[str, Any]:
         ui_up = r.status_code < 500
     except (OSError, ValueError):
         ui_up = False
-    return {
+    result = {
         "api_up": api_up,
         "ui_up": ui_up,
         "running": bool(api_up and ui_up),
         "api_health_url": _ARIA_DESIGNER_API_HEALTH,
         "ui_health_url": _ARIA_DESIGNER_UI_HEALTH,
     }
+    with _health_cache_lock:
+        _health_cache = result
+        _health_cache_ts = time.time()
+    return result
 
 
 def designer_touch_activity(reason: str = "activity") -> Dict[str, Any]:
