@@ -324,7 +324,8 @@ class _ControlStartMixin:
                     )
                 refine_config.refine_intent = resolved_intent
             nb.close()
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to compute recent synthesis S1 rate: %s", exc)
             recent_synthesis_s1_rate = 0.0
 
         if hypothesis is None:
@@ -430,7 +431,8 @@ class _ControlStartMixin:
                         if not op_name or op_name == "input":
                             continue
                         ops.append(op_name)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Falling back to default: %s", exc)
                     ops = []
 
             if ops:
@@ -557,8 +559,8 @@ class _ControlStartMixin:
             # produces better results (enforced in _record_investigation_result).
             try:
                 nb.conn.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
 
         source = "user_input" if hypothesis is not None else "runner_template"
         if hypothesis is None:
@@ -943,7 +945,7 @@ class _ControlStartMixin:
             try:
                 config_dict = json.loads(exp_data["config_json"])
                 config = RunConfig.from_dict(config_dict)
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 nb.close()
                 raise ValueError(
                     f"Cannot reconstruct config for experiment {experiment_id}"

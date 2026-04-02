@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import sqlite3
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,8 +57,8 @@ class _CycleMixin:
         if _distiller is not None:
             try:
                 _digest = _distiller.get_digest()
-            except Exception:
-                pass
+            except RuntimeError as e:
+                logger.debug("Distiller digest retrieval failed: %s", e)
 
         mode_rec = self._select_next_mode(config, nb, n_experiments, digest=_digest)
         selected_mode = mode_rec.get("mode", "synthesis")
@@ -380,7 +381,7 @@ class _CycleMixin:
                     },
                 )
             )
-        except Exception as e:
+        except (sqlite3.OperationalError, RuntimeError) as e:
             logger.debug("Failed to persist aria_cycle live-feed entry: %s", e)
         with self._lock:
             self._last_cycle_summary = summary
@@ -399,8 +400,8 @@ class _CycleMixin:
                     f"Switch-epic criteria met at cycle {n_experiments}",
                     evidence=json.dumps(json_safe(switch_guardrails), sort_keys=True),
                 )
-            except Exception:
-                pass
+            except sqlite3.OperationalError as e:
+                logger.debug("Switch-epic learning event log failed: %s", e)
         self._emit_event("aria_cycle_completed", summary)
 
         delta_s1 = summary.get("delta_stage1_survivors", 0)
@@ -502,7 +503,7 @@ class _CycleMixin:
                 f"Auto-spawned repair agent {task_id} for cycle {cycle_index} failure: {error[:200]}",
                 task_id=task_id,
             )
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.debug("Proactive cycle repair failed to spawn: %s", e)
         self._invoke_code_healer(
             nb=nb,
@@ -649,7 +650,7 @@ class _CycleMixin:
                 task_id,
                 s1_slope,
             )
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.debug("Stagnation agent spawn failed: %s", e)
         self._invoke_code_healer(
             nb=nb,
@@ -735,7 +736,7 @@ class _CycleMixin:
                 worst_error[1],
                 worst_error[0][:100],
             )
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.debug("Failed to spawn recurring error fix agent: %s", e)
         self._invoke_code_healer(
             nb=nb,
@@ -821,7 +822,7 @@ class _CycleMixin:
                     "scope": scope,
                 }
             return result
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             nb.log_learning_event(
                 "code_healer_failed",
                 f"CodeHealer failed for trigger={trigger_type}: {e}",
@@ -857,7 +858,13 @@ class _CycleMixin:
                     or default_timeout
                 ),
             )
-        except Exception:
+        except (
+            sqlite3.OperationalError,
+            json.JSONDecodeError,
+            ValueError,
+            KeyError,
+        ) as e:
+            logger.debug("Healer timeout resolution failed: %s", e)
             return default_timeout
 
     def _maybe_trigger_integrity_healer(
@@ -887,7 +894,7 @@ class _CycleMixin:
                 ],
                 trigger_payload=report,
             )
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.debug("Integrity healer check failed to execute: %s", e)
 
     @staticmethod
@@ -1049,5 +1056,5 @@ class _CycleMixin:
                     "Recovered %d stale experiments from previous crash", cleaned
                 )
             nb.close()
-        except Exception as e:
+        except (sqlite3.OperationalError, RuntimeError, OSError) as e:
             logger.debug("Startup stale-experiment recovery failed: %s", e)

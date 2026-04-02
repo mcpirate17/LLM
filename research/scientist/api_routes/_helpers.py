@@ -43,7 +43,7 @@ def _json_dict_or_empty(raw: Any) -> Dict[str, Any]:
         return {}
     try:
         parsed = json.loads(raw)
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -112,7 +112,7 @@ def get_external_running_experiment_snapshot(
     )
     try:
         total_programs = int(total_programs or 0)
-    except Exception:
+    except (TypeError, ValueError):
         total_programs = 0
 
     current_program = max(
@@ -298,18 +298,18 @@ def native_runner_canary_status_payload(
 
     try:
         iterations = int(str(os.environ.get("NATIVE_RUNNER_CANARY_ITERATIONS", "8")))
-    except Exception:
+    except (TypeError, ValueError):
         iterations = 8
     iterations = max(1, min(iterations, 50))
 
     try:
         seed = int(str(os.environ.get("NATIVE_RUNNER_CANARY_SEED", "1337")))
-    except Exception:
+    except (TypeError, ValueError):
         seed = 1337
 
     try:
         ttl_seconds = float(str(os.environ.get("NATIVE_RUNNER_CANARY_TTL_S", "300")))
-    except Exception:
+    except (TypeError, ValueError):
         ttl_seconds = 300.0
     ttl_seconds = max(0.0, min(ttl_seconds, 3600.0))
 
@@ -540,7 +540,11 @@ def load_persisted_llm_config(notebook_path: str):
             return
         aria = get_aria()
         api_key_env = str(data.get("api_key_env", "")).strip()
-        api_key = os.environ.get(api_key_env, "") if api_key_env else str(data.get("api_key", "")).strip()
+        api_key = (
+            os.environ.get(api_key_env, "")
+            if api_key_env
+            else str(data.get("api_key", "")).strip()
+        )
         aria.configure_llm(
             backend_name=backend,
             api_key=api_key,

@@ -6,13 +6,14 @@ import json
 import math
 import time
 import uuid
+import zlib
 from typing import Any, Dict, List, Optional
 
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
 
 try:
     from ..preregistration import PreregistrationError, validate_preregistration
-except Exception:
+except (ImportError, ModuleNotFoundError):
     from pathlib import Path as _Path
     import importlib.util as _importlib_util
     import sys as _sys
@@ -495,8 +496,8 @@ class _ExperimentsMixin:
                     f"DELETE FROM {table} WHERE experiment_id = ?",
                     (experiment_id,),
                 )
-            except Exception:
-                pass  # table may not exist or lack column
+            except Exception as e:
+                LOGGER.debug("Cascade delete from %s skipped: %s", table, e)
 
         self.conn.execute(
             "DELETE FROM experiments WHERE experiment_id = ?",
@@ -599,7 +600,7 @@ class _ExperimentsMixin:
                 perf = parsed.get("perf_report") if isinstance(parsed, dict) else None
                 if isinstance(perf, dict):
                     perf_tp = perf.get("avg_throughput_tok_s")
-            except Exception:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, zlib.error):
                 perf_tp = None
 
         updates: List[str] = []
@@ -659,7 +660,7 @@ class _ExperimentsMixin:
             return 0.0
         try:
             return float(row["latest_ts"] or 0.0)
-        except Exception:
+        except (TypeError, ValueError):
             return 0.0
 
     def get_experiment_trends(self, limit: int = 50) -> List[Dict]:
@@ -775,7 +776,13 @@ class _ExperimentsMixin:
                         d["gpu_starvation_ms"] = perf.get("gpu_starvation", {}).get(
                             "total_stall_ms", 0
                         )
-                except Exception:
+                except (
+                    json.JSONDecodeError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    zlib.error,
+                ):
                     pass
             if (
                 d.get("avg_throughput_tok_s") in (None, 0)

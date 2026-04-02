@@ -345,9 +345,9 @@ def apply_template(
     prev_template_instance = graph.metadata.get("_active_template_instance")
     graph.metadata["_active_template"] = name
     graph.metadata["_active_template_slot_counter"] = 0
-    graph.metadata["_active_template_instance"] = len(
-        graph.metadata.get("templates_used", [])
-    ) - 1
+    graph.metadata["_active_template_instance"] = (
+        len(graph.metadata.get("templates_used", [])) - 1
+    )
     try:
         return fn(graph, input_id, rng, motif_weights)
     finally:

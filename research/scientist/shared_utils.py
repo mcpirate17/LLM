@@ -34,8 +34,8 @@ def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     if isinstance(value, str) and value.startswith("b'") and value.endswith("'"):
         try:
             value = ast.literal_eval(value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
     if isinstance(value, (bytes, bytearray)):
         try:
@@ -45,7 +45,8 @@ def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
                 value = struct.unpack("<d", value)[0]
             else:
                 value = value.decode("utf-8", errors="ignore")
-        except Exception:
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
             return default
 
     try:
@@ -69,7 +70,8 @@ def coerce_dict_payload(payload: Any) -> Optional[Dict[str, Any]]:
     if callable(to_dict):
         try:
             coerced = to_dict()
-        except Exception:
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
             return None
         if isinstance(coerced, dict):
             return coerced

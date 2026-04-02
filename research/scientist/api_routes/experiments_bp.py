@@ -58,7 +58,8 @@ def _extract_ops_summary(graph_json_str: str | None) -> str | None:
         if len(ops) <= 5:
             return ", ".join(ops)
         return ", ".join(ops[:4]) + f" +{len(ops) - 4}"
-    except Exception:
+    except Exception as exc:
+        logger.debug("Returning default due to error: %s", exc)
         return None
 
 
@@ -535,7 +536,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
 
             try:
                 config_dict = json.loads(source.get("config_json") or "{}")
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 config_dict = {}
             config = RunConfig.from_dict(config_dict)
             hypothesis = source.get("hypothesis")
@@ -625,7 +626,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     return None
                 try:
                     config_dict = json.loads(source.get("config_json") or "{}")
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     config_dict = {}
                 config = RunConfig.from_dict(config_dict)
                 hypothesis = source.get("hypothesis")

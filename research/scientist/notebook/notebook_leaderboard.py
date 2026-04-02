@@ -3,6 +3,7 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
+import sqlite3
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -267,7 +268,13 @@ class _LeaderboardMixin:
                     n.get("op_name") in MOE_OPS
                     for n in (_gj.get("nodes") or {}).values()
                 )
-            except Exception:
+            except (
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
+                AttributeError,
+            ):
                 pass
         eff_mult = kwargs.get("efficiency_multiple")
         if eff_mult is None and pr_row:
@@ -681,7 +688,7 @@ class _LeaderboardMixin:
             ).fetchone()
             if rid_row and rid_row["result_id"]:
                 self._sync_fingerprint_leaderboard(str(rid_row["result_id"]))
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, sqlite3.OperationalError) as e:
             LOGGER.debug(
                 "Fingerprint leaderboard sync skipped for entry %s: %s", entry_id, e
             )

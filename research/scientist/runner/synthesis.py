@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import copy
 import random
+import sqlite3
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
@@ -165,7 +166,7 @@ class _SynthesisMixin:
                 (json.dumps(json_safe(stored_config)), exp_id),
             )
             nb.conn.commit()
-        except Exception as e:
+        except (sqlite3.OperationalError, json.JSONDecodeError, ValueError) as e:
             logger.debug("Failed persisting grammar weights to config: %s", e)
 
     def _log_grammar_weight_application(
@@ -181,7 +182,8 @@ class _SynthesisMixin:
         try:
             if analytics is not None:
                 audit_info = analytics.grammar_weight_audit_info()
-        except Exception:
+        except (RuntimeError, AttributeError) as e:
+            logger.debug("Grammar weight audit info failed: %s", e)
             audit_info = {}
         nb.log_learning_event(
             "grammar_weights_applied",
@@ -223,7 +225,8 @@ class _SynthesisMixin:
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,
                 )
-            except Exception:
+            except (RuntimeError, ValueError, TypeError) as e:
+                logger.debug("Ablation graph compilation failed: %s", e)
                 dropped_compile += 1
                 continue
             evaluable_graphs.append(graph)
@@ -268,7 +271,8 @@ class _SynthesisMixin:
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,
                 ).to(dev)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError) as e:
+                logger.debug("Ablation model compilation failed: %s", e)
                 continue
             s0 = self._safe_eval_for_stage(
                 model,
@@ -476,8 +480,8 @@ class _SynthesisMixin:
                     )
                     ablation_outcome = "skipped_already_tested"
                     strong_corr = False  # prevent triggering below
-            except Exception:
-                pass
+            except sqlite3.OperationalError as e:
+                logger.debug("Ablation dedup check failed: %s", e)
 
         if strong_corr and top_signal_interpretable:
             row = nb.conn.execute(
@@ -505,7 +509,7 @@ class _SynthesisMixin:
                                 original_loss_ratio=base_loss_ratio,
                             )
                         )
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     logger.debug("Ablation run failed: %s", e)
         elif strong_corr:
             ablation_outcome = "skipped_low_quality_signal"
@@ -632,7 +636,12 @@ class _SynthesisMixin:
                 "l1_distance": round(l1, 6),
                 "top_op_deltas": top_changes,
             }
-        except Exception as e:
+        except (
+            sqlite3.OperationalError,
+            json.JSONDecodeError,
+            ValueError,
+            KeyError,
+        ) as e:
             logger.debug(
                 "Failed comparing generated-op distribution for %s: %s", exp_id, e
             )
@@ -711,7 +720,8 @@ class _SynthesisMixin:
                 )
             else:
                 components["efficiency"] = 0.0
-        except Exception:
+        except (ImportError, RuntimeError, ValueError, TypeError) as e:
+            logger.debug("Efficiency multiple computation failed: %s", e)
             if is_moe:
                 components["efficiency"] = 0.5
             elif param_count > 0 and max_params > 0:
@@ -827,7 +837,8 @@ class _SynthesisMixin:
                 continue
             try:
                 parent_graph = graph_from_json(graph_json_str)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                logger.debug("Graph deserialization failed: %s", e)
                 continue
             source_pairs.append((source_id, parent_graph, source))
             if source.get("stage1_passed"):
@@ -842,7 +853,7 @@ class _SynthesisMixin:
 
         try:
             from ...search.evolution import _mutate_graph
-        except Exception as e:
+        except (ImportError, AttributeError) as e:
             logger.warning(
                 "Mutation helper unavailable (%s); falling back to synthesis generation",
                 e,
@@ -913,7 +924,8 @@ class _SynthesisMixin:
                         break
                     try:
                         child = _mutate_graph(parent_graph, grammar, rng)
-                    except Exception:
+                    except (RuntimeError, ValueError, KeyError) as e:
+                        logger.debug("Mutation failed: %s", e)
                         continue
 
                     # Z15: Prune dead branches (unreachable nodes) before validation
@@ -1095,7 +1107,8 @@ class _SynthesisMixin:
                 if flop_est and flop_est.flops_per_token > 0
                 else (params * 2)
             )
-        except Exception:
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("FLOP estimation failed: %s", e)
             flops_per_token = params * 2
         baseline_fpt = 2.0 * _cfg_dim**2 * _cfg_layers
         flop_efficiency = min(1.0, baseline_fpt / max(flops_per_token, 1.0))

@@ -29,9 +29,8 @@ def main():
     parser = argparse.ArgumentParser(description="HYDRA Architecture Explorer")
     parser.add_argument(
         "--mode",
-        default="explore",
+        default="synthesize",
         choices=[
-            "explore",
             "synthesize",
             "continuous",
             "dashboard",
@@ -60,14 +59,6 @@ def main():
         default=True,
         help="Enable math space primitives",
     )
-
-    # Pass through to original explorer
-    parser.add_argument("--fix", nargs="*", default=[])
-    parser.add_argument("--stage0_only", action="store_true")
-    parser.add_argument("--mutate", action="store_true")
-    parser.add_argument("--leaderboard", action="store_true")
-    parser.add_argument("--analyze", action="store_true")
-    parser.add_argument("--describe", type=str, default=None)
     parser.add_argument(
         "--resume",
         type=str,
@@ -94,19 +85,7 @@ def main():
         _run_resume(args)
         return
 
-    if (
-        args.mode == "explore"
-        or args.mutate
-        or args.leaderboard
-        or args.analyze
-        or args.describe
-    ):
-        # Original morphological exploration mode
-        from research.explorer import main as explorer_main
-
-        explorer_main()
-
-    elif args.mode == "synthesize":
+    if args.mode == "synthesize":
         _run_synthesis(args)
 
     elif args.mode == "continuous":

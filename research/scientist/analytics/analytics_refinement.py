@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import math
+import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -82,7 +83,7 @@ class RefinementAnalyzer:
             try:
                 prim = get_primitive(op_name)
                 op_categories[op_name] = prim.category.value
-            except Exception:
+            except (KeyError, ValueError):
                 op_categories[op_name] = "unknown"
 
         # Fetch population op stats
@@ -103,7 +104,7 @@ class RefinementAnalyzer:
             try:
                 prim = get_primitive(op)
                 pop_categories[op] = prim.category.value
-            except Exception:
+            except (KeyError, ValueError):
                 pop_categories[op] = "unknown"
 
         # Compute mean S1 rate across ops with sufficient data
@@ -297,7 +298,7 @@ class RefinementAnalyzer:
                 """SELECT {} FROM program_results
                    WHERE stage1_passed = 1""".format(", ".join(self._FP_METRICS))
             ).fetchall()
-        except Exception:
+        except (sqlite3.OperationalError, KeyError, TypeError):
             return gaps
 
         if len(rows) < 3:
@@ -386,7 +387,7 @@ class RefinementAnalyzer:
                     prim = get_primitive(op)
                     cat = prim.category.value
                     add_categories[cat] = max(add_categories.get(cat, 1.0), 1.5)
-                except Exception:
+                except (KeyError, ValueError):
                     pass
 
         # Determine intent

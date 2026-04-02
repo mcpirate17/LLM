@@ -219,7 +219,6 @@ class TemporalBayesianTracker:
         now = time.time()
         window_seconds = _FIX_WINDOW_HOURS * 3600
         reset_entities: List[str] = []
-        already_reset: set = set()  # prevent cascading resets
 
         # Aggregate: for each op, find the signature with the largest positive
         # success-rate jump. Only use that single best signal for reset.
@@ -267,12 +266,8 @@ class TemporalBayesianTracker:
             prev_rate, current_rate = op_best_rates[op_name]
 
             old_alpha, old_beta = p.alpha, p.beta
-            p.alpha = _DEFAULT_ALPHA + _FIX_RETAIN_FRACTION * (
-                p.alpha - _DEFAULT_ALPHA
-            )
-            p.beta = _DEFAULT_BETA + _FIX_RETAIN_FRACTION * (
-                p.beta - _DEFAULT_BETA
-            )
+            p.alpha = _DEFAULT_ALPHA + _FIX_RETAIN_FRACTION * (p.alpha - _DEFAULT_ALPHA)
+            p.beta = _DEFAULT_BETA + _FIX_RETAIN_FRACTION * (p.beta - _DEFAULT_BETA)
             logger.info(
                 "Code fix detected for '%s' (via %s): rate %.2f → %.2f, "
                 "posterior reset α=%.1f→%.1f β=%.1f→%.1f",
@@ -379,7 +374,7 @@ class TemporalBayesianTracker:
         try:
             conn = sqlite3.connect(str(db_path), timeout=10)
             conn.execute("PRAGMA busy_timeout=10000")
-        except Exception as e:
+        except (sqlite3.Error, OSError) as e:
             logger.error("Failed to connect to DB: %s", e)
             return tracker
 

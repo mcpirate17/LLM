@@ -71,21 +71,22 @@ def json_safe(value: Any) -> Any:
             if hasattr(t, "item"):
                 return json_safe(t.item())
             return str(t)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
             return str(value)
 
     # Numpy-like arrays/scalars (duck-typed to avoid importing numpy)
     if hasattr(value, "tolist") and callable(getattr(value, "tolist")):
         try:
             return json_safe(value.tolist())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
     if hasattr(value, "item") and callable(getattr(value, "item")):
         try:
             return json_safe(value.item())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
     return str(value)
 

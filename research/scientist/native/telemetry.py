@@ -94,7 +94,7 @@ def native_runner_capability_report() -> Dict[str, Any]:
     if fallback_limit_raw is not None:
         try:
             fallback_limit = max(0.0, min(1.0, float(str(fallback_limit_raw))))
-        except Exception:
+        except (TypeError, ValueError):
             fallback_limit = 1.0
         fallback_rate = report["fallback_metrics"]["fallback_rate"]
         checks.append(
@@ -111,7 +111,7 @@ def native_runner_capability_report() -> Dict[str, Any]:
     if legacy_limit_raw is not None:
         try:
             legacy_limit = max(0, int(str(legacy_limit_raw)))
-        except Exception:
+        except (TypeError, ValueError):
             legacy_limit = 0
         legacy_used = legacy_count
         checks.append(
@@ -168,7 +168,7 @@ def native_runner_capability_report() -> Dict[str, Any]:
         threshold = int(
             str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5"))
         )
-    except Exception:
+    except (TypeError, ValueError):
         threshold = 5
     threshold = max(1, threshold)
     report["selective_guardrail"] = {

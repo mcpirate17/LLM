@@ -174,7 +174,10 @@ class _DashboardMixin:
 
                     del model
                     clear_gpu_memory()
-                except Exception as exc:
+                except (
+                    Exception
+                ) as exc:  # top-level error boundary: benchmark run must not crash loop
+                    logger.debug("Routing benchmark run failed: %s", exc)
                     run_data["status"] = "error"
                     run_data["error"] = str(exc)
 
@@ -579,7 +582,9 @@ class _DashboardMixin:
                 "gate_health": analytics.gate_health_daily(n_days=7),
                 "hierarchy_fitness": analytics.recent_hierarchy_fitness(),
             }
-        except Exception as e:  # top-level error boundary: analytics must not crash experiment loop
+        except (
+            Exception
+        ) as e:  # top-level error boundary: analytics must not crash experiment loop
             logger.debug("_gather_analytics_data failed: %s", e)
             return {}
 
@@ -713,7 +718,9 @@ class _DashboardMixin:
                 )
                 seen_texts.add(content[:80].lower())
         except (OSError, RuntimeError) as e:
-            logger.debug("Refuted insights fetch failed: %s", e)  # table may not exist in older notebooks
+            logger.debug(
+                "Refuted insights fetch failed: %s", e
+            )  # table may not exist in older notebooks
 
         return past
 
@@ -814,7 +821,9 @@ class _DashboardMixin:
                     )
                 else:
                     fitness = 0.1
-            except Exception as e:  # top-level error boundary: fitness eval must not crash evolution
+            except (
+                Exception
+            ) as e:  # top-level error boundary: fitness eval must not crash evolution
                 logger.debug("Fitness evaluation failed for %s: %s", fp[:10], e)
                 fitness = 0.0
 
@@ -867,7 +876,7 @@ class _DashboardMixin:
                 task_id=task_id,
             )
             logger.info("Spawned reasoning-based repair agent: %s", task_id)
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.debug("Failed to spawn reasoning-based agent: %s", e)
 
     def _process_orchestrator_results(self, orchestrator, nb, exp_id, results, config):
@@ -1024,7 +1033,7 @@ class _DashboardMixin:
                             program_metrics["discovery_baseline_ratio"] = (
                                 discovery_ratio
                             )
-                        except Exception as e:
+                        except (RuntimeError, ValueError, TypeError) as e:
                             logger.debug("Discovery baseline failed: %s", e)
 
                     # 2. Validation Baseline (Corpus)
@@ -1075,8 +1084,8 @@ class _DashboardMixin:
                         data_tag="standard_baseline",
                     )
                     program_metrics["baseline_loss_ratio"] = baseline_ratio
-                except Exception:
-                    pass
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logger.debug("Standard baseline comparison failed: %s", e)
 
             # Z12: Diagnostic suite — record metrics for S1 survivors (informational only).
             # The regression gate is NOT applied at screening tier because a single-layer
@@ -1095,7 +1104,7 @@ class _DashboardMixin:
                 program_metrics["diagnostic_tasks_json"] = json.dumps(
                     json_safe(diag_result.to_dict())
                 )
-            except Exception as e:
+            except (ImportError, RuntimeError, ValueError) as e:
                 logger.debug(
                     "Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e
                 )
@@ -1173,7 +1182,7 @@ class _DashboardMixin:
                 program_metrics["novelty_requires_justification"] = int(
                     novelty_requires_justification
                 )
-            except Exception as e:
+            except (ImportError, RuntimeError, ValueError, TypeError) as e:
                 logger.debug(
                     "Novelty scoring failed for %s: %s", graph.fingerprint()[:10], e
                 )
@@ -1206,8 +1215,8 @@ class _DashboardMixin:
                 program_metrics["ncd_description_length_per_param"] = ncd_result[
                     "description_length_per_param"
                 ]
-            except Exception:
-                pass
+            except (ImportError, KeyError, TypeError, ValueError) as e:
+                logger.debug("NCD computation failed: %s", e)
 
         rid = nb.record_program_result(
             experiment_id=exp_id,
@@ -1232,8 +1241,8 @@ class _DashboardMixin:
         if training_curve and rid:
             try:
                 nb.store_training_curve(rid, training_curve)
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("store_training_curve failed for %s: %s", rid, e)
         if rid:
             try:
                 from ...eval.wikitext_eval import screening_wikitext_payload
@@ -1241,7 +1250,7 @@ class _DashboardMixin:
                 payload = screening_wikitext_payload(s1_result)
                 if payload:
                     nb.set_external_benchmarks(rid, payload)
-            except Exception as e:
+            except (ImportError, OSError, ValueError) as e:
                 logger.debug(
                     "Screening benchmark payload persist failed for %s: %s", rid, e
                 )
@@ -1281,7 +1290,7 @@ class _DashboardMixin:
                         "wikitext_score": program_metrics.get("wikitext_score"),
                     },
                 )
-            except Exception as e:
+            except (ImportError, OSError, RuntimeError) as e:
                 logger.debug("Screening leaderboard upsert failed for %s: %s", rid, e)
 
         # Update best metrics in experiment summary
@@ -1302,8 +1311,8 @@ class _DashboardMixin:
                     or nov > results["best_novelty_score"]
                 ):
                     results["best_novelty_score"] = nov
-        except Exception:
-            pass
+        except (KeyError, TypeError) as e:
+            logger.debug("Best novelty score update failed: %s", e)
 
         self._emit_event(
             "program_evaluated",
@@ -1328,7 +1337,8 @@ class _DashboardMixin:
         """Resolve pending insight-bundle trials once downstream outcomes are available."""
         try:
             trials = nb.get_pending_selection_insight_trials(limit=200)
-        except Exception:
+        except (OSError, RuntimeError) as e:
+            logger.debug("Pending selection insight trials fetch failed: %s", e)
             return
         if not trials:
             return
@@ -1432,5 +1442,5 @@ class _DashboardMixin:
                         str(insight_id),
                         success=(outcome == "supported"),
                     )
-            except Exception:
-                pass
+            except (json.JSONDecodeError, OSError, TypeError) as e:
+                logger.debug("Bayesian insight update failed: %s", e)

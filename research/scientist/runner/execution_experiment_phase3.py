@@ -97,12 +97,12 @@ class _ExecutionExperimentPhase3Mixin:
             program_metrics: Dict[str, Any] = {}
             try:
                 program_metrics.update(self._extract_sandbox_metrics(sandbox_result))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
             try:
                 program_metrics["param_count"] = sandbox_result.param_count
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
 
             for k in (
                 "initial_loss",
@@ -144,8 +144,8 @@ class _ExecutionExperimentPhase3Mixin:
                 payload = screening_wikitext_payload(s1_result)
                 if payload:
                     nb.set_external_benchmarks(result_id, payload)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
 
     def _prepare_screening_orchestrator(
         self,
@@ -199,7 +199,8 @@ class _ExecutionExperimentPhase3Mixin:
                 ).fetchall()
                 if r[0]
             }
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to load existing fingerprints for dedup: %s", exc)
             existing_fps = set()
 
         original_count = len(graphs)

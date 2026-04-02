@@ -461,7 +461,7 @@ class GBMPredictor:
         )
         try:
             return float(self.gate_model.predict(x)[0])
-        except Exception:
+        except (TypeError, ValueError):
             return 0.5
 
     def predict_rank(self, features: Dict[str, float]) -> float:
@@ -473,7 +473,7 @@ class GBMPredictor:
         )
         try:
             return float(self.rank_model.predict(x)[0])
-        except Exception:
+        except (TypeError, ValueError):
             return 1e6
 
     def save(self, state_dir: Path) -> None:
@@ -1088,7 +1088,7 @@ class EnsemblePredictor:
             bayes_path = state_dir / _BAYESIAN_STATE_PATH.name
             if bayes_path.exists():
                 ensemble.bayesian = TemporalBayesianTracker.load_state(bayes_path)
-        except Exception as exc:
+        except (ImportError, OSError, ValueError) as exc:
             logger.debug("Bayesian state load skipped: %s", exc)
 
         try:
@@ -1097,7 +1097,7 @@ class EnsemblePredictor:
             interaction_path = state_dir / _INTERACTION_MODEL_PATH.name
             if interaction_path.exists():
                 ensemble.interaction = InteractionModel.load(interaction_path)
-        except Exception as exc:
+        except (ImportError, OSError, ValueError) as exc:
             logger.debug("Interaction model load skipped: %s", exc)
 
         ensemble_state_path = state_dir / _ENSEMBLE_STATE_PATH.name

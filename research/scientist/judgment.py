@@ -637,7 +637,8 @@ def _extract_candidate_dict(graph: Any) -> Dict[str, Any]:
     if callable(topo):
         try:
             order = topo()
-        except Exception:
+        except (ValueError, KeyError, RuntimeError) as exc:
+            logger.debug("Topological sort failed, using node key order: %s", exc)
             order = list(nodes.keys())
     else:
         order = list(nodes.keys())

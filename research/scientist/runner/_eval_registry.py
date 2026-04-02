@@ -243,8 +243,8 @@ def _run_hierarchy(ctx: EvalContext) -> dict[str, Any]:
     try:
         with torch.no_grad():
             model(input_ids)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed error: %s", exc)
     finally:
         for h in hooks:
             h.remove()

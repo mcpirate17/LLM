@@ -338,8 +338,8 @@ class _ResultsKnowledgeMixin:
             logger.debug(
                 "Intelligence refresh: Bayesian tracker updated (%d ops)", n_ops
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
     def _ensure_campaign(self, config: RunConfig, nb: LabNotebook) -> Optional[str]:
         """Ensure an active campaign exists. Create one if needed."""

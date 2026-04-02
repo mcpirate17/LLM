@@ -148,8 +148,8 @@ class _ControlActionsMixin:
                 try:
                     self._event_queue.get_nowait()
                     self._event_queue.put_nowait(payload)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed error: %s", exc)
         self._persist_live_feed_event(event_type, data)
         # Buffer training_step events for REST retrieval (dashboard chart restore).
         # Keep a deep enough history so the dashboard can reconstruct near-full

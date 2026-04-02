@@ -86,7 +86,7 @@ class _ScreeningMixin:
             _ = float(probe.sum().item())
             torch.cuda.synchronize(dev)
             return True, None
-        except Exception as exc:
+        except RuntimeError as exc:
             return False, str(exc)
 
     def _recent_cuda_assert_signals(self, window: int = 5) -> Dict[str, Any]:
@@ -116,14 +116,14 @@ class _ScreeningMixin:
                     exp_id = str(exp.get("experiment_id") or "").strip()
                     if exp_id:
                         experiment_ids.append(exp_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
         finally:
             if nb is not None:
                 try:
                     nb.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed error: %s", exc)
 
         seen = set()
         unique_ids: List[str] = []

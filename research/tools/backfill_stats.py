@@ -324,7 +324,10 @@ if __name__ == "__main__":
     if args.refresh_models:
         print("\nRefreshing ML models...")
         try:
-            from research.tools.train_predictors import train_bayesian, train_graph_predictor
+            from research.tools.train_predictors import (
+                train_bayesian,
+                train_graph_predictor,
+            )
 
             train_bayesian(save=True)
             print("  Bayesian tracker refreshed")

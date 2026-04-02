@@ -7,16 +7,22 @@ import torch.nn as nn
 
 from ...eval.perf_budget import evaluate_perf_budget_gate
 from ...training.training_program import synthesize_training_program
-from ..shared_utils import coerce_dict_payload
 from ._helpers import (
-    clear_gpu_memory, compute_seed_metrics,
-    run_baseline_comparison, build_validation_entry,
-    promote_validation_candidate, run_trajectory_probe,
+    clear_gpu_memory,
+    compute_seed_metrics,
+    run_baseline_comparison,
+    build_validation_entry,
+    promote_validation_candidate,
+    run_trajectory_probe,
     handle_breakthrough,
 )
-from ._eval_registry import EvalContext, EVAL_SPECS, run_eval_suite, apply_breakthrough_logic
-from ..notebook import LabNotebook, ExperimentEntry
-from ..llm.context_experiment import build_validation_context
+from ._eval_registry import (
+    EvalContext,
+    EVAL_SPECS,
+    run_eval_suite,
+    apply_breakthrough_logic,
+)
+from ..notebook import LabNotebook
 
 import logging
 
@@ -71,9 +77,7 @@ class _ContinuousValidationMixin:
             n_steps=max(1, baseline_steps),
             seq_len=min(128, config.validation_seq_len),
             vocab_size=int(config.vocab_size),
-            batch_size=max(
-                1, min(4, config.validation_batch_size)
-            ),
+            batch_size=max(1, min(4, config.validation_batch_size)),
             lr=float(baseline_recipe["lr"]),
             device=dev_str,
             data_fn=data_fn,
@@ -116,9 +120,7 @@ class _ContinuousValidationMixin:
         n_batches: int = 2,
     ):
         seq_len = min(128, config.validation_seq_len)
-        batch_size = max(
-            1, min(4, config.validation_batch_size)
-        )
+        batch_size = max(1, min(4, config.validation_batch_size))
         return [
             self._sample_training_input_ids(
                 config=config,
@@ -158,7 +160,13 @@ class _ContinuousValidationMixin:
         def _vstatus(phase: str) -> None:
             nonlocal _eval_test_index
             _eval_test_index += 1
-            logger.info("validation[%s]: %s (%d/%d)", _rid_short, phase, _eval_test_index, _EVAL_TOTAL_TESTS)
+            logger.info(
+                "validation[%s]: %s (%d/%d)",
+                _rid_short,
+                phase,
+                _eval_test_index,
+                _EVAL_TOTAL_TESTS,
+            )
             self._emit_event(
                 "validation_phase",
                 {
@@ -169,7 +177,9 @@ class _ContinuousValidationMixin:
                     "total_tests": _EVAL_TOTAL_TESTS,
                 },
             )
-            self._update_progress(status=f"validation: {phase} ({_eval_test_index}/{_EVAL_TOTAL_TESTS})")
+            self._update_progress(
+                status=f"validation: {phase} ({_eval_test_index}/{_EVAL_TOTAL_TESTS})"
+            )
 
         scaling_enabled = bool(getattr(config, "enable_scaling_comparison", True))
         result = ExternalEvalResult(scaling_param_efficiency=val_normalized_ratio)
@@ -180,9 +190,14 @@ class _ContinuousValidationMixin:
             dev_str=dev_str,
             model=None,
             model_factory=self._make_validation_model_factory(
-                model_source, arch_spec_json_str, graph_json_str, config,
+                model_source,
+                arch_spec_json_str,
+                graph_json_str,
+                config,
             ),
-            input_batches=self._make_validation_input_batches(config, dev, source_result_id),
+            input_batches=self._make_validation_input_batches(
+                config, dev, source_result_id
+            ),
             best_seed=best_seed,
             base_final_loss=(
                 float(best_seed.get("final_loss"))
@@ -204,7 +219,8 @@ class _ContinuousValidationMixin:
         run_eval_suite(ctx=ctx, result=result, vstatus=_vstatus)
 
         apply_breakthrough_logic(
-            result, config,
+            result,
+            config,
             val_loss_ratio=val_loss_ratio,
             val_baseline_ratio=val_baseline_ratio,
             val_normalized_ratio=val_normalized_ratio,
@@ -291,7 +307,7 @@ class _ContinuousValidationMixin:
                             exp_id, source_result_id, seed, "validation_tp"
                         ),
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 — fallback from TP training to basic
                     s1_result = self._micro_train(
                         model,
                         val_config,
@@ -342,13 +358,17 @@ class _ContinuousValidationMixin:
         loss_ratios = _sm["loss_ratios"]
         best_seed = _sm["best_seed"]
 
-        _compare = lambda loss, **kw: run_baseline_comparison(
-            get_baseline=self._get_baseline,
-            resolve_recipe=self._resolve_baseline_recipe,
-            make_data_fn=self._make_baseline_data_fn,
-            candidate_loss=loss, train_result=best_seed,
-            config=config, dev_str=dev_str, **kw,
-        )
+        def _compare(loss, **kw):
+            return run_baseline_comparison(
+                get_baseline=self._get_baseline,
+                resolve_recipe=self._resolve_baseline_recipe,
+                make_data_fn=self._make_baseline_data_fn,
+                candidate_loss=loss,
+                train_result=best_seed,
+                config=config,
+                dev_str=dev_str,
+                **kw,
+            )
 
         val_baseline_ratio = None
         if best_seed is not None:
@@ -367,13 +387,15 @@ class _ContinuousValidationMixin:
         val_param_efficiency = None
         source_params = int(
             (source.get("param_count") or source.get("graph_n_params_estimate") or 0)
-            if source else 0
+            if source
+            else 0
         )
         if loss_ratios and best_seed is not None and source_params > 0:
             try:
                 norm = _compare(
                     best_seed["final_loss"],
-                    normalized=True, program_params=source_params,
+                    normalized=True,
+                    program_params=source_params,
                 )
                 val_normalized_ratio = norm.get("normalized_ratio")
                 val_param_efficiency = norm.get("param_efficiency")
@@ -414,38 +436,52 @@ class _ContinuousValidationMixin:
             return
 
         exp_id, hypothesis = self._inline_validation_bootstrap(
-            config=config, nb=nb, leaderboard=leaderboard,
-            result_ids=result_ids, limit_str=limit_str,
+            config=config,
+            nb=nb,
+            leaderboard=leaderboard,
+            result_ids=result_ids,
+            limit_str=limit_str,
         )
 
         self._live_training_context = {"exp_id": exp_id, "phase": "validation"}
         try:
             results, dev, dev_str, val_config, source_map = (
                 self._inline_validation_prepare_runtime(
-                    config=config, nb=nb, result_ids=result_ids,
+                    config=config,
+                    nb=nb,
+                    result_ids=result_ids,
                 )
             )
 
             for prog_idx, source_result_id in enumerate(result_ids):
                 if self._stop_event.is_set():
                     break
-                if config.max_cost_dollars > 0 and self.aria.total_cost >= config.max_cost_dollars:
+                if (
+                    config.max_cost_dollars > 0
+                    and self.aria.total_cost >= config.max_cost_dollars
+                ):
                     logger.info("Cost limit reached during validation")
                     break
 
                 self._update_progress(
-                    current_program=prog_idx + 1, status="validating",
+                    current_program=prog_idx + 1,
+                    status="validating",
                     aria_message=(
                         f"Validating {prog_idx + 1}/{len(result_ids)}: "
                         f"{source_result_id[:8]}... "
                         f"({config.validation_n_seeds} seeds, {config.validation_steps} steps)"
                     ),
                 )
-                self._emit_event("validation_progress", {
-                    "experiment_id": exp_id, "current": prog_idx + 1,
-                    "total": len(result_ids), "source_result_id": source_result_id,
-                    "status": "starting",
-                })
+                self._emit_event(
+                    "validation_progress",
+                    {
+                        "experiment_id": exp_id,
+                        "current": prog_idx + 1,
+                        "total": len(result_ids),
+                        "source_result_id": source_result_id,
+                        "status": "starting",
+                    },
+                )
 
                 source = source_map.get(source_result_id)
                 if source is None:
@@ -462,18 +498,30 @@ class _ContinuousValidationMixin:
                         break
 
                 seed_results = self._validation_run_seeds(
-                    config, val_config, dev, exp_id, prog_idx, len(result_ids),
-                    source_result_id, source, best_tp_json,
-                    model_source, arch_spec_json_str, graph_json_str,
+                    config,
+                    val_config,
+                    dev,
+                    exp_id,
+                    prog_idx,
+                    len(result_ids),
+                    source_result_id,
+                    source,
+                    best_tp_json,
+                    model_source,
+                    arch_spec_json_str,
+                    graph_json_str,
                 )
                 if not seed_results:
                     logger.warning(
                         "Inline validation: skipping %s — model failed for all %d seeds",
-                        source_result_id[:8], config.validation_n_seeds,
+                        source_result_id[:8],
+                        config.validation_n_seeds,
                     )
                     continue
 
-                metrics = self._validation_compute_metrics(config, dev_str, source, seed_results)
+                metrics = self._validation_compute_metrics(
+                    config, dev_str, source, seed_results
+                )
 
                 if len(metrics.passed_seeds) > 0:
                     results["stage1_passed"] += 1
@@ -481,21 +529,31 @@ class _ContinuousValidationMixin:
                 results["stage05_passed"] += 1
 
                 ev_res = self._run_external_evals(
-                    config=config, dev=dev, dev_str=dev_str,
-                    best_seed=metrics.best_seed, model_source=model_source,
-                    arch_spec_json_str=arch_spec_json_str, graph_json_str=graph_json_str,
-                    source=source, source_result_id=source_result_id, exp_id=exp_id,
+                    config=config,
+                    dev=dev,
+                    dev_str=dev_str,
+                    best_seed=metrics.best_seed,
+                    model_source=model_source,
+                    arch_spec_json_str=arch_spec_json_str,
+                    graph_json_str=graph_json_str,
+                    source=source,
+                    source_result_id=source_result_id,
+                    exp_id=exp_id,
                     val_loss_ratio=metrics.val_loss_ratio,
                     val_baseline_ratio=metrics.val_baseline_ratio,
                     val_normalized_ratio=metrics.val_normalized_ratio,
                     multi_seed_std=metrics.multi_seed_std,
-                    passed_seeds=metrics.passed_seeds, source_params=metrics.source_params,
+                    passed_seeds=metrics.passed_seeds,
+                    source_params=metrics.source_params,
                 )
 
                 nov_conf = source.get("novelty_confidence", 0) if source else 0
                 validation_entry = build_validation_entry(
-                    source_result_id=source_result_id, metrics=metrics,
-                    ev_res=ev_res, nov_conf=nov_conf, config=config,
+                    source_result_id=source_result_id,
+                    metrics=metrics,
+                    ev_res=ev_res,
+                    nov_conf=nov_conf,
+                    config=config,
                 )
                 tier = "breakthrough" if ev_res.is_breakthrough else "validation"
                 results["validation_results"].append(validation_entry.to_dict())
@@ -513,15 +571,20 @@ class _ContinuousValidationMixin:
                     results["best_novelty_score"] = source_novelty
 
                 promote_validation_candidate(
-                    nb=nb, source_result_id=source_result_id, source=source,
-                    tier=tier, metrics=metrics, ev_res=ev_res,
+                    nb=nb,
+                    source_result_id=source_result_id,
+                    source=source,
+                    tier=tier,
+                    metrics=metrics,
+                    ev_res=ev_res,
                 )
 
                 nb.record_program_result(
                     experiment_id=exp_id,
                     graph_fingerprint=source.get("graph_fingerprint", source_result_id),
                     graph_json=graph_json_str or "{}",
-                    stage0_passed=True, stage05_passed=True,
+                    stage0_passed=True,
+                    stage05_passed=True,
                     stage1_passed=len(metrics.passed_seeds) > 0,
                     loss_ratio=metrics.val_loss_ratio,
                     baseline_loss_ratio=metrics.val_baseline_ratio,
@@ -530,23 +593,36 @@ class _ContinuousValidationMixin:
                     novelty_raw_score=source.get("novelty_raw_score"),
                     novelty_z_score=source.get("novelty_z_score"),
                     novelty_reference_version=source.get("novelty_reference_version"),
-                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_valid_for_promotion=source.get(
+                        "novelty_valid_for_promotion"
+                    ),
                     novelty_validity_reason=source.get("novelty_validity_reason"),
-                    novelty_requires_justification=source.get("novelty_requires_justification"),
-                    model_source=model_source, arch_spec_json=arch_spec_json_str,
+                    novelty_requires_justification=source.get(
+                        "novelty_requires_justification"
+                    ),
+                    model_source=model_source,
+                    arch_spec_json=arch_spec_json_str,
                 )
 
                 trajectory_composite = run_trajectory_probe(
-                    graph_json_str=graph_json_str, config=config, dev=dev,
-                    dev_str=dev_str, nb=nb, source_result_id=source_result_id,
-                    tier=tier, passed_seeds=metrics.passed_seeds,
+                    graph_json_str=graph_json_str,
+                    config=config,
+                    dev=dev,
+                    dev_str=dev_str,
+                    nb=nb,
+                    source_result_id=source_result_id,
+                    tier=tier,
+                    passed_seeds=metrics.passed_seeds,
                 )
 
-                is_breakthrough = handle_breakthrough(
+                handle_breakthrough(
                     is_breakthrough=ev_res.is_breakthrough,
                     trajectory_composite=trajectory_composite,
-                    aria=self.aria, nb=nb, exp_id=exp_id,
-                    source_result_id=source_result_id, source=source,
+                    aria=self.aria,
+                    nb=nb,
+                    exp_id=exp_id,
+                    source_result_id=source_result_id,
+                    source=source,
                     validation_entry=validation_entry,
                     val_loss_ratio=metrics.val_loss_ratio,
                     val_baseline_ratio=metrics.val_baseline_ratio,
@@ -556,27 +632,42 @@ class _ContinuousValidationMixin:
 
             # Complete experiment with LLM analysis
             results["perf_report"] = self._build_experiment_perf_report(results)
-            results["perf_budget_gate"] = evaluate_perf_budget_gate(results["perf_report"])
-            context = self._build_rich_context_for_experiment(results, config, hypothesis, nb)
+            results["perf_budget_gate"] = evaluate_perf_budget_gate(
+                results["perf_report"]
+            )
+            context = self._build_rich_context_for_experiment(
+                results, config, hypothesis, nb
+            )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
 
             nb.complete_experiment(
-                experiment_id=exp_id, results=results,
-                aria_summary=summary, aria_mood=self.aria.state.mood,
+                experiment_id=exp_id,
+                results=results,
+                aria_summary=summary,
+                aria_mood=self.aria.state.mood,
                 insights=self._analyze_results(results, exp_id, nb, context=context),
                 llm_analysis=llm_analysis,
             )
             self._maybe_extract_knowledge(config, nb, n_experiments)
-            self._emit_event("validation_completed", {
-                "experiment_id": exp_id, "results": results, "summary": summary,
-            })
+            self._emit_event(
+                "validation_completed",
+                {
+                    "experiment_id": exp_id,
+                    "results": results,
+                    "summary": summary,
+                },
+            )
 
         except Exception as e:
             logger.warning(f"Inline validation failed: {e}")
             nb.fail_experiment(exp_id, str(e))
-            self._emit_event("validation_completed", {
-                "experiment_id": exp_id, "error": str(e),
-            })
+            self._emit_event(
+                "validation_completed",
+                {
+                    "experiment_id": exp_id,
+                    "error": str(e),
+                },
+            )
         finally:
             self._live_training_context = None

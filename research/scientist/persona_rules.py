@@ -21,8 +21,8 @@ class _PersonaRulesMixin:
                 if hyp:
                     self.state.current_hypothesis = hyp
                     return hyp
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
 
         # Fallback to templates
         template = self._rng.choice(self.HYPOTHESIS_TEMPLATES)

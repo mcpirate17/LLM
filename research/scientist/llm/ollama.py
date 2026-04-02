@@ -29,7 +29,7 @@ class OllamaBackend(LLMBackend):
         try:
             r = requests.get(f"{self.host}/api/tags", timeout=3)
             return r.status_code == 200
-        except Exception:
+        except (OSError, ValueError):
             return False
 
     def auto_discover_analyst_model(self) -> Optional[str]:
@@ -61,7 +61,7 @@ class OllamaBackend(LLMBackend):
                 return candidates[0][0]
 
             return None
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     def unload_model(self) -> None:

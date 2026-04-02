@@ -953,7 +953,7 @@ def program_lineage_chain(nb: LabNotebook, result_id: str) -> List[Dict[str, Any
                 )
                 if isinstance(source, str) and source.strip():
                     parent_result_id = source.strip()
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort lineage inference
                 _logger.debug(
                     "Failed to infer parent_result_id from graph_json for result_id=%s",
                     current_id,

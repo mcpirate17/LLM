@@ -389,7 +389,7 @@ class _ExperimentsMixin:
                 import numpy as np
 
                 correlation = float(np.corrcoef(discovery, validation)[0, 1])
-            except Exception:
+            except (TypeError, ValueError):
                 pass
 
         return {
@@ -458,7 +458,7 @@ class _ExperimentsMixin:
                     import numpy as np
 
                     corr = round(float(np.corrcoef(disc, val)[0, 1]), 4)
-                except Exception:
+                except (TypeError, ValueError):
                     pass
 
             daily.append(
@@ -1360,7 +1360,8 @@ class _ExperimentsMixin:
                 for entry in log
                 if entry.get("event_type") == "grammar_weights_applied"
             )
-        except Exception:
+        except (KeyError, TypeError, ValueError) as e:
+            logger.debug("Grammar weight adjustment count failed: %s", e)
             weight_adjustments = 0
 
         return {

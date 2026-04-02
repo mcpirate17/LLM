@@ -58,7 +58,7 @@ def diagnose_research_issues(
                     "action_type": "info",
                 }
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed error: %s", exc)
 
     return issues

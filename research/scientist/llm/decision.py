@@ -235,7 +235,7 @@ class NextExperimentDecisionPlanner:
                 config["n_programs"] = max(
                     4, min(int(config["n_programs"]), self.config.max_n_programs)
                 )
-            except Exception:
+            except (TypeError, ValueError):
                 config.pop("n_programs", None)
         if "max_time_minutes" in config:
             try:
@@ -243,7 +243,7 @@ class NextExperimentDecisionPlanner:
                     1,
                     min(int(config["max_time_minutes"]), self.config.max_time_minutes),
                 )
-            except Exception:
+            except (TypeError, ValueError):
                 config.pop("max_time_minutes", None)
 
         return {

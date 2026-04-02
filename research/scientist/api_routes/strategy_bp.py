@@ -56,8 +56,8 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
         if experiment_id:
             try:
                 experiment = nb.get_experiment(experiment_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
 
         config = (experiment or {}).get("config", {}) or {}
         training = {}

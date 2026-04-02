@@ -187,7 +187,7 @@ class _ExecutionInvestigationMixin:
                                 _tp_cap,
                                 free_mb,
                             )
-                    except Exception as exc:
+                    except RuntimeError as exc:
                         _fail_loud(
                             "investigation",
                             f"failed to compute VRAM seq_len cap for {source_result_id[:8]}",
@@ -312,7 +312,7 @@ class _ExecutionInvestigationMixin:
                                 del _probe
                                 torch.cuda.synchronize()
                                 logger.info("CUDA context recovered after fatal error")
-                            except Exception as exc:
+                            except RuntimeError as exc:
                                 _fail_loud(
                                     "investigation",
                                     f"CUDA context unrecoverable for {source_result_id[:8]}",
@@ -739,7 +739,7 @@ class _ExecutionInvestigationMixin:
                 },
             )
 
-        except Exception as e:
+        except RuntimeError as e:
             error = traceback.format_exc()
             logger.error("Investigation failed (%s): %s\n%s", exp_id, e, error)
             try:
@@ -756,8 +756,11 @@ class _ExecutionInvestigationMixin:
                     ],
                     trigger_payload={"mode": "investigation", "error": str(e)},
                 )
-            except Exception:
-                logger.warning("code_healer failed during investigation error handling", exc_info=True)
+            except Exception:  # noqa: BLE001 — error-path guardrail, must not raise
+                logger.warning(
+                    "code_healer failed during investigation error handling",
+                    exc_info=True,
+                )
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -774,7 +777,9 @@ class _ExecutionInvestigationMixin:
         except BaseException as e:
             logger.critical(
                 "Investigation thread KILLED (%s): %s\n%s",
-                exp_id, e, traceback.format_exc(),
+                exp_id,
+                e,
+                traceback.format_exc(),
             )
             try:
                 nb.fail_experiment(exp_id, f"FATAL: {e}")
@@ -783,8 +788,10 @@ class _ExecutionInvestigationMixin:
                     "experiment_failed",
                     {"experiment_id": exp_id, "error": f"FATAL: {e}"},
                 )
-            except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            except Exception:  # noqa: BLE001 — error-path guardrail, must not raise
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             raise
         finally:
             self._live_training_context = None

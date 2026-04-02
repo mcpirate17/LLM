@@ -357,7 +357,8 @@ def _load_approximate_alias_notes(mapping_path: Path) -> Dict[str, str]:
             msg = str(match.group(2)).strip().strip('"')
             if key and msg:
                 notes[key] = msg
-    except Exception:
+    except Exception as exc:
+        logger.debug("Returning default due to error: %s", exc)
         return {}
 
     return notes

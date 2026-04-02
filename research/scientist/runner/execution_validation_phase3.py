@@ -160,7 +160,7 @@ class _ExecutionValidationPhase3Mixin:
                             "validation_inline_tp",
                         ),
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 — fallback from TP training to basic
                     s1_result = self._micro_train(
                         model,
                         val_config,

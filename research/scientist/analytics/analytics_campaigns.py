@@ -1,7 +1,13 @@
 from __future__ import annotations
 import json
+import logging
 import re
+import sqlite3
 from typing import Dict, List, Optional
+
+from ...synthesis.primitives import get_primitive
+
+logger = logging.getLogger(__name__)
 
 
 class _CampaignsMixin:
@@ -385,8 +391,8 @@ class _CampaignsMixin:
                         "timestamp": r["timestamp"],
                     }
                 )
-        except Exception:
-            pass
+        except (KeyError, TypeError, sqlite3.OperationalError) as e:
+            logger.debug("Refuted hypotheses fetch failed: %s", e)
 
         # 5. Toxic op-pair bigrams from failure_signatures table
         try:
@@ -396,11 +402,11 @@ class _CampaignsMixin:
                 cat1, cat2 = "unknown", "unknown"
                 try:
                     cat1 = get_primitive(op1).category.value
-                except Exception:
+                except (KeyError, ValueError):
                     pass
                 try:
                     cat2 = get_primitive(op2).category.value
-                except Exception:
+                except (KeyError, ValueError):
                     pass
 
                 result["toxic_bigrams"].append(
@@ -413,8 +419,8 @@ class _CampaignsMixin:
                         "penalty": penalty,
                     }
                 )
-        except Exception:
-            pass
+        except (KeyError, TypeError, ValueError) as e:
+            logger.debug("Toxic bigram analysis failed: %s", e)
 
         # 6. Summary text
         n_ops = len(result["failed_ops"])
@@ -473,7 +479,8 @@ class _CampaignsMixin:
                    LIMIT ?""",
                 (lookback,),
             ).fetchall()
-        except Exception:
+        except (sqlite3.OperationalError, KeyError, TypeError) as e:
+            logger.debug("Decision outcome query failed: %s", e)
             return result
 
         if not rows:

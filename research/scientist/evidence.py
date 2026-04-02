@@ -366,7 +366,8 @@ def build_evidence_pack(
     if analytics:
         try:
             control = analytics.control_experiment_comparison()
-        except Exception:
+        except Exception as exc:
+            logger.debug("Control experiment comparison failed: %s", exc)
             control = None
         if control:
             uncertainty["control_comparison"] = control

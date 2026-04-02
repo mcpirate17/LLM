@@ -810,7 +810,8 @@ def run_full_analysis(nb) -> dict:
         n_exp = nb.conn.execute(
             "SELECT COUNT(*) FROM experiments WHERE status = 'completed'"
         ).fetchone()[0]
-    except Exception:
+    except Exception as exc:
+        logger.debug("Falling back to default: %s", exc)
         n_exp = 0
 
     # Count curves analyzed

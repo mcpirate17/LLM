@@ -202,8 +202,8 @@ class NativeRunnerAbiSession:
             return
         try:
             self._native_lib.nr_release_model(ctypes.c_int64(self.model_handle))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
         self._closed = True
 
 

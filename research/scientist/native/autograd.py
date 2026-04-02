@@ -145,7 +145,7 @@ class SubgraphDispatcher:
                 from ...synthesis.native_ir_converter import graph_to_native_ir_json
 
                 self._ir_json = graph_to_native_ir_json(graph)
-            except Exception:
+            except ImportError:
                 logger.debug("Failed to pre-convert graph to IR JSON")
                 self._ir_json = None
 

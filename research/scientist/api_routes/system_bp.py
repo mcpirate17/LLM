@@ -55,7 +55,7 @@ def register_system_routes(app, context: ApiRouteContext):
                 mem = torch.cuda.mem_get_info(0)
                 cuda_info["memory_free_gb"] = round(mem[0] / 1e9, 1)
                 cuda_info["memory_total_gb"] = round(mem[1] / 1e9, 1)
-            except Exception as e:
+            except RuntimeError as e:
                 logger.warning("Failed collecting CUDA details: %s", e)
 
         llm = aria._get_llm()
@@ -65,7 +65,8 @@ def register_system_routes(app, context: ApiRouteContext):
                 llm_reachable = (
                     bool(llm.is_available()) if hasattr(llm, "is_available") else True
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug("LLM reachability check failed: %s", exc)
                 llm_reachable = False
         llm_info = {
             "available": llm_reachable,
@@ -150,7 +151,7 @@ def register_system_routes(app, context: ApiRouteContext):
         """Return recent research perf artifacts and aggregate budget state."""
         try:
             limit = max(1, min(100, int(request.args.get("limit", 20))))
-        except Exception:
+        except (TypeError, ValueError):
             limit = 20
         try:
             artifacts = list_recent_perf_artifacts(component="research", limit=limit)

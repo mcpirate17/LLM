@@ -88,8 +88,11 @@ def run_combo(
     # Ensure at least some companion templates with efficiency ops
     # get generated in dedup rounds (these score on the 135pt efficiency budget)
     _EFFICIENCY_COMPANIONS = [
-        "sparse_ffn", "routed_bottleneck", "sparse_moe_block",
-        "feature_sparse_block", "three_lane_adaptive",
+        "sparse_ffn",
+        "routed_bottleneck",
+        "sparse_moe_block",
+        "feature_sparse_block",
+        "three_lane_adaptive",
     ]
     for t in _EFFICIENCY_COMPANIONS:
         if t not in templates:
@@ -100,11 +103,22 @@ def run_combo(
         device=device,
         mode="single",
         template_weights=tpl_weights,
-        category_weights={k: 1.0 for k in [
-            "elementwise_unary", "elementwise_binary", "reduction",
-            "linear_algebra", "structural", "parameterized", "mixing",
-            "sequence", "frequency", "math_space", "functional",
-        ]},
+        category_weights={
+            k: 1.0
+            for k in [
+                "elementwise_unary",
+                "elementwise_binary",
+                "reduction",
+                "linear_algebra",
+                "structural",
+                "parameterized",
+                "mixing",
+                "sequence",
+                "frequency",
+                "math_space",
+                "functional",
+            ]
+        },
         routing_mandatory=False,
         gbm_prescreener_enabled=False,
     )
@@ -167,9 +181,15 @@ def run_combo(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Targeted backfill for winning template combos")
-    parser.add_argument("--combo", type=str, default=None,
-                        help="Combo name (e.g. sparse_ffn+token_merge_block)")
+    parser = argparse.ArgumentParser(
+        description="Targeted backfill for winning template combos"
+    )
+    parser.add_argument(
+        "--combo",
+        type=str,
+        default=None,
+        help="Combo name (e.g. sparse_ffn+token_merge_block)",
+    )
     parser.add_argument("--all", action="store_true", help="Run all winning combos")
     parser.add_argument("--n", type=int, default=50, help="Programs per combo")
     parser.add_argument("--device", default="cuda", choices=["cpu", "cuda"])
@@ -182,7 +202,11 @@ def main():
         print("-" * 90)
         for name, info in WINNING_COMBOS.items():
             bl = f"{info['best_loss']:.4f}" if info["best_loss"] else "untested"
-            sr = f"{info['historical_s1_rate']:.0%}" if info["historical_s1_rate"] else "?"
+            sr = (
+                f"{info['historical_s1_rate']:.0%}"
+                if info["historical_s1_rate"]
+                else "?"
+            )
             print(f"  {name:<45} {bl:>10} {sr:>6}  {info['notes']}")
         return
 
@@ -208,11 +232,14 @@ def main():
         total_programs += recorded
 
     elapsed = time.time() - t0
-    print(f"\nDone: {len(combos)} combos, {total_programs} total programs, {elapsed:.0f}s")
+    print(
+        f"\nDone: {len(combos)} combos, {total_programs} total programs, {elapsed:.0f}s"
+    )
 
     # Refresh stats
     try:
         from research.tools.backfill_stats import backfill
+
         backfill(args.db)
         print("Stats refreshed")
     except Exception as e:

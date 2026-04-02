@@ -119,7 +119,7 @@ class KnowledgeDistiller:
             from ..notebook import LabNotebook
 
             nb = LabNotebook(self._db_path)
-        except Exception as e:
+        except ImportError as e:
             logger.warning("Failed to open notebook for distillation: %s", e)
             return
 
@@ -244,8 +244,8 @@ class KnowledgeDistiller:
             llm = OllamaBackend()
             llm.model = self._local_model
             llm.keep_alive = 0  # unload after use
-        except Exception:
-            logger.debug("Could not create Ollama backend for distillation")
+        except (ImportError, OSError, RuntimeError) as exc:
+            logger.debug("Could not create Ollama backend for distillation: %s", exc)
             return ("", [])
 
         if not llm.is_available():

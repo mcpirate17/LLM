@@ -169,8 +169,8 @@ class IRExecutor(nn.Module):
         if enable_compile:
             try:
                 self.forward = torch.compile(self.forward)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("torch.compile failed for IRExecutor: %s", e)
 
     def forward(
         self, x: torch.Tensor, capture_intermediates: bool = False

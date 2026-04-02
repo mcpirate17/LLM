@@ -226,7 +226,7 @@ def compile_model_native_first(
         guardrail_threshold = int(
             str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5"))
         )
-    except Exception:
+    except (TypeError, ValueError):
         guardrail_threshold = 5
     guardrail_threshold = max(1, guardrail_threshold)
 
@@ -384,7 +384,7 @@ def compile_model_native_first(
             )
             try:
                 setattr(model, "_native_runner_report", capability)
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
             logger.info(
                 "Native runner ABI-only model active: execution_path=%s enabled=%s strict=%s",
@@ -499,8 +499,8 @@ def compile_model_native_first(
             capability["runner_abi"]["attach_error"] = str(exc)
             try:
                 abi_session.close()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as exc:
+                logger.debug("Suppressed error: %s", exc)
 
     selective_layer_exec_enabled = _env_flag(
         "NATIVE_RUNNER_SELECTIVE_LAYER_EXEC", False
@@ -544,7 +544,7 @@ def compile_model_native_first(
                     try:
                         layer_idx = int(idx)
                         layer_result["layer_index"] = layer_idx
-                    except Exception:
+                    except (TypeError, ValueError):
                         capability["selective_execution"]["layer_build"][
                             "skipped_layers"
                         ] += 1
@@ -690,7 +690,7 @@ def compile_model_native_first(
     # Attach diagnostic metadata for observability.
     try:
         setattr(model, "_native_runner_report", capability)
-    except Exception:
+    except (AttributeError, TypeError):
         pass
 
     warning_count = int(capability.get("semantic_warning_count") or 0)

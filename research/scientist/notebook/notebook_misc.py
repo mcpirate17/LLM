@@ -41,7 +41,7 @@ class _MiscMixin:
         )
         try:
             source = template_file.read_text(encoding="utf-8")
-        except Exception:
+        except OSError:
             return {}
         counts: Dict[str, int] = {}
         matches = list(re.finditer(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", source, re.M))
@@ -104,7 +104,7 @@ class _MiscMixin:
         for row in rows:
             try:
                 graph = _json_loads(row["graph_json"]) if row["graph_json"] else {}
-            except Exception:
+            except (json.JSONDecodeError, TypeError, KeyError):
                 graph = {}
             metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
             templates = metadata.get("templates_used") or []
@@ -160,7 +160,7 @@ class _MiscMixin:
                         if isinstance(raw_failure, str)
                         else raw_failure
                     )
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     failure_details = {}
             root_cause = (
                 failure_details.get("root_cause_code")
@@ -812,7 +812,7 @@ class _MiscMixin:
                         parsed = _json_loads(existing["external_benchmarks_json"])
                         if isinstance(parsed, dict):
                             merged.update(parsed)
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         pass
                 merged.update(payload)
                 serialized = json.dumps(merged)
@@ -864,7 +864,7 @@ class _MiscMixin:
                         if isinstance(raw_failure, str)
                         else raw_failure
                     )
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     failure_details = {}
             root_cause = (
                 failure_details.get("root_cause_code")
@@ -1208,7 +1208,7 @@ class _MiscMixin:
                 "sparse": sparse if sparse > 0 else None,
                 "moe": moe if moe > 0 else None,
             }
-        except Exception:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return {"routing": None, "sparse": None, "moe": None}
 
     def _count_routing_ops(self, result_id: str) -> Optional[int]:
@@ -1230,7 +1230,7 @@ class _MiscMixin:
             return None
         try:
             return float(min(vals))
-        except Exception:
+        except (TypeError, ValueError):
             return None
 
     @staticmethod
@@ -1240,7 +1240,7 @@ class _MiscMixin:
             return None
         try:
             return float(max(vals))
-        except Exception:
+        except (TypeError, ValueError):
             return None
 
     @staticmethod

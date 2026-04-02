@@ -35,8 +35,8 @@ def build_op_reference(
             by_cat.setdefault(cat, []).append(name)
         for cat in sorted(by_cat):
             lines.append(f"  {cat}: {', '.join(by_cat[cat])}")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed error: %s", exc)
 
     # Success rates for ops with enough data
     if op_success_rates:
@@ -140,7 +140,8 @@ def _build_op_registry_section() -> str:
             ops = by_cat[cat]
             lines.append(f"  {cat} ({len(ops)}): {', '.join(ops)}")
         _OP_REGISTRY_CACHE = "\n".join(lines)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Falling back to default: %s", exc)
         _OP_REGISTRY_CACHE = ""
     return _OP_REGISTRY_CACHE
 
@@ -1195,8 +1196,8 @@ def inject_digest_context(sections: list, digest) -> None:
 
         if len(lines) > 1:
             sections.append("\n".join(lines))
-    except Exception:
-        pass  # Graceful degradation
+    except Exception as exc:
+        logger.debug("Digest context enrichment failed: %s", exc)
 
 
 def _pct(n: int, total: int) -> str:

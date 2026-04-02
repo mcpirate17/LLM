@@ -41,12 +41,14 @@ Full plan: `/home/tim/.claude/plans/jazzy-fluttering-book.md`
 ## Phase 4: Exception Handler Remediation (655 instances)
 - [x] 4.1 Tier A: execution_screening.py (18 narrowed, 20 already ok)
 - [x] 4.2 Tier A: execution_training.py (18 narrowed, 3 kept broad at error boundaries)
-- [ ] 4.3 Tier B: observability_bp.py (30 handlers)
-- [ ] 4.4 Tier B: _helpers.py (24) + dashboard.py (21)
-- [ ] 4.5 Tier B: chat_bp.py (19 handlers)
-- [ ] 4.6 Tier C: execution_candidates.py (23 handlers)
-- [ ] 4.7 Tier C: remaining notebook/ + analytics/
-- [ ] 4.8 Tier D: everything else (opportunistic)
+- [x] 4.3 Tier B: observability_bp.py (17 narrowed, 7 kept as route boundaries)
+- [x] 4.4 Tier B: _helpers.py (17 narrowed) + dashboard.py (15 narrowed)
+- [x] 4.5 Tier B: chat_bp.py (5 fixed, 14 already ok)
+- [x] 4.6 Tier C: execution_candidates.py (18 narrowed, 5 kept as boundaries)
+- [x] 4.7a Tier C: 11 runner files (113 narrowed, 9 kept as boundaries)
+- [x] 4.7b Tier C: 11 notebook/analytics files (~46 narrowed)
+- [x] 4.8 Tier D: 78 remaining files (~141 narrowed/logged)
+**Result: 655→220 handlers remaining (435 fixed, 0 bare except-pass left)**
 
 ## Phase 5: Structural Performance
 - [ ] 5.1 Profile + fix O(n^2) interaction scoring

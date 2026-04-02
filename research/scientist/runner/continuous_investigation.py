@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import List, Optional
 
 from ..json_utils import json_safe
@@ -73,12 +74,10 @@ class _ContinuousInvestigationMixin:
             if model is None:
                 return None
 
-            from research.evaluator import evaluate_stage1
-
-            result = evaluate_stage1(model, probe_config, device=dev)
+            result = self._micro_train(model, probe_config, dev, graph_json=graph_json)
             lr = result.get("loss_ratio") if result else None
             return float(lr) if lr is not None else None
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, ImportError) as e:
             logger.warning("Pre-inv probe failed for %s: %s", result_id[:8], e)
             return None
 
@@ -97,7 +96,7 @@ class _ContinuousInvestigationMixin:
 
         try:
             model = train_predictor(nb)
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.warning("Predictor training failed, skipping filter: %s", e)
             return eligible
 
@@ -313,7 +312,7 @@ class _ContinuousInvestigationMixin:
                     "UPDATE leaderboard SET pre_inv_score = ? WHERE result_id = ?",
                     (row["_pre_inv_score"], row["result_id"]),
                 )
-            except Exception as exc:
+            except sqlite3.OperationalError as exc:
                 _fail_loud(
                     "continuous_investigation",
                     f"failed to persist pre-inv score for {row['result_id'][:8]}",
@@ -321,7 +320,7 @@ class _ContinuousInvestigationMixin:
                 )
         try:
             nb.conn.commit()
-        except Exception as exc:
+        except sqlite3.OperationalError as exc:
             _fail_loud(
                 "continuous_investigation",
                 "failed to commit pre-inv scores",
@@ -437,7 +436,7 @@ class _ContinuousInvestigationMixin:
             """,
                 (max_attempts, limit + len(exclude)),
             ).fetchall()
-        except Exception as e:
+        except sqlite3.OperationalError as e:
             logger.debug("Reinvestigation query failed: %s", e)
             return []
 
@@ -455,7 +454,7 @@ class _ContinuousInvestigationMixin:
                     "WHERE result_id = ?",
                     (rid,),
                 )
-            except Exception as exc:
+            except sqlite3.OperationalError as exc:
                 _fail_loud(
                     "continuous_investigation",
                     f"failed to bump reinvestigation count for {rid[:8]}",
@@ -468,7 +467,7 @@ class _ContinuousInvestigationMixin:
         if candidates:
             try:
                 nb.conn.commit()
-            except Exception as exc:
+            except sqlite3.OperationalError as exc:
                 _fail_loud(
                     "continuous_investigation",
                     "failed to commit reinvestigation counts",
@@ -510,7 +509,7 @@ class _ContinuousInvestigationMixin:
                    LIMIT ?""",
                 (config.slope_reprieve_max_per_cycle * 3,),
             ).fetchall()
-        except Exception as e:
+        except sqlite3.OperationalError as e:
             logger.debug("Slope reprieve query failed: %s", e)
             return []
 
@@ -561,12 +560,12 @@ class _ContinuousInvestigationMixin:
             if model is None:
                 return None
 
-            from research.evaluator import evaluate_stage1
-
-            result = evaluate_stage1(model, reprieve_config, device=dev)
+            result = self._micro_train(
+                model, reprieve_config, dev, graph_json=graph_json
+            )
             lr = result.get("loss_ratio") if result else None
             return float(lr) if lr is not None else None
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, ImportError) as e:
             logger.warning("Reprieve eval failed for %s: %s", result_id[:8], e)
             return None
 
@@ -746,7 +745,7 @@ class _ContinuousInvestigationMixin:
                             raise RuntimeError(
                                 f"No model built for {source_result_id[:8]}"
                             )
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError) as e:
                         _fail_loud(
                             "continuous_investigation",
                             f"model reconstruction failed for {source_result_id[:8]} "
@@ -908,7 +907,7 @@ class _ContinuousInvestigationMixin:
                                         _attempt + 1,
                                     )
                                     break
-                            except Exception as e:
+                            except (RuntimeError, ValueError, TypeError) as e:
                                 logger.error(
                                     "post_investigation_fingerprint_failed: "
                                     "result_id=%s attempt=%d error=%s",

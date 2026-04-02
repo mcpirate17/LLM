@@ -23,7 +23,7 @@ try:
     HAS_PROFILER = True
 except ImportError:
     HAS_PROFILER = False
-except Exception as e:
+except Exception as e:  # noqa: BLE001 — catch non-import errors from profiler init
     logger.error(f"Unexpected error importing profiler: {e}")
     HAS_PROFILER = False
 

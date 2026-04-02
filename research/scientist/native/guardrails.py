@@ -26,14 +26,14 @@ def _maybe_fail_on_fallback_rate() -> None:
         max_rate_env = os.environ.get("NATIVE_RUNNER_FALLBACK_RATE_MAX", "1.0")
     try:
         max_rate_raw = float(str(max_rate_env))
-    except Exception:
+    except (TypeError, ValueError):
         max_rate_raw = 1.0
     max_rate_raw = max(0.0, min(1.0, max_rate_raw))
     try:
         min_samples = int(
             str(os.environ.get("NATIVE_RUNNER_FALLBACK_MIN_SAMPLES", "1"))
         )
-    except Exception:
+    except (TypeError, ValueError):
         min_samples = 1
 
     total = int(_FALLBACK_METRICS.get("native_enabled_compiles") or 0)
@@ -54,7 +54,7 @@ def _maybe_fail_on_legacy_compile_usage() -> None:
         return
     try:
         max_legacy = int(str(max_legacy_env))
-    except Exception:
+    except (TypeError, ValueError):
         max_legacy = -1
     max_legacy = max(0, max_legacy)
     used = _legacy_compile_count()

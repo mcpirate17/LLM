@@ -137,17 +137,23 @@ def clear_false_penalties(db_path: str = str(DB_PATH), dry_run: bool = False) ->
         if sig in existing:
             nf, ns = existing[sig]
             target_fail_rate = 0.75
-            needed_successes = max(0, int(nf * (1 - target_fail_rate) / target_fail_rate) - ns)
+            needed_successes = max(
+                0, int(nf * (1 - target_fail_rate) / target_fail_rate) - ns
+            )
             if needed_successes > 0:
                 new_ns = ns + needed_successes
                 if dry_run:
                     new_rate = nf / (nf + new_ns) * 100
-                    print(f"  [DRY RUN] Would ADJUST: {sig} (fail={nf}, succ={ns} → {new_ns}, rate {nf/(nf+ns)*100:.0f}% → {new_rate:.0f}%)")
+                    print(
+                        f"  [DRY RUN] Would ADJUST: {sig} (fail={nf}, succ={ns} → {new_ns}, rate {nf / (nf + ns) * 100:.0f}% → {new_rate:.0f}%)"
+                    )
                     print(f"    Reason: {reason}")
                 else:
                     update_rows.append((new_ns, time.time(), sig))
                     new_rate = nf / (nf + new_ns) * 100
-                    print(f"  ADJUSTED: {sig} (fail={nf}, succ={ns} → {new_ns}, rate {nf/(nf+ns)*100:.0f}% → {new_rate:.0f}%)")
+                    print(
+                        f"  ADJUSTED: {sig} (fail={nf}, succ={ns} → {new_ns}, rate {nf / (nf + ns) * 100:.0f}% → {new_rate:.0f}%)"
+                    )
                     print(f"    Reason: {reason}")
                 results["adjusted"].append(sig)
             else:

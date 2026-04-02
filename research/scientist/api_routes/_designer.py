@@ -67,12 +67,12 @@ def designer_service_status() -> Dict[str, Any]:
     try:
         r = _requests.get(_ARIA_DESIGNER_API_HEALTH, timeout=1.0)
         api_up = r.status_code < 500
-    except Exception:
+    except (OSError, ValueError):
         api_up = False
     try:
         r = _requests.get(_ARIA_DESIGNER_UI_HEALTH, timeout=1.0)
         ui_up = r.status_code < 500
-    except Exception:
+    except (OSError, ValueError):
         ui_up = False
     return {
         "api_up": api_up,
@@ -140,7 +140,7 @@ def ensure_designer_idle_watchdog() -> None:
                             with _DESIGNER_ACTIVITY_LOCK:
                                 _DESIGNER_LAST_AUTOSTOP_TS = time.time()
                 time.sleep(5.0)
-            except Exception:
+            except Exception:  # noqa: BLE001 — daemon watchdog must not crash
                 logger.exception("Designer idle auto-stop watchdog failed; retrying")
                 time.sleep(5.0)
 
@@ -188,8 +188,8 @@ def start_designer_services(force_restart: bool = False) -> Dict[str, Any]:
                     check=False,
                     timeout=20,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
 
         log_path = _ARIA_DESIGNER_ROOT / ".run" / "research_designer_boot.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -290,7 +290,7 @@ def designer_proxy(
             "Designer proxy timeout after %.1fs for %s %s", _timeout, method, path
         )
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001 — catch-all after specific request exceptions
         logger.exception("Designer proxy unexpected error for %s %s", method, path)
         return None
 
@@ -302,7 +302,7 @@ def proxy_or_error(resp: Optional[_requests.Response]):
         return None
     try:
         body = resp.json()
-    except Exception:
+    except (ValueError, TypeError):
         body = {"error": resp.text or "Proxy returned non-JSON response"}
 
     return jsonify(body), resp.status_code

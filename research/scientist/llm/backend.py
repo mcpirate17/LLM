@@ -89,7 +89,7 @@ def _auto_discover_primary_model(probe) -> Optional[str]:
 
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[0][0]
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -116,7 +116,11 @@ def _load_persisted_config() -> Optional["LLMBackend"]:
             data = _json.loads(candidate.read_text())
             backend_name = str(data.get("backend", "")).strip().lower()
             api_key_env = str(data.get("api_key_env", "")).strip()
-            api_key = os.environ.get(api_key_env, "") if api_key_env else str(data.get("api_key", "")).strip()
+            api_key = (
+                os.environ.get(api_key_env, "")
+                if api_key_env
+                else str(data.get("api_key", "")).strip()
+            )
             model = str(data.get("model", "")).strip()
             host = str(data.get("host", "")).strip()
             if not backend_name:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import sqlite3
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import torch
@@ -551,7 +552,7 @@ class _SelectionMixin:
             return nb.get_latest_novelty_calibration(
                 reference_version=reference_version
             )
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.debug("Novelty calibration failed for %s: %s", reference_version, e)
             return None
 
@@ -592,10 +593,10 @@ class _SelectionMixin:
                                 "confidence": rh.get("confidence", 0),
                             }
                         )
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except (ImportError, RuntimeError) as e:
+                logger.debug("Negative results synthesis failed: %s", e)
+        except (sqlite3.OperationalError, RuntimeError) as e:
+            logger.debug("Refuted hypothesis cache population failed: %s", e)
 
         self.aria.set_refuted_hypotheses(refuted)
 
@@ -637,8 +638,8 @@ class _SelectionMixin:
                         for part in op_name.replace("-", "_").split("_")
                         if len(part) >= 3
                     )
-            except Exception:
-                pass
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                logger.debug("Failed to parse graph_json for tokens: %s", e)
         return tokens
 
     def _op_success_lookup(self, nb: LabNotebook) -> Dict[str, float]:
@@ -656,8 +657,8 @@ class _SelectionMixin:
                 n_s1 = float(row.get("n_stage1_passed") or 0.0)
                 if n_used > 0:
                     lookup[str(row.get("op_name"))] = n_s1 / n_used
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, RuntimeError) as e:
+            logger.debug("Op success rate lookup failed: %s", e)
         return lookup
 
     @staticmethod
@@ -673,7 +674,8 @@ class _SelectionMixin:
                 recommendation=recommendation,
                 decision_type=decision_type,
             )
-        except Exception:
+        except (RuntimeError, ValueError, sqlite3.OperationalError) as e:
+            logger.debug("Evidence pack build failed: %s", e)
             return {
                 "hypothesis": "Insufficient metrics; gather more evidence before confident action.",
                 "supporting_metrics": [
@@ -735,7 +737,7 @@ class _SelectionMixin:
                     lr = float(opt["lr"])
                 if "weight_decay" in opt:
                     weight_decay = float(opt["weight_decay"])
-            except Exception as e:
+            except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
                 logger.debug(
                     "Failed to parse training_program_json for baseline recipe: %s", e
                 )
@@ -844,7 +846,7 @@ class _SelectionMixin:
                 del model
                 clear_gpu_memory()
 
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError) as e:
                 recipe_results.append(
                     {
                         "recipe": recipe["name"],
@@ -967,7 +969,7 @@ class _SelectionMixin:
                 del model
                 clear_gpu_memory()
 
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError) as e:
                 perturbation_results.append(
                     {
                         "perturbation": label,

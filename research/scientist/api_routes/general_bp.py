@@ -311,7 +311,8 @@ def register_general_routes(app, context: ApiRouteContext):
             try:
                 llm_available = bool(getattr(llm, "is_available", lambda: True)())
                 llm_reason = "ok" if llm_available else "unreachable"
-            except Exception:
+            except Exception as exc:
+                logger.debug("LLM availability check failed: %s", exc)
                 llm_available = False
                 llm_reason = "unreachable"
 

@@ -217,8 +217,8 @@ def run_local_chat_agent(
             result["code_hits"] = hits
             if hits:
                 result["summary"] = f"Found {len(hits)} relevant files."
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
     return result
 
@@ -263,8 +263,8 @@ def query_file_index(
             if full_path.is_file() and full_path.stat().st_size < 350_000:
                 content = full_path.read_text(errors="ignore").lower()
                 score += sum(content.count(t) for t in terms)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
         if score > 0:
             scored.append((score, rel_path, info))
 
@@ -313,10 +313,11 @@ def _rebuild_file_index(workspace_root: Path) -> None:
             try:
                 rel = str(path.relative_to(workspace_root))
                 index[rel] = {"size": path.stat().st_size}
-            except Exception:
+            except Exception as exc:
+                logger.debug("Skipping due to error: %s", exc)
                 continue
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed error: %s", exc)
 
     # Update the shared index (caller already holds the lock)
     _h._WORKSPACE_FILE_INDEX.clear()

@@ -103,8 +103,8 @@ class _ContinuousInlineValidationPhase7Mixin:
                 continue
             try:
                 nb.promote_to_tier(entry_id, "validation")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed error: %s", exc)
         return exp_id, hypothesis
 
     def _inline_validation_prepare_runtime(

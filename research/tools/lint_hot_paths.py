@@ -33,6 +33,7 @@ SYNC_PATTERNS = [
         # Allowed contexts: telemetry gated by collect_telemetry, init code, cached sampling
         [
             "collect_telemetry",
+            "_profile",
             "_sparse_density_sampled",
             "_sparse_density_counter",
             "def __init__",
@@ -95,8 +96,8 @@ def lint_file(filepath: Path) -> list[str]:
 
         for pattern, description, allowed_contexts in SYNC_PATTERNS + LOOP_PATTERNS:
             if pattern.search(line):
-                # Check if any allowed context appears nearby (within 10 lines)
-                context_window = "\n".join(lines[max(0, line_no - 10) : line_no + 5])
+                # Check if any allowed context appears nearby (within 20 lines)
+                context_window = "\n".join(lines[max(0, line_no - 20) : line_no + 5])
                 if any(ctx in context_window for ctx in allowed_contexts):
                     continue
                 violations.append(

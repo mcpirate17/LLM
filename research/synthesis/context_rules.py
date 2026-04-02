@@ -1419,7 +1419,6 @@ def _has_descendant_op(
     children: Optional[Dict[int, List[int]]] = None,
 ) -> bool:
     children = children or _child_map(graph)
-    allowed = set(allowed_ops)
     q = deque(children.get(start_id, ()))
     seen: set = set()
     while q:
@@ -1430,7 +1429,7 @@ def _has_descendant_op(
         node = graph.nodes.get(nid)
         if node is None:
             continue
-        if node.op_name in allowed:
+        if node.op_name in allowed_ops:
             return True
         q.extend(children.get(nid, ()))
     return False
@@ -1441,7 +1440,6 @@ def _has_ancestor_op(
     start_id: int,
     allowed_ops: Iterable[str],
 ) -> bool:
-    allowed = set(allowed_ops)
     start_node = graph.nodes.get(start_id)
     if start_node is None:
         return False
@@ -1455,7 +1453,7 @@ def _has_ancestor_op(
         node = graph.nodes.get(nid)
         if node is None:
             continue
-        if node.op_name in allowed:
+        if node.op_name in allowed_ops:
             return True
         q.extend(node.input_ids)
     return False
@@ -1467,13 +1465,12 @@ def _has_immediate_predecessor_op(
     allowed_ops: Iterable[str],
 ) -> bool:
     """Check if any direct parent of node_id has op_name in allowed_ops."""
-    allowed = set(allowed_ops)
     node = graph.nodes.get(node_id)
     if node is None:
         return False
     for pid in node.input_ids:
         parent = graph.nodes.get(pid)
-        if parent is not None and parent.op_name in allowed:
+        if parent is not None and parent.op_name in allowed_ops:
             return True
     return False
 
@@ -1485,10 +1482,9 @@ def _has_immediate_successor_op(
     allowed_ops: Iterable[str],
 ) -> bool:
     """Check if any direct child of node_id has op_name in allowed_ops."""
-    allowed = set(allowed_ops)
     for cid in children.get(node_id, ()):
         child = graph.nodes.get(cid)
-        if child is not None and child.op_name in allowed:
+        if child is not None and child.op_name in allowed_ops:
             return True
     return False
 

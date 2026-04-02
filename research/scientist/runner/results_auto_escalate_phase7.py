@@ -22,6 +22,7 @@ All threshold comparisons in this file use loss_ratio (= RAW).
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 import uuid
 from typing import Any, Dict, List
@@ -144,7 +145,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                     "Auto-escalate: global sweep found %d leaderboard candidates",
                     len(global_rows),
                 )
-        except Exception as e:
+        except sqlite3.OperationalError as e:
             logger.warning("Auto-escalate global sweep failed: %s", e)
 
         investigated_fps = nb.get_investigated_fingerprints()
@@ -203,7 +204,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                     _screening_threshold,
                 )
                 return
-        except Exception as e:
+        except (sqlite3.OperationalError, ValueError, TypeError) as e:
             logger.debug("Auto-escalate score floor check failed: %s", e)
 
         selection = self._score_candidate_pool(
@@ -271,7 +272,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                     chosen_result_ids=candidate_ids,
                     source_experiment_id=exp_id,
                 )
-        except Exception as sel_err:
+        except (ValueError, sqlite3.OperationalError) as sel_err:
             logger.debug("Auto-investigate selection logging failed: %s", sel_err)
 
         if config.auto_go_no_go and config.enable_campaigns:
@@ -281,7 +282,8 @@ class _ResultsAutoEscalatePhase7Mixin:
                 _existing_decisions = nb.get_decisions(
                     campaign_id=self._active_campaign_id
                 )
-            except Exception:
+            except (sqlite3.OperationalError, KeyError) as e:
+                logger.debug("Failed to fetch existing decisions: %s", e)
                 _existing_decisions = []
             _already_decided_rids = {
                 rid
@@ -334,7 +336,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                     )
                     if decision["decision"] in ("go", "pivot"):
                         approved_ids.append(p["result_id"])
-                except Exception as e:
+                except (RuntimeError, ValueError, KeyError) as e:
                     logger.debug("Go/no-go failed for %s: %s", p["result_id"], e)
                     approved_ids.append(p["result_id"])
 
@@ -417,7 +419,12 @@ class _ResultsAutoEscalatePhase7Mixin:
                         },
                         evidence=f"avg_sparse_loss={avg_sparse_loss:.4f}, avg_dense_loss={avg_dense_loss:.4f}",
                     )
-        except Exception as z7_err:
+        except (
+            ValueError,
+            TypeError,
+            AttributeError,
+            sqlite3.OperationalError,
+        ) as z7_err:
             logger.debug("Z7 learning logic failed: %s", z7_err)
 
     def _auto_escalate_investigation(
@@ -744,7 +751,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                     chosen_result_ids=candidate_ids,
                     source_experiment_id=str(results.get("experiment_id") or ""),
                 )
-        except Exception as sel_err:
+        except (ValueError, sqlite3.OperationalError) as sel_err:
             logger.debug("Auto-validate selection logging failed: %s", sel_err)
 
         for rid in candidate_ids:
@@ -837,7 +844,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                 len(rows),
             )
             return threshold
-        except Exception as e:
+        except (ImportError, sqlite3.OperationalError, ValueError) as e:
             logger.warning(
                 "Adaptive screening threshold failed: %s, using floor %.1f", e, floor
             )
@@ -884,7 +891,7 @@ class _ResultsAutoEscalatePhase7Mixin:
                 len(rows),
             )
             return threshold
-        except Exception as e:
+        except (ImportError, sqlite3.OperationalError, ValueError) as e:
             logger.warning(
                 "Adaptive investigation threshold failed: %s, using floor %.1f",
                 e,

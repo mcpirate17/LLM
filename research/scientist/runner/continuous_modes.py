@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 
@@ -123,7 +124,7 @@ class _ContinuousModesMixin:
                         "campaign_id": self._active_campaign_id,
                     },
                 )
-            except Exception as e:
+            except (RuntimeError, ValueError, KeyError) as e:
                 logger.debug(f"Structured hypothesis failed, using basic: {e}")
                 structured_hyp = None
 
@@ -196,7 +197,7 @@ class _ContinuousModesMixin:
                     (self._active_campaign_id, exp_id),
                 )
                 nb.conn.commit()
-            except Exception as e:
+            except sqlite3.OperationalError as e:
                 logger.warning("Campaign linking failed for %s: %s", exp_id, e)
 
         # Link hypothesis to experiment
@@ -208,7 +209,7 @@ class _ContinuousModesMixin:
                     (exp_id, hypothesis_id),
                 )
                 nb.conn.commit()
-            except Exception as e:
+            except sqlite3.OperationalError as e:
                 logger.warning("Hypothesis linking failed for %s: %s", exp_id, e)
 
         with self._lock:
@@ -288,7 +289,7 @@ class _ContinuousModesMixin:
                 # If follow-up suggested, queue it for next experiment
                 if validation.get("follow_up"):
                     self._next_follow_up_parent = hypothesis_id
-            except Exception as e:
+            except (RuntimeError, ValueError, KeyError) as e:
                 logger.debug(f"Structured validation failed: {e}")
         else:
             # Fallback to old-style validation
@@ -304,7 +305,7 @@ class _ContinuousModesMixin:
                             metadata={"validated": validation.get("validated", False)},
                         )
                     )
-            except Exception as e:
+            except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning("Hypothesis validation logging failed: %s", e)
 
         nb.complete_experiment(
@@ -624,7 +625,7 @@ class _ContinuousModesMixin:
                         include_behavioral_probes=True,
                     )
                     fingerprint_cache[gfp] = bfp
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     if _debug:
                         logger.exception(
                             "DEBUG: Fingerprint computation failed for %s", gfp[:16]
@@ -647,7 +648,8 @@ class _ContinuousModesMixin:
                     )
                 else:
                     fitness = 0.1
-            except Exception:
+            except (RuntimeError, ValueError, TypeError) as e:
+                logger.debug("Fitness computation failed: %s", e)
                 fitness = 0.0
 
             fitness_cache[gfp] = fitness
@@ -885,7 +887,8 @@ class _ContinuousModesMixin:
                 if r.get("screening_loss_ratio") is not None
             ]
             return min(lrs) if lrs else None
-        except Exception:
+        except (sqlite3.OperationalError, ValueError, TypeError) as e:
+            logger.debug("Reference baseline LR lookup failed: %s", e)
             return None
 
     def _run_continuous_phase(

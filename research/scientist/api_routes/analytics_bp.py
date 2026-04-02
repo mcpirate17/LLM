@@ -277,7 +277,7 @@ def register_analytics_routes(app, context: ApiRouteContext):
             weights = analytics.compute_grammar_weights()
             if weights:
                 op_weights = {k: round(float(v), 3) for k, v in weights.items()}
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             logger.warning("Could not compute grammar weights: %s", e)
 
         payload = {

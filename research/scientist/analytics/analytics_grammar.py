@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
@@ -405,7 +406,7 @@ class _GrammarMixin:
             for op_name in op_set:
                 try:
                     families.add(get_primitive(op_name).category.value)
-                except Exception:
+                except (KeyError, ValueError):
                     continue
             parsed.append(
                 {
@@ -739,7 +740,7 @@ class _GrammarMixin:
             if not vals:
                 return None
             return sum(vals) / len(vals)
-        except Exception:
+        except (TypeError, ValueError, sqlite3.OperationalError):
             return None
 
     def grammar_weight_learning_diagnostics(self) -> Dict:
@@ -840,7 +841,7 @@ class _GrammarMixin:
                     if cat not in seen_cats:
                         cat_norms[cat].append(norm)
                         seen_cats.add(cat)
-                except Exception:
+                except (KeyError, ValueError):
                     continue
 
         penalties = {}
@@ -872,7 +873,7 @@ class _GrammarMixin:
 
         try:
             regressions = detect_family_regression(self.nb)
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, sqlite3.OperationalError) as e:
             logger.warning("Family regression detection failed: %s", e)
             return learned
 
@@ -912,9 +913,9 @@ class _GrammarMixin:
                         if cat not in seen_cats:
                             cat_decline[cat].append(decline)
                             seen_cats.add(cat)
-                    except Exception:
+                    except (KeyError, ValueError):
                         continue
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, sqlite3.OperationalError) as e:
             logger.warning("Family regression op lookup failed: %s", e)
             return learned
 
@@ -957,7 +958,7 @@ class _GrammarMixin:
             try:
                 op = get_primitive(op_name)
                 cat = op.category.value
-            except Exception:
+            except (KeyError, ValueError):
                 continue
             if op_name in S1_EXEMPT_OPS:
                 continue
@@ -995,7 +996,7 @@ class _GrammarMixin:
 
         try:
             synergies = analyze_op_synergies(self.nb)
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, sqlite3.OperationalError) as e:
             logger.warning("Synergy analysis failed, skipping adjustments: %s", e)
             return learned
 
@@ -1008,7 +1009,7 @@ class _GrammarMixin:
             try:
                 op = get_primitive(op_name)
                 op_to_cat[op_name] = op.category.value
-            except Exception:
+            except (KeyError, ValueError):
                 continue
 
         # Accumulate per-category synergy/anti-synergy signal

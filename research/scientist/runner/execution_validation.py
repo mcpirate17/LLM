@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import traceback
 from typing import List
@@ -16,13 +17,14 @@ from ...eval.metrics import novelty_score
 from ...eval.fingerprint import compute_fingerprint
 from ...eval.diagnostic_tasks import run_diagnostic_suite
 from ...training.checkpointing import CheckpointManager
-from ..notebook import ExperimentEntry
-from ..llm.context_experiment import build_validation_context
-from ..shared_utils import coerce_dict_payload, resolve_device
+from ..shared_utils import resolve_device
 from ._helpers import (
-    clear_gpu_memory, compute_seed_metrics,
-    run_baseline_comparison, build_validation_entry,
-    promote_validation_candidate, run_trajectory_probe,
+    clear_gpu_memory,
+    compute_seed_metrics,
+    run_baseline_comparison,
+    build_validation_entry,
+    promote_validation_candidate,
+    run_trajectory_probe,
     handle_breakthrough,
 )
 
@@ -209,7 +211,7 @@ class _ExecutionValidationMixin:
                                 )
                         else:
                             _novelty_cap = 0.5
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError, ImportError) as e:
                         _novelty_cap = 0.5
                         logger.warning(
                             "validation_cka_attempt_failed: result_id=%s error=%s "
@@ -257,13 +259,17 @@ class _ExecutionValidationMixin:
 
                 _rid_short = source_result_id[:8]
 
-                _compare = lambda loss, **kw: run_baseline_comparison(
-                    get_baseline=self._get_baseline,
-                    resolve_recipe=self._resolve_baseline_recipe,
-                    make_data_fn=self._make_baseline_data_fn,
-                    candidate_loss=loss, train_result=best_seed,
-                    config=config, dev_str=dev_str, **kw,
-                )
+                def _compare(loss, **kw):
+                    return run_baseline_comparison(
+                        get_baseline=self._get_baseline,
+                        resolve_recipe=self._resolve_baseline_recipe,
+                        make_data_fn=self._make_baseline_data_fn,
+                        candidate_loss=loss,
+                        train_result=best_seed,
+                        config=config,
+                        dev_str=dev_str,
+                        **kw,
+                    )
 
                 # Baseline comparison at validation scale
                 _vstatus("baseline comparison", _rid_short)
@@ -276,7 +282,7 @@ class _ExecutionValidationMixin:
                             program_metrics["validation_baseline_loss_ratio"] = (
                                 _compare(v_loss, split="val")
                             )
-                    except Exception as exc:
+                    except (RuntimeError, ValueError, TypeError) as exc:
                         _fail_loud(
                             "validation",
                             f"baseline comparison failed for {source_result_id[:8]}",
@@ -288,18 +294,24 @@ class _ExecutionValidationMixin:
                 val_normalized_ratio = None
                 val_param_efficiency = None
                 source_params = int(
-                    (source.get("param_count") or source.get("graph_n_params_estimate") or 0)
-                    if source else 0
+                    (
+                        source.get("param_count")
+                        or source.get("graph_n_params_estimate")
+                        or 0
+                    )
+                    if source
+                    else 0
                 )
                 if loss_ratios and best_seed is not None and source_params > 0:
                     try:
                         norm_result = _compare(
                             best_seed["final_loss"],
-                            normalized=True, program_params=source_params,
+                            normalized=True,
+                            program_params=source_params,
                         )
                         val_normalized_ratio = norm_result.get("normalized_ratio")
                         val_param_efficiency = norm_result.get("param_efficiency")
-                    except Exception as exc:
+                    except (RuntimeError, ValueError, TypeError) as exc:
                         _fail_loud(
                             "validation",
                             f"normalized baseline comparison failed for {source_result_id[:8]}",
@@ -335,6 +347,7 @@ class _ExecutionValidationMixin:
 
                 # Build typed ValidationMetrics for helper consumption
                 from ._types import ValidationMetrics
+
                 _metrics = ValidationMetrics(
                     val_loss_ratio=val_loss_ratio,
                     multi_seed_std=multi_seed_std,
@@ -351,8 +364,10 @@ class _ExecutionValidationMixin:
 
                 validation_entry = build_validation_entry(
                     source_result_id=source_result_id,
-                    metrics=_metrics, ev_res=ev_res,
-                    nov_conf=nov_conf, config=config,
+                    metrics=_metrics,
+                    ev_res=ev_res,
+                    nov_conf=nov_conf,
+                    config=config,
                 )
                 tier = "breakthrough" if ev_res.is_breakthrough else "validation"
                 results["validation_results"].append(validation_entry.to_dict())
@@ -371,23 +386,35 @@ class _ExecutionValidationMixin:
 
                 _vstatus("leaderboard promotion", _rid_short)
                 promote_validation_candidate(
-                    nb=nb, source_result_id=source_result_id, source=source,
-                    tier=tier, metrics=_metrics, ev_res=ev_res,
+                    nb=nb,
+                    source_result_id=source_result_id,
+                    source=source,
+                    tier=tier,
+                    metrics=_metrics,
+                    ev_res=ev_res,
                     novelty_cap=_novelty_cap,
                 )
 
                 _vstatus("trajectory probe (4000 steps)", _rid_short)
                 trajectory_composite = run_trajectory_probe(
-                    graph_json_str=graph_json_str, config=config, dev=dev,
-                    dev_str=dev_str, nb=nb, source_result_id=source_result_id,
-                    tier=tier, passed_seeds=passed_seeds,
+                    graph_json_str=graph_json_str,
+                    config=config,
+                    dev=dev,
+                    dev_str=dev_str,
+                    nb=nb,
+                    source_result_id=source_result_id,
+                    tier=tier,
+                    passed_seeds=passed_seeds,
                 )
 
-                is_breakthrough = handle_breakthrough(
+                handle_breakthrough(
                     is_breakthrough=ev_res.is_breakthrough,
                     trajectory_composite=trajectory_composite,
-                    aria=self.aria, nb=nb, exp_id=exp_id,
-                    source_result_id=source_result_id, source=source,
+                    aria=self.aria,
+                    nb=nb,
+                    exp_id=exp_id,
+                    source_result_id=source_result_id,
+                    source=source,
                     validation_entry=validation_entry,
                     val_loss_ratio=val_loss_ratio,
                     val_baseline_ratio=val_baseline_ratio,
@@ -408,17 +435,25 @@ class _ExecutionValidationMixin:
                     experiment_id=exp_id,
                     graph_fingerprint=source.get("graph_fingerprint", source_result_id),
                     graph_json=graph_json_str or "{}",
-                    stage0_passed=True, stage05_passed=True,
+                    stage0_passed=True,
+                    stage05_passed=True,
                     stage1_passed=len(passed_seeds) > 0,
-                    loss_ratio=val_loss_ratio, baseline_loss_ratio=val_baseline_ratio,
-                    novelty_score=_raw_novelty, novelty_confidence=_raw_confidence,
+                    loss_ratio=val_loss_ratio,
+                    baseline_loss_ratio=val_baseline_ratio,
+                    novelty_score=_raw_novelty,
+                    novelty_confidence=_raw_confidence,
                     novelty_raw_score=source.get("novelty_raw_score"),
                     novelty_z_score=source.get("novelty_z_score"),
                     novelty_reference_version=source.get("novelty_reference_version"),
-                    novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+                    novelty_valid_for_promotion=source.get(
+                        "novelty_valid_for_promotion"
+                    ),
                     novelty_validity_reason=source.get("novelty_validity_reason"),
-                    novelty_requires_justification=source.get("novelty_requires_justification"),
-                    model_source=model_source, arch_spec_json=arch_spec_json_str,
+                    novelty_requires_justification=source.get(
+                        "novelty_requires_justification"
+                    ),
+                    model_source=model_source,
+                    arch_spec_json=arch_spec_json_str,
                 )
 
                 # Save checkpoint after each candidate completes
@@ -444,7 +479,7 @@ class _ExecutionValidationMixin:
                         step=0,
                         metrics={"candidate_idx": prog_idx + 1},
                     )
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     _fail_loud(
                         "validation",
                         f"checkpoint save failed for candidate {prog_idx + 1}",
@@ -472,7 +507,7 @@ class _ExecutionValidationMixin:
             if not config.keep_checkpoints:
                 try:
                     ckpt.cleanup(exp_id)
-                except Exception as exc:
+                except (OSError, RuntimeError) as exc:
                     _fail_loud(
                         "validation",
                         f"checkpoint cleanup failed for {exp_id[:8]}",
@@ -513,8 +548,12 @@ class _ExecutionValidationMixin:
                     ],
                     trigger_payload={"mode": "validation", "error": str(e)},
                 )
-            except Exception:
-                logger.warning("code_healer failed during validation error handling", exc_info=True)
+            except (RuntimeError, OSError) as heal_err:
+                logger.warning(
+                    "code_healer failed during validation error handling: %s",
+                    heal_err,
+                    exc_info=True,
+                )
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -533,7 +572,9 @@ class _ExecutionValidationMixin:
             # A background thread must never die silent.
             logger.critical(
                 "Validation thread KILLED (%s): %s\n%s",
-                exp_id, e, traceback.format_exc(),
+                exp_id,
+                e,
+                traceback.format_exc(),
             )
             try:
                 nb.fail_experiment(exp_id, f"FATAL: {e}")
@@ -542,8 +583,10 @@ class _ExecutionValidationMixin:
                     "experiment_failed",
                     {"experiment_id": exp_id, "error": f"FATAL: {e}"},
                 )
-            except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            except RuntimeError:
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             raise
         finally:
             self._live_training_context = None
@@ -631,7 +674,7 @@ class _ExecutionValidationMixin:
 
                 try:
                     graph = graph_from_json(graph_json_str)
-                except Exception as e:
+                except (json.JSONDecodeError, ValueError, KeyError) as e:
                     self._emit_event(
                         "scale_up_progress",
                         {
@@ -657,7 +700,7 @@ class _ExecutionValidationMixin:
                         vocab_size=config.vocab_size,
                         max_seq_len=config.scale_up_seq_len,
                     )
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     self._emit_event(
                         "scale_up_progress",
                         {
@@ -780,7 +823,7 @@ class _ExecutionValidationMixin:
                                 program_metrics["validation_baseline_loss_ratio"] = (
                                     v_baseline_ratio
                                 )
-                        except Exception as exc:
+                        except (RuntimeError, ValueError, TypeError) as exc:
                             _fail_loud(
                                 "scale_up",
                                 f"baseline comparison failed for {source_result_id[:8]}",
@@ -799,7 +842,7 @@ class _ExecutionValidationMixin:
                             json_safe(diag.to_dict())
                         )
                         program_metrics["diagnostic_score"] = diag.diagnostic_score
-                    except Exception as exc:
+                    except (RuntimeError, ValueError) as exc:
                         _fail_loud(
                             "scale_up",
                             f"diagnostic suite failed for {source_result_id[:8]}",
@@ -831,7 +874,7 @@ class _ExecutionValidationMixin:
                                 program_metrics["wikitext_perplexity"],
                                 program_metrics.get("wikitext_score") or 0,
                             )
-                    except Exception as e:
+                    except (ImportError, RuntimeError, ValueError) as e:
                         logger.debug("Scale-up WikiText eval skipped: %s", e)
                     try:
                         from ...eval.tinystories_eval import evaluate_tinystories
@@ -855,7 +898,7 @@ class _ExecutionValidationMixin:
                                 program_metrics["tinystories_perplexity"],
                                 program_metrics.get("tinystories_score") or 0,
                             )
-                    except Exception as e:
+                    except (ImportError, RuntimeError, ValueError) as e:
                         logger.debug("Scale-up TinyStories eval skipped: %s", e)
 
                 # Novelty — compute behavioral fingerprint for S1 survivors
@@ -883,7 +926,7 @@ class _ExecutionValidationMixin:
                         calibration_row = self._ensure_novelty_calibration(
                             nb, config, fp
                         )
-                    except Exception as exc:
+                    except (RuntimeError, ValueError, TypeError) as exc:
                         _fail_loud(
                             "scale_up",
                             f"fingerprint computation failed for {source_result_id[:8]}",
@@ -959,7 +1002,7 @@ class _ExecutionValidationMixin:
                 if training_curve and result_id:
                     try:
                         nb.store_training_curve(result_id, training_curve)
-                    except Exception as exc:
+                    except (sqlite3.OperationalError, RuntimeError) as exc:
                         _fail_loud(
                             "scale_up",
                             f"training curve persistence failed for {result_id[:8]}",
@@ -1060,8 +1103,12 @@ class _ExecutionValidationMixin:
                     ],
                     trigger_payload={"mode": "scale_up", "error": str(e)},
                 )
-            except Exception:
-                logger.warning("code_healer failed during scale-up error handling", exc_info=True)
+            except (RuntimeError, OSError) as heal_err:
+                logger.warning(
+                    "code_healer failed during scale-up error handling: %s",
+                    heal_err,
+                    exc_info=True,
+                )
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -1078,7 +1125,9 @@ class _ExecutionValidationMixin:
         except BaseException as e:
             logger.critical(
                 "Scale-up thread KILLED (%s): %s\n%s",
-                exp_id, e, traceback.format_exc(),
+                exp_id,
+                e,
+                traceback.format_exc(),
             )
             try:
                 nb.fail_experiment(exp_id, f"FATAL: {e}")
@@ -1087,8 +1136,10 @@ class _ExecutionValidationMixin:
                     "experiment_failed",
                     {"experiment_id": exp_id, "error": f"FATAL: {e}"},
                 )
-            except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            except RuntimeError:
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             raise
         finally:
             self._live_training_context = None

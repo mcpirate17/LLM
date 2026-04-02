@@ -416,8 +416,8 @@ class GraphPredictor:
             )
             if not trained_imodel._trained:
                 trained_imodel = None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
         _empty_kwargs = dict(
             w_gate=np.zeros(0),

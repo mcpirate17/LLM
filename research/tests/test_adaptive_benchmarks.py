@@ -10,10 +10,10 @@ import pytest
 import time
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from research.morphological_box import ArchSpec
 from research.arch_builder import build_model, BuildConfig
-from research.evaluator import stage1_micro_train
 
 pytestmark = pytest.mark.unit
 
@@ -144,15 +144,31 @@ def run_benchmarks():
 
     for name, spec in specs:
         print(f"\nTraining {name}...")
-        # Use stage1_micro_train from evaluator
-        res = stage1_micro_train(
-            spec, config, device=device, n_steps=300, batch_size=4, seq_len=128
-        )
-        results[name]["final_loss"] = res.final_loss
-        results[name]["loss_ratio"] = res.loss_ratio
+        model = build_model(spec, config).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
+        model.train()
+        initial_loss = final_loss = float("inf")
+        for step in range(300):
+            ids = torch.randint(0, config.vocab_size, (4, 128), device=device)
+            logits = model(ids)
+            loss = F.cross_entropy(
+                logits[:, :-1].reshape(-1, config.vocab_size), ids[:, 1:].reshape(-1)
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            lv = loss.item()
+            if step == 0:
+                initial_loss = lv
+            final_loss = lv
+        loss_ratio = final_loss / max(initial_loss, 1e-6)
+        results[name]["final_loss"] = final_loss
+        results[name]["loss_ratio"] = loss_ratio
         print(
-            f"  {name}: Initial Loss: {res.initial_loss:.4f} | Final Loss: {res.final_loss:.4f} | Ratio: {res.loss_ratio:.4f}"
+            f"  {name}: Initial Loss: {initial_loss:.4f} | Final Loss: {final_loss:.4f} | Ratio: {loss_ratio:.4f}"
         )
+        del model, optimizer
 
     # Summary Table
     print("\n" + "=" * 82)

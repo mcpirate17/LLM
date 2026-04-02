@@ -101,12 +101,12 @@ def sanitize_for_db(value: Any) -> Any:
     if hasattr(value, "item"):
         try:
             return value.item()
-        except Exception:
-            pass
+        except (TypeError, ValueError, AttributeError) as e:
+            LOGGER.debug("sanitize_for_db item() failed: %s", e)
     if hasattr(value, "dtype"):
         try:
             return float(value)
-        except Exception:
+        except (TypeError, ValueError):
             return None
     if isinstance(value, float):
         if not math.isfinite(value):

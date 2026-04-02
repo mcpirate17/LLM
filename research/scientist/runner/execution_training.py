@@ -741,7 +741,10 @@ class _ExecutionTrainingMixin:
                                             input_ids[:, 1:],
                                         )
                                     except (RuntimeError, ValueError, TypeError) as e:
-                                        logger.debug("Synthesized loss failed, falling back to CE: %s", e)
+                                        logger.debug(
+                                            "Synthesized loss failed, falling back to CE: %s",
+                                            e,
+                                        )
                                         loss = F.cross_entropy(
                                             logits[:, :-1].reshape(
                                                 -1, logits.shape[-1]
@@ -1199,7 +1202,10 @@ class _ExecutionTrainingMixin:
 
                                 _graph_obj = graph_from_json(graph_json)
                             except (ValueError, KeyError, json.JSONDecodeError) as e:
-                                logger.debug("Graph deserialization failed for fingerprint: %s", e)
+                                logger.debug(
+                                    "Graph deserialization failed for fingerprint: %s",
+                                    e,
+                                )
 
                         _fp, full_ran = compute_gated_fingerprint(
                             model,
@@ -1373,7 +1379,9 @@ class _ExecutionTrainingMixin:
 
                                 _graph_for_triage = graph_from_json(graph_json)
                             except (ValueError, KeyError, json.JSONDecodeError) as e:
-                                logger.debug("Graph deserialization failed for triage: %s", e)
+                                logger.debug(
+                                    "Graph deserialization failed for triage: %s", e
+                                )
                         triage = run_triage(
                             model,
                             _graph_for_triage,
@@ -1708,7 +1716,9 @@ class _ExecutionTrainingMixin:
                                 input_ids[:, 1:].reshape(-1),
                             )
                         except (RuntimeError, ValueError, TypeError) as e:
-                            logger.debug("Program loss failed, falling back to CE: %s", e)
+                            logger.debug(
+                                "Program loss failed, falling back to CE: %s", e
+                            )
                             loss = F.cross_entropy(
                                 logits[:, :-1].reshape(-1, logits.shape[-1]),
                                 input_ids[:, 1:].reshape(-1),

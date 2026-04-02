@@ -114,7 +114,7 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
         if row and row["avg_loss"]:
             ref["gpt2_wikitext103_tiktoken"] = float(row["avg_loss"])
         conn.close()
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         logger.debug("get_reference_losses failed: %s", exc)
     _ref_losses_cache = ref
     _ref_losses_ts = now
@@ -892,7 +892,7 @@ def _evaluate_investigation_benchmarks(
             graph_json_str=graph_json_str,
             cached_json_load=cached_json_load,
         )
-    except Exception as exc:
+    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
         logger.debug("Benchmark model build failed: %s", exc)
         return result
 
@@ -956,7 +956,7 @@ def _evaluate_investigation_benchmarks(
                 else "n/a",
                 result["capability_tier"],
             )
-    except Exception as exc:
+    except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation WikiText eval skipped: %s", exc)
 
     try:
@@ -977,7 +977,7 @@ def _evaluate_investigation_benchmarks(
                 result["inv_tinystories_ppl"],
                 result["inv_tinystories_score"] or 0,
             )
-    except Exception as exc:
+    except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation TinyStories eval skipped: %s", exc)
 
     try:
@@ -999,7 +999,7 @@ def _evaluate_investigation_benchmarks(
                 hs_result.get("hellaswag_total", 0),
                 hs_result.get("elapsed_ms", 0),
             )
-    except Exception as exc:
+    except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation HellaSwag eval skipped: %s", exc)
 
     # BLiMP linguistic minimal pairs (investigation: 50 per subtask)
@@ -1019,7 +1019,7 @@ def _evaluate_investigation_benchmarks(
                 blimp.n_examples,
                 blimp.elapsed_ms,
             )
-    except Exception as exc:
+    except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation BLiMP eval skipped: %s", exc)
 
     # Binding probes: AR + induction + binding range (full suite at investigation)
@@ -1101,7 +1101,7 @@ def _evaluate_investigation_benchmarks(
                 model_source,
                 _graph_str[:200],
             )
-    except Exception as exc:
+    except (ImportError, RuntimeError, ValueError) as exc:
         logger.debug("Investigation binding probes skipped: %s", exc)
 
     del model

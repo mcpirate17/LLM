@@ -37,7 +37,8 @@ class AnthropicBackend(LLMBackend):
         try:
             self._get_client()
             return True
-        except Exception:
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
             return False
 
     def generate(

@@ -141,8 +141,8 @@ class _ProgramsMixin:
         for exp_id in affected_experiments:
             try:
                 self.update_op_success_rates(exp_id)
-            except Exception:
-                pass  # non-critical
+            except Exception as e:
+                LOGGER.debug("op_success_rates update for %s skipped: %s", exp_id, e)
 
         return {"deleted": count, "dry_run": False}
 

@@ -97,7 +97,8 @@ def _entry_to_live_feed_event(entry: dict):
     if isinstance(metadata, str):
         try:
             metadata = _json_loads(metadata)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Falling back to default: %s", exc)
             metadata = {}
     ret = {
         "type": metadata.get("event_type") or metadata.get("live_feed_type", "info"),

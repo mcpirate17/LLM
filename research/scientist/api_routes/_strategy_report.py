@@ -24,7 +24,8 @@ def parse_report_date(
             return dt.timestamp()
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         return dt.timestamp()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Returning default due to error: %s", exc)
         return None
 
 
@@ -89,7 +90,7 @@ def experiment_s1_rate(exp: Dict[str, Any]) -> Optional[float]:
     try:
         gen = float(generated or 0)
         s1 = float(passed or 0)
-    except Exception:
+    except (TypeError, ValueError):
         return None
     if gen <= 0:
         return None

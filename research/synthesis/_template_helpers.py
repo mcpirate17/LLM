@@ -179,56 +179,35 @@ def _pick_compatible_motif(
     graph: ComputationGraph,
     node_id: int,
     rng: random.Random,
-    motif_class: str,
+    motif_class_or_classes,
     weights: MotifWeights = None,
 ) -> Optional[Motif]:
-    wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
-    is_wildcard = wildcard_prob > 0 and rng.random() < wildcard_prob
+    """Pick a compatible motif from one or more classes.
 
-    if is_wildcard:
-        candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
+    Args:
+        motif_class_or_classes: A single class string or a tuple/list of classes.
+    """
+    if isinstance(motif_class_or_classes, str):
+        classes: Tuple[str, ...] = (motif_class_or_classes,)
     else:
-        candidates = _compatible_from_classes(graph, node_id, (motif_class,))
-        # Fallback to wildcard when prescribed class yields zero candidates
-        if not candidates and wildcard_prob > 0:
-            candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
-            is_wildcard = True
+        classes = tuple(motif_class_or_classes)
 
-    selected = _select_from_candidates(candidates, rng, weights)
-    _record_slot_usage(
-        graph,
-        node_id=node_id,
-        slot_classes=(motif_class,),
-        candidates=candidates,
-        selected=selected,
-        wildcard=is_wildcard,
-    )
-    return selected
-
-
-def _pick_compatible_motif_from_classes(
-    graph: ComputationGraph,
-    node_id: int,
-    rng: random.Random,
-    classes: Tuple[str, ...] | list[str],
-    weights: MotifWeights = None,
-) -> Optional[Motif]:
     wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
     is_wildcard = wildcard_prob > 0 and rng.random() < wildcard_prob
 
-    # Check for slot adaptations (learned class expansions from DB)
-    slot_adaptations = graph.metadata.get("_slot_adaptations")
-    if slot_adaptations:
-        slot_key = _current_slot_key(graph)
-        extra_classes = slot_adaptations.get(slot_key, ())
-        if extra_classes:
-            classes = tuple(set(classes) | set(extra_classes))
+    # Slot adaptations: learned class expansions from DB (multi-class only)
+    if len(classes) > 1:
+        slot_adaptations = graph.metadata.get("_slot_adaptations")
+        if slot_adaptations:
+            slot_key = _current_slot_key(graph)
+            extra_classes = slot_adaptations.get(slot_key, ())
+            if extra_classes:
+                classes = tuple(set(classes) | set(extra_classes))
 
     if is_wildcard:
         candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
     else:
         candidates = _compatible_from_classes(graph, node_id, classes)
-        # Fallback to wildcard when prescribed classes yield zero candidates
         if not candidates and wildcard_prob > 0:
             candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
             is_wildcard = True
@@ -237,12 +216,16 @@ def _pick_compatible_motif_from_classes(
     _record_slot_usage(
         graph,
         node_id=node_id,
-        slot_classes=tuple(classes),
+        slot_classes=classes,
         candidates=candidates,
         selected=selected,
         wildcard=is_wildcard,
     )
     return selected
+
+
+# Backward-compat alias — callers using the old multi-class name still work.
+_pick_compatible_motif_from_classes = _pick_compatible_motif
 
 
 def _current_slot_key(graph: ComputationGraph) -> str:

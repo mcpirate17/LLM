@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import traceback
 
@@ -168,7 +169,7 @@ class _ExecutionSearchMixin:
                             },
                         )
                     )
-                except Exception as e:
+                except (sqlite3.OperationalError, RuntimeError) as e:
                     logger.debug(
                         "Failed to persist evolution generation feed entry: %s", e
                     )
@@ -236,7 +237,7 @@ class _ExecutionSearchMixin:
                             metadata={"validated": validation.get("validated", False)},
                         )
                     )
-            except Exception as e:
+            except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning("Hypothesis validation failed for %s: %s", exp_id, e)
 
             nb.complete_experiment(
@@ -289,8 +290,12 @@ class _ExecutionSearchMixin:
                     ],
                     trigger_payload={"mode": "evolution", "error": str(e)},
                 )
-            except Exception:
-                logger.warning("code_healer failed during evolution error handling", exc_info=True)
+            except (RuntimeError, OSError) as heal_err:
+                logger.warning(
+                    "code_healer failed during evolution error handling: %s",
+                    heal_err,
+                    exc_info=True,
+                )
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -307,7 +312,9 @@ class _ExecutionSearchMixin:
         except BaseException as e:
             logger.critical(
                 "Evolution thread KILLED (%s): %s\n%s",
-                exp_id, e, traceback.format_exc(),
+                exp_id,
+                e,
+                traceback.format_exc(),
             )
             try:
                 nb.fail_experiment(exp_id, f"FATAL: {e}")
@@ -316,8 +323,10 @@ class _ExecutionSearchMixin:
                     "experiment_failed",
                     {"experiment_id": exp_id, "error": f"FATAL: {e}"},
                 )
-            except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            except RuntimeError:
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             raise
         finally:
             nb.close()
@@ -422,7 +431,7 @@ class _ExecutionSearchMixin:
                                 bfp.interaction_locality,
                                 bfp.isotropy,
                             )
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError) as e:
                         if _debug:
                             logger.exception(
                                 "DEBUG: Fingerprint computation failed for %s", gfp[:16]
@@ -445,7 +454,8 @@ class _ExecutionSearchMixin:
                         )
                     else:
                         fitness = 0.1
-                except Exception:
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logger.debug("Fitness computation failed: %s", e)
                     fitness = 0.0
 
                 fitness_cache[gfp] = fitness
@@ -529,7 +539,7 @@ class _ExecutionSearchMixin:
                             },
                         )
                     )
-                except Exception as e:
+                except (sqlite3.OperationalError, RuntimeError) as e:
                     logger.debug(
                         "Failed to persist novelty generation feed entry: %s", e
                     )
@@ -595,8 +605,8 @@ class _ExecutionSearchMixin:
                             metadata={"validated": validation.get("validated", False)},
                         )
                     )
-            except Exception:
-                pass
+            except (RuntimeError, ValueError, KeyError) as e:
+                logger.debug("Hypothesis validation failed in novelty search: %s", e)
 
             nb.complete_experiment(
                 experiment_id=exp_id,
@@ -649,8 +659,12 @@ class _ExecutionSearchMixin:
                     ],
                     trigger_payload={"mode": "novelty", "error": str(e)},
                 )
-            except Exception:
-                logger.warning("code_healer failed during novelty error handling", exc_info=True)
+            except (RuntimeError, OSError) as heal_err:
+                logger.warning(
+                    "code_healer failed during novelty error handling: %s",
+                    heal_err,
+                    exc_info=True,
+                )
             nb.fail_experiment(exp_id, str(e))
             self._update_progress(
                 status="failed",
@@ -667,7 +681,9 @@ class _ExecutionSearchMixin:
         except BaseException as e:
             logger.critical(
                 "Novelty thread KILLED (%s): %s\n%s",
-                exp_id, e, traceback.format_exc(),
+                exp_id,
+                e,
+                traceback.format_exc(),
             )
             try:
                 nb.fail_experiment(exp_id, f"FATAL: {e}")
@@ -676,8 +692,10 @@ class _ExecutionSearchMixin:
                     "experiment_failed",
                     {"experiment_id": exp_id, "error": f"FATAL: {e}"},
                 )
-            except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            except RuntimeError:
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             raise
         finally:
             nb.close()

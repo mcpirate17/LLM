@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -436,12 +436,15 @@ class ArchSpec:
     seed: int
     generation: int = 0  # which generation/batch this came from
     parent_id: Optional[str] = None  # if mutated from another spec
+    _cached_id: Optional[str] = field(default=None, repr=False, compare=False)
 
     @property
     def id(self) -> str:
-        """Deterministic hash ID from choices."""
-        key = json.dumps(self.choices, sort_keys=True)
-        return hashlib.sha256(key.encode()).hexdigest()[:12]
+        """Deterministic hash ID from choices (cached after first computation)."""
+        if self._cached_id is None:
+            key = json.dumps(self.choices, sort_keys=True)
+            self._cached_id = hashlib.sha256(key.encode()).hexdigest()[:12]
+        return self._cached_id
 
     @property
     def short_name(self) -> str:

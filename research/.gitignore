@@ -24,6 +24,9 @@ monitor_actions.json
 monitor_alerts.json
 monitor_wake_prompt.md
 
+# Test leak artifacts
+<MagicMock*
+
 # Runtime artifacts
 *.db
 *.db.bak

@@ -126,13 +126,15 @@ class _NotebookCore:
     ):
         self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._is_memory = ":memory:" in str(self.db_path)
         raw_conn = sqlite3.connect(
             str(self.db_path),
             timeout=10.0,
             check_same_thread=check_same_thread,
         )
         raw_conn.execute("PRAGMA foreign_keys=ON")
-        raw_conn.execute("PRAGMA journal_mode=WAL")
+        if not self._is_memory:
+            raw_conn.execute("PRAGMA journal_mode=WAL")
         raw_conn.execute("PRAGMA synchronous=NORMAL")
         raw_conn.execute("PRAGMA busy_timeout=15000")
         raw_conn.row_factory = sqlite3.Row
@@ -161,7 +163,8 @@ class _NotebookCore:
         # Use a separate connection for the writer thread
         writer_conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         writer_conn.execute("PRAGMA foreign_keys=ON")
-        writer_conn.execute("PRAGMA journal_mode=WAL")
+        if not self._is_memory:
+            writer_conn.execute("PRAGMA journal_mode=WAL")
         writer_conn.execute("PRAGMA synchronous=NORMAL")
         writer_conn.execute("PRAGMA busy_timeout=15000")
 
@@ -729,7 +732,7 @@ class _NotebookCore:
             if commit:
                 cls._cached_code_version = commit
                 return cls._cached_code_version
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
         cls._cached_code_version = "unknown"
@@ -767,7 +770,12 @@ class _NotebookCore:
             ).fetchone()
             if row and row[0]:
                 return json.loads(row[0])
-        except Exception as e:
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            sqlite3.OperationalError,
+        ) as e:
             LOGGER.debug("Failed to load latest digest: %s", e)
         return None
 

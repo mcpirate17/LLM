@@ -1413,7 +1413,9 @@ class _ExecutionScreeningMixin:
                                     metrics={"predicted_p_s1": float(p_pass)},
                                 )
                             except (TypeError, ValueError) as e:
-                                logger.debug("Failed recording predictor_skip result: %s", e)
+                                logger.debug(
+                                    "Failed recording predictor_skip result: %s", e
+                                )
                         else:
                             kept.append(g)
 

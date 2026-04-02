@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import uuid
 from typing import Dict
@@ -37,7 +38,9 @@ class _ContinuousLoopMixin:
             import traceback
 
             logger.critical(
-                "Continuous thread KILLED: %s\n%s", e, traceback.format_exc(),
+                "Continuous thread KILLED: %s\n%s",
+                e,
+                traceback.format_exc(),
             )
             try:
                 self._update_progress(status="failed", error=f"FATAL: {e}")
@@ -45,8 +48,10 @@ class _ContinuousLoopMixin:
                     "experiment_failed",
                     {"experiment_id": "continuous", "error": f"FATAL: {e}"},
                 )
-            except Exception:
-                logger.error("Failed to emit failure event after fatal error", exc_info=True)
+            except RuntimeError:
+                logger.error(
+                    "Failed to emit failure event after fatal error", exc_info=True
+                )
             if not isinstance(e, Exception):
                 raise
 
@@ -70,7 +75,7 @@ class _ContinuousLoopMixin:
                     n_backfilled,
                 )
             init_nb.close()
-        except Exception as e:
+        except (RuntimeError, sqlite3.OperationalError) as e:
             logger.warning("Replication backfill failed: %s", e)
 
         # Knowledge distiller — background intelligence thread
@@ -92,11 +97,11 @@ class _ContinuousLoopMixin:
                     distiller.set_digest(ExperimentDigest.from_dict(saved))
                     logger.info("Recovered knowledge digest from DB")
                 init_nb.close()
-            except Exception as e:
+            except (RuntimeError, sqlite3.OperationalError, KeyError, ValueError) as e:
                 logger.warning("Digest recovery failed: %s", e)
             distiller.start()
             self._knowledge_distiller = distiller
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.warning(
                 "KnowledgeDistiller init failed (degrading gracefully): %s", e
             )
@@ -143,7 +148,7 @@ class _ContinuousLoopMixin:
             if n_cleaned:
                 logger.info(f"Cleaned up {n_cleaned} stale running experiments")
             cleanup_nb.close()
-        except Exception as e:
+        except (RuntimeError, sqlite3.OperationalError) as e:
             logger.warning("Stale experiment cleanup failed: %s", e)
 
         # Initialize campaign
@@ -151,7 +156,7 @@ class _ContinuousLoopMixin:
             init_nb = self._make_notebook()
             self._ensure_campaign(config, init_nb)
             init_nb.close()
-        except Exception as e:
+        except (RuntimeError, sqlite3.OperationalError, ValueError) as e:
             logger.warning("Campaign init failed: %s", e)
 
         while not self._stop_event.is_set():
@@ -173,7 +178,7 @@ class _ContinuousLoopMixin:
                         f"Retrying after heal: {retry['scope'][:200]}",
                     )
                     retry_nb.close()
-                except Exception as e:
+                except (RuntimeError, sqlite3.OperationalError) as e:
                     logger.warning("Heal retry logging failed: %s", e)
 
             # Check limits before starting next experiment
@@ -207,7 +212,7 @@ class _ContinuousLoopMixin:
                 if distiller is not None:
                     try:
                         distiller.stop()
-                    except Exception as e:
+                    except RuntimeError as e:
                         logger.warning("Distiller stop failed at limit: %s", e)
                 # Launch queued auto-scale-up
                 self._run_pending_scale_up()
@@ -238,7 +243,7 @@ class _ContinuousLoopMixin:
                                 else "N/A",
                                 stats.get("n_correlation_samples", 0),
                             )
-                    except Exception as e:
+                    except (ImportError, RuntimeError, sqlite3.OperationalError) as e:
                         logger.warning(
                             "Failed to generate gate performance summary: %s", e
                         )
@@ -249,7 +254,7 @@ class _ContinuousLoopMixin:
             if distiller is not None:
                 try:
                     distiller.notify_cycle_complete()
-                except Exception as e:
+                except RuntimeError as e:
                     logger.warning("Distiller cycle notification failed: %s", e)
 
             # Update cost in progress
@@ -275,7 +280,7 @@ class _ContinuousLoopMixin:
                             "total_tokens": self.aria.total_tokens,
                         },
                     )
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.warning("Checkpoint save failed: %s", e)
 
             # Purge empty failed experiments between cycles to prevent DB bloat.
@@ -283,7 +288,7 @@ class _ContinuousLoopMixin:
                 self.notebook.purge_empty_experiments()
                 self.notebook.compact_old_chat()
                 self.notebook.backfill_failure_signatures()
-            except Exception as e:
+            except (RuntimeError, sqlite3.OperationalError) as e:
                 logger.warning("Inter-cycle cleanup failed: %s", e)
 
             if config.rest_between_experiments > 0 and not self._stop_event.is_set():
@@ -293,7 +298,7 @@ class _ContinuousLoopMixin:
         if distiller is not None:
             try:
                 distiller.stop()
-            except Exception as e:
+            except RuntimeError as e:
                 logger.warning("Distiller stop failed: %s", e)
 
         # Re-enable LLM for interactive use after continuous mode ends.
@@ -335,7 +340,7 @@ class _ContinuousLoopMixin:
             try:
                 ckpt_exp_id = resume_id or "continuous"
                 ckpt.cleanup(ckpt_exp_id)
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.warning("Checkpoint cleanup failed: %s", e)
 
         # Launch queued auto-scale-up
@@ -377,8 +382,8 @@ class _ContinuousLoopMixin:
                     ).fetchone()
                     if _nov_rows and _nov_rows["avg_nov"] is not None:
                         novelty_scores = [float(_nov_rows["avg_nov"])]
-                except Exception:
-                    pass
+                except (sqlite3.OperationalError, ValueError, TypeError) as e:
+                    logger.debug("Novelty fallback query failed: %s", e)
             avg_novelty = (
                 sum(novelty_scores) / len(novelty_scores) if novelty_scores else 0
             )
@@ -394,8 +399,8 @@ class _ContinuousLoopMixin:
                     "WHERE e.experiment_type = 'investigation'"
                 ).fetchall()
                 _investigated_fps = {r[0] for r in _inv_rows if r[0]}
-            except Exception:
-                pass
+            except sqlite3.OperationalError as e:
+                logger.debug("Investigated fingerprint query failed: %s", e)
 
             investigation_ready = len(
                 [
@@ -427,7 +432,8 @@ class _ContinuousLoopMixin:
                                 (e["result_id"],),
                             ).fetchone()
                             fp = fp_row[0] if fp_row else None
-                        except Exception:
+                        except sqlite3.OperationalError as e:
+                            logger.debug("Fingerprint lookup failed: %s", e)
                             fp = None
                         if fp and fp not in _investigated_fps:
                             _inv_candidates.append(e)
@@ -539,8 +545,10 @@ class _ContinuousLoopMixin:
                 ).fetchall()
                 for row in rows:
                     optimizer_counts[row[0]] = row[1]
-            except Exception:
-                pass  # Table/column may not exist yet
+            except sqlite3.OperationalError as e:
+                logger.debug(
+                    "Optimizer diversity query failed (table may not exist): %s", e
+                )
 
             fallback_data = {
                 "total_s1_survivors": total_s1,
@@ -737,7 +745,7 @@ class _ContinuousLoopMixin:
                     chosen_experiments=decision_log["chosen_experiments"],
                     trigger=decision_log["trigger"],
                 )
-            except Exception as log_err:
+            except (ValueError, sqlite3.OperationalError) as log_err:
                 logger.warning("Mode selection decision log failed: %s", log_err)
 
             return rec

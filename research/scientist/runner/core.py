@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import atexit
 import hashlib
+import json
 import math
 import os
+import sqlite3
 from pathlib import Path
 import queue
 import signal
@@ -169,8 +171,13 @@ class _CoreMixin:
                     logger.info(
                         "Restored grammar weight overrides from DB: %s", overrides
                     )
-        except Exception:
-            pass  # Non-critical: start with empty overrides
+        except (
+            sqlite3.OperationalError,
+            json.JSONDecodeError,
+            KeyError,
+            ValueError,
+        ) as e:
+            logger.debug("Grammar weight override restore failed (non-critical): %s", e)
         self._last_stagnation_agent_cycle = -10
         self._last_anti_stagnation_cycle = -10
         self._last_chat_config_overrides: Dict[str, Any] = {}
@@ -178,7 +185,8 @@ class _CoreMixin:
         self._structured_sparsity_bias_override: float = 0.0
         try:
             self._healer = CodeHealer(self.notebook_path)
-        except Exception:
+        except (ImportError, RuntimeError, OSError) as e:
+            logger.debug("CodeHealer init failed: %s", e)
             self._healer = None
         self._last_healer_integrity_check = 0.0
         self._recent_healer_signatures: Dict[str, float] = {}
@@ -219,8 +227,8 @@ class _CoreMixin:
                         len(rows),
                     )
                 nb.close()
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, RuntimeError, OSError) as e:
+                logger.debug("Shutdown experiment marking failed: %s", e)
 
         atexit.register(_mark_interrupted)
 
@@ -255,7 +263,7 @@ class _CoreMixin:
 
                 register_all_mathspaces()
                 self._math_spaces_registered = True
-            except Exception as e:
+            except (ImportError, RuntimeError) as e:
                 logger.debug("Math spaces registration failed: %s", e)
 
     def _get_baseline(self) -> TransformerBaseline:
@@ -402,7 +410,7 @@ class _CoreMixin:
                 total,
             )
             return batcher
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError, KeyError) as e:
             logger.warning("Failed to load HuggingFace dataset %s: %s", ds_name, e)
             return None
 
@@ -445,7 +453,7 @@ class _CoreMixin:
                     config.hydra_dataset,
                     config.hydra_data_dir,
                 )
-            except Exception as e:
+            except (ImportError, RuntimeError, OSError, ValueError) as e:
                 logger.warning("Failed to initialize HYDRA data loader: %s", e)
                 self._hydra_loader = None
                 self._hydra_iter = None
@@ -492,7 +500,7 @@ class _CoreMixin:
         """Whether Aria is currently configured to use a local LLM backend."""
         try:
             llm_config = self.aria.get_llm_config()
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             logger.debug("Failed to inspect LLM backend for limit policy: %s", e)
             return False
         backend = str((llm_config or {}).get("backend") or "").strip().lower()
@@ -532,7 +540,7 @@ class _CoreMixin:
             stat = os.stat(path)
             name = os.path.basename(path)
             return f"{name}:{stat.st_size}:{stat.st_mtime_ns}"
-        except Exception:
+        except OSError:
             return "missing"
 
     @staticmethod

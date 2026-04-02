@@ -232,7 +232,8 @@ def _build_ref_comparison(nb) -> Optional[dict]:
             "best_reference_score": float(best_ref_score),
             "references": refs_list,
         }
-    except Exception:
+    except Exception as exc:
+        logger.debug("Returning default due to error: %s", exc)
         return None
 
 
@@ -258,7 +259,8 @@ def try_llm_briefing(
         llm_reachable = (
             bool(llm.is_available()) if hasattr(llm, "is_available") else True
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("LLM reachability check failed: %s", exc)
         llm_reachable = False
     if not llm_reachable:
         return None
@@ -308,17 +310,20 @@ def _gather_llm_context(
     try:
         active_campaigns = nb.get_active_campaigns()
         campaign = active_campaigns[0] if active_campaigns else None
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to load campaigns: %s", exc)
         campaign = None
 
     try:
         dw = analytics.get_current_grammar_weights() or {}
-    except Exception:
+    except Exception as exc:
+        logger.debug("Falling back to default: %s", exc)
         dw = {}
 
     try:
         gw = analytics.compute_grammar_weights() or {}
-    except Exception:
+    except Exception as exc:
+        logger.debug("Falling back to default: %s", exc)
         gw = {}
 
     try:
@@ -328,12 +333,14 @@ def _gather_llm_context(
             "ORDER BY composite_score DESC LIMIT 3"
         ).fetchall()
         top_progs = [dict(r) for r in top_programs] if top_programs else None
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to load top programs: %s", exc)
         top_progs = None
 
     try:
         scaling_summary_data = nb.get_scaling_summary()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to load scaling summary: %s", exc)
         scaling_summary_data = None
 
     try:
@@ -350,7 +357,8 @@ def _gather_llm_context(
             scaling_summary=scaling_summary_data,
             ref_comparison=data["ref_comparison"],
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("build_briefing_context failed, using fallback: %s", exc)
         trajectory = data["trajectory"]
         return {
             "pipeline": data["pipeline"],
@@ -588,8 +596,8 @@ def _append_diversity_sentences(
                     f"families in {total_leaderboard} "
                     f"leaderboard entries — search may be converging."
                 )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed error: %s", exc)
 
 
 def determine_recommended_action(nb, data: dict[str, Any]) -> dict[str, Any]:

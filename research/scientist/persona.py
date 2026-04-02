@@ -197,7 +197,8 @@ class Aria(
         try:
             if hasattr(llm, "is_available"):
                 reachable = bool(llm.is_available())
-        except Exception:
+        except Exception as exc:
+            logger.debug("LLM availability check failed: %s", exc)
             reachable = False
 
         config: Dict = {

@@ -44,7 +44,7 @@ def _validate_designer_layer_adapter_contract(
     """Return None when adapter output contract is safe, else skip reason."""
     try:
         import torch
-    except Exception:
+    except ImportError:
         return "torch_unavailable_for_contract_check"
 
     if model_dim <= 0:

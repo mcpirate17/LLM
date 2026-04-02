@@ -25,7 +25,9 @@ class TestHephaestusBehavior(unittest.TestCase):
                 graphs.append(gen.generate(seed=i))
             except ValueError:
                 continue
-        self.assertGreaterEqual(len(graphs), 3, "Need at least 3 valid graphs from tight budget")
+        self.assertGreaterEqual(
+            len(graphs), 3, "Need at least 3 valid graphs from tight budget"
+        )
 
         for i, g in enumerate(graphs):
             params = g.n_params_estimate()

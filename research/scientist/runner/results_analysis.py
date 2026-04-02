@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
@@ -83,7 +84,8 @@ class _ResultsAnalysisMixin:
                     nov = compute_novelty(graph, fingerprint=fp)
                     fp_novelty = float(nov.overall_novelty)
                     fp_confidence = float(nov.novelty_confidence)
-                except Exception:
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logger.debug("Novelty score computation failed: %s", e)
                     fp_novelty = fp.novelty_score if fp.novelty_score > 0 else None
                 fp_fields = {
                     "fingerprint_json": json.dumps(json_safe(fp.to_dict())),
@@ -206,7 +208,13 @@ class _ResultsAnalysisMixin:
             self._update_analytics_stats(
                 nb, graph, _s0_passed, _s1_passed, recorded_lr, fp_novelty
             )
-        except Exception as e:
+        except (
+            RuntimeError,
+            ValueError,
+            TypeError,
+            KeyError,
+            sqlite3.OperationalError,
+        ) as e:
             if debug:
                 logger.exception(
                     "DEBUG: Failed to record program result for fp=%s",
@@ -311,7 +319,7 @@ class _ResultsAnalysisMixin:
             _batch_upsert_stats("motif_stats", "motif_name", motifs)
             _batch_upsert_stats("op_stats", "op_name", list(ops))
             conn.commit()
-        except Exception:
+        except sqlite3.OperationalError:
             logger.debug("Failed to update analytics stats", exc_info=True)
 
     def _analyze_results(
@@ -364,8 +372,10 @@ class _ResultsAnalysisMixin:
                 # Insights are display-only — not fed to Aria's decision state
                 recorded.append(content)
             return recorded
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, sqlite3.OperationalError) as e:
+            logger.debug(
+                "Data-driven analytics failed, falling back to rule-based: %s", e
+            )
 
         # Fall back to rule-based
         return self._rule_based_insights(results, exp_id, nb)
@@ -401,7 +411,7 @@ class _ResultsAnalysisMixin:
                     uses_math = True
                 if cat == "frequency":
                     uses_freq = True
-            except (KeyError, Exception):
+            except (KeyError, ValueError, ImportError):
                 pass
 
         metrics["graph_n_unique_ops"] = len(ops_used)
@@ -478,7 +488,7 @@ class _ResultsAnalysisMixin:
         metrics: Dict[str, Any] = {}
         try:
             layers = list(getattr(model, "layers", []) or [])
-        except Exception:
+        except (TypeError, RuntimeError):
             layers = []
         if not layers:
             try:
@@ -486,7 +496,7 @@ class _ResultsAnalysisMixin:
                 blocks = getattr(topo, "blocks", None) if topo is not None else None
                 if blocks is not None:
                     layers = list(blocks)
-            except Exception:
+            except (TypeError, RuntimeError):
                 pass
         routing_mode = None
         spec = getattr(model, "spec", None)
@@ -572,7 +582,7 @@ class _ResultsAnalysisMixin:
             else:
                 try:
                     op_values = list(ops)
-                except Exception:
+                except TypeError:
                     # Guard against non-iterable op containers
                     continue
             for compiled_op in op_values:
@@ -668,7 +678,7 @@ class _ResultsAnalysisMixin:
                     else:
                         try:
                             op_values = list(ops)
-                        except Exception:
+                        except TypeError:
                             continue
                     for op in op_values:
                         if hasattr(op, "weight"):
@@ -691,7 +701,7 @@ class _ResultsAnalysisMixin:
                 else:
                     try:
                         op_values = list(ops)
-                    except Exception:
+                    except TypeError:
                         continue
                 for compiled_op in op_values:
                     op_obj = getattr(compiled_op, "op", None)
@@ -768,7 +778,7 @@ class _ResultsAnalysisMixin:
             else:
                 try:
                     op_values = list(ops)
-                except Exception:
+                except TypeError:
                     continue
             for compiled_op in op_values:
                 op_obj = getattr(compiled_op, "op", None)

@@ -35,7 +35,7 @@ class PerfTrace:
                 # Need to synchronize to ensure timing is accurate
                 torch.cuda.synchronize()
                 return self.gpu_start.elapsed_time(self.gpu_end)
-            except Exception:
+            except RuntimeError:
                 pass
 
         return (self.cpu_end - self.cpu_start) * 1000
@@ -129,7 +129,8 @@ class OpKernelProfiler:
             if torch.cuda.is_available():
                 activities.append(torch.profiler.ProfilerActivity.CUDA)
             return activities
-        except Exception:
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
             return []
 
     def profile_callable(self, fn) -> Optional[Dict[str, Any]]:
@@ -149,7 +150,8 @@ class OpKernelProfiler:
             ) as prof:
                 fn()
             return self.summarize(prof, top_k=self.top_k)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Returning default due to error: %s", exc)
             return None
 
     @staticmethod
@@ -294,7 +296,8 @@ class KernelTimer:
             for start, end in events:
                 try:
                     durations.append(start.elapsed_time(end))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Skipping due to error: %s", exc)
                     continue
             if durations:
                 report[name] = sum(durations) / len(durations)

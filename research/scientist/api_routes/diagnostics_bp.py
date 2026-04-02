@@ -57,13 +57,13 @@ def register_diagnostics_routes(app, context: ApiRouteContext):
             ttl_seconds = int(
                 os.environ.get("ARIA_REPORT_SNAPSHOT_TTL_SECONDS", str(7 * 24 * 3600))
             )
-        except Exception:
+        except (TypeError, ValueError):
             ttl_seconds = 7 * 24 * 3600
         try:
             max_rows_per_scope = int(
                 os.environ.get("ARIA_REPORT_SNAPSHOT_MAX_ROWS_PER_SCOPE", "400")
             )
-        except Exception:
+        except (TypeError, ValueError):
             max_rows_per_scope = 400
 
         cleanup_stats = None

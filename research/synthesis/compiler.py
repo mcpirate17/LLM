@@ -1623,18 +1623,28 @@ class CompiledOp(nn.Module):
         # nn.Parameter tensors does not get autocast coverage.
         if inputs and inputs[0].is_floating_point():
             self._cast_params_to(inputs[0].dtype)
+
+        # Per-op timing: opt-in via collect_telemetry flag (set by dashboard/profiler)
+        _profile = getattr(self, "collect_telemetry", False)
+        if _profile:
+            import time as _time
+
+            _t0 = _time.perf_counter()
+
         # Cache wrapper lookup (avoids getattr hash lookup every forward)
         wrapper = self._cached_native_wrapper
         if wrapper is not None:
             result = wrapper.dispatch(self.op_name, *inputs)
             if result is not None:
+                if _profile:
+                    self._record_op_timing(_time.perf_counter() - _t0)
                 return result
         # Use pre-bound dispatch function to skip per-call dict lookup
         dispatch_fn = self._cached_dispatch_fn
         if dispatch_fn is not None:
             result = dispatch_fn(self, inputs, self.config)
             if self._is_math_op:
-                if getattr(self, "collect_telemetry", False):
+                if _profile:
                     nonfinite = int((~torch.isfinite(result)).sum().item())
                     if nonfinite > 0:
                         result = torch.nan_to_num(
@@ -1651,8 +1661,25 @@ class CompiledOp(nn.Module):
                             setattr(self, "mathspace_telemetry", telemetry)
                 else:
                     result = torch.nan_to_num(result, nan=0.0, posinf=1e4, neginf=-1e4)
+            if _profile:
+                self._record_op_timing(_time.perf_counter() - _t0)
             return result
-        return _execute_op(self, self.op_name, inputs, self.config)
+        result = _execute_op(self, self.op_name, inputs, self.config)
+        if _profile:
+            self._record_op_timing(_time.perf_counter() - _t0)
+        return result
+
+    def _record_op_timing(self, elapsed: float) -> None:
+        """Record per-op forward timing (microseconds) for profiling."""
+        timing = getattr(self, "op_timing", None)
+        if timing is None:
+            timing = {"calls": 0, "total_us": 0.0, "max_us": 0.0}
+            object.__setattr__(self, "op_timing", timing)
+        elapsed_us = elapsed * 1e6
+        timing["calls"] += 1
+        timing["total_us"] += elapsed_us
+        if elapsed_us > timing["max_us"]:
+            timing["max_us"] = elapsed_us
 
 
 class CompiledLayer(nn.Module):

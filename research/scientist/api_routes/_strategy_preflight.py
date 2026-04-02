@@ -287,8 +287,8 @@ def run_launch_preflight(
             )
             if verdict == "pass":
                 verdict = "warn"
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed error: %s", exc)
 
     if not checks:
         checks.append({"name": "all_clear", "status": "pass", "details": None})

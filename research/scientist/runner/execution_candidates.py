@@ -128,7 +128,7 @@ class _ExecutionCandidatesMixin:
                             )
                         else:
                             del model
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError) as e:
                         logger.debug(f"Morphological candidate {i} failed: {e}")
                         continue
             except ImportError:
@@ -193,7 +193,8 @@ class _ExecutionCandidatesMixin:
                     )
                 else:
                     del model
-            except Exception:
+            except (RuntimeError, ValueError, TypeError) as e:
+                logger.debug("Graph candidate compilation failed: %s", e)
                 continue
 
         return candidates
@@ -225,16 +226,16 @@ class _ExecutionCandidatesMixin:
             try:
                 learned_op = analytics.compute_op_weights(since_ts=_window_cutoff)
                 op_weights.update(learned_op)
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug("compute_op_weights failed: %s", e)
             try:
                 learned_tpl = analytics.compute_template_weights(
                     since_ts=_window_cutoff
                 )
                 if learned_tpl:
                     template_weights.update(learned_tpl)
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug("compute_template_weights failed: %s", e)
             # Template selection scheduler — Thompson sampling or UCB1
             try:
                 db_path = (
@@ -263,22 +264,22 @@ class _ExecutionCandidatesMixin:
                             template_weights[tpl] = (template_weights[tpl] * w) ** 0.5
                         else:
                             template_weights[tpl] = w
-            except Exception:
-                pass
+            except (ImportError, KeyError, ValueError, RuntimeError) as e:
+                logger.debug("Template scheduler failed: %s", e)
             try:
                 learned_motif = analytics.compute_motif_weights(since_ts=_window_cutoff)
                 if learned_motif:
                     motif_weights.update(learned_motif)
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug("compute_motif_weights failed: %s", e)
             try:
                 syn_motif, syn_tpl = analytics.compute_synergy_boosts()
                 for name, boost in syn_motif.items():
                     motif_weights[name] = motif_weights.get(name, 1.0) * boost
                 for name, boost in syn_tpl.items():
                     template_weights[name] = template_weights.get(name, 1.0) * boost
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug("compute_synergy_boosts failed: %s", e)
             # ── Temporal Bayesian tracker: temporal-decay-aware weights ──
             # Overrides analytics weights for ops with sufficient evidence,
             # respects code-fix resets (ops fixed recently get higher weights).
@@ -360,8 +361,8 @@ class _ExecutionCandidatesMixin:
                             motif_weights[motif_name] = (
                                 motif_weights.get(motif_name, 1.0) * mult
                             )
-                    except Exception:
-                        pass
+                    except (ImportError, KeyError, ValueError) as e:
+                        logger.debug("Motif viability adjustment failed: %s", e)
                     logger.debug(
                         "Interaction model: adjusted motif weights (%d ops)",
                         imodel.n_ops,
@@ -388,8 +389,8 @@ class _ExecutionCandidatesMixin:
                     penalty = op_info.get("penalty_weight", 1.0)
                     if op_name:
                         op_weights[op_name] = penalty
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug("negative_results_synthesis failed: %s", e)
             # Category-level weights from historical success data
             try:
                 last_cat = getattr(self, "_last_category_weights", None)
@@ -397,8 +398,8 @@ class _ExecutionCandidatesMixin:
                 if learned_cat:
                     category_weights.update(learned_cat)
                     self._last_category_weights = dict(learned_cat)
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug("compute_grammar_weights failed: %s", e)
             if op_weights or category_weights:
                 logger.info(
                     "Loaded %d op weights, %d category weights for candidate generation",
@@ -547,15 +548,15 @@ class _ExecutionCandidatesMixin:
                     for op_name, penalty in op_penalties.items():
                         try:
                             p = float(penalty)
-                        except Exception:
+                        except (ValueError, TypeError):
                             continue
                         # Convert penalty (0..1) into weight multiplier (1..0.5)
                         mult = max(0.5, 1.0 - 0.5 * max(0.0, min(1.0, p)))
                         grammar.op_weights[op_name] = (
                             grammar.op_weights.get(op_name, 1.0) * mult
                         )
-        except Exception:
-            pass
+        except (OSError, ValueError, KeyError) as e:
+            logger.debug("Op priors loading failed: %s", e)
 
         # Apply cluster-based suggestions (optional)
         try:
@@ -587,20 +588,20 @@ class _ExecutionCandidatesMixin:
                     for op_name, mult in op_weight_suggestions.items():
                         try:
                             _apply_mult(op_name, float(mult))
-                        except Exception:
+                        except (ValueError, TypeError):
                             continue
 
                     for op_name, p in op_penalties.items():
                         try:
                             penalty = max(0.0, min(1.0, float(p)))
-                        except Exception:
+                        except (ValueError, TypeError):
                             continue
                         _apply_mult(op_name, 1.0 - 0.4 * penalty)
 
                     for op_name, p in op_promotions.items():
                         try:
                             promo = max(0.0, min(1.0, float(p)))
-                        except Exception:
+                        except (ValueError, TypeError):
                             continue
                         _apply_mult(op_name, 1.0 + 0.4 * promo)
 
@@ -619,8 +620,8 @@ class _ExecutionCandidatesMixin:
                     for pat in promote_patterns:
                         for op_name in _ops_from_pattern(str(pat)):
                             _apply_mult(op_name, 1.1)
-        except Exception:
-            pass
+        except (OSError, ValueError, KeyError) as e:
+            logger.debug("Cluster suggestions loading failed: %s", e)
 
         # Apply designer feedback signals (from Aria suggestion outcomes)
         try:
@@ -653,8 +654,8 @@ class _ExecutionCandidatesMixin:
                             grammar.op_weights[op_name] = (
                                 grammar.op_weights.get(op_name, 1.0) * penalty
                             )
-        except Exception:
-            pass
+        except (OSError, ValueError, KeyError) as e:
+            logger.debug("Designer feedback loading failed: %s", e)
 
         # Gradient stability penalty: penalize ops with severely exploding
         # gradients from component profiling data (measured, not speculative).
@@ -679,8 +680,8 @@ class _ExecutionCandidatesMixin:
                     grammar.op_weights[op_name] = (
                         grammar.op_weights.get(op_name, 1.0) * mult
                     )
-        except Exception:
-            pass
+        except (ImportError, OSError, ValueError, RuntimeError) as e:
+            logger.debug("Gradient stability penalty loading failed: %s", e)
 
         return grammar
 

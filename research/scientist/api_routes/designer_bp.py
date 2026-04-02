@@ -417,19 +417,19 @@ def register_designer_routes(app, context: ApiRouteContext):
             workflow_version = (
                 int(workflow_version) if workflow_version is not None else None
             )
-        except Exception:
+        except (TypeError, ValueError):
             workflow_version = None
 
         total_time_ms = body.get("total_time_ms")
         try:
             total_time_ms = float(total_time_ms) if total_time_ms is not None else None
-        except Exception:
+        except (TypeError, ValueError):
             total_time_ms = None
 
         created_at = body.get("created_at")
         try:
             created_at = float(created_at) if created_at is not None else None
-        except Exception:
+        except (TypeError, ValueError):
             created_at = None
 
         nb.save_designer_run_lineage(
@@ -500,7 +500,7 @@ def register_designer_routes(app, context: ApiRouteContext):
             )
             if comps:
                 return jsonify(comps)
-        except Exception:
+        except Exception:  # noqa: BLE001 — graceful fallback to primitives
             logger.debug(
                 "Could not load components from designer DB, falling back to primitives"
             )

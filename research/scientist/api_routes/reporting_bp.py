@@ -304,8 +304,8 @@ def register_reporting_routes(app, context: ApiRouteContext):
                     if latest.get("best_novelty_score")
                     else None,
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
         # Include learning trajectory trend in summary
         try:
@@ -314,8 +314,8 @@ def register_reporting_routes(app, context: ApiRouteContext):
                 summary["learning_trend"] = trajectory.get("trend")
                 summary["learning_slope"] = trajectory.get("slope")
                 summary["recent_s1_rate"] = trajectory.get("recent_s1_rate")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed error: %s", exc)
 
         # Include latest auto-recommendation if experiment just completed
         last_rec = runner.last_recommendation
@@ -499,7 +499,7 @@ def register_reporting_routes(app, context: ApiRouteContext):
         )
         try:
             limit = int(request.args.get("limit") or 20)
-        except Exception:
+        except (TypeError, ValueError):
             limit = 20
         limit = max(5, min(120, limit))
 
