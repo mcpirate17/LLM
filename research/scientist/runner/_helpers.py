@@ -361,8 +361,8 @@ def clear_gpu_memory() -> None:
 
         if _torch.cuda.is_available():
             _torch.cuda.empty_cache()
-    except Exception:
-        pass
+    except (ImportError, RuntimeError) as e:
+        logger.debug("GPU memory cleanup skipped: %s", e)
     gc.collect()
     _unload_ollama_if_running()
 
@@ -402,8 +402,8 @@ def _unload_ollama_if_running() -> None:
                     json={"model": name, "prompt": "", "keep_alive": 0},
                     timeout=5,
                 )
-    except Exception:
-        pass
+    except (ImportError, OSError, ValueError) as e:
+        logger.debug("Ollama unload skipped: %s", e)
 
 
 def compute_seed_metrics(
@@ -680,8 +680,8 @@ def _native_proactive_gating(graph) -> Dict[str, Any]:
 
         # 4. Call native engine
         return aria_core.proactive_gating(n_nodes, edges, op_codes)
-    except Exception as e:
-        logger.debug(f"Native proactive gating failed: {e}")
+    except (ImportError, RuntimeError, KeyError, TypeError) as e:
+        logger.debug("Native proactive gating failed: %s", e)
         return {"passed": True, "reason": "native_gating_error", "error": str(e)}
 
 
@@ -690,7 +690,7 @@ def _native_runner_progress_report() -> Dict[str, Any]:
         from ..native.telemetry import native_runner_capability_report
 
         return native_runner_capability_report()
-    except Exception as exc:
+    except (ImportError, RuntimeError, OSError) as exc:
         return {
             "enabled": False,
             "strict": False,

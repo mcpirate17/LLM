@@ -97,39 +97,45 @@ def clear_false_penalties(db_path: str = str(DB_PATH), dry_run: bool = False) ->
 
     results = {"cleared": [], "adjusted": [], "skipped": []}
 
+    # Batch-fetch all relevant signatures in two queries instead of N+1
+    all_sigs = list(CLEAR_SIGNATURES.keys()) + list(ADJACENCY_FIX_SIGNATURES.keys())
+    placeholders = ",".join("?" for _ in all_sigs)
+    existing = {}
+    for row in conn.execute(
+        f"SELECT signature, n_failures, n_successes FROM failure_signatures "
+        f"WHERE signature IN ({placeholders})",
+        all_sigs,
+    ).fetchall():
+        existing[row[0]] = (row[1], row[2])
+
     # ── Group 1: Delete false-positive signatures ──
+    delete_sigs = []
     for sig, reason in CLEAR_SIGNATURES.items():
-        row = conn.execute(
-            "SELECT n_failures, n_successes FROM failure_signatures WHERE signature = ?",
-            (sig,),
-        ).fetchone()
-        if row:
-            nf, ns = row
+        if sig in existing:
+            nf, ns = existing[sig]
             if dry_run:
                 print(f"  [DRY RUN] Would CLEAR: {sig} (fail={nf}, succ={ns})")
                 print(f"    Reason: {reason}")
             else:
-                conn.execute(
-                    "DELETE FROM failure_signatures WHERE signature = ?", (sig,)
-                )
+                delete_sigs.append((sig,))
                 print(f"  CLEARED: {sig} (was: fail={nf}, succ={ns})")
                 print(f"    Reason: {reason}")
             results["cleared"].append(sig)
         else:
             results["skipped"].append(sig)
 
+    if delete_sigs and not dry_run:
+        conn.executemany(
+            "DELETE FROM failure_signatures WHERE signature = ?", delete_sigs
+        )
+
     # ── Group 2: Add successes to adjacency-issue signatures ──
     # Adding successes prevents them from reaching the blocklist threshold
     # (>=95% fail rate) while preserving the failure data for analysis.
+    update_rows = []
     for sig, reason in ADJACENCY_FIX_SIGNATURES.items():
-        row = conn.execute(
-            "SELECT n_failures, n_successes FROM failure_signatures WHERE signature = ?",
-            (sig,),
-        ).fetchone()
-        if row:
-            nf, ns = row
-            # Add enough successes to bring fail rate below 80%
-            # (well below the 95% blocklist threshold)
+        if sig in existing:
+            nf, ns = existing[sig]
             target_fail_rate = 0.75
             needed_successes = max(0, int(nf * (1 - target_fail_rate) / target_fail_rate) - ns)
             if needed_successes > 0:
@@ -139,10 +145,7 @@ def clear_false_penalties(db_path: str = str(DB_PATH), dry_run: bool = False) ->
                     print(f"  [DRY RUN] Would ADJUST: {sig} (fail={nf}, succ={ns} → {new_ns}, rate {nf/(nf+ns)*100:.0f}% → {new_rate:.0f}%)")
                     print(f"    Reason: {reason}")
                 else:
-                    conn.execute(
-                        "UPDATE failure_signatures SET n_successes = ?, last_updated = ? WHERE signature = ?",
-                        (new_ns, time.time(), sig),
-                    )
+                    update_rows.append((new_ns, time.time(), sig))
                     new_rate = nf / (nf + new_ns) * 100
                     print(f"  ADJUSTED: {sig} (fail={nf}, succ={ns} → {new_ns}, rate {nf/(nf+ns)*100:.0f}% → {new_rate:.0f}%)")
                     print(f"    Reason: {reason}")
@@ -152,6 +155,12 @@ def clear_false_penalties(db_path: str = str(DB_PATH), dry_run: bool = False) ->
                 results["skipped"].append(sig)
         else:
             results["skipped"].append(sig)
+
+    if update_rows and not dry_run:
+        conn.executemany(
+            "UPDATE failure_signatures SET n_successes = ?, last_updated = ? WHERE signature = ?",
+            update_rows,
+        )
 
     if not dry_run:
         conn.commit()

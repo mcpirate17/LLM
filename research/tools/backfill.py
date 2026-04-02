@@ -193,7 +193,7 @@ def rescore_all(nb: LabNotebook) -> Tuple[int, int]:
     all_ids = [r["result_id"] for r in rows]
     pr_cache = prefetch_program_results(nb.conn, all_ids)
     changed = 0
-    for i, row in enumerate(rows):
+    for row in rows:
         new, old = rescore_entry(
             nb,
             row["entry_id"],
@@ -203,8 +203,7 @@ def rescore_all(nb: LabNotebook) -> Tuple[int, int]:
         )
         if new != old:
             changed += 1
-        if (i + 1) % 200 == 0:
-            nb.conn.commit()
+    # Single commit at end instead of every 200 rows
     nb.conn.commit()
     return len(rows), changed
 

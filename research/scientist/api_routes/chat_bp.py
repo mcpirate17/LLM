@@ -351,17 +351,20 @@ def register_chat_routes(app, context: ApiRouteContext):
 
         try:
             analytics_data = runner._gather_analytics_data(nb)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Analytics gather failed for chat context: %s", exc)
             analytics_data = {}
 
         try:
             history = nb.get_recent_experiments(10)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to load recent experiments for chat context: %s", exc)
             history = []
 
         try:
             past_hypotheses = runner._get_past_hypotheses(nb)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to load past hypotheses for chat context: %s", exc)
             past_hypotheses = []
 
         try:
@@ -379,7 +382,8 @@ def register_chat_routes(app, context: ApiRouteContext):
                 history=history,
                 past_hypotheses=past_hypotheses,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to build rich context for chat: %s", exc)
             context = (
                 "Context fallback:\n"
                 f"- Recent experiments: {len(history)}\n"
@@ -414,7 +418,8 @@ def register_chat_routes(app, context: ApiRouteContext):
             try:
                 if hasattr(llm, "is_available") and not llm.is_available():
                     fallback_reason = "llm_unreachable"
-            except Exception:
+            except (RuntimeError, OSError, ConnectionError) as exc:
+                logger.debug("LLM availability check failed: %s", exc)
                 fallback_reason = "llm_unreachable"
             try:
                 from ..llm.prompts import SYSTEM_PROMPT, CHAT_PROMPT

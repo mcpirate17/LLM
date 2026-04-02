@@ -39,8 +39,8 @@ Full plan: `/home/tim/.claude/plans/jazzy-fluttering-book.md`
 - [x] 3.8 Dashboard defaultdict
 
 ## Phase 4: Exception Handler Remediation (655 instances)
-- [ ] 4.1 Tier A: execution_screening.py (36 handlers)
-- [ ] 4.2 Tier A: execution_training.py (28 handlers)
+- [x] 4.1 Tier A: execution_screening.py (18 narrowed, 20 already ok)
+- [x] 4.2 Tier A: execution_training.py (18 narrowed, 3 kept broad at error boundaries)
 - [ ] 4.3 Tier B: observability_bp.py (30 handlers)
 - [ ] 4.4 Tier B: _helpers.py (24) + dashboard.py (21)
 - [ ] 4.5 Tier B: chat_bp.py (19 handlers)

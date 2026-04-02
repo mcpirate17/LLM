@@ -195,7 +195,7 @@ class _ExecutionExperimentPhase3Mixin:
             existing_fps = {
                 r[0]
                 for r in nb.conn.execute(
-                    "SELECT DISTINCT graph_fingerprint FROM program_results"
+                    "SELECT graph_fingerprint FROM program_results"
                 ).fetchall()
                 if r[0]
             }

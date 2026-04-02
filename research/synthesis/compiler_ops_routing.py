@@ -8,9 +8,7 @@ import torch.nn.functional as F
 
 from .compiler_op_utils import (
     HAS_ARIA_CORE,
-    HAS_KERNELS,
     aria_core,
-    kernels,
     _c,
     _flatten_for_kernel,
     _get_stacked_params,
@@ -236,31 +234,9 @@ def _op_moe_topk(module, inputs, config):
             x, module.experts, n_actual, weights, indices, top_k
         )
 
+    # GPU: batched einsum computes all experts in parallel via cuBLAS.
+    # Faster than per-token Triton dispatch for typical E=4-8, BS<4K.
     W_down, W_up = _moe_get_stacked_weights(module, n_actual, x.dtype)
-
-    # Triton grouped GEMM: sparse dispatch, zero redundant compute.
-    # Only for top_k=1 (each token → exactly one expert).
-    if top_k == 1 and HAS_KERNELS:
-        try:
-            BS = B * S
-            expert_ids = indices.reshape(BS)
-            sort_order = expert_ids.argsort(stable=True)
-            x_sorted = x.reshape(BS, D)[sort_order]
-            w_sorted = weights.reshape(BS)[sort_order]
-            counts = torch.bincount(expert_ids, minlength=n_actual)
-            offsets = torch.zeros(n_actual + 1, device=x.device, dtype=torch.int64)
-            offsets[1:] = counts.cumsum(0)
-            result_sorted = kernels.triton_moe_grouped_gemm(
-                x_sorted.float(), W_down.float(), W_up.float(),
-                offsets, w_sorted.float(),
-            )
-            result = torch.zeros(BS, D, device=x.device, dtype=x.dtype)
-            result[sort_order] = result_sorted.to(x.dtype)
-            return result.reshape(B, S, D)
-        except Exception as e:
-            record_kernel_fallback("triton_moe_grouped_gemm", e)
-
-    # Batched einsum fallback: all experts computed in parallel, top-k gathered.
     return _moe_batched_expert_forward(x, W_down, W_up, weights, indices, top_k)
 
 

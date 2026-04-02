@@ -9,6 +9,7 @@ import json as _json
 import logging
 import math as _math
 import os
+import sqlite3
 import statistics
 import time
 from collections import defaultdict
@@ -105,13 +106,15 @@ def _build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
                 "SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, error_type "
                 "FROM program_results WHERE graph_json IS NOT NULL"
             ).fetchall()
-    except Exception:
+    except sqlite3.OperationalError as exc:
+        logger.debug("op_index query failed: %s", exc)
         rows = []
 
     for r in rows:
         try:
             g = _json.loads(r["graph_json"])
-        except Exception:
+        except (ValueError, KeyError) as exc:
+            logger.debug("Skipping unparseable graph_json: %s", exc)
             continue
         raw_nodes = g.get("nodes")
         if not isinstance(raw_nodes, dict):
@@ -227,7 +230,7 @@ def _get_throughput(notebook_path: str) -> Dict[str, Any]:
                 if (row["s0"] or 0) > 0
                 else 0.0,
             }
-    except Exception as e:
+    except sqlite3.OperationalError as e:
         logger.error("Throughput query error: %s", e)
 
     result["computed_at"] = now
@@ -256,7 +259,8 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
             op_rates = nb.get_op_success_rates_windowed(since_ts)
         else:
             op_rates = nb.get_op_success_rates()
-    except Exception:
+    except sqlite3.OperationalError as exc:
+        logger.debug("op_success_rates query failed: %s", exc)
         op_rates = []
 
     # ── TF-IDF failure attribution ──
@@ -283,7 +287,7 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
         idx = _build_op_index(notebook_path, window=window)
         stored_rates = idx.get("stored_rates", {})
         corrected_rates = idx.get("corrected_rates", {})
-    except Exception as exc:
+    except (sqlite3.OperationalError, KeyError, TypeError) as exc:
         logger.debug(
             "Failed to build op index for observability health window=%s: %s",
             window,
@@ -354,7 +358,7 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
                     else None,
                     "profile_error": r["error"],
                 }
-    except Exception as exc:
+    except (ImportError, sqlite3.OperationalError, KeyError, TypeError) as exc:
         logger.debug(
             "Failed to load component profiling health data: %s", exc, exc_info=True
         )
@@ -636,7 +640,7 @@ def _evaluate_alerts(
                         "timestamp": now,
                     }
                 )
-    except Exception:
+    except sqlite3.OperationalError:
         logger.debug("Low S0 pass-rate alert evaluation failed", exc_info=True)
 
     # Alert 2: S1 pass rate critically low
@@ -661,7 +665,7 @@ def _evaluate_alerts(
                         "timestamp": now,
                     }
                 )
-    except Exception:
+    except sqlite3.OperationalError:
         logger.debug("Low S1 pass-rate alert evaluation failed", exc_info=True)
 
     # Alert 3: Routing collapse detected
@@ -1139,7 +1143,8 @@ def register_observability_routes(app, context: ApiRouteContext):
                     entry["changes"] = changes
                 else:
                     entry["changes"] = {}
-            except Exception:
+            except (ValueError, KeyError, TypeError) as exc:
+                logger.debug("Failed to parse grammar weight diff: %s", exc)
                 entry["changes"] = {}
             entries.append(entry)
         return jsonify({"events": entries, "count": len(entries)})

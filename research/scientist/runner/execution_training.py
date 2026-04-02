@@ -156,7 +156,7 @@ def _smoke_test_graph_structure(graph_json) -> Dict[str, Any]:
             result["reason"] = ""
         return result
 
-    except Exception as exc:
+    except (RuntimeError, ValueError, KeyError, TypeError) as exc:
         logger.debug("Smoke test failed with exception: %s", exc)
         return {"ok": True, "reason": f"smoke_test error: {exc}"}
 
@@ -471,7 +471,7 @@ class _ExecutionTrainingMixin:
                             total_steps,
                             exotic_count,
                         )
-                except Exception as e_novel:
+                except (KeyError, ValueError, AttributeError, ImportError) as e_novel:
                     logger.debug("Adaptive budget novel check failed: %s", e_novel)
 
             starvation_interval = max(
@@ -1282,7 +1282,7 @@ class _ExecutionTrainingMixin:
                                 hs.get("hellaswag_total", 0),
                                 hs.get("elapsed_ms", 0),
                             )
-                    except Exception as e_hs:
+                    except (RuntimeError, ValueError, OSError) as e_hs:
                         logger.debug("Screening HellaSwag eval skipped: %s", e_hs)
 
                 # Binding probes: induction head + binding range (post micro-train)
@@ -1355,7 +1355,7 @@ class _ExecutionTrainingMixin:
                                         if not n.is_input
                                     ],
                                 )
-                    except Exception as e_bp:
+                    except (RuntimeError, ValueError, TypeError) as e_bp:
                         logger.debug("Binding probes skipped: %s", e_bp)
 
                 # Post-S1 triage: cheap evals for composite score dimensions
@@ -1391,7 +1391,7 @@ class _ExecutionTrainingMixin:
                                 _n_sp,
                                 _n_mo,
                             )
-                    except Exception as e_tri:
+                    except (RuntimeError, ValueError, TypeError) as e_tri:
                         logger.debug("Triage eval skipped: %s", e_tri)
 
         except Exception as e:
