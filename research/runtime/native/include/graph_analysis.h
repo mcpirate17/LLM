@@ -81,6 +81,23 @@ int32_t aria_graph_dead_parameterized_mask(
     const int32_t* parameterized_flags,
     int32_t* dead_mask);
 
+int32_t aria_eval_param_formula(const char* formula, int64_t* out_value);
+
+int32_t aria_graph_build_dim_flow_flags(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    const int64_t* param_estimates,
+    const int32_t* opcode_has_params,
+    const int32_t* opcode_nontrivial,
+    const int32_t* opcode_kv_breaking,
+    const int32_t* opcode_kind,
+    const int32_t* opcode_full_dim,
+    int32_t* has_params_flags,
+    int32_t* nontrivial_flags,
+    int32_t* kv_breaking_flags,
+    int32_t* op_kind_flags,
+    int32_t* full_dim_flags);
+
 #ifdef __cplusplus
 }
 #endif

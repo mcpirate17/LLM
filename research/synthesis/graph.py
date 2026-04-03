@@ -19,13 +19,13 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 import numpy as np
+from .graph_ir_builder import build_graph_ir, resolve_reachable_node_ids
 from .native_analysis import analyze_ir
 from .native_topology import compute_topological_order
 from .primitives import (
     PrimitiveOp,
     get_primitive,
     PRIMITIVE_REGISTRY,
-    estimate_op_params,
     OPCODE_MAP,
 )
 
@@ -580,51 +580,10 @@ class ComputationGraph:
         if "ir" in self._cache:
             return self._cache["ir"]
 
-        analysis_ir = self._analysis_ir()
-        analysis = analysis_ir.analyze_structure(include_reachable=True)
-        reachable_mask = analysis.reachable_mask
-        all_node_ids = (
-            analysis_ir.node_ids
-            if analysis_ir.node_ids is not None
-            else np.arange(analysis_ir.n_nodes(), dtype=np.int32)
-        )
-        node_ids = [int(all_node_ids[idx]) for idx in np.flatnonzero(reachable_mask)]
-        id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
-        n = len(node_ids)
-
-        op_codes = np.zeros(n, dtype=np.int32)
-        input_indices = np.full((n, 2), -1, dtype=np.int32)
-        node_ids_arr = np.asarray(node_ids, dtype=np.int32)
-        param_estimates = np.zeros(n, dtype=np.int64)
-        configs = []
-
-        for nid in node_ids:
-            node = self.nodes[nid]
-            idx = id_to_idx[nid]
-            # Use 0 for unknown as a safe default ('input' is 0)
-            op_codes[idx] = OPCODE_MAP.get(node.op_name, 0)
-            if not node.is_input and node.op_name in PRIMITIVE_REGISTRY:
-                param_estimates[idx] = estimate_op_params(
-                    get_primitive(node.op_name), self.model_dim
-                )
-            for j, iid in enumerate(node.input_ids):
-                if j < 2:
-                    input_indices[idx, j] = id_to_idx[iid]
-            configs.append(node.config)
-
-        output_idx = (
-            id_to_idx[self._output_node_id] if self._output_node_id is not None else -1
-        )
-
-        ir = ComputationGraphIR(
-            model_dim=self.model_dim,
-            op_codes=op_codes,
-            input_indices=input_indices,
-            output_node_idx=output_idx,
-            configs=configs,
-            node_ids=node_ids_arr,
-            param_estimates=param_estimates,
-            source_version=self._ir_version,
+        ir = build_graph_ir(
+            self,
+            node_ids=resolve_reachable_node_ids(self),
+            ir_cls=ComputationGraphIR,
         )
         self._cache["ir"] = ir
         return ir
@@ -634,40 +593,10 @@ class ComputationGraph:
         if cached is not None:
             return cached
 
-        node_ids = sorted(self.nodes.keys())
-        id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
-        n = len(node_ids)
-        op_codes = np.zeros(n, dtype=np.int32)
-        input_indices = np.full((n, 2), -1, dtype=np.int32)
-        node_ids_arr = np.asarray(node_ids, dtype=np.int32)
-        param_estimates = np.zeros(n, dtype=np.int64)
-        configs = []
-
-        for nid in node_ids:
-            node = self.nodes[nid]
-            idx = id_to_idx[nid]
-            op_codes[idx] = OPCODE_MAP.get(node.op_name, 0)
-            if not node.is_input and node.op_name in PRIMITIVE_REGISTRY:
-                param_estimates[idx] = estimate_op_params(
-                    get_primitive(node.op_name), self.model_dim
-                )
-            for j, iid in enumerate(node.input_ids):
-                if j < 2 and iid in id_to_idx:
-                    input_indices[idx, j] = id_to_idx[iid]
-            configs.append(node.config)
-
-        output_idx = (
-            id_to_idx[self._output_node_id] if self._output_node_id is not None else -1
-        )
-        ir = ComputationGraphIR(
-            model_dim=self.model_dim,
-            op_codes=op_codes,
-            input_indices=input_indices,
-            output_node_idx=output_idx,
-            configs=configs,
-            node_ids=node_ids_arr,
-            param_estimates=param_estimates,
-            source_version=self._ir_version,
+        ir = build_graph_ir(
+            self,
+            node_ids=sorted(self.nodes.keys()),
+            ir_cls=ComputationGraphIR,
         )
         self._cache["analysis_ir"] = ir
         return ir

@@ -1,0 +1,13 @@
+#ifndef ARIA_NSGA_METRICS_H
+#define ARIA_NSGA_METRICS_H
+
+#include <stdint.h>
+
+int aria_nsga_crowding_distance(
+    const float* objective_matrix,
+    int32_t n_rows,
+    int32_t n_objectives,
+    float* out_distances
+);
+
+#endif

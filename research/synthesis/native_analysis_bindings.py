@@ -136,6 +136,25 @@ def load_native_graph_analysis_lib() -> Any:
         ]
         dead_param_fn.restype = ctypes.c_int32
 
+    dim_flow_flags_fn = getattr(lib, "aria_graph_build_dim_flow_flags", None)
+    if dim_flow_flags_fn is not None:
+        dim_flow_flags_fn.argtypes = [
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+        ]
+        dim_flow_flags_fn.restype = ctypes.c_int32
+
     BOUND_NATIVE_LIB = lib
     return lib
 

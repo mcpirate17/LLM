@@ -258,7 +258,7 @@ class TestEvolutionIntegration(unittest.TestCase):
         cfg = GrammarConfig(model_dim=128)
         # Try multiple seeds — some fail MATH_SPACE_RULES validation.
         parent = None
-        for s in [3, 4, 5, 7, 10, 13, 15, 16, 18, 22, 42, 99]:
+        for s in range(200):
             try:
                 parent = generate_layer_graph(cfg, seed=s)
                 break

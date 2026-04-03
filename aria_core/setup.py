@@ -11,6 +11,9 @@ sources = [
     "src/cpu/clifford.cpp",
     "src/cpu/hyperbolic.cpp",
     "bindings/bindings.cpp",
+    "bindings/bind_kernels.cpp",
+    "bindings/bind_ops.cpp",
+    "bindings/bind_graph.cpp",
 ]
 
 setup(
@@ -21,7 +24,7 @@ setup(
         CUDAExtension(
             name="aria_core._C",
             sources=sources,
-            include_dirs=[os.path.abspath("include")],
+            include_dirs=[os.path.abspath("include"), os.path.abspath("bindings")],
             extra_compile_args={
                 "cxx": ["-O3", "-march=native", "-fopenmp", "-DARIA_HAS_OPENMP"],
                 "nvcc": ["-O3", "-DARIA_HAS_OPENMP"],

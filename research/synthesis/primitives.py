@@ -21,6 +21,8 @@ from enum import Enum
 import logging
 from typing import Dict, List, Optional, Tuple
 
+from .native_param_formula import evaluate_param_formula_natively
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,6 +156,9 @@ def estimate_op_params(
         return 0
     d_out = d_in if d_out is None else d_out
     formula = op.param_formula.replace("D_OUT", str(d_out)).replace("D", str(d_in))
+    native_value = evaluate_param_formula_natively(formula)
+    if native_value is not None:
+        return native_value
     try:
         return safe_eval_formula(formula)
     except Exception:

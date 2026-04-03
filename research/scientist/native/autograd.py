@@ -10,6 +10,7 @@ from .dispatch import (
     dispatch_graph_native_cached,
     dispatch_op_native,
 )
+from .tensor_bridge import to_device_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -207,10 +208,7 @@ class SubgraphDispatcher:
 
             # Convert back to torch if input was torch
             if hasattr(x, "detach"):
-                import torch
-                import numpy as np
-
-                return torch.from_numpy(np.asarray(result, dtype=np.float32))
+                return to_device_tensor(result, reference=x)
             return result
         except Exception as exc:
             logger.debug("Subgraph dispatch failed: %s, falling back to per-op", exc)
@@ -267,24 +265,12 @@ class NativeForwardWrapper:
                         self._dispatch_count += 1
                         return result
 
-                import numpy as np
-
-                # Convert torch tensors to numpy for C dispatch
-                np_inputs: List[Any] = []
-                for t in tensors:
-                    if hasattr(t, "detach"):
-                        np_inputs.append(t.detach().cpu().numpy().astype(np.float32))
-                    else:
-                        np_inputs.append(np.asarray(t, dtype=np.float32))
-
-                result = dispatch_op_native(op_name, *np_inputs)
+                result = dispatch_op_native(op_name, *tensors)
                 self._dispatch_count += 1
 
                 # Convert back to torch if input was torch
                 if tensors and hasattr(tensors[0], "detach"):
-                    import torch
-
-                    return torch.from_numpy(np.asarray(result, dtype=np.float32))
+                    return to_device_tensor(result, reference=tensors[0])
                 return result
             except Exception as exc:
                 logger.debug(

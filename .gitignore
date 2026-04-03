@@ -42,6 +42,9 @@ research/dashboard/build/
 # PID files
 *.pid
 
+# CMake build artifacts
+research/runtime/native/build_current/
+
 # Cython-generated C files
 research/runtime/native/cython/*.c
 

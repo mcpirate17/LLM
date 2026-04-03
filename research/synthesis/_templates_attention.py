@@ -106,6 +106,7 @@ def tpl_attn_three_way_split(
     Forced-attention variant of three_way_split (86.4% S1).
     Lane 0 is forced to attention instead of random _MIXER_CLASSES.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -581,6 +582,7 @@ def tpl_attn_bottleneck_hybrid(
 
     Full-width attention followed by compressed sparse transform.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -707,6 +709,7 @@ def tpl_attn_state_space_hybrid(
 
     Attention + SSM in parallel paths with FFN sub-block.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -796,6 +799,7 @@ def tpl_attn_exp_gated(
     weights: MotifWeights = None,
 ) -> int:
     """norm → attention → exp → residual."""
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -821,6 +825,7 @@ def tpl_attn_gated_product(
 
     Attention + gated product for feature selection.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -858,6 +863,7 @@ def tpl_diff_attn_routing(
 
     Differential attention + depth-aware routing.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -936,6 +942,7 @@ def tpl_attn_chebyshev_hybrid(
 
     Attention + spectral (Chebyshev) paths in parallel.
     """
+    D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 

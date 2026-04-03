@@ -44,10 +44,10 @@ cmake_force:
 SHELL = /bin/sh
 
 # The CMake executable.
-CMAKE_COMMAND = /snap/cmake/current/bin/cmake
+CMAKE_COMMAND = /snap/cmake/1530/bin/cmake
 
 # The command to remove a file.
-RM = /snap/cmake/current/bin/cmake -E rm -f
+RM = /snap/cmake/1530/bin/cmake -E rm -f
 
 # Escaping for special characters.
 EQUALS = =
@@ -72,10 +72,24 @@ include CMakeFiles/aria_native_runtime_static.dir/flags.make
 CMakeFiles/aria_native_runtime_static.dir/codegen:
 .PHONY : CMakeFiles/aria_native_runtime_static.dir/codegen
 
+CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
+CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o: /home/tim/Projects/LLM/research/runtime/native/src/dim_flow_flags.c
+CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/dim_flow_flags.c
+
+CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/tim/Projects/LLM/research/runtime/native/src/dim_flow_flags.c > CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.i
+
+CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/tim/Projects/LLM/research/runtime/native/src/dim_flow_flags.c -o CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.s
+
 CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
 CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o: /home/tim/Projects/LLM/research/runtime/native/src/graph_analysis.c
 CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/graph_analysis.c
 
 CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.i: cmake_force
@@ -89,7 +103,7 @@ CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.s: cmake_force
 CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
 CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o: /home/tim/Projects/LLM/research/runtime/native/src/kernels_ext.c
 CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/kernels_ext.c
 
 CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.i: cmake_force
@@ -100,10 +114,38 @@ CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/tim/Projects/LLM/research/runtime/native/src/kernels_ext.c -o CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.s
 
+CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
+CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o: /home/tim/Projects/LLM/research/runtime/native/src/nsga_metrics.c
+CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/nsga_metrics.c
+
+CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/tim/Projects/LLM/research/runtime/native/src/nsga_metrics.c > CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.i
+
+CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/tim/Projects/LLM/research/runtime/native/src/nsga_metrics.c -o CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.s
+
+CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
+CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o: /home/tim/Projects/LLM/research/runtime/native/src/param_formula.c
+CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/param_formula.c
+
+CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/tim/Projects/LLM/research/runtime/native/src/param_formula.c > CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.i
+
+CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/tim/Projects/LLM/research/runtime/native/src/param_formula.c -o CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.s
+
 CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
 CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o: /home/tim/Projects/LLM/research/runtime/native/src/profiler.c
 CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/profiler.c
 
 CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.i: cmake_force
@@ -117,7 +159,7 @@ CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.s: cmake_force
 CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
 CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o: /home/tim/Projects/LLM/research/runtime/native/src/registry.c
 CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/registry.c
 
 CMakeFiles/aria_native_runtime_static.dir/src/registry.c.i: cmake_force
@@ -131,7 +173,7 @@ CMakeFiles/aria_native_runtime_static.dir/src/registry.c.s: cmake_force
 CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
 CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o: /home/tim/Projects/LLM/research/runtime/native/src/runner_abi.c
 CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/runner_abi.c
 
 CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.i: cmake_force
@@ -142,25 +184,47 @@ CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/tim/Projects/LLM/research/runtime/native/src/runner_abi.c -o CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.s
 
+CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o: CMakeFiles/aria_native_runtime_static.dir/flags.make
+CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o: /home/tim/Projects/LLM/research/runtime/native/src/search_metrics.c
+CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o: CMakeFiles/aria_native_runtime_static.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o -MF CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o.d -o CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o -c /home/tim/Projects/LLM/research/runtime/native/src/search_metrics.c
+
+CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/tim/Projects/LLM/research/runtime/native/src/search_metrics.c > CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.i
+
+CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/tim/Projects/LLM/research/runtime/native/src/search_metrics.c -o CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.s
+
 # Object files for target aria_native_runtime_static
 aria_native_runtime_static_OBJECTS = \
+"CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o" \
 "CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o" \
 "CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o" \
+"CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o" \
+"CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o" \
 "CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o" \
 "CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o" \
-"CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o"
+"CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o" \
+"CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o"
 
 # External object files for target aria_native_runtime_static
 aria_native_runtime_static_EXTERNAL_OBJECTS =
 
+libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o
+libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o
+libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o
+libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/build.make
 libaria_native_runtime_static.a: CMakeFiles/aria_native_runtime_static.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Linking C static library libaria_native_runtime_static.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/tim/Projects/LLM/research/runtime/native/build_current/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Linking C static library libaria_native_runtime_static.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/aria_native_runtime_static.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/aria_native_runtime_static.dir/link.txt --verbose=$(VERBOSE)
 

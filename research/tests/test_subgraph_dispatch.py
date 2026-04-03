@@ -20,6 +20,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 from research.synthesis.graph import ComputationGraph
+from research.scientist.native import dispatch as native_dispatch_module
 from research.scientist.native.autograd import SubgraphDispatcher
 
 pytestmark = pytest.mark.native
@@ -225,6 +226,75 @@ def test_stats_tracking(mock_cached_dispatch):
     assert stats["subgraph_dispatches"] == 2
     assert stats["subgraph_fallbacks"] == 1
     assert stats["all_native"] is True
+
+
+def test_dispatch_graph_forward_saved_prefers_rust(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_forward_saved(graph_json, input_flat):
+            assert graph_json == "fake-ir"
+            assert input_flat == [0.0] * 8
+            return {
+                "output": [1.0] * 8,
+                "saved_activations": {0: [0.0] * 8, 1: [1.0] * 8},
+                "arena_bytes_used": 64,
+                "arena_capacity": 128,
+            }
+
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_prepare_graph_input",
+        lambda graph, input_data: (np.zeros((1, 2, 4), dtype=np.float32), "fake-ir"),
+    )
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_try_import_rust_scheduler",
+        lambda: FakeRust(),
+    )
+
+    result = native_dispatch_module.dispatch_graph_forward_native_saved(
+        g, np.zeros((1, 2, 4), dtype=np.float32)
+    )
+
+    assert result["output"].shape == (1, 2, 4)
+    np.testing.assert_array_equal(result["output"], np.ones((1, 2, 4), dtype=np.float32))
+    assert set(result["saved_activations"]) == {0, 1}
+    assert result["arena_bytes_used"] == 64
+    assert result["arena_capacity"] == 128
+
+
+def test_dispatch_graph_backward_prefers_rust(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_backward(graph_json, grad_output, saved_activations):
+            assert graph_json == "fake-ir"
+            assert grad_output == [1.0] * 8
+            assert saved_activations[0] == [0.0] * 8
+            return {
+                "grads": {0: [2.0] * 8, 1: [1.0] * 8},
+                "arena_bytes_used": 32,
+            }
+
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_try_import_rust_scheduler",
+        lambda: FakeRust(),
+    )
+
+    result = native_dispatch_module.dispatch_graph_backward_native(
+        g,
+        np.ones((1, 2, 4), dtype=np.float32),
+        {0: np.zeros((1, 2, 4), dtype=np.float32)},
+        ir_json="fake-ir",
+    )
+
+    assert set(result) == {0, 1}
+    np.testing.assert_array_equal(result[0], np.full(8, 2.0, dtype=np.float32))
+    np.testing.assert_array_equal(result[1], np.full(8, 1.0, dtype=np.float32))
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ def maybe_dispatch_native_segment(frame: ExecutionFrame, segment) -> bool:
         return False
 
     frame.node_outputs[segment.output_ir_idx] = native_result
-    frame.counts[segment.input_ir_idx] -= 1
+    frame.counts[segment.input_ir_idx] -= segment.input_consume_count
     if (
         frame.counts[segment.input_ir_idx] <= 0
         and segment.input_ir_idx != frame.output_idx
@@ -53,8 +53,8 @@ def maybe_dispatch_native_segment(frame: ExecutionFrame, segment) -> bool:
     ):
         frame.node_outputs[segment.input_ir_idx] = None
 
-    for release_idx in segment.release_ir_indices:
-        frame.counts[release_idx] -= 1
+    for release_idx, release_count in segment.release_ir_counts:
+        frame.counts[release_idx] -= release_count
         if release_idx != frame.output_idx and frame.captured is None:
             frame.node_outputs[release_idx] = None
     return True

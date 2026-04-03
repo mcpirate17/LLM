@@ -21,6 +21,7 @@ from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
 from ..synthesis.primitives import get_primitive, list_primitives
 from ..scientist.shared_utils import clamp
+from .native_nsga import compute_crowding_distances
 
 logger = logging.getLogger(__name__)
 
@@ -555,24 +556,47 @@ def assign_crowding_distance(
             ind.crowding_dist = float("inf")
         return
 
+    attr_names = [attr for attr, _ in objectives]
+    objective_matrix = np.asarray(
+        [[getattr(ind, attr) for attr in attr_names] for ind in front],
+        dtype=np.float32,
+    )
+    native_distances = compute_crowding_distances(objective_matrix)
+    if native_distances is not None:
+        for ind, distance in zip(front, native_distances):
+            ind.crowding_dist = float(distance)
+        return
+
+    _assign_crowding_distance_in_python(front, objective_matrix)
+
+
+def _assign_crowding_distance_in_python(
+    front: List[Individual],
+    objective_matrix: np.ndarray,
+) -> None:
+    """Reference crowding-distance implementation used as fallback and benchmark baseline."""
+    n = len(front)
     for ind in front:
         ind.crowding_dist = 0.0
 
-    for attr, _ in objectives:
-        sorted_front = sorted(front, key=lambda x: getattr(x, attr))
-        obj_min = getattr(sorted_front[0], attr)
-        obj_max = getattr(sorted_front[-1], attr)
+    for objective_idx in range(objective_matrix.shape[1]):
+        order = np.argsort(objective_matrix[:, objective_idx], kind="mergesort")
+        obj_values = objective_matrix[order, objective_idx]
+        obj_min = float(obj_values[0])
+        obj_max = float(obj_values[-1])
         span = obj_max - obj_min
-        sorted_front[0].crowding_dist = float("inf")
-        sorted_front[-1].crowding_dist = float("inf")
-        if span <= 0:
+        front[int(order[0])].crowding_dist = float("inf")
+        front[int(order[-1])].crowding_dist = float("inf")
+        if span <= 0.0:
             continue
         inv_span = 1.0 / span
-        for i in range(1, n - 1):
-            diff = getattr(sorted_front[i + 1], attr) - getattr(
-                sorted_front[i - 1], attr
+        for pos in range(1, n - 1):
+            idx = int(order[pos])
+            if np.isinf(front[idx].crowding_dist):
+                continue
+            front[idx].crowding_dist += float(
+                (obj_values[pos + 1] - obj_values[pos - 1]) * inv_span
             )
-            sorted_front[i].crowding_dist += diff * inv_span
 
 
 def nsga2_rank(

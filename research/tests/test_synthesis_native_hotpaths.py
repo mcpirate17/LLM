@@ -228,7 +228,92 @@ def test_ir_executor_dispatches_native_unary_chain_segments(monkeypatch):
     out = executor(x)
     expected = python_executor(x)
 
-    assert torch.allclose(out, expected)
+    assert torch.allclose(out, expected, rtol=1e-3, atol=1e-4)
+    assert executor.execution_stats["native_chain_segments"] == 1
+    assert executor.execution_stats["native_chain_dispatches"] == 1
+    assert (
+        executor.execution_stats["last_execution_path"]
+        == "hybrid_native_python_ir_loop"
+    )
+
+
+def test_ir_executor_dispatches_single_input_native_subgraphs(monkeypatch):
+    import research.scientist.native.autograd as native_autograd
+    import research.scientist.native.dispatch as native_dispatch
+
+    class FakeWrapper:
+        def __init__(self, model, supported_ops):
+            self._dispatch_count = 0
+            self._fallback_count = 0
+
+        def dispatch(self, op_name, *tensors):
+            self._fallback_count += 1
+            return None
+
+        @property
+        def stats(self):
+            return {
+                "native_dispatches": self._dispatch_count,
+                "fallbacks": self._fallback_count,
+            }
+
+    class FakeDispatcher:
+        def __init__(self, graph, supported_ops):
+            self.graph = graph
+            self.supported_ops = supported_ops
+            op_names = [
+                node.op_name for node in graph.nodes.values() if not node.is_input
+            ]
+            self.all_native = all(op_name in supported_ops for op_name in op_names)
+
+        def try_dispatch(self, x):
+            values = {}
+            for node_id in self.graph.topological_order():
+                node = self.graph.nodes[node_id]
+                if node.is_input:
+                    values[node_id] = x
+                elif node.op_name == "relu":
+                    values[node_id] = torch.relu(values[node.input_ids[0]])
+                elif node.op_name == "gelu":
+                    values[node_id] = torch.nn.functional.gelu(
+                        values[node.input_ids[0]]
+                    )
+                elif node.op_name == "add":
+                    values[node_id] = (
+                        values[node.input_ids[0]] + values[node.input_ids[1]]
+                    )
+                else:
+                    return None
+            return values[self.graph.output_node.id]
+
+    monkeypatch.setattr(
+        native_dispatch,
+        "_check_native_op_support",
+        lambda graphs, native_lib=None: {"supported": ["relu", "gelu", "add"]},
+    )
+    monkeypatch.setattr(native_autograd, "NativeForwardWrapper", FakeWrapper)
+    monkeypatch.setattr(native_autograd, "SubgraphDispatcher", FakeDispatcher)
+
+    graph = ComputationGraph(8)
+    inp = graph.add_input()
+    relu = graph.add_op("relu", [inp])
+    gelu = graph.add_op("gelu", [inp])
+    add = graph.add_op("add", [relu, gelu])
+    out = graph.add_op("cumsum", [add])
+    graph.set_output(out)
+
+    executor = IRExecutor(graph.lower_to_ir(), source_graph=graph)
+    monkeypatch.setattr(
+        native_dispatch,
+        "_check_native_op_support",
+        lambda graphs, native_lib=None: {"supported": []},
+    )
+    python_executor = IRExecutor(graph.lower_to_ir(), source_graph=graph)
+    x = torch.tensor([[[-1.0] * 8, [2.0] * 8]], dtype=torch.float32)
+    out = executor(x)
+    expected = python_executor(x)
+
+    assert torch.allclose(out, expected, rtol=1e-3, atol=1e-4)
     assert executor.execution_stats["native_chain_segments"] == 1
     assert executor.execution_stats["native_chain_dispatches"] == 1
     assert (

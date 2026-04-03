@@ -1,11 +1,15 @@
 libaria_native_runtime.so: \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o \
   /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o \
+  CMakeFiles/aria_native_runtime.dir/src/dim_flow_flags.c.o \
   CMakeFiles/aria_native_runtime.dir/src/graph_analysis.c.o \
   CMakeFiles/aria_native_runtime.dir/src/kernels_ext.c.o \
+  CMakeFiles/aria_native_runtime.dir/src/nsga_metrics.c.o \
+  CMakeFiles/aria_native_runtime.dir/src/param_formula.c.o \
   CMakeFiles/aria_native_runtime.dir/src/profiler.c.o \
   CMakeFiles/aria_native_runtime.dir/src/registry.c.o \
   CMakeFiles/aria_native_runtime.dir/src/runner_abi.c.o \
+  CMakeFiles/aria_native_runtime.dir/src/search_metrics.c.o \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libm.so \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libm.so \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libm.so \
@@ -39,15 +43,23 @@ libaria_native_runtime.so: \
 
 /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o:
 
+CMakeFiles/aria_native_runtime.dir/src/dim_flow_flags.c.o:
+
 CMakeFiles/aria_native_runtime.dir/src/graph_analysis.c.o:
 
 CMakeFiles/aria_native_runtime.dir/src/kernels_ext.c.o:
+
+CMakeFiles/aria_native_runtime.dir/src/nsga_metrics.c.o:
+
+CMakeFiles/aria_native_runtime.dir/src/param_formula.c.o:
 
 CMakeFiles/aria_native_runtime.dir/src/profiler.c.o:
 
 CMakeFiles/aria_native_runtime.dir/src/registry.c.o:
 
 CMakeFiles/aria_native_runtime.dir/src/runner_abi.c.o:
+
+CMakeFiles/aria_native_runtime.dir/src/search_metrics.c.o:
 
 /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libm.so:
 

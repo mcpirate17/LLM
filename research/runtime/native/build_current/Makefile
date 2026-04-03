@@ -48,10 +48,10 @@ cmake_force:
 SHELL = /bin/sh
 
 # The CMake executable.
-CMAKE_COMMAND = /snap/cmake/current/bin/cmake
+CMAKE_COMMAND = /snap/cmake/1530/bin/cmake
 
 # The command to remove a file.
-RM = /snap/cmake/current/bin/cmake -E rm -f
+RM = /snap/cmake/1530/bin/cmake -E rm -f
 
 # Escaping for special characters.
 EQUALS = =
@@ -68,7 +68,7 @@ CMAKE_BINARY_DIR = /home/tim/Projects/LLM/research/runtime/native/build_current
 # Special rule for the target test
 test:
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Running tests..."
-	/snap/cmake/current/bin/ctest $(ARGS)
+	/snap/cmake/1530/bin/ctest $(ARGS)
 .PHONY : test
 
 # Special rule for the target test
@@ -88,7 +88,7 @@ edit_cache/fast: edit_cache
 # Special rule for the target rebuild_cache
 rebuild_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Running CMake to regenerate build system..."
-	/snap/cmake/current/bin/cmake --regenerate-during-build -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
+	/snap/cmake/1530/bin/cmake --regenerate-during-build -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
 .PHONY : rebuild_cache
 
 # Special rule for the target rebuild_cache
@@ -107,37 +107,37 @@ list_install_components/fast: list_install_components
 # Special rule for the target install
 install: preinstall
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Install the project..."
-	/snap/cmake/current/bin/cmake -P cmake_install.cmake
+	/snap/cmake/1530/bin/cmake -P cmake_install.cmake
 .PHONY : install
 
 # Special rule for the target install
 install/fast: preinstall/fast
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Install the project..."
-	/snap/cmake/current/bin/cmake -P cmake_install.cmake
+	/snap/cmake/1530/bin/cmake -P cmake_install.cmake
 .PHONY : install/fast
 
 # Special rule for the target install/local
 install/local: preinstall
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing only the local directory..."
-	/snap/cmake/current/bin/cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -P cmake_install.cmake
+	/snap/cmake/1530/bin/cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -P cmake_install.cmake
 .PHONY : install/local
 
 # Special rule for the target install/local
 install/local/fast: preinstall/fast
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing only the local directory..."
-	/snap/cmake/current/bin/cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -P cmake_install.cmake
+	/snap/cmake/1530/bin/cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -P cmake_install.cmake
 .PHONY : install/local/fast
 
 # Special rule for the target install/strip
 install/strip: preinstall
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing the project stripped..."
-	/snap/cmake/current/bin/cmake -DCMAKE_INSTALL_DO_STRIP=1 -P cmake_install.cmake
+	/snap/cmake/1530/bin/cmake -DCMAKE_INSTALL_DO_STRIP=1 -P cmake_install.cmake
 .PHONY : install/strip
 
 # Special rule for the target install/strip
 install/strip/fast: preinstall/fast
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing the project stripped..."
-	/snap/cmake/current/bin/cmake -DCMAKE_INSTALL_DO_STRIP=1 -P cmake_install.cmake
+	/snap/cmake/1530/bin/cmake -DCMAKE_INSTALL_DO_STRIP=1 -P cmake_install.cmake
 .PHONY : install/strip/fast
 
 # The main all target
@@ -223,6 +223,33 @@ test_profiler/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_profiler.dir/build.make CMakeFiles/test_profiler.dir/build
 .PHONY : test_profiler/fast
 
+src/dim_flow_flags.o: src/dim_flow_flags.c.o
+.PHONY : src/dim_flow_flags.o
+
+# target to build an object file
+src/dim_flow_flags.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/dim_flow_flags.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.o
+.PHONY : src/dim_flow_flags.c.o
+
+src/dim_flow_flags.i: src/dim_flow_flags.c.i
+.PHONY : src/dim_flow_flags.i
+
+# target to preprocess a source file
+src/dim_flow_flags.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/dim_flow_flags.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.i
+.PHONY : src/dim_flow_flags.c.i
+
+src/dim_flow_flags.s: src/dim_flow_flags.c.s
+.PHONY : src/dim_flow_flags.s
+
+# target to generate assembly for a file
+src/dim_flow_flags.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/dim_flow_flags.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/dim_flow_flags.c.s
+.PHONY : src/dim_flow_flags.c.s
+
 src/graph_analysis.o: src/graph_analysis.c.o
 .PHONY : src/graph_analysis.o
 
@@ -276,6 +303,60 @@ src/kernels_ext.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/kernels_ext.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.s
 .PHONY : src/kernels_ext.c.s
+
+src/nsga_metrics.o: src/nsga_metrics.c.o
+.PHONY : src/nsga_metrics.o
+
+# target to build an object file
+src/nsga_metrics.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/nsga_metrics.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.o
+.PHONY : src/nsga_metrics.c.o
+
+src/nsga_metrics.i: src/nsga_metrics.c.i
+.PHONY : src/nsga_metrics.i
+
+# target to preprocess a source file
+src/nsga_metrics.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/nsga_metrics.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.i
+.PHONY : src/nsga_metrics.c.i
+
+src/nsga_metrics.s: src/nsga_metrics.c.s
+.PHONY : src/nsga_metrics.s
+
+# target to generate assembly for a file
+src/nsga_metrics.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/nsga_metrics.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/nsga_metrics.c.s
+.PHONY : src/nsga_metrics.c.s
+
+src/param_formula.o: src/param_formula.c.o
+.PHONY : src/param_formula.o
+
+# target to build an object file
+src/param_formula.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/param_formula.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.o
+.PHONY : src/param_formula.c.o
+
+src/param_formula.i: src/param_formula.c.i
+.PHONY : src/param_formula.i
+
+# target to preprocess a source file
+src/param_formula.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/param_formula.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.i
+.PHONY : src/param_formula.c.i
+
+src/param_formula.s: src/param_formula.c.s
+.PHONY : src/param_formula.s
+
+# target to generate assembly for a file
+src/param_formula.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/param_formula.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/param_formula.c.s
+.PHONY : src/param_formula.c.s
 
 src/profiler.o: src/profiler.c.o
 .PHONY : src/profiler.o
@@ -358,6 +439,33 @@ src/runner_abi.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.s
 .PHONY : src/runner_abi.c.s
 
+src/search_metrics.o: src/search_metrics.c.o
+.PHONY : src/search_metrics.o
+
+# target to build an object file
+src/search_metrics.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/search_metrics.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.o
+.PHONY : src/search_metrics.c.o
+
+src/search_metrics.i: src/search_metrics.c.i
+.PHONY : src/search_metrics.i
+
+# target to preprocess a source file
+src/search_metrics.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/search_metrics.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.i
+.PHONY : src/search_metrics.c.i
+
+src/search_metrics.s: src/search_metrics.c.s
+.PHONY : src/search_metrics.s
+
+# target to generate assembly for a file
+src/search_metrics.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime.dir/build.make CMakeFiles/aria_native_runtime.dir/src/search_metrics.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/aria_native_runtime_static.dir/build.make CMakeFiles/aria_native_runtime_static.dir/src/search_metrics.c.s
+.PHONY : src/search_metrics.c.s
+
 tests/test_kernels.o: tests/test_kernels.c.o
 .PHONY : tests/test_kernels.o
 
@@ -423,12 +531,21 @@ help:
 	@echo "... aria_native_runtime_static"
 	@echo "... test_kernels"
 	@echo "... test_profiler"
+	@echo "... src/dim_flow_flags.o"
+	@echo "... src/dim_flow_flags.i"
+	@echo "... src/dim_flow_flags.s"
 	@echo "... src/graph_analysis.o"
 	@echo "... src/graph_analysis.i"
 	@echo "... src/graph_analysis.s"
 	@echo "... src/kernels_ext.o"
 	@echo "... src/kernels_ext.i"
 	@echo "... src/kernels_ext.s"
+	@echo "... src/nsga_metrics.o"
+	@echo "... src/nsga_metrics.i"
+	@echo "... src/nsga_metrics.s"
+	@echo "... src/param_formula.o"
+	@echo "... src/param_formula.i"
+	@echo "... src/param_formula.s"
 	@echo "... src/profiler.o"
 	@echo "... src/profiler.i"
 	@echo "... src/profiler.s"
@@ -438,6 +555,9 @@ help:
 	@echo "... src/runner_abi.o"
 	@echo "... src/runner_abi.i"
 	@echo "... src/runner_abi.s"
+	@echo "... src/search_metrics.o"
+	@echo "... src/search_metrics.i"
+	@echo "... src/search_metrics.s"
 	@echo "... tests/test_kernels.o"
 	@echo "... tests/test_kernels.i"
 	@echo "... tests/test_kernels.s"

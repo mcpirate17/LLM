@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig
 from ..eval.fingerprint import BehavioralFingerprint
+from .native_metrics import (
+    archive_mean_k_nearest,
+    pairwise_median_and_neighbor_counts,
+    topk_nearest_indices,
+)
 from .evolution import Individual, EvolutionConfig, evolutionary_search
 
 
@@ -148,14 +153,18 @@ class BehaviorArchive:
             return None  # caller should fall back to structural novelty
         target = np.array(vec, dtype=np.float32)
 
+        # Get K nearest neighbors
+        k = min(k, int(fm.shape[0]))
+        if k == 0:
+            return 1.0
+
+        native_mean = archive_mean_k_nearest(fm, target, k)
+        if native_mean is not None:
+            return native_mean
+
         # Vectorized RMS distance across entire archive
         diff = fm - target
         distances = np.sqrt(np.mean(np.square(diff), axis=1))
-
-        # Get K nearest neighbors
-        k = min(k, len(distances))
-        if k == 0:
-            return 1.0
 
         # partition is O(N) compared to sort O(N log N)
         if len(distances) > k:
@@ -192,11 +201,15 @@ class BehaviorArchive:
             return []
         target = np.array(vec, dtype=np.float32)
 
-        diff = fm - target
-        distances = np.sqrt(np.mean(np.square(diff), axis=1))
+        native_neighbors = topk_nearest_indices(fm, target, int(fm.shape[0]))
+        if native_neighbors is not None:
+            order, distances = native_neighbors
+        else:
+            diff = fm - target
+            distances = np.sqrt(np.mean(np.square(diff), axis=1))
 
-        # Sort by distance ascending
-        order = np.argsort(distances)
+            # Sort by distance ascending
+            order = np.argsort(distances)
         results: List[Tuple[float, Individual]] = []
         for idx in order:
             if len(results) >= k:
@@ -223,34 +236,19 @@ class BehaviorArchive:
         if fm is None or self._size < 2:
             return self.top_by_fitness(k)
 
-        # Compute pairwise distances to find median archive distance
-        # Use random sample of pairs for efficiency when archive is large
         n = self._size
-        if n <= 50:
-            # Small enough to compute all pairs
+        native_stats = pairwise_median_and_neighbor_counts(fm[:n])
+        if native_stats is not None:
+            median_dist, neighbor_counts = native_stats
+        else:
             diffs = fm[:n, np.newaxis, :] - fm[np.newaxis, :n, :]
             all_dists = np.sqrt(np.mean(np.square(diffs), axis=2))
-            # Exclude self-distances (diagonal)
             mask = ~np.eye(n, dtype=bool)
             median_dist = float(np.median(all_dists[mask]))
-        else:
-            # Sample 500 random pairs
-            rng = np.random.RandomState(42)
-            idx_a = rng.randint(0, n, size=500)
-            idx_b = rng.randint(0, n, size=500)
-            valid = idx_a != idx_b
-            idx_a, idx_b = idx_a[valid], idx_b[valid]
-            pair_dists = np.sqrt(np.mean(np.square(fm[idx_a] - fm[idx_b]), axis=1))
-            median_dist = float(np.median(pair_dists))
+            neighbor_counts = np.sum(all_dists < median_dist, axis=1) - 1
 
         if median_dist <= 0:
             return self.top_by_fitness(k)
-
-        # Count neighbors within median_dist radius (vectorized)
-        fm_n = fm[:n]
-        diffs = fm_n[:, np.newaxis, :] - fm_n[np.newaxis, :, :]
-        dist_matrix = np.sqrt(np.mean(np.square(diffs), axis=2))
-        neighbor_counts = (np.sum(dist_matrix < median_dist, axis=1) - 1).tolist()
 
         # Score: high fitness, low neighbor count (under-explored)
         candidates: List[Tuple[float, int]] = []

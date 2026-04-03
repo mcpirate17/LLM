@@ -7,6 +7,7 @@ import os
 from typing import Any, Dict, List, Optional, Set
 
 from .core import _try_import_cython_bridge, _try_import_rust_scheduler
+from .tensor_bridge import to_native_array, to_native_flat_array
 
 logger = logging.getLogger(__name__)
 
@@ -196,64 +197,71 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
         )
 
     canonical_op = _NATIVE_OP_ALIASES.get(op_name, op_name)
+    native_tensors = tuple(
+        to_native_flat_array(t) if canonical_op in _CYTHON_UNARY_OPS | _CYTHON_BINARY_OPS else to_native_array(t)
+        for t in tensors
+    )
 
     if canonical_op in _CYTHON_UNARY_OPS:
-        if len(tensors) != 1:
+        if len(native_tensors) != 1:
             raise ValueError(
                 f"Unary op '{op_name}' expects 1 tensor, got {len(tensors)}"
             )
         if canonical_op == "square":
             try:
-                return bridge.dispatch_unary(canonical_op, tensors[0])
+                return bridge.dispatch_unary(canonical_op, native_tensors[0])
             except ValueError:
-                return bridge.dispatch_binary("mul", tensors[0], tensors[0])
-        return bridge.dispatch_unary(canonical_op, tensors[0])
+                return bridge.dispatch_binary("mul", native_tensors[0], native_tensors[0])
+        return bridge.dispatch_unary(canonical_op, native_tensors[0])
 
     if canonical_op in _CYTHON_BINARY_OPS:
-        if len(tensors) != 2:
+        if len(native_tensors) != 2:
             raise ValueError(
                 f"Binary op '{op_name}' expects 2 tensors, got {len(tensors)}"
             )
-        return bridge.dispatch_binary(canonical_op, tensors[0], tensors[1])
+        return bridge.dispatch_binary(canonical_op, native_tensors[0], native_tensors[1])
 
     if canonical_op == "matmul":
-        if len(tensors) != 2:
+        if len(native_tensors) != 2:
             raise ValueError(f"matmul expects 2 tensors, got {len(tensors)}")
-        return bridge.dispatch_matmul(tensors[0], tensors[1])
+        return bridge.dispatch_matmul(native_tensors[0], native_tensors[1])
 
     if canonical_op == "linear":
-        if len(tensors) < 2:
+        if len(native_tensors) < 2:
             raise ValueError(
                 f"linear expects at least 2 tensors (x, W), got {len(tensors)}"
             )
-        bias = kwargs.get("bias", tensors[2] if len(tensors) > 2 else None)
-        return bridge.dispatch_linear(tensors[0], tensors[1], bias=bias)
+        bias_value = kwargs.get("bias", native_tensors[2] if len(native_tensors) > 2 else None)
+        bias = None if bias_value is None else to_native_array(bias_value)
+        return bridge.dispatch_linear(native_tensors[0], native_tensors[1], bias=bias)
 
     if canonical_op == "rmsnorm":
-        if len(tensors) < 2:
+        if len(native_tensors) < 2:
             raise ValueError(
                 f"rmsnorm expects at least 2 tensors (x, weight), got {len(tensors)}"
             )
         eps = kwargs.get("eps", 1e-5)
-        return bridge.dispatch_rmsnorm(tensors[0], tensors[1], eps=eps)
+        return bridge.dispatch_rmsnorm(native_tensors[0], native_tensors[1], eps=eps)
 
     if canonical_op == "softmax":
-        if len(tensors) != 1:
+        if len(native_tensors) != 1:
             raise ValueError(f"softmax expects 1 tensor, got {len(tensors)}")
-        return bridge.dispatch_softmax(tensors[0])
+        return bridge.dispatch_softmax(native_tensors[0])
 
     if canonical_op == "layernorm":
-        if len(tensors) < 3:
+        if len(native_tensors) < 3:
             raise ValueError(
                 f"layernorm expects 3 tensors (x, weight, bias), got {len(tensors)}"
             )
         eps = kwargs.get("eps", 1e-5)
-        return bridge.dispatch_layernorm(tensors[0], tensors[1], tensors[2], eps=eps)
+        return bridge.dispatch_layernorm(
+            native_tensors[0], native_tensors[1], native_tensors[2], eps=eps
+        )
 
     if canonical_op == "transpose2d":
-        if len(tensors) != 1:
+        if len(native_tensors) != 1:
             raise ValueError(f"transpose2d expects 1 tensor, got {len(tensors)}")
-        return bridge.dispatch_transpose2d(tensors[0])
+        return bridge.dispatch_transpose2d(native_tensors[0])
 
     raise ValueError(f"Unsupported op for native dispatch: '{op_name}'")
 
@@ -278,55 +286,60 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
             "Cython bridge (aria_bridge) is not available. "
             "Cannot dispatch backward op natively."
         )
+    grad_native = to_native_flat_array(grad_output) if op_name in _CYTHON_UNARY_BACKWARD_OPS | _CYTHON_BINARY_BACKWARD_OPS else to_native_array(grad_output)
+    saved_native = tuple(
+        to_native_flat_array(t) if op_name in _CYTHON_UNARY_BACKWARD_OPS | _CYTHON_BINARY_BACKWARD_OPS else to_native_array(t)
+        for t in saved_tensors
+    )
 
     if op_name in _CYTHON_UNARY_BACKWARD_OPS:
-        if len(saved_tensors) != 1:
+        if len(saved_native) != 1:
             raise ValueError(
                 f"Unary backward '{op_name}' expects 1 saved tensor, got {len(saved_tensors)}"
             )
-        return bridge.dispatch_unary_backward(op_name, grad_output, saved_tensors[0])
+        return bridge.dispatch_unary_backward(op_name, grad_native, saved_native[0])
 
     if op_name in _CYTHON_BINARY_BACKWARD_OPS:
-        if len(saved_tensors) != 2:
+        if len(saved_native) != 2:
             raise ValueError(
                 f"Binary backward '{op_name}' expects 2 saved tensors (a, b), got {len(saved_tensors)}"
             )
         return bridge.dispatch_binary_backward(
-            op_name, grad_output, saved_tensors[0], saved_tensors[1]
+            op_name, grad_native, saved_native[0], saved_native[1]
         )
 
     if op_name == "matmul":
-        if len(saved_tensors) != 2:
+        if len(saved_native) != 2:
             raise ValueError(
                 f"matmul backward expects 2 saved tensors (A, B), got {len(saved_tensors)}"
             )
         return bridge.dispatch_matmul_backward(
-            grad_output, saved_tensors[0], saved_tensors[1]
+            grad_native, saved_native[0], saved_native[1]
         )
 
     if op_name == "softmax":
-        if len(saved_tensors) != 1:
+        if len(saved_native) != 1:
             raise ValueError(
                 f"softmax backward expects 1 saved tensor (output), got {len(saved_tensors)}"
             )
-        return bridge.dispatch_softmax_backward(grad_output, saved_tensors[0])
+        return bridge.dispatch_softmax_backward(grad_native, saved_native[0])
 
     if op_name == "layernorm":
-        if len(saved_tensors) != 2:
+        if len(saved_native) != 2:
             raise ValueError(
                 f"layernorm backward expects 2 saved tensors (input, gamma), got {len(saved_tensors)}"
             )
         return bridge.dispatch_layernorm_backward(
-            grad_output, saved_tensors[0], saved_tensors[1]
+            grad_native, saved_native[0], saved_native[1]
         )
 
     if op_name == "rmsnorm":
-        if len(saved_tensors) != 2:
+        if len(saved_native) != 2:
             raise ValueError(
                 f"rmsnorm backward expects 2 saved tensors (input, gamma), got {len(saved_tensors)}"
             )
         return bridge.dispatch_rmsnorm_backward(
-            grad_output, saved_tensors[0], saved_tensors[1]
+            grad_native, saved_native[0], saved_native[1]
         )
 
     raise ValueError(f"Unsupported op for native backward dispatch: '{op_name}'")
@@ -340,15 +353,73 @@ def _prepare_graph_input(graph: Any, input_data: Any):
     """
     from ..synthesis.native_ir_converter import graph_to_native_ir_json
 
-    import numpy as np
-
-    if hasattr(input_data, "detach"):
-        x_np = input_data.detach().cpu().numpy().astype(np.float32)
-    else:
-        x_np = np.asarray(input_data, dtype=np.float32)
-
+    x_np = to_native_array(input_data)
     graph_json = graph_to_native_ir_json(graph)
     return x_np, graph_json
+
+
+def _reshape_graph_output(graph: Any, x_np: Any, y_flat: Any) -> Any:
+    import numpy as np
+
+    y_np = np.array(y_flat, dtype=np.float32)
+    if hasattr(graph, "output_node") and graph.output_node and x_np.ndim >= 3:
+        shape = graph.output_node.output_shape
+        target_shape = (x_np.shape[0], x_np.shape[1], shape.dim)
+        return y_np.reshape(target_shape)
+    return y_np
+
+
+def _execute_rust_graph_forward_saved(
+    *,
+    graph_json: str,
+    x_np: Any,
+    graph: Any,
+) -> Optional[Dict[str, Any]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "execute_graph_forward_saved"):
+        return None
+
+    import numpy as np
+
+    result = rust.execute_graph_forward_saved(graph_json, x_np.ravel().tolist())
+    saved_activations = {
+        int(node_id): np.asarray(values, dtype=np.float32)
+        for node_id, values in dict(result.get("saved_activations", {})).items()
+    }
+    return {
+        "output": _reshape_graph_output(graph, x_np, result["output"]),
+        "saved_activations": saved_activations,
+        "ir_json": graph_json,
+        "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+        "arena_capacity": int(result.get("arena_capacity", 0)),
+    }
+
+
+def _execute_rust_graph_backward(
+    *,
+    graph_json: str,
+    grad_np: Any,
+    saved_activations: Dict[int, Any],
+) -> Optional[Dict[int, Any]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "execute_graph_backward"):
+        return None
+
+    import numpy as np
+
+    rust_saved = {
+        int(node_id): np.asarray(values, dtype=np.float32).ravel().tolist()
+        for node_id, values in saved_activations.items()
+    }
+    result = rust.execute_graph_backward(
+        graph_json,
+        grad_np.ravel().tolist(),
+        rust_saved,
+    )
+    return {
+        int(node_id): np.asarray(values, dtype=np.float32)
+        for node_id, values in dict(result.get("grads", {})).items()
+    }
 
 
 def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
@@ -401,16 +472,7 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
         else:
             y_flat = rust.execute_graph(graph_json, x_flat)
             _last_profile_data = None
-        y_np = np.array(y_flat, dtype=np.float32)
-
-        # Reshape to output shape if possible
-        if hasattr(graph, "output_node") and graph.output_node and x_np.ndim >= 3:
-            shape = graph.output_node.output_shape
-            # Assuming [Batch, Seq, Dim]
-            target_shape = (x_np.shape[0], x_np.shape[1], shape.dim)
-            return y_np.reshape(target_shape)
-
-        return y_np
+        return _reshape_graph_output(graph, x_np, y_flat)
     except Exception as exc:
         logger.error("Rust scheduler execution failed: %s", exc)
         raise
@@ -422,10 +484,9 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
     This is the companion to ``dispatch_graph_backward_native()``.  The saved
     activations dict is keyed by integer node id and contains flat float lists.
 
-    Implementation: walks the graph in topological order using per-op native
-    dispatch via the Cython bridge, saving each node's output for backward.
-    When the Rust scheduler gains ``execute_graph_forward_saved``, this will
-    be upgraded to a single Rust call.
+    Prefers the Rust scheduler's native forward-saved path when available.
+    Falls back to the legacy per-op Python walk only when the Rust entrypoint
+    is unavailable or fails.
 
     Args:
         graph: ComputationGraph instance.
@@ -440,6 +501,17 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
     import numpy as np
 
     x_np, graph_json = _prepare_graph_input(graph, input_data)
+    try:
+        rust_result = _execute_rust_graph_forward_saved(
+            graph_json=graph_json,
+            x_np=x_np,
+            graph=graph,
+        )
+        if rust_result is not None:
+            return rust_result
+    except Exception as exc:
+        logger.debug("Rust forward-saved dispatch failed: %s", exc)
+
     topo = graph.topological_order()
 
     # Walk forward, saving every node's activation.
@@ -454,9 +526,9 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
 
         inputs = [node_outputs[iid] for iid in node.input_ids]
         # Flatten all inputs for the per-op dispatch.
-        flat_inputs = [np.asarray(a, dtype=np.float32).ravel() for a in inputs]
+        flat_inputs = [to_native_flat_array(a) for a in inputs]
         y = dispatch_op_native(node.op_name, *flat_inputs)
-        node_outputs[nid] = np.asarray(y, dtype=np.float32).ravel()
+        node_outputs[nid] = to_native_flat_array(y)
 
     output = node_outputs.get(output_node_id)
     if output is None:
@@ -465,7 +537,7 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
         )
 
     return {
-        "output": np.asarray(output, dtype=np.float32),
+        "output": to_native_array(output),
         "saved_activations": dict(node_outputs),
         "ir_json": graph_json,
     }
@@ -479,12 +551,9 @@ def dispatch_graph_backward_native(
 ) -> Dict[int, Any]:
     """Execute a full backward pass through a graph using native per-op backward.
 
-    Walks the graph in reverse topological order, dispatching each op's backward
-    through the Cython bridge.  Accumulates gradients when a node fans out to
-    multiple consumers.
-
-    When the Rust scheduler gains ``execute_graph_backward``, this will be
-    upgraded to a single Rust call.
+    Prefers the Rust scheduler's native graph backward when available.
+    Falls back to the legacy Python reverse walk only when the Rust entrypoint
+    is unavailable or fails.
 
     Args:
         graph: ComputationGraph instance.
@@ -499,10 +568,22 @@ def dispatch_graph_backward_native(
     """
     import numpy as np
 
-    if hasattr(grad_output, "detach"):
-        grad_np = grad_output.detach().cpu().numpy().astype(np.float32)
-    else:
-        grad_np = np.asarray(grad_output, dtype=np.float32)
+    grad_np = to_native_array(grad_output)
+
+    graph_json = ir_json
+    if graph_json is None:
+        _, graph_json = _prepare_graph_input(graph, grad_np)
+
+    try:
+        rust_grads = _execute_rust_graph_backward(
+            graph_json=graph_json,
+            grad_np=grad_np,
+            saved_activations=saved_activations,
+        )
+        if rust_grads is not None:
+            return rust_grads
+    except Exception as exc:
+        logger.debug("Rust backward dispatch failed: %s", exc)
 
     topo = graph.topological_order()
     output_node_id = graph._output_node_id
@@ -510,7 +591,7 @@ def dispatch_graph_backward_native(
     # Ensure saved_activations values are numpy arrays.
     saved: Dict[int, Any] = {}
     for k, v in saved_activations.items():
-        saved[int(k)] = np.asarray(v, dtype=np.float32).ravel()
+        saved[int(k)] = to_native_flat_array(v)
 
     # node_grads[nid] = accumulated gradient for that node's output.
     node_grads: Dict[int, Any] = {}
@@ -540,7 +621,7 @@ def dispatch_graph_backward_native(
 
         # Distribute gradients to inputs.
         if len(input_ids) == 1:
-            g_in = np.asarray(result, dtype=np.float32).ravel()
+            g_in = to_native_flat_array(result)
             if input_ids[0] in node_grads:
                 node_grads[input_ids[0]] = node_grads[input_ids[0]] + g_in
             else:
@@ -550,7 +631,7 @@ def dispatch_graph_backward_native(
             if not isinstance(result, (tuple, list)):
                 result = tuple([result] * len(input_ids))
             for i, iid in enumerate(input_ids):
-                g_in = np.asarray(result[i], dtype=np.float32).ravel()
+                g_in = to_native_flat_array(result[i])
                 if iid in node_grads:
                     node_grads[iid] = node_grads[iid] + g_in
                 else:
@@ -558,7 +639,7 @@ def dispatch_graph_backward_native(
 
     grads: Dict[int, Any] = {}
     for nid, g in node_grads.items():
-        grads[nid] = np.asarray(g, dtype=np.float32)
+        grads[nid] = to_native_array(g)
 
     return grads
 
@@ -582,13 +663,7 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
     if rust is None:
         raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
 
-    import numpy as np
-
-    if hasattr(input_data, "detach"):
-        x_np = input_data.detach().cpu().numpy().astype(np.float32)
-    else:
-        x_np = np.asarray(input_data, dtype=np.float32)
-
+    x_np = to_native_array(input_data)
     x_flat = x_np.ravel().tolist()
 
     try:
@@ -613,14 +688,7 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
         else:
             y_flat = rust.execute_graph(ir_json, x_flat)
             _last_profile_data = None
-        y_np = np.array(y_flat, dtype=np.float32)
-
-        if hasattr(graph, "output_node") and graph.output_node and x_np.ndim >= 3:
-            shape = graph.output_node.output_shape
-            target_shape = (x_np.shape[0], x_np.shape[1], shape.dim)
-            return y_np.reshape(target_shape)
-
-        return y_np
+        return _reshape_graph_output(graph, x_np, y_flat)
     except Exception as exc:
         logger.error("Rust scheduler execution failed: %s", exc)
         raise

@@ -4,41 +4,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .dim_flow_opcode_tables import (
+    FULL_DIM_OPS,
+    KV_CACHE_BREAKING_OPS,
+    build_dim_flow_opcode_tables,
+)
 from .graph import ComputationGraph
-from .primitives import PRIMITIVE_REGISTRY, estimate_op_params
-
-
-FULL_DIM_OPS = frozenset(
-    {
-        "softmax_attention",
-        "linear_attention",
-        "graph_attention",
-        "diff_attention",
-        "state_space",
-        "selective_scan",
-        "rwkv_channel",
-        "rwkv_time_mixing",
-        "moe_topk",
-        "moe_2expert",
-        "swiglu_mlp",
-        "gated_linear",
-        "gated_delta",
-    }
-)
-IDENTITY_LIKE_OPS = frozenset({"identity", "rmsnorm", "layernorm"})
-KV_CACHE_BREAKING_OPS = frozenset(
-    {
-        "adjacent_token_merge",
-        "depth_token_mask",
-        "spectral_filter",
-        "rfft",
-        "irfft",
-        "sort_seq",
-        "unsort_seq",
-        "cumsum",
-        "cumprod_safe",
-    }
-)
+from .native_dim_flow_flags import build_dim_flow_flags_natively
 
 
 @dataclass(slots=True)
@@ -76,39 +48,50 @@ def build_dim_flow_inputs(
         int(node_id): idx for idx, node_id in enumerate(analysis_node_ids.tolist())
     }
 
-    has_params_flags = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
-    nontrivial_flags = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
-    kv_breaking_flags = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
-    param_estimates = np.zeros(analysis_ir.n_nodes(), dtype=np.int64)
     node_dims = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
     node_seq_flags = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
-    op_kind_flags = np.full(analysis_ir.n_nodes(), op_kind_default, dtype=np.int32)
-    full_dim_flags = np.zeros(analysis_ir.n_nodes(), dtype=np.int32)
+    param_estimates = np.ascontiguousarray(
+        analysis_ir.param_estimates
+        if analysis_ir.param_estimates is not None
+        else np.zeros(analysis_ir.n_nodes(), dtype=np.int64),
+        dtype=np.int64,
+    )
 
     for node_id, idx in node_id_to_analysis_idx.items():
         node = graph.nodes[node_id]
         node_dims[idx] = int(node.output_shape.dim)
         node_seq_flags[idx] = int(node.output_shape.is_freq_domain)
-        if node.is_input:
-            continue
-        op = PRIMITIVE_REGISTRY.get(node.op_name)
-        if op is not None:
-            if op.shape_rule == "binary_broadcast":
-                op_kind_flags[idx] = op_kind_binary_broadcast
-            elif op.shape_rule == "irfft":
-                op_kind_flags[idx] = op_kind_irfft
-            elif op.shape_rule == "identity":
-                op_kind_flags[idx] = op_kind_identity
-            if node.op_name in FULL_DIM_OPS:
-                full_dim_flags[idx] = 1
-            if op.has_params:
-                has_params_flags[idx] = 1
-                d_in = node.output_shape.dim or graph.model_dim
-                param_estimates[idx] = estimate_op_params(op, d_in)
-        if node.op_name not in IDENTITY_LIKE_OPS:
-            nontrivial_flags[idx] = 1
-        if node.op_name in KV_CACHE_BREAKING_OPS:
-            kv_breaking_flags[idx] = 1
+
+    opcode_tables = build_dim_flow_opcode_tables(
+        op_kind_default=op_kind_default,
+        op_kind_irfft=op_kind_irfft,
+        op_kind_identity=op_kind_identity,
+        op_kind_binary_broadcast=op_kind_binary_broadcast,
+    )
+    native_flags = build_dim_flow_flags_natively(
+        op_codes=analysis_ir.op_codes,
+        param_estimates=param_estimates,
+        opcode_has_params=opcode_tables["opcode_has_params"],
+        opcode_nontrivial=opcode_tables["opcode_nontrivial"],
+        opcode_kv_breaking=opcode_tables["opcode_kv_breaking"],
+        opcode_kind=opcode_tables["opcode_kind"],
+        opcode_full_dim=opcode_tables["opcode_full_dim"],
+    )
+    if native_flags is None:
+        has_params_flags = (
+            opcode_tables["opcode_has_params"][analysis_ir.op_codes]
+            * (param_estimates > 0).astype(np.int32, copy=False)
+        )
+        nontrivial_flags = opcode_tables["opcode_nontrivial"][analysis_ir.op_codes].copy()
+        kv_breaking_flags = opcode_tables["opcode_kv_breaking"][analysis_ir.op_codes].copy()
+        op_kind_flags = opcode_tables["opcode_kind"][analysis_ir.op_codes].copy()
+        full_dim_flags = opcode_tables["opcode_full_dim"][analysis_ir.op_codes].copy()
+    else:
+        has_params_flags = native_flags["has_params_flags"]
+        nontrivial_flags = native_flags["nontrivial_flags"]
+        kv_breaking_flags = native_flags["kv_breaking_flags"]
+        op_kind_flags = native_flags["op_kind_flags"]
+        full_dim_flags = native_flags["full_dim_flags"]
 
     return DimFlowInputs(
         analysis_ir=analysis_ir,

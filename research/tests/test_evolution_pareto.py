@@ -1,8 +1,21 @@
 """Tests for vectorized NSGA-II fast_non_dominated_sort."""
 
+import math
 from unittest.mock import MagicMock
 
-from research.search.evolution import Individual, fast_non_dominated_sort
+import numpy as np
+
+from research.search.evolution import (
+    Individual,
+    _assign_crowding_distance_in_python,
+    assign_crowding_distance,
+    fast_non_dominated_sort,
+)
+from research.search.native_nsga import (
+    compute_crowding_distances,
+    load_native_nsga_lib,
+    reset_native_nsga_lib,
+)
 
 
 def _make_individual(fitness: float, novelty: float) -> Individual:
@@ -87,3 +100,46 @@ def test_minimization_objective():
     assert len(fronts) == 2
     assert fronts[0] == [a]
     assert fronts[1] == [b]
+
+
+def test_assign_crowding_distance_sets_boundary_infinity():
+    front = [
+        _make_individual(1.0, 4.0),
+        _make_individual(2.0, 3.0),
+        _make_individual(3.0, 2.0),
+        _make_individual(4.0, 1.0),
+    ]
+
+    assign_crowding_distance(front)
+
+    inf_count = sum(math.isinf(ind.crowding_dist) for ind in front)
+    assert inf_count >= 2
+
+
+def test_native_crowding_distance_matches_python_reference():
+    reset_native_nsga_lib()
+    if load_native_nsga_lib() is None:
+        return
+
+    front = [
+        _make_individual(1.0, 4.0),
+        _make_individual(2.0, 2.5),
+        _make_individual(3.0, 2.0),
+        _make_individual(4.0, 1.0),
+        _make_individual(2.5, 3.0),
+    ]
+    objective_matrix = np.asarray(
+        [[ind.fitness, ind.novelty] for ind in front],
+        dtype=np.float32,
+    )
+
+    py_front = list(front)
+    _assign_crowding_distance_in_python(py_front, objective_matrix)
+    native_distances = compute_crowding_distances(objective_matrix)
+
+    assert native_distances is not None
+    for ind, native in zip(py_front, native_distances):
+        if math.isinf(ind.crowding_dist):
+            assert math.isinf(float(native))
+        else:
+            assert math.isclose(ind.crowding_dist, float(native), rel_tol=1e-6, abs_tol=1e-6)
