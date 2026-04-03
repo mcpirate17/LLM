@@ -405,8 +405,13 @@ class _PersonaRulesMixin:
             sections.append("| Stage | Common Failure Mode | Count |")
             sections.append("|:------|:--------------------|:------|")
             if isinstance(failures, dict):
-                sorted_f = sorted(failures.items(), key=lambda x: x[1], reverse=True)
-                for mode, count in sorted_f[:5]:
+                sorted_f = sorted(
+                    failures.items(),
+                    key=lambda x: x[1]["total"] if isinstance(x[1], dict) else x[1],
+                    reverse=True,
+                )
+                for mode, info in sorted_f[:5]:
+                    count = info["total"] if isinstance(info, dict) else info
                     sections.append(f"| Evaluation | {mode} | {count} |")
             sections.append("")
 

@@ -9,6 +9,7 @@ from ._template_helpers import (
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SPARSE,
     MotifWeights,
+    TemplateBuildError,
     _FFN_CLASSES,
     _MIXER_CLASSES,
     _fix_dim,
@@ -18,8 +19,9 @@ from ._template_helpers import (
     _shuffle_wrap,
     _tpl_norm_op_motif_residual,
     _tpl_norm_op_residual,
+    template_add_op as _add,
+    template_add_residual as _residual,
 )
-from ._templates_core import tpl_residual_block, tpl_transformer_block
 
 
 # ── 0% S1 fix: dedicated templates for ops that work in isolation ────
@@ -55,22 +57,25 @@ def tpl_sqrt_gated_ffn(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        up = graph.add_op("linear_proj_up", [normed], config={"out_dim": D * 2})
-        # abs ensures non-negative input for sqrt
-        abs_val = graph.add_op("abs", [up])
-        sqrted = graph.add_op("sqrt", [abs_val])
-        # Gate branch
-        gate = graph.add_op("sigmoid", [up])
-        gated = graph.add_op("mul", [sqrted, gate])
-        down = graph.add_op("linear_proj_down", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, down])
-    except ValueError:
-        return down
+    up = _add(
+        graph,
+        "linear_proj_up",
+        [normed],
+        {"out_dim": D * 2},
+        context="sqrt_gated_ffn.up",
+    )
+    abs_val = _add(graph, "abs", [up], context="sqrt_gated_ffn.abs")
+    sqrted = _add(graph, "sqrt", [abs_val], context="sqrt_gated_ffn.sqrt")
+    gate = _add(graph, "sigmoid", [up], context="sqrt_gated_ffn.gate")
+    gated = _add(graph, "mul", [sqrted, gate], context="sqrt_gated_ffn.mul")
+    down = _add(
+        graph,
+        "linear_proj_down",
+        [gated],
+        {"out_dim": D},
+        context="sqrt_gated_ffn.down",
+    )
+    return _residual(graph, input_id, down, context="sqrt_gated_ffn.output")
 
 
 def tpl_reduce_attend(
@@ -92,26 +97,32 @@ def tpl_reduce_attend(
 
     reduce_op = rng.choice(["norm_last", "mean_last", "max_last", "sum_last"])
 
-    try:
-        # Primary path: FFN with learned transform (the actual learner)
-        up = graph.add_op("linear_proj_up", [normed], config={"out_dim": D * 4})
-        activated = graph.add_op("gelu", [up])
-        down = graph.add_op("linear_proj_down", [activated], config={"out_dim": D})
-
-        # Side channel: reduce → expand → sigmoid gate
-        reduced = graph.add_op(reduce_op, [normed])  # (B, S, 1)
-        gate_proj = graph.add_op("linear_proj_up", [reduced], config={"out_dim": D})
-        gate = graph.add_op("sigmoid", [gate_proj])
-
-        # Gate modulates FFN output: features scaled by their summary
-        gated = graph.add_op("mul", [down, gate])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, gated])
-    except ValueError:
-        return gated
+    up = _add(
+        graph,
+        "linear_proj_up",
+        [normed],
+        {"out_dim": D * 4},
+        context="reduce_attend.up",
+    )
+    activated = _add(graph, "gelu", [up], context="reduce_attend.activated")
+    down = _add(
+        graph,
+        "linear_proj_down",
+        [activated],
+        {"out_dim": D},
+        context="reduce_attend.down",
+    )
+    reduced = _add(graph, reduce_op, [normed], context="reduce_attend.reduced")
+    gate_proj = _add(
+        graph,
+        "linear_proj_up",
+        [reduced],
+        {"out_dim": D},
+        context="reduce_attend.gate_proj",
+    )
+    gate = _add(graph, "sigmoid", [gate_proj], context="reduce_attend.gate")
+    gated = _add(graph, "mul", [down, gate], context="reduce_attend.mul")
+    return _residual(graph, input_id, gated, context="reduce_attend.output")
 
 
 # ── 0% S1 fix round 2: attention, SSM, activation, and structural ops ──
@@ -133,19 +144,30 @@ def tpl_fused_gelu_ffn(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        fused = graph.add_op("fused_linear_gelu", [normed], config={"out_dim": D})
-        gate = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        gate = graph.add_op("sigmoid", [gate])
-        gated = graph.add_op("mul", [fused, gate])
-        down = graph.add_op("linear_proj_down", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, down])
-    except ValueError:
-        return down
+    fused = _add(
+        graph,
+        "fused_linear_gelu",
+        [normed],
+        {"out_dim": D},
+        context="fused_gelu_ffn.fused",
+    )
+    gate = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="fused_gelu_ffn.gate_proj",
+    )
+    gate = _add(graph, "sigmoid", [gate], context="fused_gelu_ffn.gate")
+    gated = _add(graph, "mul", [fused, gate], context="fused_gelu_ffn.mul")
+    down = _add(
+        graph,
+        "linear_proj_down",
+        [gated],
+        {"out_dim": D},
+        context="fused_gelu_ffn.down",
+    )
+    return _residual(graph, input_id, down, context="fused_gelu_ffn.output")
 
 
 def tpl_exp_gated_residual(
@@ -164,20 +186,20 @@ def tpl_exp_gated_residual(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        exped = graph.add_op("exp", [normed])
-        # rmsnorm after exp prevents magnitude explosion
-        stabilized = graph.add_op("rmsnorm", [exped])
-        gate = graph.add_op("sigmoid", [normed])
-        gated = graph.add_op("mul", [stabilized, gate])
-        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, projected])
-    except ValueError:
-        return projected
+    exped = _add(graph, "exp", [normed], context="exp_gated_residual.exp")
+    stabilized = _add(
+        graph, "rmsnorm", [exped], context="exp_gated_residual.stabilized"
+    )
+    gate = _add(graph, "sigmoid", [normed], context="exp_gated_residual.gate")
+    gated = _add(graph, "mul", [stabilized, gate], context="exp_gated_residual.mul")
+    projected = _add(
+        graph,
+        "linear_proj",
+        [gated],
+        {"out_dim": D},
+        context="exp_gated_residual.projected",
+    )
+    return _residual(graph, input_id, projected, context="exp_gated_residual.output")
 
 
 def tpl_integral_kernel_block(
@@ -186,10 +208,46 @@ def tpl_integral_kernel_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → integral_kernel → proj → [FFN motif] → residual_add."""
-    return _tpl_norm_op_motif_residual(
-        graph, input_id, rng, weights, op_name="integral_kernel"
+    """norm → {integral_kernel | attention} → proj → [FFN motif] → residual_add.
+
+    40% chance of adding an attention path parallel to the integral kernel.
+    """
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    kernel = _add(
+        graph, "integral_kernel", [normed], context="integral_kernel_block.kernel"
     )
+    kernel = _add(
+        graph,
+        "linear_proj",
+        [kernel],
+        {"out_dim": D},
+        context="integral_kernel_block.project",
+    )
+
+    # 40% chance: attention parallel path
+    if rng.random() < 0.4:
+        attn = _pick_compatible_motif(
+            graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
+        )
+        if attn:
+            path_attn = _instantiate_motif(graph, normed, attn, rng)
+            path_attn = _fix_dim(graph, path_attn)
+            kernel = _residual(
+                graph, kernel, path_attn, context="integral_kernel_block.attn_merge"
+            )
+
+    ffn = _pick_compatible_motif_from_classes(
+        graph, kernel, rng, list(_FFN_CLASSES), weights
+    )
+    processed = _instantiate_motif(graph, kernel, ffn, rng) if ffn else kernel
+    processed = _fix_dim(graph, processed)
+
+    return _residual(graph, input_id, processed, context="integral_kernel_block.output")
 
 
 def tpl_windowed_attention(
@@ -253,17 +311,16 @@ def tpl_rwkv_block(
     The post-residual norm is the key structural insight — graphs with this
     pattern achieve loss_ratio ~0.05 vs ~0.6 without it.
     """
-    try:
-        normed = graph.add_op("layernorm", [input_id])
-        mixed = graph.add_op(
-            "rwkv_channel",
-            [normed],
-            config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
-        )
-        mid = graph.add_op("add", [input_id, mixed])
-        norm2 = graph.add_op("layernorm", [mid])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    normed = _add(graph, "layernorm", [input_id], context="rwkv_block.norm")
+    mixed = _add(
+        graph,
+        "rwkv_channel",
+        [normed],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="rwkv_block.mixed",
+    )
+    mid = _residual(graph, input_id, mixed, context="rwkv_block.mid")
+    norm2 = _add(graph, "layernorm", [mid], context="rwkv_block.norm2")
 
     ffn = _pick_compatible_motif_from_classes(
         graph, norm2, rng, list(_FFN_CLASSES), weights
@@ -271,10 +328,7 @@ def tpl_rwkv_block(
     processed = _instantiate_motif(graph, norm2, ffn, rng) if ffn else norm2
     processed = _fix_dim(graph, processed)
 
-    try:
-        return graph.add_op("add", [mid, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, mid, processed, context="rwkv_block.output")
 
 
 def tpl_rwkv_double_norm(
@@ -289,20 +343,19 @@ def tpl_rwkv_double_norm(
     4-gram winner: layernorm → rwkv_channel → add → layernorm with swiglu_mlp
     as the FFN (best pairing from data mining).
     """
-    try:
-        normed = graph.add_op("layernorm", [input_id])
-        mixed = graph.add_op(
-            "rwkv_channel",
-            [normed],
-            config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
-        )
-        mid = graph.add_op("add", [input_id, mixed])
-        norm2 = graph.add_op("layernorm", [mid])
-        ffn_out = graph.add_op("swiglu_mlp", [norm2])
-        ffn_out = _fix_dim(graph, ffn_out)
-        return graph.add_op("add", [mid, ffn_out])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    normed = _add(graph, "layernorm", [input_id], context="rwkv_double_norm.norm")
+    mixed = _add(
+        graph,
+        "rwkv_channel",
+        [normed],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="rwkv_double_norm.mixed",
+    )
+    mid = _residual(graph, input_id, mixed, context="rwkv_double_norm.mid")
+    norm2 = _add(graph, "layernorm", [mid], context="rwkv_double_norm.norm2")
+    ffn_out = _add(graph, "swiglu_mlp", [norm2], context="rwkv_double_norm.ffn")
+    ffn_out = _fix_dim(graph, ffn_out)
+    return _residual(graph, mid, ffn_out, context="rwkv_double_norm.output")
 
 
 def tpl_rwkv_sparse_chain(
@@ -317,17 +370,16 @@ def tpl_rwkv_sparse_chain(
     also works well here at loss_ratio ~0.049) with a sparse motif slot for
     the FFN stage — keeps variety while locking in the RWKV backbone.
     """
-    try:
-        normed = graph.add_op("rmsnorm", [input_id])
-        mixed = graph.add_op(
-            "rwkv_channel",
-            [normed],
-            config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
-        )
-        mid = graph.add_op("add", [input_id, mixed])
-        norm2 = graph.add_op("rmsnorm", [mid])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    normed = _add(graph, "rmsnorm", [input_id], context="rwkv_sparse_chain.norm")
+    mixed = _add(
+        graph,
+        "rwkv_channel",
+        [normed],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="rwkv_sparse_chain.mixed",
+    )
+    mid = _residual(graph, input_id, mixed, context="rwkv_sparse_chain.mid")
+    norm2 = _add(graph, "rmsnorm", [mid], context="rwkv_sparse_chain.norm2")
 
     sparse = _pick_compatible_motif_from_classes(
         graph, norm2, rng, [MOTIF_CLASS_SPARSE], weights
@@ -335,10 +387,7 @@ def tpl_rwkv_sparse_chain(
     processed = _instantiate_motif(graph, norm2, sparse, rng) if sparse else norm2
     processed = _fix_dim(graph, processed)
 
-    try:
-        return graph.add_op("add", [mid, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, mid, processed, context="rwkv_sparse_chain.output")
 
 
 def tpl_reciprocal_gated(
@@ -357,18 +406,17 @@ def tpl_reciprocal_gated(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        sig = graph.add_op("sigmoid", [normed])
-        recip = graph.add_op("reciprocal", [sig])
-        gated = graph.add_op("mul", [normed, recip])
-        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, projected])
-    except ValueError:
-        return projected
+    sig = _add(graph, "sigmoid", [normed], context="reciprocal_gated.sig")
+    recip = _add(graph, "reciprocal", [sig], context="reciprocal_gated.recip")
+    gated = _add(graph, "mul", [normed, recip], context="reciprocal_gated.gated")
+    projected = _add(
+        graph,
+        "linear_proj",
+        [gated],
+        {"out_dim": D},
+        context="reciprocal_gated.projected",
+    )
+    return _residual(graph, input_id, projected, context="reciprocal_gated.output")
 
 
 def tpl_log_gated(
@@ -388,22 +436,26 @@ def tpl_log_gated(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        # Log path: sigmoid bounds (0,1), log compresses to (-inf, 0)
-        bounded = graph.add_op("sigmoid", [normed])
-        logged = graph.add_op("log", [bounded])
-        # Gate path: separate projection so gate learns different features
-        gate_proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        gate = graph.add_op("sigmoid", [gate_proj])
-        gated = graph.add_op("mul", [logged, gate])
-        projected = graph.add_op("linear_proj", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, projected])
-    except ValueError:
-        return projected
+    bounded = _add(graph, "sigmoid", [normed], context="log_gated.bounded")
+    logged = _add(graph, "log", [bounded], context="log_gated.logged")
+    gate_dim = graph.nodes[logged].output_shape.dim
+    gate_proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": gate_dim},
+        context="log_gated.gate_proj",
+    )
+    gate = _add(graph, "sigmoid", [gate_proj], context="log_gated.gate")
+    gated = _add(graph, "mul", [logged, gate], context="log_gated.gated")
+    projected = _add(
+        graph,
+        "linear_proj",
+        [gated],
+        {"out_dim": D},
+        context="log_gated.projected",
+    )
+    return _residual(graph, input_id, projected, context="log_gated.output")
 
 
 def tpl_sign_ste_gated(
@@ -423,19 +475,24 @@ def tpl_sign_ste_gated(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        projected = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        signed = graph.add_op("sign_ste", [projected])
-        gate = graph.add_op("sigmoid", [projected])
-        gated = graph.add_op("mul", [signed, gate])
-        out = graph.add_op("linear_proj", [gated], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    try:
-        return graph.add_op("add", [input_id, out])
-    except ValueError:
-        return out
+    projected = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="sign_ste_gated.projected",
+    )
+    signed = _add(graph, "sign_ste", [projected], context="sign_ste_gated.signed")
+    gate = _add(graph, "sigmoid", [projected], context="sign_ste_gated.gate")
+    gated = _add(graph, "mul", [signed, gate], context="sign_ste_gated.gated")
+    out = _add(
+        graph,
+        "linear_proj",
+        [gated],
+        {"out_dim": D},
+        context="sign_ste_gated.out",
+    )
+    return _residual(graph, input_id, out, context="sign_ste_gated.output")
 
 
 def tpl_ultrametric_attention_block(
@@ -454,21 +511,24 @@ def tpl_ultrametric_attention_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        attended = graph.add_op("ultrametric_attention", [normed])
-        expert = graph.add_op("moe_2expert", [attended])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    attended = _add(
+        graph,
+        "ultrametric_attention",
+        [normed],
+        context="ultrametric_attention_block.attended",
+    )
+    expert = _add(
+        graph, "moe_2expert", [attended], context="ultrametric_attention_block.expert"
+    )
 
     ffn = _pick_compatible_motif_from_classes(
         graph, expert, rng, list(_FFN_CLASSES), weights
     )
     processed = _instantiate_motif(graph, expert, ffn, rng) if ffn else expert
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph, input_id, processed, context="ultrametric_attention_block.output"
+    )
 
 
 def tpl_diff_attention_block(
@@ -545,10 +605,13 @@ def tpl_multi_head_mix_block(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     n_heads = rng.choice([2, 4, 8])
-    try:
-        mixed = graph.add_op("multi_head_mix", [normed], config={"n_heads": n_heads})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    mixed = _add(
+        graph,
+        "multi_head_mix",
+        [normed],
+        {"n_heads": n_heads},
+        context="multi_head_mix_block.mixed",
+    )
 
     # Downstream mixer benefits from head-organized features
     mixer = _pick_compatible_motif_from_classes(
@@ -560,10 +623,7 @@ def tpl_multi_head_mix_block(
         processed = mixed
 
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, input_id, processed, context="multi_head_mix_block.output")
 
 
 def tpl_spiking_stdp_block(
@@ -580,17 +640,13 @@ def tpl_spiking_stdp_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        spiked = graph.add_op("lif_neuron", [normed])
-        attended = graph.add_op("stdp_attention", [spiked])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    spiked = _add(graph, "lif_neuron", [normed], context="spiking_stdp_block.spiked")
+    attended = _add(
+        graph, "stdp_attention", [spiked], context="spiking_stdp_block.attended"
+    )
 
     attended = _fix_dim(graph, attended)
-    try:
-        return graph.add_op("add", [input_id, attended])
-    except ValueError:
-        return attended
+    return _residual(graph, input_id, attended, context="spiking_stdp_block.output")
 
 
 def tpl_rope_attention_block(
@@ -608,13 +664,22 @@ def tpl_rope_attention_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        rotated = graph.add_op("rope_rotate", [normed])
-        attended = graph.add_op("softmax_attention", [rotated])
-        post_norm = graph.add_op("rmsnorm", [attended])
-        projected = graph.add_op("linear_proj", [post_norm], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    rotated = _add(
+        graph, "rope_rotate", [normed], context="rope_attention_block.rotated"
+    )
+    attended = _add(
+        graph, "softmax_attention", [rotated], context="rope_attention_block.attended"
+    )
+    post_norm = _add(
+        graph, "rmsnorm", [attended], context="rope_attention_block.post_norm"
+    )
+    projected = _add(
+        graph,
+        "linear_proj",
+        [post_norm],
+        {"out_dim": D},
+        context="rope_attention_block.projected",
+    )
 
     # Data: sparse/routing motifs dramatically outperform random FFN here.
     # routed_ternary 25% S1, bottleneck_sparse 17% vs 10% baseline.
@@ -628,10 +693,7 @@ def tpl_rope_attention_block(
         processed = projected
 
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, input_id, processed, context="rope_attention_block.output")
 
 
 def tpl_gpt2_reference(
@@ -651,34 +713,35 @@ def tpl_gpt2_reference(
     norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
 
-    try:
-        attended = graph.add_op("softmax_attention", [normed1])
-        post_attn_norm = graph.add_op("rmsnorm", [attended])
-        proj1 = graph.add_op("linear_proj", [post_attn_norm], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_transformer_block(graph, input_id, rng, weights)
-
-    try:
-        mid = graph.add_op("add", [input_id, proj1])
-    except ValueError:
-        mid = proj1
+    attended = _add(
+        graph, "softmax_attention", [normed1], context="gpt2_reference.attended"
+    )
+    post_attn_norm = _add(
+        graph, "rmsnorm", [attended], context="gpt2_reference.post_attn_norm"
+    )
+    proj1 = _add(
+        graph,
+        "linear_proj",
+        [post_attn_norm],
+        {"out_dim": D},
+        context="gpt2_reference.proj1",
+    )
+    mid = _residual(graph, input_id, proj1, context="gpt2_reference.mid")
 
     # FFN sub-block
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
 
-    try:
-        ffn = graph.add_op(
-            "swiglu_mlp", [normed2], config={"mlp_ratio": rng.choice([2.0, 4.0])}
-        )
-    except (ValueError, KeyError):
-        ffn = normed2
+    ffn = _add(
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": rng.choice([2.0, 4.0])},
+        context="gpt2_reference.ffn",
+    )
 
     ffn = _fix_dim(graph, ffn)
-    try:
-        return graph.add_op("add", [mid, ffn])
-    except ValueError:
-        return ffn
+    return _residual(graph, mid, ffn, context="gpt2_reference.output")
 
 
 def tpl_mamba_reference(
@@ -697,35 +760,36 @@ def tpl_mamba_reference(
     norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
 
-    try:
-        convolved = graph.add_op("conv1d_seq", [normed1])
-        conv_norm = graph.add_op("rmsnorm", [convolved])
-        scanned = graph.add_op("selective_scan", [conv_norm])
-        proj1 = graph.add_op("linear_proj", [scanned], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_state_space_block(graph, input_id, rng, weights)
-
-    try:
-        mid = graph.add_op("add", [input_id, proj1])
-    except ValueError:
-        mid = proj1
+    convolved = _add(
+        graph, "conv1d_seq", [normed1], context="mamba_reference.convolved"
+    )
+    conv_norm = _add(graph, "rmsnorm", [convolved], context="mamba_reference.conv_norm")
+    scanned = _add(
+        graph, "selective_scan", [conv_norm], context="mamba_reference.scanned"
+    )
+    proj1 = _add(
+        graph,
+        "linear_proj",
+        [scanned],
+        {"out_dim": D},
+        context="mamba_reference.proj1",
+    )
+    mid = _residual(graph, input_id, proj1, context="mamba_reference.mid")
 
     # FFN sub-block
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
 
-    try:
-        ffn = graph.add_op(
-            "swiglu_mlp", [normed2], config={"mlp_ratio": rng.choice([2.0, 4.0])}
-        )
-    except (ValueError, KeyError):
-        ffn = normed2
+    ffn = _add(
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": rng.choice([2.0, 4.0])},
+        context="mamba_reference.ffn",
+    )
 
     ffn = _fix_dim(graph, ffn)
-    try:
-        return graph.add_op("add", [mid, ffn])
-    except ValueError:
-        return ffn
+    return _residual(graph, mid, ffn, context="mamba_reference.output")
 
 
 # ── True Routing Templates ───────────────────────────────────────────
@@ -747,11 +811,14 @@ def tpl_hetero_moe_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        routed = graph.add_op("hetero_moe", [proj])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="hetero_moe_block.proj",
+    )
+    routed = _add(graph, "hetero_moe", [proj], context="hetero_moe_block.routed")
 
     norm2 = _pick_compatible_motif(graph, routed, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, routed, norm2, rng) if norm2 else routed
@@ -761,10 +828,7 @@ def tpl_hetero_moe_block(
     )
     processed = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, input_id, processed, context="hetero_moe_block.output")
 
 
 def tpl_arch_router_block(
@@ -782,11 +846,14 @@ def tpl_arch_router_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        routed = graph.add_op("arch_router", [proj])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="arch_router_block.proj",
+    )
+    routed = _add(graph, "arch_router", [proj], context="arch_router_block.routed")
 
     norm2 = _pick_compatible_motif(graph, routed, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, routed, norm2, rng) if norm2 else routed
@@ -796,10 +863,7 @@ def tpl_arch_router_block(
     )
     processed = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, input_id, processed, context="arch_router_block.output")
 
 
 def tpl_compute_budget_block(
@@ -817,11 +881,19 @@ def tpl_compute_budget_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        routed = graph.add_op("compute_budget_router", [proj])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="compute_budget_block.proj",
+    )
+    routed = _add(
+        graph,
+        "compute_budget_router",
+        [proj],
+        context="compute_budget_block.routed",
+    )
 
     norm2 = _pick_compatible_motif(graph, routed, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, routed, norm2, rng) if norm2 else routed
@@ -831,10 +903,7 @@ def tpl_compute_budget_block(
     )
     processed = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(graph, input_id, processed, context="compute_budget_block.output")
 
 
 # ── Cross-Dimension Templates (transpose_sd channel interleave) ─────
@@ -857,10 +926,13 @@ def tpl_cross_dim_mixer(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj_in = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj_in = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="cross_dim_mixer.proj_in",
+    )
 
     # Channel-shuffle → mixer → channel-unshuffle.
     # Data: SSM/conv motifs handle transposed features best (selective_scan 33%,
@@ -869,15 +941,14 @@ def tpl_cross_dim_mixer(
     _CROSS_DIM_MIXER_CLASSES = ("ssm_core", "conv_core", "gate_core")
     mixed = _shuffle_wrap(graph, proj_in, rng, _CROSS_DIM_MIXER_CLASSES, weights)
 
-    try:
-        proj_out = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        proj_out = _fix_dim(graph, mixed)
-
-    try:
-        return graph.add_op("add", [input_id, proj_out])
-    except ValueError:
-        return proj_out
+    proj_out = _add(
+        graph,
+        "linear_proj",
+        [mixed],
+        {"out_dim": D},
+        context="cross_dim_mixer.proj_out",
+    )
+    return _residual(graph, input_id, proj_out, context="cross_dim_mixer.output")
 
 
 def tpl_dual_axis_block(
@@ -893,16 +964,17 @@ def tpl_dual_axis_block(
     perspectives are concatenated and projected back to model_dim.
     """
     if graph.nodes[input_id].output_shape.dim < 16:
-        return tpl_residual_block(graph, input_id, rng, weights)
+        raise TemplateBuildError("dual_axis_block: requires input dim >= 16")
 
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        split_a = graph.add_op("split2", [normed], config={"part": 0})
-        split_b = graph.add_op("split2", [normed], config={"part": 1})
-    except ValueError:
-        return tpl_residual_block(graph, input_id, rng, weights)
+    split_a = _add(
+        graph, "split2", [normed], {"part": 0}, context="dual_axis_block.split_a"
+    )
+    split_b = _add(
+        graph, "split2", [normed], {"part": 1}, context="dual_axis_block.split_b"
+    )
 
     # Path A: sequence mixer on original feature order (half dim from split2).
     # Must use _BOTTLENECK_CLASSES — ops that adapt to input dim, not model_dim.
@@ -916,13 +988,7 @@ def tpl_dual_axis_block(
     # Path B: channel shuffle → FFN → channel unshuffle (half dim from split2).
     path_b = _shuffle_wrap(graph, split_b, rng, _BOTTLENECK_CLASSES, weights)
 
-    try:
-        merged = graph.add_op("concat", [path_a, path_b])
-    except ValueError:
-        return path_a
+    merged = _add(graph, "concat", [path_a, path_b], context="dual_axis_block.merged")
 
     merged = _fix_dim(graph, merged)
-    try:
-        return graph.add_op("add", [input_id, merged])
-    except ValueError:
-        return merged
+    return _residual(graph, input_id, merged, context="dual_axis_block.output")

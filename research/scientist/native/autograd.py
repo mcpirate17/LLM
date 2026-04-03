@@ -145,8 +145,8 @@ class SubgraphDispatcher:
                 from ...synthesis.native_ir_converter import graph_to_native_ir_json
 
                 self._ir_json = graph_to_native_ir_json(graph)
-            except ImportError:
-                logger.debug("Failed to pre-convert graph to IR JSON")
+            except Exception as exc:
+                logger.debug("Failed to pre-convert graph to IR JSON: %s", exc)
                 self._ir_json = None
 
     def _check_all_native(self) -> bool:

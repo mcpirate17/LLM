@@ -7,41 +7,13 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import List, Any, Optional
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
-
-
-def safe_json_load(raw: Any) -> Any:
-    """Safely parse a JSON string, returning None on failure.
-
-    If *raw* is already a dict/list (i.e. pre-parsed), return it directly.
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, (dict, list)):
-        return raw
-    try:
-        import json
-
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
-
-
-def safe_parse_float(value: Any) -> Optional[float]:
-    """Convert *value* to float, returning None on failure.
-
-    Thin wrapper around ``shared_utils.safe_float`` — handles strings,
-    numpy scalars, torch tensors, bytes blobs, and Python numerics.
-    """
-    from research.scientist.shared_utils import safe_float
-
-    return safe_float(value, default=None)
 
 
 def tokenize_string(text: str, vocab_size: int) -> List[int]:
@@ -74,9 +46,10 @@ def make_batches(
     # Build index matrix: (n_batches, batch_size, seq_len)
     offsets = torch.arange(seq_len).unsqueeze(0).unsqueeze(0)  # (1, 1, S)
     indices = all_starts.unsqueeze(-1) + offsets  # (N, B, S)
-    # Gather all batches at once, then move to device
+    # Gather all batches at once, move to device in one transfer, then split
     all_tokens = t[indices.reshape(-1)].reshape(n_batches, batch_size, seq_len)
-    return [all_tokens[i].to(device) for i in range(n_batches)]
+    all_tokens = all_tokens.to(device)
+    return [all_tokens[i] for i in range(n_batches)]
 
 
 def micro_train_loop(
@@ -183,6 +156,64 @@ def measure_loss(
             except Exception:
                 continue
     return sum(losses) / len(losses) if losses else None
+
+
+@torch.no_grad()
+def mean_token_log_prob(
+    model: nn.Module,
+    token_ids: List[int],
+    vocab_size: int,
+    device: str,
+    start_pos: int = 0,
+    max_seq_len: int = 512,
+) -> float:
+    """Mean log-probability of tokens ``[start_pos+1:]`` under the model.
+
+    Shared scoring primitive for HellaSwag (continuation scoring) and
+    BLiMP (sentence probability comparison).
+
+    Args:
+        start_pos: First position whose *next-token prediction* is scored.
+                   For whole-sequence scoring (BLiMP), use 0.
+                   For continuation scoring (HellaSwag), use ``ctx_len - 1``.
+    """
+    if len(token_ids) < 2:
+        return float("-inf")
+    if len(token_ids) > max_seq_len:
+        token_ids = token_ids[:max_seq_len]
+
+    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
+    logits = model(input_ids)
+
+    if logits.shape[-1] > vocab_size:
+        logits = logits[..., :vocab_size]
+
+    log_probs = F.log_softmax(logits[0], dim=-1)
+
+    end = len(token_ids) - 1
+    if start_pos >= end:
+        return float("-inf")
+
+    targets = input_ids[0, start_pos + 1 : end + 1]
+    pred_log_probs = log_probs[start_pos:end]
+    return pred_log_probs.gather(1, targets.unsqueeze(1)).squeeze(1).mean().item()
+
+
+def iter_eligible_params(
+    model: nn.Module,
+) -> "Iterable[tuple[str, torch.nn.Parameter]]":
+    """Yield ``(name, param)`` for 2-D+ trainable params, excluding embeddings.
+
+    Shared filter for pruning, quantization, and sparsity analysis.
+    """
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.dim() < 2:
+            continue
+        if "embed" in name.lower():
+            continue
+        yield name, param
 
 
 def cleanup_model(device: torch.device) -> None:

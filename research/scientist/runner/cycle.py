@@ -317,11 +317,7 @@ class _CycleMixin:
                 e,
                 _tb.format_exc(),
             )
-            failed_exp_id = self._fail_active_cycle_experiment(
-                nb,
-                cycle_error,
-                expected_mode=selected_mode,
-            )
+            failed_exp_id = self._fail_active_cycle_experiment(nb, cycle_error)
             self._emit_event(
                 "experiment_failed",
                 {
@@ -1008,7 +1004,6 @@ class _CycleMixin:
         self,
         nb: LabNotebook,
         error: str,
-        expected_mode: Optional[str] = None,
     ) -> Optional[str]:
         """Fail the currently tracked cycle experiment to avoid stale `running` rows."""
         active_exp_id = self.progress.experiment_id
@@ -1021,14 +1016,6 @@ class _CycleMixin:
                 (active_exp_id,),
             ).fetchone()
             if not row or row["status"] != "running":
-                return None
-            if expected_mode and row["experiment_type"] != expected_mode:
-                logger.debug(
-                    "Skip failing experiment %s: type mismatch (%s != %s)",
-                    active_exp_id,
-                    row["experiment_type"],
-                    expected_mode,
-                )
                 return None
 
             nb.fail_experiment(active_exp_id, error)

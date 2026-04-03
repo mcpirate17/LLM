@@ -17,11 +17,10 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .utils import tokenize_string
 
@@ -34,7 +33,6 @@ _CACHE_FILE = _HELLASWAG_CACHE_DIR / "validation.json"
 SCREENING_N_EXAMPLES = 50
 INVESTIGATION_N_EXAMPLES = 100
 VALIDATION_N_EXAMPLES = 200
-FAST_LANE_N_EXAMPLES = 25
 
 
 # ── Data loading ────────────────────────────────────────────────────────
@@ -101,62 +99,69 @@ def _score_continuations(
     device: str,
     max_seq_len: int = 512,
 ) -> int:
-    """Score 4 continuations and return index of the best one.
+    """Score continuations via a single batched forward pass.
 
-    For each continuation:
-    1. Tokenize context + continuation
-    2. Forward pass to get logits
-    3. Compute mean log-prob over continuation tokens only
-    4. Pick the continuation with highest mean log-prob
+    Pads all context+ending sequences to the same length, runs one forward
+    pass with shape ``(N, max_len)``, then scores each continuation's tokens
+    independently. Returns index of highest-scoring continuation.
     """
-    ctx_tokens = tokenize_string(ctx, vocab_size)
-    best_idx = 0
-    best_score = float("-inf")
+    import torch.nn.functional as F
 
-    for i, ending in enumerate(endings):
+    ctx_tokens = tokenize_string(ctx, vocab_size)
+
+    # Prepare per-continuation sequences and metadata
+    seqs: List[List[int]] = []
+    start_positions: List[int] = []
+
+    for ending in endings:
         ending_tokens = tokenize_string(ending, vocab_size)
         full_tokens = ctx_tokens + ending_tokens
 
-        # Truncate from the left if too long (keep the ending visible)
         if len(full_tokens) > max_seq_len:
             excess = len(full_tokens) - max_seq_len
             full_tokens = full_tokens[excess:]
-            # Recompute ctx length after truncation
             ctx_len = max(0, len(ctx_tokens) - excess)
         else:
             ctx_len = len(ctx_tokens)
 
         if len(ending_tokens) == 0 or ctx_len >= len(full_tokens):
+            seqs.append([])
+            start_positions.append(0)
             continue
 
-        input_ids = torch.tensor([full_tokens], dtype=torch.long, device=device)
-        logits = model(input_ids)  # (1, seq_len, vocab_size)
+        seqs.append(full_tokens)
+        start_positions.append(max(0, ctx_len - 1))
 
-        # Clamp logits to vocab_size if model outputs more
-        if logits.shape[-1] > vocab_size:
-            logits = logits[..., :vocab_size]
+    # Filter to valid sequences
+    valid = [(i, s, sp) for i, (s, sp) in enumerate(zip(seqs, start_positions)) if s]
+    if not valid:
+        return 0
 
-        # Log-probs for each position predicting the next token
-        log_probs = F.log_softmax(logits[0], dim=-1)  # (seq_len, vocab_size)
+    # Pad and batch
+    max_len = max(len(s) for _, s, _ in valid)
+    padded = torch.zeros(len(valid), max_len, dtype=torch.long, device=device)
+    for j, (_, s, _) in enumerate(valid):
+        padded[j, : len(s)] = torch.tensor(s, dtype=torch.long)
 
-        # Mean log-prob over continuation tokens only
-        # Position i predicts token i+1, so continuation starts at position ctx_len-1
-        # predicting token ctx_len (first continuation token)
-        start = max(0, ctx_len - 1)
-        end = len(full_tokens) - 1  # last position that predicts a continuation token
-        if start >= end:
+    # Single batched forward pass
+    logits = model(padded)  # (N, max_len, V)
+    if logits.shape[-1] > vocab_size:
+        logits = logits[..., :vocab_size]
+    log_probs = F.log_softmax(logits, dim=-1)  # (N, max_len, V)
+
+    # Score each continuation
+    best_idx = 0
+    best_score = float("-inf")
+    for j, (orig_idx, s, sp) in enumerate(valid):
+        end = len(s) - 1
+        if sp >= end:
             continue
-
-        targets = torch.tensor(
-            full_tokens[start + 1 : end + 1], dtype=torch.long, device=device
-        )
-        pred_log_probs = log_probs[start:end]
-        token_scores = pred_log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
-        mean_ll = token_scores.mean().item()
-
+        targets = padded[j, sp + 1 : end + 1]
+        pred_lp = log_probs[j, sp:end]
+        mean_ll = pred_lp.gather(1, targets.unsqueeze(1)).squeeze(1).mean().item()
         if mean_ll > best_score:
             best_score = mean_ll
-            best_idx = i
+            best_idx = orig_idx
 
     return best_idx
 
@@ -256,23 +261,3 @@ def evaluate_hellaswag(
     result = _run_hellaswag(model, vocab_size, device, n_examples)
     result["hellaswag_metric_version"] = "hellaswag_v1"
     return result
-
-
-def screening_hellaswag_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return a normalized screening benchmark payload for persistence."""
-    status = result.get("hellaswag_status")
-    if not status:
-        return None
-    return {
-        "screening_hellaswag": {
-            "benchmark_family": "commonsense_reasoning",
-            "metric_version": result.get("hellaswag_metric_version"),
-            "status": status,
-            "elapsed_ms": result.get("elapsed_ms"),
-            "metrics": {
-                "hellaswag_acc": result.get("hellaswag_acc"),
-                "hellaswag_correct": result.get("hellaswag_correct"),
-                "hellaswag_total": result.get("hellaswag_total"),
-            },
-        }
-    }

@@ -8,6 +8,13 @@ import torch
 from research.defaults import ROPE_THETA_BASE
 
 try:
+    from numba import njit as _njit
+
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+
+try:
     import aria_core
 
     _HAS_ARIA_CORE = True
@@ -15,16 +22,60 @@ except ImportError:
     _HAS_ARIA_CORE = False
 
 
+# ── RWKV scan: Numba-accelerated with pure-numpy fallback ────────────
+
+
+def _rwkv_scan_numpy(k, v, r, decay, bonus):
+    """Pure numpy fallback for RWKV sequential scan."""
+    b, seq_len, d = k.shape
+    out = np.empty_like(k, dtype=np.float32)
+    decay_exp = np.exp(decay)  # precompute once
+    state = np.zeros((b, d), dtype=np.float32)
+    for t in range(seq_len):
+        kt = k[:, t, :]
+        vt = v[:, t, :]
+        ekt = np.exp(kt)
+        out[:, t, :] = r[:, t, :] * (state + np.exp(bonus + kt) * vt)
+        state = decay_exp * state + ekt * vt
+    return out
+
+
+if _HAS_NUMBA:
+
+    @_njit(cache=True)
+    def _rwkv_scan_numba(k, v, r, decay, bonus):
+        b, seq_len, d = k.shape
+        out = np.empty((b, seq_len, d), dtype=np.float32)
+        for bi in range(b):
+            for di in range(d):
+                state = np.float32(0.0)
+                decay_exp = np.exp(decay[di])
+                for t in range(seq_len):
+                    kt = k[bi, t, di]
+                    vt = v[bi, t, di]
+                    ekt = np.exp(kt)
+                    bonus_term = np.exp(bonus[di] + kt) * vt
+                    out[bi, t, di] = r[bi, t, di] * (state + bonus_term)
+                    state = decay_exp * state + ekt * vt
+        return out
+
+    def _rwkv_scan(k, v, r, decay, bonus):
+        return _rwkv_scan_numba(
+            np.ascontiguousarray(k, dtype=np.float32),
+            np.ascontiguousarray(v, dtype=np.float32),
+            np.ascontiguousarray(r, dtype=np.float32),
+            np.ascontiguousarray(decay, dtype=np.float32),
+            np.ascontiguousarray(bonus, dtype=np.float32),
+        )
+else:
+    _rwkv_scan = _rwkv_scan_numpy
+
+
 def _np_to_torch(x):
     """Convert numpy array to contiguous float32 torch tensor."""
     if isinstance(x, torch.Tensor):
         return x.float().contiguous()
     return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))
-
-
-def _torch_to_np(t):
-    """Convert torch tensor to numpy."""
-    return t.numpy()
 
 
 def _to_output(t, *, like):
@@ -267,15 +318,7 @@ class KernelDispatcher:
         v = x_np @ wv_np
         r = 1.0 / (1.0 + np.exp(-(x_np @ wr_np)))
 
-        b, seq_len, d = k.shape
-        out = np.zeros_like(x_np, dtype=np.float32)
-        state = np.zeros((b, d), dtype=np.float32)
-        for t in range(seq_len):
-            kt = k[:, t, :]
-            vt = v[:, t, :]
-            bonus_term = np.exp(bonus_np + kt) * vt
-            out[:, t, :] = r[:, t, :] * (state + bonus_term)
-            state = np.exp(decay_np) * state + np.exp(kt) * vt
+        out = _rwkv_scan(k, v, r, decay_np, bonus_np)
         return _to_output(torch.from_numpy(out), like=x)
 
     def causal_mask(self, x):
@@ -369,7 +412,5 @@ class KernelDispatcher:
         path = Path(file_path)
         if path.exists() and not overwrite:
             raise FileExistsError(f"Output path exists: {file_path}")
-        with open(file_path, "w", encoding="utf-8") as f:
-            for v in data:
-                f.write(f"{float(v)}\n")
+        np.savetxt(file_path, data, fmt="%.6g")
         return int(data.size)

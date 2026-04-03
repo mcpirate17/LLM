@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import pytest
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, get_primitive
-from research.synthesis.compiler import _execute_op
+from research.synthesis.compiler import _OP_DISPATCH
 from research.mathspaces.registry import register_all_mathspaces
 
 pytestmark = pytest.mark.unit
@@ -56,8 +56,11 @@ def is_causal_op(op_name: str) -> bool:
 
     try:
         # Execute op
-        out_base = _execute_op(module, op_name, inputs_base, config)
-        out_mod = _execute_op(module, op_name, inputs_mod, config)
+        dispatch_fn = _OP_DISPATCH.get(op_name)
+        if dispatch_fn is None:
+            return True  # No dispatch handler, skip
+        out_base = dispatch_fn(module, inputs_base, config)
+        out_mod = dispatch_fn(module, inputs_mod, config)
 
         if not isinstance(out_base, torch.Tensor):
             return True  # Not a tensor op, ignore

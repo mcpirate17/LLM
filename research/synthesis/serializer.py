@@ -1,25 +1,21 @@
-"""
-JSON Serialization for Computation Graphs
-
-Serialize/deserialize graphs for storage, sharing, and the lab notebook.
-"""
+"""JSON serialization for ComputationGraph."""
 
 from __future__ import annotations
 
-import json
 from typing import Dict
 
+from ._json_compat import dumps_json, loads_json
 from .graph import ComputationGraph
 
 
 def graph_to_json(graph: ComputationGraph) -> str:
     """Serialize a computation graph to JSON."""
-    return json.dumps(graph.to_dict(), separators=(",", ":"))
+    return dumps_json(graph.to_dict())
 
 
 def graph_from_json(json_str: str) -> ComputationGraph:
     """Deserialize a computation graph from JSON."""
-    d = json.loads(json_str)
+    d = loads_json(json_str)
     return ComputationGraph.from_dict(d)
 
 

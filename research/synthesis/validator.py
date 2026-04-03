@@ -23,7 +23,10 @@ import numpy as np
 from .context_rules import find_graph_context_violations
 from .primitives import get_primitive, REVERSE_OPCODE_MAP
 from .graph import ComputationGraph, ComputationGraphIR
-from collections import deque
+from .native_validation import summarize_validation
+
+
+_NORM_OPS = frozenset({"rmsnorm", "layernorm", "batchnorm"})
 
 
 @dataclass
@@ -49,6 +52,75 @@ class ValidationResult:
         self.warnings.append(msg)
 
 
+def _summarize_graph_validation(graph: ComputationGraph) -> tuple[object, list[int]]:
+    topo = graph.topological_order()
+    known_op_flags = np.zeros(len(topo), dtype=np.int32)
+    risky_op_flags = np.zeros(len(topo), dtype=np.int32)
+    parameterized_op_flags = np.zeros(len(topo), dtype=np.int32)
+    norm_op_flags = np.zeros(len(topo), dtype=np.int32)
+    linear_op_flags = np.zeros(len(topo), dtype=np.int32)
+
+    for idx, node_id in enumerate(topo):
+        node = graph.nodes[node_id]
+        if node.is_input:
+            continue
+        try:
+            op = get_primitive(node.op_name)
+        except KeyError:
+            continue
+        known_op_flags[idx] = 1
+        risky_op_flags[idx] = int(op.numerically_risky)
+        parameterized_op_flags[idx] = int(op.has_params)
+        norm_op_flags[idx] = int(node.op_name in _NORM_OPS)
+        linear_op_flags[idx] = int(op.has_params and op.shape_rule == "linear")
+
+    return (
+        summarize_validation(
+            known_op_flags=known_op_flags,
+            risky_op_flags=risky_op_flags,
+            parameterized_op_flags=parameterized_op_flags,
+            norm_op_flags=norm_op_flags,
+            linear_op_flags=linear_op_flags,
+        ),
+        topo,
+    )
+
+
+def _summarize_ir_validation(ir: ComputationGraphIR):
+    op_codes = ir.op_codes
+    n_nodes = ir.n_nodes()
+    known_op_flags = np.zeros(n_nodes, dtype=np.int32)
+    risky_op_flags = np.zeros(n_nodes, dtype=np.int32)
+    parameterized_op_flags = np.zeros(n_nodes, dtype=np.int32)
+    norm_op_flags = np.zeros(n_nodes, dtype=np.int32)
+    linear_op_flags = np.zeros(n_nodes, dtype=np.int32)
+
+    for idx in range(n_nodes):
+        opcode = int(op_codes[idx])
+        if opcode == 0:
+            continue
+        op_name = REVERSE_OPCODE_MAP.get(opcode)
+        if op_name is None:
+            continue
+        try:
+            op = get_primitive(op_name)
+        except KeyError:
+            continue
+        known_op_flags[idx] = 1
+        risky_op_flags[idx] = int(op.numerically_risky)
+        parameterized_op_flags[idx] = int(op.has_params)
+        norm_op_flags[idx] = int(op_name in _NORM_OPS)
+        linear_op_flags[idx] = int(op.has_params and op.shape_rule == "linear")
+
+    return summarize_validation(
+        known_op_flags=known_op_flags,
+        risky_op_flags=risky_op_flags,
+        parameterized_op_flags=parameterized_op_flags,
+        norm_op_flags=norm_op_flags,
+        linear_op_flags=linear_op_flags,
+    )
+
+
 def validate_graph(
     graph: ComputationGraph,
     max_ops: int = 20,
@@ -70,9 +142,11 @@ def validate_graph(
         result.add_error("Graph has no output node")
         return result
 
+    analysis = graph._analysis_ir().analyze_structure(include_reachable=True)
+
     result.n_ops = graph.n_ops()
-    result.depth = graph.depth()
-    result.n_params_estimate = graph.n_params_estimate()
+    result.depth = analysis.depth
+    result.n_params_estimate = analysis.param_estimate
 
     # Size limits
     if result.n_ops > max_ops:
@@ -84,15 +158,14 @@ def validate_graph(
         result.add_error(f"Too deep: {result.depth} > {depth_limit}")
 
     # Dead branch detection (Shadow Complexity)
-    reachable_nodes = graph.get_reachable_nodes()
-    if len(reachable_nodes) < len(graph.nodes):
-        dead_count = len(graph.nodes) - len(reachable_nodes)
+    if analysis.reachable_count < len(graph.nodes):
+        dead_count = len(graph.nodes) - int(analysis.reachable_count)
         result.add_error(
             f"Graph contains {dead_count} unreachable nodes (dead branches)"
         )
 
-    # Gradient flow
-    result.has_gradient_path = graph.has_gradient_path()
+    # Gradient flow and structural analysis come from the shared IR/native path.
+    result.has_gradient_path = analysis.has_gradient_path
     if not result.has_gradient_path:
         result.add_error("No differentiable path from input to output")
 
@@ -105,8 +178,12 @@ def validate_graph(
     if not output_shape.is_standard:
         result.add_error(f"Output seq dimension is '{output_shape.seq}', expected 'S'")
 
+    validation_summary, topo = _summarize_graph_validation(graph)
+    result.n_risky_ops = validation_summary.risky_op_count
+    result.n_parameterized_ops = validation_summary.parameterized_op_count
+
     # Check all nodes
-    for nid in graph.topological_order():
+    for nid in topo:
         node = graph.nodes[nid]
         if node.is_input:
             continue
@@ -129,12 +206,6 @@ def validate_graph(
             if iid not in graph.nodes:
                 result.add_error(f"Node {nid}: input {iid} doesn't exist")
 
-        # Track risky ops
-        if op.numerically_risky:
-            result.n_risky_ops += 1
-        if op.has_params:
-            result.n_parameterized_ops += 1
-
     for violation in find_graph_context_violations(graph):
         result.add_error(violation)
 
@@ -151,58 +222,17 @@ def validate_graph(
     # intermediate normalization inflate output magnitudes, causing
     # initial_loss of 100–250 (vs ~12 for normalized architectures).
     # 75% of S1 failures come from this pattern (diagnosis 2026-03-20).
-    _NORM_OPS = {"rmsnorm", "layernorm", "batchnorm"}
-    norm_depth = 0
-    max_norm_depth = 0
-    for nid in graph.topological_order():
-        node = graph.nodes[nid]
-        if node.is_input:
-            continue
-        if node.op_name in _NORM_OPS:
-            norm_depth = 0
-            continue
-        try:
-            op = get_primitive(node.op_name)
-        except KeyError:
-            continue
-        if op.has_params and op.shape_rule == "linear":
-            norm_depth += 1
-            if norm_depth > max_norm_depth:
-                max_norm_depth = norm_depth
-    if max_norm_depth > 3:
+    if validation_summary.max_projection_chain_depth > 3:
         result.add_warning(
-            f"Deep projection chain without normalization (depth={max_norm_depth}): "
+            "Deep projection chain without normalization "
+            f"(depth={validation_summary.max_projection_chain_depth}): "
             f"likely high initial loss"
         )
 
-    # Check for cycles (shouldn't happen with our builder, but safety check)
-    if _has_cycle(graph):
+    if analysis.has_cycle:
         result.add_error("Graph contains a cycle")
 
     return result
-
-
-def _has_cycle(graph: ComputationGraph) -> bool:
-    """Check for cycles in the graph using DFS."""
-    WHITE, GRAY, BLACK = 0, 1, 2
-    colors = {nid: WHITE for nid in graph.nodes}
-
-    def dfs(nid: int) -> bool:
-        colors[nid] = GRAY
-        node = graph.nodes[nid]
-        for inp_id in node.input_ids:
-            if colors[inp_id] == GRAY:
-                return True  # Back edge = cycle
-            if colors[inp_id] == WHITE and dfs(inp_id):
-                return True
-        colors[nid] = BLACK
-        return False
-
-    for nid in graph.nodes:
-        if colors[nid] == WHITE:
-            if dfs(nid):
-                return True
-    return False
 
 
 def validate_ir(
@@ -225,61 +255,38 @@ def validate_ir(
     if result.n_ops > max_ops:
         result.add_error(f"Too many ops: {result.n_ops} > {max_ops}")
 
-    # Gradient flow (Vectorized in IR)
-    result.has_gradient_path = ir.has_gradient_path()
+    analysis = ir.analyze_structure(include_reachable=True)
+
+    # Gradient flow (native-backed when available)
+    result.has_gradient_path = analysis.has_gradient_path
     if not result.has_gradient_path:
         result.add_error("No differentiable path from input to output")
 
-    result.n_params_estimate = ir.n_params_estimate()
-
-    # Reachability detection — BFS backward from output: O(n + edges)
-    if ir.output_node_idx != -1:
-        n = ir.n_nodes()
-        # Build reverse adjacency list: node → list of nodes that feed into it
-        reverse_adj: list = [[] for _ in range(n)]
-        for i in range(n):
-            for j in range(2):
-                inp_idx = int(ir.input_indices[i, j])
-                if inp_idx != -1:
-                    reverse_adj[i].append(inp_idx)
-
-        # BFS from output node, following reverse edges
-        reachable = set()
-        queue = [ir.output_node_idx]
-        reachable.add(ir.output_node_idx)
-        while queue:
-            node = queue.pop()
-            for dep in reverse_adj[node]:
-                if dep not in reachable:
-                    reachable.add(dep)
-                    queue.append(dep)
-
-        n_reachable = len(reachable)
-        if n_reachable < n:
-            result.add_error(
-                f"IR contains {n - n_reachable} unreachable nodes (dead branches)"
-            )
+    result.n_params_estimate = analysis.param_estimate
+    if analysis.reachable_count < ir.n_nodes():
+        result.add_error(
+            "IR contains "
+            f"{ir.n_nodes() - int(analysis.reachable_count)} unreachable nodes "
+            "(dead branches)"
+        )
 
     # Fast structural checks
-    if _ir_has_cycle(ir):
+    if analysis.has_cycle:
         result.add_error("Graph contains a cycle")
 
-    # Per-node property aggregation (Vectorized)
+    validation_summary = _summarize_ir_validation(ir)
+    result.n_risky_ops = validation_summary.risky_op_count
+    result.n_parameterized_ops = validation_summary.parameterized_op_count
+
     for i in range(ir.n_nodes()):
         opcode = op_codes[i]
         if opcode == 0:
             continue
-
         op_name = REVERSE_OPCODE_MAP.get(opcode)
-        if not op_name:
+        if op_name is None:
             continue
-
         try:
-            op = get_primitive(op_name)
-            if op.numerically_risky:
-                result.n_risky_ops += 1
-            if op.has_params:
-                result.n_parameterized_ops += 1
+            get_primitive(op_name)
         except KeyError:
             result.add_warning(f"IR contains unknown op '{op_name}'")
 
@@ -290,31 +297,3 @@ def validate_ir(
         result.add_warning("No learnable parameters")
 
     return result
-
-
-def _ir_has_cycle(ir: ComputationGraphIR) -> bool:
-    """Check for cycles in IR using Kahn's algorithm (NumPy accelerated)."""
-    n = ir.n_nodes()
-    in_degree = np.zeros(n, dtype=np.int32)
-
-    # adj[i] list of nodes that depend on i
-    adj = [[] for _ in range(n)]
-
-    for i in range(n):
-        for j in range(2):
-            idx = ir.input_indices[i, j]
-            if idx != -1:
-                in_degree[i] += 1
-                adj[idx].append(i)
-
-    queue = deque(np.where(in_degree == 0)[0])
-    visited_count = 0
-    while queue:
-        u = queue.popleft()
-        visited_count += 1
-        for v in adj[u]:
-            in_degree[v] -= 1
-            if in_degree[v] == 0:
-                queue.append(v)
-
-    return visited_count < n

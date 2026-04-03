@@ -13,6 +13,17 @@ from .primitives import PRIMITIVE_REGISTRY
 logger = logging.getLogger(__name__)
 
 
+def _index_edges(
+    edges: List[Dict[str, Any]],
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, List[Dict[str, Any]]]]:
+    incoming_by_target: Dict[str, List[Dict[str, Any]]] = {}
+    outgoing_by_source: Dict[str, List[Dict[str, Any]]] = {}
+    for edge in edges:
+        incoming_by_target.setdefault(edge["target"], []).append(edge)
+        outgoing_by_source.setdefault(edge["source"], []).append(edge)
+    return incoming_by_target, outgoing_by_source
+
+
 def _lower_template_component(
     graph: ComputationGraph,
     component_leaf: str,
@@ -82,6 +93,7 @@ def workflow_to_computation_graph(
     nodes = workflow_json.get("nodes", [])
     edges = workflow_json.get("edges", [])
     metadata = workflow_json.get("metadata", {})
+    incoming_by_target, outgoing_by_source = _index_edges(edges)
 
     model_dim = metadata.get("model_dim", default_model_dim)
     graph = ComputationGraph(model_dim)
@@ -108,8 +120,7 @@ def workflow_to_computation_graph(
     ]
     if not fe_inputs:
         # If no explicit input node, look for nodes with no incoming edges
-        target_ids = {e["target"] for e in edges}
-        fe_inputs = [n for n in nodes if n["id"] not in target_ids]
+        fe_inputs = [n for n in nodes if n["id"] not in incoming_by_target]
 
     if not fe_inputs:
         raise ValueError("Graph has no detectable input nodes.")
@@ -144,11 +155,11 @@ def workflow_to_computation_graph(
 
             # Strict routing: routing components must lower to a real primitive or template.
             if comp_type.startswith("routing/"):
-                if registry.is_passthrough(comp_type):
-                    pass
-                elif leaf_id in registry.template_lowered_components:
-                    pass
-                elif op_name not in PRIMITIVE_REGISTRY:
+                if (
+                    not registry.is_passthrough(comp_type)
+                    and leaf_id not in registry.template_lowered_components
+                    and op_name not in PRIMITIVE_REGISTRY
+                ):
                     raise ValueError(
                         f"Routing component '{comp_type}' is not supported in the research bridge. "
                         "Implement lowering or add a real primitive mapping before use."
@@ -161,7 +172,7 @@ def workflow_to_computation_graph(
 
             # Passthrough handling
             if registry.is_passthrough(comp_type):
-                incoming = [e for e in edges if e["target"] == node["id"]]
+                incoming = incoming_by_target.get(node["id"], [])
                 if incoming and incoming[0]["source"] in fe_to_be:
                     fe_to_be[node["id"]] = fe_to_be[incoming[0]["source"]]
                     added_any = True
@@ -172,7 +183,7 @@ def workflow_to_computation_graph(
                     continue
 
             # Find incoming edges
-            incoming = [e for e in edges if e["target"] == node["id"]]
+            incoming = incoming_by_target.get(node["id"], [])
             source_fe_ids = [e["source"] for e in incoming]
 
             if all(sid in fe_to_be for sid in source_fe_ids):
@@ -231,17 +242,20 @@ def workflow_to_computation_graph(
 
     # 3. Set output node
     if output_fe_id:
-        incoming_to_output = [e for e in edges if e["target"] == output_fe_id]
+        incoming_to_output = incoming_by_target.get(output_fe_id, [])
         if incoming_to_output:
             last_source_fe_id = incoming_to_output[0]["source"]
             if last_source_fe_id in fe_to_be:
                 graph.set_output(fe_to_be[last_source_fe_id])
             else:
-                _set_fallback_output(graph, fe_to_be, nodes, edges)
+                raise ValueError(
+                    f"Output node '{output_fe_id}' depends on unmapped source "
+                    f"'{last_source_fe_id}'"
+                )
         else:
-            _set_fallback_output(graph, fe_to_be, nodes, edges)
+            raise ValueError(f"Output node '{output_fe_id}' has no incoming edge")
     else:
-        _set_fallback_output(graph, fe_to_be, nodes, edges)
+        _set_fallback_output(graph, fe_to_be, nodes, outgoing_by_source)
 
     if return_id_map:
         return graph, fe_to_be
@@ -252,29 +266,22 @@ def _set_fallback_output(
     graph: ComputationGraph,
     fe_to_be: Dict[str, int],
     nodes: List[Dict],
-    edges: List[Dict],
+    outgoing_by_source: Dict[str, List[Dict[str, Any]]],
 ):
     """Find a suitable sink node to use as graph output."""
-    source_fe_ids = {e["source"] for e in edges}
     fe_sinks = [
-        n for n in nodes if n["id"] not in source_fe_ids and n["id"] in fe_to_be
+        n for n in nodes if n["id"] not in outgoing_by_source and n["id"] in fe_to_be
     ]
     if fe_sinks:
         for sink in reversed(fe_sinks):
             try:
                 graph.set_output(fe_to_be[sink["id"]])
                 return
-            except Exception:
+            except ValueError:
                 continue
-        try:
-            graph.set_output(fe_to_be[fe_sinks[-1]["id"]])
-        except Exception:
-            pass
+        raise ValueError("No sink node could be used as graph output")
 
-    # Final fallback
-    topo = graph.topological_order()
-    if topo:
-        graph.set_output(topo[-1])
+    raise ValueError("Graph has no detectable sink node for output")
 
 
 def graph_to_workflow(

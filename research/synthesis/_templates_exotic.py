@@ -530,14 +530,26 @@ def tpl_n_way_moe_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → n_way_sparse_router → norm → [FFN motif] → residual_add.
+    """norm → [attention →] n_way_sparse_router → norm → [FFN motif] → residual_add.
 
-    N-way sparse routing with bottleneck experts. Ensures n_ways divides
-    model_dim by choosing from safe divisors.
+    N-way sparse routing with bottleneck experts. 40% chance of attention
+    before the MoE routing for global context.
     """
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # 40% chance: attention before MoE routing
+    current = normed
+    if rng.random() < 0.4:
+        attn = _pick_compatible_motif(
+            graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
+        )
+        if attn:
+            attended = _instantiate_motif(graph, normed, attn, rng)
+            current = _fix_dim(graph, attended)
 
     # Pick n_ways that divides D
     safe_n_ways = [n for n in [2, 4, 8] if D % n == 0]
@@ -548,7 +560,7 @@ def tpl_n_way_moe_block(
     try:
         routed = graph.add_op(
             "sparse_bottleneck_moe",
-            [normed],
+            [current],
             config={"n_ways": n_ways, "top_k": min(2, n_ways)},
         )
     except (ValueError, KeyError):
@@ -613,12 +625,13 @@ def tpl_causal_mix_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → causal_mask → proj → [FFN motif] → residual_add.
+    """norm → causal_mask → [attention motif] → proj → [FFN motif] → residual_add.
 
     Causal cumulative average as a lightweight O(S*D) causal mixer.
-    Each token becomes the running mean of itself and all predecessors.
-    FFN after the mixer provides the actual learning capacity.
+    50% chance of attention after the causal mask for richer mixing.
     """
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
@@ -628,6 +641,15 @@ def tpl_causal_mix_block(
         projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
+
+    # 50% chance: attention after causal mixing
+    if rng.random() < 0.5:
+        attn = _pick_compatible_motif(
+            graph, projected, rng, MOTIF_CLASS_ATTENTION, weights
+        )
+        if attn:
+            attended = _instantiate_motif(graph, projected, attn, rng)
+            projected = _fix_dim(graph, attended)
 
     ffn = _pick_compatible_motif_from_classes(
         graph, projected, rng, list(_FFN_CLASSES), weights
@@ -650,19 +672,31 @@ def tpl_iterative_refinement(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → fixed_point_iter → linear_proj → residual_add.
+    """norm → [attention →] fixed_point_iter → linear_proj → residual_add.
 
     Damped fixed-point iteration: z = (1-d)*z + d*tanh(z@W+b), repeated n_iters times.
-    Inherently stable due to tanh bounding and damping ∈ [0,1].
+    50% chance of attention before iteration for global context seeding.
     """
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
+    # 50% chance: attention pre-seeds the iterative refinement
+    current = normed
+    if rng.random() < 0.5:
+        attn = _pick_compatible_motif(
+            graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
+        )
+        if attn:
+            attended = _instantiate_motif(graph, normed, attn, rng)
+            current = _fix_dim(graph, attended)
+
     try:
         refined = graph.add_op(
             "fixed_point_iter",
-            [normed],
+            [current],
             config={
                 "n_iters": rng.choice([2, 3]),
                 "damping": round(rng.uniform(0.3, 0.7), 2),
@@ -684,17 +718,29 @@ def tpl_recurrent_delta_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → gated_delta → proj → [FFN motif] → residual_add.
+    """norm → [attention →] gated_delta → proj → [FFN motif] → residual_add.
 
     GatedDeltaNet: recurrent outer-product state with gated decay/update.
-    6D² params — high capacity recurrent mixing + feedforward.
+    40% chance of attention before delta for global context.
     """
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
+    # 40% chance: attention before delta recurrence
+    current = normed
+    if rng.random() < 0.4:
+        attn = _pick_compatible_motif(
+            graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
+        )
+        if attn:
+            attended = _instantiate_motif(graph, normed, attn, rng)
+            current = _fix_dim(graph, attended)
+
     try:
-        recurrent = graph.add_op("gated_delta", [normed])
+        recurrent = graph.add_op("gated_delta", [current])
         projected = graph.add_op("linear_proj", [recurrent], config={"out_dim": D})
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)

@@ -126,7 +126,7 @@ MOTIF_TEST_CASES = [
     # (motif_name, target_op_that_was_unreachable)
     ("kronecker_proj", "kronecker_linear"),
     ("chebyshev_spectral", "chebyshev_spectral_mix"),
-    ("n_way_routing", "n_way_sparse_router"),
+    ("n_way_routing", "sparse_bottleneck_moe"),
     ("spectral_filter_block", "spectral_filter"),
     ("tropical_matmul_block", "tropical_matmul"),
     ("tropical_gate_block", "tropical_gate"),
@@ -140,7 +140,7 @@ MOTIF_TEST_CASES = [
     ("spiking_lif_rate", "lif_neuron"),
     ("spiking_threshold_stdp", "stdp_attention"),
     ("clifford_rotor_grade", "rotor_transform"),
-    ("route_mod_topk", "mod_topk"),
+    ("route_mod_topk", "depth_token_mask"),
     ("tropical_router_block", "tropical_router"),
     ("tropical_moe_block", "tropical_moe"),
     ("decay_cumprod", "cumprod_safe"),

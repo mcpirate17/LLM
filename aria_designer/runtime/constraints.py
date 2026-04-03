@@ -12,17 +12,32 @@ import os
 import yaml
 from typing import Any, Dict, List, Optional, Set
 
+# Module-level manifest cache — survives across calls within the same process.
+_manifest_cache: Dict[str, Optional[Dict]] = {}
+
 
 def _load_manifest(component_id: str, components_dir: str) -> Optional[Dict]:
-    """Load a component's manifest.yaml."""
-    for category in os.listdir(components_dir):
+    """Load a component's manifest.yaml (cached)."""
+    cache_key = f"{components_dir}:{component_id}"
+    if cache_key in _manifest_cache:
+        return _manifest_cache[cache_key]
+
+    result = None
+    try:
+        entries = os.listdir(components_dir)
+    except OSError:
+        _manifest_cache[cache_key] = None
+        return None
+    for category in entries:
         candidate = os.path.join(
             components_dir, category, component_id, "manifest.yaml"
         )
         if os.path.isfile(candidate):
             with open(candidate, "r") as f:
-                return yaml.safe_load(f)
-    return None
+                result = yaml.safe_load(f)
+            break
+    _manifest_cache[cache_key] = result
+    return result
 
 
 def _collect_tags(manifest: Dict) -> Set[str]:

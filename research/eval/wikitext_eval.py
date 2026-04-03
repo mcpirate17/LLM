@@ -44,12 +44,6 @@ _SCREENING_N_EVAL_BATCHES = 4
 _SCREENING_BATCH_SIZE = 4
 _SCREENING_METRIC_VERSION = "screening_wikitext_v1"
 
-# WikiText-103 for VALIDATED-stage "final boss" evaluation.
-# ~103M tokens train, ~250K tokens val — 50x larger than WikiText-2.
-WIKITEXT_103_VARIANT = "wikitext-103-raw-v1"
-_WIKITEXT_103_MAX_CHARS_TRAIN = 20_000_000  # 20MB — enough for 4000 unique batches
-_WIKITEXT_103_MAX_CHARS_VAL = 200_000  # 200KB val for reliable PPL
-
 
 def screening_wikitext_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return a normalized screening benchmark payload for persistence."""
@@ -148,7 +142,19 @@ def _download_wikitext(
 # Keyed by (variant, vocab_size, seq_len, batch_size, n_batches,
 #            max_chars_train, max_chars_val, split, seed).
 
-_batch_cache: Dict[tuple, List[torch.Tensor]] = {}
+_BATCH_CACHE_MAX_ENTRIES = 8
+
+_batch_cache: "collections.OrderedDict[tuple, List[torch.Tensor]]" = None  # type: ignore[assignment]
+
+
+def _get_batch_cache() -> "collections.OrderedDict[tuple, List[torch.Tensor]]":
+    """Lazy-init the LRU batch cache."""
+    global _batch_cache
+    if _batch_cache is None:
+        import collections
+
+        _batch_cache = collections.OrderedDict()
+    return _batch_cache
 
 
 def _get_cached_batches(
@@ -163,14 +169,16 @@ def _get_cached_batches(
     seed: int,
 ) -> Optional[List[torch.Tensor]]:
     """Return cached batches if available, moving to *device* if needed."""
+    cache = _get_batch_cache()
     key = (variant, vocab_size, seq_len, batch_size, n_batches, max_chars, split, seed)
-    batches = _batch_cache.get(key)
+    batches = cache.get(key)
     if batches is None:
         return None
+    cache.move_to_end(key)  # LRU touch
     target = torch.device(device)
     if batches[0].device != target:
         batches = [b.to(target) for b in batches]
-        _batch_cache[key] = batches
+        cache[key] = batches
     return batches
 
 
@@ -185,8 +193,12 @@ def _put_cached_batches(
     seed: int,
     batches: List[torch.Tensor],
 ) -> None:
+    cache = _get_batch_cache()
     key = (variant, vocab_size, seq_len, batch_size, n_batches, max_chars, split, seed)
-    _batch_cache[key] = batches
+    cache[key] = batches
+    # Evict oldest entries beyond the limit
+    while len(cache) > _BATCH_CACHE_MAX_ENTRIES:
+        cache.popitem(last=False)
 
 
 def _prepare_batches(
@@ -696,86 +708,5 @@ def evaluate_wikitext_trajectory(
         "total_steps": step,
         "variant": variant,
         "protocol": "trajectory_probe_v2",
-        "elapsed_ms": round(elapsed_ms, 1),
-    }
-
-
-# WikiText-103 defaults — 50x more data than WikiText-2
-_WIKITEXT103_MAX_CHARS_TRAIN = 20_000_000  # ~20MB, covers most of train split
-_WIKITEXT103_MAX_CHARS_VAL = 200_000  # ~200KB validation
-
-
-def evaluate_wikitext103_validation(
-    model: nn.Module,
-    vocab_size: int,
-    device: str,
-    n_train_steps: int = 4000,
-    seq_len: int = 128,
-    n_train_batches: int = 0,
-    n_eval_batches: int = 16,
-    train_batch_size: int = 8,
-    eval_batch_size: int = 8,
-    lr: float = 3e-4,
-    max_chars_train: int = _WIKITEXT103_MAX_CHARS_TRAIN,
-    max_chars_val: int = _WIKITEXT103_MAX_CHARS_VAL,
-) -> Dict[str, Any]:
-    """VALIDATED-stage WikiText-103 confirmation eval.
-
-    Trains on WikiText-103 (much larger corpus than WikiText-2) to confirm
-    that a model's frontier claim generalises beyond small-corpus memorisation.
-
-    If ``wikitext103_ppl / wikitext2_peak_ppl < 2.0``, the frontier claim
-    stands.  If > 2.0, the model's capability was WikiText-2-specific.
-
-    Protocol: ``validated_wikitext103_v1``
-    """
-    t0 = time.perf_counter()
-
-    if n_train_batches <= 0:
-        n_train_batches = n_train_steps
-
-    try:
-        train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
-            "wikitext-103-raw-v1",
-            vocab_size,
-            seq_len,
-            train_batch_size,
-            eval_batch_size,
-            n_train_batches,
-            n_eval_batches,
-            max_chars_train,
-            max_chars_val,
-            device,
-        )
-    except Exception as e:
-        logger.warning("WikiText-103 data prep failed: %s", e)
-        return {"error": f"data_failed: {e}"}
-
-    if not train_batches or not val_batches:
-        return {"error": "insufficient_tokens"}
-
-    pre_ppl = compute_perplexity(model, val_batches, vocab_size)
-
-    train_final_loss = micro_train_loop(
-        model,
-        train_batches,
-        vocab_size,
-        n_steps=n_train_steps,
-        lr=lr,
-    )
-
-    post_ppl = compute_perplexity(model, val_batches, vocab_size)
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-    return {
-        "wikitext103_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
-        "wikitext103_pre_perplexity": round(pre_ppl, 2)
-        if pre_ppl is not None
-        else None,
-        "wikitext103_score": wikitext_score_from_ppl(post_ppl, vocab_size),
-        "train_final_loss": round(train_final_loss, 6),
-        "variant": "wikitext-103-raw-v1",
-        "n_train_steps": n_train_steps,
-        "protocol": "validated_wikitext103_v1",
         "elapsed_ms": round(elapsed_ms, 1),
     }

@@ -15,7 +15,8 @@ def register_native_routes(app, context: ApiRouteContext):
     def api_native_runner_profile():
         """Return per-node profiling data from the most recent native execution."""
         try:
-            from ..native_runner import get_native_profile, _try_import_rust_scheduler
+            from ..native.profiling import get_native_profile
+            from ..native.core import _try_import_rust_scheduler
 
             rust = _try_import_rust_scheduler()
             profiling_enabled = bool(
@@ -57,10 +58,8 @@ def register_native_routes(app, context: ApiRouteContext):
     def api_native_runner_profile_enable():
         """Toggle native kernel profiling on or off."""
         try:
-            from ..native_runner import (
-                enable_native_profiling,
-                _try_import_rust_scheduler,
-            )
+            from ..native.profiling import enable_native_profiling
+            from ..native.core import _try_import_rust_scheduler
 
             body = request.get_json(silent=True) or {}
             enable = bool(body.get("enable", True))

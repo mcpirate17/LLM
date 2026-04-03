@@ -10,18 +10,26 @@ Post-construction static analysis that walks the DAG and reports:
 6. Parameter budget enforcement (reject before expensive eval)
 7. KV-cache compatibility flag (ops that break incremental decoding)
 
-This runs AFTER graph construction (where add_op silently falls back to
-input_id on ValueError), catching graphs that look valid but have
-skip-only or broken paths.
+This runs AFTER graph construction, catching graphs that look valid but
+still have skip-only or broken paths.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List
+from typing import FrozenSet, Optional
 
+import numpy as np
+
+from .dim_flow_support import (
+    FULL_DIM_OPS,
+    KV_CACHE_BREAKING_OPS,
+    build_dim_flow_inputs,
+)
 from .graph import ComputationGraph
-from .primitives import PRIMITIVE_REGISTRY, estimate_op_params
+from .native_analysis import summarize_dim_flow, validate_edges
+from .native_dim_flow import dead_parameterized_mask
+from .primitives import PRIMITIVE_REGISTRY
 
 
 @dataclass(slots=True)
@@ -30,6 +38,10 @@ class DimFlowResult:
 
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    reachable_param_count: int = 0
+    reachable_param_estimate: int = 0
+    reachable_nontrivial_ops: int = 0
+    reachable_ops: int = 0
 
     @property
     def valid(self) -> bool:
@@ -43,26 +55,17 @@ class DimFlowResult:
 
 
 # Ops that do internal Q/K/V projection and need full model_dim.
-_FULL_DIM_OPS: FrozenSet[str] = frozenset(
-    {
-        "softmax_attention",
-        "linear_attention",
-        "graph_attention",
-        "diff_attention",
-        "state_space",
-        "selective_scan",
-        "rwkv_channel",
-        "rwkv_time_mixing",
-        "moe_topk",
-        "moe_2expert",
-        "swiglu_mlp",
-        "gated_linear",
-        "gated_delta",
-    }
-)
+_FULL_DIM_OPS: FrozenSet[str] = FULL_DIM_OPS
+_OP_KIND_DEFAULT = 0
+_OP_KIND_IRFFT = 1
+_OP_KIND_IDENTITY = 2
+_OP_KIND_BINARY_BROADCAST = 3
 
 
-def validate_dim_flow(graph: ComputationGraph) -> DimFlowResult:
+def validate_dim_flow(
+    graph: ComputationGraph,
+    max_params: Optional[int] = None,
+) -> DimFlowResult:
     """Walk the DAG and validate dimension flow at every edge.
 
     Returns DimFlowResult with errors (hard failures) and warnings.
@@ -76,15 +79,46 @@ def validate_dim_flow(graph: ComputationGraph) -> DimFlowResult:
     model_dim = graph.model_dim
     topo = graph.topological_order()
     reachable = graph.get_reachable_nodes()
+    dim_flow_inputs = build_dim_flow_inputs(
+        graph,
+        op_kind_default=_OP_KIND_DEFAULT,
+        op_kind_irfft=_OP_KIND_IRFFT,
+        op_kind_identity=_OP_KIND_IDENTITY,
+        op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
+    )
+    analysis_ir = dim_flow_inputs.analysis_ir
+    analysis = dim_flow_inputs.analysis
+    analysis_node_ids = dim_flow_inputs.analysis_node_ids
+    node_id_to_analysis_idx = dim_flow_inputs.node_id_to_analysis_idx
 
-    # Build successor map for skip-path detection.
-    successors: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
-    for nid, node in graph.nodes.items():
-        for pid in node.input_ids:
-            if pid in successors:
-                successors[pid].append(nid)
+    summary_reachable_mask = analysis.reachable_mask.astype(np.int32, copy=True)
+    input_node_id = graph._input_node_id
+    if input_node_id is not None and input_node_id in node_id_to_analysis_idx:
+        summary_reachable_mask[node_id_to_analysis_idx[input_node_id]] = 0
 
-    # ── 1. Check every edge for dim/seq compatibility ─────────────
+    summary = summarize_dim_flow(
+        reachable_mask=summary_reachable_mask,
+        has_params_flags=dim_flow_inputs.has_params_flags,
+        param_estimates=dim_flow_inputs.param_estimates,
+        nontrivial_flags=dim_flow_inputs.nontrivial_flags,
+        kv_breaking_flags=dim_flow_inputs.kv_breaking_flags,
+    )
+    result.reachable_param_count = summary.reachable_param_count
+    result.reachable_param_estimate = summary.reachable_param_estimate
+    result.reachable_nontrivial_ops = summary.reachable_nontrivial_ops
+    result.reachable_ops = summary.reachable_ops
+
+    edge_validation = validate_edges(
+        reachable_mask=analysis.reachable_mask.astype(np.int32, copy=False),
+        input_indices=analysis_ir.input_indices,
+        node_dims=dim_flow_inputs.node_dims,
+        node_seq_flags=dim_flow_inputs.node_seq_flags,
+        op_kind_flags=dim_flow_inputs.op_kind_flags,
+        full_dim_flags=dim_flow_inputs.full_dim_flags,
+        model_dim=model_dim,
+    )
+
+    # ── 1. Check every reachable node/edge for dim, seq, and param constraints ──
     for nid in topo:
         node = graph.nodes[nid]
         if node.is_input:
@@ -107,39 +141,36 @@ def validate_dim_flow(graph: ComputationGraph) -> DimFlowResult:
 
             p_shape = parent.output_shape
 
-            # Seq-domain mismatch: freq-domain into non-freq consumer.
-            if p_shape.is_freq_domain and op.shape_rule not in ("irfft", "identity"):
+            if edge_validation.freq_mismatch_bits[node_id_to_analysis_idx[nid]] & (
+                1 << i
+            ):
                 result.add_error(
                     f"Node {nid} ({node.op_name}): input[{i}] is freq-domain "
                     f"(seq={p_shape.seq}) but op expects time-domain"
                 )
 
-            # Dim=1 from reduce feeding op that expects full dim.
-            if p_shape.dim == 1 and op.name in _FULL_DIM_OPS:
+            if edge_validation.reduce_full_dim_bits[node_id_to_analysis_idx[nid]] & (
+                1 << i
+            ):
                 result.add_error(
                     f"Node {nid} ({node.op_name}): input[{i}] has dim=1 "
                     f"(from reduce) but op requires full dim"
                 )
 
-            # Binary ops: check dim compatibility at this edge.
-            if op.shape_rule == "binary_broadcast" and len(node.input_ids) == 2:
-                other_pid = node.input_ids[1 - i]
-                other = graph.nodes.get(other_pid)
-                if other is not None:
-                    d0, d1 = p_shape.dim, other.output_shape.dim
-                    if d0 != d1 and d0 != 1 and d1 != 1:
-                        # Only report once (when i==0).
-                        if i == 0:
-                            result.add_error(
-                                f"Node {nid} ({node.op_name}): dim mismatch "
-                                f"{d0} vs {d1} at binary edge"
-                            )
+        if edge_validation.binary_dim_mismatch[node_id_to_analysis_idx[nid]]:
+            d0 = graph.nodes[node.input_ids[0]].output_shape.dim
+            d1 = graph.nodes[node.input_ids[1]].output_shape.dim
+            result.add_error(
+                f"Node {nid} ({node.op_name}): dim mismatch {d0} vs {d1} at binary edge"
+            )
 
         # Full-dim ops receiving non-model-dim input.
         if node.op_name in _FULL_DIM_OPS:
             for i, pid in enumerate(node.input_ids):
                 parent = graph.nodes.get(pid)
-                if parent and parent.output_shape.dim != model_dim:
+                if parent and edge_validation.full_dim_input_bits[
+                    node_id_to_analysis_idx[nid]
+                ] & (1 << i):
                     result.add_error(
                         f"Node {nid} ({node.op_name}): input[{i}] has "
                         f"dim={parent.output_shape.dim}, needs model_dim={model_dim}"
@@ -164,42 +195,32 @@ def validate_dim_flow(graph: ComputationGraph) -> DimFlowResult:
                 "all template ops were bypassed"
             )
 
-    # Count how many parameterized ops are on the reachable path.
-    n_reachable_params = 0
-    for nid in reachable:
-        node = graph.nodes[nid]
-        if node.is_input:
-            continue
-        op = PRIMITIVE_REGISTRY.get(node.op_name)
-        if op and op.has_params:
-            n_reachable_params += 1
-
-    if n_reachable_params == 0:
+    if result.reachable_param_count == 0:
         result.add_error("No parameterized ops on reachable path — model cannot learn")
 
     # Minimum effective depth: reject graphs where most slots silently skipped.
-    _TRIVIAL_OPS = {"identity", "rmsnorm", "layernorm"}
-    n_reachable_nontrivial = sum(
-        1 for nid in reachable if not graph.nodes[nid].is_input
-    )
-    n_effective_ops = sum(
-        1
-        for nid in reachable
-        if not graph.nodes[nid].is_input
-        and graph.nodes[nid].op_name not in _TRIVIAL_OPS
-    )
     # At least 3 effective ops, or at least 30% of reachable ops must be non-trivial
-    min_effective = min(3, max(1, int(n_reachable_nontrivial * 0.3)))
-    if n_effective_ops < min_effective:
+    min_effective = min(3, max(1, int(result.reachable_ops * 0.3)))
+    if result.reachable_nontrivial_ops < min_effective:
         result.add_error(
-            f"Too few effective ops: {n_effective_ops} < {min_effective} — "
+            f"Too few effective ops: {result.reachable_nontrivial_ops} < {min_effective} — "
             f"likely all slots fell back to skip"
         )
 
+    if max_params is not None and result.reachable_param_estimate > max_params:
+        result.add_error(
+            "Parameter budget exceeded: "
+            f"{result.reachable_param_estimate:,} > {max_params:,}"
+        )
+
     # ── 3. Dead parameterized nodes (unreachable learned weights) ─
-    for nid, node in graph.nodes.items():
-        if nid in reachable or node.is_input:
-            continue
+    dead_params = dead_parameterized_mask(
+        reachable_mask=analysis.reachable_mask.astype(np.int32, copy=False),
+        parameterized_flags=dim_flow_inputs.has_params_flags,
+    )
+    for idx in np.flatnonzero(dead_params.mask):
+        nid = int(analysis_node_ids[idx])
+        node = graph.nodes[nid]
         op = PRIMITIVE_REGISTRY.get(node.op_name)
         if op and op.has_params:
             result.add_warning(
@@ -235,25 +256,17 @@ def check_param_budget(
     Returns:
         DimFlowResult with error if budget exceeded.
     """
-    result = DimFlowResult()
-    total = 0
-    model_dim = graph.model_dim
-    reachable = graph.get_reachable_nodes()
-
-    for nid in reachable:
-        node = graph.nodes[nid]
-        if node.is_input:
-            continue
-        op = PRIMITIVE_REGISTRY.get(node.op_name)
-        if op is None or not op.has_params:
-            continue
-        d_in = node.output_shape.dim or model_dim
-        total += estimate_op_params(op, d_in)
-
-    if total > max_params:
-        result.add_error(f"Parameter budget exceeded: {total:,} > {max_params:,}")
-
-    return result
+    result = validate_dim_flow(graph, max_params=max_params)
+    budget_only = DimFlowResult(
+        reachable_param_count=result.reachable_param_count,
+        reachable_param_estimate=result.reachable_param_estimate,
+        reachable_nontrivial_ops=result.reachable_nontrivial_ops,
+        reachable_ops=result.reachable_ops,
+    )
+    for error in result.errors:
+        if error.startswith("Parameter budget exceeded:"):
+            budget_only.add_error(error)
+    return budget_only
 
 
 # ── 5.4: KV-cache compatibility ──────────────────────────────────
@@ -262,19 +275,7 @@ def check_param_budget(
 # - Reorder/drop tokens (breaking positional alignment)
 # - Require full-sequence context at every step (no incremental mode)
 # - Use FFT across sequence dim (needs full sequence)
-_KV_CACHE_BREAKING_OPS: FrozenSet[str] = frozenset(
-    {
-        "adjacent_token_merge",  # drops tokens (was: token_merge)
-        "depth_token_mask",  # routes subset of tokens (was: mod_topk)
-        "spectral_filter",  # FFT over full sequence
-        "rfft",  # frequency domain
-        "irfft",  # frequency domain
-        "sort_seq",  # reorders tokens
-        "unsort_seq",  # reorders tokens
-        "cumsum",  # depends on full prefix (marginal, but flagged)
-        "cumprod_safe",  # depends on full prefix
-    }
-)
+_KV_CACHE_BREAKING_OPS: FrozenSet[str] = KV_CACHE_BREAKING_OPS
 
 
 def compute_kv_cacheable(graph: ComputationGraph) -> bool:
@@ -282,12 +283,31 @@ def compute_kv_cacheable(graph: ComputationGraph) -> bool:
 
     Returns True if no ops in the reachable path break KV-cache.
     """
-    reachable = graph.get_reachable_nodes()
-    for nid in reachable:
-        node = graph.nodes[nid]
-        if node.op_name in _KV_CACHE_BREAKING_OPS:
-            return False
-    return True
+    dim_flow_inputs = build_dim_flow_inputs(
+        graph,
+        op_kind_default=_OP_KIND_DEFAULT,
+        op_kind_irfft=_OP_KIND_IRFFT,
+        op_kind_identity=_OP_KIND_IDENTITY,
+        op_kind_binary_broadcast=_OP_KIND_BINARY_BROADCAST,
+    )
+    analysis_ir = dim_flow_inputs.analysis_ir
+    analysis = dim_flow_inputs.analysis
+    analysis_node_ids = dim_flow_inputs.analysis_node_ids
+
+    summary_reachable_mask = analysis.reachable_mask.astype(np.int32, copy=True)
+    input_node_id = graph._input_node_id
+    if input_node_id is not None:
+        input_idx = int(np.where(analysis_node_ids == input_node_id)[0][0])
+        summary_reachable_mask[input_idx] = 0
+
+    summary = summarize_dim_flow(
+        reachable_mask=summary_reachable_mask,
+        has_params_flags=np.zeros(analysis_ir.n_nodes(), dtype=np.int32),
+        param_estimates=np.zeros(analysis_ir.n_nodes(), dtype=np.int64),
+        nontrivial_flags=np.zeros(analysis_ir.n_nodes(), dtype=np.int32),
+        kv_breaking_flags=dim_flow_inputs.kv_breaking_flags,
+    )
+    return summary.kv_cacheable
 
 
 def annotate_kv_cacheable(graph: ComputationGraph) -> None:

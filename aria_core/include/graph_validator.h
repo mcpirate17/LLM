@@ -77,6 +77,15 @@ typedef struct {
     int32_t    out_degree[ARIA_MAX_NODES];  /* out-degree per node */
 } AriaValidationResult;
 
+typedef struct {
+    AriaResult code;
+    char       error[ARIA_MAX_ERROR_LEN];
+    int32_t    reachable_nodes[ARIA_MAX_NODES];
+    int32_t    reachable_len;
+    int32_t    max_depth;
+    int32_t    has_input_path;
+} AriaGraphAnalysisResult;
+
 /* ── API ───────────────────────────────────────────────────────────── */
 
 /**
@@ -121,6 +130,11 @@ AriaResult aria_proactive_gating(const AriaGraph *graph,
  */
 int32_t aria_detect_toxic_motifs(const AriaGraph *graph, 
                                  const AriaValidationResult *validation);
+
+AriaResult aria_analyze_graph(const AriaGraph *graph,
+                              int32_t output_node,
+                              int32_t input_node,
+                              AriaGraphAnalysisResult *result);
 
 #ifdef __cplusplus
 }

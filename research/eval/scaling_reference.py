@@ -509,16 +509,20 @@ class ScalingReferenceManager:
 
             optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
             model.train()
+            _data_gen = torch.Generator(device=dev).manual_seed(seed * 100000)
 
             final_loss = float("inf")
             try:
                 for step in range(n_steps):
-                    torch.manual_seed(seed * 100000 + step)
                     if data_fn is not None:
                         input_ids = data_fn(batch_size, seq_len, dev)
                     else:
                         input_ids = torch.randint(
-                            0, vocab_size, (batch_size, seq_len), device=dev
+                            0,
+                            vocab_size,
+                            (batch_size, seq_len),
+                            device=dev,
+                            generator=_data_gen,
                         )
 
                     with torch.amp.autocast(

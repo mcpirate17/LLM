@@ -15,6 +15,7 @@ from research.synthesis.primitives import (
     algebraic_types_compatible,
 )
 from research.synthesis.templates import _instantiate_motif
+from research.synthesis._template_helpers import TemplateBuildError
 
 pytestmark = pytest.mark.unit
 register_all_mathspaces()
@@ -76,8 +77,8 @@ def test_instantiate_motif_rejects_incompatible_cross_space_sequence():
         motif_class="test",
         steps=(MotifStep("tropical_center", OpRole.MIX),),
     )
-    result = _instantiate_motif(graph, exp_id, motif, random.Random(0))
-    assert result == exp_id
+    with pytest.raises(TemplateBuildError, match="algebraically incompatible"):
+        _instantiate_motif(graph, exp_id, motif, random.Random(0))
 
 
 def test_typed_space_motifs_are_compatible_from_euclidean_input():

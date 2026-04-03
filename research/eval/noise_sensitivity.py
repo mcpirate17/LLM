@@ -56,7 +56,7 @@ def evaluate_noise_sensitivity(
             vocab_size = VOCAB_SIZE
 
     # Measure baseline loss (no noise)
-    baseline_loss = _measure_loss(model, input_batches, device, vocab_size)
+    baseline_loss = _measure_loss_util(model, input_batches, device, vocab_size)
     if baseline_loss is None or baseline_loss <= 0:
         return {"noise_sensitivity_score": 0.0, "levels": {}}
 
@@ -81,7 +81,7 @@ def evaluate_noise_sensitivity(
 
         handle = embed_module.register_forward_hook(_add_noise)
         try:
-            noisy_loss = _measure_loss(model, input_batches, device, vocab_size)
+            noisy_loss = _measure_loss_util(model, input_batches, device, vocab_size)
         finally:
             handle.remove()
 
@@ -103,13 +103,3 @@ def evaluate_noise_sensitivity(
         "baseline_loss": round(baseline_loss, 6),
         "levels": results_by_level,
     }
-
-
-def _measure_loss(
-    model: nn.Module,
-    input_batches: List[torch.Tensor],
-    device: torch.device,
-    vocab_size: int,
-) -> float | None:
-    """Measure average cross-entropy loss over batches."""
-    return _measure_loss_util(model, input_batches, device, vocab_size)

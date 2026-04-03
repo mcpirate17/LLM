@@ -27,7 +27,6 @@ from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from research.defaults import VOCAB_SIZE
 from .utils import tokenize_string
@@ -186,47 +185,59 @@ def _score_pairs_batched(
     device: str,
     max_seq_len: int = 512,
 ) -> int:
-    """Score a batch of minimal pairs. Returns number where good > bad.
+    """Score a batch of minimal pairs via a single batched forward pass.
 
-    Processes all sentences individually (BLiMP sentences are short,
-    variable-length — padding overhead would exceed batching gains).
-    Uses pre-allocated output to avoid per-pair object creation.
+    Pads all good+bad sentences to the same length, runs one forward pass,
+    then compares log-probs pairwise. Returns number where good > bad.
     """
-    correct = 0
+    import torch.nn.functional as F
+
+    if not pairs:
+        return 0
+
+    # Tokenize all sentences
+    all_tokens: List[List[int]] = []
+    lengths: List[int] = []
     for pair in pairs:
-        good_tokens = tokenize_string(pair["good"], vocab_size)
-        bad_tokens = tokenize_string(pair["bad"], vocab_size)
+        for key in ("good", "bad"):
+            toks = tokenize_string(pair[key], vocab_size)
+            if len(toks) > max_seq_len:
+                toks = toks[:max_seq_len]
+            all_tokens.append(toks)
+            lengths.append(len(toks))
 
-        good_score = _mean_log_prob(model, good_tokens, vocab_size, device, max_seq_len)
-        bad_score = _mean_log_prob(model, bad_tokens, vocab_size, device, max_seq_len)
+    # Pad to max length and stack
+    max_len = max(lengths) if lengths else 1
+    padded = torch.zeros(len(all_tokens), max_len, dtype=torch.long, device=device)
+    for i, toks in enumerate(all_tokens):
+        padded[i, : len(toks)] = torch.tensor(toks, dtype=torch.long)
 
-        if good_score > bad_score:
-            correct += 1
-    return correct
-
-
-def _mean_log_prob(
-    model: nn.Module,
-    tokens: List[int],
-    vocab_size: int,
-    device: str,
-    max_seq_len: int,
-) -> float:
-    """Mean log-prob of a token sequence under the model."""
-    if len(tokens) < 2:
-        return float("-inf")
-    if len(tokens) > max_seq_len:
-        tokens = tokens[:max_seq_len]
-
-    input_ids = torch.tensor([tokens], dtype=torch.long, device=device)
-    logits = model(input_ids)
-
+    # Single batched forward pass
+    logits = model(padded)  # (2*N, max_len, V)
     if logits.shape[-1] > vocab_size:
         logits = logits[..., :vocab_size]
+    log_probs = F.log_softmax(logits[:, :-1], dim=-1)  # (2*N, max_len-1, V)
 
-    log_probs = F.log_softmax(logits[0, :-1], dim=-1)
-    targets = input_ids[0, 1:]
-    return log_probs.gather(1, targets.unsqueeze(1)).squeeze(1).mean().item()
+    # Compute per-sequence mean log-prob
+    targets = padded[:, 1:]  # (2*N, max_len-1)
+    token_lps = log_probs.gather(2, targets.unsqueeze(2)).squeeze(2)  # (2*N, max_len-1)
+
+    # Mask out padding positions
+    mask = torch.zeros_like(token_lps)
+    for i, l in enumerate(lengths):
+        if l >= 2:
+            mask[i, : l - 1] = 1.0
+
+    # Mean log-prob per sequence (only over real tokens)
+    token_counts = mask.sum(dim=1).clamp(min=1)
+    mean_lps = (token_lps * mask).sum(dim=1) / token_counts  # (2*N,)
+
+    # Compare pairwise: even indices = good, odd indices = bad
+    correct = 0
+    for j in range(len(pairs)):
+        if mean_lps[2 * j] > mean_lps[2 * j + 1]:
+            correct += 1
+    return correct
 
 
 # ── Result type ─────────────────────────────────────────────────────────

@@ -364,9 +364,11 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     # For Cl(3,0): signs are [+,+,+,+,-,-,-,-]
     signs = _CL30_SIGNS.to(device=x.device, dtype=x.dtype)
     q_signed = mv_q * signs  # (B, S, K, 8)
-    # q_signed summed over basis -> (B, S, K)
-    q_scalar = q_signed.sum(dim=-1)  # (B, S, K)
-    k_scalar = mv_k.sum(dim=-1)  # (B, S, K)
+    # Use mean instead of sum so score magnitude does not scale with basis width.
+    q_scalar = q_signed.mean(dim=-1)  # (B, S, K)
+    k_scalar = mv_k.mean(dim=-1)  # (B, S, K)
+    q_scalar = F.normalize(q_scalar, dim=-1)
+    k_scalar = F.normalize(k_scalar, dim=-1)
 
     # Attention scores via dot in the scalar-projected space
     scores = torch.bmm(q_scalar, k_scalar.transpose(1, 2))  # (B, S, S)
@@ -376,7 +378,7 @@ def execute_clifford_attention(module: nn.Module, x: torch.Tensor) -> torch.Tens
     if S > 1:
         scores.masked_fill_(causal_mask(S, x.device), float("-inf"))
 
-    weights = torch.softmax(scores / scale, dim=-1)
+    weights = torch.softmax((scores / scale).clamp(min=-20.0, max=20.0), dim=-1)
     out = torch.bmm(weights, x_padded)  # (B, S, D_padded)
 
     if pad > 0:

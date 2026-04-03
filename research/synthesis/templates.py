@@ -4,6 +4,8 @@ Template implementations live in submodules:
   _templates_core.py     — workhorse templates (residual, transformer, etc.)
   _templates_routing.py  — routing-first templates (difficulty-gated, etc.)
   _templates_exotic.py   — binary-op safety, math-space, spiking templates
+  _templates_attention.py — attention-heavy structural templates
+  _templates_attention_tail.py — generated attention wrappers and tail templates
   _templates_research.py — 0% S1 fixes, zero-coverage ops, reference architectures
   _template_helpers.py   — shared helpers (motif picking, instantiation)
 """
@@ -19,6 +21,7 @@ from .graph import ComputationGraph
 from ._template_helpers import (  # noqa: F401
     MotifWeights,
     TemplateFn,
+    TemplateBuildError,
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
@@ -91,6 +94,64 @@ from ._templates_exotic import (  # noqa: F401
     tpl_causal_mix_block,
     tpl_iterative_refinement,
     tpl_recurrent_delta_block,
+)
+
+from ._templates_attention import (  # noqa: F401
+    tpl_attn_residual_block,
+    tpl_attn_gated_residual,
+    tpl_attn_three_way_split,
+    tpl_attn_dense_cascade,
+    tpl_attn_conditional_compute,
+    tpl_attn_cross_dim,
+    tpl_attn_multi_head_mix,
+    tpl_local_attn_ffn_block,
+    tpl_local_attn_swiglu,
+    tpl_diff_attn_gated_ffn,
+    tpl_attn_ssm_hybrid,
+    tpl_attn_conv_hybrid,
+    tpl_attn_rwkv_hybrid,
+    tpl_attn_bottleneck_hybrid,
+    tpl_attn_routing_block,
+    tpl_dual_attn_block,
+    tpl_attn_state_space_hybrid,
+    tpl_cascaded_attn_ffn,
+    tpl_attn_exp_gated,
+    tpl_attn_gated_product,
+    tpl_diff_attn_routing,
+    tpl_local_attn_routing,
+    tpl_attn_chebyshev_hybrid,
+    tpl_attn_sparse_moe,
+)
+
+from ._templates_attention_tail import (  # noqa: F401
+    tpl_attn_decay_sequence,
+    tpl_attn_dual_axis,
+    tpl_attn_gated_maximum,
+    tpl_attn_gated_minimum,
+    tpl_attn_hyperbolic,
+    tpl_attn_kronecker_hybrid,
+    tpl_attn_log_gated,
+    tpl_attn_moe_block,
+    tpl_attn_normalized_matmul,
+    tpl_attn_reciprocal_gated,
+    tpl_attn_safe_division,
+    tpl_attn_spiking_hybrid,
+    tpl_attn_spectral_filter,
+    tpl_diff_attn_conv_hybrid,
+    tpl_diff_attn_ffn_block,
+    tpl_diff_attn_moe,
+    tpl_graph_attn_ffn_block,
+    tpl_graph_attn_moe,
+    tpl_graph_attn_sparse_ffn,
+    tpl_latent_attn_conv_hybrid,
+    tpl_latent_attn_ffn_block,
+    tpl_latent_attn_moe,
+    tpl_latent_attn_sparse_ffn,
+    tpl_latent_attn_ssm_hybrid,
+    tpl_linear_attn_ffn_block,
+    tpl_linear_attn_sparse_ffn,
+    tpl_local_attn_moe,
+    tpl_local_attn_ssm_hybrid,
 )
 
 from ._templates_research import (  # noqa: F401
@@ -215,6 +276,61 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "adaptive_lane_recursion": tpl_adaptive_lane_recursion,
     "cross_dim_mixer": tpl_cross_dim_mixer,
     "dual_axis_block": tpl_dual_axis_block,
+    # ── Attention templates (Groups A-D) ──────────────────────────────
+    "attn_residual_block": tpl_attn_residual_block,
+    "attn_gated_residual": tpl_attn_gated_residual,
+    "attn_three_way_split": tpl_attn_three_way_split,
+    "attn_dense_cascade": tpl_attn_dense_cascade,
+    "attn_conditional_compute": tpl_attn_conditional_compute,
+    "attn_dual_axis": tpl_attn_dual_axis,
+    "attn_cross_dim": tpl_attn_cross_dim,
+    "attn_multi_head_mix": tpl_attn_multi_head_mix,
+    "latent_attn_ffn_block": tpl_latent_attn_ffn_block,
+    "local_attn_ffn_block": tpl_local_attn_ffn_block,
+    "diff_attn_ffn_block": tpl_diff_attn_ffn_block,
+    "linear_attn_ffn_block": tpl_linear_attn_ffn_block,
+    "latent_attn_sparse_ffn": tpl_latent_attn_sparse_ffn,
+    "local_attn_swiglu": tpl_local_attn_swiglu,
+    "diff_attn_gated_ffn": tpl_diff_attn_gated_ffn,
+    "graph_attn_ffn_block": tpl_graph_attn_ffn_block,
+    "attn_ssm_hybrid": tpl_attn_ssm_hybrid,
+    "attn_conv_hybrid": tpl_attn_conv_hybrid,
+    "attn_rwkv_hybrid": tpl_attn_rwkv_hybrid,
+    "attn_moe_block": tpl_attn_moe_block,
+    "attn_bottleneck_hybrid": tpl_attn_bottleneck_hybrid,
+    "attn_routing_block": tpl_attn_routing_block,
+    "dual_attn_block": tpl_dual_attn_block,
+    "attn_state_space_hybrid": tpl_attn_state_space_hybrid,
+    "cascaded_attn_ffn": tpl_cascaded_attn_ffn,
+    "attn_exp_gated": tpl_attn_exp_gated,
+    "attn_reciprocal_gated": tpl_attn_reciprocal_gated,
+    "attn_decay_sequence": tpl_attn_decay_sequence,
+    "attn_gated_product": tpl_attn_gated_product,
+    "diff_attn_routing": tpl_diff_attn_routing,
+    "local_attn_routing": tpl_local_attn_routing,
+    "attn_chebyshev_hybrid": tpl_attn_chebyshev_hybrid,
+    "attn_kronecker_hybrid": tpl_attn_kronecker_hybrid,
+    "attn_sparse_moe": tpl_attn_sparse_moe,
+    "attn_log_gated": tpl_attn_log_gated,
+    # Group E: additional to reach 60%
+    "attn_gated_minimum": tpl_attn_gated_minimum,
+    "attn_gated_maximum": tpl_attn_gated_maximum,
+    "attn_hyperbolic": tpl_attn_hyperbolic,
+    "attn_spectral_filter": tpl_attn_spectral_filter,
+    "attn_normalized_matmul": tpl_attn_normalized_matmul,
+    "latent_attn_conv_hybrid": tpl_latent_attn_conv_hybrid,
+    "diff_attn_conv_hybrid": tpl_diff_attn_conv_hybrid,
+    # Group F
+    "attn_safe_division": tpl_attn_safe_division,
+    "latent_attn_ssm_hybrid": tpl_latent_attn_ssm_hybrid,
+    "local_attn_ssm_hybrid": tpl_local_attn_ssm_hybrid,
+    "attn_spiking_hybrid": tpl_attn_spiking_hybrid,
+    "latent_attn_moe": tpl_latent_attn_moe,
+    "local_attn_moe": tpl_local_attn_moe,
+    "diff_attn_moe": tpl_diff_attn_moe,
+    "graph_attn_moe": tpl_graph_attn_moe,
+    "linear_attn_sparse_ffn": tpl_linear_attn_sparse_ffn,
+    "graph_attn_sparse_ffn": tpl_graph_attn_sparse_ffn,
 }
 
 DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
@@ -292,7 +408,7 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "chebyshev_block": 3.0,
     "kronecker_block": 3.0,
     "spiking_stdp_block": 3.0,
-    "rope_attention_block": 3.5,
+    "rope_attention_block": 1.0,  # Demoted: 4.9% S1 rate
     "gpt2_reference": 3.0,
     "mamba_reference": 3.0,
     "hetero_moe_block": 4.0,
@@ -306,6 +422,65 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "adaptive_lane_recursion": 4.5,
     "cross_dim_mixer": 3.5,
     "dual_axis_block": 3.0,
+    # ── Attention templates (Groups A-D) ──────────────────────────────
+    # Group A: forced-attention variants of existing templates
+    "attn_residual_block": 3.5,
+    "attn_gated_residual": 3.5,
+    "attn_three_way_split": 4.0,  # Parent is 86.4% S1
+    "attn_dense_cascade": 3.0,
+    "attn_conditional_compute": 3.5,
+    "attn_dual_axis": 3.5,
+    "attn_cross_dim": 3.0,
+    "attn_multi_head_mix": 3.5,
+    # Group B: attention+FFN with specific ops
+    "latent_attn_ffn_block": 4.0,  # Best attn op (30.2% S1)
+    "local_attn_ffn_block": 4.0,  # 27.5% S1
+    "diff_attn_ffn_block": 3.5,  # 21.2% S1
+    "linear_attn_ffn_block": 2.5,  # 11.3% S1 — weaker
+    "latent_attn_sparse_ffn": 4.0,
+    "local_attn_swiglu": 4.0,
+    "diff_attn_gated_ffn": 3.5,
+    "graph_attn_ffn_block": 3.5,
+    # Group C: hybrid attention+X
+    "attn_ssm_hybrid": 3.5,
+    "attn_conv_hybrid": 3.5,
+    "attn_rwkv_hybrid": 3.5,
+    "attn_moe_block": 3.5,
+    "attn_bottleneck_hybrid": 3.0,
+    "attn_routing_block": 3.0,
+    "dual_attn_block": 3.0,
+    "attn_state_space_hybrid": 3.5,
+    "cascaded_attn_ffn": 3.0,
+    # Group D: attention + exotic ops
+    "attn_exp_gated": 3.0,
+    "attn_reciprocal_gated": 3.0,
+    "attn_decay_sequence": 3.0,
+    "attn_gated_product": 3.0,
+    "diff_attn_routing": 3.5,
+    "local_attn_routing": 3.5,
+    "attn_chebyshev_hybrid": 3.0,
+    "attn_kronecker_hybrid": 3.0,
+    "attn_sparse_moe": 3.5,
+    "attn_log_gated": 3.0,
+    # Group E: additional to reach 60%
+    "attn_gated_minimum": 3.0,
+    "attn_gated_maximum": 3.0,
+    "attn_hyperbolic": 3.0,
+    "attn_spectral_filter": 3.5,  # spectral_filter has best S1 rate (0.329)
+    "attn_normalized_matmul": 3.0,
+    "latent_attn_conv_hybrid": 4.0,  # Best attn + conv parallel
+    "diff_attn_conv_hybrid": 3.5,
+    # Group F: final templates for 60% threshold
+    "attn_safe_division": 3.0,
+    "latent_attn_ssm_hybrid": 4.0,
+    "local_attn_ssm_hybrid": 3.5,
+    "attn_spiking_hybrid": 3.0,
+    "latent_attn_moe": 4.0,
+    "local_attn_moe": 3.5,
+    "diff_attn_moe": 3.5,
+    "graph_attn_moe": 3.5,
+    "linear_attn_sparse_ffn": 2.5,
+    "graph_attn_sparse_ffn": 3.0,
 }
 
 
@@ -332,6 +507,12 @@ def apply_template(
     op_weights: Optional[Dict[str, float]] = None,
 ) -> int:
     """Apply a template to the graph. Main entry point for grammar."""
+    prev_node_ids = set(graph.nodes.keys())
+    prev_next_id = graph._next_id
+    prev_output_id = graph._output_node_id
+    prev_ir_version = graph._ir_version
+    prev_metadata = dict(graph.metadata)
+
     if template_name and template_name in TEMPLATES:
         name = template_name
         fn = TEMPLATES[name]
@@ -350,6 +531,16 @@ def apply_template(
     )
     try:
         return fn(graph, input_id, rng, motif_weights)
+    except Exception:
+        added_ids = set(graph.nodes.keys()) - prev_node_ids
+        for nid in added_ids:
+            del graph.nodes[nid]
+        graph._next_id = prev_next_id
+        graph._output_node_id = prev_output_id
+        graph._ir_version = prev_ir_version
+        graph.metadata = prev_metadata
+        graph._cache.clear()
+        raise
     finally:
         if prev_template is None:
             graph.metadata.pop("_active_template", None)

@@ -783,18 +783,27 @@ def _tropical_matmul_kernel(
     M,
     N,
     K,
+    stride_ab,
     stride_am,
     stride_ak,
+    stride_bb,
     stride_bn,
     stride_bk,
+    stride_cb,
     stride_cm,
     stride_cn,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    pid_b = tl.program_id(2)
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
+
+    # Offset pointers to the current batch element
+    A_ptr = A_ptr + pid_b * stride_ab
+    B_ptr = B_ptr + pid_b * stride_bb
+    C_ptr = C_ptr + pid_b * stride_cb
 
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
@@ -852,29 +861,30 @@ def triton_tropical_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     BLOCK_SIZE_N = 32
     BLOCK_SIZE_K = 64
 
-    def grid(META):
-        return (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]),
-            triton.cdiv(N, META["BLOCK_SIZE_N"]),
-        )
+    grid = (
+        triton.cdiv(M, BLOCK_SIZE_M),
+        triton.cdiv(N, BLOCK_SIZE_N),
+        B_sz,
+    )
 
-    for b_idx in range(B_sz):
-        # We loop over batch dim to keep kernel simple
-        _tropical_matmul_kernel[grid](
-            a_c[b_idx],
-            b_t[b_idx],
-            c[b_idx],
-            M,
-            N,
-            K,
-            a_c.stride(1),
-            a_c.stride(2),
-            b_t.stride(1),
-            b_t.stride(2),
-            c.stride(1),
-            c.stride(2),
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-        )
+    _tropical_matmul_kernel[grid](
+        a_c,
+        b_t,
+        c,
+        M,
+        N,
+        K,
+        a_c.stride(0),
+        a_c.stride(1),
+        a_c.stride(2),
+        b_t.stride(0),
+        b_t.stride(1),
+        b_t.stride(2),
+        c.stride(0),
+        c.stride(1),
+        c.stride(2),
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+    )
     return c

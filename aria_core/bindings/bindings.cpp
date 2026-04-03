@@ -1253,6 +1253,46 @@ py::dict proactive_gating(int32_t n_nodes, std::vector<std::vector<int32_t>> edg
     return out;
 }
 
+py::dict analyze_graph(int32_t n_nodes,
+                       std::vector<std::vector<int32_t>> edges,
+                       std::vector<int32_t> op_codes,
+                       int32_t output_node,
+                       int32_t input_node) {
+    AriaGraph graph;
+    memset(&graph, 0, sizeof(graph));
+    graph.n_nodes = n_nodes;
+    graph.n_edges = static_cast<int32_t>(edges.size());
+    for (int32_t i = 0; i < graph.n_edges; i++) {
+        graph.edges[i].source = edges[i][0];
+        graph.edges[i].target = edges[i][1];
+        graph.edges[i].src_port = edges[i].size() > 2 ? edges[i][2] : 0;
+        graph.edges[i].tgt_port = edges[i].size() > 3 ? edges[i][3] : 0;
+    }
+    for (int32_t i = 0; i < n_nodes && i < (int32_t)op_codes.size(); i++) {
+        graph.op_codes[i] = op_codes[i];
+    }
+
+    AriaGraphAnalysisResult result;
+    memset(&result, 0, sizeof(result));
+    AriaResult rc = aria_analyze_graph(&graph, output_node, input_node, &result);
+
+    py::dict out;
+    if (rc == ARIA_OK) {
+        out["valid"] = true;
+        std::vector<int32_t> reachable(
+            result.reachable_nodes, result.reachable_nodes + result.reachable_len
+        );
+        out["reachable_nodes"] = reachable;
+        out["max_depth"] = result.max_depth;
+        out["has_input_path"] = result.has_input_path != 0;
+    } else {
+        out["valid"] = false;
+        out["error"] = std::string(result.error);
+        out["code"] = static_cast<int>(rc);
+    }
+    return out;
+}
+
 py::dict propagate_shapes(
     std::vector<int32_t> topo_order,
     std::vector<std::vector<int32_t>> edges,
@@ -1550,6 +1590,7 @@ py::dict smoke_test_graph_py(
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "aria_core: Unified high-performance kernel library for Aria";
     m.def("canonical_topo_sort", &canonical_topo_sort, "Stable topological sort for graph fingerprinting");
+    m.def("analyze_graph", &analyze_graph, "Native graph reachability/depth analysis");
     m.def("relu_f32", &relu_f32); m.def("gelu_f32", &gelu_f32); m.def("silu_f32", &silu_f32);
     m.def("square_f32", &square_f32); m.def("abs_f32", &abs_f32); m.def("neg_f32", &neg_f32);
     m.def("reciprocal_f32", &reciprocal_f32); m.def("log_f32", &log_f32); m.def("sqrt_f32", &sqrt_f32);

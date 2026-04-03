@@ -15,27 +15,9 @@ from ._template_helpers import (
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
+    template_add_op as _add,
+    template_add_residual as _residual,
 )
-from ._templates_core import tpl_residual_block
-
-import logging
-from collections import defaultdict
-
-_logger = logging.getLogger(__name__)
-
-# Counts per-template fallbacks for observability. Read via
-# _templates_routing.TEMPLATE_FALLBACK_COUNTS from diagnostics/tests.
-TEMPLATE_FALLBACK_COUNTS: defaultdict = defaultdict(int)
-
-
-def _record_fallback(template_name: str) -> None:
-    """Record a template fallback and log at DEBUG level."""
-    TEMPLATE_FALLBACK_COUNTS[template_name] += 1
-    _logger.debug(
-        "template fallback: %s (count=%d)",
-        template_name,
-        TEMPLATE_FALLBACK_COUNTS[template_name],
-    )
 
 
 # ── Routing-First Templates (Phase 2) ──────────────────────────────
@@ -55,6 +37,18 @@ ROUTING_TEMPLATES: frozenset = frozenset(
         "token_merge_block",
         "routed_bottleneck",
         "sparse_moe_block",
+        # Attention templates that produce routing ops internally
+        "attn_routing_block",
+        "attn_moe_block",
+        "attn_three_way_split",
+        "attn_conditional_compute",
+        "attn_sparse_moe",
+        "diff_attn_routing",
+        "local_attn_routing",
+        "latent_attn_moe",
+        "local_attn_moe",
+        "diff_attn_moe",
+        "graph_attn_moe",
     }
 )
 
@@ -79,23 +73,28 @@ def tpl_difficulty_routed_block(
 
     # Classify → entropy: token_type_classifier (B,S,D)→(B,S,D) logits,
     # then entropy_score (B,S,D)→(B,S,1) difficulty signal.
-    try:
-        class_logits = graph.add_op(
-            "token_class_proj", [normed], config={"n_classes": 4}
-        )
-        difficulty = graph.add_op("token_entropy", [class_logits])
-    except (ValueError, KeyError):
-        _record_fallback("tpl_difficulty_gated_residual.classify")
-        return tpl_residual_block(graph, input_id, rng, weights)
+    class_logits = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": 4},
+        context="difficulty_routed_block.classify",
+    )
+    difficulty = _add(
+        graph,
+        "token_entropy",
+        [class_logits],
+        context="difficulty_routed_block.entropy",
+    )
 
     # Fast path: cheap linear projection (always runs on all tokens)
-    try:
-        fast_out = graph.add_op(
-            "linear_proj", [normed], config={"out_dim": graph.model_dim}
-        )
-    except ValueError:
-        _record_fallback("tpl_difficulty_gated_residual.fast_path")
-        fast_out = normed
+    fast_out = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": graph.model_dim},
+        context="difficulty_routed_block.fast_path",
+    )
 
     # Slow path: expensive motif (attention/SSM/MoE + FFN)
     slow_motif = _pick_compatible_motif_from_classes(
@@ -112,22 +111,28 @@ def tpl_difficulty_routed_block(
     slow_out = _fix_dim(graph, slow_out)
 
     # Gate slow path by difficulty: hard tokens get more slow-path signal
-    try:
-        slow_weighted = graph.add_op("mul", [slow_out, difficulty])
-    except ValueError:
-        slow_weighted = slow_out
+    slow_weighted = _add(
+        graph,
+        "mul",
+        [slow_out, difficulty],
+        context="difficulty_routed_block.slow_weighted",
+    )
 
     # Merge: fast + difficulty-weighted slow
-    try:
-        merged = graph.add_op("add", [fast_out, slow_weighted])
-    except ValueError:
-        merged = slow_weighted
+    merged = _residual(
+        graph,
+        fast_out,
+        slow_weighted,
+        context="difficulty_routed_block.merge",
+    )
 
     # Residual
-    try:
-        return graph.add_op("add", [input_id, merged])
-    except ValueError:
-        return merged
+    return _residual(
+        graph,
+        input_id,
+        merged,
+        context="difficulty_routed_block.output",
+    )
 
 
 def tpl_three_lane_adaptive(
@@ -146,10 +151,12 @@ def tpl_three_lane_adaptive(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # adaptive_lane_mixer: self-contained 3-way routing
-    try:
-        routed = graph.add_op("difficulty_blend_3way", [normed, normed])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    routed = _add(
+        graph,
+        "difficulty_blend_3way",
+        [normed, normed],
+        context="three_lane_adaptive.route",
+    )
 
     routed = _fix_dim(graph, routed)
 
@@ -161,10 +168,12 @@ def tpl_three_lane_adaptive(
     else:
         processed = routed
 
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="three_lane_adaptive.output",
+    )
 
 
 def tpl_cascaded_early_exit(
@@ -192,22 +201,46 @@ def tpl_cascaded_early_exit(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        # Difficulty scoring: token_type_classifier → entropy_score
-        classified = graph.add_op("token_class_proj", [normed], config={"n_classes": 4})
-        difficulty = graph.add_op("token_entropy", [classified])
-
-        # Mixer: process input with difficulty weighting
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        weighted = graph.add_op("mul", [proj, difficulty])
-        mixed = graph.add_op("linear_proj", [weighted], config={"out_dim": D})
-
-        # Early exit: zeros easy tokens, hard tokens pass through
-        exited = graph.add_op(
-            "confidence_token_gate", [mixed], config={"threshold": 0.5}
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    classified = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": 4},
+        context="cascaded_early_exit.classify",
+    )
+    difficulty = _add(
+        graph,
+        "token_entropy",
+        [classified],
+        context="cascaded_early_exit.entropy",
+    )
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="cascaded_early_exit.proj",
+    )
+    weighted = _add(
+        graph,
+        "mul",
+        [proj, difficulty],
+        context="cascaded_early_exit.weighted",
+    )
+    mixed = _add(
+        graph,
+        "linear_proj",
+        [weighted],
+        {"out_dim": D},
+        context="cascaded_early_exit.mixed",
+    )
+    exited = _add(
+        graph,
+        "confidence_token_gate",
+        [mixed],
+        {"threshold": 0.5},
+        context="cascaded_early_exit.exit",
+    )
 
     # FFN processes the output — easy tokens are zero so FFN work is
     # wasted on them (future: skip zero tokens for compute savings)
@@ -218,10 +251,12 @@ def tpl_cascaded_early_exit(
     processed = _fix_dim(graph, processed)
 
     # Outer residual: recovers easy tokens' original representations
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="cascaded_early_exit.output",
+    )
 
 
 def tpl_recursive_depth_router(
@@ -241,12 +276,13 @@ def tpl_recursive_depth_router(
 
     # Depth-adaptive routing
     max_depth = rng.choice([2, 3, 4])
-    try:
-        depth_routed = graph.add_op(
-            "depth_weighted_proj", [normed], config={"max_depth": max_depth}
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    depth_routed = _add(
+        graph,
+        "depth_weighted_proj",
+        [normed],
+        {"max_depth": max_depth},
+        context="recursive_depth_router.route",
+    )
 
     # Post-routing motif (operates on depth-scaled tokens)
     core = _pick_compatible_motif_from_classes(
@@ -262,10 +298,12 @@ def tpl_recursive_depth_router(
         processed = depth_routed
     processed = _fix_dim(graph, processed)
 
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="recursive_depth_router.output",
+    )
 
 
 # ── Latent Compression Templates ──────────────────────────────────
@@ -294,42 +332,59 @@ def tpl_latent_compress_block(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Projection → latent attention compressor
-    try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        compressed = graph.add_op("latent_attention_compressor", [proj])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="latent_compress_block.proj",
+    )
+    compressed = _add(
+        graph,
+        "latent_attention_compressor",
+        [proj],
+        context="latent_compress_block.compress",
+    )
 
     # Inner residual (normed + compressed)
-    try:
-        inner_res = graph.add_op("add", [normed, compressed])
-    except ValueError:
-        inner_res = compressed
+    inner_res = _residual(
+        graph,
+        normed,
+        compressed,
+        context="latent_compress_block.inner_residual",
+    )
 
     # Sparse linear (nm_sparse or semi_structured)
     sparse_op = rng.choice(["nm_sparse_linear", "semi_structured_2_4_linear"])
     sparse_config: dict = {"out_dim": D}
     if sparse_op == "nm_sparse_linear":
         sparse_config.update({"n": 2, "m": 4})
-    try:
-        sparse = graph.add_op(sparse_op, [inner_res], config=sparse_config)
-    except (ValueError, KeyError):
-        sparse = inner_res
+    sparse = _add(
+        graph,
+        sparse_op,
+        [inner_res],
+        sparse_config,
+        context="latent_compress_block.sparse",
+    )
 
     # Activation
     act_op = rng.choice(["silu", "gelu", "relu"])
-    try:
-        activated = graph.add_op(act_op, [sparse])
-    except ValueError:
-        activated = sparse
+    activated = _add(
+        graph,
+        act_op,
+        [sparse],
+        context="latent_compress_block.activation",
+    )
 
     activated = _fix_dim(graph, activated)
 
     # Outer residual
-    try:
-        return graph.add_op("add", [input_id, activated])
-    except ValueError:
-        return activated
+    return _residual(
+        graph,
+        input_id,
+        activated,
+        context="latent_compress_block.output",
+    )
 
 
 def tpl_latent_compress_rwkv(
@@ -348,12 +403,25 @@ def tpl_latent_compress_rwkv(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        compressed = graph.add_op("latent_attention_compressor", [proj])
-        inner_res = graph.add_op("add", [normed, compressed])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="latent_compress_rwkv.proj",
+    )
+    compressed = _add(
+        graph,
+        "latent_attention_compressor",
+        [proj],
+        context="latent_compress_rwkv.compress",
+    )
+    inner_res = _residual(
+        graph,
+        normed,
+        compressed,
+        context="latent_compress_rwkv.inner_residual",
+    )
 
     sparse_op = rng.choice(
         ["nm_sparse_linear", "semi_structured_2_4_linear", "block_sparse_linear"]
@@ -368,36 +436,42 @@ def tpl_latent_compress_rwkv(
                 "block_density": rng.uniform(0.1, 0.4),
             }
         )
-    try:
-        sparse = graph.add_op(sparse_op, [inner_res], config=sparse_cfg)
-    except (ValueError, KeyError):
-        sparse = inner_res
+    sparse = _add(
+        graph,
+        sparse_op,
+        [inner_res],
+        sparse_cfg,
+        context="latent_compress_rwkv.sparse",
+    )
 
     # Progressive compression gate (if available)
-    try:
-        gated = graph.add_op("adaptive_rank_gate", [sparse])
-    except (ValueError, KeyError):
-        gated = sparse
+    gated = _add(
+        graph,
+        "adaptive_rank_gate",
+        [sparse],
+        context="latent_compress_rwkv.rank_gate",
+    )
 
     # Post-norm + RWKV channel mixing
     norm2 = _pick_compatible_motif(graph, gated, rng, MOTIF_CLASS_NORM, weights)
     post_normed = _instantiate_motif(graph, gated, norm2, rng) if norm2 else gated
 
-    try:
-        mixed = graph.add_op(
-            "rwkv_channel",
-            [post_normed],
-            config={"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
-        )
-    except (ValueError, KeyError):
-        mixed = post_normed
+    mixed = _add(
+        graph,
+        "rwkv_channel",
+        [post_normed],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="latent_compress_rwkv.mixed",
+    )
 
     mixed = _fix_dim(graph, mixed)
 
-    try:
-        return graph.add_op("add", [input_id, mixed])
-    except ValueError:
-        return mixed
+    return _residual(
+        graph,
+        input_id,
+        mixed,
+        context="latent_compress_rwkv.output",
+    )
 
 
 # ── 2-Input Routing Templates ─────────────────────────────────────
@@ -421,44 +495,57 @@ def tpl_signal_routed_compression(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Produce routing signal
-    try:
-        signal = graph.add_op(
-            "token_class_proj",
-            [normed],
-            config={"n_classes": rng.choice([2, 3, 4])},
+    signal = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": rng.choice([2, 3, 4])},
+        context="signal_routed_compression.signal",
+    )
+
+    # 40% chance: attention on data before compression routing
+    if rng.random() < 0.4:
+        from ._template_helpers import MOTIF_CLASS_ATTENTION
+
+        attn = _pick_compatible_motif(
+            graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
         )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+        if attn:
+            attended = _instantiate_motif(graph, normed, attn, rng)
+            normed = _fix_dim(graph, attended)
 
     # Route through compression op (2-input: data + signal)
     comp_op = rng.choice(["dual_compression_blend", "signal_conditioned_compression"])
-    try:
-        compressed = graph.add_op(comp_op, [normed, signal])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    compressed = _add(
+        graph,
+        comp_op,
+        [normed, signal],
+        context="signal_routed_compression.compress",
+    )
 
     compressed = _fix_dim(graph, compressed)
 
     # Optional moe_topk after compression (60% chance) — data mining shows
     # dual_compression_blend + moe_topk is the top underexplored high-signal combo
     if rng.random() < 0.6:
-        try:
-            compressed = graph.add_op(
-                "moe_topk",
-                [compressed],
-                config={
-                    "num_experts": rng.choice([2, 4]),
-                    "top_k": rng.choice([1, 2]),
-                },
-            )
-            compressed = _fix_dim(graph, compressed)
-        except (ValueError, KeyError):
-            pass
+        compressed = _add(
+            graph,
+            "moe_topk",
+            [compressed],
+            {
+                "num_experts": rng.choice([2, 4]),
+                "top_k": rng.choice([1, 2]),
+            },
+            context="signal_routed_compression.moe",
+        )
+        compressed = _fix_dim(graph, compressed)
 
-    try:
-        return graph.add_op("add", [input_id, compressed])
-    except ValueError:
-        return compressed
+    return _residual(
+        graph,
+        input_id,
+        compressed,
+        context="signal_routed_compression.output",
+    )
 
 
 def tpl_dual_routing_stack(
@@ -478,33 +565,33 @@ def tpl_dual_routing_stack(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Routing signal from classifier
-    try:
-        signal = graph.add_op(
-            "token_class_proj",
-            [normed],
-            config={"n_classes": rng.choice([2, 3, 4])},
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    signal = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": rng.choice([2, 3, 4])},
+        context="dual_routing_stack.signal",
+    )
 
     # 2-input compression: data + routing signal
-    try:
-        compressed = graph.add_op("dual_compression_blend", [normed, signal])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    compressed = _add(
+        graph,
+        "dual_compression_blend",
+        [normed, signal],
+        context="dual_routing_stack.compress",
+    )
 
     # Expert routing
-    try:
-        routed = graph.add_op(
-            "moe_topk",
-            [compressed],
-            config={
-                "num_experts": rng.choice([2, 4]),
-                "top_k": rng.choice([1, 2]),
-            },
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    routed = _add(
+        graph,
+        "moe_topk",
+        [compressed],
+        {
+            "num_experts": rng.choice([2, 4]),
+            "top_k": rng.choice([1, 2]),
+        },
+        context="dual_routing_stack.moe",
+    )
 
     # Optional FFN motif (50% chance)
     if rng.random() < 0.5:
@@ -516,10 +603,12 @@ def tpl_dual_routing_stack(
 
     routed = _fix_dim(graph, routed)
 
-    try:
-        return graph.add_op("add", [input_id, routed])
-    except ValueError:
-        return routed
+    return _residual(
+        graph,
+        input_id,
+        routed,
+        context="dual_routing_stack.output",
+    )
 
 
 def tpl_dual_routing_deep(
@@ -536,18 +625,32 @@ def tpl_dual_routing_deep(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        signal = graph.add_op("token_class_proj", [normed], config={"n_classes": 4})
-        compressed = graph.add_op("dual_compression_blend", [normed, signal])
-        # Second norm between routing ops — key pattern from data mining
-        mid_normed = graph.add_op("layernorm", [compressed])
-        routed = graph.add_op(
-            "moe_topk",
-            [mid_normed],
-            config={"num_experts": 4, "top_k": 2},
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    signal = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": 4},
+        context="dual_routing_deep.signal",
+    )
+    compressed = _add(
+        graph,
+        "dual_compression_blend",
+        [normed, signal],
+        context="dual_routing_deep.compress",
+    )
+    mid_normed = _add(
+        graph,
+        "layernorm",
+        [compressed],
+        context="dual_routing_deep.mid_norm",
+    )
+    routed = _add(
+        graph,
+        "moe_topk",
+        [mid_normed],
+        {"num_experts": 4, "top_k": 2},
+        context="dual_routing_deep.moe",
+    )
 
     # Optional FFN motif
     if rng.random() < 0.5:
@@ -559,10 +662,12 @@ def tpl_dual_routing_deep(
 
     routed = _fix_dim(graph, routed)
 
-    try:
-        return graph.add_op("add", [input_id, routed])
-    except ValueError:
-        return routed
+    return _residual(
+        graph,
+        input_id,
+        routed,
+        context="dual_routing_deep.output",
+    )
 
 
 def tpl_routing_conditioned_moe(
@@ -579,30 +684,35 @@ def tpl_routing_conditioned_moe(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        signal = graph.add_op(
-            "token_class_proj",
-            [normed],
-            config={"n_classes": rng.choice([2, 3, 4])},
-        )
-        compressed = graph.add_op("signal_conditioned_compression", [normed, signal])
-        routed = graph.add_op(
-            "moe_topk",
-            [compressed],
-            config={
-                "num_experts": rng.choice([2, 4]),
-                "top_k": 1,
-            },
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    signal = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": rng.choice([2, 3, 4])},
+        context="routing_conditioned_moe.signal",
+    )
+    compressed = _add(
+        graph,
+        "signal_conditioned_compression",
+        [normed, signal],
+        context="routing_conditioned_moe.compress",
+    )
+    routed = _add(
+        graph,
+        "moe_topk",
+        [compressed],
+        {"num_experts": rng.choice([2, 4]), "top_k": 1},
+        context="routing_conditioned_moe.moe",
+    )
 
     routed = _fix_dim(graph, routed)
 
-    try:
-        return graph.add_op("add", [input_id, routed])
-    except ValueError:
-        return routed
+    return _residual(
+        graph,
+        input_id,
+        routed,
+        context="routing_conditioned_moe.output",
+    )
 
 
 def tpl_mixed_recursion(
@@ -620,38 +730,46 @@ def tpl_mixed_recursion(
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
     # Depth scores from classifier
-    try:
-        scores = graph.add_op(
-            "token_class_proj",
-            [normed],
-            config={"n_classes": rng.choice([3, 4, 5])},
-        )
-        gated = graph.add_op(
-            "score_depth_blend",
-            [normed, scores],
-            config={"max_depth": rng.choice([2, 3, 4])},
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
-
-    # Post-routing motif
-    core = _pick_compatible_motif_from_classes(
+    scores = _add(
         graph,
-        gated,
-        rng,
-        list(_MIXER_CLASSES + _FFN_CLASSES),
-        weights,
+        "token_class_proj",
+        [normed],
+        {"n_classes": rng.choice([3, 4, 5])},
+        context="mixed_recursion.scores",
     )
+    gated = _add(
+        graph,
+        "score_depth_blend",
+        [normed, scores],
+        {"max_depth": rng.choice([2, 3, 4])},
+        context="mixed_recursion.gated",
+    )
+
+    # Post-routing motif: 40% chance of forced attention
+    from ._template_helpers import MOTIF_CLASS_ATTENTION
+
+    if rng.random() < 0.4:
+        core = _pick_compatible_motif(graph, gated, rng, MOTIF_CLASS_ATTENTION, weights)
+    else:
+        core = _pick_compatible_motif_from_classes(
+            graph,
+            gated,
+            rng,
+            list(_MIXER_CLASSES + _FFN_CLASSES),
+            weights,
+        )
     if core:
         processed = _instantiate_motif(graph, gated, core, rng)
     else:
         processed = gated
     processed = _fix_dim(graph, processed)
 
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="mixed_recursion.output",
+    )
 
 
 def tpl_depth_gated_block(
@@ -668,10 +786,13 @@ def tpl_depth_gated_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        gated = graph.add_op("depth_gated_transform", [normed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    gated = _add(
+        graph,
+        "depth_gated_transform",
+        [normed],
+        {"out_dim": D},
+        context="depth_gated_block.gated",
+    )
 
     # Exclude MATH_SPACE motifs: depth_gated_transform is a gating op, and many
     # math_space ops (tropical_gate, etc.) are also gating ops — forbidden as
@@ -683,10 +804,12 @@ def tpl_depth_gated_block(
     mixed = _instantiate_motif(graph, gated, mixer, rng) if mixer else gated
     mixed = _fix_dim(graph, mixed)
 
-    try:
-        return graph.add_op("add", [input_id, mixed])
-    except ValueError:
-        return mixed
+    return _residual(
+        graph,
+        input_id,
+        mixed,
+        context="depth_gated_block.output",
+    )
 
 
 def tpl_feature_sparse_block(
@@ -702,11 +825,14 @@ def tpl_feature_sparse_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        k = rng.choice([32, 64, 128])
-        sparse = graph.add_op("feature_sparsity", [normed], config={"k": k})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    k = rng.choice([32, 64, 128])
+    sparse = _add(
+        graph,
+        "feature_sparsity",
+        [normed],
+        {"k": k},
+        context="feature_sparse_block.sparse",
+    )
 
     ffn = _pick_compatible_motif_from_classes(
         graph, sparse, rng, list(_FFN_CLASSES), weights
@@ -714,10 +840,12 @@ def tpl_feature_sparse_block(
     processed = _instantiate_motif(graph, sparse, ffn, rng) if ffn else sparse
     processed = _fix_dim(graph, processed)
 
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="feature_sparse_block.output",
+    )
 
 
 def tpl_topk_retrieval(
@@ -735,14 +863,26 @@ def tpl_topk_retrieval(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        proj = graph.add_op("linear_proj", [normed], config={"out_dim": D})
-        scores = graph.add_op("cosine_similarity", [normed, proj])
-        gathered = graph.add_op(
-            "gather_topk", [normed, scores], config={"k": rng.choice([4, 8, 16])}
-        )
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    proj = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": D},
+        context="topk_retrieval.proj",
+    )
+    scores = _add(
+        graph,
+        "cosine_similarity",
+        [normed, proj],
+        context="topk_retrieval.scores",
+    )
+    gathered = _add(
+        graph,
+        "gather_topk",
+        [normed, scores],
+        {"k": rng.choice([4, 8, 16])},
+        context="topk_retrieval.gathered",
+    )
 
     # Process gathered subset
     core = _pick_compatible_motif_from_classes(
@@ -758,10 +898,12 @@ def tpl_topk_retrieval(
         processed = gathered
     processed = _fix_dim(graph, processed)
 
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="topk_retrieval.output",
+    )
 
 
 # ── Adaptive Recursion Templates ────────────────────────────────────
@@ -790,18 +932,32 @@ def tpl_adaptive_sparse(
         "block_sparse_linear",
         "ternary_projection",
     ]
-    try:
-        recursed = graph.add_op("depth_weighted_proj", [normed])
-        sparse = graph.add_op(rng.choice(sparse_ops), [recursed])
-        activated = graph.add_op("gelu", [sparse])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    recursed = _add(
+        graph,
+        "depth_weighted_proj",
+        [normed],
+        context="adaptive_sparse.recursed",
+    )
+    sparse = _add(
+        graph,
+        rng.choice(sparse_ops),
+        [recursed],
+        context="adaptive_sparse.sparse",
+    )
+    activated = _add(
+        graph,
+        "gelu",
+        [sparse],
+        context="adaptive_sparse.activated",
+    )
 
     processed = _fix_dim(graph, activated)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="adaptive_sparse.output",
+    )
 
 
 def tpl_adaptive_conv_ffn(
@@ -819,22 +975,36 @@ def tpl_adaptive_conv_ffn(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        recursed = graph.add_op("depth_weighted_proj", [normed])
-        mid_norm = graph.add_op("rmsnorm", [recursed])
-        conved = graph.add_op("conv1d_seq", [mid_norm])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    recursed = _add(
+        graph,
+        "depth_weighted_proj",
+        [normed],
+        context="adaptive_conv_ffn.recursed",
+    )
+    mid_norm = _add(
+        graph,
+        "rmsnorm",
+        [recursed],
+        context="adaptive_conv_ffn.mid_norm",
+    )
+    conved = _add(
+        graph,
+        "conv1d_seq",
+        [mid_norm],
+        context="adaptive_conv_ffn.conved",
+    )
 
     ffn = _pick_compatible_motif_from_classes(
         graph, conved, rng, list(_FFN_CLASSES), weights
     )
     processed = _instantiate_motif(graph, conved, ffn, rng) if ffn else conved
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="adaptive_conv_ffn.output",
+    )
 
 
 def tpl_adaptive_ssm_chain(
@@ -852,20 +1022,44 @@ def tpl_adaptive_ssm_chain(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    try:
-        recursed = graph.add_op("depth_weighted_proj", [normed])
-        mid_norm = graph.add_op("rmsnorm", [recursed])
-        scanned = graph.add_op("selective_scan", [mid_norm])
-        projected = graph.add_op("ternary_projection", [scanned])
-        activated = graph.add_op("gelu", [projected])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    recursed = _add(
+        graph,
+        "depth_weighted_proj",
+        [normed],
+        context="adaptive_ssm_chain.recursed",
+    )
+    mid_norm = _add(
+        graph,
+        "rmsnorm",
+        [recursed],
+        context="adaptive_ssm_chain.mid_norm",
+    )
+    scanned = _add(
+        graph,
+        "selective_scan",
+        [mid_norm],
+        context="adaptive_ssm_chain.scanned",
+    )
+    projected = _add(
+        graph,
+        "ternary_projection",
+        [scanned],
+        context="adaptive_ssm_chain.projected",
+    )
+    activated = _add(
+        graph,
+        "gelu",
+        [projected],
+        context="adaptive_ssm_chain.activated",
+    )
 
     processed = _fix_dim(graph, activated)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="adaptive_ssm_chain.output",
+    )
 
 
 def tpl_adaptive_lane_recursion(
@@ -880,26 +1074,37 @@ def tpl_adaptive_lane_recursion(
     adaptive_recursion (0.1236). difficulty_blend_3way takes 2 inputs
     (routes tokens by difficulty across 3 lanes).
     """
-    try:
-        blended = graph.add_op("difficulty_blend_3way", [input_id, input_id])
-        lane_merged = graph.add_op("add", [input_id, blended])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    blended = _add(
+        graph,
+        "difficulty_blend_3way",
+        [input_id, input_id],
+        context="adaptive_lane_recursion.blended",
+    )
+    lane_merged = _residual(
+        graph,
+        input_id,
+        blended,
+        context="adaptive_lane_recursion.lane_merged",
+    )
 
     norm = _pick_compatible_motif(graph, lane_merged, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, lane_merged, norm, rng) if norm else lane_merged
 
-    try:
-        recursed = graph.add_op("depth_weighted_proj", [normed])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    recursed = _add(
+        graph,
+        "depth_weighted_proj",
+        [normed],
+        context="adaptive_lane_recursion.recursed",
+    )
 
     ffn = _pick_compatible_motif_from_classes(
         graph, recursed, rng, list(_FFN_CLASSES), weights
     )
     processed = _instantiate_motif(graph, recursed, ffn, rng) if ffn else recursed
     processed = _fix_dim(graph, processed)
-    try:
-        return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    return _residual(
+        graph,
+        input_id,
+        processed,
+        context="adaptive_lane_recursion.output",
+    )

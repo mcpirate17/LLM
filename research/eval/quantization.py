@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 
+from .utils import iter_eligible_params
+
 
 @dataclass(slots=True)
 class FakeQuantResult:
@@ -40,14 +42,7 @@ class FakeQuantResult:
 
 def _iter_quantizable_params(model: nn.Module):
     """Yield (name, param) pairs eligible for quantization."""
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if param.dim() < 2:
-            continue
-        if "embed" in name.lower():
-            continue
-        yield name, param
+    return iter_eligible_params(model)
 
 
 def fake_quantize_tensor(tensor: torch.Tensor, bits: int = 8) -> torch.Tensor:

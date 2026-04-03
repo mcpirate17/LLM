@@ -818,11 +818,14 @@ class _GrammarMixin:
         Returns a penalty multiplier [0.5, 1.0] for each category.
         Categories that frequently cause instability get lower multipliers.
         """
-        count_row = self.nb.conn.execute(
-            "SELECT COUNT(*) FROM program_results "
-            "WHERE fp_jacobian_spectral_norm IS NOT NULL"
-        ).fetchone()
-        if (count_row[0] or 0) < 10:
+        try:
+            count_row = self.nb.conn.execute(
+                "SELECT COUNT(*) FROM program_results "
+                "WHERE fp_jacobian_spectral_norm IS NOT NULL"
+            ).fetchone()
+            if int(count_row[0] or 0) < 10:
+                return {}
+        except (TypeError, ValueError):
             return {}
 
         cursor = self.nb.conn.execute("""

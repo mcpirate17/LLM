@@ -290,3 +290,98 @@ int32_t aria_detect_toxic_motifs(const AriaGraph *graph,
     }
     return toxic_count;
 }
+
+AriaResult aria_analyze_graph(const AriaGraph *graph,
+                              int32_t output_node,
+                              int32_t input_node,
+                              AriaGraphAnalysisResult *result) {
+    memset(result, 0, sizeof(AriaGraphAnalysisResult));
+
+    AriaValidationResult validation;
+    AriaResult rc = aria_validate_graph(graph, &validation);
+    if (rc != ARIA_OK) {
+        result->code = rc;
+        snprintf(result->error, ARIA_MAX_ERROR_LEN, "%s", validation.error);
+        return rc;
+    }
+
+    if (output_node < 0 || output_node >= graph->n_nodes) {
+        result->code = ARIA_ERR_DANGLING_EDGE;
+        snprintf(result->error, ARIA_MAX_ERROR_LEN,
+                 "Output node %d is out of range for graph with %d nodes",
+                 output_node, graph->n_nodes);
+        return result->code;
+    }
+
+    AdjList adj;
+    build_adjacency(graph, &adj);
+
+    int32_t reverse_start[ARIA_MAX_NODES + 1];
+    int32_t reverse_adj[ARIA_MAX_EDGES];
+    int32_t reverse_count[ARIA_MAX_NODES];
+    memset(reverse_count, 0, sizeof(int32_t) * graph->n_nodes);
+
+    for (int32_t i = 0; i < graph->n_edges; i++) {
+        reverse_count[graph->edges[i].target]++;
+    }
+
+    reverse_start[0] = 0;
+    for (int32_t i = 0; i < graph->n_nodes; i++) {
+        reverse_start[i + 1] = reverse_start[i] + reverse_count[i];
+    }
+
+    int32_t reverse_pos[ARIA_MAX_NODES];
+    memcpy(reverse_pos, reverse_start, sizeof(int32_t) * graph->n_nodes);
+    for (int32_t i = 0; i < graph->n_edges; i++) {
+        int32_t tgt = graph->edges[i].target;
+        reverse_adj[reverse_pos[tgt]++] = graph->edges[i].source;
+    }
+
+    int32_t reachable[ARIA_MAX_NODES];
+    memset(reachable, 0, sizeof(int32_t) * graph->n_nodes);
+    int32_t queue[ARIA_MAX_NODES];
+    int32_t head = 0;
+    int32_t tail = 0;
+    queue[tail++] = output_node;
+    reachable[output_node] = 1;
+
+    while (head < tail) {
+        int32_t node = queue[head++];
+        for (int32_t j = reverse_start[node]; j < reverse_start[node + 1]; j++) {
+            int32_t parent = reverse_adj[j];
+            if (!reachable[parent]) {
+                reachable[parent] = 1;
+                queue[tail++] = parent;
+            }
+        }
+    }
+
+    int32_t node_depth[ARIA_MAX_NODES];
+    memset(node_depth, 0, sizeof(int32_t) * graph->n_nodes);
+    int32_t max_depth = 0;
+    for (int32_t i = 0; i < validation.topo_len; i++) {
+        int32_t u = validation.topo_order[i];
+        for (int32_t j = adj.adj_start[u]; j < adj.adj_start[u + 1]; j++) {
+            int32_t v = adj.adj[j];
+            if (node_depth[u] + 1 > node_depth[v]) {
+                node_depth[v] = node_depth[u] + 1;
+                if (node_depth[v] > max_depth) {
+                    max_depth = node_depth[v];
+                }
+            }
+        }
+    }
+
+    result->reachable_len = 0;
+    for (int32_t i = 0; i < graph->n_nodes; i++) {
+        if (reachable[i]) {
+            result->reachable_nodes[result->reachable_len++] = i;
+        }
+    }
+    result->max_depth = max_depth;
+    result->has_input_path = (
+        input_node >= 0 && input_node < graph->n_nodes && reachable[input_node]
+    ) ? 1 : 0;
+    result->code = ARIA_OK;
+    return ARIA_OK;
+}

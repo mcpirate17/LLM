@@ -285,9 +285,13 @@ class _ContinuousLoopMixin:
 
             # Purge empty failed experiments between cycles to prevent DB bloat.
             try:
-                self.notebook.purge_empty_experiments()
-                self.notebook.compact_old_chat()
-                self.notebook.backfill_failure_signatures()
+                _cleanup_nb = self._make_notebook()
+                try:
+                    _cleanup_nb.purge_empty_experiments()
+                    _cleanup_nb.compact_old_chat()
+                    _cleanup_nb.backfill_failure_signatures()
+                finally:
+                    _cleanup_nb.close()
             except (RuntimeError, sqlite3.OperationalError) as e:
                 logger.warning("Inter-cycle cleanup failed: %s", e)
 
@@ -538,7 +542,7 @@ class _ContinuousLoopMixin:
             # Optimizer diversity: count distinct optimizers used
             optimizer_counts = {}
             try:
-                rows = nb.db.execute(
+                rows = nb.conn.execute(
                     "SELECT optimizer_name, COUNT(*) as cnt "
                     "FROM program_results WHERE optimizer_name IS NOT NULL "
                     "GROUP BY optimizer_name"

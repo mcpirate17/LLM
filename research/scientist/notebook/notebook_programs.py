@@ -982,36 +982,29 @@ class _ProgramsMixin:
         screening_modes = ("synthesis", "novelty", "evolution", "reference")
         screening_placeholders = ",".join("?" for _ in screening_modes)
 
-        total_stage1_rows = int(
-            self.conn.execute(
-                "SELECT COUNT(*) FROM program_results WHERE stage1_passed = 1"
-            ).fetchone()[0]
-            or 0
+        def _count(sql, params=()):
+            row = self.conn.execute(sql, params).fetchone()
+            return int(row[0] or 0) if row else 0
+
+        total_stage1_rows = _count(
+            "SELECT COUNT(*) FROM program_results WHERE stage1_passed = 1"
         )
-        total_leaderboard_rows = int(
-            self.conn.execute("SELECT COUNT(*) FROM leaderboard").fetchone()[0] or 0
+        total_leaderboard_rows = _count("SELECT COUNT(*) FROM leaderboard")
+        orphan_leaderboard_rows = _count(
+            """
+            SELECT COUNT(*)
+            FROM leaderboard l
+            LEFT JOIN program_results pr ON pr.result_id = l.result_id
+            WHERE pr.result_id IS NULL
+            """
         )
-        orphan_leaderboard_rows = int(
-            self.conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM leaderboard l
-                LEFT JOIN program_results pr ON pr.result_id = l.result_id
-                WHERE pr.result_id IS NULL
-                """
-            ).fetchone()[0]
-            or 0
-        )
-        non_stage1_leaderboard_rows = int(
-            self.conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM leaderboard l
-                JOIN program_results pr ON pr.result_id = l.result_id
-                WHERE COALESCE(pr.stage1_passed, 0) != 1
-                """
-            ).fetchone()[0]
-            or 0
+        non_stage1_leaderboard_rows = _count(
+            """
+            SELECT COUNT(*)
+            FROM leaderboard l
+            JOIN program_results pr ON pr.result_id = l.result_id
+            WHERE COALESCE(pr.stage1_passed, 0) != 1
+            """
         )
 
         rows = self.conn.execute(

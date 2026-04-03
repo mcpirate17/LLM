@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional, Set
-from ...eval.utils import safe_parse_float
+from ..shared_utils import safe_float
 
 
 class _OpsMixin:
@@ -55,7 +55,7 @@ class _OpsMixin:
 
     @staticmethod
     def _as_float(value) -> Optional[float]:
-        return safe_parse_float(value)
+        return safe_float(value, default=None)
 
     @classmethod
     def _extract_ops_fast(cls, graph_json: str) -> Optional[List[str]]:

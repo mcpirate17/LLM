@@ -24,6 +24,7 @@ dist/
 runtime/lib/*.so
 runtime/lib/*.dylib
 runtime/obj/
+runtime/tests/build/
 *.o
 
 # Test runner artifacts

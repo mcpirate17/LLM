@@ -1959,9 +1959,11 @@ class _ExperimentsMixin:
             return
 
         rated_ops.sort(key=lambda x: -x[1])
-        overall_rate = sum(s["n_stage1_passed"] for s in op_rates.values()) / max(
-            sum(s["n_used"] for s in op_rates.values()), 1
-        )
+        total_n = sum(s["n_used"] for s in op_rates.values())
+        overall_rate = sum(
+            s.get("n_stage1_passed", 0) or int(s["s1_rate"] * s["n_s0"])
+            for s in op_rates.values()
+        ) / max(total_n, 1)
 
         # Best ops: significantly above average
         for op, rate, n_used, n_passed in rated_ops[:5]:

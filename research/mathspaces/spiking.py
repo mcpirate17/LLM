@@ -208,7 +208,10 @@ def execute_stdp_attention(module: nn.Module, *inputs: torch.Tensor) -> torch.Te
         and x.device.type == "cpu"
         and not x.requires_grad
     ):
-        attended = aria_core.stdp_attention_f32(x, tau, 0.0)
+        tau_scalar = (
+            float(tau.detach()) if isinstance(tau, torch.Tensor) else float(tau)
+        )
+        attended = aria_core.stdp_attention_f32(x, tau_scalar, 0.0)
     else:
         # Build causal exponential decay kernel: weight[i,j] = exp(-(i-j)/tau) for j<=i
         positions = torch.arange(S, device=x.device, dtype=x.dtype)

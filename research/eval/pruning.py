@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import measure_loss as _measure_loss_shared
+from .utils import iter_eligible_params, measure_loss as _measure_loss_shared
 
 
 @dataclass(slots=True)
@@ -37,13 +37,7 @@ class OneShotPruneResult:
 
 
 def _iter_prunable_params(model: nn.Module) -> Iterable[torch.nn.Parameter]:
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if param.dim() < 2:
-            continue
-        if "embed" in name.lower():
-            continue
+    for _name, param in iter_eligible_params(model):
         yield param
 
 

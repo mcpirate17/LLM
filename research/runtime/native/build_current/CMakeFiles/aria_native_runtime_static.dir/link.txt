@@ -1,0 +1,2 @@
+/usr/bin/ar qc libaria_native_runtime_static.a CMakeFiles/aria_native_runtime_static.dir/src/graph_analysis.c.o CMakeFiles/aria_native_runtime_static.dir/src/kernels_ext.c.o CMakeFiles/aria_native_runtime_static.dir/src/profiler.c.o CMakeFiles/aria_native_runtime_static.dir/src/registry.c.o CMakeFiles/aria_native_runtime_static.dir/src/runner_abi.c.o
+/usr/bin/ranlib libaria_native_runtime_static.a

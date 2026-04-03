@@ -76,6 +76,14 @@ void test_tropical_matmul() {
 
 void test_tropical_center() {
     printf("Testing Tropical Center... ");
+    /* x shape: (1, 3, 2) — batch=1, seq=3, dim=2
+     * Kernel does running-min centering per dimension:
+     *   y[s] = x[s] - min(x[0..s])
+     *
+     * dim=0: [5, 3, 7] → running_min=[5,3,3] → [0, 0, 4]
+     * dim=1: [1, 4, 0] → running_min=[1,1,0] → [0, 3, 0]
+     * Interleaved: [0, 0, 0, 3, 4, 0]
+     */
     float x[] = {
         5.0f, 1.0f,
         3.0f, 4.0f,
@@ -83,10 +91,10 @@ void test_tropical_center() {
     };
     float y[6];
     aria_tropical_center_f32(x, y, 1, 3, 2);
-    assert(fabs(y[0] - 2.0f) < EPS);
-    assert(fabs(y[1] - 1.0f) < EPS);
+    assert(fabs(y[0] - 0.0f) < EPS);
+    assert(fabs(y[1] - 0.0f) < EPS);
     assert(fabs(y[2] - 0.0f) < EPS);
-    assert(fabs(y[3] - 4.0f) < EPS);
+    assert(fabs(y[3] - 3.0f) < EPS);
     assert(fabs(y[4] - 4.0f) < EPS);
     assert(fabs(y[5] - 0.0f) < EPS);
     printf("OK\n");

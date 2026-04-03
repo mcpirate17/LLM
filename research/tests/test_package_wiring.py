@@ -57,7 +57,8 @@ class TestPackageWiring(unittest.TestCase):
     @unittest.skipUnless(HAS_TORCH, "requires torch")
     def test_external_op_nonfinite_sanitization_and_telemetry(self):
         import torch
-        from research.synthesis.compiler import _execute_op
+        from research.synthesis.compiler import CompiledOp
+        from research.synthesis.graph import ShapeInfo
         from research.synthesis.primitives import (
             PrimitiveOp,
             OpCategory,
@@ -79,16 +80,16 @@ class TestPackageWiring(unittest.TestCase):
 
         object.__setattr__(op, "execute_fn", _execute_fn)
         register_external_primitive(op)
-        module = torch.nn.Module()
         x = torch.ones(2, 3, 4)
         try:
-            out = _execute_op(module, op_name, (x,), {})
+            compiled_op = CompiledOp(op_name, {}, ShapeInfo(dim=4), ShapeInfo(dim=4), 4)
+            compiled_op.collect_telemetry = True
+            out = compiled_op(x)
             self.assertTrue(torch.isfinite(out).all())
-            telemetry = getattr(module, "mathspace_telemetry", {})
+            telemetry = getattr(compiled_op, "mathspace_telemetry", {})
             self.assertIn(op_name, telemetry)
             self.assertGreaterEqual(telemetry[op_name]["calls"], 1)
-            self.assertGreater(telemetry[op_name]["nonfinite_elements"], 0)
-            self.assertGreaterEqual(telemetry[op_name]["sanitized_calls"], 1)
+            self.assertGreater(telemetry[op_name]["nonfinite"], 0)
         finally:
             PRIMITIVE_REGISTRY.pop(op_name, None)
 

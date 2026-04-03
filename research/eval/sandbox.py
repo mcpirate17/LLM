@@ -31,6 +31,12 @@ from ..scientist.perf import PerfTracer, OpKernelProfiler
 from .sparsity import check_activation_sparsity
 from research.defaults import VOCAB_SIZE
 
+
+def _env_bool(key: str, default: str = "0") -> bool:
+    """Parse an environment variable as a boolean flag."""
+    return os.getenv(key, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Substrings in CUDA errors that indicate an unrecoverable (sticky) context
 _CUDA_FATAL_MARKERS = (
     "device-side assert",
@@ -96,22 +102,11 @@ def safe_eval(
     """
     result = SandboxResult()
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
-    trace_enabled = os.getenv("AI_SCI_PERF_TRACE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    trace_enabled = _env_bool("AI_SCI_PERF_TRACE")
     tracer = PerfTracer() if trace_enabled else None
-    kernel_profile_enabled = os.getenv("AI_SCI_KERNEL_PROFILE", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    kernel_profile_enabled = _env_bool("AI_SCI_KERNEL_PROFILE")
     op_profiler = OpKernelProfiler(enabled=kernel_profile_enabled, top_k=20)
     mapped_array = None
-    mapped_path = None
 
     # Set timeout (Unix only)
     old_handler = None
@@ -146,7 +141,7 @@ def safe_eval(
         if dev.type == "cuda":
             input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
         else:
-            shared_ids, mapped_array, mapped_path = _mapped_shared_token_ids(
+            shared_ids, mapped_array, _mapped_path = _mapped_shared_token_ids(
                 batch_size, seq_len, vocab_size
             )
             input_ids = shared_ids
@@ -155,14 +150,7 @@ def safe_eval(
         # This validates that compile-time ABI handles can execute real token payloads
         # without replacing training/backprop path yet.
         if abi_infer_probe is None:
-            abi_probe_enabled = os.getenv(
-                "NATIVE_RUNNER_ABI_INFER_PROBE", "1"
-            ).strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            abi_probe_enabled = _env_bool("NATIVE_RUNNER_ABI_INFER_PROBE", "1")
         else:
             abi_probe_enabled = bool(abi_infer_probe)
         abi_session = getattr(model, "_native_runner_abi_session", None)
@@ -618,7 +606,6 @@ def safe_eval(
                         break
             if failure_op is None:
                 # Heuristic fallback from the error line itself
-                str(e)
                 if "kv_compress" in result.error:
                     failure_op = "latent_attention_compressor"
                 elif "conv_weight" in result.error:
@@ -650,16 +637,6 @@ def safe_eval(
                 logger.debug(
                     "torch.cuda.empty_cache() failed during sandbox cleanup: %s", exc
                 )
-        # Cleanup mapped shared-memory buffer
-        try:
-            if mapped_array is not None:
-                del mapped_array
-            if mapped_path and os.path.exists(mapped_path):
-                os.remove(mapped_path)
-        except OSError as exc:
-            logger.debug(
-                "Failed to remove mapped sandbox buffer %s: %s", mapped_path, exc
-            )
         if force_gc_every > 0 and (_SAFE_EVAL_CALL_COUNT % force_gc_every == 0):
             gc.collect()
 

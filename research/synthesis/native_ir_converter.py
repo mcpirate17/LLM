@@ -12,9 +12,9 @@ The Rust scheduler's ``GraphIR`` (graph.rs) consumes this same format.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List
 
+from ._json_compat import dumps_json
 from .graph import ComputationGraph
 
 
@@ -64,4 +64,4 @@ def graph_to_native_ir(graph: ComputationGraph) -> dict:
 
 def graph_to_native_ir_json(graph: ComputationGraph) -> str:
     """Convert a ComputationGraph and serialize to a compact JSON string."""
-    return json.dumps(graph_to_native_ir(graph), separators=(",", ":"))
+    return dumps_json(graph_to_native_ir(graph))

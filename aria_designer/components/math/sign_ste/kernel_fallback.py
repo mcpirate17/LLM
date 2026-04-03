@@ -9,4 +9,4 @@ def _sign_ste(x: torch.Tensor) -> torch.Tensor:
     return x + (torch.sign(x) - x).detach()
 
 
-ComponentHandler = make_unary_handler(_sign_ste)
+ComponentHandler = make_unary_handler(_sign_ste, native_op_name="sign_ste")

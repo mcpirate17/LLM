@@ -136,7 +136,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Softmax self-attention → norm → projection",
         support=13,
         avg_loss_ratio=0.142,
-        lift=2.37,
+        lift=0.5,  # Demoted: 2.9% S1 rate in production — broken
     ),
     Motif(
         name="attn_linear",
@@ -172,7 +172,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Local windowed causal attention → projection",
         support=15,
         avg_loss_ratio=0.062,
-        lift=3.0,
+        lift=4.0,  # Boosted: 27.5% S1 rate — second-best attention variant
     ),
     Motif(
         name="attn_latent_compress",
@@ -184,7 +184,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="MLA-style KV compression → expand (best pair LR 0.040)",
         support=20,
         avg_loss_ratio=0.040,
-        lift=1.8,
+        lift=4.0,  # Boosted: 30.2% S1 rate — best attention variant
     ),
     # ── SSM / state-space cores ─────────────────────────────────────
     Motif(
@@ -608,7 +608,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="Differential attention (dual softmax subtraction) → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.0,
+        lift=3.5,  # Boosted: 21.2% S1 rate in template analytics
     ),
     Motif(
         name="attn_gated_delta",
@@ -1217,7 +1217,7 @@ _MOTIF_LIST: Tuple[Motif, ...] = (
         description="RoPE → softmax attention → norm → projection",
         support=0,
         avg_loss_ratio=0.0,
-        lift=1.5,
+        lift=0.3,  # Demoted: rope_attention_block has 4.9% S1 — broken combo
     ),
     Motif(
         name="attn_causal_mask",

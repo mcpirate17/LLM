@@ -29,18 +29,20 @@ class RWKVChannelModule(nn.Module):
 
 
 class ComponentHandler:
+    def __init__(self):
+        self._module = None
+        self._dim = None
+
     def validate_config(self, config):
         return []
 
     def build(self, config):
-        dim = config.get("dim", 64)
-        return RWKVChannelModule(dim)
+        return None
 
     def forward(self, inputs, config):
         x = inputs["x"]
-        in_dim = x.shape[-1] if hasattr(x, "shape") else 64
-        dim = config.get("dim", in_dim)
-        if dim != in_dim:
-            dim = in_dim
-        mod = RWKVChannelModule(dim)
-        return {"y": mod(x)}
+        dim = x.shape[-1] if hasattr(x, "shape") else 64
+        if self._module is None or self._dim != dim:
+            self._module = RWKVChannelModule(dim)
+            self._dim = dim
+        return {"y": self._module(x)}

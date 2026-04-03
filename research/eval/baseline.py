@@ -76,11 +76,8 @@ class TransformerBaseline:
     def __init__(self, cache_path: str = "research/baseline_cache.db"):
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_cache()
-
-    def _init_cache(self):
-        conn = sqlite3.connect(str(self.cache_path))
-        conn.execute("""
+        self._conn = sqlite3.connect(str(self.cache_path))
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS baseline_results (
                 config_key TEXT PRIMARY KEY,
                 final_loss REAL NOT NULL,
@@ -88,8 +85,13 @@ class TransformerBaseline:
                 trained_at REAL NOT NULL
             )
         """)
-        conn.commit()
-        conn.close()
+        self._conn.commit()
+
+    def close(self):
+        """Close the underlying SQLite connection."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def _config_key(
         self,
@@ -119,24 +121,20 @@ class TransformerBaseline:
         )
 
     def _get_cached(self, config_key: str) -> Optional[float]:
-        conn = sqlite3.connect(str(self.cache_path))
-        row = conn.execute(
+        row = self._conn.execute(
             "SELECT final_loss FROM baseline_results WHERE config_key = ?",
             (config_key,),
         ).fetchone()
-        conn.close()
         return row[0] if row else None
 
     def _save_cache(self, config_key: str, final_loss: float, initial_loss: float):
-        conn = sqlite3.connect(str(self.cache_path))
-        conn.execute(
+        self._conn.execute(
             """INSERT OR REPLACE INTO baseline_results
                (config_key, final_loss, initial_loss, trained_at)
                VALUES (?, ?, ?, ?)""",
             (config_key, final_loss, initial_loss, time.time()),
         )
-        conn.commit()
-        conn.close()
+        self._conn.commit()
 
     def get_baseline_loss(
         self,
@@ -210,6 +208,7 @@ class TransformerBaseline:
 
         final_loss = sum(losses) / len(losses) if losses else float("inf")
         if math.isfinite(final_loss) and cache_data_fn:
+            # NB: "initial_loss" column stores seed-0 final loss (historical misnomer)
             self._save_cache(config_key, final_loss, losses[0])
         return final_loss
 
@@ -252,12 +251,12 @@ class TransformerBaseline:
                 betas=adamw_betas,
             )
         model.train()
+        _data_gen = torch.Generator(device=dev).manual_seed(seed * 100000)
 
         final_loss = float("inf")
 
         try:
             for step in range(n_steps):
-                torch.manual_seed(seed * 100000 + step)
                 if data_fn is not None:
                     input_ids = data_fn(batch_size, seq_len, dev)
                 else:
@@ -266,6 +265,7 @@ class TransformerBaseline:
                         vocab_size,
                         (batch_size, seq_len),
                         device=dev,
+                        generator=_data_gen,
                     )
                 with torch.amp.autocast(
                     device_type=dev.type,

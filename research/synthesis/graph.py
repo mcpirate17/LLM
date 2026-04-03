@@ -11,7 +11,6 @@ at construction time, so invalid graphs are rejected before compilation.
 
 from __future__ import annotations
 
-import heapq
 import xxhash
 import logging
 from dataclasses import dataclass, field, replace
@@ -20,13 +19,14 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 import numpy as np
+from .native_analysis import analyze_ir
+from .native_topology import compute_topological_order
 from .primitives import (
     PrimitiveOp,
     get_primitive,
     PRIMITIVE_REGISTRY,
     estimate_op_params,
     OPCODE_MAP,
-    REVERSE_OPCODE_MAP,
 )
 
 
@@ -127,7 +127,10 @@ class ComputationGraphIR:
     input_indices: np.ndarray  # int32, shape (N, 2)
     output_node_idx: int
     configs: List[Dict]
+    node_ids: Optional[np.ndarray] = None
+    param_estimates: Optional[np.ndarray] = None
     source_version: int = 0  # _ir_version of source ComputationGraph at construction
+    analysis_cache: Dict[str, object] = field(default_factory=dict, repr=False)
 
     def is_stale(self, graph: "ComputationGraph") -> bool:
         """Check if this IR was built from an older version of the graph."""
@@ -136,50 +139,25 @@ class ComputationGraphIR:
     def n_nodes(self) -> int:
         return len(self.op_codes)
 
+    def analyze_structure(self, include_reachable: bool = False):
+        cache_key = "with_reachable" if include_reachable else "summary"
+        cached = self.analysis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = analyze_ir(self, include_reachable=include_reachable)
+        self.analysis_cache[cache_key] = result
+        return result
+
     def has_gradient_path(self) -> bool:
         """Check if there's a differentiable path from input to output.
-        Vectorized via NumPy for high-throughput architecture filtering.
+        Uses sparse reverse traversal over input_indices.
         """
-        if self.output_node_idx == -1:
-            return False
-
-        n = self.n_nodes()
-        # adj_back[i, j] means i depends on j
-        adj_back = np.zeros((n, n), dtype=bool)
-        for i in range(n):
-            for j in range(2):
-                inp_idx = self.input_indices[i, j]
-                if inp_idx != -1:
-                    adj_back[i, inp_idx] = True
-
-        visited = np.zeros(n, dtype=bool)
-        visited[self.output_node_idx] = True
-
-        for _ in range(n):
-            # Expand reachability one step backwards
-            # new_visited = visited | {j | exists i s.t. visited[i] and i->j}
-            new_visited = (
-                visited | np.any(adj_back[visited, :], axis=0)
-                if np.any(visited)
-                else visited
-            )
-            if np.array_equal(new_visited, visited):
-                break
-            visited = new_visited
-
-        # Opcode 0 is 'input'
-        input_indices = np.where(self.op_codes == 0)[0]
-        return np.any(visited[input_indices])
+        return bool(self.analyze_structure().has_gradient_path)
 
     @staticmethod
     def batch_has_gradient_path(ir_list: List[ComputationGraphIR]) -> np.ndarray:
-        """Check gradient path for a list of IRs using a single vectorized routine where possible.
-        For different graph structures, we still need to loop but we can optimize the inner logic.
-        """
-        results = []
-        for ir in ir_list:
-            results.append(ir.has_gradient_path())
-        return np.array(results, dtype=bool)
+        """Check gradient path for a list of IRs."""
+        return np.fromiter((ir.has_gradient_path() for ir in ir_list), dtype=bool)
 
     @staticmethod
     def batch_op_distribution(
@@ -199,19 +177,7 @@ class ComputationGraphIR:
 
     def n_params_estimate(self) -> int:
         """Estimate total learnable parameters using the IR. Cached."""
-        total = 0
-        D = self.model_dim
-        # We need REVERSE_OPCODE_MAP to get op names
-        for i in range(self.n_nodes()):
-            opcode = self.op_codes[i]
-            if opcode == 0:  # input
-                continue
-            op_name = REVERSE_OPCODE_MAP.get(opcode)
-            if not op_name:
-                continue
-            op = get_primitive(op_name)
-            total += estimate_op_params(op, D)
-        return total
+        return int(self.analyze_structure().param_estimate)
 
 
 class ComputationGraph:
@@ -459,94 +425,7 @@ class ComputationGraph:
         """
         if "topo" in self._cache:
             return self._cache["topo"]
-
-        # 0. Try fast C++ implementation via aria_core
-        try:
-            import aria_core
-
-            if hasattr(aria_core, "canonical_topo_sort"):
-                n_nodes = self._next_id
-                # Only pass existing nodes (up to max id)
-                op_names = [""] * n_nodes
-                config_strs = [""] * n_nodes
-                node_inputs = [[] for _ in range(n_nodes)]
-                edges = []
-
-                for nid, node in self.nodes.items():
-                    op_names[nid] = node.op_name
-                    if node.config:
-                        config_items = sorted(
-                            f"{k}={v}" for k, v in node.config.items()
-                        )
-                        config_strs[nid] = f"[{','.join(config_items)}]"
-                    node_inputs[nid] = node.input_ids
-                    for iid in node.input_ids:
-                        edges.append((iid, nid))
-
-                order = aria_core.canonical_topo_sort(
-                    n_nodes, edges, op_names, config_strs, node_inputs
-                )
-                # Filter out any placeholder indices if necessary (shouldn't be)
-                order = [int(nid) for nid in order if nid in self.nodes]
-                self._cache["topo"] = order
-                return order
-        except Exception:
-            # Fallback to Python if C++ fails or is missing
-            pass
-
-        # 1. Compute in-degrees
-        in_degree = {nid: len(node.input_ids) for nid, node in self.nodes.items()}
-
-        # 2. Track adjacency (children)
-        children = {nid: [] for nid in self.nodes}
-        for nid, node in self.nodes.items():
-            for iid in node.input_ids:
-                children[iid].append(nid)
-
-        # 3. Initialize queue with nodes having 0 in-degree
-        # Precompute static sort keys
-        static_keys = {}
-        for nid, node in self.nodes.items():
-            config_str = ""
-            if node.config:
-                config_items = sorted(f"{k}={v}" for k, v in node.config.items())
-                config_str = f"[{','.join(config_items)}]"
-            static_keys[nid] = (node.op_name, config_str, nid)
-
-        order = []
-        canonical_id_map = {}  # nid -> position in canonical order
-
-        ready = []
-        for nid, deg in in_degree.items():
-            if deg == 0:
-                node = self.nodes[nid]
-                input_keys = tuple(canonical_id_map[iid] for iid in node.input_ids)
-                op_name, config_str, orig_id = static_keys[nid]
-                heapq.heappush(ready, (op_name, input_keys, config_str, orig_id))
-
-        while ready:
-            op_name, input_keys, config_str, u = heapq.heappop(ready)
-
-            canonical_id_map[u] = len(order)
-            order.append(u)
-
-            for v in children[u]:
-                in_degree[v] -= 1
-                if in_degree[v] == 0:
-                    node = self.nodes[v]
-                    v_input_keys = tuple(
-                        canonical_id_map[iid] for iid in node.input_ids
-                    )
-                    v_op_name, v_config_str, v_orig_id = static_keys[v]
-                    heapq.heappush(
-                        ready, (v_op_name, v_input_keys, v_config_str, v_orig_id)
-                    )
-
-        if len(order) < len(self.nodes):
-            # This should not happen in a valid DAG, but if it does,
-            # fall back to a simple visit to avoid breaking completely.
-            return sorted(self.nodes.keys())
-
+        order = compute_topological_order(self)
         self._cache["topo"] = order
         return order
 
@@ -561,18 +440,15 @@ class ComputationGraph:
         if self._output_node_id is None:
             self._cache["reachable"] = set()
             return set()
-        visited: set = set()
-        queue = [self._output_node_id]
-        while queue:
-            nid = queue.pop()
-            if nid in visited:
-                continue
-            visited.add(nid)
-            node = self.nodes.get(nid)
-            if node:
-                for iid in node.input_ids:
-                    if iid not in visited:
-                        queue.append(iid)
+        ir = self._analysis_ir()
+        analysis = ir.analyze_structure(include_reachable=True)
+        mask = analysis.reachable_mask
+        node_ids = (
+            ir.node_ids
+            if ir.node_ids is not None
+            else np.arange(ir.n_nodes(), dtype=np.int32)
+        )
+        visited = {int(node_ids[idx]) for idx in np.flatnonzero(mask)}
         self._cache["reachable"] = visited
         return visited
 
@@ -601,15 +477,9 @@ class ComputationGraph:
         if "depth" in self._cache:
             return self._cache["depth"]
         if not self.nodes:
+            self._cache["depth"] = 0
             return 0
-        depths: Dict[int, int] = {}
-        for nid in self.topological_order():
-            node = self.nodes[nid]
-            if not node.input_ids:
-                depths[nid] = 0
-            else:
-                depths[nid] = max(depths.get(iid, 0) for iid in node.input_ids) + 1
-        result = max(depths.values()) if depths else 0
+        result = int(self.lower_to_ir().analyze_structure().depth)
         self._cache["depth"] = result
         return result
 
@@ -636,9 +506,7 @@ class ComputationGraph:
         """
         if "grad_path" in self._cache:
             return self._cache["grad_path"]
-
-        ir = self.lower_to_ir()
-        result = ir.has_gradient_path()
+        result = bool(self.lower_to_ir().analyze_structure().has_gradient_path)
         self._cache["grad_path"] = result
         return result
 
@@ -712,13 +580,22 @@ class ComputationGraph:
         if "ir" in self._cache:
             return self._cache["ir"]
 
-        reachable = self.get_reachable_nodes()
-        node_ids = sorted(nid for nid in self.nodes.keys() if nid in reachable)
+        analysis_ir = self._analysis_ir()
+        analysis = analysis_ir.analyze_structure(include_reachable=True)
+        reachable_mask = analysis.reachable_mask
+        all_node_ids = (
+            analysis_ir.node_ids
+            if analysis_ir.node_ids is not None
+            else np.arange(analysis_ir.n_nodes(), dtype=np.int32)
+        )
+        node_ids = [int(all_node_ids[idx]) for idx in np.flatnonzero(reachable_mask)]
         id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
         n = len(node_ids)
 
         op_codes = np.zeros(n, dtype=np.int32)
         input_indices = np.full((n, 2), -1, dtype=np.int32)
+        node_ids_arr = np.asarray(node_ids, dtype=np.int32)
+        param_estimates = np.zeros(n, dtype=np.int64)
         configs = []
 
         for nid in node_ids:
@@ -726,6 +603,10 @@ class ComputationGraph:
             idx = id_to_idx[nid]
             # Use 0 for unknown as a safe default ('input' is 0)
             op_codes[idx] = OPCODE_MAP.get(node.op_name, 0)
+            if not node.is_input and node.op_name in PRIMITIVE_REGISTRY:
+                param_estimates[idx] = estimate_op_params(
+                    get_primitive(node.op_name), self.model_dim
+                )
             for j, iid in enumerate(node.input_ids):
                 if j < 2:
                     input_indices[idx, j] = id_to_idx[iid]
@@ -741,9 +622,54 @@ class ComputationGraph:
             input_indices=input_indices,
             output_node_idx=output_idx,
             configs=configs,
+            node_ids=node_ids_arr,
+            param_estimates=param_estimates,
             source_version=self._ir_version,
         )
         self._cache["ir"] = ir
+        return ir
+
+    def _analysis_ir(self) -> ComputationGraphIR:
+        cached = self._cache.get("analysis_ir")
+        if cached is not None:
+            return cached
+
+        node_ids = sorted(self.nodes.keys())
+        id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
+        n = len(node_ids)
+        op_codes = np.zeros(n, dtype=np.int32)
+        input_indices = np.full((n, 2), -1, dtype=np.int32)
+        node_ids_arr = np.asarray(node_ids, dtype=np.int32)
+        param_estimates = np.zeros(n, dtype=np.int64)
+        configs = []
+
+        for nid in node_ids:
+            node = self.nodes[nid]
+            idx = id_to_idx[nid]
+            op_codes[idx] = OPCODE_MAP.get(node.op_name, 0)
+            if not node.is_input and node.op_name in PRIMITIVE_REGISTRY:
+                param_estimates[idx] = estimate_op_params(
+                    get_primitive(node.op_name), self.model_dim
+                )
+            for j, iid in enumerate(node.input_ids):
+                if j < 2 and iid in id_to_idx:
+                    input_indices[idx, j] = id_to_idx[iid]
+            configs.append(node.config)
+
+        output_idx = (
+            id_to_idx[self._output_node_id] if self._output_node_id is not None else -1
+        )
+        ir = ComputationGraphIR(
+            model_dim=self.model_dim,
+            op_codes=op_codes,
+            input_indices=input_indices,
+            output_node_idx=output_idx,
+            configs=configs,
+            node_ids=node_ids_arr,
+            param_estimates=param_estimates,
+            source_version=self._ir_version,
+        )
+        self._cache["analysis_ir"] = ir
         return ir
 
     def describe(self) -> str:

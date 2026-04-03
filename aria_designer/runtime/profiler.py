@@ -72,27 +72,25 @@ class ProfileReport:
     avoided_duplicate_conversions: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        # Convert numpy types
-        for k, v in d.items():
-            if hasattr(v, "item"):
-                d[k] = v.item()
+        def _scalar(v):
+            return v.item() if hasattr(v, "item") else v
+
         metrics = {
-            "total_params": d.get("total_params", 0),
-            "total_flops_per_token": d.get("total_flops_per_token", 0),
-            "total_memory_bytes": d.get("total_memory_bytes", 0),
-            "forward_time_ms": d.get("forward_time_ms", 0.0),
-            "backward_time_ms": d.get("backward_time_ms", 0.0),
-            "peak_memory_mb": d.get("peak_memory_mb", 0.0),
-            "throughput_tokens_per_sec": d.get("throughput_tokens_per_sec", 0.0),
-            "native_coverage": d.get("native_coverage", 0.0),
-            "compile_time_ms": d.get("compile_time_ms", 0.0),
-            "total_time_ms": d.get("total_time_ms", 0.0),
+            "total_params": _scalar(self.total_params),
+            "total_flops_per_token": _scalar(self.total_flops_per_token),
+            "total_memory_bytes": _scalar(self.total_memory_bytes),
+            "forward_time_ms": _scalar(self.forward_time_ms),
+            "backward_time_ms": _scalar(self.backward_time_ms),
+            "peak_memory_mb": _scalar(self.peak_memory_mb),
+            "throughput_tokens_per_sec": _scalar(self.throughput_tokens_per_sec),
+            "native_coverage": _scalar(self.native_coverage),
+            "compile_time_ms": _scalar(self.compile_time_ms),
+            "total_time_ms": _scalar(self.total_time_ms),
         }
         duplicate_work = build_duplicate_work_report(
             repeated_keys={},
             avoided_keys={
-                "workflow_to_graph": int(d.get("avoided_duplicate_conversions", 0) or 0)
+                "workflow_to_graph": int(self.avoided_duplicate_conversions or 0)
             },
         )
         contract = build_perf_contract(
@@ -111,8 +109,12 @@ class ProfileReport:
                 budget_profile="designer_interactive",
             ),
             duplicate_work=duplicate_work,
-            warnings=d.get("bottleneck_ops", []),
+            warnings=self.bottleneck_ops,
         )
+        d = asdict(self)
+        for k, v in d.items():
+            if hasattr(v, "item"):
+                d[k] = v.item()
         d["perf_contract"] = contract
         return d
 
@@ -148,22 +150,13 @@ def _estimate_op_flops(op_name: str, model_dim: int, config: Dict) -> int:
     elif op.shape_rule in ("reduce_last", "reduce_seq"):
         return D
 
-    elif op.shape_rule == "rfft":
-        # FFT: O(D log D)
+    elif op.shape_rule in ("rfft", "irfft"):
         import math
 
         return int(D * math.log2(max(D, 2))) * 5
 
-    elif op.shape_rule == "irfft":
-        import math
-
-        return int(D * math.log2(max(D, 2))) * 5
-
-    elif op.shape_rule == "concat":
-        return 0  # no compute, just memory
-
-    elif op.shape_rule == "split":
-        return 0  # no compute, just view
+    elif op.shape_rule in ("concat", "split"):
+        return 0
 
     return D  # fallback
 

@@ -8,15 +8,21 @@ the entire IR traversal into a single compiled kernel.
 
 from __future__ import annotations
 
-import os
 import logging
+import os
+from typing import Dict, Tuple
+
 import torch
 import torch.nn as nn
-import numpy as np
-from typing import List, Dict, Tuple, Optional
 
 from .graph import ComputationGraphIR
-from .primitives import REVERSE_OPCODE_MAP
+from .ir_executor_native import configure_native_execution
+from .ir_executor_plan import build_executor_plan
+from .ir_executor_runtime import (
+    execute_plan_entry,
+    initialize_execution_frame,
+    maybe_dispatch_native_segment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,141 +30,51 @@ logger = logging.getLogger(__name__)
 class IRExecutor(nn.Module):
     """Executes ComputationGraphIR with minimal overhead."""
 
-    def __init__(self, ir: ComputationGraphIR):
+    def __init__(self, ir: ComputationGraphIR, source_graph=None):
         super().__init__()
+        self.source_graph = source_graph
         self.model_dim = ir.model_dim
         self.op_codes = ir.op_codes
         self.input_indices = ir.input_indices
         self.output_node_idx = ir.output_node_idx
         self.configs = ir.configs
+        self._subgraph_dispatcher = None
+        self._native_chain_segments = ()
+        self._native_chain_segments_by_plan_index = {}
+        self._native_forward_wrapper = None
+        self._last_execution_path = "uninitialized"
+        self._execution_stats = {
+            "native_subgraph_dispatches": 0,
+            "native_chain_dispatches": 0,
+            "hybrid_native_python_ir_loops": 0,
+            "python_ir_loop_fallbacks": 0,
+        }
 
-        # Z8: Pre-calculate reference counts for memory management
-        self.consumer_counts = np.zeros(len(self.op_codes), dtype=np.int32)
-        for i in range(len(self.op_codes)):
-            if self.op_codes[i] == 0:
-                continue
-            in1 = self.input_indices[i, 0]
-            in2 = self.input_indices[i, 1]
-            if in1 != -1:
-                self.consumer_counts[in1] += 1
-            if in2 != -1:
-                self.consumer_counts[in2] += 1
+        plan = build_executor_plan(ir)
+        self.consumer_counts = plan.consumer_counts
         if self.output_node_idx is not None:
             for i in range(len(self.op_codes)):
                 if self.op_codes[i] == 0:
                     continue
                 if i != int(self.output_node_idx) and self.consumer_counts[i] == 0:
-                    op_name = REVERSE_OPCODE_MAP.get(self.op_codes[i], "unknown")
+                    op_name = getattr(plan.flat_ops[i], "op_name", "unknown")
                     logger.warning(
                         "IRExecutor: node %d (%s) has zero consumers (possible dead branch)",
                         i,
                         op_name,
                     )
 
-        self.ops = nn.ModuleList()
-        # Map IR index to Module index in self.ops
-        self.idx_to_op_idx = {}
-
-        from .compiler import CompiledOp, ShapeInfo
-
-        # Track output dim per node for shape-aware param init
-        node_dims = {}
-        for i in range(len(self.op_codes)):
-            if self.op_codes[i] == 0:  # input
-                node_dims[i] = self.model_dim
-                continue
-            op_name = REVERSE_OPCODE_MAP.get(self.op_codes[i])
-            config = self.configs[i]
-            in1 = self.input_indices[i, 0]
-            in_dim = node_dims.get(in1, self.model_dim) if in1 != -1 else self.model_dim
-            # Determine output dim based on op type and config
-            if op_name in (
-                "linear_proj",
-                "linear_proj_down",
-                "linear_proj_up",
-                "fused_linear_gelu",
-                "gated_linear",
-                "nm_sparse_linear",
-                "block_sparse_linear",
-                "semi_structured_2_4_linear",
-            ):
-                node_dims[i] = config.get("out_dim", in_dim)
-            elif op_name == "split2":
-                node_dims[i] = in_dim // 2
-            elif op_name == "split3":
-                node_dims[i] = in_dim // 3
-            elif op_name == "concat":
-                in2 = self.input_indices[i, 1]
-                d2 = node_dims.get(in2, self.model_dim) if in2 != -1 else self.model_dim
-                node_dims[i] = in_dim + d2
-            elif op_name in (
-                "cosine_similarity",
-                "sum_last",
-                "mean_last",
-                "max_last",
-                "norm_last",
-            ):
-                node_dims[i] = 1
-            else:
-                node_dims[i] = in_dim
-
-        # Build op modules with correct shapes
-        for i in range(len(self.op_codes)):
-            opcode = self.op_codes[i]
-            if opcode == 0:  # input
-                continue
-
-            op_name = REVERSE_OPCODE_MAP.get(opcode)
-            if not op_name:
-                continue
-
-            in1 = self.input_indices[i, 0]
-            in_dim = node_dims.get(in1, self.model_dim) if in1 != -1 else self.model_dim
-            out_dim = node_dims.get(i, self.model_dim)
-
-            input_shape = ShapeInfo(batch="B", seq="S", dim=in_dim)
-            output_shape = ShapeInfo(batch="B", seq="S", dim=out_dim)
-
-            op_mod = CompiledOp(
-                op_name=op_name,
-                config=self.configs[i],
-                input_shape=input_shape,
-                output_shape=output_shape,
-                model_dim=self.model_dim,
-            )
-
-            self.idx_to_op_idx[i] = len(self.ops)
-            self.ops.append(op_mod)
-
-        # Build flat op lookup array: O(1) list index instead of dict hash
-        n_nodes = len(self.op_codes)
-        self._flat_ops: List[Optional[nn.Module]] = [None] * n_nodes
-        for ir_idx, op_idx in self.idx_to_op_idx.items():
-            self._flat_ops[ir_idx] = self.ops[op_idx]
-
-        # Pre-convert numpy arrays to Python lists (avoid per-element int() casts)
-        self._op_codes_list = (
-            self.op_codes.tolist()
-            if hasattr(self.op_codes, "tolist")
-            else list(self.op_codes)
-        )
-        self._in1_list = (
-            self.input_indices[:, 0].tolist()
-            if hasattr(self.input_indices, "tolist")
-            else [int(self.input_indices[i, 0]) for i in range(n_nodes)]
-        )
-        self._in2_list = (
-            self.input_indices[:, 1].tolist()
-            if hasattr(self.input_indices, "tolist")
-            else [int(self.input_indices[i, 1]) for i in range(n_nodes)]
-        )
-        _ccl = (
-            self.consumer_counts.tolist()
-            if hasattr(self.consumer_counts, "tolist")
-            else list(self.consumer_counts)
-        )
-        self._counts_original = list(_ccl)
-        self._counts_buf = list(_ccl)
+        self.ops = plan.ops
+        self.idx_to_op_idx = plan.idx_to_op_idx
+        self._flat_ops = plan.flat_ops
+        self._op_codes_list = plan.op_codes_list
+        self._in1_list = plan.in1_list
+        self._in2_list = plan.in2_list
+        self._counts_original = plan.counts_original
+        self._counts_buf = plan.counts_buf
+        self._input_node_indices = plan.input_node_indices
+        self._exec_plan = plan.exec_plan
+        self._exec_plan_node_indices = plan.exec_plan_node_indices
 
         # torch.compile can dominate runtime for short-lived candidate models.
         # Keep it opt-in so screening throughput does not get bottlenecked by
@@ -172,64 +88,102 @@ class IRExecutor(nn.Module):
             except Exception as e:
                 logger.debug("torch.compile failed for IRExecutor: %s", e)
 
+        native_cfg = configure_native_execution(
+            self,
+            self.source_graph,
+            op_codes_list=self._op_codes_list,
+            exec_plan_node_indices=self._exec_plan_node_indices,
+        )
+        self._subgraph_dispatcher = native_cfg.subgraph_dispatcher
+        self._native_chain_segments = native_cfg.native_chain_segments
+        self._native_chain_segments_by_plan_index = (
+            native_cfg.native_chain_segments_by_plan_index or {}
+        )
+        self._native_forward_wrapper = native_cfg.native_forward_wrapper
+
+    def _wrapper_stats(self) -> Tuple[int, int]:
+        wrapper = self._native_forward_wrapper
+        if wrapper is None:
+            return (0, 0)
+        stats = wrapper.stats
+        return (
+            int(stats.get("native_dispatches", 0)),
+            int(stats.get("fallbacks", 0)),
+        )
+
     def forward(
         self, x: torch.Tensor, capture_intermediates: bool = False
     ) -> torch.Tensor | Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
         """Lowered execution loop. torch.compile fuses this into a single kernel."""
-        n_nodes = len(self._op_codes_list)
-        node_outputs: List[Optional[torch.Tensor]] = [None] * n_nodes
-        captured = {} if capture_intermediates else None
+        if not capture_intermediates and self._subgraph_dispatcher is not None:
+            native_result = self._subgraph_dispatcher.try_dispatch(x)
+            if native_result is not None:
+                self._last_execution_path = "native_subgraph"
+                self._execution_stats["native_subgraph_dispatches"] += 1
+                return native_result
 
-        # Z8: Reset consumer counts in-place (no allocation)
-        counts = self._counts_buf
-        counts[:] = self._counts_original
-        output_idx = int(self.output_node_idx)
+        wrapper_dispatches_before, _ = self._wrapper_stats()
+        native_chain_dispatches_before = self._execution_stats[
+            "native_chain_dispatches"
+        ]
+        frame = initialize_execution_frame(
+            n_nodes=len(self._op_codes_list),
+            counts_buf=self._counts_buf,
+            counts_original=self._counts_original,
+            output_idx=int(self.output_node_idx),
+            input_node_indices=self._input_node_indices,
+            x=x,
+            capture_intermediates=capture_intermediates,
+        )
 
-        # Local refs avoid repeated attribute lookups in the loop
-        op_codes = self._op_codes_list
-        in1_list = self._in1_list
-        in2_list = self._in2_list
-        flat_ops = self._flat_ops
-
-        for i in range(n_nodes):
-            if op_codes[i] == 0:  # input
-                node_outputs[i] = x
+        plan_index = 0
+        while plan_index < len(self._exec_plan):
+            segment = (
+                self._native_chain_segments_by_plan_index.get(plan_index)
+                if not capture_intermediates
+                else None
+            )
+            if segment is not None and maybe_dispatch_native_segment(frame, segment):
+                plan_index = segment.end_plan_index + 1
+                self._execution_stats["native_chain_dispatches"] += 1
                 continue
 
-            in1_idx = in1_list[i]
-            in2_idx = in2_list[i]
+            execute_plan_entry(frame, self._exec_plan[plan_index])
+            plan_index += 1
 
-            op = flat_ops[i]
-            if op is not None:
-                t1 = node_outputs[in1_idx]
-                if in2_idx != -1:
-                    t2 = node_outputs[in2_idx]
-                    node_outputs[i] = op(t1, t2)
-
-                    counts[in2_idx] -= 1
-                    if (
-                        counts[in2_idx] <= 0
-                        and in2_idx != output_idx
-                        and captured is None
-                    ):
-                        node_outputs[in2_idx] = None
-                else:
-                    node_outputs[i] = op(t1)
-
-                counts[in1_idx] -= 1
-                if counts[in1_idx] <= 0 and in1_idx != output_idx and captured is None:
-                    node_outputs[in1_idx] = None
-
-                if captured is not None:
-                    captured[i] = node_outputs[i].detach().clone()
-
-        res = node_outputs[output_idx]
+        res = frame.node_outputs[frame.output_idx]
         if res is None:
             logger.warning(
-                "IRExecutor: output node %d produced None, returning input", output_idx
+                "IRExecutor: output node %d produced None, returning input",
+                frame.output_idx,
             )
             res = x
 
-        if captured is not None:
-            return res, captured
+        wrapper_dispatches_after, _ = self._wrapper_stats()
+        native_chain_dispatches_after = self._execution_stats["native_chain_dispatches"]
+        if (
+            wrapper_dispatches_after > wrapper_dispatches_before
+            or native_chain_dispatches_after > native_chain_dispatches_before
+        ):
+            self._last_execution_path = "hybrid_native_python_ir_loop"
+            self._execution_stats["hybrid_native_python_ir_loops"] += 1
+        else:
+            self._last_execution_path = "python_ir_loop"
+            self._execution_stats["python_ir_loop_fallbacks"] += 1
+
+        if frame.captured is not None:
+            return res, frame.captured
         return res
+
+    @property
+    def execution_stats(self) -> Dict[str, int | str | bool]:
+        wrapper_dispatches, wrapper_fallbacks = self._wrapper_stats()
+        return {
+            "last_execution_path": self._last_execution_path,
+            "native_subgraph_available": self._subgraph_dispatcher is not None,
+            "native_chain_segments": len(self._native_chain_segments),
+            "partial_native_available": self._native_forward_wrapper is not None,
+            "partial_native_dispatches": wrapper_dispatches,
+            "partial_native_fallbacks": wrapper_fallbacks,
+            **self._execution_stats,
+        }

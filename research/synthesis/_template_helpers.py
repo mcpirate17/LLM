@@ -48,6 +48,37 @@ TemplateFn = Callable[
     int,
 ]
 
+
+class TemplateBuildError(ValueError):
+    """Raised when a template cannot be lowered into a valid graph."""
+
+
+def template_add_op(
+    graph: ComputationGraph,
+    op_name: str,
+    input_ids: list[int],
+    config: Optional[Dict[str, object]] = None,
+    *,
+    context: str,
+) -> int:
+    """Add an op during template lowering and fail with template context."""
+    try:
+        return graph.add_op(op_name, input_ids, config=config)
+    except (ValueError, KeyError) as exc:
+        raise TemplateBuildError(f"{context}: failed to add {op_name}") from exc
+
+
+def template_add_residual(
+    graph: ComputationGraph,
+    skip_id: int,
+    value_id: int,
+    *,
+    context: str,
+) -> int:
+    """Add a residual edge during template lowering and fail explicitly."""
+    return template_add_op(graph, "add", [skip_id, value_id], context=context)
+
+
 # ── Motif class groupings for slot constraints ──────────────────────
 
 # Slots that accept any sequence mixer
@@ -57,6 +88,17 @@ _MIXER_CLASSES: Tuple[str, ...] = (
     MOTIF_CLASS_CONV,
     MOTIF_CLASS_CHANNEL,
     MOTIF_CLASS_MATH_SPACE,
+)
+
+# Slots that guarantee attention (no 5-class lottery dilution)
+_ATTENTION_ONLY_CLASSES: Tuple[str, ...] = (MOTIF_CLASS_ATTENTION,)
+
+# Constrained FFN classes for attention templates where sparse/efficient
+# outperform random FFN (empirical: 25% vs 10% S1 rate)
+_SPARSE_FFN_CLASSES: Tuple[str, ...] = (
+    MOTIF_CLASS_SPARSE,
+    MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_GATE,
 )
 
 # Slots inside bottleneck (D/2 → core → D): only ops that adapt to input dim.
@@ -131,8 +173,10 @@ def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) ->
         depth += 1
     for step in motif.steps:
         step_op = PRIMITIVE_REGISTRY.get(step.op_name)
-        if step_op is None or not algebraic_types_compatible(
-            current_type, step_op.algebraic_type
+        if (
+            step_op is None
+            or step_op.n_inputs != 1
+            or not algebraic_types_compatible(current_type, step_op.algebraic_type)
         ):
             return False
         # Reject motif if op requires deeper placement than current position
@@ -266,14 +310,20 @@ def _record_slot_usage(
 
 
 def _fix_dim(graph: ComputationGraph, node_id: int) -> int:
-    """Add linear_proj to fix dimension back to model_dim if needed."""
-    if graph.nodes[node_id].output_shape.dim != graph.model_dim:
+    """Add projection to fix dimension back to model_dim if needed.
+
+    Uses linear_proj_down when current dim > model_dim to avoid the
+    forbidden linear_proj_up → linear_proj context rule pair.
+    """
+    cur_dim = graph.nodes[node_id].output_shape.dim
+    if cur_dim != graph.model_dim:
+        op = "linear_proj_down" if cur_dim > graph.model_dim else "linear_proj"
         try:
-            return graph.add_op(
-                "linear_proj", [node_id], config={"out_dim": graph.model_dim}
-            )
-        except ValueError:
-            return node_id
+            return graph.add_op(op, [node_id], config={"out_dim": graph.model_dim})
+        except ValueError as exc:
+            raise TemplateBuildError(
+                f"Failed to restore model_dim={graph.model_dim} from dim={cur_dim}"
+            ) from exc
     return node_id
 
 
@@ -295,9 +345,8 @@ def _shuffle_wrap(
     if use_shuffle:
         try:
             current = graph.add_op("transpose_sd", [current])
-        except (ValueError, KeyError):
-            use_shuffle = False
-            current = node_id
+        except (ValueError, KeyError) as exc:
+            raise TemplateBuildError("Failed to add pre-motif transpose_sd") from exc
 
     motif = _pick_compatible_motif_from_classes(
         graph, current, rng, motif_classes, weights
@@ -308,8 +357,8 @@ def _shuffle_wrap(
         result = _fix_dim(graph, result)
         try:
             result = graph.add_op("transpose_sd", [result])
-        except (ValueError, KeyError):
-            pass
+        except (ValueError, KeyError) as exc:
+            raise TemplateBuildError("Failed to add post-motif transpose_sd") from exc
 
     return result
 
@@ -322,7 +371,7 @@ def _instantiate_motif(
 ) -> int:
     """Add a motif's ops to the graph starting from node_id.
 
-    Returns the output node ID. On shape mismatch, returns input node_id.
+    Returns the output node ID.
     Reads op_weights from graph.metadata["_op_weights"] if present.
     """
     current = node_id
@@ -338,7 +387,9 @@ def _instantiate_motif(
             step, rng, prev_op=prev_op, next_op=next_step_op, op_weights=_op_weights
         )
         if not _step_is_compatible(graph, current, op_name):
-            return node_id
+            raise TemplateBuildError(
+                f"Motif '{motif.name}' step '{op_name}' is algebraically incompatible"
+            )
         # Math-space safety: auto-insert rmsnorm if must_precede is unsatisfied
         ms_rules = MATH_SPACE_RULES.get(op_name)
         if ms_rules and "must_precede" in ms_rules:
@@ -346,8 +397,10 @@ def _instantiate_motif(
                 try:
                     current = graph.add_op("rmsnorm", [current])
                     prev_op = "rmsnorm"
-                except (ValueError, KeyError):
-                    return node_id
+                except (ValueError, KeyError) as exc:
+                    raise TemplateBuildError(
+                        f"Motif '{motif.name}' could not insert required rmsnorm"
+                    ) from exc
         # Auto-fix dim=1 outputs (from reduce_last ops like entropy_router):
         # if the current node reduced to dim=1 and the next op is parameterized,
         # insert a linear_proj to restore model_dim before the next op.
@@ -359,8 +412,10 @@ def _instantiate_motif(
                     current = graph.add_op(
                         "linear_proj", [current], config={"out_dim": D}
                     )
-                except ValueError:
-                    return node_id
+                except ValueError as exc:
+                    raise TemplateBuildError(
+                        f"Motif '{motif.name}' could not restore reduced dim=1 to {D}"
+                    ) from exc
                 cur_dim = D
         if op_name in ("linear_proj", "fused_linear_gelu", "gated_linear"):
             config.setdefault("out_dim", D)
@@ -407,11 +462,18 @@ def _instantiate_motif(
         pre_op = current
         try:
             current = graph.add_op(op_name, [current], config=config)
-        except (ValueError, KeyError):
-            return node_id  # Bail on shape error
+        except (ValueError, KeyError) as exc:
+            raise TemplateBuildError(
+                f"Motif '{motif.name}' failed on step '{op_name}'"
+            ) from exc
         # Auto-wrap REQUIRES_RESIDUAL_BYPASS ops with add(input, gated)
         if op_name in REQUIRES_RESIDUAL_BYPASS:
-            current = graph.add_op("add", [pre_op, current])
+            try:
+                current = graph.add_op("add", [pre_op, current])
+            except ValueError as exc:
+                raise TemplateBuildError(
+                    f"Motif '{motif.name}' failed to add required residual bypass"
+                ) from exc
         prev_op = op_name
     # Record motif usage for analytics feedback loop
     if current != node_id:
@@ -440,24 +502,26 @@ def _tpl_norm_op_residual(
     Covers ~13 templates that apply a single op with residual connection.
     Falls back to tpl_residual_block on error.
     """
-    from ._templates_core import tpl_residual_block
-
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
     try:
         processed = graph.add_op(op_name, [normed], config=op_config or {})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    except (ValueError, KeyError) as exc:
+        raise TemplateBuildError(f"Template op '{op_name}' failed to lower") from exc
     if post_norm:
         try:
             processed = graph.add_op("rmsnorm", [processed])
-        except (ValueError, KeyError):
-            pass
+        except (ValueError, KeyError) as exc:
+            raise TemplateBuildError(
+                f"Template op '{op_name}' failed to add post rmsnorm"
+            ) from exc
     processed = _fix_dim(graph, processed)
     try:
         return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    except ValueError as exc:
+        raise TemplateBuildError(
+            f"Template op '{op_name}' failed to add residual connection"
+        ) from exc
 
 
 def _tpl_norm_dual_op_residual(
@@ -475,8 +539,6 @@ def _tpl_norm_dual_op_residual(
     Covers ~8 binary-op templates (matmul, gated product, cosine, tropical, etc.).
     Falls back to tpl_residual_block on error.
     """
-    from ._templates_core import tpl_residual_block
-
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
@@ -488,13 +550,17 @@ def _tpl_norm_dual_op_residual(
             "linear_proj", [normed], config=path_b_config or {"out_dim": D}
         )
         merged = graph.add_op(merge_op, [proj_a, proj_b])
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    except (ValueError, KeyError) as exc:
+        raise TemplateBuildError(
+            f"Template merge op '{merge_op}' failed to lower"
+        ) from exc
     projected = _fix_dim(graph, merged)
     try:
         return graph.add_op("add", [input_id, projected])
-    except ValueError:
-        return projected
+    except ValueError as exc:
+        raise TemplateBuildError(
+            f"Template merge op '{merge_op}' failed to add residual connection"
+        ) from exc
 
 
 def _tpl_norm_op_motif_residual(
@@ -513,16 +579,16 @@ def _tpl_norm_op_motif_residual(
     (integral_kernel, windowed_attention, local_attention, state_space, etc.).
     Falls back to tpl_residual_block on error.
     """
-    from ._templates_core import tpl_residual_block
-
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
     try:
         mixed = graph.add_op(op_name, [normed], config=op_config or {})
         projected = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
-    except (ValueError, KeyError):
-        return tpl_residual_block(graph, input_id, rng, weights)
+    except (ValueError, KeyError) as exc:
+        raise TemplateBuildError(
+            f"Template op '{op_name}' failed before motif slot lowering"
+        ) from exc
     ffn = _pick_compatible_motif_from_classes(
         graph, projected, rng, motif_classes, weights
     )
@@ -530,5 +596,74 @@ def _tpl_norm_op_motif_residual(
     processed = _fix_dim(graph, processed)
     try:
         return graph.add_op("add", [input_id, processed])
-    except ValueError:
-        return processed
+    except ValueError as exc:
+        raise TemplateBuildError(
+            f"Template op '{op_name}' failed to add residual connection"
+        ) from exc
+
+
+def _tpl_attention_ffn_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+    *,
+    attn_op: Optional[str] = None,
+    attn_config: Optional[dict] = None,
+    ffn_classes: Tuple[str, ...] = _FFN_CLASSES,
+) -> int:
+    """Factory: norm → attention → add → norm → FFN → add.
+
+    Pre-norm transformer pattern with **forced attention** in the mixer slot.
+    If attn_op is None, picks a random attention motif. If attn_op is a string,
+    uses that specific attention op (e.g., 'latent_attention_compressor').
+    Falls back to tpl_residual_block on error.
+    """
+    D = graph.model_dim
+
+    # Attention sub-block
+    norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+
+    if attn_op is not None:
+        try:
+            mixed = graph.add_op(attn_op, [normed1], config=attn_config or {})
+            mixed = graph.add_op("linear_proj", [mixed], config={"out_dim": D})
+        except (ValueError, KeyError) as exc:
+            raise TemplateBuildError(
+                f"Forced attention op '{attn_op}' failed to lower"
+            ) from exc
+    else:
+        attn = _pick_compatible_motif(
+            graph, normed1, rng, _ATTENTION_ONLY_CLASSES, weights
+        )
+        if attn:
+            mixed = _instantiate_motif(graph, normed1, attn, rng)
+        else:
+            raise TemplateBuildError("No compatible attention motif available")
+    mixed = _fix_dim(graph, mixed)
+
+    try:
+        mid = graph.add_op("add", [input_id, mixed])
+    except ValueError as exc:
+        raise TemplateBuildError(
+            "Attention sub-block failed to add residual connection"
+        ) from exc
+
+    # FFN sub-block
+    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+
+    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, ffn_classes, weights)
+    if ffn:
+        ffned = _instantiate_motif(graph, normed2, ffn, rng)
+    else:
+        ffned = normed2
+    ffned = _fix_dim(graph, ffned)
+
+    try:
+        return graph.add_op("add", [mid, ffned])
+    except ValueError as exc:
+        raise TemplateBuildError(
+            "FFN sub-block failed to add residual connection"
+        ) from exc

@@ -1256,7 +1256,9 @@ class _DashboardMixin:
                 )
 
         # Every S1 survivor gets a screening-tier leaderboard entry
+        # flush async writes so program_results row exists before FK-dependent upsert
         if s1_passed and rid:
+            nb.flush_writes()
             try:
                 from ._helpers import _upsert_screening_entry
 

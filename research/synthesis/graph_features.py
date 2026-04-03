@@ -9,63 +9,81 @@ Performance target: <5ms per graph.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import sqlite3
 from collections import Counter, deque
-from typing import Any, Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+
+from ._json_compat import loads_json
 
 logger = logging.getLogger(__name__)
 
-# Op categories matching synthesis/primitives.py registry
-_CATEGORY_NAMES = (
-    "mixing",
-    "linear_algebra",
-    "normalization",
-    "structural",
-    "sequence",
-    "io",
-    "channel_mixing",
-    "routing",
-    "parameterized",
-    "math_space",
-    "activation",
-)
-
-# Top ops by frequency — used as individual binary/count features
-_TOP_OPS = (
+_TOP_OP_CANDIDATES = (
     "linear_proj",
     "linear_proj_up",
     "linear_proj_down",
-    "layer_norm",
-    "rms_norm",
+    "layernorm",
+    "rmsnorm",
     "gelu",
     "swiglu",
-    "attention",
-    "rotary_embed",
+    "softmax_attention",
+    "rope_rotate",
     "causal_mask",
     "moe_topk",
     "moe_2expert",
     "selective_scan",
     "add",
     "concat",
-    "split",
+    "split2",
+    "split3",
     "token_entropy",
-    "route_topk",
-    "route_lanes",
+    "topk_gate",
+    "gated_lane_blend",
     "bottleneck_proj",
 )
 
-# Sentinel ops for boolean features
-_ATTENTION_OPS = frozenset({"attention", "local_attention", "sliding_window_attention"})
-_SSM_OPS = frozenset({"selective_scan", "state_space", "mamba_block"})
-_MOE_OPS = frozenset({"moe_topk", "moe_2expert", "sparse_bottleneck_moe"})
-_NORM_OPS = frozenset(
-    {"layer_norm", "rms_norm", "group_norm", "batch_norm", "dynamic_norm"}
+
+@lru_cache(maxsize=1)
+def _primitive_metadata() -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    from .primitives import OpCategory, PRIMITIVE_REGISTRY
+
+    category_names = tuple(cat.value for cat in OpCategory)
+    top_ops = tuple(op for op in _TOP_OP_CANDIDATES if op in PRIMITIVE_REGISTRY)
+    return category_names, top_ops
+
+
+def _canonicalize_op_name(op_name: str) -> str:
+    if not op_name or op_name == "input":
+        return op_name
+    try:
+        from .primitives import get_primitive
+
+        return get_primitive(op_name).name
+    except KeyError:
+        return op_name
+
+
+def _canonical_op_set(op_names: Tuple[str, ...]) -> FrozenSet[str]:
+    return frozenset(_canonicalize_op_name(op_name) for op_name in op_names)
+
+
+_ATTENTION_OPS = _canonical_op_set(
+    (
+        "softmax_attention",
+        "linear_attention",
+        "graph_attention",
+        "local_window_attn",
+    )
+)
+_SSM_OPS = _canonical_op_set(("selective_scan", "state_space", "mamba_block"))
+_MOE_OPS = _canonical_op_set(("moe_topk", "moe_2expert", "sparse_bottleneck_moe"))
+_NORM_OPS = _canonical_op_set(
+    ("layernorm", "rmsnorm", "group_norm", "batch_norm", "dynamic_norm")
 )
 _RESIDUAL_OPS = frozenset({"add"})
-_ROPE_OPS = frozenset({"rotary_embed", "rope"})
+_ROPE_OPS = _canonical_op_set(("rope_rotate", "rotary_embed", "rope"))
 _CAUSAL_OPS = frozenset({"causal_mask"})
 
 
@@ -170,8 +188,8 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     """
     if isinstance(graph_json, str):
         try:
-            graph_json = json.loads(graph_json)
-        except (json.JSONDecodeError, TypeError):
+            graph_json = loads_json(graph_json)
+        except (TypeError, ValueError):
             return {}
 
     if not isinstance(graph_json, dict):
@@ -184,9 +202,11 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
         return {}
 
     # Collect all op names
+    _, top_ops = _primitive_metadata()
+
     op_names: List[str] = []
     for node in nodes.values():
-        op = node.get("op_name", "")
+        op = _canonicalize_op_name(str(node.get("op_name", "")))
         if op and op != "input":
             op_names.append(op)
 
@@ -213,7 +233,7 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     features["edge_density"] = n_edges / max(n_nodes, 1)
 
     # ── Op histogram (top ops as individual features) ──
-    for op in _TOP_OPS:
+    for op in top_ops:
         features[f"op_{op}"] = float(op_counter.get(op, 0))
 
     # ── Category histogram ──
@@ -233,7 +253,8 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     except ImportError:
         cat_counter = Counter()
 
-    for cat in _CATEGORY_NAMES:
+    category_names, _ = _primitive_metadata()
+    for cat in category_names:
         features[f"cat_{cat}"] = float(cat_counter.get(cat, 0))
 
     # ── Boolean sentinel features ──

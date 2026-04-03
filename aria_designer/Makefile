@@ -36,7 +36,11 @@ bootstrap:
 build-ui:
 	cd ui && npm run build
 
-build: build-ui
+build-native:
+	@cmake -S runtime/tests -B runtime/tests/build -DCMAKE_BUILD_TYPE=Release 2>/dev/null
+	@cmake --build runtime/tests/build -j$$(nproc) 2>&1 | tail -3
+
+build: build-ui build-native
 
 # ── Test ─────────────────────────────────────────────────────────────
 
@@ -54,10 +58,13 @@ test-components:
 test-runtime:
 	python -m pytest runtime/tests/ -x --tb=short
 
+test-native: build-native
+	@cd runtime/tests/build && ctest --output-on-failure
+
 test-e2e:
 	cd e2e && npx playwright test --config=playwright.config.js
 
-test-all: test test-runtime
+test-all: test test-runtime test-native
 
 # ── Lint ─────────────────────────────────────────────────────────────
 

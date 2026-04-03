@@ -3,4 +3,4 @@
 import torch.nn.functional as F
 from components.base import make_unary_handler
 
-ComponentHandler = make_unary_handler(lambda x: F.silu(x))
+ComponentHandler = make_unary_handler(lambda x: F.silu(x), native_op_name="silu")

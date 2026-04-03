@@ -74,7 +74,10 @@ def test_mutation_generation_keeps_local_window_valid_when_sampled():
     )
     generated = 0
     for seed in range(10):
-        child = _mutate_graph(parent, cfg, random.Random(seed))
+        try:
+            child = _mutate_graph(parent, cfg, random.Random(seed))
+        except ValueError:
+            continue
         generated += 1
         ops = {node.op_name for node in child.nodes.values() if not node.is_input}
         if "local_window_attn" not in ops:

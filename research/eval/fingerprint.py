@@ -397,13 +397,11 @@ def compute_structural_novelty_only(
 ) -> float:
     """Compute structural novelty score without behavioral probes or CKA.
 
-    Reuses the existing structural analysis from metrics._novelty_score_from_ir.
     Returns a 0–1 score based on op diversity, category spread, and evenness.
     """
-    from .metrics import _novelty_score_from_ir
+    from .metrics import batch_novelty_scores
 
-    ir = graph.lower_to_ir()
-    metrics = _novelty_score_from_ir(graph, ir, fingerprint=None)
+    metrics = batch_novelty_scores([graph], None)[0]
     return float(metrics.structural_novelty)
 
 
@@ -543,6 +541,9 @@ def complete_fingerprint_post_investigation(
     and fills in the missing behavioral probes and CKA measurements using the
     post-investigation model that has converged representations.
 
+    Delegates to ``_populate_behavioral_probes`` and ``_populate_cka`` (the same
+    helpers used by ``compute_fingerprint``) to avoid duplicated logic.
+
     Idempotent: if fp.fingerprint_completed_post_investigation is already True,
     returns fp unchanged.
     """
@@ -558,115 +559,34 @@ def complete_fingerprint_post_investigation(
         probe_ids = torch.randint(0, vocab_size, (n_probes, seq_len), device=dev)
         reps = _get_representations(model, probe_ids, dev)
 
-    # Step 1 — Run behavioral probes
-    if reps is not None and len(reps) > 0:
-        # Token interaction pattern
-        try:
-            interaction = _analyze_interactions(
-                model, probe_ids, dev, seq_len, vocab_size
-            )
-            fp.interaction_locality = interaction["locality"]
-            fp.interaction_sparsity = interaction["sparsity"]
-            fp.interaction_symmetry = interaction["symmetry"]
-            fp.interaction_hierarchy = interaction["hierarchy"]
-        except (ImportError, RuntimeError, AttributeError) as e:
-            logger.warning("post_inv_interaction_probe_failed: %s", e)
+    # Step 1 — Run behavioral probes (delegates to shared helper)
+    probe_succeeded = _populate_behavioral_probes(
+        fp,
+        model,
+        probe_ids,
+        reps,
+        dev,
+        seq_len,
+        vocab_size,
+        include=True,
+    )
 
-        # Representation geometry
-        try:
-            geometry = _analyze_geometry(reps)
-            fp.intrinsic_dim = geometry["intrinsic_dim"]
-            fp.isotropy = geometry["isotropy"]
-            fp.rank_ratio = geometry["rank_ratio"]
-        except (ImportError, RuntimeError, AttributeError) as e:
-            logger.warning("post_inv_geometry_probe_failed: %s", e)
-
-    # Input sensitivity (Jacobian analysis)
-    try:
-        sensitivity = _analyze_sensitivity(model, dev, seq_len, vocab_size)
-        fp.jacobian_spectral_norm = sensitivity["spectral_norm"]
-        fp.jacobian_effective_rank = sensitivity["effective_rank"]
-        fp.sensitivity_uniformity = sensitivity["uniformity"]
-    except (ImportError, RuntimeError, AttributeError) as e:
-        logger.warning("post_inv_sensitivity_probe_failed: %s", e)
-
-    # Step 2 — Run CKA
-    with torch.no_grad():
-        store = _get_default_store()
-        ref_activations = store.get_references()
-        cka_meta = store.get_metadata()
-
-        cka = _compute_reference_cka(reps, ref_activations=ref_activations)
-        cka_t = cka.get("transformer", 0.0)
-        cka_s = cka.get("ssm", 0.0)
-        cka_c = cka.get("conv", 0.0)
-
-        # Degenerate CKA check
-        if all(abs(s) < 1e-6 for s in [cka_t, cka_s, cka_c]):
-            fp.cka_vs_transformer = None
-            fp.cka_vs_ssm = None
-            fp.cka_vs_conv = None
-            fp.cka_source = "degenerate"
-            fp.novelty_valid_for_promotion = False
-            fp.novelty_validity_reason = "cka_degenerate_zeros"
-            logger.warning(
-                "cka_degenerate_zeros_post_investigation: cka_scores=[%.6f,%.6f,%.6f]",
-                cka_t,
-                cka_s,
-                cka_c,
-            )
-        else:
-            fp.cka_vs_transformer = cka_t
-            fp.cka_vs_ssm = cka_s
-            fp.cka_vs_conv = cka_c
-            fp.cka_source = cka_meta.get("cka_source", "artifact")
-            fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
-            fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
-            fp.cka_reference_quality = cka_meta.get("cka_reference_quality")
-            fp.similarity_path = cka_meta.get(
-                "cka_similarity_path", "_compute_reference_cka"
-            )
-            fp.novelty_reference_version = build_novelty_reference_version(
-                fp.cka_source,
-                fp.cka_artifact_version,
-                fp.cka_probe_protocol_hash,
-            )
-            if fp.cka_source == "artifact":
-                fp.novelty_valid_for_promotion = True
-                fp.novelty_validity_reason = "artifact_reference_post_investigation"
-            elif fp.cka_source == "heuristic_fallback":
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "heuristic_fallback_reference"
-            else:
-                fp.novelty_valid_for_promotion = False
-                fp.novelty_validity_reason = "no_reference_available"
+    # Step 2 — Run CKA (delegates to shared helper)
+    cka_succeeded, cka_all_zero = _populate_cka(fp, reps, include=True)
 
     # Step 3 — Recompute novelty blend with real values
+    n_succeeded = probe_succeeded + cka_succeeded
     fp.behavior_signature_score = _behavior_signature_score(fp)
-    if fp.cka_vs_transformer is not None:
-        cka_distance = 1.0 - max(fp.cka_vs_transformer, fp.cka_vs_ssm, fp.cka_vs_conv)
-        fp.novelty_score = (
-            CKA_NOVELTY_WEIGHT * cka_distance
-            + BEHAVIOR_SIGNATURE_WEIGHT * fp.behavior_signature_score
-        )
-    else:
-        # CKA degenerate — use behavior_signature_score alone
+    fp.novelty_score = _blend_behavioral_novelty(fp)
+
+    # When CKA is degenerate, the blend formula produces ~0.99 from the
+    # CKA distance term. Replace with behavior_signature_score alone.
+    if cka_all_zero:
         fp.novelty_score = fp.behavior_signature_score
 
-    # Step 4 — Mark completion
+    # Step 4 — Mark completion and update quality
     fp.fingerprint_completed_post_investigation = True
     fp.fingerprint_completion_timestamp = datetime.utcnow().isoformat()
-
-    # Update quality tracking
-    n_succeeded = 0
-    if fp.interaction_locality is not None and fp.interaction_locality != 0.0:
-        n_succeeded += 1
-    if fp.intrinsic_dim is not None and fp.intrinsic_dim != 0.0:
-        n_succeeded += 1
-    if fp.jacobian_spectral_norm is not None and fp.jacobian_spectral_norm != 0.0:
-        n_succeeded += 1
-    if fp.cka_vs_transformer is not None:
-        n_succeeded += 1
     fp.analyses_succeeded = n_succeeded
     if n_succeeded == 4:
         fp.quality = "full"

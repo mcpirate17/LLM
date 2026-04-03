@@ -129,10 +129,7 @@ def build_retrieval_augmented_layer(
     query = g.add_op("linear_proj", [ln2], {"out_dim": d_model})
     # Simulated memory bank: using the sequence itself as memory for architectural baseline
     sim = g.add_op("cosine_similarity", [query, query])
-    retrieved = g.add_op("gather_topk", [query, sim], {"k": top_k})
-    # Cross-attention over top-k retrieved items
-    g.add_op("softmax_attention", [retrieved])
-    # Note: softmax_attention on [B, k, D] returns [B, k, D].
+    g.add_op("gather_topk", [query, sim], {"k": top_k})
     # For a true RAG we'd project back to sequence length S, but for
     # the baseline graph we'll approximate with linear attention on the original sequence.
     rag_out = g.add_op("linear_attention", [ln2])

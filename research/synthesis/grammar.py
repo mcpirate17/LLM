@@ -25,20 +25,29 @@ from typing import Dict, FrozenSet, List, Optional
 logger = logging.getLogger(__name__)
 
 from research.defaults import MODEL_DIM
-from .graph import ComputationGraph, OpNode, ShapeInfo
+from .graph import ComputationGraph, OpNode
+from .grammar_support import (
+    DBTemplateWeightCache,
+    EFFICIENCY_TEMPLATES,
+    EfficiencyPrior,
+    OP_TO_TEMPLATE,
+    ROUTING_COMPRESSION_MOE_OPS,
+    SlotAdaptationCache,
+    check_graph_space_consistency,
+    check_shape_compat,
+    compute_motif_weights_from_op_weights,
+)
 from .primitives import (
     PRIMITIVE_REGISTRY,
-    PrimitiveOp,
     REQUIRES_RESIDUAL_BYPASS,
-    algebraic_types_compatible,
-    default_algebraic_type_for_space,
+    get_wiring_rule,
     validate_wiring,
 )
 from .templates import (
     apply_template,
 )
 from .context_rules import validate_context_rules
-from .graph_validator import validate_dim_flow, check_param_budget
+from .graph_validator import validate_dim_flow
 from .template_rules import validate_template_graph
 from .validator import validate_graph
 
@@ -53,95 +62,9 @@ class BatchGenerateResult:
     n_rejected_dedup: int  # duplicate fingerprints
 
 
-# ── Motif weight cache (avoids recomputing geometric means every generation) ──
-
-import threading
-
-_motif_weight_lock = threading.Lock()
-_motif_weight_cache_key: Optional[tuple] = None
-_motif_weight_cache_val: Dict[str, float] = {}
-
-
-def _compute_motif_weights_from_op_weights(
-    op_weights: Dict[str, float],
-) -> Dict[str, tuple]:
-    """Geometric mean of op weights per motif, cached by op_weights content.
-
-    Returns {motif_name: (factor, default_lift)} so callers can apply
-    ``motif_weights.get(name, lift) * factor``.
-    """
-    global _motif_weight_cache_key, _motif_weight_cache_val
-    cache_key = tuple(sorted(op_weights.items()))
-    with _motif_weight_lock:
-        if cache_key == _motif_weight_cache_key:
-            return _motif_weight_cache_val
-
-    import math as _math
-    from .motifs import ALL_MOTIFS
-
-    result: Dict[str, tuple] = {}
-    for motif in ALL_MOTIFS:
-        motif_ops = [step.op_name for step in motif.steps]
-        factors = [op_weights.get(op, 1.0) for op in motif_ops]
-        factor = _math.exp(sum(_math.log(max(f, 0.01)) for f in factors) / len(factors))
-        factor = max(0.1, min(8.0, factor))
-        result[motif.name] = (factor, motif.lift)
-
-    with _motif_weight_lock:
-        _motif_weight_cache_key = cache_key
-        _motif_weight_cache_val = result
-    return result
-
-
-# ── Algebraic Space Compatibility ────────────────────────────────────
-
-
-def _compatible_space(current_space: str, op_space: str) -> bool:
-    """Check if an op's algebraic space is compatible with the current context.
-
-    Euclidean ops compose with everything. Non-euclidean ops require a
-    matching space (e.g., tropical ops can only follow other tropical ops
-    or euclidean ops).
-    """
-    return algebraic_types_compatible(
-        default_algebraic_type_for_space(current_space),
-        default_algebraic_type_for_space(op_space),
-    )
-
-
-def _check_graph_space_consistency(graph: ComputationGraph) -> Optional[str]:
-    """Validate that a computation graph has no algebraic space conflicts.
-
-    Walks the graph in topological order and checks that each op's algebraic
-    space is compatible with the spaces of its input ops.  Returns None if
-    consistent, or an error message describing the first conflict found.
-    """
-    for node_id, node in sorted(graph.nodes.items()):
-        if node.op_name == "input":
-            continue
-        op = PRIMITIVE_REGISTRY.get(node.op_name)
-        if op is None:
-            continue
-        op_type = op.algebraic_type
-
-        for in_id in node.input_ids:
-            in_node = graph.nodes.get(in_id)
-            if in_node is None or in_node.op_name == "input":
-                continue
-            in_op = PRIMITIVE_REGISTRY.get(in_node.op_name)
-            if in_op is None:
-                continue
-            in_type = in_op.algebraic_type
-            if not algebraic_types_compatible(in_type, op_type):
-                return (
-                    f"Space conflict: {in_node.op_name} ({in_type.space}/{in_type.output_guarantee}) → "
-                    f"{node.op_name} ({op_type.space}/{op_type.input_constraint})"
-                )
-    return None
-
-
 # Alias for backward compatibility — some test files import Node from grammar
 Node = OpNode
+_check_graph_space_consistency = check_graph_space_consistency
 
 
 @dataclass
@@ -462,225 +385,9 @@ class GrammarConfig:
 # ── DB-backed template weight loader ────────────────────────────────
 
 
-class _DBTemplateWeightCache:
-    """TTL-bounded cache for DB template weights. No global mutable state."""
-
-    __slots__ = ("_weights", "_expires", "_ttl")
-
-    def __init__(self, ttl: float = 60.0):
-        self._weights: Optional[Dict[str, float]] = None
-        self._expires: float = 0.0
-        self._ttl = ttl
-
-    def get(
-        self, db_path: str = "research/lab_notebook.db"
-    ) -> Optional[Dict[str, float]]:
-        """Load template weights from template_stats, cached for TTL seconds."""
-        import math as _math
-        import sqlite3
-        import time as _time
-
-        now = _time.time()
-        if self._weights is not None and now < self._expires:
-            return self._weights
-
-        try:
-            from pathlib import Path
-
-            path = Path(db_path)
-            if not path.is_absolute():
-                cwd = Path.cwd()
-                if (
-                    cwd.name == "research"
-                    and path.parts
-                    and path.parts[0] == "research"
-                ):
-                    path = cwd.parent / db_path
-                else:
-                    path = path.resolve()
-            if not path.exists():
-                return None
-
-            conn = sqlite3.connect(str(path), timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            rows = conn.execute(
-                """SELECT template_name, eval_count, s1_pass_count, mean_loss
-                   FROM template_stats WHERE eval_count >= 5"""
-            ).fetchall()
-            conn.close()
-
-            if not rows:
-                return None
-
-            from .templates import DEFAULT_TEMPLATE_WEIGHTS
-
-            k = 3.0
-            db_weights: Dict[str, float] = {}
-            for tpl_name, eval_count, s1_count, mean_loss in rows:
-                if mean_loss is None or not _math.isfinite(mean_loss):
-                    continue
-                s1_rate = s1_count / max(eval_count, 1)
-                perf_weight = _math.exp(-k * mean_loss) * (1.0 + s1_rate)
-                static_weight = DEFAULT_TEMPLATE_WEIGHTS.get(tpl_name, 1.0)
-                db_weights[tpl_name] = 0.5 * static_weight + 0.5 * perf_weight
-
-            for tpl_name, w in DEFAULT_TEMPLATE_WEIGHTS.items():
-                if tpl_name not in db_weights:
-                    db_weights[tpl_name] = w
-
-            # Curiosity bonus: under-explored templates get up to 2x boost.
-            # Decays naturally as they accumulate evaluations.
-            eval_counts = {r[0]: r[1] for r in rows}
-            if eval_counts:
-                sorted_counts = sorted(eval_counts.values())
-                median_evals = sorted_counts[len(sorted_counts) // 2]
-                if median_evals > 0:
-                    for tpl_name in db_weights:
-                        n = eval_counts.get(tpl_name, 0)
-                        if n < median_evals:
-                            curiosity = 1.0 + (1.0 - n / median_evals)
-                            db_weights[tpl_name] *= curiosity
-
-            self._weights = db_weights
-            self._expires = now + self._ttl
-            logger.info(
-                "Loaded DB template weights for %d templates (%.0f%% from DB)",
-                len(db_weights),
-                len(rows) / max(len(db_weights), 1) * 100,
-            )
-            return db_weights
-
-        except Exception as e:
-            logger.debug("Failed to load DB template weights: %s", e)
-            return None
-
-
-_db_weight_cache = _DBTemplateWeightCache(ttl=60.0)
-
-
-class _SlotAdaptationCache:
-    """TTL-bounded cache for slot class adaptations learned from wildcard fills."""
-
-    __slots__ = ("_adaptations", "_expires", "_ttl")
-
-    _MIN_EVALS = 5  # Minimum wildcard evals before promoting a class
-    _MAX_EXTRA_CLASSES = 2  # Cap additional classes per slot
-
-    def __init__(self, ttl: float = 120.0):
-        self._adaptations: Optional[Dict[str, list]] = None
-        self._expires: float = 0.0
-        self._ttl = ttl
-
-    def get(self, db_path: str = "research/lab_notebook.db") -> Dict[str, list]:
-        """Return slot_key → [additional motif classes] learned from wildcard success."""
-        import json as _json
-        import sqlite3
-        import time as _time
-
-        now = _time.time()
-        if self._adaptations is not None and now < self._expires:
-            return self._adaptations
-
-        adaptations: Dict[str, list] = {}
-        try:
-            from pathlib import Path
-
-            path = Path(db_path)
-            if not path.is_absolute():
-                cwd = Path.cwd()
-                if (
-                    cwd.name == "research"
-                    and path.parts
-                    and path.parts[0] == "research"
-                ):
-                    path = cwd.parent / db_path
-                else:
-                    path = path.resolve()
-            if not path.exists():
-                return adaptations
-
-            conn = sqlite3.connect(str(path), timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            rows = conn.execute(
-                """SELECT slot_key, slot_classes, s1_pass_count, eval_count,
-                          wildcard_class_outcomes
-                   FROM slot_stats
-                   WHERE wildcard_count >= ?""",
-                (self._MIN_EVALS,),
-            ).fetchall()
-            conn.close()
-
-            for slot_key, slot_classes_json, s1_total, eval_total, wc_json in rows:
-                if not wc_json:
-                    continue
-                try:
-                    prescribed = set(_json.loads(slot_classes_json or "[]"))
-                    wc_outcomes = _json.loads(wc_json)
-                except (ValueError, TypeError):
-                    continue
-
-                baseline_s1_rate = s1_total / max(eval_total, 1)
-                extra: list = []
-                for cls, vals in wc_outcomes.items():
-                    if cls in prescribed:
-                        continue  # Already in the slot's class set
-                    n = vals.get("n", 0)
-                    s1 = vals.get("s1", 0)
-                    if n < self._MIN_EVALS:
-                        continue
-                    cls_s1_rate = s1 / n
-                    if cls_s1_rate > baseline_s1_rate:
-                        extra.append(cls)
-                    if len(extra) >= self._MAX_EXTRA_CLASSES:
-                        break
-
-                if extra:
-                    adaptations[slot_key] = extra
-
-            self._adaptations = adaptations
-            self._expires = now + self._ttl
-            if adaptations:
-                logger.info(
-                    "Loaded slot adaptations: %d slots with expanded classes",
-                    len(adaptations),
-                )
-        except Exception as e:
-            logger.debug("Failed to load slot adaptations: %s", e)
-
-        return adaptations
-
-
-_slot_adaptation_cache = _SlotAdaptationCache(ttl=120.0)
-
-
-class EfficiencyPrior:
-    """Uses historical Pareto frontier data to bias synthesis."""
-
-    __slots__ = ("op_biases",)
-
-    def __init__(self, frontier_data: List[Dict]):
-        self.op_biases: Dict[str, float] = {}
-        for p in frontier_data or []:
-            graph_json = p.get("graph_json", "")
-            if not graph_json:
-                continue
-            for motif in [
-                "selective_scan",
-                "tropical",
-                "clifford",
-                "low_rank",
-                "sparse",
-            ]:
-                if motif in graph_json:
-                    mult = 1.12 if motif == "tropical" else 1.05
-                    self.op_biases[motif] = self.op_biases.get(motif, 1.0) * mult
-
-    def get_bias(self, op_name: str) -> float:
-        bias = 1.0
-        for motif, multiplier in self.op_biases.items():
-            if motif in op_name:
-                bias *= multiplier
-        return min(2.5, bias)
+_db_weight_cache = DBTemplateWeightCache(ttl=60.0)
+_slot_adaptation_cache = SlotAdaptationCache(ttl=120.0)
+_ROUTING_COMPRESSION_MOE_OPS = ROUTING_COMPRESSION_MOE_OPS
 
 
 def generate_layer_graph(
@@ -725,7 +432,7 @@ def generate_layer_graph(
         from .motifs import ALL_MOTIFS
 
     if config.op_weights:
-        cached_factors = _compute_motif_weights_from_op_weights(config.op_weights)
+        cached_factors = compute_motif_weights_from_op_weights(config.op_weights)
         for motif_name, (factor, default_lift) in cached_factors.items():
             current = motif_weights.get(motif_name, default_lift)
             motif_weights[motif_name] = current * factor
@@ -738,71 +445,12 @@ def generate_layer_graph(
                 current = motif_weights.get(motif.name, motif.lift)
                 motif_weights[motif.name] = current * config.exploration_boost_factor
 
-        # Also boost templates that serve target ops (binary-op templates)
-        _OP_TO_TEMPLATE = {
-            "div_safe": "safe_division",
-            "maximum": "gated_maximum",
-            "minimum": "gated_minimum",
-            "sub": "residual_difference",
-            "split3": "three_way_split",
-            "outer_product": "gated_product",
-            "geometric_product": "geometric_product_block",
-            "tropical_matmul": "tropical_matmul_block",
-            "hyp_distance": "hyp_distance_scoring",
-            "cumprod_safe": "decay_sequence",
-            # Phase 3: dedicated paths for underperforming ops
-            "lif_neuron": "spiking_moe_block",
-            "sparse_threshold": "spiking_moe_block",
-            "stdp_attention": "spiking_residual_block",  # needs spiking predecessor chain
-            "spike_rate_code": "spiking_moe_block",
-            "hyp_linear": "hyperbolic_bridge_block",
-            "hyp_tangent_nonlinear": "hyperbolic_bridge_block",
-            "sparse_bottleneck_moe": "n_way_moe_block",
-            "conv_only": "conv_residual_block",
-            "fixed_point_iter": "iterative_refinement",
-            "gated_delta": "recurrent_delta_block",
-            "bottleneck_proj": "bottleneck",
-            "low_rank_proj": "bottleneck",
-            "confidence_token_gate": "cascaded_early_exit",
-            "depth_weighted_proj": "recursive_depth_router",
-            "tropical_center": "tropical_center_block",
-            "tropical_attention": "tropical_center_block",
-            "tropical_add": "tropical_residual",
-            # 0% S1 fix: dedicated template paths
-            "cumsum": "cumulative_sequence",
-            "sqrt": "sqrt_gated_ffn",
-            "norm_last": "reduce_attend",
-            "mean_last": "reduce_attend",
-            "max_last": "reduce_attend",
-            "sum_last": "reduce_attend",
-            # 0% S1 fix round 2
-            "diff_attention": "diff_attention_block",
-            "causal_mask": "causal_mix_block",
-            "fused_linear_gelu": "fused_gelu_ffn",
-            "exp": "exp_gated_residual",
-            "integral_kernel": "integral_kernel_block",
-            "sliding_window_mask": "windowed_attention",
-            "local_window_attn": "local_attention_block",
-            "state_space": "state_space_block",
-            "rwkv_time_mixing": "rwkv_block",
-            "reciprocal": "reciprocal_gated",
-            "sign_ste": "sign_ste_gated",
-            "log": "log_gated",
-            "ultrametric_attention": "ultrametric_attention_block",
-            "graph_attention": "graph_attention_block",
-            # 2-input routing ops — need dedicated template for structural wiring
-            "dual_compression_blend": "signal_routed_compression",
-            "signal_conditioned_compression": "signal_routed_compression",
-            "score_depth_blend": "mixed_recursion",
-            "difficulty_blend_3way": "three_lane_adaptive",
-            "relu_gated_moe": "moe",
-        }
         if tpl_weights is None:
             from .templates import DEFAULT_TEMPLATE_WEIGHTS
 
             tpl_weights = dict(DEFAULT_TEMPLATE_WEIGHTS)
         for op_name in config.exploration_targets:
-            tpl_name = _OP_TO_TEMPLATE.get(op_name)
+            tpl_name = OP_TO_TEMPLATE.get(op_name)
             if tpl_name and tpl_name in tpl_weights:
                 tpl_weights[tpl_name] *= config.exploration_boost_factor
 
@@ -817,18 +465,9 @@ def generate_layer_graph(
             graph.metadata["_slot_adaptations"] = slot_adaptations
 
     # High sparsity bias → force first template from efficiency pool
-    _EFFICIENCY_TEMPLATES = {
-        "sparse_moe_block",
-        "routed_bottleneck",
-        "token_merge_block",
-        "conditional_compute",
-        "sparse_ffn",
-        "moe",
-    }
     if config.structured_sparsity_bias > 0.5 and tpl_weights:
         _first_tpl_weights = {
-            k: (v if k in _EFFICIENCY_TEMPLATES else 0.0)
-            for k, v in tpl_weights.items()
+            k: (v if k in EFFICIENCY_TEMPLATES else 0.0) for k, v in tpl_weights.items()
         }
         # Only use if at least one efficiency template has positive weight
         if any(v > 0 for v in _first_tpl_weights.values()):
@@ -850,20 +489,22 @@ def generate_layer_graph(
 
         # Depth-aware template biasing: early blocks favor FFN/conv,
         # late blocks favor attention/SSM (per GPT-2 layer importance research).
+        # Note: "attn" matches new attention templates (attn_*).
         if _iter_weights and n_templates > 1:
             depth_ratio = t_idx / (n_templates - 1)
             depth_weights = {}
             for tpl_name, base_w in _iter_weights.items():
                 tl = tpl_name.lower()
+                _is_attn = "attn" in tl or "attention" in tl or "transformer" in tl
                 if depth_ratio < 0.33:
                     if "conv" in tl or "ffn" in tl or "bottleneck" in tl:
                         depth_weights[tpl_name] = base_w * 1.5
-                    elif "attention" in tl or "transformer" in tl:
-                        depth_weights[tpl_name] = base_w * 0.6
+                    elif _is_attn:
+                        depth_weights[tpl_name] = base_w * 0.85
                     else:
                         depth_weights[tpl_name] = base_w
                 elif depth_ratio > 0.66:
-                    if "attention" in tl or "transformer" in tl or "mamba" in tl:
+                    if _is_attn or "mamba" in tl:
                         depth_weights[tpl_name] = base_w * 1.5
                     elif "bottleneck" in tl or "compress" in tl:
                         depth_weights[tpl_name] = base_w * 0.6
@@ -971,48 +612,6 @@ def generate_layer_graph(
     return graph
 
 
-_ROUTING_COMPRESSION_MOE_OPS: frozenset = frozenset(
-    {
-        # Routing — per-token path selection
-        "token_entropy",
-        "token_class_proj",
-        "feature_sparsity",
-        "gated_lane_blend",
-        "depth_gated_transform",
-        "difficulty_blend_3way",
-        "score_depth_blend",
-        "confidence_token_gate",
-        "learned_token_gate",
-        "cheap_verify_blend",
-        "depth_weighted_proj",
-        "depth_token_mask",
-        "adjacent_token_merge",
-        "relu_gated_moe",
-        # True routing — heterogeneous expert dispatch
-        "hetero_moe",
-        "arch_router",
-        "compute_budget_router",
-        # MoE — expert selection
-        "moe_topk",
-        "moe_2expert",
-        "sparse_bottleneck_moe",
-        "tropical_moe",
-        # Conditional gating — per-token activation decisions
-        "topk_gate",
-        "tropical_gate",
-        "tropical_router",
-        "sparse_threshold",
-        "lif_neuron",
-        "padic_gate",
-        # Dynamic compression — per-token bandwidth decisions
-        "signal_conditioned_compression",
-        "adaptive_rank_gate",
-        "dual_compression_blend",
-        "latent_attention_compressor",
-    }
-)
-
-
 def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     """Validate a generated graph and raise ValueError if invalid."""
     # Allow +2 depth headroom for multi-step motifs (e.g., 3-4 step math-space
@@ -1028,22 +627,16 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
             result.errors[0] if result.errors else "Graph validation failed"
         )
 
-    # Dimension-flow validation — catch skip-only paths and dim mismatches
-    # that slipped through template ValueError fallbacks.
-    dim_result = validate_dim_flow(graph)
+    # Dimension-flow validation also enforces the parameter budget so we
+    # don't pay for an extra whole-graph reachable-path scan here.
+    max_params = 12 * 4 * config.model_dim * config.model_dim
+    dim_result = validate_dim_flow(graph, max_params=max_params)
     if not dim_result.valid:
         raise ValueError(dim_result.errors[0])
 
-    # Parameter budget — reject graphs that would OOM before eval.
-    # Budget: 12 transformer-equivalent layers * 4*D*D params each.
-    max_params = 12 * 4 * config.model_dim * config.model_dim
-    budget_result = check_param_budget(graph, max_params)
-    if not budget_result.valid:
-        raise ValueError(budget_result.errors[0])
-
     # Algebraic space consistency check — reject graphs that mix
     # incompatible mathematical spaces (e.g., tropical after poincaré).
-    space_err = _check_graph_space_consistency(graph)
+    space_err = check_graph_space_consistency(graph)
     if space_err is not None:
         raise ValueError(space_err)
 
@@ -1055,8 +648,9 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
                 "routing_mandatory=True but graph has no routing/compression/MoE ops"
             )
 
-    # Depth constraint check: reject ops placed before their min_layer_depth.
-    # Approximate layer depth by topological order from input.
+    # Depth constraint check: reject ops placed before their required layer depth.
+    # The requirement lives in wiring rules; mutating the graph here leaves stale
+    # cached IR/metrics behind and turns validation into silent graph rewriting.
     topo_depth: Dict[int, int] = {}
     for nid, node in sorted(graph.nodes.items()):
         if node.is_input:
@@ -1068,38 +662,34 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     for nid, node in graph.nodes.items():
         if node.is_input:
             continue
-        op = PRIMITIVE_REGISTRY.get(node.op_name)
-        if op is not None and op.min_layer_depth > 0:
+        depth_rule = get_wiring_rule(node.op_name) or {}
+        min_layer_depth = int(depth_rule.get("min_layer_depth", 0))
+        if min_layer_depth > 0:
             depth = topo_depth.get(nid, 0)
-            if depth < op.min_layer_depth:
-                # Auto-correct: replace too-shallow op with identity pass-through
-                logger.debug(
-                    "depth_autocorrect: %s at depth %d < min %d → identity",
-                    node.op_name,
-                    depth,
-                    op.min_layer_depth,
+            if depth < min_layer_depth:
+                raise ValueError(
+                    f"{node.op_name} (id={nid}) placed at depth {depth} "
+                    f"before min_layer_depth={min_layer_depth}"
                 )
-                object.__setattr__(node, "op_name", "identity")
 
     # Residual bypass check: ops in REQUIRES_RESIDUAL_BYPASS must have a
     # downstream add that also takes the op's input (residual connection).
+    successors: Dict[int, List[int]] = {nid: [] for nid in graph.nodes}
+    add_inputs_by_source: Dict[int, set[int]] = {}
+    for other_nid, other_node in graph.nodes.items():
+        for parent_id in other_node.input_ids:
+            if parent_id in successors:
+                successors[parent_id].append(other_nid)
+        if other_node.op_name == "add":
+            add_inputs = set(other_node.input_ids)
+            for source_id in add_inputs:
+                add_inputs_by_source.setdefault(source_id, set()).update(add_inputs)
+
     for nid, node in graph.nodes.items():
         if node.is_input or node.op_name not in REQUIRES_RESIDUAL_BYPASS:
             continue
-        # Check if any downstream consumer is an 'add' that also takes
-        # one of this node's inputs (forming a skip connection).
         node_inputs = set(node.input_ids)
-        has_bypass = False
-        for other_nid, other_node in graph.nodes.items():
-            if other_node.op_name != "add":
-                continue
-            other_inputs = set(other_node.input_ids)
-            # The add takes both (a) something downstream of nid and
-            # (b) one of the original inputs to nid → residual bypass
-            if other_inputs & node_inputs:
-                has_bypass = True
-                break
-        if not has_bypass:
+        if not (add_inputs_by_source.get(nid, set()) & node_inputs):
             raise ValueError(
                 f"{node.op_name} (id={nid}) requires residual bypass but none found"
             )
@@ -1127,10 +717,9 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
         # "before" check: reject invalid successors (e.g. sigmoid→add)
         before = rules.get("before")
         if before is not None:
-            for other_nid, other_node in graph.nodes.items():
+            for other_nid in successors.get(nid, ()):
+                other_node = graph.nodes[other_nid]
                 if other_node.is_input:
-                    continue
-                if nid not in other_node.input_ids:
                     continue
                 if other_node.op_name not in before:
                     raise ValueError(
@@ -1198,17 +787,11 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
         # must_follow_with: a successor from this set must consume this op
         must_follow_with = ms_rules.get("must_follow_with")
         if must_follow_with is not None:
-            has_valid_successor = False
-            for other_nid, other_node in graph.nodes.items():
-                if other_node.is_input:
-                    continue
-                if (
-                    nid in other_node.input_ids
-                    and other_node.op_name in must_follow_with
-                ):
-                    has_valid_successor = True
-                    break
-            if not has_valid_successor:
+            if not any(
+                not graph.nodes[other_nid].is_input
+                and graph.nodes[other_nid].op_name in must_follow_with
+                for other_nid in successors.get(nid, ())
+            ):
                 raise ValueError(
                     f"Math-space constraint: {node.op_name} (id={nid}) "
                     f"must be followed by one of {must_follow_with}"
@@ -1318,95 +901,4 @@ class AdaptiveGenerator:
 # ── Shape compatibility check (used by external code) ───────────────
 
 
-def _check_shape_compat(
-    op: PrimitiveOp,
-    input_shapes: List[ShapeInfo],
-    model_dim: int,
-    current_space: str = "euclidean",
-) -> bool:
-    """Quick check if an op is compatible with given input shapes and space."""
-    # Algebraic space filter: reject ops from incompatible spaces
-    if not algebraic_types_compatible(
-        default_algebraic_type_for_space(current_space),
-        op.algebraic_type,
-    ):
-        return False
-
-    if not input_shapes:
-        return False
-    if op.n_inputs != len(input_shapes):
-        return False
-
-    s0 = input_shapes[0]
-
-    if op.name == "split2":
-        if s0.dim % 2 != 0 or s0.dim // 2 < 4:
-            return False
-    if op.name == "split3":
-        if s0.dim % 3 != 0 or s0.dim // 3 < 4:
-            return False
-
-    if op.shape_rule == "rfft" and not s0.is_standard:
-        return False
-    if op.shape_rule == "irfft" and not s0.is_freq_domain:
-        return False
-
-    if op.name in (
-        "local_window_attn",
-        "sliding_window_mask",
-        "token_pool_restore",
-        "selective_scan",
-        "conv1d_seq",
-        "basis_expansion",
-        "integral_kernel",
-        "fixed_point_iter",
-    ):
-        if not s0.is_standard:
-            return False
-
-    _MIN_DIM_OPS = {
-        "softmax_attention": 16,
-        "linear_attention": 16,
-        "graph_attention": 16,
-        "multi_head_mix": 4,
-        "selective_scan": 8,
-        "state_space": 8,
-        "rwkv_time_mixing": 8,
-        "rwkv_channel": 8,
-        "conv1d_seq": 4,
-        "moe_topk": 8,
-        "moe_2expert": 8,
-        "swiglu_mlp": 4,
-        "topk_gate": 4,
-        "block_sparse_linear": 16,
-        "nm_sparse_linear": 8,
-        "low_rank_proj": 8,
-        "bottleneck_proj": 8,
-        "grouped_linear": 8,
-        "shared_basis_proj": 8,
-        # Parameterized ops that fail with degenerate dims from reduce_last
-        "gated_linear": 8,
-        "ternary_projection": 8,
-        "linear_proj": 4,
-        "linear_proj_down": 4,
-        "linear_proj_up": 4,
-        "fused_linear_gelu": 4,
-        "difficulty_blend_3way": 8,
-        "relu_gated_moe": 8,
-    }
-    min_dim = _MIN_DIM_OPS.get(op.name)
-    if min_dim and s0.dim < min_dim:
-        return False
-
-    if len(input_shapes) == 2:
-        s1 = input_shapes[1]
-        if op.shape_rule == "binary_broadcast":
-            if s0.seq != s1.seq:
-                return False
-            if s0.dim != s1.dim and s0.dim != 1 and s1.dim != 1:
-                return False
-        elif op.shape_rule in ("matmul", "concat"):
-            if s0.seq != s1.seq:
-                return False
-
-    return True
+_check_shape_compat = check_shape_compat

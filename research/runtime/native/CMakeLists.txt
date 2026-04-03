@@ -13,6 +13,7 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--disable-new-dt
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_designer/runtime/src)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/include)
 
 # Local native kernel sources
 file(GLOB NATIVE_SRCS src/*.c)

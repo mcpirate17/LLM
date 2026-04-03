@@ -52,13 +52,14 @@ def run_long_context_sweep(
             optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
             final_loss = float("inf")
+            _data_gen = torch.Generator(device=device).manual_seed(42)
             for step in range(n_steps):
-                torch.manual_seed(42 + step)
                 input_ids = torch.randint(
                     0,
                     vocab_size,
                     (batch_size, seq_len),
                     device=device,
+                    generator=_data_gen,
                 )
                 try:
                     with torch.amp.autocast(

@@ -59,6 +59,31 @@ def _resolve_primitive(component_type: str) -> Optional[str]:
 # ── Component Mapping Helpers (Delegating to Registry) ───────────────
 
 
+def _capability_result(
+    component_type: str,
+    cid: str,
+    *,
+    mapping_kind: str,
+    execution_class: str,
+    fidelity: str,
+    supported: bool,
+    primitive: str | None = None,
+    warnings: list | None = None,
+    reason: str,
+) -> Dict[str, Any]:
+    return {
+        "component_type": component_type,
+        "component_leaf": cid,
+        "mapping_kind": mapping_kind,
+        "execution_class": execution_class,
+        "semantic_fidelity": fidelity,
+        "bridge_supported": supported,
+        "primitive_name": primitive,
+        "warnings": warnings or [],
+        "reason": reason,
+    }
+
+
 def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
     """Return bridge execution capability metadata for a component type."""
     parts = str(component_type or "").split("/")
@@ -68,115 +93,86 @@ def get_component_execution_capability(component_type: str) -> Dict[str, Any]:
         category or "", "primitive_candidate"
     )
 
-    # Handle IO components
     if cid in _IO_COMPONENTS:
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": "io",
-            "execution_class": "io",
-            "semantic_fidelity": "exact",
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": [],
-            "reason": "IO passthrough node.",
-        }
-
-    # Delegate to centralized registry for non-primitive lowering kinds.
-    if registry.is_source(component_type):
-        kind, fidelity, warn = (
-            "source",
-            "approximate",
-            "Source lowering to deterministic graph input.",
+        return _capability_result(
+            component_type,
+            cid,
+            mapping_kind="io",
+            execution_class="io",
+            fidelity="exact",
+            supported=True,
+            reason="IO passthrough node.",
         )
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": kind,
-            "execution_class": category_class,
-            "semantic_fidelity": fidelity,
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": [warn],
-            "reason": f"Supported via {kind} lowering.",
-        }
-    elif registry.is_passthrough(component_type):
-        kind, fidelity, warn = (
-            "passthrough",
-            "approximate",
+
+    # Non-primitive lowering kinds
+    _LOWERING = {
+        "source": ("Source lowering to deterministic graph input.", category_class),
+        "passthrough": (
             "Passthrough lowering (wire-through identity).",
-        )
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": kind,
-            "execution_class": category_class,
-            "semantic_fidelity": fidelity,
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": [warn],
-            "reason": f"Supported via {kind} lowering.",
-        }
+            category_class,
+        ),
+        "template": ("Template lowering to primitive subgraph.", "composite"),
+    }
+    if registry.is_source(component_type):
+        kind = "source"
+    elif registry.is_passthrough(component_type):
+        kind = "passthrough"
     elif cid in registry.template_lowered_components:
-        kind, fidelity, warn = (
-            "template",
-            "approximate",
-            "Template lowering to primitive subgraph.",
-        )
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": kind,
-            "execution_class": "composite",
-            "semantic_fidelity": fidelity,
-            "bridge_supported": True,
-            "primitive_name": None,
-            "warnings": [warn],
-            "reason": f"Supported via {kind} lowering.",
-        }
+        kind = "template"
+    else:
+        kind = None
 
-    # Primitive/direct/alias path.
+    if kind is not None:
+        warn_msg, exec_class = _LOWERING[kind]
+        return _capability_result(
+            component_type,
+            cid,
+            mapping_kind=kind,
+            execution_class=exec_class,
+            fidelity="approximate",
+            supported=True,
+            warnings=[warn_msg],
+            reason=f"Supported via {kind} lowering.",
+        )
+
+    # Primitive / direct path
     try:
         primitive = _resolve_primitive(component_type)
     except ValueError:
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": "unsupported",
-            "execution_class": category_class
-            if category_class != "primitive_candidate"
-            else "unsupported",
-            "semantic_fidelity": "unsupported",
-            "bridge_supported": False,
-            "primitive_name": None,
-            "warnings": [],
-            "reason": "No primitive mapping registered.",
-        }
+        exec_class = (
+            category_class if category_class != "primitive_candidate" else "unsupported"
+        )
+        return _capability_result(
+            component_type,
+            cid,
+            mapping_kind="unsupported",
+            execution_class=exec_class,
+            fidelity="unsupported",
+            supported=False,
+            reason="No primitive mapping registered.",
+        )
 
     if primitive is not None:
-        return {
-            "component_type": component_type,
-            "component_leaf": cid,
-            "mapping_kind": "direct",
-            "execution_class": "primitive",
-            "semantic_fidelity": "exact",
-            "bridge_supported": True,
-            "primitive_name": primitive,
-            "warnings": [],
-            "reason": "Direct primitive mapping.",
-        }
+        return _capability_result(
+            component_type,
+            cid,
+            mapping_kind="direct",
+            execution_class="primitive",
+            fidelity="exact",
+            supported=True,
+            primitive=primitive,
+            reason="Direct primitive mapping.",
+        )
 
-    return {
-        "component_type": component_type,
-        "component_leaf": cid,
-        "mapping_kind": "unsupported",
-        "execution_class": "unsupported",
-        "semantic_fidelity": "unsupported",
-        "bridge_supported": False,
-        "primitive_name": None,
-        "warnings": [],
-        "reason": "No primitive mapping registered.",
-    }
+    return _capability_result(
+        component_type,
+        cid,
+        mapping_kind="unsupported",
+        execution_class="unsupported",
+        fidelity="unsupported",
+        supported=False,
+        reason="No primitive mapping registered.",
+    )
 
 
 # ── Workflow → ComputationGraph conversion ───────────────────────────
@@ -323,18 +319,12 @@ def evaluate_workflow(
             result.fingerprint.intrinsic_dim = getattr(fp, "intrinsic_dim", 0.0)
             result.fingerprint.isotropy = getattr(fp, "isotropy", 0.0)
             result.fingerprint.behavioral_novelty = getattr(fp, "novelty_score", 0.0)
-            result.fingerprint.most_similar_to = max(
-                {
-                    "transformer": result.fingerprint.cka_vs_transformer,
-                    "ssm": result.fingerprint.cka_vs_ssm,
-                    "conv": result.fingerprint.cka_vs_conv,
-                },
-                key=lambda k: {
-                    "transformer": result.fingerprint.cka_vs_transformer,
-                    "ssm": result.fingerprint.cka_vs_ssm,
-                    "conv": result.fingerprint.cka_vs_conv,
-                }[k],
-            )
+            _cka = {
+                "transformer": result.fingerprint.cka_vs_transformer,
+                "ssm": result.fingerprint.cka_vs_ssm,
+                "conv": result.fingerprint.cka_vs_conv,
+            }
+            result.fingerprint.most_similar_to = max(_cka, key=_cka.get)
 
         if run_novelty:
             from research.eval.metrics import novelty_score

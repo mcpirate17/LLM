@@ -30,6 +30,7 @@ def _build_layer(
 
 def _run_fwd_bwd(layer: CompiledLayer) -> tuple[float, float, bool]:
     """Run forward + backward, return (max_param_grad, input_grad, has_nan)."""
+    torch.manual_seed(0)
     x = torch.randn(2, 8, 64, requires_grad=True)
     y = layer(x)
     try:

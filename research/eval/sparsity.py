@@ -68,7 +68,7 @@ def check_activation_sparsity(
                 # Flatten batch and seq dimensions: (B, S, D) -> (B*S, D)
                 flat = out.detach().reshape(-1, out.shape[-1])
                 # Count zeros per neuron across all tokens in the batch
-                is_zero = (flat.abs() < threshold).float()
+                is_zero = flat.abs() < threshold  # bool tensor, no float conversion
 
                 if name not in stats:
                     stats[name] = {
@@ -78,7 +78,7 @@ def check_activation_sparsity(
                         "op_name": getattr(mod, "op_name", ""),
                     }
 
-                stats[name]["zero_counts"] += is_zero.sum(dim=0)
+                stats[name]["zero_counts"] += is_zero.sum(dim=0, dtype=torch.float32)
                 stats[name]["total_counts"] += flat.shape[0]
 
         return hook

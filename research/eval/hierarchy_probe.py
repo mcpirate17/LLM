@@ -26,7 +26,7 @@ except ImportError:
     _HAS_GROMOV_C = False
 
 # Maximum number of point samples for delta computation (O(n^4) complexity)
-_MAX_SAMPLE_POINTS = 50
+_MAX_SAMPLE_POINTS = 30
 
 
 def gromov_delta(distance_matrix: np.ndarray) -> float:
@@ -57,12 +57,7 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
         n = _MAX_SAMPLE_POINTS
 
     d = distance_matrix
-
-    # Sample 4-tuples
-    n_sample = min(n, 30)
-    indices = (
-        np.random.choice(n, n_sample, replace=False) if n > n_sample else np.arange(n)
-    )
+    indices = np.arange(n)
 
     # C kernel fast path: ~10-20x faster for n>=15
     if _HAS_GROMOV_C:
