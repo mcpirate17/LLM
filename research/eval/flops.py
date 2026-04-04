@@ -8,8 +8,9 @@ Used for efficiency analysis and Pareto frontier computation.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Dict, Optional
 
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.primitives import get_primitive, OpCategory
@@ -22,18 +23,30 @@ class FLOPEstimate:
     flops_forward: int = 0
     flops_per_param: float = 0.0
     flops_per_token: float = 0.0
-    breakdown: Dict[str, int] = None
-
-    def __post_init__(self):
-        if self.breakdown is None:
-            self.breakdown = {}
+    breakdown: Dict[str, int] = field(default_factory=dict)
+    estimate_method: str = "heuristic_static_graph"
+    measured: bool = False
+    performance_claim_valid: bool = False
+    estimate_warning: str = "Heuristic FLOP estimate only. Not kernel-level measurement and not a runtime performance claim."
 
     def to_dict(self) -> Dict:
         return {
             "flops_forward": self.flops_forward,
             "flops_per_param": self.flops_per_param,
             "flops_per_token": self.flops_per_token,
+            "estimate_method": self.estimate_method,
+            "measured": self.measured,
+            "performance_claim_valid": self.performance_claim_valid,
+            "estimate_warning": self.estimate_warning,
         }
+
+
+@lru_cache(maxsize=512)
+def _cached_op_category(op_name: str) -> Optional[OpCategory]:
+    try:
+        return get_primitive(op_name).category
+    except KeyError:
+        return None
 
 
 # FLOP estimates per op category/type
@@ -46,12 +59,9 @@ def _estimate_op_flops(
     if config is None:
         config = {}
 
-    try:
-        op = get_primitive(op_name)
-    except KeyError:
+    cat = _cached_op_category(op_name)
+    if cat is None:
         return S * D  # fallback: elementwise
-
-    cat = op.category
 
     if cat == OpCategory.ELEMENTWISE_UNARY:
         # One op per element: relu, sigmoid, tanh, sin, etc.

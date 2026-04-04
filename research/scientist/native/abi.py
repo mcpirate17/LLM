@@ -6,6 +6,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Sequence, Tuple
 
+import torch
+
 from .core import NativeRunnerState, _FALLBACK_METRICS, _env_flag
 
 logger = logging.getLogger(__name__)
@@ -249,6 +251,51 @@ class NativeRunnerAbiSession:
         return list(
             self._cache_put(cache_key, (float(resp.logits[i]) for i in range(n_vocab)))
         )
+
+    def execute_tokens_tensor(
+        self, token_ids: torch.Tensor, batch: int = 1
+    ) -> List[float]:
+        if self._closed:
+            raise RuntimeError("native ABI session already closed")
+        if token_ids.dim() != 1:
+            raise ValueError("token_ids tensor must be 1D")
+        if token_ids.numel() <= 0:
+            raise ValueError("token_ids tensor must be non-empty")
+
+        batch = int(batch)
+        if batch <= 0:
+            raise ValueError("batch must be > 0")
+
+        flat_count = int(token_ids.numel())
+        if flat_count % batch != 0:
+            raise ValueError("token_ids length must be divisible by batch")
+        seq_len = flat_count // batch
+        if seq_len <= 0:
+            raise ValueError("token_ids tensor must be non-empty")
+        if seq_len > self.max_seq_len:
+            raise ValueError("token length exceeds compiled max_seq_len")
+
+        token_buf = token_ids.detach()
+        if token_buf.device.type != "cpu":
+            token_buf = token_buf.to(device="cpu", dtype=torch.int32)
+        else:
+            token_buf = token_buf.to(dtype=torch.int32, copy=False)
+        token_buf = token_buf.contiguous().view(-1)
+
+        req = _NrExecuteRequest(
+            model_handle=self.model_handle,
+            token_ids=ctypes.cast(
+                token_buf.data_ptr(),
+                ctypes.POINTER(ctypes.c_int32),
+            ),
+            batch=batch,
+            seq_len=seq_len,
+        )
+        resp = self._native_lib.nr_execute(ctypes.byref(req))
+        if int(resp.status) != 0 or not bool(resp.logits):
+            raise RuntimeError(f"runner ABI execute failed: status={int(resp.status)}")
+        n_vocab = int(resp.vocab_size)
+        return [float(resp.logits[i]) for i in range(n_vocab)]
 
     def execute_token_rows(
         self, token_rows: Sequence[Sequence[int]]

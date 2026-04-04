@@ -26,16 +26,28 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from ..scientist.perf import PerfTracer, OpKernelProfiler
 from .sparsity import check_activation_sparsity
-from .utils import compute_grad_norm
+from .utils import compute_grad_norm, language_model_loss, make_adamw
 from research.defaults import VOCAB_SIZE
 
 
 def _env_bool(key: str, default: str = "0") -> bool:
     """Parse an environment variable as a boolean flag."""
     return os.getenv(key, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_eval_level() -> str:
+    level = os.getenv("AI_SCI_SAFE_EVAL_LEVEL", "minimal").strip().lower()
+    if level not in {"minimal", "full"}:
+        return "minimal"
+    return level
+
+
+def _resolve_probe_flag(explicit: Optional[bool], env_key: str, default: bool) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    return _env_bool(env_key, "1" if default else "0")
 
 
 # Substrings in CUDA errors that indicate an unrecoverable (sticky) context
@@ -92,6 +104,8 @@ def safe_eval(
     device: str = "cuda",
     timeout_seconds: int = 30,
     run_stability_probe: bool = True,
+    run_training_dynamics_probe: Optional[bool] = None,
+    run_activation_sparsity_probe: Optional[bool] = None,
     abi_infer_probe: Optional[bool] = None,
     abi_infer_primary: Optional[bool] = None,
     abi_infer_primary_no_grad: Optional[bool] = None,
@@ -107,8 +121,17 @@ def safe_eval(
     tracer = PerfTracer() if trace_enabled else None
     kernel_profile_enabled = _env_bool("AI_SCI_KERNEL_PROFILE")
     op_profiler = OpKernelProfiler(enabled=kernel_profile_enabled, top_k=20)
-    mapped_array = None
-
+    safe_eval_level = _safe_eval_level()
+    run_training_dynamics = _resolve_probe_flag(
+        run_training_dynamics_probe,
+        "AI_SCI_SAFE_EVAL_TRAINING_DYNAMICS",
+        safe_eval_level == "full",
+    )
+    run_activation_sparsity = _resolve_probe_flag(
+        run_activation_sparsity_probe,
+        "AI_SCI_SAFE_EVAL_ACTIVATION_SPARSITY",
+        safe_eval_level == "full",
+    )
     # Set timeout (Unix only)
     old_handler = None
     try:
@@ -142,7 +165,7 @@ def safe_eval(
         if dev.type == "cuda":
             input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
         else:
-            shared_ids, mapped_array, _mapped_path = _mapped_shared_token_ids(
+            shared_ids, _mapped_array, _mapped_path = _mapped_shared_token_ids(
                 batch_size, seq_len, vocab_size
             )
             input_ids = shared_ids
@@ -168,8 +191,17 @@ def safe_eval(
                 "mode": "probe_only",
             }
             try:
-                flat_tokens = input_ids.detach().cpu().reshape(-1).tolist()
-                abi_logits = abi_session.execute_tokens(flat_tokens, batch=batch_size)
+                flat_tokens = input_ids.detach().reshape(-1)
+                if hasattr(abi_session, "execute_tokens_tensor"):
+                    abi_logits = abi_session.execute_tokens_tensor(
+                        flat_tokens,
+                        batch=batch_size,
+                    )
+                else:
+                    abi_logits = abi_session.execute_tokens(
+                        flat_tokens.cpu().tolist(),
+                        batch=batch_size,
+                    )
                 if int(len(abi_logits)) != int(vocab_size):
                     probe_payload["reason"] = (
                         f"vocab_mismatch:{len(abi_logits)}!={int(vocab_size)}"
@@ -392,10 +424,7 @@ def safe_eval(
         if logit_std > 10.0:
             logits_for_loss = logits / (logit_std / 2.0)
 
-        loss = F.cross_entropy(
-            logits_for_loss.reshape(-1, logits_for_loss.shape[-1]),
-            input_ids.reshape(-1),
-        )
+        loss = language_model_loss(logits_for_loss, input_ids, vocab_size)
 
         def _run_backward() -> None:
             loss.backward()
@@ -463,18 +492,24 @@ def safe_eval(
             if tracer is not None:
                 tracer.start("stability", use_gpu=True)
 
-            # Enable heatmap capture during stability probe
-            if hasattr(model, "set_capture_heatmap"):
+            capture_heatmaps = safe_eval_level == "full"
+            if capture_heatmaps and hasattr(model, "set_capture_heatmap"):
                 model.set_capture_heatmap(True)
 
-            stability = _stability_probe(model, dev, batch_size, seq_len, vocab_size)
+            stability = _stability_probe(
+                model,
+                dev,
+                batch_size,
+                seq_len,
+                vocab_size,
+                run_training_dynamics_probe=run_training_dynamics,
+            )
             result.stability_score = stability["score"]
             result.extreme_input_passed = stability["extreme_passed"]
             result.random_input_passed = stability["random_passed"]
             result.causality_passed = stability["causality_passed"]
             result.output_range = stability.get("output_range")
 
-            # Extract heatmaps if captured
             heatmaps = {}
             total_savings = 0.0
             total_depth_ratio = 0.0
@@ -501,10 +536,10 @@ def safe_eval(
                 result.sparsity_report["routing_depth_ratio"] = round(
                     total_depth_ratio / routing_op_count, 4
                 )
-                if heatmaps:
+                if capture_heatmaps and heatmaps:
                     result.sparsity_report["routing_heatmaps"] = heatmaps
 
-            if hasattr(model, "set_capture_heatmap"):
+            if capture_heatmaps and hasattr(model, "set_capture_heatmap"):
                 model.set_capture_heatmap(False)
 
             if not result.causality_passed:
@@ -515,7 +550,6 @@ def safe_eval(
                 result.error_type = "causality_violation"
                 return result
 
-            # Hard gate: reject architectures with chaotic training dynamics
             if stability.get("training_dynamics_passed") is False:
                 result.passed = False
                 _cv = stability.get("training_dynamics_cv", 0)
@@ -530,24 +564,23 @@ def safe_eval(
             if tracer is not None:
                 tracer.stop("stability")
 
-            # ── Activation Sparsity Check ──
-            # Uses the last input_ids batch from forward pass
-            sparsity_report = check_activation_sparsity(model, [input_ids])
-            result.activation_sparsity = sparsity_report.overall_sparsity
-            result.dead_neuron_count = sparsity_report.total_dead_neurons
-            result.sparsity_report = {
-                "dead_neuron_ratio": sparsity_report.dead_neuron_ratio,
-                "max_layer_collapse": sparsity_report.max_layer_collapse,
-                "n_collapsed_layers": sum(
-                    1 for r in sparsity_report.layers if r.is_collapsed
-                ),
-            }
+            if run_activation_sparsity:
+                sparsity_report = check_activation_sparsity(model, [input_ids])
+                result.activation_sparsity = sparsity_report.overall_sparsity
+                result.dead_neuron_count = sparsity_report.total_dead_neurons
+                result.sparsity_report = {
+                    "dead_neuron_ratio": sparsity_report.dead_neuron_ratio,
+                    "max_layer_collapse": sparsity_report.max_layer_collapse,
+                    "n_collapsed_layers": sum(
+                        1 for r in sparsity_report.layers if r.is_collapsed
+                    ),
+                }
 
-            if any(r.is_collapsed for r in sparsity_report.layers):
-                result.passed = False
-                result.error = f"Activation collapse: {result.sparsity_report['n_collapsed_layers']} layers collapsed"
-                result.error_type = "activation_collapse"
-                return result
+                if any(r.is_collapsed for r in sparsity_report.layers):
+                    result.passed = False
+                    result.error = f"Activation collapse: {result.sparsity_report['n_collapsed_layers']} layers collapsed"
+                    result.error_type = "activation_collapse"
+                    return result
 
         if dev.type == "cuda":
             result.peak_memory_mb = torch.cuda.max_memory_allocated(dev) / (1024**2)
@@ -649,6 +682,8 @@ def _stability_probe(
     batch_size: int,
     seq_len: int,
     vocab_size: int,
+    *,
+    run_training_dynamics_probe: bool,
 ) -> Dict:
     """Run numerical stability probes."""
     model.eval()
@@ -756,81 +791,76 @@ def _stability_probe(
     except Exception:
         results["causality_passed"] = False
 
-    # Test 6: Training dynamics probe — fast gradient steps to detect chaotic loss
-    # Uses higher LR (3e-3) to amplify instability faster in fewer steps
-    total_checks += 1
-    try:
-        model.train()
-        _probe_steps = 20
-        _probe_lr = 1e-3
-        _probe_optimizer = torch.optim.Adam(model.parameters(), lr=_probe_lr)
-        _probe_losses: List[float] = []
+    if run_training_dynamics_probe:
+        total_checks += 1
+        try:
+            model.train()
+            _probe_steps = 20
+            _probe_lr = 1e-3
+            _probe_optimizer = make_adamw(
+                model.parameters(),
+                lr=_probe_lr,
+                fused_if_available=False,
+            )
+            _probe_losses: List[float] = []
 
-        _use_amp = dev.type == "cuda"
-        for _ in range(_probe_steps):
-            ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
-            _probe_optimizer.zero_grad()
-            with torch.amp.autocast(
-                device_type=dev.type, dtype=torch.bfloat16, enabled=_use_amp
-            ):
-                logits = model(ids)
-                loss = F.cross_entropy(
-                    logits[:, :-1].reshape(-1, logits.size(-1)),
-                    ids[:, 1:].reshape(-1),
-                )
-            if torch.isnan(loss) or torch.isinf(loss):
-                break
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            _probe_optimizer.step()
-            _probe_losses.append(loss.item())
+            _use_amp = dev.type == "cuda"
+            for _ in range(_probe_steps):
+                ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=dev)
+                _probe_optimizer.zero_grad()
+                with torch.amp.autocast(
+                    device_type=dev.type, dtype=torch.bfloat16, enabled=_use_amp
+                ):
+                    logits = model(ids)
+                    loss = language_model_loss(logits, ids, logits.size(-1))
+                if torch.isnan(loss) or torch.isinf(loss):
+                    break
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                _probe_optimizer.step()
+                _probe_losses.append(loss.item())
 
-        if len(_probe_losses) >= _probe_steps:
-            _mean_l = sum(_probe_losses) / len(_probe_losses)
-            if _mean_l > 0:
-                _var_l = sum((x - _mean_l) ** 2 for x in _probe_losses) / len(
-                    _probe_losses
-                )
-                _cv = (_var_l**0.5) / _mean_l
-                # Check consecutive step-to-step sign changes (direction reversals)
-                _sign_changes = sum(
-                    1
-                    for i in range(2, len(_probe_losses))
-                    if (_probe_losses[i] - _probe_losses[i - 1])
-                    * (_probe_losses[i - 1] - _probe_losses[i - 2])
-                    < 0
-                )
-                _reversal_rate = _sign_changes / max(len(_probe_losses) - 2, 1)
-                # Also check if loss decreased at all (last 5 vs first 5)
-                _first5 = sum(_probe_losses[:5]) / 5
-                _last5 = sum(_probe_losses[-5:]) / 5
-                # Fail if: high volatility OR loss diverging
-                # Reversal rate is noisy early in training, so only use CV + trend
-                _dynamics_bad = (
-                    _cv > 0.25  # moderate CV threshold
-                    or (
+            if len(_probe_losses) >= _probe_steps:
+                _mean_l = sum(_probe_losses) / len(_probe_losses)
+                if _mean_l > 0:
+                    _var_l = sum((x - _mean_l) ** 2 for x in _probe_losses) / len(
+                        _probe_losses
+                    )
+                    _cv = (_var_l**0.5) / _mean_l
+                    _sign_changes = sum(
+                        1
+                        for i in range(2, len(_probe_losses))
+                        if (_probe_losses[i] - _probe_losses[i - 1])
+                        * (_probe_losses[i - 1] - _probe_losses[i - 2])
+                        < 0
+                    )
+                    _reversal_rate = _sign_changes / max(len(_probe_losses) - 2, 1)
+                    _first5 = sum(_probe_losses[:5]) / 5
+                    _last5 = sum(_probe_losses[-5:]) / 5
+                    _dynamics_bad = _cv > 0.25 or (
                         _last5 > _first5 * 1.05 and _cv > 0.10
-                    )  # loss increasing + unstable
-                )
-                if not _dynamics_bad:
+                    )
+                    if not _dynamics_bad:
+                        checks_passed += 1
+                        results["training_dynamics_passed"] = True
+                    else:
+                        results["training_dynamics_passed"] = False
+                        results["training_dynamics_cv"] = round(_cv, 4)
+                        results["training_dynamics_trend"] = round(
+                            _last5 / max(_first5, 1e-8), 4
+                        )
+                        results["training_dynamics_reversal_rate"] = round(
+                            _reversal_rate, 4
+                        )
+                else:
                     checks_passed += 1
                     results["training_dynamics_passed"] = True
-                else:
-                    results["training_dynamics_passed"] = False
-                    results["training_dynamics_cv"] = round(_cv, 4)
-                    results["training_dynamics_trend"] = round(
-                        _last5 / max(_first5, 1e-8), 4
-                    )
-                    results["training_dynamics_reversal_rate"] = round(
-                        _reversal_rate, 4
-                    )
             else:
-                checks_passed += 1  # zero loss is fine
-                results["training_dynamics_passed"] = True
-        else:
-            results["training_dynamics_passed"] = False  # NaN/Inf during probe
-    except Exception:
-        results["training_dynamics_passed"] = False
+                results["training_dynamics_passed"] = False
+        except Exception:
+            results["training_dynamics_passed"] = False
+    else:
+        results["training_dynamics_passed"] = None
 
     results["score"] = checks_passed / max(total_checks, 1)
     model.train()

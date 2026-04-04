@@ -16,10 +16,8 @@ from research.eval.wikitext_eval import (
     screening_wikitext_eval,
     screening_wikitext_payload,
     wikitext_score_from_ppl,
-    _batch_cache,
-    _get_cached_batches,
-    _put_cached_batches,
 )
+from research.eval import corpus_pipeline
 
 
 # ── Tiny model fixture ──────────────────────────────────────────────────
@@ -258,35 +256,48 @@ class TestGracefulFailure:
 
 class TestBatchCache:
     def setup_method(self):
-        _batch_cache.clear()
+        corpus_pipeline._batch_cache.clear()
 
     def test_put_and_get(self):
         batches = [torch.randn(2, 16)]
-        _put_cached_batches(
-            "wikitext-2-raw-v1", 256, 16, 4, 8, 100_000, "train", 42, batches
+        cache_key = (
+            "wikitext:wikitext-2-raw-v1",
+            "/tmp/train.txt",
+            1,
+            256,
+            16,
+            4,
+            8,
+            "train",
+            42,
         )
-        got = _get_cached_batches(
-            "wikitext-2-raw-v1", 256, 16, 4, 8, 100_000, "cpu", "train", 42
-        )
+        corpus_pipeline._put_cached_batches(cache_key, batches)
+        got = corpus_pipeline._get_cached_batches(cache_key, "cpu")
         assert got is not None
         assert len(got) == 1
         assert torch.equal(got[0], batches[0])
 
     def test_cache_miss(self):
-        got = _get_cached_batches(
-            "wikitext-2-raw-v1", 256, 16, 4, 8, 100_000, "cpu", "train", 42
-        )
+        got = corpus_pipeline._get_cached_batches(("missing",), "cpu")
         assert got is None
 
     def test_different_seed_different_key(self):
         batches = [torch.randn(2, 16)]
-        _put_cached_batches(
-            "wikitext-2-raw-v1", 256, 16, 4, 8, 100_000, "train", 42, batches
+        key_seed_42 = (
+            "wikitext:wikitext-2-raw-v1",
+            "/tmp/train.txt",
+            1,
+            256,
+            16,
+            4,
+            8,
+            "train",
+            42,
         )
-        got = _get_cached_batches(
-            "wikitext-2-raw-v1", 256, 16, 4, 8, 100_000, "cpu", "train", 99
-        )
+        key_seed_99 = key_seed_42[:-1] + (99,)
+        corpus_pipeline._put_cached_batches(key_seed_42, batches)
+        got = corpus_pipeline._get_cached_batches(key_seed_99, "cpu")
         assert got is None
 
     def teardown_method(self):
-        _batch_cache.clear()
+        corpus_pipeline._batch_cache.clear()

@@ -16,13 +16,16 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
+import torch
 import torch.nn as nn
 
-from .utils import batched_span_mean_log_probs, tokenize_string
+from .choice_scoring import grouped_choice_scores
+from .utils import tokenize_string
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,10 @@ _CACHE_FILE = _HELLASWAG_CACHE_DIR / "validation.json"
 SCREENING_N_EXAMPLES = 50
 INVESTIGATION_N_EXAMPLES = 100
 VALIDATION_N_EXAMPLES = 200
+_TOKENIZED_CACHE_MAX_ENTRIES = 4
+_tokenized_examples_cache: "OrderedDict[tuple[int, int], List[Dict[str, Any]]]" = (
+    OrderedDict()
+)
 
 
 # ── Data loading ────────────────────────────────────────────────────────
@@ -73,21 +80,88 @@ def _download_hellaswag() -> List[Dict[str, Any]]:
     return examples
 
 
-def _get_examples(n: int, seed: int = 42) -> List[Dict[str, Any]]:
-    """Load and subsample n examples with deterministic shuffle."""
-    all_examples = _download_hellaswag()
-    if n >= len(all_examples):
-        return all_examples
-    # Deterministic subsample via seeded shuffle
+def _tokenized_cache_key(vocab_size: int) -> tuple[int, int]:
+    mtime = int(_CACHE_FILE.stat().st_mtime_ns) if _CACHE_FILE.exists() else 0
+    return int(vocab_size), mtime
+
+
+def _get_tokenized_examples(vocab_size: int) -> List[Dict[str, Any]]:
+    cache_key = _tokenized_cache_key(vocab_size)
+    cached = _tokenized_examples_cache.get(cache_key)
+    if cached is not None:
+        _tokenized_examples_cache.move_to_end(cache_key)
+        return cached
+
+    tokenized = []
+    for example in _download_hellaswag():
+        tokenized.append(
+            {
+                "ctx_tokens": tokenize_string(example["ctx"], vocab_size),
+                "ending_tokens": tuple(
+                    tokenize_string(ending, vocab_size) for ending in example["endings"]
+                ),
+                "label": int(example["label"]),
+            }
+        )
+
+    _tokenized_examples_cache[cache_key] = tokenized
+    _tokenized_examples_cache.move_to_end(cache_key)
+    while len(_tokenized_examples_cache) > _TOKENIZED_CACHE_MAX_ENTRIES:
+        _tokenized_examples_cache.popitem(last=False)
+    return tokenized
+
+
+def _get_tokenized_subset(
+    n: int,
+    *,
+    vocab_size: int,
+    seed: int = 42,
+) -> List[Dict[str, Any]]:
+    tokenized = _get_tokenized_examples(vocab_size)
+    if n >= len(tokenized):
+        return tokenized
     import random
 
     rng = random.Random(seed)
-    indices = list(range(len(all_examples)))
+    indices = list(range(len(tokenized)))
     rng.shuffle(indices)
-    return [all_examples[i] for i in indices[:n]]
+    return [tokenized[i] for i in indices[:n]]
 
 
 # ── Scoring ─────────────────────────────────────────────────────────────
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return isinstance(exc, torch.OutOfMemoryError) or "out of memory" in text
+
+
+def _clear_cuda_cache(device: str) -> None:
+    try:
+        if str(device).startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _recommended_batch_examples(
+    requested: int,
+    vocab_size: int,
+    max_seq_len: int,
+    device: str,
+) -> int:
+    batch_examples = max(1, int(requested))
+    if not str(device).startswith("cuda"):
+        return batch_examples
+    # Each example expands to 4 candidate sequences. The scorer materializes a
+    # large logits/log-prob tensor over roughly:
+    #   4 * batch_examples * (max_seq_len - 1) * vocab_size
+    # Target ~3 GiB of transient activation volume to avoid first-try OOMs.
+    target_bytes = 3 * 1024 * 1024 * 1024
+    bytes_per_scalar = 4
+    denom = max(1, 4 * max(1, max_seq_len - 1) * max(1, vocab_size) * bytes_per_scalar)
+    capped = max(1, target_bytes // denom)
+    return min(batch_examples, int(capped))
 
 
 def _score_example_batch(
@@ -101,15 +175,14 @@ def _score_example_batch(
 
     Returns ``(n_correct, n_scored)``.
     """
-    sequences = []
-    start_positions: List[int] = []
-    owner_idx: List[int] = []
-    ending_idx: List[int] = []
+    grouped_sequences: List[List[np.ndarray]] = []
+    grouped_starts: List[List[int]] = []
 
-    for ex_idx, ex in enumerate(examples):
-        ctx_tokens = tokenize_string(ex["ctx"], vocab_size)
-        for opt_idx, ending in enumerate(ex["endings"]):
-            ending_tokens = tokenize_string(ending, vocab_size)
+    for ex in examples:
+        ctx_tokens = ex["ctx_tokens"]
+        ex_sequences: List[np.ndarray] = []
+        ex_starts: List[int] = []
+        for ending_tokens in ex["ending_tokens"]:
             full_tokens = (
                 ctx_tokens
                 if ending_tokens.size == 0
@@ -129,22 +202,18 @@ def _score_example_batch(
             else:
                 start_pos = max(0, ctx_len - 1)
 
-            sequences.append(full_tokens)
-            start_positions.append(start_pos)
-            owner_idx.append(ex_idx)
-            ending_idx.append(opt_idx)
+            ex_sequences.append(full_tokens)
+            ex_starts.append(start_pos)
+        grouped_sequences.append(ex_sequences)
+        grouped_starts.append(ex_starts)
 
-    scores = batched_span_mean_log_probs(
+    grouped_scores = grouped_choice_scores(
         model,
-        sequences,
-        start_positions,
+        grouped_sequences,
+        grouped_starts,
         vocab_size=vocab_size,
         device=device,
     )
-
-    grouped_scores = [[float("-inf")] * 4 for _ in examples]
-    for score, ex_idx, opt_idx in zip(scores.tolist(), owner_idx, ending_idx):
-        grouped_scores[ex_idx][opt_idx] = score
 
     correct = 0
     total = 0
@@ -171,7 +240,7 @@ def _run_hellaswag(
     t0 = time.perf_counter()
 
     try:
-        examples = _get_examples(n_examples)
+        examples = _get_tokenized_subset(n_examples, vocab_size=vocab_size)
     except Exception as exc:
         return {
             "hellaswag_acc": None,
@@ -183,31 +252,58 @@ def _run_hellaswag(
     model.eval()
     correct = 0
     total = 0
+    first_error: str | None = None
+    effective_batch_examples = _recommended_batch_examples(
+        requested=batch_examples,
+        vocab_size=vocab_size,
+        max_seq_len=max_seq_len,
+        device=device,
+    )
+    oom_retries = 0
 
-    for start in range(0, len(examples), max(1, batch_examples)):
-        batch = examples[start : start + max(1, batch_examples)]
+    start = 0
+    while start < len(examples):
+        batch = examples[start : start + effective_batch_examples]
         try:
             batch_correct, batch_total = _score_example_batch(
                 model, batch, vocab_size, device, max_seq_len
             )
             correct += batch_correct
             total += batch_total
-        except Exception:
+            start += effective_batch_examples
+        except Exception as exc:
+            if _is_cuda_oom(exc) and effective_batch_examples > 1:
+                oom_retries += 1
+                effective_batch_examples = max(1, effective_batch_examples // 2)
+                _clear_cuda_cache(device)
+                logger.warning(
+                    "HellaSwag CUDA OOM at batch_examples=%d; retrying with %d",
+                    len(batch),
+                    effective_batch_examples,
+                )
+                continue
+            if first_error is None:
+                first_error = f"{type(exc).__name__}: {exc}"
             logger.debug("HellaSwag batch failed, skipping", exc_info=True)
-            continue
+            start += max(1, effective_batch_examples)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
     if total == 0:
-        return {
-            "hellaswag_acc": None,
+        result = {
+            "hellaswag_acc": 0.0,
             "hellaswag_status": "all_failed",
             "hellaswag_n_examples": 0,
             "elapsed_ms": elapsed_ms,
         }
+        if first_error is not None:
+            result["error"] = first_error
+        if oom_retries:
+            result["hellaswag_oom_retries"] = oom_retries
+        return result
 
     acc = round(correct / total, 4)
-    return {
+    result = {
         "hellaswag_acc": acc,
         "hellaswag_correct": correct,
         "hellaswag_total": total,
@@ -215,6 +311,9 @@ def _run_hellaswag(
         "hellaswag_status": "ok",
         "elapsed_ms": elapsed_ms,
     }
+    if oom_retries:
+        result["hellaswag_oom_retries"] = oom_retries
+    return result
 
 
 # ── Public API ──────────────────────────────────────────────────────────

@@ -58,6 +58,8 @@ class _ExecutionMicroTrainPhase3Mixin:
         seq_len: int,
     ) -> Optional[float]:
         """Run fast discovery-loss evaluation on random batches."""
+        if not bool(getattr(config, "stage1_compute_discovery_loss", True)):
+            return None
         discovery_steps = min(5, int(config.stage1_steps) // 10)
         if discovery_steps <= 0:
             return None

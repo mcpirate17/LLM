@@ -1,10 +1,10 @@
 """
-Fake-quantization utilities for sparse+quant co-design evaluation.
+Fake-quantization utilities for numerics-only sparse+quant evaluation.
 
 Provides simulated low-bit quantization (INT8/INT4) to evaluate how well
 architectures retain quality under combined sparsity + quantization.
-No actual kernel compilation — uses fake-quant (quantize-then-dequantize)
-to measure quality degradation in full-precision arithmetic.
+No actual kernel compilation or low-bit execution is performed. This is a
+fake-quant (quantize-then-dequantize) quality proxy only.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ class FakeQuantResult:
     n_params_quantized: int
     bytes_per_param_original: float
     bytes_per_param_effective: float
+    quantization_backend: str = "fake_quantized_fp_eval"
+    performance_claim_valid: bool = False
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -37,6 +39,8 @@ class FakeQuantResult:
             "n_params_quantized": self.n_params_quantized,
             "bytes_per_param_original": self.bytes_per_param_original,
             "bytes_per_param_effective": self.bytes_per_param_effective,
+            "quantization_backend": self.quantization_backend,
+            "performance_claim_valid": self.performance_claim_valid,
         }
 
 
@@ -110,7 +114,7 @@ def evaluate_sparse_quant_quality(
     bits: int = 8,
     pruning_method: str = "wanda",
 ) -> Optional[Dict]:
-    """Evaluate quality retention under combined sparsity + quantization.
+    """Evaluate numerics-only quality retention under fake sparsity + quantization.
 
     Pipeline:
     1. Measure dense baseline loss
@@ -118,7 +122,7 @@ def evaluate_sparse_quant_quality(
     3. Measure sparse-only loss
     4. Apply fake quantization at target bits
     5. Measure sparse+quant loss
-    6. Compute quality-retention-per-byte metrics
+    6. Compute estimated quality-retention-per-byte metrics
 
     Returns dict with all metrics, or None if evaluation fails.
     """
@@ -178,4 +182,8 @@ def evaluate_sparse_quant_quality(
         "pruning_method": pruning_method,
         "bytes_per_param_effective": bytes_effective,
         "n_params_total": prune_result.n_params_total,
+        "quantization_backend": quant_result.quantization_backend,
+        "performance_claim_valid": False,
+        "quality_proxy_only": True,
+        "compression_ratio_estimate": round(compression_ratio, 2),
     }

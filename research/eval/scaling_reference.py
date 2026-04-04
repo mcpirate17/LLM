@@ -21,9 +21,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-import torch
 
 from research.defaults import VOCAB_SIZE
+from .reference_training import train_reference_transformer
 
 logger = logging.getLogger(__name__)
 
@@ -481,8 +481,6 @@ class ScalingReferenceManager:
         Averages over n_seeds for stability (same pattern as baseline.py).
         When cacheable=True, results are cached even with real data (data_fn).
         """
-        from .baseline import _BaselineTransformer
-
         config_key = self._config_key(
             family, d_model, n_layers, seq_len, n_steps, vocab_size, data_tag
         )
@@ -496,60 +494,27 @@ class ScalingReferenceManager:
                     (config_key,),
                 ).fetchone()
                 return cached, row[0] if row else 0
-
-        dev = torch.device(device if torch.cuda.is_available() else "cpu")
         losses = []
         param_count = 0
 
         for seed in range(n_seeds):
-            torch.manual_seed(seed)
-            model = _BaselineTransformer(vocab_size, d_model, n_layers=n_layers).to(dev)
+            final_loss, seed_param_count = train_reference_transformer(
+                d_model=d_model,
+                seq_len=seq_len,
+                n_steps=n_steps,
+                vocab_size=vocab_size,
+                batch_size=batch_size,
+                lr=lr,
+                device=device,
+                n_layers=n_layers,
+                optimizer_name="adamw",
+                weight_decay=0.01,
+                seed=seed,
+                data_fn=data_fn,
+            )
             if seed == 0:
-                param_count = sum(p.numel() for p in model.parameters())
-
-            optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-            model.train()
-            _data_gen = torch.Generator(device=dev).manual_seed(seed * 100000)
-
-            final_loss = float("inf")
-            try:
-                for step in range(n_steps):
-                    if data_fn is not None:
-                        input_ids = data_fn(batch_size, seq_len, dev)
-                    else:
-                        input_ids = torch.randint(
-                            0,
-                            vocab_size,
-                            (batch_size, seq_len),
-                            device=dev,
-                            generator=_data_gen,
-                        )
-
-                    with torch.amp.autocast(
-                        device_type=dev.type,
-                        dtype=torch.bfloat16,
-                        enabled=(dev.type == "cuda"),
-                    ):
-                        logits = model(input_ids)
-                        loss = torch.nn.functional.cross_entropy(
-                            logits[:, :-1].reshape(-1, vocab_size),
-                            input_ids[:, 1:].reshape(-1),
-                        )
-
-                    if torch.isnan(loss) or torch.isinf(loss):
-                        break
-
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    optimizer.step()
-                    final_loss = loss.item()
-            finally:
-                del model, optimizer
-                if dev.type == "cuda":
-                    torch.cuda.empty_cache()
-                gc.collect()
-
+                param_count = seed_param_count
+            gc.collect()
             if math.isfinite(final_loss):
                 losses.append(final_loss)
 

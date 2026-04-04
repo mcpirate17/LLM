@@ -17,6 +17,7 @@ from typing import Dict, List, Any
 
 import torch
 
+from .corpus_pipeline import TextSplitSpec, cache_hf_text_splits, split_token_array
 from .utils import (
     tokenize_file,
     make_batches,
@@ -38,31 +39,19 @@ def _download_code_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
     if path.exists():
         return path
 
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        raise RuntimeError("HuggingFace `datasets` required: pip install datasets")
-
     logger.info("Downloading Python code corpus ...")
     # Use codeparrot/github-code-clean for Python snippets
     try:
-        ds = load_dataset(
-            "codeparrot/github-code-clean",
-            languages=["Python"],
-            split="train",
+        paths = cache_hf_text_splits(
+            cache_dir=_CACHE_DIR,
+            dataset_name="codeparrot/github-code-clean",
+            split_specs=(TextSplitSpec("train", "python_code.txt", max_chars),),
             streaming=True,
             trust_remote_code=True,
+            load_kwargs={"languages": ["Python"]},
+            sample_to_text=lambda sample: sample.get("code", ""),
         )
-        texts = []
-        total_chars = 0
-        for sample in ds:
-            code = sample.get("code", "")
-            if not code.strip():
-                continue
-            texts.append(code)
-            total_chars += len(code)
-            if total_chars >= max_chars:
-                break
+        return paths["train"]
     except Exception:
         # Fallback: generate synthetic Python-like code
         logger.info("Falling back to synthetic Python corpus")
@@ -106,19 +95,15 @@ def _download_nl_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
     if path.exists():
         return path
 
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        raise RuntimeError("HuggingFace `datasets` required: pip install datasets")
-
     logger.info("Downloading WikiText-2 for NL corpus ...")
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", trust_remote_code=True)
-    texts = ds["train"]["text"]
-    combined = "\n".join(t for t in texts if t.strip())
-    if len(combined) > max_chars:
-        combined = combined[:max_chars]
-    path.write_text(combined, encoding="utf-8")
-    return path
+    paths = cache_hf_text_splits(
+        cache_dir=_CACHE_DIR,
+        dataset_name="wikitext",
+        config_name="wikitext-2-raw-v1",
+        split_specs=(TextSplitSpec("train", "natural_language.txt", max_chars),),
+        trust_remote_code=True,
+    )
+    return paths["train"]
 
 
 def evaluate_cross_task_robustness(
@@ -159,20 +144,20 @@ def evaluate_cross_task_robustness(
         return {"cross_task_score": None, "error": "insufficient_tokens"}
 
     # Split each corpus: 90% train, 10% val
-    code_split = int(len(code_tokens) * 0.9)
-    nl_split = int(len(nl_tokens) * 0.9)
+    code_train, code_val = split_token_array(code_tokens, train_fraction=0.9)
+    nl_train, nl_val = split_token_array(nl_tokens, train_fraction=0.9)
 
     code_train_batches = make_batches(
-        code_tokens[:code_split], batch_size, seq_len, n_train_batches, device, seed=42
+        code_train, batch_size, seq_len, n_train_batches, device, seed=42
     )
     code_val_batches = make_batches(
-        code_tokens[code_split:], batch_size, seq_len, n_eval_batches, device, seed=99
+        code_val, batch_size, seq_len, n_eval_batches, device, seed=99
     )
     nl_train_batches = make_batches(
-        nl_tokens[:nl_split], batch_size, seq_len, n_train_batches, device, seed=42
+        nl_train, batch_size, seq_len, n_train_batches, device, seed=42
     )
     nl_val_batches = make_batches(
-        nl_tokens[nl_split:], batch_size, seq_len, n_eval_batches, device, seed=99
+        nl_val, batch_size, seq_len, n_eval_batches, device, seed=99
     )
 
     if not all(

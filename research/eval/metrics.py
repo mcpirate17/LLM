@@ -35,7 +35,7 @@ CONFIDENCE_NO_FP = 0.2
 
 DUPLICATE_PENALTY_MULTIPLIER = 0.1
 from ..synthesis.graph import ComputationGraph
-from .fingerprint import BehavioralFingerprint
+from .fingerprint_types import BehavioralFingerprint
 
 
 @dataclass(slots=True)

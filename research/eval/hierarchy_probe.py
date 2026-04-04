@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 from typing import Dict
 
-import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
@@ -25,47 +24,11 @@ try:
 except ImportError:
     _HAS_GROMOV_C = False
 
-try:
-    from numba import njit
-
-    _HAS_NUMBA = True
-except ImportError:
-    _HAS_NUMBA = False
-
-    def njit(*args, **kwargs):  # type: ignore[no-redef]
-        def decorator(fn):
-            return fn
-
-        return decorator
+import numpy as np
 
 
 # Maximum number of point samples for delta computation (O(n^4) complexity)
 _MAX_SAMPLE_POINTS = 30
-
-
-@njit(cache=True)
-def _gromov_delta_numba(d: np.ndarray) -> float:
-    n = d.shape[0]
-    max_delta = 0.0
-    for x in range(n - 3):
-        for y in range(x + 1, n - 2):
-            for z in range(y + 1, n - 1):
-                for w in range(z + 1, n):
-                    s1 = d[x, y] + d[z, w]
-                    s2 = d[x, z] + d[y, w]
-                    s3 = d[x, w] + d[y, z]
-
-                    if s1 > s2:
-                        s1, s2 = s2, s1
-                    if s2 > s3:
-                        s2, s3 = s3, s2
-                    if s1 > s2:
-                        s1, s2 = s2, s1
-
-                    delta = 0.5 * (s3 - s2)
-                    if delta > max_delta:
-                        max_delta = delta
-    return max_delta
 
 
 def gromov_delta(distance_matrix: np.ndarray) -> float:
@@ -104,10 +67,6 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
         d_tensor = torch.from_numpy(d_contig)
         idx_tensor = torch.from_numpy(indices.astype(np.int32))
         return float(aria_core.gromov_delta_f32(d_tensor, idx_tensor))
-
-    if _HAS_NUMBA:
-        d_contig = np.ascontiguousarray(d, dtype=np.float32)
-        return float(_gromov_delta_numba(d_contig))
 
     idx = np.array(indices)
     n_idx = len(idx)
@@ -159,8 +118,7 @@ def hierarchy_fitness(
 
     B, S, D = representations.shape
 
-    # Flatten batch and sequence dims, sample tokens
-    flat = representations.detach().reshape(-1, D).float().cpu().numpy()
+    flat = representations.detach().reshape(-1, D).float().cpu()
     n = flat.shape[0]
 
     if n < 4:
@@ -171,39 +129,22 @@ def hierarchy_fitness(
         }
 
     if n > max_tokens:
-        idx = np.random.choice(n, max_tokens, replace=False)
-        flat = flat[idx]
+        idx = torch.randperm(n)[:max_tokens]
+        flat = flat.index_select(0, idx)
         n = max_tokens
 
-    # Compute pairwise Euclidean distances
-    try:
-        from scipy.spatial.distance import pdist, squareform
+    dist_matrix_t = torch.cdist(flat, flat)
+    dist_matrix = dist_matrix_t.numpy()
 
-        dist_condensed = pdist(flat, metric="euclidean")
-        dist_matrix = squareform(dist_condensed)
-    except ImportError:
-        # Fallback without scipy
-        diff = flat[:, None, :] - flat[None, :, :]
-        dist_matrix = np.sqrt((diff**2).sum(axis=-1) + 1e-10)
-
-    # Compute Gromov delta
     delta = gromov_delta(dist_matrix)
 
-    # Normalize delta to [0, 1] fitness score
-    # Use median distance as scale factor
-    median_dist = (
-        float(np.median(dist_matrix[dist_matrix > 0]))
-        if (dist_matrix > 0).any()
-        else 1.0
-    )
+    nonzero = dist_matrix_t[dist_matrix_t > 0]
+    median_dist = float(nonzero.median().item()) if nonzero.numel() > 0 else 1.0
     if median_dist < 1e-10:
         median_dist = 1.0
 
-    # Normalized delta: delta / median_dist
-    # Low normalized delta = tree-like = high fitness
     normalized_delta = delta / median_dist
-    # Map to [0, 1]: fitness = exp(-normalized_delta)
-    fitness = float(np.exp(-normalized_delta))
+    fitness = float(torch.exp(torch.tensor(-normalized_delta)).item())
 
     return {
         "hierarchy_fitness": max(0.0, min(1.0, fitness)),

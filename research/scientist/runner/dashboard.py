@@ -118,6 +118,9 @@ class _DashboardMixin:
         bench_config = config.copy()
         if bench_config.stage1_steps <= 0:
             bench_config.stage1_steps = 1
+        bench_config.profile_disable_post_eval = True
+        bench_config.stage1_compute_val_loss = False
+        bench_config.stage1_compute_discovery_loss = False
 
         raw_runs: List[Dict[str, Any]] = []
         for routing_mode in supported_modes:

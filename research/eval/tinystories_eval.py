@@ -13,9 +13,12 @@ import time
 from pathlib import Path
 from typing import Dict, Any
 
+from .corpus_pipeline import (
+    TextSplitSpec,
+    cache_hf_text_splits,
+    prepare_text_split_batches,
+)
 from .utils import (
-    tokenize_file,
-    make_batches,
     micro_train_loop,
     compute_perplexity,
 )
@@ -40,26 +43,19 @@ def _download_tinystories(
     if train_path.exists() and val_path.exists():
         return train_path, val_path
 
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        raise RuntimeError("HuggingFace `datasets` required: pip install datasets")
-
     logger.info("Downloading TinyStories ...")
-    ds = load_dataset("roneneldan/TinyStories", trust_remote_code=True)
-
-    for split_name, path, max_chars in [
-        ("train", train_path, max_chars_train),
-        ("validation", val_path, max_chars_val),
-    ]:
-        texts = ds[split_name]["text"]
-        combined = "\n".join(t for t in texts if t.strip())
-        if len(combined) > max_chars:
-            combined = combined[:max_chars]
-        path.write_text(combined, encoding="utf-8")
+    paths = cache_hf_text_splits(
+        cache_dir=_CACHE_DIR,
+        dataset_name="roneneldan/TinyStories",
+        split_specs=(
+            TextSplitSpec("train", "train.txt", max_chars_train),
+            TextSplitSpec("validation", "validation.txt", max_chars_val),
+        ),
+        trust_remote_code=True,
+    )
 
     logger.info("TinyStories cached at %s", _CACHE_DIR)
-    return train_path, val_path
+    return paths["train"], paths["validation"]
 
 
 def evaluate_tinystories(
@@ -83,19 +79,21 @@ def evaluate_tinystories(
         logger.warning("TinyStories download failed: %s", e)
         return {"tinystories_perplexity": None, "error": f"download_failed: {e}"}
 
-    train_tokens = tokenize_file(train_path, vocab_size)
-    val_tokens = tokenize_file(val_path, vocab_size)
+    train_batches, val_batches, train_tokens, val_tokens = prepare_text_split_batches(
+        namespace="tinystories",
+        train_path=train_path,
+        val_path=val_path,
+        vocab_size=vocab_size,
+        seq_len=seq_len,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        n_train_batches=n_train_batches,
+        n_eval_batches=n_eval_batches,
+        device=device,
+    )
 
-    if len(train_tokens) < seq_len + 1 or len(val_tokens) < seq_len + 1:
+    if train_batches is None or val_batches is None:
         return {"tinystories_perplexity": None, "error": "insufficient_tokens"}
-
-    train_batches = make_batches(
-        train_tokens, batch_size, seq_len, n_train_batches, device
-    )
-    val_batches = make_batches(
-        val_tokens, batch_size, seq_len, n_eval_batches, device, seed=123
-    )
-
     if not train_batches or not val_batches:
         return {"tinystories_perplexity": None, "error": "batch_generation_failed"}
 
@@ -117,7 +115,7 @@ def evaluate_tinystories(
         "tinystories_score": tinystories_score,
         "train_final_loss": round(train_final_loss, 6),
         "n_train_steps": n_train_steps,
-        "train_tokens": len(train_tokens),
-        "val_tokens": len(val_tokens),
+        "train_tokens": train_tokens,
+        "val_tokens": val_tokens,
         "elapsed_ms": round(elapsed_ms, 1),
     }

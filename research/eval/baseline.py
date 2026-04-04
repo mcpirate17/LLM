@@ -15,73 +15,10 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 from research.defaults import VOCAB_SIZE
-
-
-class _SimpleTransformerLayer(nn.Module):
-    """Minimal transformer layer for baseline comparison."""
-
-    def __init__(self, d_model: int, n_heads: int = 4):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.ff = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
-            nn.GELU(),
-            nn.Linear(d_model * 4, d_model),
-        )
-        self.ln1 = nn.LayerNorm(d_model)
-        self.ln2 = nn.LayerNorm(d_model)
-        self._causal_mask_cache: dict[tuple[int, str, int | None], torch.Tensor] = {}
-
-    def _causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        key = (int(seq_len), device.type, device.index)
-        mask = self._causal_mask_cache.get(key)
-        if mask is None:
-            mask = nn.Transformer.generate_square_subsequent_mask(
-                seq_len,
-                device=device,
-            )
-            self._causal_mask_cache[key] = mask
-        return mask
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        S = x.shape[1]
-        h = self.ln1(x)
-        h, _ = self.attn(
-            h,
-            h,
-            h,
-            attn_mask=self._causal_mask(S, x.device),
-            need_weights=False,
-            is_causal=True,
-        )
-        x = x + h
-        x = x + self.ff(self.ln2(x))
-        return x
-
-
-class _BaselineTransformer(nn.Module):
-    """Minimal 2-layer transformer for baseline loss measurement."""
-
-    def __init__(self, vocab_size: int, d_model: int, n_layers: int = 2):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, d_model)
-        self.layers = nn.ModuleList(
-            [_SimpleTransformerLayer(d_model) for _ in range(n_layers)]
-        )
-        self.head = nn.Linear(d_model, vocab_size, bias=False)
-        self.ln_f = nn.LayerNorm(d_model)
-
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed(input_ids)
-        for layer in self.layers:
-            x = layer(x)
-        x = self.ln_f(x)
-        return self.head(x)
+from .reference_training import (
+    train_reference_transformer,
+)
 
 
 class TransformerBaseline:
@@ -248,70 +185,23 @@ class TransformerBaseline:
         data_fn=None,
     ) -> float:
         """Train a baseline transformer and return final loss."""
-        dev = torch.device(device if torch.cuda.is_available() else "cpu")
-
-        torch.manual_seed(seed)
-        model = _BaselineTransformer(vocab_size, d_model, n_layers=n_layers).to(dev)
-        opt = (optimizer_name or "adamw").lower()
-        if opt == "sgd":
-            optimizer = torch.optim.SGD(
-                model.parameters(),
-                lr=lr,
-                momentum=momentum,
-                weight_decay=weight_decay,
-            )
-        else:
-            adamw_betas = betas if betas is not None else (0.9, 0.999)
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=adamw_betas,
-            )
-        model.train()
-        _data_gen = torch.Generator(device=dev).manual_seed(seed * 100000)
-
-        final_loss = float("inf")
-
-        try:
-            for step in range(n_steps):
-                if data_fn is not None:
-                    input_ids = data_fn(batch_size, seq_len, dev)
-                else:
-                    input_ids = torch.randint(
-                        0,
-                        vocab_size,
-                        (batch_size, seq_len),
-                        device=dev,
-                        generator=_data_gen,
-                    )
-                with torch.amp.autocast(
-                    device_type=dev.type,
-                    dtype=torch.bfloat16,
-                    enabled=(dev.type == "cuda"),
-                ):
-                    logits = model(input_ids)
-                    loss = F.cross_entropy(
-                        logits[:, :-1].reshape(-1, vocab_size),
-                        input_ids[:, 1:].reshape(-1),
-                    )
-
-                if torch.isnan(loss) or torch.isinf(loss):
-                    break
-
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-
-                final_loss = loss.item()
-
-        finally:
-            del model, optimizer
-            if dev.type == "cuda":
-                torch.cuda.empty_cache()
-            gc.collect()
-
+        final_loss, _ = train_reference_transformer(
+            d_model=d_model,
+            seq_len=seq_len,
+            n_steps=n_steps,
+            vocab_size=vocab_size,
+            batch_size=batch_size,
+            lr=lr,
+            device=device,
+            n_layers=n_layers,
+            optimizer_name=optimizer_name,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            betas=betas,
+            seed=seed,
+            data_fn=data_fn,
+        )
+        gc.collect()
         return final_loss
 
     def compare(

@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+from ._eval_native import load_eval_native
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,13 +29,19 @@ def _gini_coefficient(counts: np.ndarray) -> float:
     """Compute Gini coefficient of expert utilization. 0=perfectly balanced, 1=fully collapsed."""
     if len(counts) < 2 or counts.sum() == 0:
         return 0.0
-    sorted_counts = np.sort(counts)
-    n = len(sorted_counts)
-    cumsum = np.cumsum(sorted_counts)
-    return float(
-        (2.0 * np.sum((np.arange(1, n + 1) * sorted_counts)) / (n * cumsum[-1]))
-        - (n + 1) / n
-    )
+    try:
+        native = load_eval_native()
+        return float(
+            native.gini_coefficient_f64(torch.as_tensor(counts, dtype=torch.float64))
+        )
+    except Exception:
+        sorted_counts = np.sort(counts)
+        n = len(sorted_counts)
+        cumsum = np.cumsum(sorted_counts)
+        return float(
+            (2.0 * np.sum((np.arange(1, n + 1) * sorted_counts)) / (n * cumsum[-1]))
+            - (n + 1) / n
+        )
 
 
 def _max_entropy(n_experts: int) -> float:
@@ -111,23 +119,32 @@ def evaluate_routing_heatmap(
         entropy_sum = rt.get("entropy_sum", 0.0)
         count = rt.get("count", 0)
 
-        # Compute per-module metrics
-        gini = (
-            _gini_coefficient(counts_np)
-            if counts_np is not None and n_experts > 1
-            else 0.0
-        )
+        gini = 0.0
         avg_entropy = (entropy_sum / count) if count > 0 else 0.0
-        max_ent = _max_entropy(n_experts)
-        normalized_entropy = (avg_entropy / max_ent) if max_ent > 0 else 0.0
-
-        # Collapse detection: Gini > 0.8 or normalized entropy < 0.2
-        is_collapsed = (gini > 0.8) or (normalized_entropy < 0.2 and n_experts > 1)
-
-        # Dominant expert fraction: what % of tokens went to the most-used expert
+        normalized_entropy = 0.0
         dominant_frac = 0.0
-        if counts_np is not None and counts_np.sum() > 0:
-            dominant_frac = float(counts_np.max() / counts_np.sum())
+        if counts_np is not None and n_experts > 1:
+            try:
+                native = load_eval_native()
+                metrics = native.routing_metrics_f64(
+                    torch.as_tensor(counts_np, dtype=torch.float64),
+                    float(entropy_sum),
+                    int(count),
+                ).tolist()
+                gini, avg_entropy, normalized_entropy, dominant_frac = (
+                    float(metrics[0]),
+                    float(metrics[1]),
+                    float(metrics[2]),
+                    float(metrics[3]),
+                )
+            except Exception:
+                gini = _gini_coefficient(counts_np)
+                max_ent = _max_entropy(n_experts)
+                normalized_entropy = (avg_entropy / max_ent) if max_ent > 0 else 0.0
+                if counts_np.sum() > 0:
+                    dominant_frac = float(counts_np.max() / counts_np.sum())
+
+        is_collapsed = (gini > 0.8) or (normalized_entropy < 0.2 and n_experts > 1)
 
         module_info = {
             "module": name,

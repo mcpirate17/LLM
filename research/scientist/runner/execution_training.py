@@ -30,38 +30,43 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _sample_entropy_gate_output(
-    model: nn.Module, input_ids: torch.Tensor
-) -> float | None:
-    """Sample the mean token_entropy output from the model (no-grad forward pass).
+class _EntropyGateSampler:
+    """Capture token-entropy telemetry from the main training forward pass."""
 
-    Returns the mean absolute token_entropy value, or None if no token_entropy ops found.
-    """
-    values: List[float] = []
-    hooks = []
+    __slots__ = ("_enabled", "_handles", "_values")
 
-    def _hook(module: nn.Module, inp: Any, out: Any) -> None:  # noqa: ARG001
-        if isinstance(out, torch.Tensor):
-            values.append(out.abs().mean().item())
+    def __init__(self, model: nn.Module):
+        self._enabled = False
+        self._values: List[float] = []
+        self._handles = []
+        for mod in model.modules():
+            op_name = getattr(mod, "_op_name", None)
+            if op_name and "token_entropy" in str(op_name):
+                self._handles.append(mod.register_forward_hook(self._hook))
 
-    for mod in model.modules():
-        op_name = getattr(mod, "_op_name", None)
-        if op_name and "token_entropy" in str(op_name):
-            hooks.append(mod.register_forward_hook(_hook))
+    def _hook(self, module: nn.Module, inp: Any, out: Any) -> None:  # noqa: ARG002
+        if not self._enabled or not isinstance(out, torch.Tensor):
+            return
+        self._values.append(float(out.detach().abs().mean().item()))
 
-    if not hooks:
-        return None
+    @property
+    def available(self) -> bool:
+        return bool(self._handles)
 
-    with torch.no_grad():
-        try:
-            model(input_ids)
-        except RuntimeError as e:
-            logger.debug("Entropy gate forward pass failed: %s", e)
-        finally:
-            for h in hooks:
-                h.remove()
+    def begin_sample(self) -> None:
+        self._values.clear()
+        self._enabled = True
 
-    return (sum(values) / len(values)) if values else None
+    def finish_sample(self) -> float | None:
+        self._enabled = False
+        if not self._values:
+            return None
+        return sum(self._values) / len(self._values)
+
+    def close(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
 
 
 def _smoke_test_graph_structure(graph_json) -> Dict[str, Any]:
@@ -688,6 +693,7 @@ class _ExecutionTrainingMixin:
             # Entropy gate trajectory (sampled at key steps during training)
             _ENTROPY_GATE_SAMPLE_STEPS = frozenset({10, 25, 50, 75, 100})
             _entropy_gate_trajectory: List[float] = []
+            entropy_gate_sampler = _EntropyGateSampler(model)
 
             if not ran_cuda_graph:
                 # Budget extension tracking
@@ -738,6 +744,12 @@ class _ExecutionTrainingMixin:
                     ) * 1000.0
 
                     t_step = time.perf_counter()
+                    should_sample_entropy = (
+                        entropy_gate_sampler.available
+                        and step in _ENTROPY_GATE_SAMPLE_STEPS
+                    )
+                    if should_sample_entropy:
+                        entropy_gate_sampler.begin_sample()
 
                     step_state: Dict[str, Any] = {}
 
@@ -847,6 +859,18 @@ class _ExecutionTrainingMixin:
                             _run_step()
                     else:
                         _run_step()
+
+                    if should_sample_entropy:
+                        _eg_val = entropy_gate_sampler.finish_sample()
+                        if _eg_val is not None:
+                            _entropy_gate_trajectory.append(_eg_val)
+                            if _eg_val < 0.05:
+                                logger.warning(
+                                    "entropy_gate_collapse_detected at step %d: "
+                                    "value=%.4f",
+                                    step,
+                                    _eg_val,
+                                )
 
                     loss = step_state.get("loss")
                     grad_norm = float(step_state.get("grad_norm", 0.0))
@@ -976,19 +1000,6 @@ class _ExecutionTrainingMixin:
                                 "step_time_ms": step_time_ms,
                             }
                         )
-
-                    # Entropy gate trajectory: sample at key steps
-                    if step in _ENTROPY_GATE_SAMPLE_STEPS:
-                        _eg_val = _sample_entropy_gate_output(model, input_ids)
-                        if _eg_val is not None:
-                            _entropy_gate_trajectory.append(_eg_val)
-                            if _eg_val < 0.05:
-                                logger.warning(
-                                    "entropy_gate_collapse_detected at step %d: "
-                                    "value=%.4f",
-                                    step,
-                                    _eg_val,
-                                )
 
                     # Emit live training step events for dashboard
                     ctx = getattr(self, "_live_training_context", None)
@@ -1245,6 +1256,7 @@ class _ExecutionTrainingMixin:
                 if (
                     result.get("passed")
                     and model is not None
+                    and not bool(getattr(config, "skip_post_s1_triage", False))
                     and not bool(getattr(config, "profile_disable_post_eval", False))
                 ):
                     try:
@@ -1337,7 +1349,7 @@ class _ExecutionTrainingMixin:
                             wt.get("wikitext_score") or 0,
                             wt.get("elapsed_ms") or 0,
                         )
-                    except (RuntimeError, ValueError, OSError) as e_wt:
+                    except (RuntimeError, ValueError, OSError, ImportError) as e_wt:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
                 # Fast HellaSwag commonsense reasoning probe at screening time
@@ -1368,7 +1380,7 @@ class _ExecutionTrainingMixin:
                                 hs.get("hellaswag_total", 0),
                                 hs.get("elapsed_ms", 0),
                             )
-                    except (RuntimeError, ValueError, OSError) as e_hs:
+                    except (RuntimeError, ValueError, OSError, ImportError) as e_hs:
                         logger.debug("Screening HellaSwag eval skipped: %s", e_hs)
 
                 # Binding probes: induction head + binding range (post micro-train)
@@ -1457,13 +1469,14 @@ class _ExecutionTrainingMixin:
                                         for n in graph_nodes
                                     ],
                                 )
-                    except (RuntimeError, ValueError, TypeError) as e_bp:
+                    except (RuntimeError, ValueError, TypeError, ImportError) as e_bp:
                         logger.debug("Binding probes skipped: %s", e_bp)
 
                 # Post-S1 triage: cheap evals for composite score dimensions
                 if (
                     result.get("passed")
                     and model is not None
+                    and not bool(getattr(config, "skip_post_s1_fingerprint", False))
                     and not bool(getattr(config, "profile_disable_post_eval", False))
                 ):
                     try:
@@ -1524,6 +1537,8 @@ class _ExecutionTrainingMixin:
                 elif "conv_weight" in err_str:
                     result["failure_op"] = "conv1d_seq"
         finally:
+            if "entropy_gate_sampler" in locals():
+                entropy_gate_sampler.close()
             run_profiler.__exit__(None, None, None)
 
         if result.get("final_loss") is not None and bool(

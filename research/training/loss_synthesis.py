@@ -21,7 +21,6 @@ import torch
 
 from ._loss_components import (
     LOG_PROB_COMPONENTS,
-    PROB_COMPONENTS,
     compute_component_fast,
     compute_spectral_component,
 )
@@ -91,9 +90,6 @@ class SynthesizedLoss:
             if comp_name in LOG_PROB_COMPONENTS:
                 if log_probs is None:
                     log_probs = torch.nn.functional.log_softmax(flat_logits, dim=-1)
-            if comp_name in PROB_COMPONENTS:
-                if probs is None:
-                    probs = torch.nn.functional.softmax(flat_logits, dim=-1)
 
             total = total + comp_weight * compute_component_fast(
                 comp_name, flat_logits, flat_targets, log_probs, probs
@@ -127,9 +123,12 @@ LOSS_COMPONENTS = [
 ]
 
 
-def synthesize_loss(seed: Optional[int] = None) -> SynthesizedLoss:
+def synthesize_loss(
+    seed: Optional[int] = None,
+    rng: Optional[random.Random] = None,
+) -> SynthesizedLoss:
     """Generate a random loss function from components."""
-    rng = random.Random(seed)
+    rng = rng if rng is not None else random.Random(seed)
 
     # Always include some form of CE
     ce_variants = [

@@ -96,9 +96,19 @@ def analyze_sensitivity(
             positions = torch.arange(
                 0, seq_len, step, device=device, dtype=torch.int64
             )[:n_positions]
-            sens_matrix = collect_position_sensitivities(
-                forward_from_embed, embed, positions
-            )
+            if (
+                getattr(collect_position_sensitivities, "__module__", __name__)
+                != __name__
+            ):
+                sens_matrix = collect_position_sensitivities(
+                    forward_from_embed, embed, positions
+                )
+            else:
+                sens_matrix = collect_sensitivity_rows(x, embed, positions)
+                if sens_matrix is None:
+                    sens_matrix = collect_position_sensitivities(
+                        forward_from_embed, embed, positions
+                    )
             if sens_matrix is None:
                 record_sensitivity_skip("no_sensitivity_grads")
                 return result

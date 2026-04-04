@@ -17,6 +17,7 @@ binding profile. A model with AUC > 0.3 has non-trivial binding range.
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from contextlib import nullcontext
@@ -28,6 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
+from .utils import make_adamw
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +41,6 @@ def _amp_context(device: str):
     if str(device).startswith("cuda"):
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     return nullcontext()
-
-
-def _make_adamw(params, lr: float):
-    kwargs = {"lr": lr}
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, fused=True, **kwargs)
-        except TypeError:
-            pass
-    return torch.optim.AdamW(params, **kwargs)
 
 
 @dataclass(slots=True)
@@ -132,17 +124,15 @@ def induction_score(
     train_gap = 8  # fixed training gap
 
     try:
-        original_state = model.state_dict()
-        original_training = model.training
-        model.to(device)
-        model.train()
-        probe_model = model
+        probe_model = copy.deepcopy(model)
+        probe_model.to(device)
+        probe_model.train()
     except Exception as e:
         result.status = f"copy_failed: {e}"
         result.elapsed_ms = (time.perf_counter() - t0) * 1000
         return result
 
-    opt = _make_adamw(probe_model.parameters(), lr=lr)
+    opt = make_adamw(probe_model.parameters(), lr=lr)
 
     try:
         with disable_native_probe_dispatch(probe_model, device=device):
@@ -184,26 +174,22 @@ def induction_score(
                     correct = 0
                     total = 0
                     remaining = n_eval
-                    eval_batches = []
                     while remaining > 0:
                         bs = min(batch_size, remaining)
-                        eval_batches.append(_generate_induction_batch(bs, gap, device))
-                        remaining -= bs
-
-                    for inp, tgt in eval_batches:
+                        inp, tgt = _generate_induction_batch(bs, gap, device)
                         out = probe_model(inp)
                         pred_pos = inp.shape[1] - 1
                         preds = out[:, pred_pos, :_RESTRICTED_VOCAB].argmax(dim=-1)
                         correct += (preds == tgt).sum().item()
                         total += tgt.numel()
+                        remaining -= bs
 
                     result.gap_accuracies[gap] = round(correct / max(total, 1), 4)
 
     except Exception as e:
         result.status = f"train_failed: {e}"
     finally:
-        model.load_state_dict(original_state)
-        model.train(original_training)
+        del probe_model
         if device == "cuda":
             torch.cuda.empty_cache()
 

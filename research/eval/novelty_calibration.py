@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from .baseline import _BaselineTransformer
-from .fingerprint import build_novelty_reference_version, compute_fingerprint
+from .fingerprint_runtime import compute_fingerprint
+from .fingerprint_scoring import build_novelty_reference_version
 
 
 def _quantile(values: List[float], q: float) -> Optional[float]:

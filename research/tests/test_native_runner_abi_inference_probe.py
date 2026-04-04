@@ -104,6 +104,43 @@ def test_safe_eval_native_abi_probe_failure_is_non_fatal():
     assert str(probe.get("reason", "")).startswith("execute_error:")
 
 
+def test_safe_eval_native_abi_probe_prefers_tensor_execute_path():
+    vocab_size = 32
+    model = _GoodModel(vocab_size=vocab_size)
+
+    class _Session:
+        def __init__(self):
+            self.tensor_calls = 0
+            self.list_calls = 0
+
+        def execute_tokens_tensor(self, token_ids, batch=1):
+            assert isinstance(token_ids, torch.Tensor)
+            assert token_ids.device.type == "cpu"
+            self.tensor_calls += 1
+            return [0.0] * vocab_size
+
+        def execute_tokens(self, token_ids, batch=1):
+            self.list_calls += 1
+            return [0.0] * vocab_size
+
+    session = _Session()
+    model._native_runner_abi_session = session
+
+    with _env(NATIVE_RUNNER_ABI_INFER_PROBE="1"):
+        result = safe_eval(
+            model,
+            batch_size=2,
+            seq_len=8,
+            vocab_size=vocab_size,
+            device="cpu",
+            run_stability_probe=False,
+        )
+
+    assert result.passed is True
+    assert session.tensor_calls == 1
+    assert session.list_calls == 0
+
+
 def test_safe_eval_native_abi_primary_forward_only_uses_session_logits():
     vocab_size = 32
 
@@ -263,6 +300,48 @@ def test_native_runner_abi_session_respects_batch_seq_len_and_caches():
     logits_cached = session.execute_tokens([5, 6, 7, 8], batch=2)
     assert logits_cached == logits
     assert len(lib.calls) == 1
+
+
+def test_native_runner_abi_session_execute_tokens_tensor_uses_buffer_pointer():
+    class _FakeLib:
+        def __init__(self):
+            self.calls = []
+            self._buffers = []
+
+        def nr_execute(self, req_ptr):
+            req = req_ptr._obj
+            token_count = int(req.batch) * int(req.seq_len)
+            tokens = [int(req.token_ids[i]) for i in range(token_count)]
+            self.calls.append(
+                {
+                    "batch": int(req.batch),
+                    "seq_len": int(req.seq_len),
+                    "tokens": tokens,
+                }
+            )
+            buf = (ctypes.c_float * 4)(1.0, 2.0, 3.0, 4.0)
+            self._buffers.append(buf)
+            return _NrExecuteResponse(
+                status=0,
+                logits=buf,
+                vocab_size=4,
+                message=None,
+            )
+
+        def nr_release_model(self, handle):
+            return None
+
+    lib = _FakeLib()
+    session = NativeRunnerAbiSession(
+        native_lib=lib,
+        model_handle=1,
+        vocab_size=4,
+        max_seq_len=8,
+    )
+
+    logits = session.execute_tokens_tensor(torch.tensor([5, 6, 7, 8]), batch=2)
+    assert logits == [1.0, 2.0, 3.0, 4.0]
+    assert lib.calls == [{"batch": 2, "seq_len": 2, "tokens": [5, 6, 7, 8]}]
 
 
 def test_build_native_abi_only_model_uses_row_execution_path():

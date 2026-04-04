@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 import torch
@@ -23,6 +24,48 @@ from ..synthesis.grammar import _ROUTING_COMPRESSION_MOE_OPS
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class ProbeRepresentations:
+    logits: torch.Tensor
+    reps: Optional[torch.Tensor]
+
+
+def _replacement_ids(
+    ids: torch.Tensor, positions: torch.Tensor, vocab_size: int
+) -> torch.Tensor:
+    return (ids[0, positions] + 1) % vocab_size
+
+
+def _perturbed_token_batch(
+    ids: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    vocab_size: int,
+) -> torch.Tensor:
+    n_positions = int(positions.numel())
+    perturbed = ids.expand(n_positions, -1).clone()
+    row_idx = torch.arange(n_positions, device=positions.device)
+    perturbed[row_idx, positions] = _replacement_ids(ids, positions, vocab_size)
+    return perturbed
+
+
+def _perturbed_embed_batch(
+    model: nn.Module,
+    ids: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    vocab_size: int,
+) -> torch.Tensor:
+    n_positions = int(positions.numel())
+    base_embed = model.embed(ids)
+    perturbed = base_embed.expand(n_positions, -1, -1).clone()
+    row_idx = torch.arange(n_positions, device=positions.device)
+    perturbed[row_idx, positions] = model.embed(
+        _replacement_ids(ids, positions, vocab_size)
+    )
+    return base_embed, perturbed
+
+
 def _resolve_representation_hook_module(model: nn.Module) -> nn.Module | None:
     cached = model.__dict__.get("_fingerprint_capture_module", None)
     if cached is False:
@@ -30,29 +73,53 @@ def _resolve_representation_hook_module(model: nn.Module) -> nn.Module | None:
     if cached is not None:
         return cached
 
+    output_projection_ids = {
+        id(module)
+        for name in ("lm_head", "head", "output", "classifier")
+        for module in (getattr(model, name, None),)
+        if isinstance(module, nn.Module)
+    }
+
+    vocab_size = None
+    embed = getattr(model, "embed", None)
+    if isinstance(embed, nn.Embedding):
+        vocab_size = int(embed.num_embeddings)
+        embed_candidate: nn.Module | None = embed
+    else:
+        embed_candidate = None
+
     last_candidate: nn.Module | None = None
     for mod in model.modules():
-        if isinstance(mod, (nn.LayerNorm, nn.Linear)):
+        if id(mod) in output_projection_ids:
+            continue
+        if isinstance(mod, nn.LayerNorm):
+            last_candidate = mod
+            continue
+        if isinstance(mod, nn.Linear):
+            if vocab_size is not None and int(mod.out_features) == vocab_size:
+                continue
             last_candidate = mod
 
-    model.__dict__["_fingerprint_capture_module"] = (
-        last_candidate if last_candidate is not None else False
-    )
-    return last_candidate
+    resolved = last_candidate if last_candidate is not None else embed_candidate
+    model.__dict__["_fingerprint_capture_module"] = resolved or False
+    return resolved
 
 
-def get_representations(
+def capture_probe_representations(
     model: nn.Module,
     input_ids: torch.Tensor,
-) -> Optional[torch.Tensor]:
-    """Run the model and capture the last hidden-like activation for CKA fallback."""
+) -> Optional[ProbeRepresentations]:
+    """Run the model and capture the best available hidden-state-like tensor."""
     try:
         direct_impl = getattr(model, "_fingerprint_representations", None)
         if callable(direct_impl):
             logits, reps = direct_impl(input_ids)
-            if isinstance(logits, torch.Tensor) and isinstance(reps, torch.Tensor):
-                logits._cka_intermediate_reps = reps.detach()
-            return logits
+            if isinstance(logits, torch.Tensor):
+                return ProbeRepresentations(
+                    logits=logits,
+                    reps=reps.detach() if isinstance(reps, torch.Tensor) else None,
+                )
+            return None
 
         captured: dict[str, torch.Tensor] = {}
         hooks = []
@@ -71,9 +138,10 @@ def get_representations(
         for hook in hooks:
             hook.remove()
 
-        if captured:
-            logits._cka_intermediate_reps = captured["last"]
-        return logits
+        if not isinstance(logits, torch.Tensor):
+            return None
+        reps = captured.get("last")
+        return ProbeRepresentations(logits=logits, reps=reps)
     except Exception as exc:
         logger.warning("Failed to get representations: %s", exc)
         return None
@@ -87,19 +155,16 @@ def interaction_influence_matrix(
     vocab_size: int,
 ) -> torch.Tensor:
     ids = input_ids[:1]
-    n_positions = int(positions.numel())
     pre_logits_from_embed = getattr(model, "_fingerprint_pre_logits_from_embed", None)
     if (
         callable(pre_logits_from_embed)
         and hasattr(model, "embed")
         and hasattr(model, "lm_head")
     ):
-        base_embed = model.embed(ids)
+        base_embed, perturbed_embed = _perturbed_embed_batch(
+            model, ids, positions, vocab_size=vocab_size
+        )
         base_pre = pre_logits_from_embed(base_embed)
-        perturbed_embed = base_embed.expand(n_positions, -1, -1).clone()
-        row_idx = torch.arange(n_positions, device=positions.device)
-        replacement_ids = (ids[0, positions] + 1) % vocab_size
-        perturbed_embed[row_idx, positions] = model.embed(replacement_ids)
         delta = pre_logits_from_embed(perturbed_embed) - base_pre
         native_metric = mean_abs_linear_delta(delta, model.lm_head.weight)
         if native_metric is not None:
@@ -108,20 +173,14 @@ def interaction_influence_matrix(
 
     logits_from_embed = getattr(model, "_fingerprint_logits_from_embed", None)
     if callable(logits_from_embed) and hasattr(model, "embed"):
-        base_embed = model.embed(ids)
+        base_embed, perturbed_embed = _perturbed_embed_batch(
+            model, ids, positions, vocab_size=vocab_size
+        )
         base_out = logits_from_embed(base_embed)
-        perturbed_embed = base_embed.expand(n_positions, -1, -1).clone()
-        row_idx = torch.arange(n_positions, device=positions.device)
-        replacement_ids = (ids[0, positions] + 1) % vocab_size
-        perturbed_embed[row_idx, positions] = model.embed(replacement_ids)
         return (logits_from_embed(perturbed_embed) - base_out).abs().mean(dim=-1)
 
     base_out = model(ids)
-    perturbed_batch = ids.expand(n_positions, -1).clone()
-    row_idx = torch.arange(n_positions, device=positions.device)
-    perturbed_batch[row_idx, positions] = (
-        perturbed_batch[row_idx, positions] + 1
-    ) % vocab_size
+    perturbed_batch = _perturbed_token_batch(ids, positions, vocab_size=vocab_size)
     return (model(perturbed_batch) - base_out).abs().mean(dim=-1)
 
 

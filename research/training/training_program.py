@@ -67,11 +67,9 @@ def synthesize_training_program(
     """Generate a complete random training program."""
     rng = random.Random(seed)
 
-    loss = synthesize_loss(seed=rng.randint(0, 2**32))
-    optimizer = synthesize_optimizer(seed=rng.randint(0, 2**32))
-    curriculum = synthesize_curriculum(
-        max_seq_len=max_seq_len, seed=rng.randint(0, 2**32)
-    )
+    loss = synthesize_loss(rng=rng)
+    optimizer = synthesize_optimizer(rng=rng)
+    curriculum = synthesize_curriculum(max_seq_len=max_seq_len, rng=rng)
     init_scheme = rng.choice(INIT_SCHEMES)
     init_scale = rng.choice([0.02, 0.05, 0.1, 1.0])
 

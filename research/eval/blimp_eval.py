@@ -29,7 +29,8 @@ import torch
 import torch.nn as nn
 
 from research.defaults import VOCAB_SIZE
-from .utils import batched_span_mean_log_probs, tokenize_string
+from .choice_scoring import grouped_choice_scores
+from .utils import tokenize_string
 
 logger = logging.getLogger(__name__)
 
@@ -190,23 +191,28 @@ def _score_pairs_batched(
     if not pairs:
         return 0
 
-    all_tokens: List[List[int]] = []
+    grouped_sequences: List[List[List[int]]] = []
+    grouped_starts: List[List[int]] = []
     for pair in pairs:
+        pair_tokens: List[List[int]] = []
         for key in ("good", "bad"):
             toks = tokenize_string(pair[key], vocab_size)
             if len(toks) > max_seq_len:
                 toks = toks[:max_seq_len]
-            all_tokens.append(toks)
+            pair_tokens.append(toks.tolist() if hasattr(toks, "tolist") else list(toks))
+        grouped_sequences.append(pair_tokens)
+        grouped_starts.append([0, 0])
 
-    mean_lps = batched_span_mean_log_probs(
+    pair_scores = grouped_choice_scores(
         model,
-        all_tokens,
-        [0] * len(all_tokens),
+        grouped_sequences,
+        grouped_starts,
         vocab_size=vocab_size,
         device=device,
     )
-    pair_scores = mean_lps.view(-1, 2)
-    return int((pair_scores[:, 0] > pair_scores[:, 1]).sum().item())
+    return sum(
+        1 for scores in pair_scores if len(scores) == 2 and scores[0] > scores[1]
+    )
 
 
 # ── Result type ─────────────────────────────────────────────────────────

@@ -38,6 +38,8 @@ from research.tools.backfill import store_probe_results
 DB_PATH = Path("research/lab_notebook.db")
 REPORT_PATH = Path("research/reports/backpopulate_screening_metrics.tsv")
 DEFAULT_BATCH_COMMIT = 10
+DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
+DEFAULT_WORKER_TIMEOUT_SECONDS = 180
 RAPID_REQUIRED_FIELDS = (
     "rapid_screening_passed",
     "rapid_screening_elapsed_ms",
@@ -67,6 +69,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-rapid", action="store_true")
     parser.add_argument("--skip-post-train", action="store_true")
     parser.add_argument("--batch-commit", type=int, default=DEFAULT_BATCH_COMMIT)
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        help=(
+            "Stop the run after this many row-level failures in a row to avoid "
+            "burning long CUDA batches on catastrophic tool/runtime failures."
+        ),
+    )
+    parser.add_argument(
+        "--worker-timeout-seconds",
+        type=int,
+        default=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        help="Hard timeout for a single isolated replay worker.",
+    )
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -232,6 +249,8 @@ def _build_run_config(row: sqlite3.Row, device: str) -> RunConfig:
     config.stage1_steps = int(budget_steps)
     config.collect_training_curve = False
     config.enable_perf_tracing = False
+    config.skip_post_s1_fingerprint = True
+    config.skip_post_s1_triage = True
     return config
 
 
@@ -308,15 +327,9 @@ def _run_post_train(
     result_id: str,
 ) -> Dict[str, Any]:
     graph = graph_from_json(graph_json)
-    phase1_vocab = (
-        config.qualifying_vocab_size
-        if config.progressive_screening
-        and config.vocab_size > config.qualifying_vocab_size
-        else config.vocab_size
-    )
     model = compile_model(
         [graph] * int(config.n_layers),
-        vocab_size=phase1_vocab,
+        vocab_size=int(config.vocab_size),
         max_seq_len=config.max_seq_len,
     )
     dev = resolve_device(device)
@@ -407,6 +420,13 @@ def _evaluate_row_payload(
     post_needed = (not skip_post_train) and _needs_post_train(row, force)
     updates: Dict[str, Any] = {}
     config = _build_run_config(row, device)
+    # Replay only the missing post-train metrics for this row.
+    config.skip_screening_wikitext = row.get("wikitext_perplexity") is not None
+    config.skip_screening_hellaswag = row.get("hellaswag_acc") is not None
+    config.skip_binding_probes = all(
+        row.get(key) is not None
+        for key in ("induction_auc", "binding_auc", "binding_composite")
+    )
     if rapid_needed:
         updates.update(_run_rapid(str(row["graph_json"]), config, device))
     if post_needed:
@@ -467,23 +487,33 @@ def _run_worker_subprocess(
             cmd.append("--skip-rapid")
         if args.skip_post_train:
             cmd.append("--skip-post-train")
-        proc = subprocess.run(
-            cmd,
-            cwd=str(Path.cwd()),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if not output_path.exists():
-            raise RuntimeError(f"worker produced no output (exit={proc.returncode})")
-        worker_output = json.loads(output_path.read_text(encoding="utf-8"))
-        if not bool(worker_output.get("ok", 0)):
-            raise RuntimeError(
-                str(worker_output.get("error") or f"worker_exit_{proc.returncode}")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(Path.cwd()),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=max(1, int(args.worker_timeout_seconds)),
             )
-        if proc.returncode != 0:
-            raise RuntimeError(f"worker_exit_{proc.returncode}")
-        return worker_output
+            worker_output = {}
+            if output_path.exists():
+                worker_output = json.loads(output_path.read_text(encoding="utf-8"))
+            if not output_path.exists():
+                raise RuntimeError(
+                    f"worker produced no output (exit={proc.returncode})"
+                )
+            if not bool(worker_output.get("ok", 0)):
+                raise RuntimeError(
+                    str(worker_output.get("error") or f"worker_exit_{proc.returncode}")
+                )
+            if proc.returncode != 0:
+                raise RuntimeError(f"worker_exit_{proc.returncode}")
+            return worker_output
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"worker_timeout_after_{int(args.worker_timeout_seconds)}s"
+            ) from exc
 
 
 def _write_report(report_path: Path, rows: Sequence[Dict[str, Any]]) -> None:
@@ -543,6 +573,7 @@ def main() -> None:
     processed = 0
     updated = 0
     updated_cuda = 0
+    consecutive_failures = 0
     report_rows: List[Dict[str, Any]] = []
     t0 = time.time()
 
@@ -593,6 +624,10 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     err = str(exc)
                     status = "error"
+                if status == "error":
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
                 report_rows.append(
                     {
                         "result_id": row["result_id"],
@@ -611,6 +646,16 @@ def main() -> None:
                     f"source={source_device} status={status} fields={len(updates)}",
                     flush=True,
                 )
+                if int(
+                    args.max_consecutive_failures
+                ) > 0 and consecutive_failures >= int(args.max_consecutive_failures):
+                    _write_report(args.report, report_rows)
+                    raise RuntimeError(
+                        "Stopping backpopulate run after "
+                        f"{consecutive_failures} consecutive row failures. "
+                        "This likely indicates a catastrophic tool/runtime issue; "
+                        f"see report {args.report} for the exact failing rows."
+                    )
         _write_report(args.report, report_rows)
 
     _write_report(args.report, report_rows)

@@ -14,26 +14,98 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ._runner_native import load_runner_native
+from research.training._data_native import load_data_native
+
 logger = logging.getLogger(__name__)
+
+
+def make_adamw(
+    params,
+    *,
+    lr: float,
+    fused_if_available: bool = True,
+    **kwargs,
+):
+    """Create AdamW, using fused kernels on CUDA when the local build supports it."""
+    if fused_if_available and torch.cuda.is_available():
+        try:
+            return torch.optim.AdamW(params, lr=lr, fused=True, **kwargs)
+        except TypeError:
+            pass
+    return torch.optim.AdamW(params, lr=lr, **kwargs)
+
+
+def language_model_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    vocab_size: int,
+    *,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    """Cross-entropy over next-token logits with vocab clipping."""
+    try:
+        return load_runner_native().next_token_cross_entropy(
+            logits,
+            targets,
+            int(vocab_size),
+            str(reduction),
+        )
+    except Exception:
+        score_logits = logits[:, :-1].contiguous()
+        if score_logits.shape[-1] > vocab_size:
+            score_logits = score_logits[..., :vocab_size]
+        return F.cross_entropy(
+            score_logits.reshape(-1, score_logits.shape[-1]),
+            targets[:, 1:].reshape(-1),
+            reduction=reduction,
+        )
+
+
+def move_batches_to_device(
+    batches: Sequence[torch.Tensor],
+    device: str | torch.device,
+) -> List[torch.Tensor]:
+    """Move a batch list to a device without reallocating when already resident."""
+    target = torch.device(device)
+    out: List[torch.Tensor] = []
+    for batch in batches:
+        if batch.device == target:
+            out.append(batch)
+        else:
+            out.append(batch.to(target, non_blocking=(target.type == "cuda")))
+    return out
 
 
 def tokenize_string(text: str, vocab_size: int) -> np.ndarray:
     """Tokenize text as UTF-8 bytes modulo vocab size using native NumPy ops."""
-    encoded = text.encode("utf-8", errors="ignore")
-    if not encoded:
+    if not text:
         return np.empty(0, dtype=np.int64)
-    byte_view = np.frombuffer(encoded, dtype=np.uint8)
-    if vocab_size < 256:
-        return np.remainder(byte_view, vocab_size).astype(np.int64, copy=False)
-    if vocab_size == 256:
-        return byte_view.astype(np.int64, copy=False)
-    return np.remainder(byte_view.astype(np.int64, copy=False), vocab_size)
+    try:
+        return load_data_native().byte_tokenize_utf8(text, int(vocab_size)).numpy()
+    except Exception:
+        encoded = text.encode("utf-8", errors="ignore")
+        if not encoded:
+            return np.empty(0, dtype=np.int64)
+        byte_view = np.frombuffer(encoded, dtype=np.uint8)
+        if vocab_size < 256:
+            return np.remainder(byte_view, vocab_size).astype(np.int64, copy=False)
+        if vocab_size == 256:
+            return byte_view.astype(np.int64, copy=False)
+        return np.remainder(byte_view.astype(np.int64, copy=False), vocab_size)
 
 
 def tokenize_file(path: Path, vocab_size: int) -> np.ndarray:
     """Tokenize a text file as UTF-8 bytes modulo vocab size."""
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    return tokenize_string(text, vocab_size)
+    try:
+        return (
+            load_data_native()
+            .byte_tokenize_file_utf8(str(path), int(vocab_size))
+            .numpy()
+        )
+    except Exception:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        return tokenize_string(text, vocab_size)
 
 
 def make_batches(
@@ -41,7 +113,7 @@ def make_batches(
     batch_size: int,
     seq_len: int,
     n_batches: int,
-    device: torch.device,
+    device: str | torch.device,
     seed: int = 42,
 ) -> List[torch.Tensor]:
     """Create randomized (B, S) batches from a token sequence."""
@@ -51,10 +123,19 @@ def make_batches(
     gen = torch.Generator().manual_seed(seed)
     max_start = len(tokens) - seq_len - 1
     all_starts = torch.randint(0, max_start, (n_batches, batch_size), generator=gen)
-    offsets = torch.arange(seq_len).view(1, 1, seq_len)
-    indices = all_starts.unsqueeze(-1) + offsets
-    all_tokens = t[indices.reshape(-1)].reshape(n_batches, batch_size, seq_len)
-    all_tokens = all_tokens.to(device)
+    try:
+        native = load_data_native()
+        flat_batches = native.gather_token_batch(
+            t.contiguous(),
+            all_starts.reshape(-1).contiguous(),
+            int(seq_len),
+        )
+        all_tokens = flat_batches.reshape(n_batches, batch_size, seq_len)
+    except Exception:
+        offsets = torch.arange(seq_len).view(1, 1, seq_len)
+        indices = all_starts.unsqueeze(-1) + offsets
+        all_tokens = t[indices.reshape(-1)].reshape(n_batches, batch_size, seq_len)
+    all_tokens = all_tokens.to(torch.device(device))
     return [all_tokens[i] for i in range(n_batches)]
 
 
@@ -80,41 +161,31 @@ def micro_train_loop(
     if not batches:
         return float("inf")
 
+    from .training_core import run_training_loop
+
     def _run(model: nn.Module, run_lr: float) -> float:
-        opt = torch.optim.AdamW(model.parameters(), lr=run_lr)
-        final_loss = float("inf")
-        for step in range(n_steps):
-            # LR warmup: ramp from 0 to run_lr over warmup_steps
-            if step < warmup_steps:
-                warmup_factor = (step + 1) / warmup_steps
-                for pg in opt.param_groups:
-                    pg["lr"] = run_lr * warmup_factor
-
+        def compute_loss(step: int) -> torch.Tensor:
             batch = batches[step % len(batches)]
-            opt.zero_grad(set_to_none=True)
             logits = model(batch)
-            sl = logits[:, :-1].contiguous()
-            if sl.shape[-1] > vocab_size:
-                sl = sl[..., :vocab_size]
+            return language_model_loss(logits, batch, vocab_size)
 
-            loss = F.cross_entropy(
-                sl.reshape(-1, sl.shape[-1]), batch[:, 1:].reshape(-1)
+        result = run_training_loop(
+            model.parameters(),
+            compute_loss,
+            n_steps=n_steps,
+            optimizer_name="adamw",
+            lr=run_lr,
+            clip_grad=clip_grad,
+            warmup_steps=warmup_steps,
+            loss_trajectory=loss_trajectory,
+        )
+        if result.diverged:
+            logger.warning(
+                "Micro-train loss is not finite after %d steps (lr=%.1e)",
+                result.steps_completed,
+                run_lr,
             )
-
-            if not torch.isfinite(loss):
-                logger.warning(
-                    "Micro-train loss is not finite at step %d (lr=%.1e)", step, run_lr
-                )
-                return float("inf")
-
-            loss.backward()
-            if clip_grad > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-            opt.step()
-            final_loss = loss.item()
-            if loss_trajectory is not None:
-                loss_trajectory[step + 1] = final_loss
-        return final_loss
+        return result.final_loss
 
     result = _run(model, lr)
     if not math.isfinite(result):
@@ -127,8 +198,8 @@ def micro_train_loop(
             if hasattr(m, "reset_parameters"):
                 try:
                     m.reset_parameters()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("reset_parameters() failed during retry: %s", exc)
         result = _run(model, lr * 0.1)
     return result
 
@@ -147,20 +218,25 @@ def measure_loss(
         return None
     model.eval()
     losses: List[float] = []
+    skipped = 0
+    first_error: Exception | None = None
     with torch.no_grad():
         for batch in input_batches:
             try:
                 batch = batch.to(device)
                 logits = model(batch)
                 v = vocab_size if vocab_size > 0 else logits.shape[-1]
-                loss = F.cross_entropy(
-                    logits[:, :-1].reshape(-1, v),
-                    batch[:, 1:].reshape(-1),
-                )
+                loss = language_model_loss(logits, batch, v)
                 if torch.isfinite(loss):
                     losses.append(loss.item())
-            except Exception:
-                continue
+            except Exception as exc:
+                skipped += 1
+                if first_error is None:
+                    first_error = exc
+    if skipped:
+        logger.warning(
+            "measure_loss skipped %d batches; first error: %s", skipped, first_error
+        )
     return sum(losses) / len(losses) if losses else None
 
 
@@ -210,6 +286,8 @@ def batched_span_mean_log_probs(
     valid_starts = starts[valid_idx]
 
     dev = torch.device(device)
+    valid_lengths = valid_lengths.to(dev)
+    valid_starts = valid_starts.to(dev)
     max_len = int(valid_lengths.max().item())
     padded = torch.zeros((len(valid_sequences), max_len), dtype=torch.long, device=dev)
     for row, seq in enumerate(valid_sequences):
@@ -312,12 +390,7 @@ def compute_perplexity(
     with torch.no_grad():
         for batch in batches:
             logits = model(batch)
-            sl = logits[:, :-1].contiguous()
-            if sl.shape[-1] > vocab_size:
-                sl = sl[..., :vocab_size]
-            loss = F.cross_entropy(
-                sl.reshape(-1, sl.shape[-1]), batch[:, 1:].reshape(-1), reduction="sum"
-            )
+            loss = language_model_loss(logits, batch, vocab_size, reduction="sum")
             if torch.isfinite(loss):
                 total_loss += loss.item()
                 total_tokens += batch[:, 1:].numel()

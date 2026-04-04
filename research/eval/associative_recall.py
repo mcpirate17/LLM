@@ -26,8 +26,10 @@ Pass signal: >15% accuracy at step 500.
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
@@ -35,12 +37,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .utils import make_adamw
+
 logger = logging.getLogger(__name__)
 
 _VOCAB_LO = 100
 _VOCAB_HI = 356  # 256 tokens: IDs 100-355
 _VOCAB_N = _VOCAB_HI - _VOCAB_LO
 _TIMEOUT_S = 90.0
+_RANDPERM_CACHE_LIMIT = 64
+_RANDPERM_CACHE: "OrderedDict[tuple[int, torch.device], torch.Tensor]" = OrderedDict()
 
 
 @dataclass(slots=True)
@@ -107,7 +113,16 @@ def _generate_ar_batch(
     # Draw n_tokens unique tokens per sample via batched randperm on CPU
     # (torch.randperm has no batch dim, so we stack — still faster than
     # Python loops with set filtering)
-    perms = torch.stack([torch.randperm(_VOCAB_N) for _ in range(batch_size)])
+    cache_key = (int(batch_size), torch.device("cpu"))
+    perms = _RANDPERM_CACHE.get(cache_key)
+    if perms is None:
+        perms = torch.stack([torch.randperm(_VOCAB_N) for _ in range(batch_size)])
+        _RANDPERM_CACHE[cache_key] = perms
+        while len(_RANDPERM_CACHE) > _RANDPERM_CACHE_LIMIT:
+            _RANDPERM_CACHE.popitem(last=False)
+    else:
+        _RANDPERM_CACHE.move_to_end(cache_key)
+    perms = perms[torch.randperm(batch_size)]
     tokens = perms[:, :n_tokens] + _VOCAB_LO  # (B, 3*n_pairs)
 
     keys = tokens[:, : 2 * n_pairs].reshape(batch_size, n_pairs, 2)  # (B, N, 2)
@@ -226,11 +241,9 @@ def associative_recall_score(
     result = ARResult(learning_curve=[])
 
     try:
-        original_state = model.state_dict()
-        original_training = model.training
-        model.to(device)
-        model.train()
-        probe_model = model
+        probe_model = copy.deepcopy(model)
+        probe_model.to(device)
+        probe_model.train()
     except Exception as e:
         result.status = f"copy_failed: {e}"
         result.elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -249,11 +262,10 @@ def associative_recall_score(
     except Exception as e:
         result.status = f"eval_gen_failed: {e}"
         result.elapsed_ms = (time.perf_counter() - t0) * 1000
-        model.load_state_dict(original_state)
-        model.train(original_training)
+        del probe_model
         return result
 
-    opt = torch.optim.AdamW(probe_model.parameters(), lr=lr)
+    opt = make_adamw(probe_model.parameters(), lr=lr)
     ans_pos = 3 * n_pairs + 3
 
     try:
@@ -297,9 +309,8 @@ def associative_recall_score(
     except Exception as e:
         result.status = f"train_failed: {e}"
     finally:
-        model.load_state_dict(original_state)
-        model.train(original_training)
         del eval_ids, eval_targets
+        del probe_model
         if device == "cuda":
             torch.cuda.empty_cache()
 

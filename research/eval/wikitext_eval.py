@@ -10,22 +10,22 @@ Uses the existing CorpusTokenBatcher infrastructure via a cached text file.
 
 from __future__ import annotations
 
-import collections
 import logging
 import math
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 import torch
 import torch.nn as nn
 
-from .utils import (
-    tokenize_file,
-    make_batches,
-    micro_train_loop,
-    compute_perplexity,
+from .corpus_pipeline import (
+    TextSplitSpec,
+    cache_hf_text_splits,
+    prepare_text_split_batches,
 )
+from .training_core import run_training_loop
+from .utils import language_model_loss, make_adamw, micro_train_loop, compute_perplexity
 from .stateless_training import (
     clone_module_state,
     functional_compute_perplexity,
@@ -116,91 +116,20 @@ def _download_wikitext(
     if train_path.exists() and val_path.exists():
         return train_path, val_path
 
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        raise RuntimeError(
-            "HuggingFace `datasets` package required for WikiText evaluation. "
-            "Install with: pip install datasets"
-        )
-
     logger.info("Downloading WikiText variant=%s ...", variant)
-    ds = load_dataset("wikitext", variant, trust_remote_code=True)
-
-    # Extract and truncate text
-    for split_name, path, max_chars in [
-        ("train", train_path, max_chars_train),
-        ("validation", val_path, max_chars_val),
-    ]:
-        texts = ds[split_name]["text"]
-        combined = "\n".join(t for t in texts if t.strip())
-        if len(combined) > max_chars:
-            combined = combined[:max_chars]
-        path.write_text(combined, encoding="utf-8")
+    paths = cache_hf_text_splits(
+        cache_dir=cache_dir,
+        dataset_name="wikitext",
+        config_name=variant,
+        split_specs=(
+            TextSplitSpec("train", "train.txt", max_chars_train),
+            TextSplitSpec("validation", "validation.txt", max_chars_val),
+        ),
+        trust_remote_code=True,
+    )
 
     logger.info("WikiText cached at %s", cache_dir)
-    return train_path, val_path
-
-
-# ── Batch cache ──────────────────────────────────────────────────────────
-# Avoids repeated tokenization + batch construction across candidates.
-# Keyed by (variant, vocab_size, seq_len, batch_size, n_batches,
-#            max_chars_train, max_chars_val, split, seed).
-
-_BATCH_CACHE_MAX_ENTRIES = 8
-
-_batch_cache: "collections.OrderedDict[tuple, List[torch.Tensor]]" = (
-    collections.OrderedDict()
-)
-
-
-def _get_batch_cache() -> "collections.OrderedDict[tuple, List[torch.Tensor]]":
-    """Lazy-init the LRU batch cache."""
-    return _batch_cache
-
-
-def _get_cached_batches(
-    variant: str,
-    vocab_size: int,
-    seq_len: int,
-    batch_size: int,
-    n_batches: int,
-    max_chars: int,
-    device: str,
-    split: str,
-    seed: int,
-) -> Optional[List[torch.Tensor]]:
-    """Return cached batches if available, moving to *device* if needed."""
-    cache = _get_batch_cache()
-    key = (variant, vocab_size, seq_len, batch_size, n_batches, max_chars, split, seed)
-    batches = cache.get(key)
-    if batches is None:
-        return None
-    cache.move_to_end(key)  # LRU touch
-    target = torch.device(device)
-    if batches[0].device != target:
-        batches = [b.to(target) for b in batches]
-        cache[key] = batches
-    return batches
-
-
-def _put_cached_batches(
-    variant: str,
-    vocab_size: int,
-    seq_len: int,
-    batch_size: int,
-    n_batches: int,
-    max_chars: int,
-    split: str,
-    seed: int,
-    batches: List[torch.Tensor],
-) -> None:
-    cache = _get_batch_cache()
-    key = (variant, vocab_size, seq_len, batch_size, n_batches, max_chars, split, seed)
-    cache[key] = batches
-    # Evict oldest entries beyond the limit
-    while len(cache) > _BATCH_CACHE_MAX_ENTRIES:
-        cache.popitem(last=False)
+    return paths["train"], paths["validation"]
 
 
 def _prepare_batches(
@@ -216,75 +145,85 @@ def _prepare_batches(
     device: str,
 ) -> Tuple[Optional[List[torch.Tensor]], Optional[List[torch.Tensor]], int, int]:
     """Prepare train/val batches with caching. Returns (train, val, n_train_tok, n_val_tok)."""
-    train = _get_cached_batches(
-        variant,
-        vocab_size,
-        seq_len,
-        train_batch_size,
-        n_train_batches,
-        max_chars_train,
-        device,
-        "train",
-        42,
-    )
-    val = _get_cached_batches(
-        variant,
-        vocab_size,
-        seq_len,
-        eval_batch_size,
-        n_eval_batches,
-        max_chars_val,
-        device,
-        "validation",
-        123,
-    )
-    if train is not None and val is not None:
-        return train, val, -1, -1  # -1 = cached, counts unknown
-
     train_path, val_path = _download_wikitext(variant, max_chars_train, max_chars_val)
-    train_tokens = tokenize_file(train_path, vocab_size)
-    val_tokens = tokenize_file(val_path, vocab_size)
+    return prepare_text_split_batches(
+        namespace=f"wikitext:{variant}",
+        train_path=train_path,
+        val_path=val_path,
+        vocab_size=vocab_size,
+        seq_len=seq_len,
+        train_batch_size=train_batch_size,
+        eval_batch_size=eval_batch_size,
+        n_train_batches=n_train_batches,
+        n_eval_batches=n_eval_batches,
+        device=device,
+    )
 
-    if len(train_tokens) < seq_len + 1 or len(val_tokens) < seq_len + 1:
-        return None, None, len(train_tokens), len(val_tokens)
 
-    if train is None:
-        train = make_batches(
-            train_tokens, train_batch_size, seq_len, n_train_batches, device, seed=42
-        )
-        if train:
-            _put_cached_batches(
-                variant,
-                vocab_size,
-                seq_len,
-                train_batch_size,
-                n_train_batches,
-                max_chars_train,
-                "train",
-                42,
-                train,
-            )
-    if val is None:
-        val = make_batches(
-            val_tokens, eval_batch_size, seq_len, n_eval_batches, device, seed=123
-        )
-        if val:
-            _put_cached_batches(
-                variant,
-                vocab_size,
-                seq_len,
-                eval_batch_size,
-                n_eval_batches,
-                max_chars_val,
-                "validation",
-                123,
-                val,
-            )
+def _has_usable_batches(
+    train_batches: Optional[List[torch.Tensor]],
+    val_batches: Optional[List[torch.Tensor]],
+) -> bool:
+    return bool(train_batches) and bool(val_batches)
 
-    return train, val, len(train_tokens), len(val_tokens)
+
+def _finalize_ppl_result(
+    *,
+    pre_ppl: Optional[float],
+    post_ppl: Optional[float],
+    train_final_loss: float,
+    vocab_size: int,
+    variant: str,
+    n_train_steps: int,
+    seq_len: int,
+    elapsed_ms: float,
+) -> Dict[str, Any]:
+    ppl_improvement = None
+    if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
+        ppl_improvement = round(post_ppl / pre_ppl, 4)
+    return {
+        "wikitext_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
+        "wikitext_pre_perplexity": round(pre_ppl, 2) if pre_ppl is not None else None,
+        "wikitext_score": wikitext_score_from_ppl(post_ppl, vocab_size),
+        "wikitext_ppl_improvement": ppl_improvement,
+        "train_final_loss": round(train_final_loss, 6),
+        "variant": variant,
+        "n_train_steps": n_train_steps,
+        "seq_len": seq_len,
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
 
 
 # ── Score helper ─────────────────────────────────────────────────────────
+
+
+def _make_scheduled_loss_fn(
+    model: nn.Module,
+    batches: List[torch.Tensor],
+    vocab_size: int,
+    start_step: int,
+    n_steps: int,
+):
+    last_loss = torch.tensor(float("nan"))
+    n_batches = len(batches)
+    if start_step + n_steps <= n_batches:
+        segment = batches[start_step : start_step + n_steps]
+
+        def compute_loss(local_step: int) -> torch.Tensor:
+            nonlocal last_loss
+            batch = segment[local_step]
+            last_loss = language_model_loss(model(batch), batch, vocab_size)
+            return last_loss
+
+    else:
+
+        def compute_loss(local_step: int) -> torch.Tensor:
+            nonlocal last_loss
+            batch = batches[(start_step + local_step) % n_batches]
+            last_loss = language_model_loss(model(batch), batch, vocab_size)
+            return last_loss
+
+    return compute_loss, lambda: last_loss
 
 
 def wikitext_score_from_ppl(
@@ -358,12 +297,7 @@ def screening_wikitext_eval(
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return meta
 
-    if (
-        train_batches is None
-        or val_batches is None
-        or not train_batches
-        or not val_batches
-    ):
+    if not _has_usable_batches(train_batches, val_batches):
         meta["screening_wikitext_status"] = "insufficient_tokens"
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return meta
@@ -401,19 +335,18 @@ def screening_wikitext_eval(
             model, params, buffers, val_batches, vocab_size
         )
 
-        ppl_improvement = None
-        if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
-            ppl_improvement = round(post_ppl / pre_ppl, 4)
-
-        meta["wikitext_perplexity"] = (
-            round(post_ppl, 2) if post_ppl is not None else None
+        meta.update(
+            _finalize_ppl_result(
+                pre_ppl=pre_ppl,
+                post_ppl=post_ppl,
+                train_final_loss=train_final_loss,
+                vocab_size=vocab_size,
+                variant=variant,
+                n_train_steps=n_train_steps,
+                seq_len=seq_len,
+                elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+            )
         )
-        meta["wikitext_pre_perplexity"] = (
-            round(pre_ppl, 2) if pre_ppl is not None else None
-        )
-        meta["wikitext_score"] = wikitext_score_from_ppl(post_ppl, vocab_size)
-        meta["wikitext_ppl_improvement"] = ppl_improvement
-        meta["train_final_loss"] = round(train_final_loss, 6)
         meta["screening_wikitext_status"] = "ok"
 
         # Slope trajectory: sample at steps 10, 25, and final (50)
@@ -490,12 +423,7 @@ def evaluate_wikitext_perplexity(
         logger.warning("WikiText data preparation failed: %s", e)
         return {"wikitext_perplexity": None, "error": f"data_failed: {e}"}
 
-    if (
-        train_batches is None
-        or val_batches is None
-        or not train_batches
-        or not val_batches
-    ):
+    if not _has_usable_batches(train_batches, val_batches):
         return {
             "wikitext_perplexity": None,
             "error": "insufficient_tokens",
@@ -517,21 +445,16 @@ def evaluate_wikitext_perplexity(
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-    ppl_improvement = None
-    if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
-        ppl_improvement = round(post_ppl / pre_ppl, 4)
-
-    return {
-        "wikitext_perplexity": round(post_ppl, 2) if post_ppl is not None else None,
-        "wikitext_pre_perplexity": round(pre_ppl, 2) if pre_ppl is not None else None,
-        "wikitext_score": wikitext_score_from_ppl(post_ppl, vocab_size),
-        "wikitext_ppl_improvement": ppl_improvement,
-        "train_final_loss": round(train_final_loss, 6),
-        "variant": variant,
-        "n_train_steps": n_train_steps,
-        "seq_len": seq_len,
-        "elapsed_ms": round(elapsed_ms, 1),
-    }
+    return _finalize_ppl_result(
+        pre_ppl=pre_ppl,
+        post_ppl=post_ppl,
+        train_final_loss=train_final_loss,
+        vocab_size=vocab_size,
+        variant=variant,
+        n_train_steps=n_train_steps,
+        seq_len=seq_len,
+        elapsed_ms=elapsed_ms,
+    )
 
 
 def evaluate_wikitext_trajectory(
@@ -565,8 +488,6 @@ def evaluate_wikitext_trajectory(
 
     Protocol: ``trajectory_probe_v2``
     """
-    import torch.optim
-
     t0 = time.perf_counter()
     sorted_ckpts = sorted(checkpoints)
 
@@ -592,7 +513,7 @@ def evaluate_wikitext_trajectory(
         logger.warning("WikiText trajectory data prep failed: %s", e)
         return {"error": f"data_failed: {e}", "checkpoints": {}}
 
-    if not train_batches or not val_batches:
+    if not _has_usable_batches(train_batches, val_batches):
         return {"error": "insufficient_tokens", "checkpoints": {}}
 
     trajectory: Dict[int, Dict[str, Any]] = {}
@@ -609,7 +530,7 @@ def evaluate_wikitext_trajectory(
     # LinearLR decays from lr_warmup down to lr over warmup_steps.
     warmup_steps = 100
     lr_warmup = lr * 10.0
-    opt = torch.optim.AdamW(model.parameters(), lr=lr_warmup)
+    opt = make_adamw(model.parameters(), lr=lr_warmup)
     scheduler = torch.optim.lr_scheduler.LinearLR(
         opt,
         start_factor=1.0,
@@ -630,29 +551,31 @@ def evaluate_wikitext_trajectory(
             }
             continue
 
-        # Train from current step to this checkpoint
         steps_needed = ckpt_steps - step
-        for _ in range(steps_needed):
-            batch = train_batches[step % len(train_batches)]
-            opt.zero_grad(set_to_none=True)
-            logits = model(batch)
-            sl = logits[:, :-1].contiguous()
-            if sl.shape[-1] > vocab_size:
-                sl = sl[..., :vocab_size]
-            loss = torch.nn.functional.cross_entropy(
-                sl.reshape(-1, sl.shape[-1]),
-                batch[:, 1:].reshape(-1),
-            )
-            if not torch.isfinite(loss):
-                logger.warning("Trajectory train loss not finite at step %d", step)
-                diverged = True
-                steps_to_divergence = step
-                break
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-            scheduler.step()
-            step += 1
+        compute_loss, get_last_loss = _make_scheduled_loss_fn(
+            model,
+            train_batches,
+            vocab_size,
+            step,
+            steps_needed,
+        )
+
+        train_result = run_training_loop(
+            model.parameters(),
+            compute_loss,
+            n_steps=steps_needed,
+            optimizer=opt,
+            optimizer_name="adamw",
+            lr=lr_warmup,
+            clip_grad=1.0,
+            scheduler_step=scheduler.step,
+        )
+        step += train_result.steps_completed
+        loss = get_last_loss()
+        if train_result.diverged:
+            logger.warning("Trajectory train loss not finite at step %d", step)
+            diverged = True
+            steps_to_divergence = step
 
         # Measure PPL at this checkpoint
         ppl = compute_perplexity(model, val_batches, vocab_size)

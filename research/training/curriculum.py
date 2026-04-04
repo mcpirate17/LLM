@@ -68,9 +68,10 @@ class CurriculumStrategy:
 def synthesize_curriculum(
     max_seq_len: int = 512,
     seed: Optional[int] = None,
+    rng: Optional[random.Random] = None,
 ) -> CurriculumStrategy:
     """Generate a random curriculum strategy."""
-    rng = random.Random(seed)
+    rng = rng if rng is not None else random.Random(seed)
 
     seq_schedule = rng.choice(["fixed", "growing", "growing", "oscillating"])
     mask_pattern = rng.choice(

@@ -109,6 +109,7 @@ class CorpusTokenBatcher:
         "_train_tokens",
         "_val_tokens",
         "_native_ext",
+        "_newline_tokens",
     )
 
     def __init__(self, config: CorpusConfig, vocab_size: int):
@@ -119,6 +120,7 @@ class CorpusTokenBatcher:
             config.tokenizer, config.tiktoken_encoding
         )
         self._native_ext = None
+        self._newline_tokens: Optional[torch.Tensor] = None
         self._tokens = self._load_tokens()
         self._train_tokens, self._val_tokens = self._split_tokens(self._tokens)
 
@@ -180,6 +182,62 @@ class CorpusTokenBatcher:
             return torch.empty(0, dtype=torch.long)
         return torch.as_tensor(encoded, dtype=torch.long)
 
+    def _separator_tokens(self) -> torch.Tensor:
+        if self._newline_tokens is None:
+            self._newline_tokens = self._tokens_from_text("\n")
+        return self._newline_tokens
+
+    def _load_text_tokens(self, text: str) -> torch.Tensor:
+        return self._tokens_from_text(text[: self.config.max_chars])
+
+    def _load_jsonl_tokens(self) -> torch.Tensor:
+        token_chunks: List[torch.Tensor] = []
+        chars = 0
+        first_chunk = True
+        separator = self._separator_tokens()
+
+        with self.path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError as e:
+                    logger.error("Failed to decode JSON line in corpus: %s", e)
+                    raise e
+
+                if isinstance(item, dict):
+                    value = item.get(self.config.text_key)
+                    text = value if isinstance(value, str) else ""
+                elif isinstance(item, str):
+                    text = item
+                else:
+                    text = ""
+
+                if not text:
+                    continue
+
+                remaining = self.config.max_chars - chars
+                if remaining <= 0:
+                    break
+                clipped = text[:remaining]
+                chunk_tokens = self._tokens_from_text(clipped)
+                if chunk_tokens.numel() == 0:
+                    chars += len(clipped)
+                    continue
+                if not first_chunk and separator.numel() > 0:
+                    token_chunks.append(separator)
+                token_chunks.append(chunk_tokens)
+                chars += len(clipped)
+                first_chunk = False
+
+        if not token_chunks:
+            return torch.empty(0, dtype=torch.long)
+        if len(token_chunks) == 1:
+            return token_chunks[0]
+        return torch.cat(token_chunks)
+
     def _load_tokens(self) -> torch.Tensor:
         if not self.path.exists() or not self.path.is_file():
             logger.warning("Corpus path not found: %s", self.path)
@@ -198,45 +256,13 @@ class CorpusTokenBatcher:
             return torch.from_numpy(np.ascontiguousarray(tokens_np))
 
         fmt = self._detect_format()
-        text_chunks: List[str] = []
-        chars = 0
 
         try:
             if fmt == "jsonl":
-                with self.path.open("r", encoding="utf-8") as handle:
-                    for raw in handle:
-                        line = raw.strip()
-                        if not line:
-                            continue
-                        try:
-                            item = json.loads(line)
-                        except json.JSONDecodeError as e:
-                            logger.error("Failed to decode JSON line in corpus: %s", e)
-                            raise e
+                return self._load_jsonl_tokens()
 
-                        if isinstance(item, dict):
-                            value = item.get(self.config.text_key)
-                            text = value if isinstance(value, str) else ""
-                        elif isinstance(item, str):
-                            text = item
-                        else:
-                            text = ""
-
-                        if not text:
-                            continue
-
-                        remaining = self.config.max_chars - chars
-                        if remaining <= 0:
-                            break
-                        clipped = text[:remaining]
-                        text_chunks.append(clipped)
-                        chars += len(clipped)
-            else:
-                text = self.path.read_text(encoding="utf-8", errors="ignore")
-                text_chunks.append(text[: self.config.max_chars])
-
-            joined = "\n".join(text_chunks)
-            return self._tokens_from_text(joined)
+            with self.path.open("r", encoding="utf-8", errors="ignore") as handle:
+                return self._load_text_tokens(handle.read(self.config.max_chars))
         except Exception as exc:
             logger.error("Corpus load failed from %s: %s", self.path, exc)
             raise exc

@@ -12,9 +12,11 @@ from typing import Callable, Dict, Sequence
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+from .training_core import run_training_loop
+from .utils import language_model_loss
 
 
 def run_long_context_sweep(
@@ -49,11 +51,9 @@ def run_long_context_sweep(
         try:
             model = make_model_fn().to(device)
             model.train()
-            optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-
-            final_loss = float("inf")
             _data_gen = torch.Generator(device=device).manual_seed(42)
-            for step in range(n_steps):
+
+            def compute_loss(_step: int) -> torch.Tensor:
                 input_ids = torch.randint(
                     0,
                     vocab_size,
@@ -68,24 +68,22 @@ def run_long_context_sweep(
                         enabled=(device.type == "cuda"),
                     ):
                         logits = model(input_ids)
-                        loss = F.cross_entropy(
-                            logits[:, :-1].reshape(-1, vocab_size),
-                            input_ids[:, 1:].reshape(-1),
-                        )
+                        return language_model_loss(logits, input_ids, vocab_size)
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower():
                         logger.info("OOM at seq_len=%d, stopping sweep", seq_len)
-                        break
+                        return torch.tensor(float("inf"), device=device)
                     raise
 
-                if torch.isnan(loss) or torch.isinf(loss):
-                    break
-
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                final_loss = loss.item()
+            result = run_training_loop(
+                model.parameters(),
+                compute_loss,
+                n_steps=n_steps,
+                optimizer_name="adamw",
+                lr=lr,
+                clip_grad=1.0,
+            )
+            final_loss = result.final_loss
 
             loss_ratio = (
                 final_loss / max(base_loss, 1e-8) if base_loss > 0 else float("inf")
@@ -98,7 +96,7 @@ def run_long_context_sweep(
             if loss_ratio < 2.0:
                 max_viable_len = seq_len
 
-            del model, optimizer
+            del model
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             gc.collect()

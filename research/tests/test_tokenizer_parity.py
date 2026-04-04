@@ -105,3 +105,41 @@ class TestTokenizerParity:
             assert batcher._native_ext is not None
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+
+    def test_jsonl_batcher_stream_loads_without_text_join(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write('{"text":"alpha beta"}\n')
+            f.write('{"text":"gamma delta"}\n')
+            tmp_path = f.name
+
+        try:
+            config = CorpusConfig(
+                path=tmp_path,
+                fmt="jsonl",
+                text_key="text",
+                tokenizer="byte",
+                max_chars=64,
+            )
+            batcher = CorpusTokenBatcher(config, vocab_size=256)
+            assert batcher.ready
+            assert batcher._tokens.numel() > 0
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def test_text_loader_respects_max_chars_without_full_file_read(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("abcdef" * 20)
+            tmp_path = f.name
+
+        try:
+            config = CorpusConfig(
+                path=tmp_path,
+                fmt="txt",
+                tokenizer="byte",
+                max_chars=12,
+            )
+            batcher = CorpusTokenBatcher(config, vocab_size=256)
+            assert batcher.ready
+            assert int(batcher._tokens.numel()) == 12
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)

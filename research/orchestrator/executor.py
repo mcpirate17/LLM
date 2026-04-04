@@ -30,7 +30,9 @@ class Job:
     seed: int
     model: Optional[torch.nn.Module] = None  # Z6: Pre-compiled model
     payload: Dict[str, Any] = field(default_factory=dict)
-    enqueue_time: float = field(default_factory=time.time)
+    enqueue_time: float = field(default_factory=time.perf_counter)
+    prep_enqueue_time: float = field(default_factory=time.perf_counter)
+    worker_enqueue_time: float = 0.0
     preprocessing_start_time: float = 0.0
     preprocessing_end_time: float = 0.0
 
@@ -204,6 +206,8 @@ class WorkerPoolOrchestrator:
                 if job is None:
                     break
 
+                prep_wait_ms = (time.perf_counter() - job.prep_enqueue_time) * 1000.0
+                self.telemetry.record_wait("prep_queue", prep_wait_ms)
                 job.preprocessing_start_time = time.perf_counter()
                 try:
                     # CPU-intensive compilation
@@ -221,6 +225,7 @@ class WorkerPoolOrchestrator:
                         self._preprocessing_times_ms.append(prep_ms)
 
                     # Submit to GPU worker queue
+                    job.worker_enqueue_time = time.perf_counter()
                     self.job_queue.put(job)
                 except Exception as e:
                     logger.error("Preprocessor %d failed compilation: %s", prep_id, e)
@@ -246,7 +251,12 @@ class WorkerPoolOrchestrator:
                     break
 
                 # Record queue wait time
-                wait_ms = (time.time() - job.enqueue_time) * 1000
+                worker_enqueue_time = (
+                    job.worker_enqueue_time
+                    if job.worker_enqueue_time > 0.0
+                    else job.enqueue_time
+                )
+                wait_ms = (time.perf_counter() - worker_enqueue_time) * 1000.0
                 self.telemetry.record_wait("job_queue", wait_ms)
                 start_exec = time.perf_counter()
 
@@ -326,12 +336,14 @@ class WorkerPoolOrchestrator:
             seed,
             model=model,
             payload=payload_data,
-            enqueue_time=time.time(),
+            enqueue_time=time.perf_counter(),
+            prep_enqueue_time=time.perf_counter(),
         )
         if model is not None:
             # Skip preprocessing if model is already compiled
             job.preprocessing_start_time = t0
             job.preprocessing_end_time = t0
+            job.worker_enqueue_time = time.perf_counter()
             self.job_queue.put(job)
         else:
             # Z6: Submit to preprocessor
@@ -383,6 +395,7 @@ class WorkerPoolOrchestrator:
             training_program_queue = dict(self._training_program_queue)
 
         queue_summary = self.telemetry.get_summary()
+        prep_queue_summary = queue_summary.get("prep_queue", {})
         job_queue_summary = queue_summary.get("job_queue", {})
         return {
             "submitted_jobs": submitted_jobs,
@@ -402,6 +415,12 @@ class WorkerPoolOrchestrator:
             "preprocessing_avg_ms": (sum(prep_times) / len(prep_times))
             if prep_times
             else 0.0,
+            "prep_queue_wait_avg_ms": float(
+                prep_queue_summary.get("avg_wait_ms", 0.0) or 0.0
+            ),
+            "prep_queue_wait_max_ms": float(
+                prep_queue_summary.get("max_wait_ms", 0.0) or 0.0
+            ),
             "scheduling_wait_avg_ms": float(
                 job_queue_summary.get("avg_wait_ms", 0.0) or 0.0
             ),

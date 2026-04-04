@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from research.eval.fingerprint import (
-    _get_representations,
+    _capture_probe_representations,
     _interaction_influence_matrix,
     _interaction_metrics,
 )
@@ -157,7 +157,7 @@ def test_interaction_influence_matrix_prefers_pre_logits_native_reduction(monkey
     assert torch.allclose(combined, expected, atol=1e-6, rtol=1e-6)
 
 
-def test_get_representations_prefers_model_fast_path():
+def test_capture_probe_representations_prefers_model_fast_path():
     class _TinyRepModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -175,11 +175,32 @@ def test_get_representations_prefers_model_fast_path():
     model = _TinyRepModel()
     ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
 
-    logits = _get_representations(model, ids, torch.device("cpu"))
+    captured = _capture_probe_representations(model, ids)
 
     assert model.called is True
-    assert torch.allclose(logits, ids.float().unsqueeze(-1) + 5.0)
-    assert hasattr(logits, "_cka_intermediate_reps")
-    assert torch.allclose(
-        logits._cka_intermediate_reps, ids.float().unsqueeze(-1) + 2.0
-    )
+    assert captured is not None
+    assert torch.allclose(captured.logits, ids.float().unsqueeze(-1) + 5.0)
+    assert captured.reps is not None
+    assert torch.allclose(captured.reps, ids.float().unsqueeze(-1) + 2.0)
+
+
+def test_capture_probe_representations_falls_back_to_embedding_output():
+    class _TinyFallbackModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(32, 8)
+            self.linear = nn.Linear(8, 32)
+
+        def forward(self, input_ids):
+            return self.linear(self.embed(input_ids))
+
+    model = _TinyFallbackModel()
+    ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+
+    captured = _capture_probe_representations(model, ids)
+
+    assert captured is not None
+    assert captured.logits.shape == (1, 3, 32)
+    assert captured.reps is not None
+    assert captured.reps.shape == (1, 3, 8)
+    assert torch.allclose(captured.reps, model.embed(ids))

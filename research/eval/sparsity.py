@@ -12,6 +12,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+from ._eval_native import load_eval_native
+
 
 @dataclass
 class SparsityResult:
@@ -65,10 +67,7 @@ def check_activation_sparsity(
     def get_hook(name, module):
         def hook(mod, inp, out):
             if isinstance(out, torch.Tensor):
-                # Flatten batch and seq dimensions: (B, S, D) -> (B*S, D)
                 flat = out.detach().reshape(-1, out.shape[-1])
-                # Count zeros per neuron across all tokens in the batch
-                is_zero = flat.abs() < threshold  # bool tensor, no float conversion
 
                 if name not in stats:
                     stats[name] = {
@@ -78,7 +77,18 @@ def check_activation_sparsity(
                         "op_name": getattr(mod, "op_name", ""),
                     }
 
-                stats[name]["zero_counts"] += is_zero.sum(dim=0, dtype=torch.float32)
+                try:
+                    zero_counts = load_eval_native().zero_count_last_dim(
+                        flat, float(threshold)
+                    )
+                    zero_counts = zero_counts.to(
+                        device=flat.device, dtype=torch.float32
+                    )
+                except Exception:
+                    zero_counts = (flat.abs() < threshold).sum(
+                        dim=0, dtype=torch.float32
+                    )
+                stats[name]["zero_counts"] += zero_counts
                 stats[name]["total_counts"] += flat.shape[0]
 
         return hook

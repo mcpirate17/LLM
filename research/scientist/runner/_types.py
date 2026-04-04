@@ -135,6 +135,8 @@ class RunConfig:
     stage1_discovery_batch_size: int = 4
     skip_screening_hellaswag: bool = False
     skip_binding_probes: bool = False
+    skip_post_s1_fingerprint: bool = False
+    skip_post_s1_triage: bool = False
     # HYDRA data loader settings (data_mode="hydra")
     hydra_data_dir: str = "../HYDRA/data"
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name

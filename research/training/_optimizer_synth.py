@@ -65,9 +65,12 @@ class SynthesizedOptimizer:
         }
 
 
-def synthesize_optimizer(seed: Optional[int] = None) -> SynthesizedOptimizer:
+def synthesize_optimizer(
+    seed: Optional[int] = None,
+    rng: Optional[random.Random] = None,
+) -> SynthesizedOptimizer:
     """Generate a supported optimizer recipe."""
-    rng = random.Random(seed)
+    rng = rng if rng is not None else random.Random(seed)
     name, components, description = rng.choice(OPTIMIZER_RECIPES)
     lr = 10 ** rng.uniform(-4.5, -3.0)
     weight_decay = 10 ** rng.uniform(-3, -1)

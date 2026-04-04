@@ -7,8 +7,10 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.func import functional_call
+
+from .training_core import run_training_loop
+from .utils import language_model_loss
 
 
 TensorMap = Dict[str, torch.Tensor]
@@ -53,14 +55,7 @@ def functional_compute_perplexity(
     with torch.no_grad():
         for batch in batches:
             logits = functional_logits(model, params, buffers, batch)
-            sl = logits[:, :-1].contiguous()
-            if sl.shape[-1] > vocab_size:
-                sl = sl[..., :vocab_size]
-            loss = F.cross_entropy(
-                sl.reshape(-1, sl.shape[-1]),
-                batch[:, 1:].reshape(-1),
-                reduction="sum",
-            )
+            loss = language_model_loss(logits, batch, vocab_size, reduction="sum")
             if torch.isfinite(loss):
                 total_loss += float(loss.item())
                 total_tokens += batch[:, 1:].numel()
@@ -88,34 +83,24 @@ def functional_micro_train_loop(
     template_params = {name: tensor.detach().clone() for name, tensor in params.items()}
 
     def _run(run_lr: float) -> float:
-        optimizer = torch.optim.AdamW(list(params.values()), lr=run_lr)
-        final_loss = float("inf")
-        for step in range(n_steps):
-            if step < warmup_steps:
-                warmup_factor = (step + 1) / warmup_steps
-                for group in optimizer.param_groups:
-                    group["lr"] = run_lr * warmup_factor
+        param_values = list(params.values())
 
+        def compute_loss(step: int) -> torch.Tensor:
             batch = batches[step % len(batches)]
-            optimizer.zero_grad(set_to_none=True)
             logits = functional_logits(model, params, buffers, batch)
-            sl = logits[:, :-1].contiguous()
-            if sl.shape[-1] > vocab_size:
-                sl = sl[..., :vocab_size]
-            loss = F.cross_entropy(
-                sl.reshape(-1, sl.shape[-1]),
-                batch[:, 1:].reshape(-1),
-            )
-            if not torch.isfinite(loss):
-                return float("inf")
-            loss.backward()
-            if clip_grad > 0:
-                torch.nn.utils.clip_grad_norm_(list(params.values()), clip_grad)
-            optimizer.step()
-            final_loss = float(loss.item())
-            if loss_trajectory is not None:
-                loss_trajectory[step + 1] = final_loss
-        return final_loss
+            return language_model_loss(logits, batch, vocab_size)
+
+        result = run_training_loop(
+            param_values,
+            compute_loss,
+            n_steps=n_steps,
+            optimizer_name="adamw",
+            lr=run_lr,
+            clip_grad=clip_grad,
+            warmup_steps=warmup_steps,
+            loss_trajectory=loss_trajectory,
+        )
+        return result.final_loss
 
     result = _run(lr)
     if math.isfinite(result):

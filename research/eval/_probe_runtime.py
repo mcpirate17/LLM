@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from typing import Iterator
+
+
+def _allow_native_cuda_probe_bridge() -> bool:
+    return os.getenv("ARIA_ALLOW_SLOW_NATIVE_CUDA_PROBES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @contextmanager
@@ -13,7 +23,7 @@ def disable_native_probe_dispatch(model, *, device: str) -> Iterator[None]:
     but it is counterproductive for small CUDA probe batches where the regular
     PyTorch/Triton path can stay entirely on device.
     """
-    if not str(device).startswith("cuda"):
+    if not str(device).startswith("cuda") or _allow_native_cuda_probe_bridge():
         yield
         return
 

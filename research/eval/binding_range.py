@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _RESTRICTED_VOCAB = 256
 _TIMEOUT_S = 30.0
+_COPY_INDEX_CACHE_LIMIT = 32
+_COPY_INDEX_CACHE: "OrderedDict[tuple[int, int, str], torch.Tensor]" = OrderedDict()
 
 
 @dataclass(slots=True)
@@ -55,10 +58,9 @@ class BindingResult:
 
 
 def _generate_copy_batch(
-    batch_size: int,
+    batch: torch.Tensor,
+    prefix_buf: torch.Tensor,
     distance: int,
-    seq_len: int,
-    device: str,
 ) -> torch.Tensor:
     """Generate sequences where token[i] == token[i - distance] for i >= distance.
 
@@ -66,11 +68,23 @@ def _generate_copy_batch(
     the token `distance` positions back. This creates a pure copy pattern
     that the model should predict if it can bind at that distance.
     """
-    # Generate the first `distance` tokens randomly, then tile to fill
-    prefix = torch.randint(1, _RESTRICTED_VOCAB, (batch_size, distance), device=device)
-    # Repeat prefix to fill seq_len: token[i] = prefix[i % distance]
-    repeats = (seq_len + distance - 1) // distance
-    batch = prefix.repeat(1, repeats)[:, :seq_len]
+    batch_size, seq_len = batch.shape
+    device = batch.device
+    cache_key = (int(seq_len), int(distance), str(device))
+    copy_idx = _COPY_INDEX_CACHE.get(cache_key)
+    if copy_idx is None:
+        copy_idx = torch.arange(seq_len, device=device, dtype=torch.long).remainder(
+            distance
+        )
+        _COPY_INDEX_CACHE[cache_key] = copy_idx
+        while len(_COPY_INDEX_CACHE) > _COPY_INDEX_CACHE_LIMIT:
+            _COPY_INDEX_CACHE.popitem(last=False)
+    else:
+        _COPY_INDEX_CACHE.move_to_end(cache_key)
+
+    prefix = prefix_buf[:batch_size, :distance]
+    prefix.random_(1, _RESTRICTED_VOCAB)
+    batch.copy_(prefix[:, copy_idx])
     return batch
 
 
@@ -101,6 +115,13 @@ def binding_range_profile(
 
     try:
         with disable_native_probe_dispatch(model, device=device):
+            max_distance = max((d for d in distances if d > 0), default=1)
+            batch_buf = torch.empty(
+                (batch_size, seq_len), dtype=torch.long, device=device
+            )
+            prefix_buf = torch.empty(
+                (batch_size, max_distance), dtype=torch.long, device=device
+            )
             for d in sorted(distances):
                 if d + 2 > seq_len:
                     result.distance_accuracies[d] = 0.0
@@ -114,12 +135,6 @@ def binding_range_profile(
                 correct = 0
                 total = 0
                 remaining = n_eval
-                eval_batches = []
-
-                while remaining > 0:
-                    bs = min(batch_size, remaining)
-                    eval_batches.append(_generate_copy_batch(bs, d, seq_len, device))
-                    remaining -= bs
 
                 start = d
                 end = seq_len - 1
@@ -127,7 +142,13 @@ def binding_range_profile(
                     result.distance_accuracies[d] = 0.0
                     continue
 
-                for input_ids in eval_batches:
+                while remaining > 0:
+                    bs = min(batch_size, remaining)
+                    input_ids = _generate_copy_batch(
+                        batch_buf[:bs],
+                        prefix_buf[:bs],
+                        d,
+                    )
                     logits = model(input_ids)  # (B, seq_len, V)
 
                     # Check predictions at positions d+1 through seq_len-1
@@ -137,9 +158,9 @@ def binding_range_profile(
                     targets = input_ids[:, start + 1 : end + 1]
 
                     preds = pred_logits.argmax(dim=-1)  # (B, n_positions)
-                    matches = (preds == targets).float()
-                    correct += matches.sum().item()
-                    total += matches.numel()
+                    correct += preds.eq(targets).sum().item()
+                    total += targets.numel()
+                    remaining -= bs
 
                 acc = correct / max(total, 1)
                 result.distance_accuracies[d] = round(acc, 4)

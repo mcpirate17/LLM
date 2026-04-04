@@ -221,6 +221,21 @@ _TOP_OP_TEMPLATE_HINTS: Dict[str, Dict[str, float]] = {
 }
 
 
+def _make_stage1_screening_config(config: RunConfig) -> RunConfig:
+    """Strip expensive post-train eval from candidate-screening Stage 1."""
+    stage1_config = config.copy()
+    stage1_config.profile_disable_post_eval = True
+    stage1_config.stage1_compute_val_loss = False
+    stage1_config.stage1_compute_discovery_loss = False
+    stage1_config.skip_screening_wikitext = True
+    stage1_config.skip_screening_hellaswag = True
+    stage1_config.skip_binding_probes = True
+    stage1_config.skip_post_s1_fingerprint = True
+    stage1_config.skip_post_s1_triage = True
+    stage1_config.collect_training_curve = False
+    return stage1_config
+
+
 def _freeze_op_pair_priors(
     priors: List[Dict[str, Any]],
 ) -> Tuple[Tuple[str, float], ...]:
@@ -938,6 +953,7 @@ class _ExecutionScreeningMixin:
     ) -> Dict:
         """Core experiment logic shared by single and continuous modes."""
         self._live_training_context = {"exp_id": exp_id, "phase": "synthesis"}
+        stage1_config = _make_stage1_screening_config(config)
         with self._lock:
             # Z17: Explicitly reset progress object at start of execution
             self._progress = LiveProgress(
@@ -2132,7 +2148,7 @@ class _ExecutionScreeningMixin:
                 orchestrator.submit(
                     index=i,
                     graph=graph,
-                    config=config,
+                    config=stage1_config,
                     seed=self._stable_seed(exp_id, i, "screening"),
                     payload={
                         "metrics": program_metrics,

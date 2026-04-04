@@ -23,6 +23,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .stateless_training import clone_module_state, functional_logits
+from .training_core import run_training_loop
+from .utils import language_model_loss
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -275,6 +279,14 @@ DIAGNOSTIC_TASKS = {
     "selective_copy": generate_selective_copy_task,
 }
 
+
+def _infer_vocab_size(model: nn.Module) -> Optional[int]:
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            return int(module.num_embeddings)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Training + eval loop
 # ---------------------------------------------------------------------------
@@ -299,31 +311,19 @@ def _train_and_eval_task(
         if dev.type == "cuda":
             torch.cuda.manual_seed_all(seed)
 
-        # We assume model is already a fresh copy if we want to avoid deepcopy issues
-        # Or we move it to device here
         task_model = model.to(dev)
+        params, buffers = clone_module_state(task_model)
         task_model.train()
 
-        optimizer = torch.optim.AdamW(
-            task_model.parameters(),
-            lr=DIAG_LR,
-            weight_decay=0.01,
-        )
-
-        # Determine vocab_size from model's embedding layer
-        vocab_size = None
-        for m in task_model.modules():
-            if isinstance(m, nn.Embedding):
-                vocab_size = m.num_embeddings
-                break
+        vocab_size = _infer_vocab_size(task_model)
         if vocab_size is None:
             result.error = "no_embedding_found"
             return result
 
-        # Training
         rng = torch.Generator(device=dev)
         rng.manual_seed(seed)
-        for step in range(n_steps):
+
+        def compute_loss(_step: int) -> torch.Tensor:
             input_ids, _, _ = task_fn(
                 batch_size=DIAG_BATCH_SIZE,
                 seq_len=DIAG_SEQ_LEN,
@@ -335,25 +335,23 @@ def _train_and_eval_task(
                 dtype=torch.bfloat16,
                 enabled=(dev.type == "cuda"),
             ):
-                logits = task_model(input_ids)
-                loss = F.cross_entropy(
-                    logits[:, :-1].reshape(-1, vocab_size),
-                    input_ids[:, 1:].reshape(-1),
-                )
+                logits = functional_logits(task_model, params, buffers, input_ids)
+                return language_model_loss(logits, input_ids, vocab_size)
 
-            if torch.isnan(loss) or torch.isinf(loss):
-                result.error = "nan_or_inf_loss"
-                result.steps_trained = step
-                return result
+        train_result = run_training_loop(
+            params.values(),
+            compute_loss,
+            n_steps=n_steps,
+            optimizer_name="adamw",
+            lr=DIAG_LR,
+            weight_decay=0.01,
+            clip_grad=1.0,
+        )
+        result.steps_trained = train_result.steps_completed
+        if train_result.diverged:
+            result.error = "nan_or_inf_loss"
+            return result
 
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            nn.utils.clip_grad_norm_(task_model.parameters(), 1.0)
-            optimizer.step()
-
-        result.steps_trained = n_steps
-
-        # Evaluation: measure accuracy on critical positions
         task_model.eval()
         eval_rng = torch.Generator(device=dev)
         eval_rng.manual_seed(seed + 10000)
@@ -374,17 +372,15 @@ def _train_and_eval_task(
                     dtype=torch.bfloat16,
                     enabled=(dev.type == "cuda"),
                 ):
-                    logits = task_model(input_ids)
+                    logits = functional_logits(task_model, params, buffers, input_ids)
 
-                # Next-token predictions: logits[:, :-1]
-                preds = logits[:, :-1].argmax(dim=-1)  # (B, S-1)
+                preds = logits[:, :-1].argmax(dim=-1)
                 n_crit = crit_mask.sum().item()
                 if n_crit > 0:
                     correct = ((preds == crit_targets) & crit_mask).sum().item()
                     total_correct += correct
                     total_critical += n_crit
 
-                    # Loss on critical positions only
                     flat_logits = logits[:, :-1].reshape(-1, vocab_size)
                     flat_targets = crit_targets.reshape(-1)
                     flat_mask = crit_mask.reshape(-1)
@@ -403,11 +399,12 @@ def _train_and_eval_task(
     except Exception as e:
         result.error = str(e)[:200]
     finally:
-        # Cleanup
         if "task_model" in dir():
             del task_model
-        if "optimizer" in dir():
-            del optimizer
+        if "params" in dir():
+            del params
+        if "buffers" in dir():
+            del buffers
         if dev.type == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
@@ -433,19 +430,13 @@ def run_diagnostic_suite(
     t0 = time.time()
     suite = DiagnosticSuiteResult()
 
-    # For ComputationGraph inputs, compile once and save initial state for reset.
-    # For pre-compiled models, save state dict to avoid expensive deepcopy per task.
     is_graph = isinstance(model_or_graph, ComputationGraph)
     if is_graph:
         base_model = compile_graph(model_or_graph)
     else:
         base_model = model_or_graph
-    original_state = base_model.state_dict()
 
     for task_name, task_fn in DIAGNOSTIC_TASKS.items():
-        # Reset to clean weights for each task
-        base_model.load_state_dict(original_state)
-
         task_result = _train_and_eval_task(
             base_model,
             task_fn,
@@ -458,10 +449,6 @@ def run_diagnostic_suite(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # Restore original state after all tasks
-    base_model.load_state_dict(original_state)
-
-    # Compute mean accuracy across non-errored tasks
     accs = [t.accuracy for t in suite.tasks if t.error is None]
     suite.diagnostic_score = sum(accs) / len(accs) if accs else 0.0
     suite.total_time_ms = (time.time() - t0) * 1000

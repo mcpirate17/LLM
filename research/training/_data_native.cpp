@@ -1,5 +1,7 @@
 #include <cctype>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include <torch/extension.h>
 
@@ -14,6 +16,35 @@ torch::Tensor byte_tokenize_utf8(const std::string& text, int64_t vocab_size) {
   auto* data = out.data_ptr<int64_t>();
   for (size_t i = 0; i < text.size(); ++i) {
     data[i] = static_cast<unsigned char>(text[i]) % vocab_size;
+  }
+  return out;
+}
+
+torch::Tensor byte_tokenize_file_utf8(const std::string& path, int64_t vocab_size) {
+  if (vocab_size <= 0) {
+    return torch::empty({0}, torch::TensorOptions().dtype(torch::kLong));
+  }
+
+  std::ifstream file(path, std::ios::binary);
+  TORCH_CHECK(file.good(), "failed to open file: ", path);
+
+  file.seekg(0, std::ios::end);
+  const auto size = static_cast<size_t>(file.tellg());
+  file.seekg(0, std::ios::beg);
+  if (size == 0) {
+    return torch::empty({0}, torch::TensorOptions().dtype(torch::kLong));
+  }
+
+  std::vector<char> buffer(size);
+  file.read(buffer.data(), static_cast<std::streamsize>(size));
+  TORCH_CHECK(file.good() || file.eof(), "failed to read file: ", path);
+
+  auto out = torch::empty(
+      {static_cast<int64_t>(size)},
+      torch::TensorOptions().dtype(torch::kLong));
+  auto* data = out.data_ptr<int64_t>();
+  for (size_t i = 0; i < size; ++i) {
+    data[i] = static_cast<unsigned char>(buffer[i]) % vocab_size;
   }
   return out;
 }
@@ -83,6 +114,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "byte_tokenize_utf8",
       &byte_tokenize_utf8,
       "Tokenize UTF-8 bytes with modulo vocab projection");
+  m.def(
+      "byte_tokenize_file_utf8",
+      &byte_tokenize_file_utf8,
+      "Tokenize a UTF-8 file with modulo vocab projection");
   m.def(
       "whitespace_hash_tokenize",
       &whitespace_hash_tokenize,
