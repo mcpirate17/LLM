@@ -7,11 +7,11 @@ import os
 from typing import Any, Dict, List, Optional, Set
 
 from .core import _try_import_cython_bridge, _try_import_rust_scheduler
-from .tensor_bridge import to_native_array, to_native_flat_array
+from .tensor_bridge import to_device_tensor, to_native_array, to_native_flat_array
 
 logger = logging.getLogger(__name__)
 
-_NON_KERNEL_STRUCTURAL_OPS: Set[str] = {
+NATIVE_STRUCTURAL_OPS: Set[str] = {
     "input",
     "output",
     "identity",
@@ -22,10 +22,17 @@ _NON_KERNEL_STRUCTURAL_OPS: Set[str] = {
     "split2",
     "split",
 }
+_NON_KERNEL_STRUCTURAL_OPS: Set[str] = NATIVE_STRUCTURAL_OPS
 _NATIVE_OP_ALIASES: Dict[str, str] = {
     "linear_proj": "linear",
     "softmax_last": "softmax",
     "transpose": "transpose2d",
+    "swiglu_mlp": "swiglu",
+    "adaptive_recursion": "depth_weighted_proj",
+    "gated_lane_blend": "depth_weighted_proj",
+    "route_lanes": "depth_weighted_proj",
+    "depth_gated_transform": "depth_weighted_proj",
+    "route_recursion": "depth_weighted_proj",
 }
 _NATIVE_C_KERNEL_OPS: Set[str] = {
     "relu",
@@ -51,7 +58,19 @@ _NATIVE_C_KERNEL_OPS: Set[str] = {
     "layernorm",
     "softmax",
     "transpose2d",
+    "softmax_attention",
+    "linear_attention",
+    "selective_scan",
+    "state_space",
+    "gated_delta",
+    "gated_linear",
+    "rwkv_time_mixing",
+    "rwkv_channel",
+    "swiglu",
+    "conv1d_seq",
+    "depth_weighted_proj",
 }
+_PER_OP_BRIDGE_ONLY_OPS: Set[str] = set()
 _CYTHON_WRAPPER_OPS: Set[str] = set(_NATIVE_C_KERNEL_OPS)
 _SOFT_BRIDGE_OPS: Set[str] = {"causal_mask", "argsort_seq", "topk_gate"}
 _CYTHON_UNARY_OPS: Set[str] = {
@@ -73,6 +92,7 @@ _CYTHON_UNARY_OPS: Set[str] = {
 _CYTHON_BINARY_OPS: Set[str] = {"add", "mul", "sub"}
 _CYTHON_UNARY_BACKWARD_OPS: Set[str] = {"relu", "gelu", "silu", "sigmoid", "tanh"}
 _CYTHON_BINARY_BACKWARD_OPS: Set[str] = {"add", "mul", "sub"}
+_RUST_SCHEDULER_UNSUPPORTED_OPS: Set[str] = {"grade_mix", "layernorm"}
 
 
 def _check_native_op_support(
@@ -92,7 +112,7 @@ def _check_native_op_support(
         op for op in all_ops if op not in _NON_KERNEL_STRUCTURAL_OPS
     }
 
-    supported: Set[str] = set()
+    supported: Set[str] = {op for op in all_ops if op in NATIVE_STRUCTURAL_OPS}
     unsupported: Set[str] = set()
 
     def _canonical_op(op_name: str) -> str:
@@ -145,9 +165,14 @@ def _check_native_op_support(
                 else:
                     unsupported.add(op)
         else:
-            # Conservative mode: if neither bridge nor native library query is
-            # available, treat kernel-relevant ops as unsupported.
             for op in kernel_relevant_ops:
+                if op in _all_known_native:
+                    supported.add(op)
+                    continue
+                kernel_op = _canonical_op(op)
+                if kernel_op in _all_known_native:
+                    supported.add(op)
+                    continue
                 unsupported.add(op)
 
     if not all_ops:
@@ -155,7 +180,9 @@ def _check_native_op_support(
     elif not kernel_relevant_ops:
         native_coverage = 1.0
     else:
-        native_coverage = len(supported) / len(kernel_relevant_ops)
+        native_coverage = len(supported & kernel_relevant_ops) / len(
+            kernel_relevant_ops
+        )
 
     return {
         "all_ops": sorted(all_ops),
@@ -164,6 +191,11 @@ def _check_native_op_support(
         "unsupported": sorted(unsupported),
         "native_coverage": native_coverage,
     }
+
+
+def scheduler_compatible_ops(supported_ops: Set[str]) -> Set[str]:
+    """Filter native-supported ops down to the subset safe for Rust subgraph dispatch."""
+    return set(supported_ops) - _RUST_SCHEDULER_UNSUPPORTED_OPS
 
 
 def _requested_execution_mode() -> str:
@@ -189,6 +221,8 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
     - softmax / softmax_last: dispatch_softmax
     - layernorm: dispatch_layernorm (kwargs: eps)
     - transpose, transpose2d: dispatch_transpose2d
+    - gated_linear: dispatch_gated_linear (kwargs: bias, bias_gate)
+    - rwkv_time_mixing: dispatch_rwkv_time_mixing
     """
     bridge = _try_import_cython_bridge()
     if bridge is None:
@@ -198,7 +232,13 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
 
     canonical_op = _NATIVE_OP_ALIASES.get(op_name, op_name)
     native_tensors = tuple(
-        to_native_flat_array(t) if canonical_op in _CYTHON_UNARY_OPS | _CYTHON_BINARY_OPS else to_native_array(t)
+        None
+        if t is None
+        else (
+            to_native_flat_array(t)
+            if canonical_op in _CYTHON_UNARY_OPS | _CYTHON_BINARY_OPS
+            else to_native_array(t)
+        )
         for t in tensors
     )
 
@@ -211,7 +251,9 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
             try:
                 return bridge.dispatch_unary(canonical_op, native_tensors[0])
             except ValueError:
-                return bridge.dispatch_binary("mul", native_tensors[0], native_tensors[0])
+                return bridge.dispatch_binary(
+                    "mul", native_tensors[0], native_tensors[0]
+                )
         return bridge.dispatch_unary(canonical_op, native_tensors[0])
 
     if canonical_op in _CYTHON_BINARY_OPS:
@@ -219,7 +261,9 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
             raise ValueError(
                 f"Binary op '{op_name}' expects 2 tensors, got {len(tensors)}"
             )
-        return bridge.dispatch_binary(canonical_op, native_tensors[0], native_tensors[1])
+        return bridge.dispatch_binary(
+            canonical_op, native_tensors[0], native_tensors[1]
+        )
 
     if canonical_op == "matmul":
         if len(native_tensors) != 2:
@@ -231,7 +275,9 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
             raise ValueError(
                 f"linear expects at least 2 tensors (x, W), got {len(tensors)}"
             )
-        bias_value = kwargs.get("bias", native_tensors[2] if len(native_tensors) > 2 else None)
+        bias_value = kwargs.get(
+            "bias", native_tensors[2] if len(native_tensors) > 2 else None
+        )
         bias = None if bias_value is None else to_native_array(bias_value)
         return bridge.dispatch_linear(native_tensors[0], native_tensors[1], bias=bias)
 
@@ -263,6 +309,153 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
             raise ValueError(f"transpose2d expects 1 tensor, got {len(tensors)}")
         return bridge.dispatch_transpose2d(native_tensors[0])
 
+    if canonical_op == "gated_linear":
+        if len(native_tensors) < 3:
+            raise ValueError("gated_linear expects at least 3 tensors (x, W, W_gate)")
+        return bridge.dispatch_gated_linear(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            bias=kwargs.get("bias"),
+            bias_gate=kwargs.get("bias_gate"),
+        )
+
+    if canonical_op == "rwkv_time_mixing":
+        if len(native_tensors) != 6:
+            raise ValueError(
+                "rwkv_time_mixing expects 6 tensors (x, w_decay, u_bonus, W_k, W_v, W_r)"
+            )
+        return bridge.dispatch_rwkv_time_mixing(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+            native_tensors[5],
+        )
+
+    if canonical_op == "rwkv_channel":
+        if len(native_tensors) != 6:
+            raise ValueError(
+                "rwkv_channel expects 6 tensors (x, mix_k, mix_r, W_k, W_r, W_v)"
+            )
+        return bridge.dispatch_rwkv_channel(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+            native_tensors[5],
+        )
+
+    if canonical_op == "depth_weighted_proj":
+        if len(native_tensors) != 3:
+            raise ValueError(
+                "depth_weighted_proj expects 3 tensors (x, depth_scorer, step_projs)"
+            )
+        return bridge.dispatch_depth_weighted_proj(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+        )
+
+    if canonical_op == "conv1d_seq":
+        if len(native_tensors) not in {2, 3}:
+            raise ValueError("conv1d_seq expects x, weight, and optional bias")
+        return bridge.dispatch_conv1d_seq(
+            native_tensors[0],
+            native_tensors[1],
+            bias=native_tensors[2] if len(native_tensors) > 2 else None,
+        )
+
+    if canonical_op == "swiglu":
+        if len(native_tensors) not in {4, 5, 6, 7}:
+            raise ValueError(
+                "swiglu expects x, W_gate, W_up, W_down, and optional biases"
+            )
+        return bridge.dispatch_swiglu(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            bias_gate=native_tensors[4] if len(native_tensors) > 4 else None,
+            bias_up=native_tensors[5] if len(native_tensors) > 5 else None,
+            bias_down=native_tensors[6] if len(native_tensors) > 6 else None,
+        )
+
+    if canonical_op == "softmax_attention":
+        if len(native_tensors) != 5:
+            raise ValueError("softmax_attention expects 5 tensors (x, Wq, Wk, Wv, Wo)")
+        n_heads = int(kwargs.get("n_heads", 0))
+        if n_heads <= 0:
+            raise ValueError("softmax_attention requires positive n_heads")
+        return bridge.dispatch_softmax_attention(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+            n_heads=n_heads,
+        )
+
+    if canonical_op == "linear_attention":
+        if len(native_tensors) != 5:
+            raise ValueError("linear_attention expects 5 tensors (x, Wq, Wk, Wv, Wo)")
+        return bridge.dispatch_linear_attention(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+        )
+
+    if canonical_op == "selective_scan":
+        if len(native_tensors) != 5:
+            raise ValueError(
+                "selective_scan expects 5 tensors (x, A_log, dt_proj, B_weight, C_weight)"
+            )
+        return bridge.dispatch_selective_scan_compiled(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+        )
+
+    if canonical_op == "state_space":
+        if len(native_tensors) != 7:
+            raise ValueError(
+                "state_space expects 7 tensors (x, ssm_A, ssm_B_weight, ssm_C_weight, ssm_D, ssm_dt_weight, ssm_dt_bias)"
+            )
+        return bridge.dispatch_state_space_compiled(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+            native_tensors[5],
+            native_tensors[6],
+        )
+
+    if canonical_op == "gated_delta":
+        if len(native_tensors) != 7:
+            raise ValueError(
+                "gated_delta expects 7 tensors (x, q_weight, k_weight, v_weight, alpha_weight, beta_weight, o_weight)"
+            )
+        n_heads = int(kwargs.get("n_heads", 0))
+        if n_heads <= 0:
+            raise ValueError("gated_delta requires positive n_heads")
+        return bridge.dispatch_gated_delta_compiled(
+            native_tensors[0],
+            native_tensors[1],
+            native_tensors[2],
+            native_tensors[3],
+            native_tensors[4],
+            native_tensors[5],
+            native_tensors[6],
+            n_heads=n_heads,
+        )
+
     raise ValueError(f"Unsupported op for native dispatch: '{op_name}'")
 
 
@@ -286,9 +479,15 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
             "Cython bridge (aria_bridge) is not available. "
             "Cannot dispatch backward op natively."
         )
-    grad_native = to_native_flat_array(grad_output) if op_name in _CYTHON_UNARY_BACKWARD_OPS | _CYTHON_BINARY_BACKWARD_OPS else to_native_array(grad_output)
+    grad_native = (
+        to_native_flat_array(grad_output)
+        if op_name in _CYTHON_UNARY_BACKWARD_OPS | _CYTHON_BINARY_BACKWARD_OPS
+        else to_native_array(grad_output)
+    )
     saved_native = tuple(
-        to_native_flat_array(t) if op_name in _CYTHON_UNARY_BACKWARD_OPS | _CYTHON_BINARY_BACKWARD_OPS else to_native_array(t)
+        to_native_flat_array(t)
+        if op_name in _CYTHON_UNARY_BACKWARD_OPS | _CYTHON_BINARY_BACKWARD_OPS
+        else to_native_array(t)
         for t in saved_tensors
     )
 
@@ -312,6 +511,15 @@ def dispatch_op_backward_native(op_name: str, grad_output, *saved_tensors) -> An
         if len(saved_native) != 2:
             raise ValueError(
                 f"matmul backward expects 2 saved tensors (A, B), got {len(saved_tensors)}"
+            )
+        return bridge.dispatch_matmul_backward(
+            grad_native, saved_native[0], saved_native[1]
+        )
+
+    if op_name == "linear":
+        if len(saved_native) != 2:
+            raise ValueError(
+                f"linear backward expects 2 saved tensors (x, W), got {len(saved_tensors)}"
             )
         return bridge.dispatch_matmul_backward(
             grad_native, saved_native[0], saved_native[1]
@@ -395,6 +603,44 @@ def _execute_rust_graph_forward_saved(
     }
 
 
+def _execute_rust_graph_forward_saved_multi_input(
+    *,
+    graph_json: str,
+    native_inputs: list[Any],
+    output_shape: tuple[int, ...] | None,
+) -> Optional[Dict[str, Any]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "execute_graph_forward_saved_multi_input"):
+        return None
+
+    import numpy as np
+
+    if hasattr(rust, "execute_graph_forward_saved_multi_input_arrays"):
+        result = rust.execute_graph_forward_saved_multi_input_arrays(
+            graph_json,
+            native_inputs,
+        )
+    else:
+        result = rust.execute_graph_forward_saved_multi_input(
+            graph_json,
+            [value.ravel().tolist() for value in native_inputs],
+        )
+    output = np.asarray(result["output"], dtype=np.float32)
+    if output_shape is not None:
+        output = output.reshape(output_shape)
+    saved_activations = {
+        int(node_id): np.asarray(values, dtype=np.float32)
+        for node_id, values in dict(result.get("saved_activations", {})).items()
+    }
+    return {
+        "output": output,
+        "saved_activations": saved_activations,
+        "ir_json": graph_json,
+        "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+        "arena_capacity": int(result.get("arena_capacity", 0)),
+    }
+
+
 def _execute_rust_graph_backward(
     *,
     graph_json: str,
@@ -422,6 +668,27 @@ def _execute_rust_graph_backward(
     }
 
 
+def dispatch_graph_backward_native_cached(
+    ir_json: str,
+    grad_output: Any,
+    saved_activations: Dict[int, Any],
+) -> Dict[int, Any]:
+    import numpy as np
+
+    grad_np = to_native_array(grad_output)
+    rust_grads = _execute_rust_graph_backward(
+        graph_json=ir_json,
+        grad_np=grad_np,
+        saved_activations={
+            int(node_id): np.asarray(values, dtype=np.float32)
+            for node_id, values in saved_activations.items()
+        },
+    )
+    if rust_grads is None:
+        raise RuntimeError("Rust scheduler does not expose graph backward execution.")
+    return rust_grads
+
+
 def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     """Execute a full computation graph using the Rust scheduler.
 
@@ -435,8 +702,6 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     rust = _try_import_rust_scheduler()
     if rust is None:
         raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
-
-    import numpy as np
 
     x_np, graph_json = _prepare_graph_input(graph, input_data)
 
@@ -498,7 +763,6 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
           - ``"saved_activations"``: dict[int, numpy.ndarray] per-node activations.
           - ``"ir_json"``: the pre-serialized IR JSON (for backward call).
     """
-    import numpy as np
 
     x_np, graph_json = _prepare_graph_input(graph, input_data)
     try:
@@ -692,6 +956,91 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
     except Exception as exc:
         logger.error("Rust scheduler execution failed: %s", exc)
         raise
+
+
+def dispatch_graph_native_multi_input_cached(
+    ir_json: str,
+    input_data: list[Any] | tuple[Any, ...],
+    *,
+    output_shape: tuple[int, ...] | None = None,
+) -> Any:
+    """Execute a graph using distinct input buffers bound to distinct input nodes."""
+    rust = _try_import_rust_scheduler()
+    if rust is None:
+        raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
+
+    import numpy as np
+
+    native_inputs = [to_native_array(value) for value in input_data]
+
+    try:
+        global _last_profile_data
+        if hasattr(rust, "execute_graph_multi_input_arrays_with_stats"):
+            result = rust.execute_graph_multi_input_arrays_with_stats(
+                ir_json,
+                native_inputs,
+            )
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            _last_profile_data = None
+        elif hasattr(rust, "execute_graph_multi_input_with_stats"):
+            flat_inputs = [value.ravel().tolist() for value in native_inputs]
+            result = rust.execute_graph_multi_input_with_stats(ir_json, flat_inputs)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            _last_profile_data = None
+        elif hasattr(rust, "execute_graph_multi_input_arrays"):
+            y_flat = rust.execute_graph_multi_input_arrays(ir_json, native_inputs)
+            _last_profile_data = None
+        elif hasattr(rust, "execute_graph_multi_input"):
+            flat_inputs = [value.ravel().tolist() for value in native_inputs]
+            y_flat = rust.execute_graph_multi_input(ir_json, flat_inputs)
+            _last_profile_data = None
+        else:
+            raise RuntimeError(
+                "Rust scheduler does not expose multi-input graph execution."
+            )
+        y_np = np.asarray(y_flat, dtype=np.float32)
+        if output_shape is not None:
+            y_np = y_np.reshape(output_shape)
+        reference = input_data[0] if input_data else y_np
+        return to_device_tensor(y_np, reference=reference)
+    except Exception as exc:
+        logger.error("Rust multi-input scheduler execution failed: %s", exc)
+        raise
+
+
+def dispatch_graph_forward_saved_multi_input_cached(
+    ir_json: str,
+    input_data: list[Any] | tuple[Any, ...],
+    *,
+    output_shape: tuple[int, ...] | None = None,
+) -> Dict[str, Any]:
+    native_inputs = [to_native_array(value) for value in input_data]
+    rust_result = _execute_rust_graph_forward_saved_multi_input(
+        graph_json=ir_json,
+        native_inputs=native_inputs,
+        output_shape=output_shape,
+    )
+    if rust_result is None:
+        raise RuntimeError(
+            "Rust scheduler does not expose multi-input forward-saved execution."
+        )
+    reference = input_data[0] if input_data else rust_result["output"]
+    rust_result["output"] = to_device_tensor(rust_result["output"], reference=reference)
+    return rust_result
 
 
 def _activate_selective_native_dispatch(native_lib: Any) -> Dict[str, Any]:

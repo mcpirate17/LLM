@@ -1,3 +1,6 @@
+#ifndef ARIA_KERNELS_COMMON_H
+#include "kernels_common.h"
+#endif
 #include "hyperbolic.h"
 #include "simd_math.h"
 #include <math.h>

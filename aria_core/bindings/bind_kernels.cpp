@@ -3,6 +3,7 @@
  *                    softmax, structural, fused, FP16, and backward kernel bindings.
  */
 #include "bind_common.h"
+#include <torch/csrc/autograd/autograd.h>
 
 // ═══ Elementwise unary ═══
 
@@ -72,6 +73,91 @@ static float linear_cka_f32(torch::Tensor X, torch::Tensor Y) {
     int64_t n = (int64_t)sqrt(X.numel());
     TORCH_CHECK(n * n == X.numel(), "X must be a square matrix [n, n]");
     return aria_linear_cka_f32(X.data_ptr<float>(), Y.data_ptr<float>(), n);
+}
+
+static torch::Tensor sequence_self_similarity_f32(torch::Tensor reps) {
+    CHECK_INPUT(reps);
+    TORCH_CHECK(reps.dim() == 2 || reps.dim() == 3, "reps must be [S, D] or [P, S, D]");
+    const int64_t n_probes = reps.dim() == 3 ? reps.size(0) : 1;
+    const int64_t seq_len = reps.dim() == 3 ? reps.size(1) : reps.size(0);
+    const int64_t dim = reps.dim() == 3 ? reps.size(2) : reps.size(1);
+    auto flat = reps.dim() == 3 ? reps.contiguous() : reps.unsqueeze(0).contiguous();
+    auto out = torch::zeros({seq_len, seq_len}, reps.options());
+    aria_sequence_self_similarity_f32(
+        flat.data_ptr<float>(),
+        out.data_ptr<float>(),
+        n_probes,
+        seq_len,
+        dim
+    );
+    return out;
+}
+
+static torch::Tensor mean_abs_linear_delta_f32(torch::Tensor delta, torch::Tensor weight) {
+    CHECK_INPUT(delta);
+    CHECK_INPUT(weight);
+    TORCH_CHECK(delta.dim() == 2 || delta.dim() == 3, "delta must be [S, D] or [B, S, D]");
+    TORCH_CHECK(weight.dim() == 2, "weight must be [V, D]");
+    const int64_t batch = delta.dim() == 3 ? delta.size(0) : 1;
+    const int64_t seq_len = delta.dim() == 3 ? delta.size(1) : delta.size(0);
+    const int64_t dim = delta.dim() == 3 ? delta.size(2) : delta.size(1);
+    TORCH_CHECK(weight.size(1) == dim, "weight dim must match delta dim");
+    const int64_t vocab = weight.size(0);
+    auto flat = delta.dim() == 3 ? delta.contiguous() : delta.unsqueeze(0).contiguous();
+    auto out = torch::empty({batch, seq_len}, delta.options());
+    aria_mean_abs_linear_delta_f32(
+        flat.data_ptr<float>(),
+        weight.contiguous().data_ptr<float>(),
+        out.data_ptr<float>(),
+        batch,
+        seq_len,
+        dim,
+        vocab
+    );
+    return delta.dim() == 3 ? out : out.squeeze(0);
+}
+
+static torch::Tensor sensitivity_collect_f32(
+    torch::Tensor x,
+    torch::Tensor embed,
+    torch::Tensor positions
+) {
+    CHECK_CONTIGUOUS(x);
+    CHECK_CONTIGUOUS(embed);
+    CHECK_I64(positions);
+    TORCH_CHECK(x.dim() == 3, "x must be [B, S, H]");
+    TORCH_CHECK(embed.dim() == 3, "embed must be [B, S, H]");
+    TORCH_CHECK(x.requires_grad(), "x must require grad");
+    TORCH_CHECK(embed.requires_grad(), "embed must require grad");
+    TORCH_CHECK(x.size(0) == embed.size(0), "x and embed batch mismatch");
+    TORCH_CHECK(x.size(1) == embed.size(1), "x and embed sequence mismatch");
+
+    auto pos_cpu = positions.contiguous().to(torch::kCPU);
+    const auto n_pos = pos_cpu.numel();
+    auto rows = torch::empty(
+        {n_pos, embed.size(1)},
+        embed.options().dtype(torch::kFloat32)
+    );
+    auto pos_ptr = pos_cpu.data_ptr<int64_t>();
+
+    for (int64_t i = 0; i < n_pos; ++i) {
+        const int64_t pos = pos_ptr[i];
+        TORCH_CHECK(pos >= 0 && pos < x.size(1), "position out of range");
+        auto selected = x.select(1, pos).sum();
+        auto grads = torch::autograd::grad(
+            {selected},
+            {embed},
+            {},
+            /*retain_graph=*/i + 1 < n_pos,
+            /*create_graph=*/false,
+            /*allow_unused=*/true
+        );
+        TORCH_CHECK(!grads.empty(), "autograd returned no gradient tensors");
+        TORCH_CHECK(grads[0].defined(), "autograd returned undefined gradient");
+        rows[i].copy_(grads[0].norm(2, -1).squeeze(0).to(rows.device()));
+    }
+
+    return rows;
 }
 
 // ═══ Linear algebra ═══
@@ -340,6 +426,14 @@ void bind_kernels(py::module_ &m) {
     // Reductions
     m.def("sum_f32", &sum_f32); m.def("mean_f32", &mean_f32);
     m.def("linear_cka_f32", &linear_cka_f32, "Linear CKA similarity score");
+    m.def("sequence_self_similarity_f32", &sequence_self_similarity_f32, "Mean cosine self-similarity for [S,D] or [P,S,D] reps");
+    m.def("mean_abs_linear_delta_f32", &mean_abs_linear_delta_f32, "Mean absolute linear-logit delta for [S,D]/[B,S,D] deltas and [V,D] weights");
+    m.def(
+        "sensitivity_collect_f32",
+        &sensitivity_collect_f32,
+        py::call_guard<py::gil_scoped_release>(),
+        "Collect per-position sensitivity row norms via LibTorch autograd"
+    );
     // Linear algebra
     m.def("matmul_f32", &matmul_f32);
     m.def("tropical_matmul_f32", &tropical_matmul_f32);

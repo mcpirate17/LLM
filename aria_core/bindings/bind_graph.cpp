@@ -464,6 +464,37 @@ static torch::Tensor sensitivity_metrics_f32_py(torch::Tensor sens) {
     return out;
 }
 
+static torch::Tensor geometry_metrics_f32_py(torch::Tensor reps, int64_t max_rows) {
+    CHECK_INPUT(reps);
+    TORCH_CHECK(reps.dim() == 2 || reps.dim() == 3, "reps must be [N, D] or [B, S, D]");
+    TORCH_CHECK(max_rows > 0, "max_rows must be positive");
+
+    const int64_t width = reps.size(-1);
+    auto flat = reps.dim() == 2 ? reps : reps.reshape({-1, width});
+    TORCH_CHECK(flat.size(0) >= 2, "reps must have at least 2 rows");
+    TORCH_CHECK(width >= 2, "reps width must be at least 2");
+
+    torch::Tensor row_indices;
+    const int64_t sample_rows = std::min<int64_t>(flat.size(0), max_rows);
+    if (flat.size(0) > max_rows) {
+        row_indices = torch::randperm(
+            flat.size(0),
+            flat.options().dtype(torch::kInt64)
+        ).slice(0, 0, max_rows).contiguous();
+    }
+
+    auto out = torch::empty({3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+    aria_geometry_metrics_f32(
+        flat.contiguous().data_ptr<float>(),
+        row_indices.defined() ? row_indices.data_ptr<int64_t>() : nullptr,
+        out.data_ptr<float>(),
+        flat.size(0),
+        sample_rows,
+        width
+    );
+    return out;
+}
+
 // ═══ Smoke Test ═══
 
 static py::object graph_ir_field(const py::object &graph_ir, const char *name) {
@@ -576,6 +607,14 @@ void bind_graph(py::module_ &m) {
     // Fingerprint metrics
     m.def("interaction_metrics_f32", &interaction_metrics_f32_py, "Interaction metrics from influence matrix");
     m.def("sensitivity_metrics_f32", &sensitivity_metrics_f32_py, "Sensitivity metrics from Jacobian matrix");
+    m.def(
+        "geometry_metrics_f32",
+        &geometry_metrics_f32_py,
+        py::arg("reps"),
+        py::arg("max_rows") = 500,
+        py::call_guard<py::gil_scoped_release>(),
+        "Geometry metrics from representation tensor"
+    );
     // Smoke test
     m.def("smoke_test_graph", &smoke_test_graph_py, "Fast structural smoke test for computation graphs",
           py::arg("n_nodes"), py::arg("edges"), py::arg("op_roles"),

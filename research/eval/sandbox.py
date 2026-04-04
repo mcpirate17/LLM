@@ -29,6 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ..scientist.perf import PerfTracer, OpKernelProfiler
 from .sparsity import check_activation_sparsity
+from .utils import compute_grad_norm
 from research.defaults import VOCAB_SIZE
 
 
@@ -411,7 +412,6 @@ def safe_eval(
             tracer.stop("backward")
 
         # Check gradients
-        total_norm = 0.0
         has_nan = False
         has_zero = True
         n_with_grad = 0
@@ -419,10 +419,10 @@ def safe_eval(
         grads = [p.grad for p in model.parameters() if p.grad is not None]
         if grads:
             n_with_grad = len(grads)
+            total_norm = compute_grad_norm(model)
             try:
                 norms = torch._foreach_norm(grads, 2)
                 norm_vec = torch.stack([n.detach() for n in norms])
-                total_norm = float(torch.linalg.vector_norm(norm_vec, ord=2).item())
                 has_nan = not bool(torch.isfinite(norm_vec).all().item())
                 has_zero = not bool((norm_vec > 1e-10).any().item())
             except RuntimeError as exc:
@@ -431,13 +431,13 @@ def safe_eval(
                     exc,
                 )
                 for grad in grads:
-                    pnorm = grad.data.norm(2).item()
-                    total_norm += pnorm**2
                     if torch.isnan(grad).any():
                         has_nan = True
+                    pnorm = grad.data.float().norm().item()
                     if pnorm > 1e-10:
                         has_zero = False
-                total_norm = total_norm**0.5
+        else:
+            total_norm = 0.0
 
         result.grad_norm = float(total_norm)
         result.has_nan_grad = has_nan

@@ -35,12 +35,30 @@ class _SimpleTransformerLayer(nn.Module):
         )
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
+        self._causal_mask_cache: dict[tuple[int, str, int | None], torch.Tensor] = {}
+
+    def _causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        key = (int(seq_len), device.type, device.index)
+        mask = self._causal_mask_cache.get(key)
+        if mask is None:
+            mask = nn.Transformer.generate_square_subsequent_mask(
+                seq_len,
+                device=device,
+            )
+            self._causal_mask_cache[key] = mask
+        return mask
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         S = x.shape[1]
-        mask = nn.Transformer.generate_square_subsequent_mask(S, device=x.device)
         h = self.ln1(x)
-        h, _ = self.attn(h, h, h, attn_mask=mask, is_causal=True)
+        h, _ = self.attn(
+            h,
+            h,
+            h,
+            attn_mask=self._causal_mask(S, x.device),
+            need_weights=False,
+            is_causal=True,
+        )
         x = x + h
         x = x + self.ff(self.ln2(x))
         return x

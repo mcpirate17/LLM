@@ -123,9 +123,9 @@ class TestNonInvasiveEval:
         assert tiny_model.training == training_before
 
     def test_clone_failure_graceful(self, tiny_model):
-        """If deepcopy fails, return error status without crashing."""
+        """If stateless state capture fails, return error status without crashing."""
         with patch(
-            "research.eval.wikitext_eval.copy.deepcopy",
+            "research.eval.wikitext_eval.clone_module_state",
             side_effect=RuntimeError("clone boom"),
         ):
             with patch("research.eval.wikitext_eval._prepare_batches") as mock_pb:

@@ -7,14 +7,9 @@ class CompiledOpRuntimeMixin:
     def _cast_params_to(self, dtype: torch.dtype) -> None:
         if getattr(self, "_last_cast_dtype", None) == dtype:
             return
-        for param in self._parameters.values():
-            if param is not None and param.dtype != dtype:
+        for param in self.parameters():
+            if param.dtype != dtype:
                 param.data = param.data.to(dtype)
-        for child in self._modules.values():
-            if isinstance(child, torch.nn.ParameterList):
-                for param in child:
-                    if param.dtype != dtype:
-                        param.data = param.data.to(dtype)
         self._last_cast_dtype = dtype
 
     def _record_op_timing(self, elapsed: float) -> None:

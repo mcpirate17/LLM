@@ -87,8 +87,95 @@ cdef extern from "kernels.h":
     void aria_conv1d_seq_f32(const float* x, const float* weight, const float* bias, float* y, int64_t batch, int64_t seq, int64_t dim)
     void aria_fused_linear_gelu_f32(const float* x, const float* W, const float* bias, float* y, int64_t batch, int64_t dim_in, int64_t dim_out)
     void aria_swiglu_f32(const float* x, const float* W_gate, const float* W_up, const float* W_down, const float* bias_gate, const float* bias_up, const float* bias_down, float* y, float* tmp_gate, float* tmp_up, int64_t batch, int64_t dim, int64_t hidden_dim)
+    void aria_rwkv_channel_f32(const float* x, const float* mix_k, const float* mix_r, const float* W_k, const float* W_r, const float* W_v, float* y, float* tmp_xk, float* tmp_xr, float* tmp_k, int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim)
+    void aria_depth_weighted_proj_f32(const float* x, const float* depth_scorer, const float* step_projs, float* y, int64_t batch, int64_t seq, int64_t dim, int64_t max_depth)
     void aria_token_pool_restore_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim)
     void aria_selective_scan_f32(const float* x, const float* A, const float* B, const float* C, const float* D, float* y, int64_t batch, int64_t seq, int64_t dim)
+    void aria_selective_scan_compiled_f32(const float* x,
+                                            const float* A_log,
+                                            const float* dt_proj,
+                                            const float* B_weight,
+                                            const float* C_weight,
+                                            float* y,
+                                            int64_t batch,
+                                            int64_t seq,
+                                            int64_t dim)
+    void aria_selective_scan_compiled_backward_f32(const float* grad_out,
+                                                     const float* x,
+                                                     const float* A_log,
+                                                     const float* dt_proj,
+                                                     const float* B_weight,
+                                                     const float* C_weight,
+                                                     float* grad_x,
+                                                     float* grad_A_log,
+                                                     float* grad_dt_proj,
+                                                     float* grad_B_weight,
+                                                     float* grad_C_weight,
+                                                     int64_t batch,
+                                                     int64_t seq,
+                                                     int64_t dim)
+    void aria_state_space_compiled_f32(const float* x,
+                                         const float* ssm_A,
+                                         const float* ssm_B_weight,
+                                         const float* ssm_C_weight,
+                                         const float* ssm_D,
+                                         const float* ssm_dt_weight,
+                                         const float* ssm_dt_bias,
+                                         float* y,
+                                         int64_t batch,
+                                         int64_t seq,
+                                         int64_t dim,
+                                         int64_t state_dim)
+    void aria_state_space_compiled_backward_f32(const float* grad_out,
+                                                  const float* x,
+                                                  const float* ssm_A,
+                                                  const float* ssm_B_weight,
+                                                  const float* ssm_C_weight,
+                                                  const float* ssm_D,
+                                                  const float* ssm_dt_weight,
+                                                  const float* ssm_dt_bias,
+                                                  float* grad_x,
+                                                  float* grad_ssm_A,
+                                                  float* grad_ssm_B_weight,
+                                                  float* grad_ssm_C_weight,
+                                                  float* grad_ssm_D,
+                                                  float* grad_ssm_dt_weight,
+                                                  float* grad_ssm_dt_bias,
+                                                  int64_t batch,
+                                                  int64_t seq,
+                                                  int64_t dim,
+                                                  int64_t state_dim)
+    void aria_gated_delta_compiled_f32(const float* x,
+                                         const float* q_weight,
+                                         const float* k_weight,
+                                         const float* v_weight,
+                                         const float* alpha_weight,
+                                         const float* beta_weight,
+                                         const float* o_weight,
+                                         float* y,
+                                         int64_t batch,
+                                         int64_t seq,
+                                         int64_t dim,
+                                         int64_t n_heads)
+    void aria_gated_delta_compiled_backward_f32(const float* grad_out,
+                                                  const float* x,
+                                                  const float* q_weight,
+                                                  const float* k_weight,
+                                                  const float* v_weight,
+                                                  const float* alpha_weight,
+                                                  const float* beta_weight,
+                                                  const float* o_weight,
+                                                  float* grad_x,
+                                                  float* grad_q_weight,
+                                                  float* grad_k_weight,
+                                                  float* grad_v_weight,
+                                                  float* grad_alpha_weight,
+                                                  float* grad_beta_weight,
+                                                  float* grad_o_weight,
+                                                  int64_t batch,
+                                                  int64_t seq,
+                                                  int64_t dim,
+                                                  int64_t n_heads)
     void aria_topk_gate_f32(const float* x, const float* W_gate, float* y, int64_t batch, int64_t seq, int64_t dim, int64_t k)
     void aria_basis_expansion_f32(const float* x, const float* freqs, float* y, int64_t batch, int64_t seq, int64_t dim, int64_t n_bases)
     void aria_sparse_threshold_f32(const float* x, float* y, int64_t batch, int64_t seq, int64_t dim)
@@ -133,6 +220,31 @@ cdef extern from "kernels.h":
     void aria_rope_rotate_f32(const float* x, float* y,
                                 int64_t batch, int64_t seq, int64_t dim,
                                 float theta_base)
+    void aria_softmax_attention_f32(const float* x,
+                                      const float* Wq, const float* Wk,
+                                      const float* Wv, const float* Wo,
+                                      float* y,
+                                      int64_t batch, int64_t seq,
+                                      int64_t dim, int64_t n_heads)
+    void aria_softmax_attention_backward_f32(const float* grad_out,
+                                               const float* x,
+                                               const float* Wq,
+                                               const float* Wk,
+                                               const float* Wv,
+                                               const float* Wo,
+                                               float* grad_x,
+                                               float* grad_Wq,
+                                               float* grad_Wk,
+                                               float* grad_Wv,
+                                               float* grad_Wo,
+                                               int64_t batch,
+                                               int64_t seq,
+                                               int64_t dim,
+                                               int64_t n_heads)
+    void aria_linear_attention_f32(const float* x,
+                                     const float* Wq, const float* Wk,
+                                     const float* Wv, const float* Wo, float* y,
+                                     int64_t batch, int64_t seq, int64_t dim)
     void aria_gated_linear_f32(const float* x,
                                  const float* W, const float* b,
                                  const float* W_gate, const float* b_gate,
@@ -149,6 +261,22 @@ cdef extern from "kernels.h":
                                      const float* W_k, const float* W_v, const float* W_r,
                                      float* y,
                                      int64_t batch, int64_t seq, int64_t dim)
+    void aria_rwkv_time_mixing_backward_f32(const float* grad_out,
+                                              const float* x,
+                                              const float* w_decay,
+                                              const float* u_bonus,
+                                              const float* W_k,
+                                              const float* W_v,
+                                              const float* W_r,
+                                              float* grad_x,
+                                              float* grad_w_decay,
+                                              float* grad_u_bonus,
+                                              float* grad_W_k,
+                                              float* grad_W_v,
+                                              float* grad_W_r,
+                                              int64_t batch,
+                                              int64_t seq,
+                                              int64_t dim)
     void aria_embedding_lookup_backward_f32(const float* grad_out, const int32_t* indices,
                                               float* grad_table, float* grad_pos_embed,
                                               int64_t batch, int64_t dim,
@@ -221,7 +349,8 @@ _EXTENDED_OPS = {
     'swiglu', 'token_pool_restore', 'selective_scan', 'topk_gate',
     'basis_expansion', 'sparse_threshold',
     # Reference architecture ops
-    'embedding_lookup', 'rope_rotate', 'gated_linear',
+    'embedding_lookup', 'rope_rotate', 'softmax_attention',
+    'linear_attention', 'gated_linear',
     'cosine_similarity', 'gather_topk', 'rwkv_time_mixing',
     # Math space
     'exp_map', 'log_map', 'poincare_add', 'hyp_linear',
@@ -234,6 +363,7 @@ _EXTENDED_OPS = {
     'difficulty_scorer', 'lane_router_threshold',
     'conditional_dispatch', 'conditional_gather',
     'adaptive_route_dispatch',
+    'depth_weighted_proj',
 }
 
 
@@ -334,14 +464,19 @@ def dispatch_linear(cnp.ndarray[float, ndim=2] x, cnp.ndarray[float, ndim=2] W, 
     return y
 
 
-def dispatch_rmsnorm(cnp.ndarray[float, ndim=2] x, cnp.ndarray[float, ndim=1] weight, float eps=1e-5):
-    """RMSNorm via native C kernel."""
-    cdef int64_t batch = x.shape[0]
-    cdef int64_t dim = x.shape[1]
+def dispatch_rmsnorm(x, cnp.ndarray[float, ndim=1] weight, float eps=1e-5):
+    """RMSNorm via native C kernel over the last dimension."""
+    cdef cnp.ndarray[float, ndim=1] flat
+    x_arr = np.ascontiguousarray(x, dtype=np.float32)
+    if x_arr.ndim < 2:
+        raise ValueError("dispatch_rmsnorm expects x with rank >= 2")
+    cdef int64_t dim = x_arr.shape[x_arr.ndim - 1]
     assert weight.shape[0] == dim
-    cdef cnp.ndarray[float, ndim=2] y = np.empty((batch, dim), dtype=np.float32)
-    aria_rmsnorm_f32(<float*>x.data, <float*>weight.data, <float*>y.data, batch, dim, eps)
-    return y
+    cdef int64_t batch = x_arr.size // dim
+    flat = x_arr.reshape(-1)
+    cdef cnp.ndarray[float, ndim=1] y_flat = np.empty(batch * dim, dtype=np.float32)
+    aria_rmsnorm_f32(<float*>flat.data, <float*>weight.data, <float*>y_flat.data, batch, dim, eps)
+    return y_flat.reshape(x_arr.shape)
 
 
 def dispatch_softmax(cnp.ndarray[float, ndim=2] x):
@@ -599,50 +734,77 @@ def dispatch_softmax_backward(cnp.ndarray[float, ndim=2] grad_output,
     return grad_in
 
 
-def dispatch_layernorm_backward(cnp.ndarray[float, ndim=2] grad_output,
-                                 cnp.ndarray[float, ndim=2] input,
-                                 cnp.ndarray[float, ndim=1] gamma,
-                                 float eps=1e-5):
+def dispatch_layernorm_backward(grad_output, input, cnp.ndarray[float, ndim=1] gamma, float eps=1e-5):
     """LayerNorm backward: returns (grad_input, grad_gamma, grad_beta)."""
-    cdef int64_t batch = grad_output.shape[0]
-    cdef int64_t dim = grad_output.shape[1]
-    assert input.shape[0] == batch and input.shape[1] == dim
-    assert gamma.shape[0] == dim
-    cdef cnp.ndarray[float, ndim=2] grad_in = np.empty((batch, dim), dtype=np.float32)
-    cdef cnp.ndarray[float, ndim=1] grad_gamma = np.zeros(dim, dtype=np.float32)
-    cdef cnp.ndarray[float, ndim=1] grad_beta = np.zeros(dim, dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_2d
+    cdef cnp.ndarray[float, ndim=2] input_2d
+    cdef tuple original_shape
+    cdef Py_ssize_t ndim
+    cdef int64_t batch
+    cdef int64_t dim
+    cdef cnp.ndarray[float, ndim=2] grad_in
+    cdef cnp.ndarray[float, ndim=1] grad_gamma
+    cdef cnp.ndarray[float, ndim=1] grad_beta
+
+    grad_output = np.ascontiguousarray(grad_output, dtype=np.float32)
+    input = np.ascontiguousarray(input, dtype=np.float32)
+    original_shape = tuple(grad_output.shape)
+    ndim = len(original_shape)
+    dim = gamma.shape[0]
+    assert input.shape == original_shape
+    assert ndim >= 2
+    assert original_shape[ndim - 1] == dim
+    batch = grad_output.size // dim
+    grad_2d = grad_output.reshape(batch, dim)
+    input_2d = input.reshape(batch, dim)
+    grad_in = np.empty((batch, dim), dtype=np.float32)
+    grad_gamma = np.zeros(dim, dtype=np.float32)
+    grad_beta = np.zeros(dim, dtype=np.float32)
     aria_layernorm_backward_f32(
-        <float*>grad_output.data,
-        <float*>input.data,
+        <float*>grad_2d.data,
+        <float*>input_2d.data,
         <float*>gamma.data,
         <float*>grad_in.data,
         <float*>grad_gamma.data,
         <float*>grad_beta.data,
         batch, dim, eps,
     )
-    return grad_in, grad_gamma, grad_beta
+    return grad_in.reshape(original_shape), grad_gamma, grad_beta
 
 
-def dispatch_rmsnorm_backward(cnp.ndarray[float, ndim=2] grad_output,
-                               cnp.ndarray[float, ndim=2] input,
-                               cnp.ndarray[float, ndim=1] gamma,
-                               float eps=1e-5):
+def dispatch_rmsnorm_backward(grad_output, input, cnp.ndarray[float, ndim=1] gamma, float eps=1e-5):
     """RMSNorm backward: returns (grad_input, grad_gamma)."""
-    cdef int64_t batch = grad_output.shape[0]
-    cdef int64_t dim = grad_output.shape[1]
-    assert input.shape[0] == batch and input.shape[1] == dim
-    assert gamma.shape[0] == dim
-    cdef cnp.ndarray[float, ndim=2] grad_in = np.empty((batch, dim), dtype=np.float32)
-    cdef cnp.ndarray[float, ndim=1] grad_gamma = np.zeros(dim, dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_2d
+    cdef cnp.ndarray[float, ndim=2] input_2d
+    cdef tuple original_shape
+    cdef Py_ssize_t ndim
+    cdef int64_t batch
+    cdef int64_t dim
+    cdef cnp.ndarray[float, ndim=2] grad_in
+    cdef cnp.ndarray[float, ndim=1] grad_gamma
+
+    grad_output = np.ascontiguousarray(grad_output, dtype=np.float32)
+    input = np.ascontiguousarray(input, dtype=np.float32)
+    original_shape = tuple(grad_output.shape)
+    ndim = len(original_shape)
+    dim = gamma.shape[0]
+    assert input.shape == original_shape
+    assert ndim >= 2
+    assert original_shape[ndim - 1] == dim
+    batch = grad_output.size // dim
+    grad_2d = grad_output.reshape(batch, dim)
+    input_2d = input.reshape(batch, dim)
+    grad_in = np.empty((batch, dim), dtype=np.float32)
+    grad_gamma = np.zeros(dim, dtype=np.float32)
     aria_rmsnorm_backward_f32(
-        <float*>grad_output.data,
-        <float*>input.data,
+        <float*>grad_2d.data,
+        <float*>input_2d.data,
         <float*>gamma.data,
         <float*>grad_in.data,
         <float*>grad_gamma.data,
         batch, dim, eps,
     )
-    return grad_in, grad_gamma
+    return grad_in.reshape(original_shape), grad_gamma
 
 
 # ── Reference architecture op dispatch ────────────────────────────
@@ -673,6 +835,342 @@ def dispatch_rope_rotate(cnp.ndarray[float, ndim=3] x, float theta_base=10000.0)
     cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
     aria_rope_rotate_f32(<float*>x.data, <float*>y.data, batch, seq, dim, theta_base)
     return y
+
+
+def dispatch_softmax_attention(cnp.ndarray[float, ndim=3] x,
+                                 cnp.ndarray[float, ndim=2] Wq,
+                                 cnp.ndarray[float, ndim=2] Wk,
+                                 cnp.ndarray[float, ndim=2] Wv,
+                                 cnp.ndarray[float, ndim=2] Wo,
+                                 int64_t n_heads):
+    """Causal multi-head attention with output projection."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    if Wq.shape[0] != dim or Wq.shape[1] != dim:
+        raise ValueError(f"Wq shape mismatch: expected ({dim}, {dim}), got ({Wq.shape[0]}, {Wq.shape[1]})")
+    if Wk.shape[0] != dim or Wk.shape[1] != dim:
+        raise ValueError(f"Wk shape mismatch: expected ({dim}, {dim}), got ({Wk.shape[0]}, {Wk.shape[1]})")
+    if Wv.shape[0] != dim or Wv.shape[1] != dim:
+        raise ValueError(f"Wv shape mismatch: expected ({dim}, {dim}), got ({Wv.shape[0]}, {Wv.shape[1]})")
+    if Wo.shape[0] != dim or Wo.shape[1] != dim:
+        raise ValueError(f"Wo shape mismatch: expected ({dim}, {dim}), got ({Wo.shape[0]}, {Wo.shape[1]})")
+    if n_heads <= 0 or dim % n_heads != 0:
+        raise ValueError(f"Invalid head configuration: dim={dim}, n_heads={n_heads}")
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_softmax_attention_f32(
+        <float*>x.data,
+        <float*>Wq.data,
+        <float*>Wk.data,
+        <float*>Wv.data,
+        <float*>Wo.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+        n_heads,
+    )
+    return y
+
+
+def dispatch_softmax_attention_backward(cnp.ndarray[float, ndim=3] grad_out,
+                                          cnp.ndarray[float, ndim=3] x,
+                                          cnp.ndarray[float, ndim=2] Wq,
+                                          cnp.ndarray[float, ndim=2] Wk,
+                                          cnp.ndarray[float, ndim=2] Wv,
+                                          cnp.ndarray[float, ndim=2] Wo,
+                                          int64_t n_heads):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] grad_x = np.zeros((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_Wq = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_Wk = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_Wv = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_Wo = np.zeros((dim, dim), dtype=np.float32)
+    aria_softmax_attention_backward_f32(
+        <float*>grad_out.data,
+        <float*>x.data,
+        <float*>Wq.data,
+        <float*>Wk.data,
+        <float*>Wv.data,
+        <float*>Wo.data,
+        <float*>grad_x.data,
+        <float*>grad_Wq.data,
+        <float*>grad_Wk.data,
+        <float*>grad_Wv.data,
+        <float*>grad_Wo.data,
+        batch,
+        seq,
+        dim,
+        n_heads,
+    )
+    return grad_x, grad_Wq, grad_Wk, grad_Wv, grad_Wo
+
+
+def dispatch_linear_attention(cnp.ndarray[float, ndim=3] x,
+                                cnp.ndarray[float, ndim=2] Wq,
+                                cnp.ndarray[float, ndim=2] Wk,
+                                cnp.ndarray[float, ndim=2] Wv,
+                                cnp.ndarray[float, ndim=2] Wo):
+    """Export the native linear-attention kernel for direct bridge callers."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    if Wq.shape[0] != dim or Wq.shape[1] != dim:
+        raise ValueError(f"Wq shape mismatch: expected ({dim}, {dim}), got ({Wq.shape[0]}, {Wq.shape[1]})")
+    if Wk.shape[0] != dim or Wk.shape[1] != dim:
+        raise ValueError(f"Wk shape mismatch: expected ({dim}, {dim}), got ({Wk.shape[0]}, {Wk.shape[1]})")
+    if Wv.shape[0] != dim or Wv.shape[1] != dim:
+        raise ValueError(f"Wv shape mismatch: expected ({dim}, {dim}), got ({Wv.shape[0]}, {Wv.shape[1]})")
+    if Wo.shape[0] != dim or Wo.shape[1] != dim:
+        raise ValueError(f"Wo shape mismatch: expected ({dim}, {dim}), got ({Wo.shape[0]}, {Wo.shape[1]})")
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_linear_attention_f32(
+        <float*>x.data,
+        <float*>Wq.data,
+        <float*>Wk.data,
+        <float*>Wv.data,
+        <float*>Wo.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+    )
+    return y
+
+
+def dispatch_selective_scan_compiled(cnp.ndarray[float, ndim=3] x,
+                                       cnp.ndarray[float, ndim=1] A_log,
+                                       cnp.ndarray[float, ndim=1] dt_proj,
+                                       cnp.ndarray[float, ndim=2] B_weight,
+                                       cnp.ndarray[float, ndim=2] C_weight):
+    """Compiled selective-scan path matching synthesis semantics."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    if A_log.shape[0] != dim or dt_proj.shape[0] != dim:
+        raise ValueError(f"Selective scan vector mismatch: dim={dim}, A_log={A_log.shape[0]}, dt_proj={dt_proj.shape[0]}")
+    if B_weight.shape[0] != dim or B_weight.shape[1] != dim:
+        raise ValueError(f"B_weight shape mismatch: expected ({dim}, {dim}), got ({B_weight.shape[0]}, {B_weight.shape[1]})")
+    if C_weight.shape[0] != dim or C_weight.shape[1] != dim:
+        raise ValueError(f"C_weight shape mismatch: expected ({dim}, {dim}), got ({C_weight.shape[0]}, {C_weight.shape[1]})")
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_selective_scan_compiled_f32(
+        <float*>x.data,
+        <float*>A_log.data,
+        <float*>dt_proj.data,
+        <float*>B_weight.data,
+        <float*>C_weight.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+    )
+    return y
+
+
+def dispatch_selective_scan_compiled_backward(cnp.ndarray[float, ndim=3] grad_out,
+                                                cnp.ndarray[float, ndim=3] x,
+                                                cnp.ndarray[float, ndim=1] A_log,
+                                                cnp.ndarray[float, ndim=1] dt_proj,
+                                                cnp.ndarray[float, ndim=2] B_weight,
+                                                cnp.ndarray[float, ndim=2] C_weight):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] grad_x = np.zeros((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_A_log = np.zeros((dim,), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_dt_proj = np.zeros((dim,), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_B_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_C_weight = np.zeros((dim, dim), dtype=np.float32)
+    aria_selective_scan_compiled_backward_f32(
+        <float*>grad_out.data,
+        <float*>x.data,
+        <float*>A_log.data,
+        <float*>dt_proj.data,
+        <float*>B_weight.data,
+        <float*>C_weight.data,
+        <float*>grad_x.data,
+        <float*>grad_A_log.data,
+        <float*>grad_dt_proj.data,
+        <float*>grad_B_weight.data,
+        <float*>grad_C_weight.data,
+        batch,
+        seq,
+        dim,
+    )
+    return grad_x, grad_A_log, grad_dt_proj, grad_B_weight, grad_C_weight
+
+
+def dispatch_state_space_compiled(cnp.ndarray[float, ndim=3] x,
+                                    cnp.ndarray[float, ndim=2] ssm_A,
+                                    cnp.ndarray[float, ndim=2] ssm_B_weight,
+                                    cnp.ndarray[float, ndim=2] ssm_C_weight,
+                                    cnp.ndarray[float, ndim=1] ssm_D,
+                                    cnp.ndarray[float, ndim=2] ssm_dt_weight,
+                                    cnp.ndarray[float, ndim=1] ssm_dt_bias):
+    """Compiled state-space path matching synthesis semantics."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef int64_t state_dim = ssm_A.shape[1]
+    if ssm_A.shape[0] != dim:
+        raise ValueError(f"ssm_A shape mismatch: expected first dim {dim}, got {ssm_A.shape[0]}")
+    if ssm_B_weight.shape[0] != dim * state_dim or ssm_B_weight.shape[1] != dim:
+        raise ValueError(f"ssm_B_weight shape mismatch: expected ({dim * state_dim}, {dim}), got ({ssm_B_weight.shape[0]}, {ssm_B_weight.shape[1]})")
+    if ssm_C_weight.shape[0] != dim or ssm_C_weight.shape[1] != dim * state_dim:
+        raise ValueError(f"ssm_C_weight shape mismatch: expected ({dim}, {dim * state_dim}), got ({ssm_C_weight.shape[0]}, {ssm_C_weight.shape[1]})")
+    if ssm_D.shape[0] != dim:
+        raise ValueError(f"ssm_D shape mismatch: expected ({dim},), got ({ssm_D.shape[0]},)")
+    if ssm_dt_weight.shape[0] != dim or ssm_dt_weight.shape[1] != dim:
+        raise ValueError(f"ssm_dt_weight shape mismatch: expected ({dim}, {dim}), got ({ssm_dt_weight.shape[0]}, {ssm_dt_weight.shape[1]})")
+    if ssm_dt_bias.shape[0] != dim:
+        raise ValueError(f"ssm_dt_bias shape mismatch: expected ({dim},), got ({ssm_dt_bias.shape[0]},)")
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_state_space_compiled_f32(
+        <float*>x.data,
+        <float*>ssm_A.data,
+        <float*>ssm_B_weight.data,
+        <float*>ssm_C_weight.data,
+        <float*>ssm_D.data,
+        <float*>ssm_dt_weight.data,
+        <float*>ssm_dt_bias.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+        state_dim,
+    )
+    return y
+
+
+def dispatch_state_space_compiled_backward(cnp.ndarray[float, ndim=3] grad_out,
+                                             cnp.ndarray[float, ndim=3] x,
+                                             cnp.ndarray[float, ndim=2] ssm_A,
+                                             cnp.ndarray[float, ndim=2] ssm_B_weight,
+                                             cnp.ndarray[float, ndim=2] ssm_C_weight,
+                                             cnp.ndarray[float, ndim=1] ssm_D,
+                                             cnp.ndarray[float, ndim=2] ssm_dt_weight,
+                                             cnp.ndarray[float, ndim=1] ssm_dt_bias):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef int64_t state_dim = ssm_A.shape[1]
+    cdef cnp.ndarray[float, ndim=3] grad_x = np.zeros((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_ssm_A = np.zeros((dim, state_dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_ssm_B_weight = np.zeros((dim * state_dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_ssm_C_weight = np.zeros((dim, dim * state_dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_ssm_D = np.zeros((dim,), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_ssm_dt_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_ssm_dt_bias = np.zeros((dim,), dtype=np.float32)
+    aria_state_space_compiled_backward_f32(
+        <float*>grad_out.data,
+        <float*>x.data,
+        <float*>ssm_A.data,
+        <float*>ssm_B_weight.data,
+        <float*>ssm_C_weight.data,
+        <float*>ssm_D.data,
+        <float*>ssm_dt_weight.data,
+        <float*>ssm_dt_bias.data,
+        <float*>grad_x.data,
+        <float*>grad_ssm_A.data,
+        <float*>grad_ssm_B_weight.data,
+        <float*>grad_ssm_C_weight.data,
+        <float*>grad_ssm_D.data,
+        <float*>grad_ssm_dt_weight.data,
+        <float*>grad_ssm_dt_bias.data,
+        batch,
+        seq,
+        dim,
+        state_dim,
+    )
+    return grad_x, grad_ssm_A, grad_ssm_B_weight, grad_ssm_C_weight, grad_ssm_D, grad_ssm_dt_weight, grad_ssm_dt_bias
+
+
+def dispatch_gated_delta_compiled(cnp.ndarray[float, ndim=3] x,
+                                    cnp.ndarray[float, ndim=2] q_weight,
+                                    cnp.ndarray[float, ndim=2] k_weight,
+                                    cnp.ndarray[float, ndim=2] v_weight,
+                                    cnp.ndarray[float, ndim=2] alpha_weight,
+                                    cnp.ndarray[float, ndim=2] beta_weight,
+                                    cnp.ndarray[float, ndim=2] o_weight,
+                                    int64_t n_heads):
+    """Compiled gated-delta path matching synthesis semantics."""
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    if q_weight.shape[0] != dim or q_weight.shape[1] != dim:
+        raise ValueError(f"q_weight shape mismatch: expected ({dim}, {dim}), got ({q_weight.shape[0]}, {q_weight.shape[1]})")
+    if k_weight.shape[0] != dim or k_weight.shape[1] != dim:
+        raise ValueError(f"k_weight shape mismatch: expected ({dim}, {dim}), got ({k_weight.shape[0]}, {k_weight.shape[1]})")
+    if v_weight.shape[0] != dim or v_weight.shape[1] != dim:
+        raise ValueError(f"v_weight shape mismatch: expected ({dim}, {dim}), got ({v_weight.shape[0]}, {v_weight.shape[1]})")
+    if alpha_weight.shape[0] != dim or alpha_weight.shape[1] != dim:
+        raise ValueError(f"alpha_weight shape mismatch: expected ({dim}, {dim}), got ({alpha_weight.shape[0]}, {alpha_weight.shape[1]})")
+    if beta_weight.shape[0] != dim or beta_weight.shape[1] != dim:
+        raise ValueError(f"beta_weight shape mismatch: expected ({dim}, {dim}), got ({beta_weight.shape[0]}, {beta_weight.shape[1]})")
+    if o_weight.shape[0] != dim or o_weight.shape[1] != dim:
+        raise ValueError(f"o_weight shape mismatch: expected ({dim}, {dim}), got ({o_weight.shape[0]}, {o_weight.shape[1]})")
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_gated_delta_compiled_f32(
+        <float*>x.data,
+        <float*>q_weight.data,
+        <float*>k_weight.data,
+        <float*>v_weight.data,
+        <float*>alpha_weight.data,
+        <float*>beta_weight.data,
+        <float*>o_weight.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+        n_heads,
+    )
+    return y
+
+
+def dispatch_gated_delta_compiled_backward(cnp.ndarray[float, ndim=3] grad_out,
+                                             cnp.ndarray[float, ndim=3] x,
+                                             cnp.ndarray[float, ndim=2] q_weight,
+                                             cnp.ndarray[float, ndim=2] k_weight,
+                                             cnp.ndarray[float, ndim=2] v_weight,
+                                             cnp.ndarray[float, ndim=2] alpha_weight,
+                                             cnp.ndarray[float, ndim=2] beta_weight,
+                                             cnp.ndarray[float, ndim=2] o_weight,
+                                             int64_t n_heads):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] grad_x = np.zeros((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_q_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_k_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_v_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_alpha_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_beta_weight = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_o_weight = np.zeros((dim, dim), dtype=np.float32)
+    aria_gated_delta_compiled_backward_f32(
+        <float*>grad_out.data,
+        <float*>x.data,
+        <float*>q_weight.data,
+        <float*>k_weight.data,
+        <float*>v_weight.data,
+        <float*>alpha_weight.data,
+        <float*>beta_weight.data,
+        <float*>o_weight.data,
+        <float*>grad_x.data,
+        <float*>grad_q_weight.data,
+        <float*>grad_k_weight.data,
+        <float*>grad_v_weight.data,
+        <float*>grad_alpha_weight.data,
+        <float*>grad_beta_weight.data,
+        <float*>grad_o_weight.data,
+        batch,
+        seq,
+        dim,
+        n_heads,
+    )
+    return grad_x, grad_q_weight, grad_k_weight, grad_v_weight, grad_alpha_weight, grad_beta_weight, grad_o_weight
 
 
 def dispatch_gated_linear(cnp.ndarray[float, ndim=2] x,
@@ -728,6 +1226,130 @@ def dispatch_gather_topk(cnp.ndarray[float, ndim=2] scores,
     return out, out_indices
 
 
+def dispatch_conv1d_seq(cnp.ndarray[float, ndim=3] x,
+                          cnp.ndarray[float, ndim=3] weight,
+                          bias=None):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] bias_arr
+    if bias is None:
+        bias_arr = np.zeros((dim,), dtype=np.float32)
+    else:
+        bias_arr = np.ascontiguousarray(bias, dtype=np.float32)
+    aria_conv1d_seq_f32(
+        <float*>x.data,
+        <float*>weight.data,
+        <float*>bias_arr.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+    )
+    return y
+
+
+def dispatch_swiglu(cnp.ndarray[float, ndim=2] x,
+                      cnp.ndarray[float, ndim=2] w_gate,
+                      cnp.ndarray[float, ndim=2] w_up,
+                      cnp.ndarray[float, ndim=2] w_down,
+                      bias_gate=None,
+                      bias_up=None,
+                      bias_down=None):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t dim = x.shape[1]
+    cdef int64_t hidden_dim = w_gate.shape[0]
+    cdef cnp.ndarray[float, ndim=2] y = np.empty((batch, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] tmp_gate = np.empty((batch, hidden_dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] tmp_up = np.empty((batch, hidden_dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] b_gate_arr
+    cdef cnp.ndarray[float, ndim=1] b_up_arr
+    cdef cnp.ndarray[float, ndim=1] b_down_arr
+    if bias_gate is None:
+        b_gate_arr = np.zeros((hidden_dim,), dtype=np.float32)
+    else:
+        b_gate_arr = np.ascontiguousarray(bias_gate, dtype=np.float32)
+    if bias_up is None:
+        b_up_arr = np.zeros((hidden_dim,), dtype=np.float32)
+    else:
+        b_up_arr = np.ascontiguousarray(bias_up, dtype=np.float32)
+    if bias_down is None:
+        b_down_arr = np.zeros((dim,), dtype=np.float32)
+    else:
+        b_down_arr = np.ascontiguousarray(bias_down, dtype=np.float32)
+    aria_swiglu_f32(
+        <float*>x.data,
+        <float*>w_gate.data,
+        <float*>w_up.data,
+        <float*>w_down.data,
+        <float*>b_gate_arr.data,
+        <float*>b_up_arr.data,
+        <float*>b_down_arr.data,
+        <float*>y.data,
+        <float*>tmp_gate.data,
+        <float*>tmp_up.data,
+        batch,
+        dim,
+        hidden_dim,
+    )
+    return y
+
+
+def dispatch_rwkv_channel(cnp.ndarray[float, ndim=3] x,
+                            cnp.ndarray[float, ndim=1] mix_k,
+                            cnp.ndarray[float, ndim=1] mix_r,
+                            cnp.ndarray[float, ndim=2] w_k,
+                            cnp.ndarray[float, ndim=2] w_r,
+                            cnp.ndarray[float, ndim=2] w_v):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef int64_t hidden_dim = w_k.shape[0]
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=3] tmp_xk = np.empty((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=3] tmp_xr = np.empty((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=3] tmp_k = np.empty((batch, seq, hidden_dim), dtype=np.float32)
+    aria_rwkv_channel_f32(
+        <float*>x.data,
+        <float*>mix_k.data,
+        <float*>mix_r.data,
+        <float*>w_k.data,
+        <float*>w_r.data,
+        <float*>w_v.data,
+        <float*>y.data,
+        <float*>tmp_xk.data,
+        <float*>tmp_xr.data,
+        <float*>tmp_k.data,
+        batch,
+        seq,
+        dim,
+        hidden_dim,
+    )
+    return y
+
+
+def dispatch_depth_weighted_proj(cnp.ndarray[float, ndim=3] x,
+                                   cnp.ndarray[float, ndim=2] depth_scorer,
+                                   cnp.ndarray[float, ndim=3] step_projs):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef int64_t max_depth = depth_scorer.shape[0]
+    cdef cnp.ndarray[float, ndim=3] y = np.empty((batch, seq, dim), dtype=np.float32)
+    aria_depth_weighted_proj_f32(
+        <float*>x.data,
+        <float*>depth_scorer.data,
+        <float*>step_projs.data,
+        <float*>y.data,
+        batch,
+        seq,
+        dim,
+        max_depth,
+    )
+    return y
+
+
 def dispatch_rwkv_time_mixing(cnp.ndarray[float, ndim=3] x,
                                 cnp.ndarray[float, ndim=1] w_decay,
                                 cnp.ndarray[float, ndim=1] u_bonus,
@@ -745,6 +1367,43 @@ def dispatch_rwkv_time_mixing(cnp.ndarray[float, ndim=3] x,
                                 <float*>y.data,
                                 batch, seq, dim)
     return y
+
+
+def dispatch_rwkv_time_mixing_backward(cnp.ndarray[float, ndim=3] grad_out,
+                                         cnp.ndarray[float, ndim=3] x,
+                                         cnp.ndarray[float, ndim=1] w_decay,
+                                         cnp.ndarray[float, ndim=1] u_bonus,
+                                         cnp.ndarray[float, ndim=2] W_k,
+                                         cnp.ndarray[float, ndim=2] W_v,
+                                         cnp.ndarray[float, ndim=2] W_r):
+    cdef int64_t batch = x.shape[0]
+    cdef int64_t seq = x.shape[1]
+    cdef int64_t dim = x.shape[2]
+    cdef cnp.ndarray[float, ndim=3] grad_x = np.zeros((batch, seq, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_w_decay = np.zeros((dim,), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=1] grad_u_bonus = np.zeros((dim,), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_W_k = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_W_v = np.zeros((dim, dim), dtype=np.float32)
+    cdef cnp.ndarray[float, ndim=2] grad_W_r = np.zeros((dim, dim), dtype=np.float32)
+    aria_rwkv_time_mixing_backward_f32(
+        <float*>grad_out.data,
+        <float*>x.data,
+        <float*>w_decay.data,
+        <float*>u_bonus.data,
+        <float*>W_k.data,
+        <float*>W_v.data,
+        <float*>W_r.data,
+        <float*>grad_x.data,
+        <float*>grad_w_decay.data,
+        <float*>grad_u_bonus.data,
+        <float*>grad_W_k.data,
+        <float*>grad_W_v.data,
+        <float*>grad_W_r.data,
+        batch,
+        seq,
+        dim,
+    )
+    return grad_x, grad_w_decay, grad_u_bonus, grad_W_k, grad_W_v, grad_W_r
 
 
 # ── Adaptive routing dispatch (C2 bridge) ─────────────────────────
@@ -1092,4 +1751,5 @@ def has_backward(str op_name):
            op_name in _UNARY_BACKWARD_OUTPUT_OPS or \
            op_name in ('add', 'mul', 'sub', 'maximum', 'minimum', 'div_safe',
                        'matmul', 'softmax', 'layernorm', 'rmsnorm',
-                       'embedding_lookup', 'gated_linear')
+                       'embedding_lookup', 'gated_linear', 'softmax_attention',
+                       'selective_scan', 'state_space', 'gated_delta')

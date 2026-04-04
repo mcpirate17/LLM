@@ -1,17 +1,37 @@
 #![cfg(feature = "python")]
 
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArrayDyn};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::arena::Arena;
+use crate::corpus::{
+    build_graph_training_corpus_json, build_predictor_training_corpus_json,
+    fingerprint_notebook_graph_json,
+};
+use crate::executor::{
+    execute_backward_with_arena, execute_forward_saving_activations,
+    execute_forward_saving_activations_multi_input, execute_with_arena,
+    execute_with_arena_multi_input, NativeKernelDispatch,
+};
 use crate::ffi;
 use crate::graph::GraphIR;
-use crate::executor::{
-    execute_with_arena, execute_forward_saving_activations,
-    execute_backward_with_arena, NativeKernelDispatch,
-};
+
+fn readonly_array_slices<'py>(
+    inputs: &'py [PyReadonlyArrayDyn<'py, f32>],
+) -> PyResult<Vec<&'py [f32]>> {
+    let mut slices = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let slice = input
+            .as_slice()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        slices.push(slice);
+    }
+    Ok(slices)
+}
 
 /// Parse a graph IR JSON string, validate it, and return the node count.
 #[pyfunction]
@@ -33,6 +53,27 @@ fn topological_order(json: &str) -> PyResult<Vec<u32>> {
         .topological_order()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(order.into_iter().map(|id| id.0).collect())
+}
+
+/// Compute the canonical notebook-graph fingerprint from stored graph_json.
+#[pyfunction]
+fn fingerprint_notebook_graph(json: &str) -> PyResult<String> {
+    fingerprint_notebook_graph_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// Build a deduped graph-training corpus from the notebook DB and return it as JSON.
+#[pyfunction]
+fn build_graph_training_corpus(db_path: &str) -> PyResult<String> {
+    build_graph_training_corpus_json(Path::new(db_path))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+/// Build a deduped predictor-training corpus from the notebook DB and return it as JSON.
+#[pyfunction]
+fn build_predictor_training_corpus(db_path: &str) -> PyResult<String> {
+    build_predictor_training_corpus_json(Path::new(db_path))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
 /// Execute a graph IR using the native kernel library.
@@ -68,7 +109,10 @@ fn execute_graph_with_stats(py: Python<'_>, json: &str, input: Vec<f32>) -> PyRe
     dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
     dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
     dict.set_item("arena_alloc_count", result.arena_stats.arena_alloc_count)?;
-    dict.set_item("heap_fallback_count", result.arena_stats.heap_fallback_count)?;
+    dict.set_item(
+        "heap_fallback_count",
+        result.arena_stats.heap_fallback_count,
+    )?;
 
     // Include profiling data when available.
     if !result.node_profiles.is_empty() {
@@ -86,6 +130,84 @@ fn execute_graph_with_stats(py: Python<'_>, json: &str, input: Vec<f32>) -> PyRe
         dict.set_item("peak_memory_bytes", result.peak_memory_bytes)?;
     }
 
+    Ok(dict.into())
+}
+
+/// Execute a graph IR using multiple distinct input buffers.
+///
+/// Inputs are bound to input nodes in ascending input-node order.
+#[pyfunction]
+fn execute_graph_multi_input(json: &str, inputs: Vec<Vec<f32>>) -> PyResult<Vec<f32>> {
+    let graph = GraphIR::from_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let input_slices: Vec<&[f32]> = inputs.iter().map(|input| input.as_slice()).collect();
+    let result = execute_with_arena_multi_input(&graph, &NativeKernelDispatch, &input_slices)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(result.output)
+}
+
+/// Execute a graph IR using multiple contiguous float32 array inputs.
+#[pyfunction]
+fn execute_graph_multi_input_arrays<'py>(
+    py: Python<'py>,
+    json: &str,
+    inputs: Vec<PyReadonlyArrayDyn<'py, f32>>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let graph = GraphIR::from_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let input_slices = readonly_array_slices(&inputs)?;
+    let result = execute_with_arena_multi_input(&graph, &NativeKernelDispatch, &input_slices)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(result.output.into_pyarray_bound(py))
+}
+
+/// Execute a graph IR with distinct input buffers and return arena stats.
+#[pyfunction]
+fn execute_graph_multi_input_with_stats(
+    py: Python<'_>,
+    json: &str,
+    inputs: Vec<Vec<f32>>,
+) -> PyResult<PyObject> {
+    let graph = GraphIR::from_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let input_slices: Vec<&[f32]> = inputs.iter().map(|input| input.as_slice()).collect();
+    let result = execute_with_arena_multi_input(&graph, &NativeKernelDispatch, &input_slices)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("output", result.output)?;
+    dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
+    dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
+    dict.set_item("arena_alloc_count", result.arena_stats.arena_alloc_count)?;
+    dict.set_item(
+        "heap_fallback_count",
+        result.arena_stats.heap_fallback_count,
+    )?;
+    Ok(dict.into())
+}
+
+/// Execute a graph IR with contiguous float32 array inputs and return arena stats.
+#[pyfunction]
+fn execute_graph_multi_input_arrays_with_stats<'py>(
+    py: Python<'py>,
+    json: &str,
+    inputs: Vec<PyReadonlyArrayDyn<'py, f32>>,
+) -> PyResult<PyObject> {
+    let graph = GraphIR::from_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let input_slices = readonly_array_slices(&inputs)?;
+    let result = execute_with_arena_multi_input(&graph, &NativeKernelDispatch, &input_slices)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("output", result.output.into_pyarray_bound(py))?;
+    dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
+    dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
+    dict.set_item("arena_alloc_count", result.arena_stats.arena_alloc_count)?;
+    dict.set_item(
+        "heap_fallback_count",
+        result.arena_stats.heap_fallback_count,
+    )?;
     Ok(dict.into())
 }
 
@@ -154,6 +276,64 @@ fn execute_graph_forward_saved(py: Python<'_>, json: &str, input: Vec<f32>) -> P
     Ok(dict.into())
 }
 
+#[pyfunction]
+fn execute_graph_forward_saved_multi_input(
+    py: Python<'_>,
+    json: &str,
+    inputs: Vec<Vec<f32>>,
+) -> PyResult<PyObject> {
+    let graph = GraphIR::from_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let input_slices: Vec<&[f32]> = inputs.iter().map(|input| input.as_slice()).collect();
+    let result = execute_forward_saving_activations_multi_input(
+        &graph,
+        &NativeKernelDispatch,
+        &input_slices,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("output", result.output.into_pyarray_bound(py))?;
+
+    let saved_dict = PyDict::new_bound(py);
+    for (node_id, activation) in result.saved_activations {
+        saved_dict.set_item(node_id, activation.into_pyarray_bound(py))?;
+    }
+    dict.set_item("saved_activations", saved_dict)?;
+    dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
+    dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
+    Ok(dict.into())
+}
+
+#[pyfunction]
+fn execute_graph_forward_saved_multi_input_arrays<'py>(
+    py: Python<'py>,
+    json: &str,
+    inputs: Vec<PyReadonlyArrayDyn<'py, f32>>,
+) -> PyResult<PyObject> {
+    let graph = GraphIR::from_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let input_slices = readonly_array_slices(&inputs)?;
+    let result = execute_forward_saving_activations_multi_input(
+        &graph,
+        &NativeKernelDispatch,
+        &input_slices,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("output", result.output)?;
+
+    let saved_dict = PyDict::new_bound(py);
+    for (node_id, activation) in &result.saved_activations {
+        saved_dict.set_item(*node_id, activation.clone())?;
+    }
+    dict.set_item("saved_activations", saved_dict)?;
+    dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
+    dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
+    Ok(dict.into())
+}
+
 /// Execute the backward pass through a graph.
 ///
 /// Args:
@@ -201,9 +381,27 @@ fn execute_graph_backward(
 fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_graph_ir, m)?)?;
     m.add_function(wrap_pyfunction!(topological_order, m)?)?;
+    m.add_function(wrap_pyfunction!(fingerprint_notebook_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(build_graph_training_corpus, m)?)?;
+    m.add_function(wrap_pyfunction!(build_predictor_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_with_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(execute_graph_multi_input, m)?)?;
+    m.add_function(wrap_pyfunction!(execute_graph_multi_input_with_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(execute_graph_multi_input_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        execute_graph_multi_input_arrays_with_stats,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(execute_graph_forward_saved, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        execute_graph_forward_saved_multi_input,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        execute_graph_forward_saved_multi_input_arrays,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(execute_graph_backward, m)?)?;
     m.add_function(wrap_pyfunction!(arena_test, m)?)?;
     m.add_function(wrap_pyfunction!(profiler_enable, m)?)?;

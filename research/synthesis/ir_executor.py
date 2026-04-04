@@ -19,9 +19,9 @@ from .graph import ComputationGraphIR
 from .ir_executor_native import configure_native_execution
 from .ir_executor_plan import build_executor_plan
 from .ir_executor_runtime import (
-    execute_plan_entry,
-    initialize_execution_frame,
-    maybe_dispatch_native_segment,
+    execute_plan_loop,
+    execute_plan_loop_with_native_segments,
+    initialize_execution_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,12 @@ class IRExecutor(nn.Module):
         self.configs = ir.configs
         self._subgraph_dispatcher = None
         self._native_chain_segments = ()
-        self._native_chain_segments_by_plan_index = {}
+        self._native_chain_segment_slots = ()
         self._native_forward_wrapper = None
+        self._native_setup_reason = None
+        self._native_setup_detail = None
+        self._output_idx_int = int(ir.output_node_idx)
+        self._has_native_chain_slots = False
         self._last_execution_path = "uninitialized"
         self._execution_stats = {
             "native_subgraph_dispatches": 0,
@@ -73,8 +77,10 @@ class IRExecutor(nn.Module):
         self._counts_original = plan.counts_original
         self._counts_buf = plan.counts_buf
         self._input_node_indices = plan.input_node_indices
-        self._exec_plan = plan.exec_plan
-        self._exec_plan_node_indices = plan.exec_plan_node_indices
+        self._exec_node_indices = plan.exec_node_indices
+        self._exec_in1_indices = plan.exec_in1_indices
+        self._exec_in2_indices = plan.exec_in2_indices
+        self._exec_ops = plan.exec_ops
 
         # torch.compile can dominate runtime for short-lived candidate models.
         # Keep it opt-in so screening throughput does not get bottlenecked by
@@ -91,15 +97,17 @@ class IRExecutor(nn.Module):
         native_cfg = configure_native_execution(
             self,
             self.source_graph,
+            flat_ops=self._flat_ops,
             op_codes_list=self._op_codes_list,
-            exec_plan_node_indices=self._exec_plan_node_indices,
+            exec_plan_node_indices=self._exec_node_indices,
         )
         self._subgraph_dispatcher = native_cfg.subgraph_dispatcher
         self._native_chain_segments = native_cfg.native_chain_segments
-        self._native_chain_segments_by_plan_index = (
-            native_cfg.native_chain_segments_by_plan_index or {}
-        )
+        self._native_chain_segment_slots = native_cfg.native_chain_segment_slots
+        self._has_native_chain_slots = bool(self._native_chain_segment_slots)
         self._native_forward_wrapper = native_cfg.native_forward_wrapper
+        self._native_setup_reason = native_cfg.setup_reason
+        self._native_setup_detail = native_cfg.setup_detail
 
     def _wrapper_stats(self) -> Tuple[int, int]:
         wrapper = self._native_forward_wrapper
@@ -126,36 +134,46 @@ class IRExecutor(nn.Module):
         native_chain_dispatches_before = self._execution_stats[
             "native_chain_dispatches"
         ]
-        frame = initialize_execution_frame(
+        counts, node_outputs, captured = initialize_execution_state(
             n_nodes=len(self._op_codes_list),
             counts_buf=self._counts_buf,
             counts_original=self._counts_original,
-            output_idx=int(self.output_node_idx),
             input_node_indices=self._input_node_indices,
             x=x,
             capture_intermediates=capture_intermediates,
         )
 
-        plan_index = 0
-        while plan_index < len(self._exec_plan):
-            segment = (
-                self._native_chain_segments_by_plan_index.get(plan_index)
-                if not capture_intermediates
-                else None
+        if capture_intermediates or not self._has_native_chain_slots:
+            execute_plan_loop(
+                counts=counts,
+                node_outputs=node_outputs,
+                captured=captured,
+                output_idx=self._output_idx_int,
+                exec_node_indices=self._exec_node_indices,
+                exec_in1_indices=self._exec_in1_indices,
+                exec_in2_indices=self._exec_in2_indices,
+                exec_ops=self._exec_ops,
             )
-            if segment is not None and maybe_dispatch_native_segment(frame, segment):
-                plan_index = segment.end_plan_index + 1
-                self._execution_stats["native_chain_dispatches"] += 1
-                continue
+        else:
+            self._execution_stats["native_chain_dispatches"] += (
+                execute_plan_loop_with_native_segments(
+                    counts=counts,
+                    node_outputs=node_outputs,
+                    captured=captured,
+                    output_idx=self._output_idx_int,
+                    exec_node_indices=self._exec_node_indices,
+                    exec_in1_indices=self._exec_in1_indices,
+                    exec_in2_indices=self._exec_in2_indices,
+                    exec_ops=self._exec_ops,
+                    chain_segment_slots=self._native_chain_segment_slots,
+                )
+            )
 
-            execute_plan_entry(frame, self._exec_plan[plan_index])
-            plan_index += 1
-
-        res = frame.node_outputs[frame.output_idx]
+        res = node_outputs[self._output_idx_int]
         if res is None:
             logger.warning(
                 "IRExecutor: output node %d produced None, returning input",
-                frame.output_idx,
+                self._output_idx_int,
             )
             res = x
 
@@ -171,16 +189,27 @@ class IRExecutor(nn.Module):
             self._last_execution_path = "python_ir_loop"
             self._execution_stats["python_ir_loop_fallbacks"] += 1
 
-        if frame.captured is not None:
-            return res, frame.captured
+        if captured is not None:
+            return res, captured
         return res
 
     @property
     def execution_stats(self) -> Dict[str, int | str | bool]:
         wrapper_dispatches, wrapper_fallbacks = self._wrapper_stats()
+        dispatcher_stats = (
+            self._subgraph_dispatcher.stats
+            if self._subgraph_dispatcher is not None
+            and hasattr(self._subgraph_dispatcher, "stats")
+            else {}
+        )
         return {
             "last_execution_path": self._last_execution_path,
             "native_subgraph_available": self._subgraph_dispatcher is not None,
+            "native_setup_reason": self._native_setup_reason,
+            "native_setup_detail": self._native_setup_detail,
+            "native_subgraph_refusal_reason": dispatcher_stats.get(
+                "last_refusal_reason"
+            ),
             "native_chain_segments": len(self._native_chain_segments),
             "partial_native_available": self._native_forward_wrapper is not None,
             "partial_native_dispatches": wrapper_dispatches,

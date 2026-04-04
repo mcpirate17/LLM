@@ -19,6 +19,7 @@ import gc
 import json
 import logging
 import os
+import random
 import signal
 import sqlite3
 import sys
@@ -59,8 +60,12 @@ from research.synthesis.grammar import (
     generate_layer_graph,
     batch_generate,
 )
+from research.synthesis.grammar_support import OP_TO_TEMPLATE
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
 from research.synthesis.compiler import compile_model
+from research.synthesis.graph import ComputationGraph
+from research.synthesis.motifs import VALIDATED_MOTIFS, resolve_step
+from research.synthesis.templates import apply_template
 from research.eval.sandbox import safe_eval
 from research.eval.screening_rapid import RapidScreeningCheck
 
@@ -162,11 +167,24 @@ def discover_targets(
         conn = sqlite3.connect(db_path, timeout=5)
         conn.row_factory = sqlite3.Row
         try:
-            rows = conn.execute(
-                "SELECT op_name, n_used FROM op_success_rates"
-            ).fetchall()
-            for r in rows:
-                observed[r["op_name"]] = r["n_used"]
+            tables = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "op_stats" in tables:
+                rows = conn.execute(
+                    "SELECT op_name, eval_count FROM op_stats"
+                ).fetchall()
+                for r in rows:
+                    observed[r["op_name"]] = int(r["eval_count"] or 0)
+            elif "op_success_rates" in tables:
+                rows = conn.execute(
+                    "SELECT op_name, n_used FROM op_success_rates"
+                ).fetchall()
+                for r in rows:
+                    observed[r["op_name"]] = int(r["n_used"] or 0)
         finally:
             conn.close()
 
@@ -201,6 +219,52 @@ def _find_motifs_containing_op(op_name: str) -> List[str]:
     return [
         m.name for m in ALL_MOTIFS if any(step.op_name == op_name for step in m.steps)
     ]
+
+
+def _build_graph_from_motif(motif_name: str, seed: int, model_dim: int):
+    """Build a minimal graph from a validated motif."""
+    motif = VALIDATED_MOTIFS[motif_name]
+    g = ComputationGraph(model_dim=model_dim)
+    current = g.add_input()
+    rng = random.Random(seed)
+
+    for i, step in enumerate(motif.steps):
+        next_op = motif.steps[i + 1].op_name if i + 1 < len(motif.steps) else None
+        prev_op = g.nodes[current].op_name if not g.nodes[current].is_input else None
+        op_name, config = resolve_step(step, rng, prev_op=prev_op, next_op=next_op)
+        config = dict(config or {})
+
+        cur_dim = g.nodes[current].output_shape.dim
+        prim = PRIMITIVE_REGISTRY.get(op_name)
+        n_inputs = prim.n_inputs if prim else 1
+        inputs = [current]
+        if n_inputs == 2:
+            inp2 = g.add_op("linear_proj", [current], config={"out_dim": cur_dim})
+            inputs = [current, inp2]
+
+        if op_name in ("linear_proj", "fused_linear_gelu", "gated_linear"):
+            config.setdefault("out_dim", model_dim)
+        elif op_name == "linear_proj_down":
+            config.setdefault("out_dim", max(cur_dim // 2, 4))
+        elif op_name == "linear_proj_up":
+            config.setdefault("out_dim", model_dim)
+        elif op_name in (
+            "nm_sparse_linear",
+            "block_sparse_linear",
+            "semi_structured_2_4_linear",
+            "ternary_projection",
+            "kronecker_linear",
+        ):
+            config.setdefault("out_dim", model_dim)
+
+        current = g.add_op(op_name, inputs, config=config)
+
+    out_dim = g.nodes[current].output_shape.dim
+    if out_dim != model_dim:
+        current = g.add_op("linear_proj", [current], config={"out_dim": model_dim})
+
+    g.set_output(current)
+    return g
 
 
 def _make_config_for_op(
@@ -257,6 +321,50 @@ def generate_forced_graph(
     Returns (graph, retry_count) or (None, max_retries) if all attempts fail.
     """
     seen = seen_fingerprints if seen_fingerprints is not None else set()
+
+    template_name = OP_TO_TEMPLATE.get(op_name)
+    if template_name:
+        dim = base_config.model_dim if base_config else model_dim
+        for attempt in range(max_retries):
+            try:
+                g = ComputationGraph(model_dim=dim)
+                inp = g.add_input()
+                out = apply_template(
+                    g,
+                    inp,
+                    random.Random(seed + attempt * 31),
+                    template_name=template_name,
+                )
+                g.set_output(out)
+                if op_name not in _ops_in_graph(g):
+                    continue
+                fp = g.fingerprint()
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                return g, attempt
+            except (ValueError, RuntimeError):
+                continue
+
+    motifs = _find_motifs_containing_op(op_name)
+    if motifs:
+        dim = base_config.model_dim if base_config else model_dim
+        for attempt in range(max_retries):
+            motif_name = motifs[attempt % len(motifs)]
+            try:
+                g = _build_graph_from_motif(
+                    motif_name, seed=seed + attempt * 31, model_dim=dim
+                )
+                if op_name not in _ops_in_graph(g):
+                    continue
+                fp = g.fingerprint()
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                return g, attempt
+            except (ValueError, RuntimeError):
+                continue
+
     cfg = _make_config_for_op(
         op_name,
         base_config,
@@ -1337,8 +1445,9 @@ def main():
     )
     parser.add_argument(
         "--record",
-        action="store_true",
-        help="Record results to lab_notebook.db (updates op_success_rates, program_results)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Record results to lab_notebook.db (default: on)",
     )
     parser.add_argument(
         "--ops",

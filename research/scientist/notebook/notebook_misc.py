@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from functools import lru_cache
 from pathlib import Path
 import re
 import time
@@ -11,6 +12,33 @@ import uuid
 from typing import Any, Dict, List, Optional
 from ..json_utils import fast_loads as _json_loads
 from ..thresholds import GPT2_REF
+from ...synthesis.templates import TEMPLATES
+
+
+@lru_cache(maxsize=8192)
+def _cached_extract_op_bigrams(graph_json: str) -> tuple[str, ...]:
+    try:
+        data = _json_loads(graph_json)
+    except (json.JSONDecodeError, TypeError):
+        return ()
+    nodes = data.get("nodes", {})
+    if not isinstance(nodes, dict):
+        return ()
+    bigrams: set[str] = set()
+    for nd in nodes.values():
+        if not isinstance(nd, dict):
+            continue
+        op = nd.get("op_name", "")
+        if not op or op == "input":
+            continue
+        for inp in nd.get("input_ids", ()):
+            parent = nodes.get(str(inp), {})
+            if not isinstance(parent, dict):
+                continue
+            pop = parent.get("op_name", "")
+            if pop and pop != "input":
+                bigrams.add(f"{pop}->{op}")
+    return tuple(sorted(bigrams))
 
 
 class _MiscMixin:
@@ -36,21 +64,27 @@ class _MiscMixin:
 
     @staticmethod
     def _infer_template_slot_counts() -> Dict[str, int]:
-        template_file = (
-            Path(__file__).resolve().parents[2] / "synthesis" / "templates.py"
-        )
-        try:
-            source = template_file.read_text(encoding="utf-8")
-        except OSError:
-            return {}
         counts: Dict[str, int] = {}
-        matches = list(re.finditer(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", source, re.M))
-        for idx, match in enumerate(matches):
-            name = match.group(1)
-            start = match.start()
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(source)
-            body = source[start:end]
-            counts[name] = body.count("_pick_compatible_motif_from_classes(")
+        template_dir = Path(__file__).resolve().parents[2] / "synthesis"
+        template_files = sorted(template_dir.glob("_templates*.py"))
+        for template_file in template_files:
+            try:
+                source = template_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            matches = list(
+                re.finditer(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", source, re.M)
+            )
+            for idx, match in enumerate(matches):
+                name = match.group(1)
+                start = match.start()
+                end = (
+                    matches[idx + 1].start() if idx + 1 < len(matches) else len(source)
+                )
+                body = source[start:end]
+                counts[name.removeprefix("tpl_")] = body.count(
+                    "_pick_compatible_motif("
+                ) + body.count("_pick_compatible_motif_from_classes(")
         return counts
 
     def get_template_slot_observability(self, limit: int = 8) -> Dict[str, Any]:
@@ -372,8 +406,15 @@ class _MiscMixin:
 
         template_rows = [summarize_template(stat) for stat in template_stats.values()]
         template_rows = [row for row in template_rows if row["n_used"] > 0]
+        active_template_names = frozenset(TEMPLATES)
+        active_template_rows = [
+            row for row in template_rows if row["name"] in active_template_names
+        ]
+        inactive_template_rows = [
+            row for row in template_rows if row["name"] not in active_template_names
+        ]
         top_templates = sorted(
-            template_rows,
+            active_template_rows,
             key=lambda row: (
                 -(row["s1_rate"] or 0.0),
                 row["avg_validation_loss_ratio"]
@@ -385,7 +426,7 @@ class _MiscMixin:
             ),
         )[:limit]
         struggling_templates = sorted(
-            [row for row in template_rows if row["n_used"] >= 3],
+            [row for row in active_template_rows if row["n_used"] >= 3],
             key=lambda row: (
                 row["s1_rate"] or 0.0,
                 row["avg_validation_loss_ratio"]
@@ -446,7 +487,14 @@ class _MiscMixin:
                 }
             )
         slot_rows = sorted(
-            [row for row in slot_rows if row["n_used"] >= 2],
+            [
+                row
+                for row in slot_rows
+                if row["n_used"] >= 2
+                and row["template_name"] in active_template_names
+                and row["slot_index"]
+                < int(slot_counts.get(row["template_name"], 0) or 0)
+            ],
             key=lambda row: (
                 row["s1_rate"] if row["s1_rate"] is not None else 1.0,
                 row["avg_loss_ratio"] if row["avg_loss_ratio"] is not None else 999.0,
@@ -537,7 +585,11 @@ class _MiscMixin:
             )
 
         zero_slot_templates = sorted(
-            [name for name, count in slot_counts.items() if count == 0]
+            [
+                name
+                for name, count in slot_counts.items()
+                if count == 0 and name in active_template_names
+            ]
         )[:10]
 
         sorted_buckets = sorted(
@@ -628,20 +680,25 @@ class _MiscMixin:
                     if motifs_per_graph
                     else 0.0
                 ),
-                "templates_tracked": len(template_rows),
+                "templates_tracked": len(active_template_rows),
                 "motifs_tracked": len(motif_rows),
                 "zero_slot_templates": zero_slot_templates,
+                "inactive_templates_tracked": len(inactive_template_rows),
+                "inactive_template_names": sorted(
+                    row["name"] for row in inactive_template_rows
+                )[:10],
                 "routing_fast_lane_templates": sum(
                     1
-                    for row in template_rows
+                    for row in active_template_rows
                     if (row.get("routing_fast_lane_runs") or 0) > 0
                 ),
                 "routing_fast_lane_runs": sum(
-                    int(row.get("routing_fast_lane_runs") or 0) for row in template_rows
+                    int(row.get("routing_fast_lane_runs") or 0)
+                    for row in active_template_rows
                 ),
                 "routing_fast_lane_positive_templates": sum(
                     1
-                    for row in template_rows
+                    for row in active_template_rows
                     if (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
                     and (row.get("routing_fast_lane_runs") or 0) >= 3
                 ),
@@ -755,22 +812,9 @@ class _MiscMixin:
         sorted deduplicated list, giving a compact structural fingerprint
         of what-connects-to-what.
         """
-        try:
-            data = _json_loads(graph_json)
-        except (json.JSONDecodeError, TypeError):
+        if not isinstance(graph_json, str) or not graph_json:
             return []
-        nodes = data.get("nodes", {})
-        bigrams: set = set()
-        for nid, nd in nodes.items():
-            op = nd.get("op_name", "")
-            if not op or op == "input":
-                continue
-            for inp in nd.get("input_ids", []):
-                parent = nodes.get(str(inp), {})
-                pop = parent.get("op_name", "")
-                if pop and pop != "input":
-                    bigrams.add(f"{pop}->{op}")
-        return sorted(bigrams)
+        return list(_cached_extract_op_bigrams(graph_json))
 
     def get_entries(
         self,

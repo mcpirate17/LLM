@@ -23,7 +23,10 @@ impl Arena {
 
     /// Create a new arena with a custom alignment (must be a power of two).
     pub fn with_alignment(capacity: usize, alignment: usize) -> Self {
-        assert!(alignment.is_power_of_two(), "alignment must be a power of two");
+        assert!(
+            alignment.is_power_of_two(),
+            "alignment must be a power of two"
+        );
         Self {
             buffer: vec![0u8; capacity],
             alignment,

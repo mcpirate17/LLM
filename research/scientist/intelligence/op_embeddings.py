@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .ml_corpus import load_deduped_graph_training_rows
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NOTEBOOK_DB = Path(__file__).parents[2] / "lab_notebook.db"
@@ -431,23 +433,20 @@ def _extract_cooccurrence_pairs(
         return positive, negative
 
     try:
-        conn = sqlite3.connect(str(db_path), timeout=10)
-        conn.execute("PRAGMA busy_timeout=10000")
-
-        where_clause = "WHERE graph_json IS NOT NULL"
-        if temporal_days is not None:
-            cutoff = time.time() - temporal_days * 86400
-            where_clause += f" AND timestamp > {cutoff}"
-
-        rows = conn.execute(
-            f"SELECT graph_json, stage1_passed FROM program_results {where_clause}"
-        ).fetchall()
-        conn.close()
+        rows = load_deduped_graph_training_rows(db_path)
     except Exception as e:
         logger.warning("Failed to load co-occurrence data: %s", e)
         return positive, negative
 
-    for graph_json, s1_passed in rows:
+    cutoff = None
+    if temporal_days is not None:
+        cutoff = time.time() - temporal_days * 86400
+
+    for row in rows:
+        if cutoff is not None and float(row.get("latest_timestamp", 0.0)) <= cutoff:
+            continue
+        graph_json = row["graph_json"]
+        s1_passed = row["stage1_any_passed"]
         try:
             g = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
         except (json.JSONDecodeError, TypeError):

@@ -1,6 +1,6 @@
 """Kernel handler for geometric_product — delegates to research.mathspaces.clifford."""
 
-from runtime.fallback_templates import make_mathspace_binary_handler
+from aria_designer.runtime.fallback_templates import make_mathspace_binary_handler
 
 ComponentHandler = make_mathspace_binary_handler(
     "clifford_geometric_product_cl30",

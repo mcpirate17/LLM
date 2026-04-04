@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ctypes
 from contextlib import contextmanager
 
 import pytest
@@ -8,6 +9,12 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from research.eval.sandbox import safe_eval
+from research.scientist.native.abi import (
+    _NrExecuteBatchResponse,
+    NativeRunnerAbiSession,
+    _NrExecuteResponse,
+    _build_native_abi_only_model,
+)
 
 pytestmark = pytest.mark.native
 
@@ -210,3 +217,138 @@ def test_safe_eval_native_abi_primary_parity_strict_fails_on_drift():
     probe = result.native_abi_probe or {}
     assert probe.get("parity_attempted") is True
     assert probe.get("parity_pass") is False
+
+
+def test_native_runner_abi_session_respects_batch_seq_len_and_caches():
+    class _FakeLib:
+        def __init__(self):
+            self.calls = []
+            self._buffers = []
+
+        def nr_execute(self, req_ptr):
+            req = req_ptr._obj
+            token_count = int(req.batch) * int(req.seq_len)
+            tokens = [int(req.token_ids[i]) for i in range(token_count)]
+            self.calls.append(
+                {
+                    "batch": int(req.batch),
+                    "seq_len": int(req.seq_len),
+                    "tokens": tokens,
+                }
+            )
+            buf = (ctypes.c_float * 4)(1.0, 2.0, 3.0, 4.0)
+            self._buffers.append(buf)
+            return _NrExecuteResponse(
+                status=0,
+                logits=buf,
+                vocab_size=4,
+                message=None,
+            )
+
+        def nr_release_model(self, handle):
+            return None
+
+    lib = _FakeLib()
+    session = NativeRunnerAbiSession(
+        native_lib=lib,
+        model_handle=1,
+        vocab_size=4,
+        max_seq_len=8,
+    )
+
+    logits = session.execute_tokens([5, 6, 7, 8], batch=2)
+    assert logits == [1.0, 2.0, 3.0, 4.0]
+    assert lib.calls == [{"batch": 2, "seq_len": 2, "tokens": [5, 6, 7, 8]}]
+
+    logits_cached = session.execute_tokens([5, 6, 7, 8], batch=2)
+    assert logits_cached == logits
+    assert len(lib.calls) == 1
+
+
+def test_build_native_abi_only_model_uses_row_execution_path():
+    class _Session:
+        def __init__(self):
+            self.rows = None
+
+        def execute_tokens(self, token_ids, batch=1):
+            raise AssertionError("per-row execute_tokens path should not be used")
+
+        def execute_token_rows(self, token_rows):
+            self.rows = [tuple(int(v) for v in row) for row in token_rows]
+            return [
+                (10.0, 11.0, 12.0),
+                (20.0, 21.0, 22.0),
+            ]
+
+    session = _Session()
+    model = _build_native_abi_only_model(session, vocab_size=3)
+    input_ids = torch.tensor([[1, 2], [1, 2]], dtype=torch.long)
+    out = model(input_ids)
+
+    assert session.rows == [(1, 2), (1, 2)]
+    assert tuple(out.shape) == (2, 2, 3)
+    assert torch.allclose(out[0, 0], torch.tensor([10.0, 11.0, 12.0]))
+    assert torch.allclose(out[1, 1], torch.tensor([20.0, 21.0, 22.0]))
+
+
+def test_native_runner_abi_session_uses_native_batch_execute_for_rows():
+    class _FakeLib:
+        def __init__(self):
+            self.batch_calls = []
+            self._buffers = []
+
+        def nr_execute_batch(self, req_ptr):
+            req = req_ptr._obj
+            token_count = int(req.batch) * int(req.seq_len)
+            tokens = [int(req.token_ids[i]) for i in range(token_count)]
+            self.batch_calls.append(
+                {
+                    "batch": int(req.batch),
+                    "seq_len": int(req.seq_len),
+                    "tokens": tokens,
+                }
+            )
+            buf = (ctypes.c_float * 12)(
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                5.0,
+                6.0,
+                7.0,
+                8.0,
+                9.0,
+                10.0,
+                11.0,
+                12.0,
+            )
+            self._buffers.append(buf)
+            return _NrExecuteBatchResponse(
+                status=0,
+                logits=buf,
+                batch=2,
+                vocab_size=4,
+                message=None,
+            )
+
+        def nr_execute(self, req_ptr):
+            raise AssertionError("single execute path should not be used")
+
+        def nr_release_model(self, handle):
+            return None
+
+    lib = _FakeLib()
+    session = NativeRunnerAbiSession(
+        native_lib=lib,
+        model_handle=1,
+        vocab_size=4,
+        max_seq_len=8,
+    )
+
+    rows = session.execute_token_rows([(1, 2), (3, 4), (1, 2)])
+    assert lib.batch_calls == [{"batch": 2, "seq_len": 2, "tokens": [1, 2, 3, 4]}]
+    assert rows == [
+        (1.0, 2.0, 3.0, 4.0),
+        (5.0, 6.0, 7.0, 8.0),
+        (1.0, 2.0, 3.0, 4.0),
+    ]

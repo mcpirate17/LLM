@@ -19,10 +19,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-import torch
+import numpy as np
 import torch.nn as nn
 
-from .utils import tokenize_string
+from .utils import batched_span_mean_log_probs, tokenize_string
 
 logger = logging.getLogger(__name__)
 
@@ -90,80 +90,73 @@ def _get_examples(n: int, seed: int = 42) -> List[Dict[str, Any]]:
 # ── Scoring ─────────────────────────────────────────────────────────────
 
 
-@torch.no_grad()
-def _score_continuations(
+def _score_example_batch(
     model: nn.Module,
-    ctx: str,
-    endings: List[str],
+    examples: List[Dict[str, Any]],
     vocab_size: int,
     device: str,
     max_seq_len: int = 512,
-) -> int:
-    """Score continuations via a single batched forward pass.
+) -> tuple[int, int]:
+    """Score a batch of HellaSwag examples using one forward pass.
 
-    Pads all context+ending sequences to the same length, runs one forward
-    pass with shape ``(N, max_len)``, then scores each continuation's tokens
-    independently. Returns index of highest-scoring continuation.
+    Returns ``(n_correct, n_scored)``.
     """
-    import torch.nn.functional as F
-
-    ctx_tokens = tokenize_string(ctx, vocab_size)
-
-    # Prepare per-continuation sequences and metadata
-    seqs: List[List[int]] = []
+    sequences = []
     start_positions: List[int] = []
+    owner_idx: List[int] = []
+    ending_idx: List[int] = []
 
-    for ending in endings:
-        ending_tokens = tokenize_string(ending, vocab_size)
-        full_tokens = ctx_tokens + ending_tokens
+    for ex_idx, ex in enumerate(examples):
+        ctx_tokens = tokenize_string(ex["ctx"], vocab_size)
+        for opt_idx, ending in enumerate(ex["endings"]):
+            ending_tokens = tokenize_string(ending, vocab_size)
+            full_tokens = (
+                ctx_tokens
+                if ending_tokens.size == 0
+                else np.concatenate((ctx_tokens, ending_tokens))
+            )
 
-        if len(full_tokens) > max_seq_len:
-            excess = len(full_tokens) - max_seq_len
-            full_tokens = full_tokens[excess:]
-            ctx_len = max(0, len(ctx_tokens) - excess)
-        else:
-            ctx_len = len(ctx_tokens)
+            if len(full_tokens) > max_seq_len:
+                excess = len(full_tokens) - max_seq_len
+                full_tokens = full_tokens[excess:]
+                ctx_len = max(0, len(ctx_tokens) - excess)
+            else:
+                ctx_len = len(ctx_tokens)
 
-        if len(ending_tokens) == 0 or ctx_len >= len(full_tokens):
-            seqs.append([])
-            start_positions.append(0)
+            if ending_tokens.size == 0 or ctx_len >= len(full_tokens):
+                full_tokens = full_tokens[:0]
+                start_pos = 0
+            else:
+                start_pos = max(0, ctx_len - 1)
+
+            sequences.append(full_tokens)
+            start_positions.append(start_pos)
+            owner_idx.append(ex_idx)
+            ending_idx.append(opt_idx)
+
+    scores = batched_span_mean_log_probs(
+        model,
+        sequences,
+        start_positions,
+        vocab_size=vocab_size,
+        device=device,
+    )
+
+    grouped_scores = [[float("-inf")] * 4 for _ in examples]
+    for score, ex_idx, opt_idx in zip(scores.tolist(), owner_idx, ending_idx):
+        grouped_scores[ex_idx][opt_idx] = score
+
+    correct = 0
+    total = 0
+    for ex, option_scores in zip(examples, grouped_scores):
+        best_idx = max(range(len(option_scores)), key=option_scores.__getitem__)
+        if option_scores[best_idx] == float("-inf"):
             continue
+        total += 1
+        if best_idx == int(ex["label"]):
+            correct += 1
 
-        seqs.append(full_tokens)
-        start_positions.append(max(0, ctx_len - 1))
-
-    # Filter to valid sequences
-    valid = [(i, s, sp) for i, (s, sp) in enumerate(zip(seqs, start_positions)) if s]
-    if not valid:
-        return 0
-
-    # Pad and batch
-    max_len = max(len(s) for _, s, _ in valid)
-    padded = torch.zeros(len(valid), max_len, dtype=torch.long, device=device)
-    for j, (_, s, _) in enumerate(valid):
-        padded[j, : len(s)] = torch.tensor(s, dtype=torch.long)
-
-    # Single batched forward pass
-    logits = model(padded)  # (N, max_len, V)
-    if logits.shape[-1] > vocab_size:
-        logits = logits[..., :vocab_size]
-    log_probs = F.log_softmax(logits, dim=-1)  # (N, max_len, V)
-
-    # Score each continuation
-    best_idx = 0
-    best_score = float("-inf")
-    for j, (orig_idx, s, sp) in enumerate(valid):
-        end = len(s) - 1
-        if sp >= end:
-            continue
-        targets = padded[j, sp + 1 : end + 1]
-        pred_lp = log_probs[j, sp:end]
-        mean_ll = pred_lp.gather(1, targets.unsqueeze(1)).squeeze(1).mean().item()
-        if mean_ll > best_score:
-            best_score = mean_ll
-            best_idx = orig_idx
-
-    return best_idx
+    return correct, total
 
 
 def _run_hellaswag(
@@ -172,6 +165,7 @@ def _run_hellaswag(
     device: str,
     n_examples: int,
     max_seq_len: int = 512,
+    batch_examples: int = 16,
 ) -> Dict[str, Any]:
     """Core HellaSwag evaluation loop. Returns accuracy and metadata."""
     t0 = time.perf_counter()
@@ -190,17 +184,16 @@ def _run_hellaswag(
     correct = 0
     total = 0
 
-    for ex in examples:
+    for start in range(0, len(examples), max(1, batch_examples)):
+        batch = examples[start : start + max(1, batch_examples)]
         try:
-            pred = _score_continuations(
-                model, ex["ctx"], ex["endings"], vocab_size, device, max_seq_len
+            batch_correct, batch_total = _score_example_batch(
+                model, batch, vocab_size, device, max_seq_len
             )
-            if pred == ex["label"]:
-                correct += 1
-            total += 1
+            correct += batch_correct
+            total += batch_total
         except Exception:
-            # Skip examples that cause OOM or other errors
-            logger.debug("HellaSwag example failed, skipping", exc_info=True)
+            logger.debug("HellaSwag batch failed, skipping", exc_info=True)
             continue
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)

@@ -702,7 +702,7 @@ class TestAPI(unittest.TestCase):
 
                 _FALLBACK_METRICS["native_enabled_compiles"] = 10
                 _FALLBACK_METRICS["fallback_compiles"] = 8
-                _FALLBACK_METRICS["legacy_compile_invocations"] = 3
+                _FALLBACK_METRICS["legacy_compile_count"] = 3
                 _FALLBACK_METRICS["parity_samples"] = 5
                 _FALLBACK_METRICS["parity_failures"] = 2
                 blocked_payload = native_runner_capability_report()
@@ -711,7 +711,7 @@ class TestAPI(unittest.TestCase):
                 self.assertFalse(bool(blocked_gate.get("ready")))
 
                 _FALLBACK_METRICS["fallback_compiles"] = 2
-                _FALLBACK_METRICS["legacy_compile_invocations"] = 0
+                _FALLBACK_METRICS["legacy_compile_count"] = 0
                 _FALLBACK_METRICS["parity_failures"] = 0
                 ready_payload = native_runner_capability_report()
                 ready_gate = ready_payload.get("cutover_gate") or {}
@@ -783,6 +783,23 @@ class TestAPI(unittest.TestCase):
         self.assertIn("exemplars", data)
         self.assertIsInstance(data["root_causes"], dict)
         self.assertIsInstance(data["exemplars"], list)
+
+    def test_api_experiment_analysis_skips_backfill_variants(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = self.exp_id
+        nb.conn.execute(
+            "UPDATE experiments SET experiment_type = ?, llm_analysis = NULL WHERE experiment_id = ?",
+            ("template_backfill", exp_id),
+        )
+        nb.flush_writes()
+        nb.close()
+
+        r = self.client.get(f"/api/experiments/{exp_id}/analysis")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsNone(data["analysis"])
+        self.assertEqual(data["source"], "unavailable")
+        self.assertIn("Backfill experiments skip LLM analysis", data["reason"])
 
     def test_api_programs(self):
         r = self.client.get("/api/programs")
@@ -2355,6 +2372,64 @@ class TestAPI(unittest.TestCase):
 
         r = client.get("/favicon.ico")
         self.assertEqual(r.status_code, 204)
+
+    def test_default_dashboard_missing_build_triggers_auto_build(self):
+        import research.scientist.api as api_mod
+
+        dashboard_dir = Path(self.tmpdir) / "dashboard_src"
+        build_dir = dashboard_dir / "build"
+        node_modules_dir = dashboard_dir / "node_modules"
+        dashboard_dir.mkdir()
+        build_dir.mkdir()
+        node_modules_dir.mkdir()
+        (dashboard_dir / "package.json").write_text('{"name":"dashboard"}')
+
+        def _fake_build(*args, **kwargs):
+            (build_dir / "index.html").write_text("<html></html>")
+            return MagicMock()
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(api_mod, "_DASHBOARD_DIR", dashboard_dir),
+            patch.object(api_mod, "_DEFAULT_DASHBOARD_BUILD_DIR", build_dir),
+            patch("research.scientist.api.shutil.which", return_value="/usr/bin/npm"),
+            patch(
+                "research.scientist.api.subprocess.run", side_effect=_fake_build
+            ) as mock_run,
+        ):
+            api_mod._ensure_default_dashboard_build(str(build_dir))
+
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        self.assertEqual(args[0], ["/usr/bin/npm", "run", "build"])
+        self.assertEqual(kwargs["cwd"], str(Path(self.tmpdir) / "dashboard_src"))
+        self.assertEqual(kwargs["check"], True)
+
+    def test_default_dashboard_auto_build_skips_custom_static_folder(self):
+        import research.scientist.api as api_mod
+
+        with (
+            patch("research.scientist.api.subprocess.run") as mock_run,
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            api_mod._ensure_default_dashboard_build(
+                os.path.join(self.tmpdir, "custom_static")
+            )
+
+        mock_run.assert_not_called()
+
+    def test_default_dashboard_auto_build_can_be_disabled(self):
+        import research.scientist.api as api_mod
+
+        with (
+            patch("research.scientist.api.subprocess.run") as mock_run,
+            patch.dict(os.environ, {"ARIA_AUTO_BUILD_DASHBOARD": "0"}, clear=False),
+        ):
+            api_mod._ensure_default_dashboard_build(
+                str(api_mod._DEFAULT_DASHBOARD_BUILD_DIR)
+            )
+
+        mock_run.assert_not_called()
 
     # ── POST endpoints ──
 

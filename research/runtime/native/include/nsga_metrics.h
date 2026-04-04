@@ -10,4 +10,11 @@ int aria_nsga_crowding_distance(
     float* out_distances
 );
 
+int aria_nsga_pareto_ranks(
+    const float* objective_matrix,
+    int32_t n_rows,
+    int32_t n_objectives,
+    int32_t* out_ranks
+);
+
 #endif

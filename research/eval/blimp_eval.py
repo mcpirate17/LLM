@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 
 from research.defaults import VOCAB_SIZE
-from .utils import tokenize_string
+from .utils import batched_span_mean_log_probs, tokenize_string
 
 logger = logging.getLogger(__name__)
 
@@ -185,59 +185,28 @@ def _score_pairs_batched(
     device: str,
     max_seq_len: int = 512,
 ) -> int:
-    """Score a batch of minimal pairs via a single batched forward pass.
-
-    Pads all good+bad sentences to the same length, runs one forward pass,
-    then compares log-probs pairwise. Returns number where good > bad.
-    """
-    import torch.nn.functional as F
+    """Score minimal pairs via one batched forward pass."""
 
     if not pairs:
         return 0
 
-    # Tokenize all sentences
     all_tokens: List[List[int]] = []
-    lengths: List[int] = []
     for pair in pairs:
         for key in ("good", "bad"):
             toks = tokenize_string(pair[key], vocab_size)
             if len(toks) > max_seq_len:
                 toks = toks[:max_seq_len]
             all_tokens.append(toks)
-            lengths.append(len(toks))
 
-    # Pad to max length and stack
-    max_len = max(lengths) if lengths else 1
-    padded = torch.zeros(len(all_tokens), max_len, dtype=torch.long, device=device)
-    for i, toks in enumerate(all_tokens):
-        padded[i, : len(toks)] = torch.tensor(toks, dtype=torch.long)
-
-    # Single batched forward pass
-    logits = model(padded)  # (2*N, max_len, V)
-    if logits.shape[-1] > vocab_size:
-        logits = logits[..., :vocab_size]
-    log_probs = F.log_softmax(logits[:, :-1], dim=-1)  # (2*N, max_len-1, V)
-
-    # Compute per-sequence mean log-prob
-    targets = padded[:, 1:]  # (2*N, max_len-1)
-    token_lps = log_probs.gather(2, targets.unsqueeze(2)).squeeze(2)  # (2*N, max_len-1)
-
-    # Mask out padding positions
-    mask = torch.zeros_like(token_lps)
-    for i, l in enumerate(lengths):
-        if l >= 2:
-            mask[i, : l - 1] = 1.0
-
-    # Mean log-prob per sequence (only over real tokens)
-    token_counts = mask.sum(dim=1).clamp(min=1)
-    mean_lps = (token_lps * mask).sum(dim=1) / token_counts  # (2*N,)
-
-    # Compare pairwise: even indices = good, odd indices = bad
-    correct = 0
-    for j in range(len(pairs)):
-        if mean_lps[2 * j] > mean_lps[2 * j + 1]:
-            correct += 1
-    return correct
+    mean_lps = batched_span_mean_log_probs(
+        model,
+        all_tokens,
+        [0] * len(all_tokens),
+        vocab_size=vocab_size,
+        device=device,
+    )
+    pair_scores = mean_lps.view(-1, 2)
+    return int((pair_scores[:, 0] > pair_scores[:, 1]).sum().item())
 
 
 # ── Result type ─────────────────────────────────────────────────────────

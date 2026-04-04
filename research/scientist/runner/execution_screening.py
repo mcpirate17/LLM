@@ -105,12 +105,61 @@ _EFFICIENCY_OPS = frozenset(
     }
 )
 
+
+def _record_screening_failure(
+    *,
+    nb,
+    exp_id: str,
+    graph,
+    stage0_passed: bool,
+    stage05_passed: bool,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    stage_at_death: str | None = None,
+    stability_score: float | None = None,
+    extra_metrics: Dict[str, Any] | None = None,
+) -> None:
+    """Persist an early-screening failure for coverage-oriented runs."""
+    try:
+        persisted_extra_metrics = dict(extra_metrics or {})
+        if extra_metrics:
+            persisted_extra_metrics.update(screening_wikitext_fields(extra_metrics))
+            persisted_extra_metrics.update(screening_probe_fields(extra_metrics))
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint=graph.fingerprint(),
+            graph_json=json.dumps(graph.to_dict(), separators=(",", ":")),
+            bypass_quality_gate=True,
+            stage0_passed=stage0_passed,
+            stage05_passed=stage05_passed,
+            stage1_passed=False,
+            graph_n_ops=graph.n_ops(),
+            graph_n_unique_ops=len(
+                {
+                    node.op_name
+                    for node in graph.nodes.values()
+                    if not node.is_input and not getattr(node, "is_output", False)
+                }
+            ),
+            graph_has_gradient_path=graph.has_gradient_path(),
+            stability_score=stability_score,
+            error_type=error_type,
+            error_message=error_message,
+            stage_at_death=stage_at_death,
+            **persisted_extra_metrics,
+        )
+    except Exception as exc:
+        logger.debug("Failed to persist screening failure for %s: %s", exp_id, exc)
+
+
 from ._types import RunConfig, LiveProgress
 from ._helpers import (
     _native_proactive_gating,
     clear_gpu_memory,
     graph_routing_ops,
     routing_fast_lane_fields,
+    screening_probe_fields,
+    screening_wikitext_fields,
 )
 
 try:
@@ -1086,17 +1135,23 @@ class _ExecutionScreeningMixin:
             except Exception as e:
                 logger.warning("Failed computing champion bias for %s: %s", exp_id, e)
 
-        try:
-            template_weights, motif_weights = _build_signal_weight_maps(nb)
-        except (AttributeError, TypeError, ValueError) as e:
-            logger.debug("Failed building signal weight maps: %s", e)
+        if getattr(config, "use_screening_signal_weights", True):
+            try:
+                template_weights, motif_weights = _build_signal_weight_maps(nb)
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug("Failed building signal weight maps: %s", e)
+                template_weights, motif_weights = {}, {}
+        else:
             template_weights, motif_weights = {}, {}
+            logger.info("Screening signal weight maps disabled for this run")
 
         # Data-driven op/template/motif weights from accumulated S1 pass rates.
         # Template and motif weights share the same DB query internally
         # (_compute_metadata_weights), so computing them back-to-back is
         # efficient — the DB page cache serves the second query from memory.
-        if analytics is not None:
+        if analytics is not None and getattr(
+            config, "use_screening_signal_weights", True
+        ):
             _window_cutoff = time.time() - 604800  # 7 days
             try:
                 learned_op_weights = analytics.compute_op_weights(
@@ -1130,8 +1185,12 @@ class _ExecutionScreeningMixin:
 
         op_weights = {**op_weights, **self._op_weights_overrides}
         grammar = self._build_grammar_config(config, op_weights=op_weights)
-        # Merge learned template/motif weights, but don't overwrite routing_first preset
-        if grammar.routing_mandatory:
+        explicit_template_weights = bool(getattr(config, "template_weights", None))
+        # Merge learned template/motif weights, but preserve explicit template
+        # weights supplied by callers such as targeted backfill.
+        if explicit_template_weights:
+            pass
+        elif grammar.routing_mandatory:
             # Routing-first: only merge in weights that don't conflict
             for k, v in template_weights.items():
                 grammar.template_weights.setdefault(k, v)
@@ -1139,12 +1198,13 @@ class _ExecutionScreeningMixin:
             grammar.template_weights = template_weights
         grammar.motif_weights = motif_weights
         # Apply Bayesian insight adjustments to grammar config
-        try:
-            _apply_insight_adjustments(
-                nb, grammar, grammar.template_weights, grammar.motif_weights
-            )
-        except Exception as e:
-            logger.debug("Insight grammar adjustment failed: %s", e)
+        if getattr(config, "use_screening_signal_weights", True):
+            try:
+                _apply_insight_adjustments(
+                    nb, grammar, grammar.template_weights, grammar.motif_weights
+                )
+            except Exception as e:
+                logger.debug("Insight grammar adjustment failed: %s", e)
 
         if grammar_weights:
             old_weights = dict(grammar.category_weights)
@@ -1281,14 +1341,28 @@ class _ExecutionScreeningMixin:
                 except Exception as e:
                     logger.warning("Failed to initialize efficiency prior: %s", e)
 
+            batch_seed = self._stable_seed(
+                exp_id,
+                config.mode,
+                config.n_programs,
+                config.model_source,
+                "batch_generate",
+            )
+            logger.info(
+                "Experiment %s: batch_generate base_seed=%d",
+                exp_id[:8],
+                batch_seed,
+            )
             _bg_result = batch_generate(
                 config.n_programs,
                 grammar,
+                base_seed=batch_seed,
                 _use_adaptive_synthesis=use_adaptive,
                 prior=prior,
             )
             graphs = _bg_result.graphs
             results["batch_generate_stats"] = {
+                "base_seed": batch_seed,
                 "n_attempted": _bg_result.n_attempted,
                 "n_rejected_grammar": _bg_result.n_rejected_grammar,
                 "n_rejected_dedup": _bg_result.n_rejected_dedup,
@@ -1537,7 +1611,7 @@ class _ExecutionScreeningMixin:
                 for node in graph.nodes.values()
                 if not node.is_input and not getattr(node, "is_output", False)
             }
-            if not (_graph_ops & _EFFICIENCY_OPS):
+            if config.routing_mandatory and not (_graph_ops & _EFFICIENCY_OPS):
                 results["funnel_counts"].setdefault("dropped_structural_gate", 0)
                 results["funnel_counts"]["dropped_structural_gate"] += 1
                 results["funnel_counts"].setdefault("dropped_gate5_no_routing", 0)
@@ -1776,6 +1850,18 @@ class _ExecutionScreeningMixin:
                             "has_inf": sandbox_result.has_inf_output or None,
                         },
                     )
+                    if config.persist_screening_failures:
+                        _record_screening_failure(
+                            nb=nb,
+                            exp_id=exp_id,
+                            graph=graph,
+                            stage0_passed=bool(s0_passed),
+                            stage05_passed=bool(s05_passed),
+                            error_type=error_type,
+                            error_message=(sandbox_result.error or "")[:240] or None,
+                            stage_at_death="stage0" if not s0_passed else "stage05",
+                            stability_score=sandbox_result.stability_score,
+                        )
                     continue
 
                 # S0.75: Initial-loss pre-screen (5 gradient steps)
@@ -1817,6 +1903,21 @@ class _ExecutionScreeningMixin:
                                 "threshold": INITIAL_LOSS_THRESHOLD,
                             },
                         )
+                        if config.persist_screening_failures:
+                            _record_screening_failure(
+                                nb=nb,
+                                exp_id=exp_id,
+                                graph=graph,
+                                stage0_passed=True,
+                                stage05_passed=True,
+                                error_type="high_initial_loss",
+                                error_message=(
+                                    f"initial_loss={_s075_init_loss:.4f} > "
+                                    f"{INITIAL_LOSS_THRESHOLD:.4f}"
+                                ),
+                                stage_at_death="stage075",
+                                stability_score=sandbox_result.stability_score,
+                            )
                         del _s075_opt
                         continue
 
@@ -1846,6 +1947,14 @@ class _ExecutionScreeningMixin:
                 )
                 program_metrics["rapid_screening_passed"] = rapid_result.passed
                 program_metrics["rapid_screening_elapsed_ms"] = rapid_result.elapsed_ms
+                program_metrics["rapid_screening_steps_completed"] = (
+                    rapid_result.metrics.get("steps_completed")
+                )
+                program_metrics["rapid_screening_max_steps"] = rapid.max_steps
+                program_metrics["rapid_screening_gpu_minutes_saved"] = (
+                    rapid_result.gpu_minutes_saved
+                )
+                program_metrics["rapid_screening_metrics"] = rapid_result.metrics
                 # Extract screening loss checkpoints for failure diagnostics
                 _rm = rapid_result.metrics
                 for _step, _col in (
@@ -1894,6 +2003,21 @@ class _ExecutionScreeningMixin:
                             "gpu_minutes_saved": rapid_result.gpu_minutes_saved,
                         },
                     )
+                    if config.persist_screening_failures:
+                        _record_screening_failure(
+                            nb=nb,
+                            exp_id=exp_id,
+                            graph=graph,
+                            stage0_passed=True,
+                            stage05_passed=True,
+                            error_type="rapid_screening_error",
+                            error_message=(
+                                rapid_result.kill_reason or "rapid_screening_failed"
+                            )[:240],
+                            stage_at_death="rapid_screening",
+                            stability_score=sandbox_result.stability_score,
+                            extra_metrics=program_metrics,
+                        )
                     continue
 
                 # Phase 2: recompile at real vocab for S1 training

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-/* ── Softmax Attention (QKV self-attention) ────────────────────────── */
+/* ── Softmax Attention (QKV self-attention, causal) ────────────────── */
 
 void aria_softmax_attention_f32(const float *x, const float *Wq, const float *Wk,
                                  const float *Wv, const float *Wo,
@@ -45,15 +45,15 @@ void aria_softmax_attention_f32(const float *x, const float *Wq, const float *Wk
             }
         }
 
-        // Per-head attention
+        // Per-head causal attention
         for (int64_t h = 0; h < n_heads; h++) {
             int64_t off = h * head_dim;
 
-            // Compute QK^T and apply softmax
+            // Compute causal QK^T and apply softmax
             std::vector<float> scores(seq * seq);
             for (int64_t i = 0; i < seq; i++) {
                 float max_val = -1e30f;
-                for (int64_t j = 0; j < seq; j++) {
+                for (int64_t j = 0; j <= i; j++) {
                     float dot = 0;
                     for (int64_t d = 0; d < head_dim; d++) {
                         dot += Q[i * dim + off + d] * K[j * dim + off + d];
@@ -63,12 +63,15 @@ void aria_softmax_attention_f32(const float *x, const float *Wq, const float *Wk
                 }
                 // Softmax
                 float sum_exp = 0;
-                for (int64_t j = 0; j < seq; j++) {
+                for (int64_t j = 0; j <= i; j++) {
                     scores[i * seq + j] = expf(scores[i * seq + j] - max_val);
                     sum_exp += scores[i * seq + j];
                 }
-                for (int64_t j = 0; j < seq; j++) {
+                for (int64_t j = 0; j <= i; j++) {
                     scores[i * seq + j] /= (sum_exp + 1e-8f);
+                }
+                for (int64_t j = i + 1; j < seq; j++) {
+                    scores[i * seq + j] = 0.0f;
                 }
             }
 
@@ -100,13 +103,16 @@ void aria_softmax_attention_f32(const float *x, const float *Wq, const float *Wk
 /* ── Linear Attention (ELU feature map, O(SD)) ────────────────────── */
 
 void aria_linear_attention_f32(const float *x, const float *Wq, const float *Wk,
-                                const float *Wv, float *y,
+                                const float *Wv, const float *Wo, float *y,
                                 int64_t batch, int64_t seq, int64_t dim) {
     for (int64_t b = 0; b < batch; b++) {
         const float *xb = x + b * seq * dim;
         float *yb = y + b * seq * dim;
 
         std::vector<float> Q(seq * dim), K(seq * dim), V(seq * dim);
+        std::vector<float> state(dim * dim, 0.0f);
+        std::vector<float> z_state(dim, 0.0f);
+        std::vector<float> attn_out(seq * dim);
 
         // Project Q, K, V and apply ELU+1 to Q, K
         for (int64_t s = 0; s < seq; s++) {
@@ -125,37 +131,35 @@ void aria_linear_attention_f32(const float *x, const float *Wq, const float *Wk,
             }
         }
 
-        // KV = K^T @ V (dim x dim)
-        std::vector<float> KV(dim * dim, 0.0f);
+        // Strictly causal running-state formulation.
         for (int64_t s = 0; s < seq; s++) {
             for (int64_t i = 0; i < dim; i++) {
+                z_state[i] += K[s * dim + i];
                 for (int64_t j = 0; j < dim; j++) {
-                    KV[i * dim + j] += K[s * dim + i] * V[s * dim + j];
+                    state[i * dim + j] += K[s * dim + i] * V[s * dim + j];
                 }
             }
-        }
-
-        // K_sum = sum(K, dim=seq)
-        std::vector<float> K_sum(dim, 0.0f);
-        for (int64_t s = 0; s < seq; s++) {
-            for (int64_t d = 0; d < dim; d++) {
-                K_sum[d] += K[s * dim + d];
-            }
-        }
-
-        // y = Q @ KV / (Q @ K_sum)
-        for (int64_t s = 0; s < seq; s++) {
             float z = 0;
             for (int64_t d = 0; d < dim; d++) {
-                z += Q[s * dim + d] * K_sum[d];
+                z += Q[s * dim + d] * z_state[d];
             }
             z = std::max(z, 1e-6f);
             for (int64_t d = 0; d < dim; d++) {
                 float val = 0;
                 for (int64_t k = 0; k < dim; k++) {
-                    val += Q[s * dim + k] * KV[k * dim + d];
+                    val += Q[s * dim + k] * state[k * dim + d];
                 }
-                yb[s * dim + d] = val / z;
+                attn_out[s * dim + d] = val / z;
+            }
+        }
+
+        for (int64_t s = 0; s < seq; s++) {
+            for (int64_t d = 0; d < dim; d++) {
+                float val = 0;
+                for (int64_t k = 0; k < dim; k++) {
+                    val += attn_out[s * dim + k] * Wo[d * dim + k];
+                }
+                yb[s * dim + d] = val;
             }
         }
     }

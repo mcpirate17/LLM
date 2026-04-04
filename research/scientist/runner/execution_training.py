@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 from ...eval.fingerprint import compute_gated_fingerprint
 from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
+from ...training.profiling import TrainingRunProfiler
 from ._helpers import (
     normalized_loss_ratio,
     stage1_learning_gate,
@@ -317,6 +318,7 @@ class _ExecutionTrainingMixin:
             enabled=bool(getattr(config, "enable_kernel_profiling", False)),
             top_k=max(1, int(getattr(config, "kernel_profile_top_k", 20) or 20)),
         )
+        run_profiler = TrainingRunProfiler(config, dev)
 
         result: Dict[str, Any] = {"passed": False}
         use_synthesized_training = _allow_synthesized_training(self, config)
@@ -345,8 +347,9 @@ class _ExecutionTrainingMixin:
             )
 
         try:
+            run_profiler.__enter__()
             setup_t0 = time.perf_counter()
-            with _trace_ctx("model_setup"):
+            with _trace_ctx("model_setup"), run_profiler.trace("model_setup_ms"):
                 model = model.to(dev)
                 model.train()
                 from ...training.optimizer_synthesis import build_optimizer
@@ -364,7 +367,10 @@ class _ExecutionTrainingMixin:
                     from ...training.optimizer_synthesis import synthesize_optimizer
 
                     synth_opt = synthesize_optimizer(seed=seed)
-                    optimizer = synth_opt.create(model.parameters(), lr=effective_lr)
+                    optimizer = synth_opt.create(
+                        model.parameters(),
+                        lr=effective_lr,
+                    )
                     result["optimizer_synthesized"] = synth_opt.name
                 else:
                     # Non-synthesized: use build_optimizer (no silent fallbacks)
@@ -373,7 +379,11 @@ class _ExecutionTrainingMixin:
                         model.parameters(),
                         optimizer_type=resolved_type,
                         lr=effective_lr,
-                        weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
+                        weight_decay=getattr(
+                            config,
+                            "optimizer_weight_decay",
+                            0.01,
+                        ),
                         betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
                         fused=(
                             dev.type == "cuda"
@@ -477,6 +487,11 @@ class _ExecutionTrainingMixin:
             starvation_interval = max(
                 1, int(getattr(config, "starvation_check_interval", 8) or 8)
             )
+            starvation_monitoring = bool(
+                getattr(config, "enable_starvation_monitoring", False)
+                or trace_enabled
+                or bool(getattr(config, "profile_enabled", False))
+            )
 
             use_cuda_graph = bool(
                 dev.type == "cuda"
@@ -485,6 +500,7 @@ class _ExecutionTrainingMixin:
                 and not op_profiler.enabled
                 and not trace_enabled
                 and not collect_curve
+                and not bool(getattr(config, "profile_enabled", False))
                 and int(total_steps) >= 8
             )
 
@@ -592,6 +608,7 @@ class _ExecutionTrainingMixin:
                         # CPU-GPU sync on every step.
                         is_milestone = step == 250 or step == 500
                         if not should_check and not is_milestone:
+                            run_profiler.step()
                             step += 1
                             continue
 
@@ -615,6 +632,7 @@ class _ExecutionTrainingMixin:
                                 )
 
                         if not should_check:
+                            run_profiler.step()
                             step += 1
                             continue
 
@@ -657,6 +675,10 @@ class _ExecutionTrainingMixin:
                             step_count = step + 1
                             break
 
+                        run_profiler.record_step(
+                            step=step, loss=loss_val, grad_norm=grad_norm
+                        )
+                        run_profiler.step()
                         step += 1
                     ran_cuda_graph = True
                 except RuntimeError as e:
@@ -679,13 +701,18 @@ class _ExecutionTrainingMixin:
                     if self._stop_event.is_set():
                         break
 
-                    starvation_sample = (not random_mode) and (
-                        (step % starvation_interval) == 0
+                    starvation_sample = (
+                        starvation_monitoring
+                        and (not random_mode)
+                        and ((step % starvation_interval) == 0)
                     )
                     if starvation_sample:
                         starvation_detector.start_wait()
                     data_t0 = time.perf_counter()
-                    with _trace_ctx("data_sampling"):
+                    with (
+                        _trace_ctx("data_sampling"),
+                        run_profiler.trace("data_sampling_ms"),
+                    ):
                         if random_mode:
                             input_ids = self._micro_train_make_random_batch(
                                 seed_int=_seed_int,
@@ -702,6 +729,7 @@ class _ExecutionTrainingMixin:
                                 batch_size=config.stage1_batch_size,
                                 seq_len=seq_len,
                                 seed=seed + step,
+                                timer=run_profiler.record_timing,
                             )
                     if starvation_sample:
                         starvation_detector.end_wait()
@@ -715,7 +743,10 @@ class _ExecutionTrainingMixin:
 
                     def _run_step() -> None:
                         fwd_t0 = time.perf_counter()
-                        with _trace_ctx("forward_pass"):
+                        with (
+                            _trace_ctx("forward_pass"),
+                            run_profiler.trace("forward_pass_ms"),
+                        ):
                             with torch.amp.autocast(
                                 device_type=dev.type,
                                 dtype=torch.bfloat16,
@@ -780,7 +811,10 @@ class _ExecutionTrainingMixin:
                             step_state["early_exit_aux_loss_tensor"] = ee_loss.detach()
 
                         bwd_t0 = time.perf_counter()
-                        with _trace_ctx("backward_pass"):
+                        with (
+                            _trace_ctx("backward_pass"),
+                            run_profiler.trace("backward_pass_ms"),
+                        ):
                             optimizer.zero_grad(set_to_none=True)
                             loss.backward()
                             if grad_clip_norm > 0.0:
@@ -796,7 +830,10 @@ class _ExecutionTrainingMixin:
                         ) * 1000.0
 
                         opt_t0 = time.perf_counter()
-                        with _trace_ctx("optimizer_step"):
+                        with (
+                            _trace_ctx("optimizer_step"),
+                            run_profiler.trace("optimizer_step_ms"),
+                        ):
                             optimizer.step()
                         trace_totals_ms["optimizer_step"] += (
                             time.perf_counter() - opt_t0
@@ -869,23 +906,31 @@ class _ExecutionTrainingMixin:
                     total_tokens += input_ids.numel()
 
                     # Inflight health checks — abort hopeless runs early
-                    _inflight_fail = check_inflight_health(
-                        step=step,
-                        loss_val=loss_val,
-                        grad_norm=grad_norm,
-                        min_loss=min_loss,
-                        initial_loss=initial_loss,
-                        total_steps=total_steps,
-                        state=_inflight_state,
-                        spike_ratio=getattr(config, "inflight_spike_ratio", 2.0),
-                        spike_window=getattr(config, "inflight_spike_window", 10),
-                        grad_norm_limit=getattr(
-                            config, "inflight_grad_norm_limit", 100.0
-                        ),
-                        grad_norm_strikes=getattr(
-                            config, "inflight_grad_norm_strikes", 3
-                        ),
-                    )
+                    _inflight_fail = None
+                    if not bool(
+                        getattr(config, "profile_disable_inflight_checks", False)
+                    ):
+                        _inflight_fail = check_inflight_health(
+                            step=step,
+                            loss_val=loss_val,
+                            grad_norm=grad_norm,
+                            min_loss=min_loss,
+                            initial_loss=initial_loss,
+                            total_steps=total_steps,
+                            state=_inflight_state,
+                            spike_ratio=getattr(config, "inflight_spike_ratio", 2.0),
+                            spike_window=getattr(config, "inflight_spike_window", 10),
+                            grad_norm_limit=getattr(
+                                config,
+                                "inflight_grad_norm_limit",
+                                100.0,
+                            ),
+                            grad_norm_strikes=getattr(
+                                config,
+                                "inflight_grad_norm_strikes",
+                                3,
+                            ),
+                        )
                     if _inflight_fail is not None:
                         result.update(_inflight_fail)
                         result["n_train_steps"] = step
@@ -977,6 +1022,10 @@ class _ExecutionTrainingMixin:
                             step_time_ms,
                         )
 
+                    run_profiler.record_step(
+                        step=step, loss=loss_val, grad_norm=grad_norm
+                    )
+                    run_profiler.step()
                     step += 1
 
             if dev.type == "cuda":
@@ -988,32 +1037,36 @@ class _ExecutionTrainingMixin:
             validation_loss = None
             validation_loss_ratio = None
             generalization_gap = None
-            try:
-                validation_loss = self._micro_train_optional_validation_loss(
-                    model=model,
-                    config=config,
-                    dev=dev,
-                    seq_len=seq_len,
-                    seed=seed,
-                )
-            except RuntimeError as e:
-                logger.debug("Validation loss eval failed: %s", e)
-                result["validation_loss_error"] = str(e)
+            if not bool(getattr(config, "profile_disable_post_eval", False)):
+                try:
+                    with run_profiler.trace("validation_eval_ms"):
+                        validation_loss = self._micro_train_optional_validation_loss(
+                            model=model,
+                            config=config,
+                            dev=dev,
+                            seq_len=seq_len,
+                            seed=seed,
+                        )
+                except RuntimeError as e:
+                    logger.debug("Validation loss eval failed: %s", e)
+                    result["validation_loss_error"] = str(e)
 
             # Optional discovery loss on random tokens (fast triage signal)
             discovery_loss = None
             discovery_loss_ratio = None
-            try:
-                discovery_loss = self._micro_train_optional_discovery_loss(
-                    model=model,
-                    config=config,
-                    dev=dev,
-                    seq_len=seq_len,
-                    seed=seed,
-                )
-            except RuntimeError as e:
-                logger.debug("Discovery loss eval failed: %s", e)
-                result["discovery_loss_error"] = str(e)
+            if not bool(getattr(config, "profile_disable_post_eval", False)):
+                try:
+                    with run_profiler.trace("discovery_eval_ms"):
+                        discovery_loss = self._micro_train_optional_discovery_loss(
+                            model=model,
+                            config=config,
+                            dev=dev,
+                            seq_len=seq_len,
+                            seed=seed,
+                        )
+                except RuntimeError as e:
+                    logger.debug("Discovery loss eval failed: %s", e)
+                    result["discovery_loss_error"] = str(e)
 
             if validation_loss is not None and initial_loss:
                 validation_loss_ratio = validation_loss / max(initial_loss, 1e-6)
@@ -1132,6 +1185,16 @@ class _ExecutionTrainingMixin:
                 result["final_lr"] = config.stage1_lr  # constant for now
                 if collect_curve:
                     result["training_curve"] = training_curve
+                artifacts = run_profiler.artifacts()
+                if artifacts is not None:
+                    result["profile_artifacts"] = {
+                        "output_dir": artifacts.output_dir,
+                        "summary_json": artifacts.summary_json,
+                        "trace_json": artifacts.trace_json,
+                    }
+                    run_profiler.event("avg_step_time_ms", result["avg_step_time_ms"])
+                    run_profiler.event("throughput_tok_s", result["throughput"])
+                    run_profiler.event("n_train_steps", result["n_train_steps"])
 
                 # Extract architecture-specific telemetry (MoE, MoD, MoR, etc.)
                 arch_telemetry = self._extract_architecture_telemetry(model)
@@ -1179,7 +1242,11 @@ class _ExecutionTrainingMixin:
 
                 # Behavioral fingerprint for S1 survivors (structural-only at
                 # screening; CKA + behavioral probes deferred to post-investigation)
-                if result.get("passed") and model is not None:
+                if (
+                    result.get("passed")
+                    and model is not None
+                    and not bool(getattr(config, "profile_disable_post_eval", False))
+                ):
                     try:
                         _lr = result.get("loss_ratio", 1.0)
                         _perf_gate = float(
@@ -1227,7 +1294,9 @@ class _ExecutionTrainingMixin:
                         logger.debug("Fingerprint failed in S1 worker: %s", e_fp)
 
                 # Fast WikiText perplexity at screening time
-                if not getattr(config, "skip_screening_wikitext", False):
+                if not getattr(config, "skip_screening_wikitext", False) and not bool(
+                    getattr(config, "profile_disable_post_eval", False)
+                ):
                     try:
                         from ...eval.wikitext_eval import screening_wikitext_eval
 
@@ -1272,7 +1341,9 @@ class _ExecutionTrainingMixin:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
                 # Fast HellaSwag commonsense reasoning probe at screening time
-                if not getattr(config, "skip_screening_hellaswag", False):
+                if not getattr(config, "skip_screening_hellaswag", False) and not bool(
+                    getattr(config, "profile_disable_post_eval", False)
+                ):
                     try:
                         from ...eval.hellaswag_eval import screening_hellaswag_eval
 
@@ -1283,6 +1354,12 @@ class _ExecutionTrainingMixin:
                         )
                         result["hellaswag_acc"] = hs.get("hellaswag_acc")
                         result["hellaswag_status"] = hs.get("hellaswag_status")
+                        result["hellaswag_n_examples"] = hs.get("hellaswag_total")
+                        result["screening_hellaswag_correct"] = hs.get(
+                            "hellaswag_correct"
+                        )
+                        result["screening_hellaswag_total"] = hs.get("hellaswag_total")
+                        result["screening_hellaswag_elapsed_ms"] = hs.get("elapsed_ms")
                         if hs.get("hellaswag_acc") is not None:
                             logger.info(
                                 "    Screening HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
@@ -1295,7 +1372,9 @@ class _ExecutionTrainingMixin:
                         logger.debug("Screening HellaSwag eval skipped: %s", e_hs)
 
                 # Binding probes: induction head + binding range (post micro-train)
-                if not getattr(config, "skip_binding_probes", False):
+                if not getattr(config, "skip_binding_probes", False) and not bool(
+                    getattr(config, "profile_disable_post_eval", False)
+                ):
                     try:
                         from ...eval.induction_probe import induction_score
                         from ...eval.binding_range import binding_range_profile
@@ -1310,6 +1389,11 @@ class _ExecutionTrainingMixin:
                         )
                         result["induction_auc"] = ind.auc
                         result["induction_gap_accuracies"] = ind.gap_accuracies
+                        result["induction_probe_train_steps"] = 1000
+                        result["induction_probe_eval_examples"] = 100
+                        result["induction_probe_batch_size"] = 16
+                        result["induction_probe_gaps"] = [4, 8, 16, 32, 64]
+                        result["induction_probe_elapsed_ms"] = ind.elapsed_ms
 
                         br = binding_range_profile(
                             model,
@@ -1318,6 +1402,10 @@ class _ExecutionTrainingMixin:
                             device=str(dev),
                         )
                         result["binding_auc"] = br.auc
+                        result["binding_distance_accuracies"] = br.distance_accuracies
+                        result["binding_probe_eval_examples"] = 100
+                        result["binding_probe_distances"] = [2, 4, 8, 16, 32, 64]
+                        result["binding_probe_elapsed_ms"] = br.elapsed_ms
 
                         # AR probe skipped at screening (too slow, signal is weak)
                         result["ar_auc"] = None
@@ -1339,17 +1427,23 @@ class _ExecutionTrainingMixin:
                         # HIGH PRIORITY DISCOVERY: induction_auc > 0.20 without
                         # standard causal attention. This would be a novel mechanism
                         # for exact token retrieval across gaps.
-                        if ind.auc > 0.20:
+                        if ind.auc > 0.20 and graph_data:
+                            graph_nodes = []
+                            if isinstance(graph_data, dict):
+                                graph_nodes = [
+                                    node
+                                    for node in graph_data.get("nodes", [])
+                                    if not node.get("is_input", False)
+                                ]
                             _has_attention = any(
-                                n.op_name
+                                n.get("op_name", n.get("op"))
                                 in (
                                     "softmax_attention",
                                     "diff_attention",
                                     "graph_attention",
                                     "linear_attention",
                                 )
-                                for n in graph.nodes.values()
-                                if not n.is_input
+                                for n in graph_nodes
                             )
                             if not _has_attention:
                                 logger.warning(
@@ -1359,16 +1453,19 @@ class _ExecutionTrainingMixin:
                                     result.get("graph_fingerprint", "?")[:10],
                                     ind.auc,
                                     [
-                                        n.op_name
-                                        for n in graph.nodes.values()
-                                        if not n.is_input
+                                        n.get("op_name", n.get("op"))
+                                        for n in graph_nodes
                                     ],
                                 )
                     except (RuntimeError, ValueError, TypeError) as e_bp:
                         logger.debug("Binding probes skipped: %s", e_bp)
 
                 # Post-S1 triage: cheap evals for composite score dimensions
-                if result.get("passed") and model is not None:
+                if (
+                    result.get("passed")
+                    and model is not None
+                    and not bool(getattr(config, "profile_disable_post_eval", False))
+                ):
                     try:
                         from .execution_triage import run_triage
 
@@ -1426,6 +1523,8 @@ class _ExecutionTrainingMixin:
                     result["failure_op"] = "latent_attention_compressor"
                 elif "conv_weight" in err_str:
                     result["failure_op"] = "conv1d_seq"
+        finally:
+            run_profiler.__exit__(None, None, None)
 
         if result.get("final_loss") is not None and bool(
             getattr(config, "one_shot_pruning_baseline", False)
@@ -1926,6 +2025,7 @@ class _ExecutionTrainingMixin:
         seq_len: int,
         seed: int,
         split: str = "train",
+        timer=None,
     ) -> torch.Tensor:
         """Sample input IDs from configured data source with deterministic seed."""
         mode = str(config.data_mode or "random").strip().lower()
@@ -1943,6 +2043,7 @@ class _ExecutionTrainingMixin:
                     generator=generator,
                     device=dev,
                     split=split,
+                    timer=timer,
                 )
                 if batch is not None:
                     return batch
@@ -1963,6 +2064,7 @@ class _ExecutionTrainingMixin:
                     generator=generator,
                     device=dev,
                     split=split,
+                    timer=timer,
                 )
                 if batch is not None:
                     return batch

@@ -99,6 +99,11 @@ typedef nk_status_t (*nk_rwkv_channel_f32_fn)(
     float* y, float* tmp_xk, float* tmp_xr, float* tmp_k,
     int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
 
+/** conv1d_seq: causal depthwise conv over sequence */
+typedef nk_status_t (*nk_conv1d_seq_f32_fn)(
+    const float* x, const float* weight, const float* bias,
+    float* y, int64_t batch, int64_t seq, int64_t dim);
+
 /* --------------- reference architecture kernel signatures --------------- */
 
 /** embedding_lookup: y = table[indices] + pos_embed */
@@ -184,6 +189,7 @@ typedef struct {
   nk_matmul_gelu_f32_fn             matmul_gelu_fn;
   nk_swiglu_f32_fn                  swiglu_fn;
   nk_rwkv_channel_f32_fn            rwkv_channel_fn;
+  nk_conv1d_seq_f32_fn              conv1d_seq_fn;
   /* Reference architecture ops */
   nk_embedding_lookup_f32_fn        embedding_lookup_fn;
   nk_rope_rotate_f32_fn             rope_rotate_fn;

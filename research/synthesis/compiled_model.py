@@ -158,6 +158,31 @@ class SynthesizedModel(nn.Module):
                 x = layer(x)
         return self.lm_head(self.norm(x))
 
+    def _fingerprint_forward_from_embed(self, embed_in: torch.Tensor) -> torch.Tensor:
+        x = embed_in
+        for i, layer in enumerate(self.layers):
+            if self.layer_needs_residual[i]:
+                out = layer(x)
+                x = x + out if out.shape == x.shape else out
+            else:
+                x = layer(x)
+        return x
+
+    def _fingerprint_logits_from_embed(self, embed_in: torch.Tensor) -> torch.Tensor:
+        return self.lm_head(self._fingerprint_pre_logits_from_embed(embed_in))
+
+    def _fingerprint_pre_logits_from_embed(
+        self, embed_in: torch.Tensor
+    ) -> torch.Tensor:
+        x = self._fingerprint_forward_from_embed(embed_in)
+        return self.norm(x)
+
+    def _fingerprint_representations(
+        self, input_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        reps = self._fingerprint_pre_logits_from_embed(self.embed(input_ids))
+        return self.lm_head(reps), reps
+
     def set_capture_heatmap(self, enabled: bool = True) -> None:
         for layer in self.layers:
             if hasattr(layer, "set_capture_heatmap"):

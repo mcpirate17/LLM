@@ -11,11 +11,12 @@ from __future__ import annotations
 import logging
 from typing import List
 
+import torch
 import torch.nn as nn
 
 from .graph import ComputationGraph
 from . import native_compile
-from .compiler_registry import load_split_op_modules
+from .compiler_registry import OP_DISPATCH, load_split_op_modules
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,22 @@ from research.defaults import VOCAB_SIZE, VALIDATION_SEQ_LEN
 load_split_op_modules()
 
 from .compiled_model import CompiledLayer, SynthesizedModel
+from .compiled_op import CompiledOp
+from .compiler_ops_sequence import _op_gated_delta, _parallel_associative_scan
+
+_OP_DISPATCH = OP_DISPATCH
+
+__all__ = [
+    "CompiledLayer",
+    "CompiledOp",
+    "SynthesizedModel",
+    "_OP_DISPATCH",
+    "_op_gated_delta",
+    "_parallel_associative_scan",
+    "compile_graph",
+    "compile_model",
+    "torch",
+]
 
 
 def compile_graph(graph: ComputationGraph, use_ir: bool = True) -> nn.Module:

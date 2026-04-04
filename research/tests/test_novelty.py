@@ -929,6 +929,20 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
             self.assertEqual(meta["cka_source"], "artifact")
             self.assertEqual(meta["cka_artifact_version"], "v1")
 
+    def test_store_reference_similarity_cache_reuses_matrices(self):
+        """Prepared reference similarity matrices are cached across calls."""
+        from research.eval.cka_references import ReferenceCkaStore
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            store = ReferenceCkaStore(artifact_dir=art_dir)
+            first = store.get_reference_similarities()
+            second = store.get_reference_similarities()
+            self.assertIsNotNone(first)
+            self.assertIs(first, second)
+            self.assertEqual(set(first.keys()), {"transformer", "ssm", "conv"})
+
     def test_store_reset_clears_cache(self):
         """reset() clears loaded state so next access reloads."""
         from research.eval.cka_references import ReferenceCkaStore

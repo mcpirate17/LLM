@@ -34,6 +34,11 @@ from ._helpers import clear_gpu_memory, normalized_loss_ratio
 from ._types import RunConfig
 
 
+def _scaffold_blend_alpha(support: int) -> float:
+    """Keep scaffold priors helpful but subordinate to live graph evidence."""
+    return max(0.0, min(0.5, (float(support) / 16.0) * 0.5))
+
+
 class _SelectionMixin:
     """Candidate scoring, selection, novelty calibration."""
 
@@ -659,6 +664,23 @@ class _SelectionMixin:
                 n_s1 = float(row.get("n_stage1_passed") or 0.0)
                 if n_used > 0:
                     lookup[str(row.get("op_name"))] = n_s1 / n_used
+            try:
+                scaffold_stats = nb.get_scaffold_component_stats(
+                    since_ts=since_ts,
+                    min_support=2,
+                )
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                scaffold_stats = {}
+            for op_name, stat in scaffold_stats.items():
+                prior_rate = float(stat.get("prior_rate") or 0.0)
+                support = int(stat.get("support") or 0)
+                if op_name in lookup:
+                    alpha = _scaffold_blend_alpha(support)
+                    lookup[op_name] = ((1.0 - alpha) * lookup[op_name]) + (
+                        alpha * prior_rate
+                    )
+                elif support >= 3:
+                    lookup[op_name] = prior_rate
         except (sqlite3.OperationalError, RuntimeError) as e:
             logger.debug("Op success rate lookup failed: %s", e)
         return lookup

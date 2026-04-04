@@ -15,6 +15,7 @@ from research.synthesis.compiler import CompiledLayer
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.motifs import VALIDATED_MOTIFS, resolve_step
 from research.synthesis.templates import (
+    TEMPLATES,
     apply_template,
 )
 
@@ -190,6 +191,20 @@ TEMPLATE_TEST_CASES = [
     ("decay_sequence", "cumprod_safe"),
 ]
 
+BACKFILL_TEMPLATE_CASES = [
+    ("latent_attn_ffn_block", "latent_attention_compressor"),
+    ("local_attn_ffn_block", "local_window_attn"),
+    ("latent_attn_sparse_ffn", "latent_attention_compressor"),
+    ("local_attn_swiglu", "local_window_attn"),
+    ("attn_spectral_filter", "spectral_filter"),
+    ("attn_rwkv_hybrid", "rwkv_channel"),
+    ("attn_three_way_split", "split3"),
+    ("latent_attn_moe", "latent_attention_compressor"),
+    ("latent_attn_conv_hybrid", "latent_attention_compressor"),
+    ("latent_attn_ssm_hybrid", "latent_attention_compressor"),
+    ("depth_token_mask_block", "depth_token_mask"),
+]
+
 
 @pytest.mark.parametrize(
     "template_name,target_op",
@@ -201,6 +216,29 @@ def test_template_compile_and_forward(template_name, target_op):
     g = _build_template_graph(template_name)
 
     # Verify the target op is in the graph
+    op_names = [n.op_name for n in g.nodes.values() if not n.is_input]
+    assert target_op in op_names, (
+        f"Template {template_name} did not produce {target_op}; got {op_names}"
+    )
+
+    layer = _build_layer_from_graph(g)
+    result = _fwd_bwd(layer, dim=g.model_dim)
+
+    assert not result["has_nan"], f"{template_name}: NaN in output"
+    assert not result["has_inf"], f"{template_name}: Inf in output"
+    assert result["output_shape"][0] == B, f"{template_name}: bad batch dim"
+    assert result["output_shape"][1] == S, f"{template_name}: bad seq dim"
+
+
+@pytest.mark.parametrize(
+    "template_name,target_op",
+    BACKFILL_TEMPLATE_CASES,
+    ids=[f"{t}({op})" for t, op in BACKFILL_TEMPLATE_CASES],
+)
+def test_backfill_attention_templates_compile_and_forward(template_name, target_op):
+    """Priority backfill templates must build, compile, and run cleanly."""
+    g = _build_template_graph(template_name)
+
     op_names = [n.op_name for n in g.nodes.values() if not n.is_input]
     assert target_op in op_names, (
         f"Template {template_name} did not produce {target_op}; got {op_names}"
@@ -254,3 +292,57 @@ def test_template_graphs_pass_space_check():
             failures.append(f"{template_name}: {err}")
 
     assert not failures, "Space consistency failures:\n" + "\n".join(failures)
+
+
+def test_quarantined_templates_are_not_selectable():
+    for template_name in (
+        "attn_dual_axis",
+        "attn_dense_cascade",
+        "attn_moe_block",
+        "attn_gated_minimum",
+    ):
+        assert template_name not in TEMPLATES
+
+
+@pytest.mark.parametrize(
+    "template_name,required_ops",
+    (
+        ("mamba_reference", {"rmsnorm", "conv1d_seq", "selective_scan", "swiglu_mlp"}),
+        (
+            "topk_retrieval",
+            {"rmsnorm", "cosine_similarity", "gather_topk", "swiglu_mlp"},
+        ),
+    ),
+)
+def test_reference_templates_use_fixed_high_signal_paths(template_name, required_ops):
+    g = _build_template_graph(template_name)
+
+    op_names = {n.op_name for n in g.nodes.values() if not n.is_input}
+    assert required_ops.issubset(op_names)
+    assert not g.metadata.get("template_slot_usage"), (
+        f"{template_name} should not emit random slot telemetry anymore"
+    )
+
+
+@pytest.mark.parametrize(
+    "template_name,required_ops",
+    (
+        ("attn_spectral_filter", {"spectral_filter", "linear_proj"}),
+        ("attn_rwkv_hybrid", {"layernorm", "rwkv_channel"}),
+        (
+            "depth_token_mask_block",
+            {
+                "rmsnorm",
+                "token_class_proj",
+                "score_depth_blend",
+                "depth_token_mask",
+                "linear_proj",
+            },
+        ),
+    ),
+)
+def test_rehab_templates_keep_stabilizing_scaffolds(template_name, required_ops):
+    g = _build_template_graph(template_name)
+
+    op_names = {n.op_name for n in g.nodes.values() if not n.is_input}
+    assert required_ops.issubset(op_names)

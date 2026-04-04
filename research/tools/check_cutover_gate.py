@@ -62,7 +62,7 @@ def _generate_compile_sample() -> None:
     This is used to ensure cutover gates are evaluated after at least one real
     compile invocation in the checking process.  Phase D: compile with native
     disabled so the legacy compile path is exercised (the only path that
-    increments legacy_compile_invocations for gate evaluation).
+    increments legacy_compile_count for gate evaluation).
     """
     from research.scientist.native_runner import compile_model_native_first
     from research.synthesis.graph import ComputationGraph

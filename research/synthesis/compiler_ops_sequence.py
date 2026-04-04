@@ -96,7 +96,9 @@ def _op_rwkv_channel(module, inputs, _):
             module.receptance_proj.weight,
             module.value_proj.weight,
         )
-    shifted = F.pad(x[:, :-1], (0, 0, 1, 0)) if x.ndim == 3 else x
+    shifted = x.clone()
+    if x.ndim == 3 and x.shape[1] > 1:
+        shifted[:, 1:] = x[:, :-1]
     xk = x * module.mix_k + shifted * (1 - module.mix_k)
     xr = x * module.mix_r + shifted * (1 - module.mix_r)
     k = torch.square(torch.relu(module.key_proj(xk)))
@@ -112,16 +114,23 @@ def _op_diff_attention(module, inputs, _):
     q = module.q_proj(x).reshape(B, S, nh, 2, hd).permute(0, 2, 3, 1, 4)
     k = module.k_proj(x).reshape(B, S, nh, 2, hd).permute(0, 2, 3, 1, 4)
     v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    scale = hd**-0.5
-    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-    attn1 = (q[:, :, 0] @ k[:, :, 0].transpose(-2, -1)) * scale
-    attn2 = (q[:, :, 1] @ k[:, :, 1].transpose(-2, -1)) * scale
-    attn1.masked_fill_(mask, float("-inf"))
-    attn2.masked_fill_(mask, float("-inf"))
-    diff = F.softmax(attn1, dim=-1) - module.lambda_param.abs() * F.softmax(
-        attn2, dim=-1
+    out1 = F.scaled_dot_product_attention(
+        q[:, :, 0],
+        k[:, :, 0],
+        v,
+        dropout_p=0.0,
+        is_causal=True,
+        scale=hd**-0.5,
     )
-    out = (diff @ v).transpose(1, 2).reshape(B, S, -1)
+    out2 = F.scaled_dot_product_attention(
+        q[:, :, 1],
+        k[:, :, 1],
+        v,
+        dropout_p=0.0,
+        is_causal=True,
+        scale=hd**-0.5,
+    )
+    out = (out1 - module.lambda_param.abs() * out2).transpose(1, 2).reshape(B, S, -1)
     return module.o_proj(out)
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Dict, FrozenSet
 
 from ._context_types import (
-    CONTEXT_CLASS_GENERAL,
     CONTEXT_CLASS_STRUCTURAL,
     ContextRule,
     SearchMode,
@@ -961,28 +960,6 @@ REQUIRES_RESIDUAL_CONTEXT: FrozenSet[str] = frozenset(
 # linear_proj but are additionally safe to chain (weight sharing
 # reduces redundant parameters).
 
-# ── True routing ops: dispatch tokens to heterogeneous experts ────
-CONTEXT_RULES["hetero_moe"] = ContextRule(
-    search_mode=SearchMode.GENERAL,
-    forbidden_predecessors=_REDUCE_OPS,
-    forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
-    requires_residual_context=True,
-)
-
-CONTEXT_RULES["arch_router"] = ContextRule(
-    search_mode=SearchMode.GENERAL,
-    forbidden_predecessors=_REDUCE_OPS,
-    forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
-    requires_residual_context=True,
-)
-
-CONTEXT_RULES["compute_budget_router"] = ContextRule(
-    search_mode=SearchMode.GENERAL,
-    forbidden_predecessors=_REDUCE_OPS,
-    forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
-    requires_residual_context=True,
-)
-
 CONTEXT_RULES["tied_proj"] = ContextRule(
     search_mode=SearchMode.GENERAL,
     forbidden_predecessors=_REDUCE_OPS,
@@ -1001,4 +978,3 @@ CONTEXT_RULES["shared_basis_proj"] = ContextRule(
 
 def is_structural(op_name: str) -> bool:
     return op_name in STRUCTURAL_OPS
-

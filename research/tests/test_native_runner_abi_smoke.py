@@ -43,6 +43,16 @@ class NrExecuteResponse(ctypes.Structure):
     ]
 
 
+class NrExecuteBatchResponse(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("logits", ctypes.POINTER(ctypes.c_float)),
+        ("batch", ctypes.c_int32),
+        ("vocab_size", ctypes.c_int32),
+        ("message", ctypes.c_char_p),
+    ]
+
+
 class NrCapability(ctypes.Structure):
     _fields_ = [
         ("supported_ops", ctypes.POINTER(ctypes.c_char_p)),
@@ -121,6 +131,25 @@ def test_runner_abi_lifecycle_compile_execute_smoke():
     assert int(exec_res_2.status) == 0
     logits_2 = [float(exec_res_2.logits[i]) for i in range(exec_res_2.vocab_size)]
     assert logits == logits_2
+
+    lib.nr_execute_batch.argtypes = [ctypes.POINTER(NrExecuteRequest)]
+    lib.nr_execute_batch.restype = NrExecuteBatchResponse
+    batch_token_buf = (ctypes.c_int32 * 8)(1, 2, 3, 4, 4, 3, 2, 1)
+    batch_req = NrExecuteRequest(
+        model_handle=compile_res.model_handle,
+        token_ids=batch_token_buf,
+        batch=2,
+        seq_len=4,
+    )
+    batch_res = lib.nr_execute_batch(ctypes.byref(batch_req))
+    assert int(batch_res.status) == 0
+    assert int(batch_res.batch) == 2
+    assert int(batch_res.vocab_size) == 128
+    assert bool(batch_res.logits)
+    row0 = [float(batch_res.logits[i]) for i in range(128)]
+    row1 = [float(batch_res.logits[128 + i]) for i in range(128)]
+    assert row0 == logits
+    assert row1 != row0
 
     lib.nr_release_model.argtypes = [ctypes.c_int64]
     lib.nr_release_model(compile_res.model_handle)

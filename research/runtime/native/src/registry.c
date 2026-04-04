@@ -77,6 +77,9 @@ static nk_status_t wrap_swiglu(const float* x, const float* W_gate, const float*
 static nk_status_t wrap_rwkv_channel(const float* x, const float* mix_k, const float* mix_r, const float* W_k, const float* W_r, const float* W_v, float* y, float* tmp_xk, float* tmp_xr, float* tmp_k, int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim) {
     aria_rwkv_channel_f32(x, mix_k, mix_r, W_k, W_r, W_v, y, tmp_xk, tmp_xr, tmp_k, batch, seq, dim, hidden_dim); return NK_OK;
 }
+static nk_status_t wrap_conv1d_seq(const float* x, const float* weight, const float* bias, float* y, int64_t batch, int64_t seq, int64_t dim) {
+    aria_conv1d_seq_f32(x, weight, bias, y, batch, seq, dim); return NK_OK;
+}
 
 /* --- Reference architecture adapter wrappers --- */
 static nk_status_t wrap_embedding_lookup(const float* table, const int32_t* indices, const float* pos_embed, float* y, int64_t batch, int64_t dim, int64_t vocab_size) {
@@ -175,6 +178,7 @@ void aria_registry_init(void) {
     memset(&r, 0, sizeof(r)); r.op_name = "matmul_gelu"; r.matmul_gelu_fn = wrap_matmul_gelu; nk_register(&r);
     memset(&r, 0, sizeof(r)); r.op_name = "swiglu"; r.swiglu_fn = wrap_swiglu; nk_register(&r);
     memset(&r, 0, sizeof(r)); r.op_name = "rwkv_channel"; r.rwkv_channel_fn = wrap_rwkv_channel; nk_register(&r);
+    memset(&r, 0, sizeof(r)); r.op_name = "conv1d_seq"; r.conv1d_seq_fn = wrap_conv1d_seq; nk_register(&r);
 
     /* Reference architecture ops */
     memset(&r, 0, sizeof(r)); r.op_name = "embedding_lookup"; r.embedding_lookup_fn = wrap_embedding_lookup; nk_register(&r);

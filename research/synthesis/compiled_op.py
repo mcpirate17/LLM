@@ -12,6 +12,55 @@ from .compiler_registry import OP_DISPATCH
 from .graph import ShapeInfo
 from .primitives import PRIMITIVE_REGISTRY, get_primitive
 
+_MODULE_NATIVE_DISPATCH_OPS = frozenset(
+    {
+        "linear_proj",
+        "linear_proj_down",
+        "linear_proj_up",
+        "rmsnorm",
+        "layernorm",
+        "conv1d_seq",
+        "rwkv_channel",
+        "swiglu_mlp",
+        "gated_linear",
+        "rwkv_time_mixing",
+        "softmax_attention",
+        "linear_attention",
+        "gated_lane_blend",
+        "route_lanes",
+        "depth_gated_transform",
+        "route_recursion",
+        "depth_weighted_proj",
+        "adaptive_recursion",
+        "selective_scan",
+        "state_space",
+        "gated_delta",
+    }
+)
+
+
+def _reshape_native_result_if_needed(
+    result: torch.Tensor,
+    *,
+    inputs: tuple[torch.Tensor, ...],
+    output_shape: ShapeInfo,
+) -> torch.Tensor:
+    if not inputs or not isinstance(result, torch.Tensor):
+        return result
+
+    input0 = inputs[0]
+    if not isinstance(input0, torch.Tensor):
+        return result
+    if not output_shape.is_standard:
+        return result
+
+    target_shape = tuple(int(v) for v in input0.shape[:-1]) + (int(output_shape.dim),)
+    if result.shape == target_shape:
+        return result
+    if result.numel() != int(torch.Size(target_shape).numel()):
+        return result
+    return result.reshape(target_shape)
+
 
 def sanitize_mathspace_result(
     result: torch.Tensor,
@@ -77,8 +126,16 @@ class CompiledOp(CompiledOpParamInitMixin, CompiledOpRuntimeMixin, nn.Module):
 
         wrapper = self._cached_native_wrapper
         if wrapper is not None:
-            result = wrapper.dispatch(self.op_name, *inputs)
+            if self.op_name in _MODULE_NATIVE_DISPATCH_OPS:
+                result = wrapper.dispatch(self.op_name, *inputs, module=self)
+            else:
+                result = wrapper.dispatch(self.op_name, *inputs)
             if result is not None:
+                result = _reshape_native_result_if_needed(
+                    result,
+                    inputs=inputs,
+                    output_shape=self.output_shape,
+                )
                 if profile:
                     self._record_op_timing(_time.perf_counter() - t0)
                 return result

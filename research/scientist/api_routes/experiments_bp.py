@@ -63,6 +63,12 @@ def _extract_ops_summary(graph_json_str: str | None) -> str | None:
         return None
 
 
+def _is_backfill_experiment_type(experiment_type: Any) -> bool:
+    if not experiment_type:
+        return False
+    return "backfill" in str(experiment_type).lower()
+
+
 def register_experiments_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -135,7 +141,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
             return jsonify({"analysis": stored, "source": "stored"})
 
         # Skip on-demand LLM generation for backfill experiments
-        if exp.get("experiment_type") == "backfill":
+        if _is_backfill_experiment_type(exp.get("experiment_type")):
             return jsonify(
                 {
                     "analysis": None,

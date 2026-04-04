@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import sqlite3
-import time
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -204,10 +202,6 @@ class _ResultsAnalysisMixin:
                         },
                     },
                 )
-            # Update analytics stats tables for feedback-driven search
-            self._update_analytics_stats(
-                nb, graph, _s0_passed, _s1_passed, recorded_lr, fp_novelty
-            )
         except (
             RuntimeError,
             ValueError,
@@ -222,105 +216,6 @@ class _ResultsAnalysisMixin:
                 )
             else:
                 logger.debug("Failed to record program result: %s", e)
-
-    def _update_analytics_stats(
-        self,
-        nb: LabNotebook,
-        graph,
-        s0_passed: bool,
-        s1_passed: bool,
-        loss_ratio: Optional[float],
-        novelty: Optional[float],
-    ) -> None:
-        """Incrementally update template_stats, motif_stats, and op_stats after each eval."""
-        now = time.time()
-        templates = graph.metadata.get("templates_used", [])
-        motifs = graph.metadata.get("motifs_used", [])
-        ops = {
-            n.op_name
-            for n in (
-                graph.nodes.values() if isinstance(graph.nodes, dict) else graph.nodes
-            )
-            if hasattr(n, "op_name") and n.op_name != "input"
-        }
-
-        s0_inc = 1 if s0_passed else 0
-        s1_inc = 1 if s1_passed else 0
-        valid_loss = loss_ratio is not None and math.isfinite(loss_ratio)
-
-        try:
-            conn = nb.conn
-            loss_val = loss_ratio if valid_loss else None
-
-            def _batch_upsert_stats(
-                table: str,
-                name_col: str,
-                names: list,
-            ) -> None:
-                """Batch-upsert stats: one SELECT for all names, then batch UPDATE/INSERT."""
-                if not names:
-                    return
-                placeholders = ",".join("?" for _ in names)
-                rows = conn.execute(
-                    f"SELECT {name_col}, eval_count, s0_pass_count, s1_pass_count, "
-                    f"mean_loss, min_loss FROM {table} WHERE {name_col} IN ({placeholders})",
-                    names,
-                ).fetchall()
-                existing = {r[0]: r[1:] for r in rows}
-
-                updates = []
-                inserts = []
-                for name in names:
-                    if name in existing:
-                        ec, s0c, s1c, ml, mnl = existing[name]
-                        ec2 = ec + 1
-                        new_mean = (
-                            (ml * ec + loss_ratio) / ec2
-                            if valid_loss and ml is not None
-                            else (loss_ratio if valid_loss else ml)
-                        )
-                        new_min = (
-                            min(mnl, loss_ratio)
-                            if valid_loss and mnl is not None
-                            else (loss_ratio if valid_loss else mnl)
-                        )
-                        updates.append(
-                            (
-                                ec2,
-                                s0c + s0_inc,
-                                s1c + s1_inc,
-                                new_mean,
-                                new_min,
-                                now,
-                                name,
-                            )
-                        )
-                    else:
-                        inserts.append(
-                            (name, 1, s0_inc, s1_inc, loss_val, loss_val, now)
-                        )
-
-                if updates:
-                    conn.executemany(
-                        f"UPDATE {table} SET eval_count=?, s0_pass_count=?, "
-                        f"s1_pass_count=?, mean_loss=?, min_loss=?, last_updated=? "
-                        f"WHERE {name_col}=?",
-                        updates,
-                    )
-                if inserts:
-                    conn.executemany(
-                        f"INSERT INTO {table} ({name_col}, eval_count, s0_pass_count, "
-                        f"s1_pass_count, mean_loss, min_loss, last_updated) "
-                        f"VALUES (?,?,?,?,?,?,?)",
-                        inserts,
-                    )
-
-            _batch_upsert_stats("template_stats", "template_name", templates)
-            _batch_upsert_stats("motif_stats", "motif_name", motifs)
-            _batch_upsert_stats("op_stats", "op_name", list(ops))
-            conn.commit()
-        except sqlite3.OperationalError:
-            logger.debug("Failed to update analytics stats", exc_info=True)
 
     def _analyze_results(
         self, results: Dict, exp_id: str, nb: LabNotebook, context: str = ""

@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, str(ROOT := Path("/home/tim/Projects/LLM/aria_designer")))
 
-from runtime.bridge import (
+from aria_designer.runtime.bridge import (
     evaluate_workflow as direct_bridge_evaluate,
     validate_workflow_graph as direct_bridge_validate,
 )

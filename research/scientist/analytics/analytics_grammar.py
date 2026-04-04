@@ -6,6 +6,7 @@ import sqlite3
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
+from ..intelligence.ml_corpus import load_deduped_graph_analysis_rows
 from ...synthesis.grammar import GrammarConfig
 from ...synthesis.primitives import get_primitive
 
@@ -387,14 +388,8 @@ class _GrammarMixin:
 
     def _load_program_factor_rows(self) -> List[Dict[str, Any]]:
         """Load per-program factors for attribution analysis."""
-        cursor = self.nb.conn.execute(
-            """SELECT result_id, experiment_id, graph_json, stage1_passed,
-                      graph_depth, graph_uses_math_spaces
-               FROM program_results
-               WHERE graph_json IS NOT NULL"""
-        )
         parsed: List[Dict[str, Any]] = []
-        for row in cursor:
+        for row in load_deduped_graph_analysis_rows(self.nb.db_path):
             graph_json = row["graph_json"]
             ops = self._extract_ops_fast(graph_json)
             if ops is None:
@@ -412,7 +407,7 @@ class _GrammarMixin:
                 {
                     "result_id": row["result_id"],
                     "experiment_id": row["experiment_id"],
-                    "stage1_passed": int(bool(row["stage1_passed"])),
+                    "stage1_passed": int(bool(row["stage1_any_passed"])),
                     "ops": op_set,
                     "families": families,
                     "math_space": bool(row["graph_uses_math_spaces"]),

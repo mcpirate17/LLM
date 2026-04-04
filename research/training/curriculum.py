@@ -15,10 +15,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-import torch
 
-
-@dataclass
+@dataclass(slots=True)
 class CurriculumStrategy:
     """A synthesized curriculum/data presentation strategy."""
 
@@ -33,8 +31,6 @@ class CurriculumStrategy:
     initial_seq_len: int = 32
     max_seq_len: int = 512
     masking_pattern: str = "causal"  # "causal", "prefix", "random_span", "checkerboard"
-    difficulty_sort: bool = False
-    spaced_repetition: bool = False
 
     def get_seq_len(self, step: int, total_steps: int) -> int:
         """Get sequence length for current step."""
@@ -54,44 +50,6 @@ class CurriculumStrategy:
             )
         return self.max_seq_len
 
-    # Cache for deterministic masks keyed by (pattern, seq_len, device)
-    _mask_cache: Dict = field(default_factory=dict, repr=False)
-
-    def get_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Get attention mask for current strategy."""
-        if self.masking_pattern == "random_span":
-            # Non-deterministic — cannot cache
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
-            n_spans = max(1, seq_len // 16)
-            for _ in range(n_spans):
-                start = random.randint(0, seq_len - 4)
-                end = min(start + random.randint(2, 8), seq_len)
-                mask[start:end, start:end] = 1.0
-            return mask
-
-        cache_key = (self.masking_pattern, seq_len, str(device))
-        cached = self._mask_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        if self.masking_pattern == "causal":
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
-        elif self.masking_pattern == "prefix":
-            prefix_len = max(1, seq_len // 4)
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
-            mask[:, :prefix_len] = 1.0
-        elif self.masking_pattern == "checkerboard":
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
-            block_size = max(4, seq_len // 8)
-            for i in range(0, seq_len, block_size * 2):
-                end = min(i + block_size, seq_len)
-                mask[i:end, i:end] = 1.0
-        else:
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
-
-        self._mask_cache[cache_key] = mask
-        return mask
-
     def to_dict(self) -> Dict:
         return {
             "name": self.name,
@@ -100,8 +58,6 @@ class CurriculumStrategy:
             "initial_seq_len": self.initial_seq_len,
             "max_seq_len": self.max_seq_len,
             "masking_pattern": self.masking_pattern,
-            "difficulty_sort": self.difficulty_sort,
-            "spaced_repetition": self.spaced_repetition,
             "seed": self.seed,
         }
 
@@ -120,14 +76,7 @@ def synthesize_curriculum(
     mask_pattern = rng.choice(
         ["causal", "causal", "prefix", "random_span", "checkerboard"]
     )
-    diff_sort = rng.random() < 0.3
-    spaced_rep = rng.random() < 0.2
-
     components = [seq_schedule, mask_pattern]
-    if diff_sort:
-        components.append("difficulty_sort")
-    if spaced_rep:
-        components.append("spaced_repetition")
 
     name = f"curriculum_{'_'.join(components[:3])}"
 
@@ -141,6 +90,4 @@ def synthesize_curriculum(
         initial_seq_len=rng.choice([16, 32, 64]),
         max_seq_len=max_seq_len,
         masking_pattern=mask_pattern,
-        difficulty_sort=diff_sort,
-        spaced_repetition=spaced_rep,
     )

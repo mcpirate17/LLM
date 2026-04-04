@@ -164,7 +164,7 @@ async def _stage_conversion(wf: dict, model_dim: int) -> dict:
         graph, cg_to_aria = original
         used_original = True
     else:
-        from runtime.bridge import workflow_to_graph as _w2g
+        from aria_designer.runtime.bridge import workflow_to_graph as _w2g
 
         graph, id_map = await asyncio.to_thread(_w2g, wf, model_dim, return_id_map=True)
         cg_to_aria = {v: k for k, v in id_map.items()}
@@ -196,7 +196,7 @@ async def _stage_profiling(
             "op_profiles_for_nodes": [],
         }
 
-    from runtime.profiler import profile_static_graph
+    from aria_designer.runtime.profiler import profile_static_graph
 
     duplicate_work_avoided["workflow_to_graph"] += 1
     report = await asyncio.to_thread(

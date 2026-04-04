@@ -119,6 +119,8 @@ def run_combo(
                 "functional",
             ]
         },
+        use_learned_candidate_weights=False,
+        use_screening_signal_weights=False,
         routing_mandatory=False,
         gbm_prescreener_enabled=False,
     )
@@ -126,6 +128,9 @@ def run_combo(
     runner = ExperimentRunner(db_path)
     runner._grammar_weight_overrides = {}
     runner._op_weights_overrides = {}
+    logger.info(
+        "Targeted backfill forcing neutral weight mode: learned candidate weights off, screening signal weights off"
+    )
     runner._ensure_math_spaces()
 
     nb = runner._make_notebook()

@@ -17,7 +17,7 @@ from .optimizer_synthesis import SynthesizedOptimizer, synthesize_optimizer
 from .curriculum import CurriculumStrategy, synthesize_curriculum
 
 
-@dataclass
+@dataclass(slots=True)
 class TrainingProgram:
     """Complete training specification."""
 
@@ -47,17 +47,6 @@ class TrainingProgram:
             "init_scale": self.init_scale,
             "seed": self.seed,
         }
-
-    def describe(self) -> str:
-        lines = [
-            f"Training Program: {self.name}",
-            f"  Loss: {self.loss.name} ({len(self.loss.components)} components)",
-            f"  Optimizer: {self.optimizer.name} (lr={self.optimizer.lr:.2e})",
-            f"  Curriculum: {self.curriculum.seq_len_schedule} seq, {self.curriculum.masking_pattern} mask",
-            f"  Init: {self.init_scheme} (scale={self.init_scale:.2f})",
-            f"  Steps: {self.n_steps}, Batch: {self.batch_size}",
-        ]
-        return "\n".join(lines)
 
 
 # ── Init Schemes ──────────────────────────────────────────────────────

@@ -26,11 +26,15 @@ def _op_softmax_attention(module, inputs, _):
     q = module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
     k = module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
     v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
-    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-    attn.masked_fill_(mask, float("-inf"))
-    attn = F.softmax(attn, dim=-1)
-    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    out = F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        dropout_p=0.0,
+        is_causal=True,
+        scale=module.attn_scale,
+    )
+    out = out.transpose(1, 2).reshape(B, S, -1)
     return module.o_proj(out)
 
 
@@ -103,11 +107,15 @@ def _op_graph_attention(module, inputs, _):
     q = module.q_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
     k = module.k_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
     v = module.v_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
-    attn = (q @ k.transpose(-2, -1)) * module.attn_scale
-    mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-    attn.masked_fill_(mask, float("-inf"))
-    attn = F.softmax(attn, dim=-1)
-    out = (attn @ v).transpose(1, 2).reshape(B, S, -1)
+    out = F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        dropout_p=0.0,
+        is_causal=True,
+        scale=module.attn_scale,
+    )
+    out = out.transpose(1, 2).reshape(B, S, -1)
     return module.o_proj(out)
 
 
@@ -150,11 +158,8 @@ def _op_gated_linear(module, inputs, _):
         )
         if out.ndim == x.ndim:
             return out
-    dt = x.dtype
-    linear = F.linear(x, module.linear_weight.to(dt), module.linear_bias.to(dt))
-    gate = torch.sigmoid(
-        F.linear(x, module.gate_weight.to(dt), module.gate_bias.to(dt))
-    )
+    linear = F.linear(x, module.linear_weight, module.linear_bias)
+    gate = torch.sigmoid(F.linear(x, module.gate_weight, module.gate_bias))
     return linear * gate
 
 

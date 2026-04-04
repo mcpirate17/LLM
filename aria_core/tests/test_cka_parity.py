@@ -2,6 +2,7 @@ import torch
 import aria_core
 import time
 from research.eval.fingerprint import _linear_cka
+from research.eval.fingerprint_native import sequence_self_similarity
 
 
 def test_cka_parity():
@@ -43,3 +44,15 @@ def test_cka_parity():
 
 if __name__ == "__main__":
     test_cka_parity()
+
+
+def test_sequence_self_similarity_parity():
+    reps = torch.randn(4, 12, 16, dtype=torch.float32)
+    native = aria_core.sequence_self_similarity_f32(reps.contiguous())
+    wrapped = sequence_self_similarity(reps)
+    norm = torch.nn.functional.normalize(reps, dim=-1)
+    reference = torch.bmm(norm, norm.transpose(1, 2)).mean(dim=0)
+
+    assert native.shape == (12, 12)
+    assert torch.allclose(native, reference, atol=1e-5, rtol=1e-5)
+    assert torch.allclose(wrapped, reference, atol=1e-5, rtol=1e-5)

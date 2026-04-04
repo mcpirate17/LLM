@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections import deque
 
 try:
     import jsonschema
@@ -59,10 +60,6 @@ def validate_ir(ir_doc: dict) -> list[str]:
         if nid in node_ids:
             errors.append(f"duplicate node id: {nid}")
         node_ids.add(nid)
-        for inp_id in node.get("input_ids", []):
-            if inp_id not in node_ids and inp_id >= nid:
-                # Forward references - check after all nodes loaded
-                pass
 
     # Validate all input_ids reference existing nodes
     for node in ir_doc.get("nodes", []):
@@ -92,10 +89,10 @@ def validate_ir(ir_doc: dict) -> list[str]:
             adj[src].append(tgt)
             in_degree[tgt] += 1
 
-    queue = [nid for nid, deg in in_degree.items() if deg == 0]
+    queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
     visited = 0
     while queue:
-        nid = queue.pop(0)
+        nid = queue.popleft()
         visited += 1
         for neighbor in adj[nid]:
             in_degree[neighbor] -= 1

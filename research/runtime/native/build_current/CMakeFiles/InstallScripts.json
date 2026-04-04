@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/tim/Projects/LLM/research/runtime/native/build_current/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

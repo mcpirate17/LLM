@@ -6,12 +6,14 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import torch
 
 from research.training.data_pipeline import (
     ByteTokenizer,
     CorpusConfig,
     CorpusTokenBatcher,
     TiktokenAdapter,
+    WhitespaceHashTokenizer,
 )
 
 
@@ -70,3 +72,36 @@ class TestTokenizerParity:
         """CorpusConfig defaults tiktoken_encoding to 'gpt2'."""
         config = CorpusConfig(path="/tmp/dummy.txt")
         assert config.tiktoken_encoding == "gpt2"
+
+    def test_whitespace_tokenizer_is_deterministic(self):
+        text = "alpha beta alpha"
+        vocab = 8192
+
+        first = WhitespaceHashTokenizer().encode(text, vocab)
+        second = WhitespaceHashTokenizer().encode(text, vocab)
+
+        assert first == second
+        assert len(first) == 3
+        assert first[0] == first[2]
+
+    def test_byte_batcher_loads_native_extension(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("abc def ghi")
+            tmp_path = f.name
+
+        try:
+            config = CorpusConfig(path=tmp_path, tokenizer="byte")
+            batcher = CorpusTokenBatcher(config, vocab_size=256)
+            assert batcher.ready
+            assert batcher._native_ext is None
+            batch = batcher.sample_batch(
+                batch_size=2,
+                seq_len=3,
+                generator=torch.Generator().manual_seed(0),
+                device=torch.device("cpu"),
+            )
+            assert batch is not None
+            assert batch.shape == (2, 3)
+            assert batcher._native_ext is not None
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)

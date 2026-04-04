@@ -7,6 +7,13 @@ from typing import Any, Dict, List
 import torch
 import torch.nn as nn
 
+try:
+    import aria_core
+
+    _HAS_ARIA_CORE = True
+except ImportError:
+    _HAS_ARIA_CORE = False
+
 
 def make_identity_handler(component_type: str):
     """Create a ComponentHandler class that returns input tensor as-is.
@@ -34,7 +41,7 @@ def make_identity_handler(component_type: str):
 
 def make_native_temperature_handler(component_type: str, native_op_name: str):
     """Create NativeComponentHandler subclass for (x, temperature) kernels."""
-    from components.base import NativeComponentHandler
+    from aria_designer.components.base import NativeComponentHandler
 
     class ComponentHandler(NativeComponentHandler):  # noqa: D401
         def _get_native_args(self, inputs, config):
@@ -79,7 +86,7 @@ def make_mathspace_unary_handler(
     ``native_args_fn`` optionally customises the args tuple sent to
     aria_core; by default it sends ``(x_detached_contiguous_f32,)``.
     """
-    from components.base import NativeComponentHandler
+    from aria_designer.components.base import NativeComponentHandler
 
     _execute_fn = None
 
@@ -116,7 +123,7 @@ def make_mathspace_binary_handler(
 ):
     """Like ``make_mathspace_unary_handler`` but for binary ops
     (``execute_fn(module, x, y)``)."""
-    from components.base import NativeComponentHandler
+    from aria_designer.components.base import NativeComponentHandler
 
     _execute_fn = None
 
@@ -177,5 +184,139 @@ def make_embedding_lookup_handler(component_type: str):
             )
             y = (indices.unsqueeze(-1).float() + base).remainder(97.0) / 97.0
             return {"y": y}
+
+    return ComponentHandler
+
+
+def make_route_topk_handler():
+    """Create a native-first top-k routing handler."""
+
+    class ComponentHandler:  # noqa: D401
+        def validate_config(self, config: Dict[str, Any]) -> List[str]:
+            return []
+
+        def build(self, config: Dict[str, Any]) -> None:
+            return None
+
+        def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
+            scores = inputs["scores"]
+            if scores.dim() != 3:
+                raise ValueError("route_topk expects scores with shape [B, S, K]")
+            k = max(1, min(int(config.get("k", 1)), scores.size(-1)))
+            if _HAS_ARIA_CORE:
+                try:
+                    indices, weights = aria_core.route_topk_indices_f32(
+                        scores.detach().contiguous().float(), k
+                    )
+                    return {"indices": indices, "weights": weights}
+                except Exception:
+                    pass
+            weights, indices = torch.topk(scores, k=k, dim=-1)
+            return {"indices": indices, "weights": weights}
+
+    return ComponentHandler
+
+
+def make_route_argmax_handler(
+    component_name: str,
+    output_name: str,
+    config_key: str,
+    default_limit: int,
+):
+    """Create an argmax-style routing handler."""
+
+    class ComponentHandler:  # noqa: D401
+        def validate_config(self, config: Dict[str, Any]) -> List[str]:
+            return []
+
+        def build(self, config: Dict[str, Any]) -> None:
+            return None
+
+        def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
+            scores = inputs["scores"]
+            if scores.dim() != 3:
+                raise ValueError(
+                    f"{component_name} expects scores with shape [B, S, D]"
+                )
+            limit = max(
+                1, min(int(config.get(config_key, default_limit)), scores.size(-1))
+            )
+            if component_name == "route_recursion" and _HAS_ARIA_CORE:
+                try:
+                    depth = aria_core.route_recursion_depth_f32(
+                        scores[..., :limit].detach().contiguous().float()
+                    )
+                    return {output_name: depth}
+                except Exception:
+                    pass
+            return {output_name: torch.argmax(scores[..., :limit], dim=-1)}
+
+    return ComponentHandler
+
+
+def make_token_merge_handler():
+    """Create a native-first token merge handler."""
+
+    class ComponentHandler:  # noqa: D401
+        def validate_config(self, config: Dict[str, Any]) -> List[str]:
+            return []
+
+        def build(self, config: Dict[str, Any]) -> None:
+            return None
+
+        def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
+            x = inputs["x"]
+            if x.dim() != 3:
+                raise ValueError("token_merge expects x with shape [B, S, D]")
+            seq_len = x.shape[1]
+            n_keep = max(1, min(int(config.get("n_keep", seq_len)), seq_len))
+            if _HAS_ARIA_CORE:
+                try:
+                    y, restore_map = aria_core.token_merge_simple_f32(
+                        x.detach().contiguous().float(), n_keep
+                    )
+                    return {"y": y, "restore_map": restore_map}
+                except Exception:
+                    pass
+            batch_size = x.shape[0]
+            restore_row = torch.arange(
+                seq_len, device=x.device, dtype=torch.long
+            ).clamp(max=n_keep - 1)
+            restore_map = restore_row.unsqueeze(0).expand(batch_size, -1)
+            return {"y": x[:, :n_keep, :], "restore_map": restore_map}
+
+    return ComponentHandler
+
+
+def make_basis_expansion_handler():
+    """Create a native-first Fourier basis expansion handler."""
+
+    class ComponentHandler:  # noqa: D401
+        def validate_config(self, config: Dict[str, Any]) -> List[str]:
+            return []
+
+        def build(self, config: Dict[str, Any]) -> None:
+            return None
+
+        def forward(self, inputs: Dict[str, Any], config: Dict[str, Any]):
+            x = inputs["x"]
+            n_bases = max(1, int(config.get("n_bases", 4)))
+            if _HAS_ARIA_CORE:
+                try:
+                    freqs = torch.arange(
+                        1, n_bases + 1, device=x.device, dtype=torch.float32
+                    )
+                    return {
+                        "y": aria_core.basis_expansion_f32(
+                            x.detach().contiguous().float(), freqs, n_bases
+                        )
+                    }
+                except Exception:
+                    pass
+            features = []
+            for freq in range(1, n_bases + 1):
+                scaled = x * float(freq)
+                features.extend((torch.sin(scaled), torch.cos(scaled)))
+            return {"y": torch.cat(features, dim=-1)}
 
     return ComponentHandler

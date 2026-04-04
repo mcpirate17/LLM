@@ -51,10 +51,12 @@ def _dispatch_to_experts(
     B, S, D = x.shape
 
     if not hasattr(module, "gate_weight"):
-        return x
+        raise RuntimeError(
+            f"{type(module).__name__} missing gate_weight for true routing op"
+        )
 
     # 1. Gate: learned routing decision per token (pointwise — causal-safe)
-    logits = F.linear(x, module.gate_weight.to(x.dtype))  # (B, S, n_experts)
+    logits = F.linear(x, module.gate_weight)  # (B, S, n_experts)
     logits = _apply_moe_load_balance(module, logits, n_experts)
     weights, indices = logits.topk(1, dim=-1)  # top-1 hard routing
     weights = torch.sigmoid(weights)  # (B, S, 1) — gate confidence
@@ -111,12 +113,12 @@ def _mini_attention(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
     Returns: (N, D)
     """
     # QKV projection → gated combination (per-token, no cross-token interaction)
-    qkv = F.linear(chunk, module.attn_qkv.to(chunk.dtype))  # (N, 3*D)
+    qkv = F.linear(chunk, module.attn_qkv)  # (N, 3*D)
     q, k, v = qkv.chunk(3, dim=-1)
     # Per-token gated mixing: sigmoid(q) * v (element-wise, causal-safe)
     gate = torch.sigmoid(q * k)
     out = gate * v
-    return F.linear(out, module.attn_out.to(chunk.dtype))
+    return F.linear(out, module.attn_out)
 
 
 def _mini_conv(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
@@ -128,7 +130,7 @@ def _mini_conv(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
 
     chunk: (N, D). Returns: (N, D)
     """
-    projected = F.linear(chunk, module.conv_proj.to(chunk.dtype))
+    projected = F.linear(chunk, module.conv_proj)
     return F.gelu(projected) * chunk
 
 
@@ -141,10 +143,9 @@ def _mini_ssm(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
 
     chunk: (N, D). Returns: (N, D)
     """
-    dt = chunk.dtype
-    gate_b = torch.sigmoid(F.linear(chunk, module.ssm_B_proj.to(dt)))
-    gate_c = torch.sigmoid(F.linear(chunk, module.ssm_C_proj.to(dt)))
-    return gate_b * gate_c * chunk + module.ssm_D.to(dt) * chunk
+    gate_b = torch.sigmoid(F.linear(chunk, module.ssm_B_proj))
+    gate_c = torch.sigmoid(F.linear(chunk, module.ssm_C_proj))
+    return gate_b * gate_c * chunk + module.ssm_D * chunk
 
 
 def _mini_mlp(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
@@ -152,9 +153,8 @@ def _mini_mlp(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
 
     chunk: (N, D). Returns: (N, D)
     """
-    dt = chunk.dtype
-    hidden = F.gelu(F.linear(chunk, module.mlp_up.to(dt)))
-    return F.linear(hidden, module.mlp_down.to(dt))
+    hidden = F.gelu(F.linear(chunk, module.mlp_up))
+    return F.linear(hidden, module.mlp_down)
 
 
 def _mini_cheap_linear(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
@@ -162,7 +162,7 @@ def _mini_cheap_linear(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
 
     chunk: (N, D). Returns: (N, D)
     """
-    return F.linear(chunk, module.cheap_proj.to(chunk.dtype))
+    return F.linear(chunk, module.cheap_proj)
 
 
 # ── Op 1: hetero_moe ─────────────────────────────────────────────
@@ -180,14 +180,14 @@ def _op_hetero_moe(module, inputs, config):
 def _mini_transformer_block(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
     """Transformer-style: attention → linear proj."""
     out = _mini_attention(chunk, module)
-    return F.linear(F.gelu(out), module.arch_ffn.to(chunk.dtype))
+    return F.linear(F.gelu(out), module.arch_ffn)
 
 
 def _mini_mamba_block(chunk: torch.Tensor, module: nn.Module) -> torch.Tensor:
     """Mamba-style: conv1d → SSM → linear proj."""
     out = _mini_conv(chunk, module)
     out = _mini_ssm(out, module)
-    return F.linear(out, module.arch_proj.to(chunk.dtype))
+    return F.linear(out, module.arch_proj)
 
 
 def _op_arch_router(module, inputs, config):

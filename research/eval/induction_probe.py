@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -26,10 +27,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ._probe_runtime import disable_native_probe_dispatch
+
 logger = logging.getLogger(__name__)
 
 _RESTRICTED_VOCAB = 256
 _TIMEOUT_S = 120.0
+
+
+def _amp_context(device: str):
+    if str(device).startswith("cuda"):
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
+
+
+def _make_adamw(params, lr: float):
+    kwargs = {"lr": lr}
+    if torch.cuda.is_available():
+        try:
+            return torch.optim.AdamW(params, fused=True, **kwargs)
+        except TypeError:
+            pass
+    return torch.optim.AdamW(params, **kwargs)
 
 
 @dataclass(slots=True)
@@ -123,57 +142,62 @@ def induction_score(
         result.elapsed_ms = (time.perf_counter() - t0) * 1000
         return result
 
-    opt = torch.optim.AdamW(probe_model.parameters(), lr=lr)
+    opt = _make_adamw(probe_model.parameters(), lr=lr)
 
     try:
-        # Train on fixed gap
-        for step in range(1, n_train_steps + 1):
-            if time.perf_counter() - t0 > timeout_s:
-                result.status = "timeout"
-                break
-
-            input_ids, targets = _generate_induction_batch(
-                batch_size, train_gap, device
-            )
-            opt.zero_grad(set_to_none=True)
-
-            logits = probe_model(input_ids)
-            # Predict B at the last position (after seeing second A)
-            pred_pos = input_ids.shape[1] - 1
-            pred_logits = logits[:, pred_pos, :_RESTRICTED_VOCAB]
-            loss = F.cross_entropy(pred_logits, targets)
-
-            if not torch.isfinite(loss):
-                result.status = "diverged"
-                break
-
-            loss.backward()
-            nn.utils.clip_grad_norm_(probe_model.parameters(), 1.0)
-            opt.step()
-            result.steps_trained = step
-
-        # Evaluate across all gap distances
-        probe_model.eval()
-        with torch.no_grad():
-            for gap in sorted(gaps):
+        with disable_native_probe_dispatch(probe_model, device=device):
+            # Train on fixed gap
+            for step in range(1, n_train_steps + 1):
                 if time.perf_counter() - t0 > timeout_s:
-                    result.gap_accuracies[gap] = 0.0
-                    continue
+                    result.status = "timeout"
+                    break
 
-                correct = 0
-                total = 0
-                remaining = n_eval
-                while remaining > 0:
-                    bs = min(batch_size, remaining)
-                    inp, tgt = _generate_induction_batch(bs, gap, device)
-                    out = probe_model(inp)
-                    pred_pos = inp.shape[1] - 1
-                    preds = out[:, pred_pos, :_RESTRICTED_VOCAB].argmax(dim=-1)
-                    correct += (preds == tgt).sum().item()
-                    total += bs
-                    remaining -= bs
+                input_ids, targets = _generate_induction_batch(
+                    batch_size, train_gap, device
+                )
+                opt.zero_grad(set_to_none=True)
 
-                result.gap_accuracies[gap] = round(correct / max(total, 1), 4)
+                with _amp_context(device):
+                    logits = probe_model(input_ids)
+                    # Predict B at the last position (after seeing second A)
+                    pred_pos = input_ids.shape[1] - 1
+                    pred_logits = logits[:, pred_pos, :_RESTRICTED_VOCAB]
+                    loss = F.cross_entropy(pred_logits.float(), targets)
+
+                if not torch.isfinite(loss):
+                    result.status = "diverged"
+                    break
+
+                loss.backward()
+                nn.utils.clip_grad_norm_(probe_model.parameters(), 1.0)
+                opt.step()
+                result.steps_trained = step
+
+            # Evaluate across all gap distances
+            probe_model.eval()
+            with torch.inference_mode():
+                for gap in sorted(gaps):
+                    if time.perf_counter() - t0 > timeout_s:
+                        result.gap_accuracies[gap] = 0.0
+                        continue
+
+                    correct = 0
+                    total = 0
+                    remaining = n_eval
+                    eval_batches = []
+                    while remaining > 0:
+                        bs = min(batch_size, remaining)
+                        eval_batches.append(_generate_induction_batch(bs, gap, device))
+                        remaining -= bs
+
+                    for inp, tgt in eval_batches:
+                        out = probe_model(inp)
+                        pred_pos = inp.shape[1] - 1
+                        preds = out[:, pred_pos, :_RESTRICTED_VOCAB].argmax(dim=-1)
+                        correct += (preds == tgt).sum().item()
+                        total += tgt.numel()
+
+                    result.gap_accuracies[gap] = round(correct / max(total, 1), 4)
 
     except Exception as e:
         result.status = f"train_failed: {e}"

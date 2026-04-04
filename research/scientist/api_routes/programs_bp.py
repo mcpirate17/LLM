@@ -225,7 +225,9 @@ def register_programs_routes(app, context: ApiRouteContext):
             _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
             if _designer_root not in _sys.path:
                 _sys.path.insert(0, _designer_root)
-            from runtime.importer import graph_to_workflow as _graph_to_workflow
+            from aria_designer.runtime.importer import (
+                graph_to_workflow as _graph_to_workflow,
+            )
         except ImportError:
             _graph_to_workflow = None
 

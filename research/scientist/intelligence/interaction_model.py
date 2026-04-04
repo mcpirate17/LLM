@@ -28,6 +28,12 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .ml_corpus import (
+    CorpusIntegrityError,
+    load_deduped_graph_training_rows,
+    rerun_confidence_weight,
+)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NOTEBOOK_DB = Path(__file__).parents[2] / "lab_notebook.db"
@@ -220,13 +226,14 @@ class InteractionModel:
 
             # From experiment co-occurrence
             try:
-                rows = conn.execute(
-                    """SELECT graph_json, stage1_passed, loss_ratio, timestamp
-                       FROM program_results
-                       WHERE graph_json IS NOT NULL"""
-                ).fetchall()
+                rows = load_deduped_graph_training_rows(notebook_db, validate=True)
                 now = time.time()
-                for gj, s1, lr, ts in rows:
+                for row in rows:
+                    gj = row["graph_json"]
+                    s1 = bool(row["stage1_any_passed"])
+                    loss_ratio = row.get("loss_ratio_best")
+                    ts = row.get("latest_timestamp", None)
+                    rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
                     try:
                         g = json.loads(gj) if isinstance(gj, str) else gj
                     except (json.JSONDecodeError, TypeError):
@@ -245,14 +252,20 @@ class InteractionModel:
                         if half_life > 0
                         else 1.0
                     )
+                    w *= rerun_weight
 
                     for i_op, a in enumerate(ops):
                         all_ops.add(a)
                         for b in ops[i_op + 1 :]:
                             stability_data.append((a, b, bool(s1), w * 0.1))
-                            if s1 and lr is not None and math.isfinite(lr):
-                                loss_data.append((a, b, lr, w * 0.1))
-                conn.close()
+                            if (
+                                s1
+                                and loss_ratio is not None
+                                and math.isfinite(loss_ratio)
+                            ):
+                                loss_data.append((a, b, loss_ratio, w * 0.1))
+            except CorpusIntegrityError:
+                raise
             except Exception as e:
                 logger.warning("Failed to load experiment co-occurrence: %s", e)
 

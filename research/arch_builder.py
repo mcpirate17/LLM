@@ -1234,6 +1234,33 @@ class ExplorerModel(nn.Module):
         x = self.head_norm(x) if self.head_norm is not None else x
         return self.lm_head(x)
 
+    def _fingerprint_forward_from_embed(self, embed_in: torch.Tensor) -> torch.Tensor:
+        x = embed_in
+        x = (
+            self.tok_repr.encode(x)
+            if hasattr(self.tok_repr, "encode")
+            else self.tok_repr(x)
+        )
+        if self.pos_enc is not None:
+            x = self.pos_enc(x)
+        return self.topology(x)
+
+    def _fingerprint_logits_from_embed(self, embed_in: torch.Tensor) -> torch.Tensor:
+        return self.lm_head(self._fingerprint_pre_logits_from_embed(embed_in))
+
+    def _fingerprint_pre_logits_from_embed(
+        self, embed_in: torch.Tensor
+    ) -> torch.Tensor:
+        x = self._fingerprint_forward_from_embed(embed_in)
+        x = self.tok_repr.decode(x) if hasattr(self.tok_repr, "decode") else x
+        return self.head_norm(x) if self.head_norm is not None else x
+
+    def _fingerprint_representations(
+        self, input_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        reps = self._fingerprint_pre_logits_from_embed(self.embed(input_ids))
+        return self.lm_head(reps), reps
+
     def param_count(self) -> int:
         return sum(p.numel() for p in self.parameters())
 

@@ -40,11 +40,6 @@ class FakeQuantResult:
         }
 
 
-def _iter_quantizable_params(model: nn.Module):
-    """Yield (name, param) pairs eligible for quantization."""
-    return iter_eligible_params(model)
-
-
 def fake_quantize_tensor(tensor: torch.Tensor, bits: int = 8) -> torch.Tensor:
     """Simulate low-bit quantization via quantize-then-dequantize.
 
@@ -80,13 +75,13 @@ def apply_fake_quantization(
     total_quantized = 0
     n_sparse = 0
 
-    for _name, param in _iter_quantizable_params(model):
+    for _name, param in iter_eligible_params(model):
         numel = int(param.numel())
         total_params += numel
         total_quantized += numel
 
         # Count existing zeros (from prior pruning/sparsity)
-        n_sparse += int((param.data == 0).sum().item())
+        n_sparse += numel - int(torch.count_nonzero(param.data).item())
 
         with torch.no_grad():
             param.copy_(fake_quantize_tensor(param.data, bits=bits))

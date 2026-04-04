@@ -97,8 +97,8 @@ function StatusBar({
   const nativeFallbackRate = Number(nativeRunner?.fallback_metrics?.fallback_rate);
   const nativeFallbackLimitRaw = nativeRunner?.fallback_metrics?.max_allowed_fallback_rate;
   const nativeFallbackLimit = nativeFallbackLimitRaw != null ? Number(nativeFallbackLimitRaw) : null;
-  const nativeLegacyUsed = Number(nativeRunner?.fallback_metrics?.legacy_compile_invocations || 0);
-  const nativeLegacyLimitRaw = nativeRunner?.fallback_metrics?.max_allowed_legacy_compile_invocations;
+  const nativeLegacyUsed = Number(nativeRunner?.fallback_metrics?.legacy_compile_count || 0);
+  const nativeLegacyLimitRaw = nativeRunner?.fallback_metrics?.max_allowed_legacy_compile_count;
   const nativeLegacyLimit = nativeLegacyLimitRaw != null ? Number(nativeLegacyLimitRaw) : null;
   const nativeExecPath = nativeRunner?.execution_path;
   const selectiveLayerBuild = nativeRunner?.selective_execution?.layer_build || {};

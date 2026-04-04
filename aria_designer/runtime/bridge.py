@@ -5,7 +5,7 @@ Converts aria_designer WorkflowGraphModel JSON into research ComputationGraph,
 then drives compilation, sandbox evaluation, fingerprinting, and novelty scoring.
 
 Usage:
-    from runtime.bridge import evaluate_workflow, workflow_to_graph
+    from aria_designer.runtime.bridge import evaluate_workflow, workflow_to_graph
 
     result = evaluate_workflow(workflow_json, device="cuda")
 """

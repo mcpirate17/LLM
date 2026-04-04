@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import random
 
-from .graph import ComputationGraph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_MATH_SPACE,
     MOTIF_CLASS_NORM,
@@ -522,6 +525,47 @@ def tpl_hyperbolic_bridge_block(
         return graph.add_op("add", [input_id, processed])
     except ValueError:
         return processed
+
+
+def tpl_poincare_add_bridge(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → proj branches → exp_map → poincare_add → log_map → [FFN] → residual."""
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    try:
+        branch_a = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        branch_b = graph.add_op("linear_proj", [normed], config={"out_dim": D})
+        if rng.random() < 0.5:
+            branch_b = graph.add_op(rng.choice(["silu", "gelu", "tanh"]), [branch_b])
+        if rng.random() < 0.35:
+            branch_b = graph.add_op("linear_proj", [branch_b], config={"out_dim": D})
+
+        mapped_a = graph.add_op("exp_map", [branch_a])
+        mapped_b = graph.add_op("exp_map", [branch_b])
+        mixed = graph.add_op("add", [mapped_a, mapped_b])
+        bridged = graph.add_op("poincare_add", [mixed])
+        current = graph.add_op("log_map", [bridged])
+    except (ValueError, KeyError):
+        return tpl_residual_block(graph, input_id, rng, weights)
+
+    if rng.random() < 0.7:
+        post = _pick_compatible_motif_from_classes(
+            graph, current, rng, _FFN_CLASSES, weights
+        )
+        if post:
+            current = _instantiate_motif(graph, current, post, rng)
+
+    current = _fix_dim(graph, current)
+    try:
+        return graph.add_op("add", [input_id, current])
+    except ValueError:
+        return current
 
 
 def tpl_n_way_moe_block(

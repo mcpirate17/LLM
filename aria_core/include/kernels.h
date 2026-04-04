@@ -50,6 +50,20 @@ float aria_mean_f32(const float *x, int64_t n);
  * Matrices are assumed to be square [n, n].
  */
 float aria_linear_cka_f32(const float *X, const float *Y, int64_t n);
+void aria_sequence_self_similarity_f32(const float *reps, float *out,
+                                       int64_t n_probes, int64_t seq_len, int64_t dim);
+void aria_mean_abs_linear_delta_f32(
+    const float *delta, const float *weight, float *out,
+    int64_t batch, int64_t seq_len, int64_t dim, int64_t vocab
+);
+void aria_geometry_metrics_f32(
+    const float *reps,
+    const int64_t *row_indices,
+    float *out,
+    int64_t total_rows,
+    int64_t sample_rows,
+    int64_t dim
+);
 
 /* ── Linear algebra ────────────────────────────────────────────────── */
 
@@ -318,6 +332,14 @@ void aria_rwkv_channel_f32(const float *x,
                             const float *W_k, const float *W_r, const float *W_v,
                             float *y, float *tmp_xk, float *tmp_xr, float *tmp_k,
                             int64_t batch, int64_t seq, int64_t dim, int64_t hidden_dim);
+void aria_depth_weighted_proj_f32(const float *x,
+                                  const float *depth_scorer,
+                                  const float *step_projs,
+                                  float *y,
+                                  int64_t batch,
+                                  int64_t seq,
+                                  int64_t dim,
+                                  int64_t max_depth);
 
 /** Token pool-restore: pool adjacent pairs via mean, restore via repeat */
 void aria_token_pool_restore_f32(const float *x, float *y,
@@ -327,6 +349,91 @@ void aria_token_pool_restore_f32(const float *x, float *y,
 void aria_selective_scan_f32(const float *x, const float *A, const float *B,
                               const float *C, const float *D,
                               float *y, int64_t batch, int64_t seq, int64_t dim);
+void aria_selective_scan_compiled_f32(const float *x,
+                                      const float *A_log,
+                                      const float *dt_proj,
+                                      const float *B_weight,
+                                      const float *C_weight,
+                                      float *y,
+                                      int64_t batch,
+                                      int64_t seq,
+                                      int64_t dim);
+void aria_selective_scan_compiled_backward_f32(const float *grad_out,
+                                               const float *x,
+                                               const float *A_log,
+                                               const float *dt_proj,
+                                               const float *B_weight,
+                                               const float *C_weight,
+                                               float *grad_x,
+                                               float *grad_A_log,
+                                               float *grad_dt_proj,
+                                               float *grad_B_weight,
+                                               float *grad_C_weight,
+                                               int64_t batch,
+                                               int64_t seq,
+                                               int64_t dim);
+void aria_state_space_compiled_f32(const float *x,
+                                   const float *ssm_A,
+                                   const float *ssm_B_weight,
+                                   const float *ssm_C_weight,
+                                   const float *ssm_D,
+                                   const float *ssm_dt_weight,
+                                   const float *ssm_dt_bias,
+                                   float *y,
+                                   int64_t batch,
+                                   int64_t seq,
+                                   int64_t dim,
+                                   int64_t state_dim);
+void aria_state_space_compiled_backward_f32(const float *grad_out,
+                                            const float *x,
+                                            const float *ssm_A,
+                                            const float *ssm_B_weight,
+                                            const float *ssm_C_weight,
+                                            const float *ssm_D,
+                                            const float *ssm_dt_weight,
+                                            const float *ssm_dt_bias,
+                                            float *grad_x,
+                                            float *grad_ssm_A,
+                                            float *grad_ssm_B_weight,
+                                            float *grad_ssm_C_weight,
+                                            float *grad_ssm_D,
+                                            float *grad_ssm_dt_weight,
+                                            float *grad_ssm_dt_bias,
+                                            int64_t batch,
+                                            int64_t seq,
+                                            int64_t dim,
+                                            int64_t state_dim);
+void aria_gated_delta_compiled_f32(const float *x,
+                                   const float *q_weight,
+                                   const float *k_weight,
+                                   const float *v_weight,
+                                   const float *alpha_weight,
+                                   const float *beta_weight,
+                                   const float *o_weight,
+                                   float *y,
+                                   int64_t batch,
+                                   int64_t seq,
+                                   int64_t dim,
+                                   int64_t n_heads);
+void aria_gated_delta_compiled_backward_f32(const float *grad_out,
+                                            const float *x,
+                                            const float *q_weight,
+                                            const float *k_weight,
+                                            const float *v_weight,
+                                            const float *alpha_weight,
+                                            const float *beta_weight,
+                                            const float *o_weight,
+                                            float *grad_x,
+                                            float *grad_q_weight,
+                                            float *grad_k_weight,
+                                            float *grad_v_weight,
+                                            float *grad_alpha_weight,
+                                            float *grad_beta_weight,
+                                            float *grad_o_weight,
+                                            int64_t batch,
+                                            int64_t seq,
+                                            int64_t dim,
+                                            int64_t n_heads);
 
 /** Top-k gating: project to k scores, sparse gate */
 void aria_topk_gate_f32(const float *x, const float *W_gate, float *y,
@@ -532,6 +639,36 @@ void aria_rope_rotate_f32(const float *x, float *y,
                            int64_t batch, int64_t seq, int64_t dim,
                            float theta_base);
 
+/** Causal multi-head QKV attention with output projection.
+ *  x: [batch, seq, dim], W*: [dim, dim], y: [batch, seq, dim] */
+void aria_softmax_attention_f32(const float *x,
+                                 const float *Wq, const float *Wk,
+                                 const float *Wv, const float *Wo,
+                                 float *y,
+                                 int64_t batch, int64_t seq,
+                                 int64_t dim, int64_t n_heads);
+void aria_softmax_attention_backward_f32(const float *grad_out,
+                                         const float *x,
+                                         const float *Wq,
+                                         const float *Wk,
+                                         const float *Wv,
+                                         const float *Wo,
+                                         float *grad_x,
+                                         float *grad_Wq,
+                                         float *grad_Wk,
+                                         float *grad_Wv,
+                                         float *grad_Wo,
+                                         int64_t batch,
+                                         int64_t seq,
+                                         int64_t dim,
+                                         int64_t n_heads);
+
+/** Linear attention kernel surface currently exported for direct native use. */
+void aria_linear_attention_f32(const float *x,
+                                const float *Wq, const float *Wk,
+                                const float *Wv, const float *Wo, float *y,
+                                int64_t batch, int64_t seq, int64_t dim);
+
 /** Gated linear: y = (x @ W + b) * sigmoid(x @ W_gate + b_gate)
  *  x: [batch, dim_in], W/W_gate: [dim_out, dim_in], b/b_gate: [dim_out] (may be NULL) */
 void aria_gated_linear_f32(const float *x,
@@ -560,6 +697,22 @@ void aria_rwkv_time_mixing_f32(const float *x,
                                  const float *W_k, const float *W_v, const float *W_r,
                                  float *y,
                                  int64_t batch, int64_t seq, int64_t dim);
+void aria_rwkv_time_mixing_backward_f32(const float *grad_out,
+                                        const float *x,
+                                        const float *w_decay,
+                                        const float *u_bonus,
+                                        const float *W_k,
+                                        const float *W_v,
+                                        const float *W_r,
+                                        float *grad_x,
+                                        float *grad_w_decay,
+                                        float *grad_u_bonus,
+                                        float *grad_W_k,
+                                        float *grad_W_v,
+                                        float *grad_W_r,
+                                        int64_t batch,
+                                        int64_t seq,
+                                        int64_t dim);
 
 /** Embedding lookup backward: accumulate gradients into table rows */
 void aria_embedding_lookup_backward_f32(const float *grad_out, const int32_t *indices,

@@ -507,6 +507,96 @@ def screening_wikitext_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return fields
 
 
+def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract persisted screening/probe telemetry from a result dict."""
+    fields: Dict[str, Any] = {}
+    for key in (
+        "rapid_screening_passed",
+        "rapid_screening_elapsed_ms",
+        "rapid_screening_steps_completed",
+        "rapid_screening_max_steps",
+        "rapid_screening_degraded",
+        "rapid_screening_kill_reason",
+        "rapid_screening_kill_step",
+        "rapid_screening_kill_metric",
+        "rapid_screening_gpu_minutes_saved",
+        "ar_auc",
+        "ar_final_acc",
+        "ar_timed_out",
+        "ar_above_chance",
+        "induction_auc",
+        "induction_probe_train_steps",
+        "induction_probe_eval_examples",
+        "induction_probe_batch_size",
+        "induction_probe_elapsed_ms",
+        "binding_auc",
+        "binding_probe_eval_examples",
+        "binding_probe_elapsed_ms",
+        "binding_composite",
+        "local_only",
+        "hellaswag_acc",
+        "hellaswag_status",
+        "hellaswag_n_examples",
+        "screening_hellaswag_correct",
+        "screening_hellaswag_total",
+        "screening_hellaswag_elapsed_ms",
+        "train_budget_steps",
+    ):
+        value = row.get(key)
+        if value is not None:
+            fields[key] = value
+
+    rapid_degraded_reasons = row.get("rapid_screening_degraded_reasons")
+    if rapid_degraded_reasons:
+        fields["rapid_screening_degraded_reasons_json"] = json.dumps(
+            json_safe(rapid_degraded_reasons),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    rapid_metrics = row.get("rapid_screening_metrics")
+    if rapid_metrics:
+        fields["rapid_screening_metrics_json"] = json.dumps(
+            json_safe(rapid_metrics),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    induction_gap_accuracies = row.get("induction_gap_accuracies")
+    if induction_gap_accuracies:
+        fields["induction_gap_accuracies_json"] = json.dumps(
+            json_safe(induction_gap_accuracies),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    induction_gaps = row.get("induction_probe_gaps")
+    if induction_gaps:
+        fields["induction_probe_gaps_json"] = json.dumps(
+            json_safe(induction_gaps),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    binding_distance_accuracies = row.get("binding_distance_accuracies")
+    if binding_distance_accuracies:
+        fields["binding_distance_accuracies_json"] = json.dumps(
+            json_safe(binding_distance_accuracies),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    binding_distances = row.get("binding_probe_distances")
+    if binding_distances:
+        fields["binding_probe_distances_json"] = json.dumps(
+            json_safe(binding_distances),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    return fields
+
+
 def routing_fast_lane_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     """Extract persisted routing fast-lane fields from a result dict."""
     fields: Dict[str, Any] = {}

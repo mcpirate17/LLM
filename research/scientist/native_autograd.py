@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 from .native.tensor_bridge import to_device_tensor
 from .native_runner import dispatch_op_native, dispatch_op_backward_native
@@ -71,12 +72,12 @@ def _make_binary_flat(op_name: str) -> type:
         def backward(ctx, grad_output):
             a, b = ctx.saved_tensors
             shape = grad_output.shape
-            grad_a_np, grad_b_np = dispatch_op_backward_native(op_name, grad_output, a, b)
-            return to_device_tensor(
-                grad_a_np, reference=grad_output
-            ).reshape(shape), to_device_tensor(grad_b_np, reference=grad_output).reshape(
-                shape
+            grad_a_np, grad_b_np = dispatch_op_backward_native(
+                op_name, grad_output, a, b
             )
+            return to_device_tensor(grad_a_np, reference=grad_output).reshape(
+                shape
+            ), to_device_tensor(grad_b_np, reference=grad_output).reshape(shape)
 
     _F.__name__ = _F.__qualname__ = f"Native{op_name.capitalize()}"
     return _F
@@ -142,20 +143,25 @@ class NativeLayernorm(torch.autograd.Function):
     def forward(ctx, x, gamma, beta):
         y_np = dispatch_op_native("layernorm", x, gamma, beta)
         y = to_device_tensor(y_np, reference=x)
-        ctx.save_for_backward(x, gamma)
+        ctx.save_for_backward(x, gamma, beta)
         return y
 
     @staticmethod
     def backward(ctx, grad_output):
-        x, gamma = ctx.saved_tensors
-        grad_in_np, grad_gamma_np, grad_beta_np = dispatch_op_backward_native(
-            "layernorm", grad_output, x, gamma
-        )
-        return (
-            to_device_tensor(grad_in_np, reference=grad_output),
-            to_device_tensor(grad_gamma_np, reference=grad_output),
-            to_device_tensor(grad_beta_np, reference=grad_output),
-        )
+        x, gamma, beta = ctx.saved_tensors
+        with torch.enable_grad():
+            x_req = x.detach().requires_grad_(True)
+            gamma_req = gamma.detach().requires_grad_(True)
+            beta_req = beta.detach().requires_grad_(True)
+            y = F.layer_norm(x_req, (x.shape[-1],), gamma_req, beta_req, eps=1e-5)
+            grad_x, grad_gamma, grad_beta = torch.autograd.grad(
+                y,
+                (x_req, gamma_req, beta_req),
+                grad_output,
+                retain_graph=False,
+                allow_unused=False,
+            )
+        return grad_x, grad_gamma, grad_beta
 
 
 class NativeRmsnorm(torch.autograd.Function):
@@ -169,12 +175,38 @@ class NativeRmsnorm(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         x, gamma = ctx.saved_tensors
-        grad_in_np, grad_gamma_np = dispatch_op_backward_native(
-            "rmsnorm", grad_output, x, gamma
+        with torch.enable_grad():
+            x_req = x.detach().requires_grad_(True)
+            gamma_req = gamma.detach().requires_grad_(True)
+            rms = torch.rsqrt(x_req.pow(2).mean(dim=-1, keepdim=True) + 1e-5)
+            y = x_req * rms * gamma_req
+            grad_x, grad_gamma = torch.autograd.grad(
+                y,
+                (x_req, gamma_req),
+                grad_output,
+                retain_graph=False,
+                allow_unused=False,
+            )
+        return grad_x, grad_gamma
+
+
+class NativeLinear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight):
+        y_np = dispatch_op_native("linear", x, weight)
+        y = to_device_tensor(y_np, reference=x)
+        ctx.save_for_backward(x, weight)
+        return y
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, weight = ctx.saved_tensors
+        grad_x_np, grad_weight_np = dispatch_op_backward_native(
+            "linear", grad_output, x, weight
         )
         return (
-            to_device_tensor(grad_in_np, reference=grad_output),
-            to_device_tensor(grad_gamma_np, reference=grad_output),
+            to_device_tensor(grad_x_np, reference=grad_output),
+            to_device_tensor(grad_weight_np, reference=grad_output),
         )
 
 
@@ -212,6 +244,7 @@ _NATIVE_AUTOGRAD_OPS = {
     "softmax": NativeSoftmax,
     "layernorm": NativeLayernorm,
     "rmsnorm": NativeRmsnorm,
+    "linear": NativeLinear,
 }
 
 # Ops whose backward kernels exist in the C library.

@@ -7,9 +7,12 @@ picking, and the motif instantiation engine.
 from __future__ import annotations
 
 import random
-from typing import Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
-from .graph import ComputationGraph
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
+else:
+    ComputationGraph = Any
 from .motifs import (
     MATH_SPACE_RULES,
     MOTIFS_BY_CLASS,
@@ -204,6 +207,29 @@ def _compatible_from_classes(
     ]
 
 
+_SLOT_MOTIF_DENYLIST: dict[str, frozenset[str]] = {
+    # Live telemetry shows these normalization motifs collapse the Mamba
+    # reference block before the selective-scan path can learn anything useful.
+    "mamba_reference.slot0": frozenset({"norm_layer", "norm_rms"}),
+    "mamba_reference.slot1": frozenset({"norm_layer", "norm_rms"}),
+    # gate_bias_act repeatedly destabilizes the retrieval post-processing slot.
+    "topk_retrieval.slot1": frozenset({"gate_bias_act"}),
+}
+
+
+def _filter_slot_candidates(
+    graph: ComputationGraph,
+    candidates: list[Motif],
+) -> list[Motif]:
+    """Drop motifs that are known-bad for the active template slot."""
+    slot_key = _current_slot_key(graph)
+    denied = _SLOT_MOTIF_DENYLIST.get(slot_key)
+    if not denied:
+        return candidates
+    filtered = [motif for motif in candidates if motif.name not in denied]
+    return filtered or candidates
+
+
 def _select_from_candidates(
     candidates: list[Motif],
     rng: random.Random,
@@ -255,6 +281,7 @@ def _pick_compatible_motif(
         if not candidates and wildcard_prob > 0:
             candidates = _compatible_from_classes(graph, node_id, _ALL_CLASSES)
             is_wildcard = True
+    candidates = _filter_slot_candidates(graph, candidates)
 
     selected = _select_from_candidates(candidates, rng, weights)
     _record_slot_usage(

@@ -30,12 +30,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(ROOT))
 
 from research.synthesis.primitives import PRIMITIVE_REGISTRY  # noqa: E402
-from runtime.bridge import (  # noqa: E402
-    _COMPONENT_ALIASES,
+from research.synthesis.component_registry import registry  # noqa: E402
+from aria_designer.runtime.bridge import (  # noqa: E402
     _IO_COMPONENTS,
-    _PASSTHROUGH_COMPONENTS,
-    _SOURCE_COMPONENTS,
-    _TEMPLATE_LOWERED_COMPONENTS,
+    get_component_execution_capability,
 )
 
 
@@ -89,16 +87,18 @@ def _resolve_primitive(component_id: str, category: str) -> tuple[str, Optional[
         cid = candidate.split("/")[-1]
         if cid in _IO_COMPONENTS:
             return "io", None
-        if cid in _SOURCE_COMPONENTS:
+        if registry.is_source(candidate):
             return "source", None
-        if cid in _TEMPLATE_LOWERED_COMPONENTS:
+        if cid in registry.template_lowered_components:
             return "template", None
-        if cid in _PASSTHROUGH_COMPONENTS:
+        if registry.is_passthrough(candidate):
             return "passthrough", None
         if cid in PRIMITIVE_REGISTRY:
             return "direct", cid
-        if cid in _COMPONENT_ALIASES:
-            return "alias", _COMPONENT_ALIASES[cid]
+        capability = get_component_execution_capability(candidate)
+        primitive_name = capability.get("primitive_name")
+        if primitive_name:
+            return capability.get("mapping_kind", "bridge"), primitive_name
     return "unmapped", None
 
 

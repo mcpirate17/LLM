@@ -8,6 +8,7 @@ from research.synthesis.compiler import compile_graph, compile_model
 from research.synthesis.grammar import GrammarConfig, _validate_graph
 from research.synthesis.graph import ComputationGraph, ComputationGraphIR
 from research.synthesis.graph_features import extract_graph_features
+from research.synthesis.native_compile import get_supported_native_ops
 from research.synthesis.workflow_converter import workflow_to_computation_graph
 
 
@@ -150,7 +151,7 @@ def test_compile_model_uses_fast_path_selection_per_layer(monkeypatch):
 def test_compile_graph_attaches_native_subgraph_dispatcher(monkeypatch):
     import research.scientist.native.autograd as native_autograd
     import research.scientist.native.dispatch as native_dispatch
-    import research.synthesis.compiler as compiler_mod
+    from research.synthesis.ir_executor import IRExecutor
 
     class FakeDispatcher:
         def __init__(self, graph, supported_ops):
@@ -172,8 +173,29 @@ def test_compile_graph_attaches_native_subgraph_dispatcher(monkeypatch):
 
     module = compile_graph(graph, use_ir=True)
 
-    assert isinstance(module, compiler_mod.CompiledLayer)
+    assert isinstance(module, IRExecutor)
     assert isinstance(module._subgraph_dispatcher, FakeDispatcher)
+
+
+def test_get_supported_native_ops_caches_probe_result(monkeypatch):
+    import research.scientist.native.dispatch as native_dispatch
+
+    calls = {"count": 0}
+
+    def _fake_check(graphs, native_lib=None):
+        calls["count"] += 1
+        return {"supported": ["relu"]}
+
+    monkeypatch.setattr(native_dispatch, "_check_native_op_support", _fake_check)
+
+    graph = ComputationGraph(32)
+    inp = graph.add_input()
+    out = graph.add_op("relu", [inp])
+    graph.set_output(out)
+
+    assert get_supported_native_ops(graph) == {"relu"}
+    assert get_supported_native_ops(graph) == {"relu"}
+    assert calls["count"] == 1
 
 
 def test_graph_uses_native_analysis_when_available(monkeypatch):

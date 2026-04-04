@@ -361,6 +361,7 @@ class TestDispatchRegistry:
             "softmax",
             "layernorm",
             "rmsnorm",
+            "linear",
             "minimum",
             "maximum",
             "div_safe",

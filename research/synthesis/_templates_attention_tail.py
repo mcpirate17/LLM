@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import random
 
-from .graph import ComputationGraph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CONV,
+    MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
@@ -51,6 +55,112 @@ def _tpl_attn_op_chain(
     )
     processed = _fix_dim(graph, processed)
     return _residual(graph, input_id, processed, context=f"{post_op}.output")
+
+
+def _pick_with_local_wildcard(
+    graph: ComputationGraph,
+    node_id: int,
+    rng: random.Random,
+    motif_classes,
+    weights: MotifWeights = None,
+    *,
+    wildcard_prob: float,
+):
+    previous = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    graph.metadata["_wildcard_slot_prob"] = wildcard_prob
+    try:
+        return _pick_compatible_motif(graph, node_id, rng, motif_classes, weights)
+    finally:
+        graph.metadata["_wildcard_slot_prob"] = previous
+
+
+def tpl_attn_spectral_filter(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → attention → proj → rmsnorm → spectral_filter → proj → FFN → add.
+
+    The bare attention → spectral_filter chain passes early screens but tends to
+    stall before S1. Keep spectral_filter inside a densified residual branch and
+    add an FFN stage so the block can recover useful gradients after the FFT.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
+    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    attended = _fix_dim(graph, attended)
+    attended = _add(
+        graph,
+        "linear_proj",
+        [attended],
+        {"out_dim": D},
+        context="attn_spectral_filter.pre_proj",
+    )
+    spectral_in = _add(
+        graph,
+        "rmsnorm",
+        [attended],
+        context="attn_spectral_filter.pre_norm",
+    )
+    filtered = _add(
+        graph,
+        "spectral_filter",
+        [spectral_in],
+        context="attn_spectral_filter.filter",
+    )
+    filtered = _add(
+        graph,
+        "linear_proj",
+        [filtered],
+        {"out_dim": D},
+        context="attn_spectral_filter.post_proj",
+    )
+    filtered = _fix_dim(graph, filtered)
+
+    spectral_mid = _residual(
+        graph,
+        attended,
+        filtered,
+        context="attn_spectral_filter.spectral_mid",
+    )
+    mid = _residual(graph, input_id, spectral_mid, context="attn_spectral_filter.mid")
+
+    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+    bridge = _pick_compatible_motif_from_classes(
+        graph,
+        normed2,
+        rng,
+        (MOTIF_CLASS_CONV, MOTIF_CLASS_EFFICIENT_PROJ),
+        weights,
+    )
+    if bridge:
+        normed2 = _instantiate_motif(graph, normed2, bridge, rng)
+        normed2 = _fix_dim(graph, normed2)
+    post = _pick_with_local_wildcard(
+        graph,
+        normed2,
+        rng,
+        _FFN_CLASSES,
+        weights,
+        wildcard_prob=0.15,
+    )
+    if post:
+        ffned = _instantiate_motif(graph, normed2, post, rng)
+    else:
+        ffned = _add(
+            graph,
+            "swiglu_mlp",
+            [normed2],
+            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+            context="attn_spectral_filter.ffn",
+        )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(graph, mid, ffned, context="attn_spectral_filter.output")
 
 
 def tpl_attn_gated_minimum(
@@ -470,7 +580,6 @@ _ATTN_OP_CHAIN_TEMPLATES = {
     "attn_decay_sequence": "cumprod_safe",
     "attn_kronecker_hybrid": "kronecker_linear",
     "attn_log_gated": "log",
-    "attn_spectral_filter": "spectral_filter",
 }
 
 _MOE_CLASSES = (MOTIF_CLASS_MOE, MOTIF_CLASS_GATE)

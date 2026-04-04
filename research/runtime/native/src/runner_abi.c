@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <pthread.h>
 
 #define NR_MAX_HANDLES 1024
@@ -22,6 +23,7 @@ static int32_t g_handle_vocab_sizes[NR_MAX_HANDLES];
 static int32_t g_handle_max_seq_lens[NR_MAX_HANDLES];
 static uint32_t g_handle_ir_hash[NR_MAX_HANDLES];
 static float* g_handle_logits[NR_MAX_HANDLES];
+static float* g_handle_batch_logits[NR_MAX_HANDLES];
 static float* g_handle_add_vectors[NR_MAX_HANDLES];
 static float* g_handle_mul_vectors[NR_MAX_HANDLES];
 static nk_unary_f32_fn g_handle_unary_fns[NR_MAX_HANDLES];
@@ -41,6 +43,7 @@ static float g_handle_rmsnorm_w0[NR_MAX_HANDLES];
 static float g_handle_rmsnorm_w1[NR_MAX_HANDLES];
 static float g_handle_rmsnorm_eps[NR_MAX_HANDLES];
 static const char* g_handle_unary_names[NR_MAX_HANDLES];
+static int32_t g_handle_batch_logit_capacities[NR_MAX_HANDLES];
 static int32_t g_handle_count = 0;
 
 static pthread_mutex_t g_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -741,6 +744,10 @@ static void _release_handle_index(int32_t idx) {
     free(g_handle_logits[idx]);
     g_handle_logits[idx] = NULL;
   }
+  if (g_handle_batch_logits[idx] != NULL) {
+    free(g_handle_batch_logits[idx]);
+    g_handle_batch_logits[idx] = NULL;
+  }
   if (g_handle_add_vectors[idx] != NULL) {
     free(g_handle_add_vectors[idx]);
     g_handle_add_vectors[idx] = NULL;
@@ -749,6 +756,217 @@ static void _release_handle_index(int32_t idx) {
     free(g_handle_mul_vectors[idx]);
     g_handle_mul_vectors[idx] = NULL;
   }
+  g_handle_batch_logit_capacities[idx] = 0;
+}
+
+static nr_status_t _ensure_batch_logit_capacity(
+    int32_t idx,
+    int32_t batch,
+    int32_t vocab_size,
+    const char** out_message) {
+  if (idx < 0 || idx >= g_handle_count || batch <= 0 || vocab_size <= 0) {
+    if (out_message != NULL) {
+      *out_message = "invalid_batch_logit_capacity_request";
+    }
+    return NR_ERR_INVALID_ARGUMENT;
+  }
+  if (batch > (INT32_MAX / vocab_size)) {
+    if (out_message != NULL) {
+      *out_message = "batch_logit_capacity_overflow";
+    }
+    return NR_ERR_INVALID_ARGUMENT;
+  }
+
+  const int32_t required = batch * vocab_size;
+  if (g_handle_batch_logits[idx] != NULL &&
+      g_handle_batch_logit_capacities[idx] >= required) {
+    return NR_OK;
+  }
+
+  float* resized = (float*)realloc(
+      g_handle_batch_logits[idx], (size_t)required * sizeof(float));
+  if (resized == NULL) {
+    if (out_message != NULL) {
+      *out_message = "batch_logit_buffer_alloc_failed";
+    }
+    return NR_ERR_INTERNAL;
+  }
+  g_handle_batch_logits[idx] = resized;
+  g_handle_batch_logit_capacities[idx] = required;
+  return NR_OK;
+}
+
+static nr_status_t _execute_into_logits(
+    int idx,
+    const int32_t* token_ids,
+    int32_t token_count,
+    float* logits,
+    const char** out_message) {
+  if (idx < 0 || idx >= g_handle_count || token_ids == NULL || token_count <= 0 ||
+      logits == NULL) {
+    if (out_message != NULL) {
+      *out_message = "invalid_execute_state";
+    }
+    return NR_ERR_INVALID_ARGUMENT;
+  }
+
+  const int32_t vocab_size = g_handle_vocab_sizes[idx];
+  if (vocab_size <= 0) {
+    if (out_message != NULL) {
+      *out_message = "missing_logit_buffer";
+    }
+    return NR_ERR_INTERNAL;
+  }
+
+  for (int32_t v = 0; v < vocab_size; v++) {
+    const uint32_t mix = ((uint32_t)v * 2654435761u) ^ g_handle_ir_hash[idx];
+    const int32_t bucket = (int32_t)(mix & 0x1F);
+    logits[v] = ((float)bucket - 15.0f) * 0.02f;
+  }
+
+  for (int32_t i = 0; i < token_count; i++) {
+    int64_t token = (int64_t)token_ids[i];
+    if (token < 0) {
+      token = -token;
+    }
+    const int32_t target = (int32_t)(token % (int64_t)vocab_size);
+    const float pos_bias = 1.0f + 0.001f * (float)(i + 1);
+    logits[target] += pos_bias;
+  }
+
+  nk_binary_f32_fn add_fn = g_handle_add_fns[idx];
+  float* add_vec = g_handle_add_vectors[idx];
+  if (add_fn == NULL || add_vec == NULL ||
+      add_fn(logits, add_vec, logits, vocab_size) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "add_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+
+  nk_binary_f32_fn mul_fn = g_handle_mul_fns[idx];
+  float* mul_vec = g_handle_mul_vectors[idx];
+  if (mul_fn == NULL || mul_vec == NULL ||
+      mul_fn(logits, mul_vec, logits, vocab_size) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "mul_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+
+  nk_matmul_f32_fn matmul_fn = g_handle_matmul_fns[idx];
+  if (matmul_fn == NULL) {
+    if (out_message != NULL) {
+      *out_message = "matmul_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+  float lhs[2];
+  lhs[0] = logits[0];
+  lhs[1] = logits[vocab_size > 1 ? 1 : 0];
+  float rhs[2];
+  rhs[0] = g_handle_matmul_rhs_a[idx];
+  rhs[1] = g_handle_matmul_rhs_b[idx];
+  float matmul_scalar = 0.0f;
+  if (matmul_fn(lhs, rhs, &matmul_scalar, 1, 2, 1) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "matmul_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+  const float matmul_bias = matmul_scalar * 0.0025f;
+  for (int32_t v = 0; v < vocab_size; v++) {
+    logits[v] += matmul_bias;
+  }
+
+  nk_linear_f32_fn linear_fn = g_handle_linear_fns[idx];
+  if (linear_fn == NULL) {
+    if (out_message != NULL) {
+      *out_message = "linear_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+  float linear_x[2];
+  linear_x[0] = logits[0];
+  linear_x[1] = logits[vocab_size > 1 ? 1 : 0];
+  float linear_w[2];
+  linear_w[0] = g_handle_linear_w0[idx];
+  linear_w[1] = g_handle_linear_w1[idx];
+  float linear_b[1];
+  linear_b[0] = g_handle_linear_bias[idx];
+  float linear_y[1] = {0.0f};
+  if (linear_fn(linear_x, linear_w, linear_b, linear_y, 1, 2, 1) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "linear_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+  const float linear_bias = linear_y[0] * 0.0015f;
+  for (int32_t v = 0; v < vocab_size; v++) {
+    logits[v] += linear_bias;
+  }
+
+  nk_softmax_f32_fn softmax_fn = g_handle_softmax_fns[idx];
+  if (softmax_fn == NULL || softmax_fn(logits, logits, 1, vocab_size) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "softmax_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+
+  nk_rmsnorm_f32_fn rmsnorm_fn = g_handle_rmsnorm_fns[idx];
+  if (rmsnorm_fn == NULL) {
+    if (out_message != NULL) {
+      *out_message = "rmsnorm_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+  float rms_x[2];
+  rms_x[0] = logits[0];
+  rms_x[1] = logits[vocab_size > 1 ? 1 : 0];
+  float rms_w[2];
+  rms_w[0] = g_handle_rmsnorm_w0[idx];
+  rms_w[1] = g_handle_rmsnorm_w1[idx];
+  float rms_y[2] = {0.0f, 0.0f};
+  if (rmsnorm_fn(rms_x, rms_w, rms_y, 1, 2, g_handle_rmsnorm_eps[idx]) !=
+      NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "rmsnorm_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+  const float rmsnorm_bias = (rms_y[0] + rms_y[1]) * 0.0005f;
+  for (int32_t v = 0; v < vocab_size; v++) {
+    logits[v] += rmsnorm_bias;
+  }
+
+  nk_binary_f32_fn sub_fn = g_handle_sub_fns[idx];
+  if (sub_fn == NULL || add_vec == NULL ||
+      sub_fn(logits, add_vec, logits, vocab_size) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "sub_chain_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+
+  for (int32_t i = 0; i < token_count; i++) {
+    int64_t token = (int64_t)token_ids[i];
+    if (token < 0) {
+      token = -token;
+    }
+    const int32_t target = (int32_t)(token % (int64_t)vocab_size);
+    logits[target] += 0.75f + 0.001f * (float)(i + 1);
+  }
+
+  nk_unary_f32_fn unary_fn = g_handle_unary_fns[idx];
+  if (unary_fn == NULL || unary_fn(logits, logits, vocab_size) != NK_OK) {
+    if (out_message != NULL) {
+      *out_message = "unary_family_execute_failed";
+    }
+    return NR_ERR_EXECUTION_FAILURE;
+  }
+
+  return NR_OK;
 }
 
 nr_status_t nr_runtime_init(void) {
@@ -873,8 +1091,10 @@ nr_compile_response_t nr_compile(const nr_compile_request_t* req) {
   g_handle_max_seq_lens[g_handle_count] = req->max_seq_len;
   g_handle_ir_hash[g_handle_count] = _hash_bytes(req->ir_json, req->ir_json_len);
   g_handle_logits[g_handle_count] = logits;
+  g_handle_batch_logits[g_handle_count] = NULL;
   g_handle_add_vectors[g_handle_count] = add_vec;
   g_handle_mul_vectors[g_handle_count] = mul_vec;
+  g_handle_batch_logit_capacities[g_handle_count] = 0;
   nk_unary_f32_fn unary_fn = NULL;
   const char* unary_name = NULL;
   if (!_resolve_supported_unary_family(req->ir_json, req->ir_json_len, &unary_fn, &unary_name)) {
@@ -1017,141 +1237,81 @@ nr_execute_response_t nr_execute(const nr_execute_request_t* req) {
     return res;
   }
 
-  for (int32_t v = 0; v < vocab_size; v++) {
-    const uint32_t mix = ((uint32_t)v * 2654435761u) ^ g_handle_ir_hash[idx];
-    const int32_t bucket = (int32_t)(mix & 0x1F);
-    logits[v] = ((float)bucket - 15.0f) * 0.02f;
-  }
-
   const int64_t token_count = (int64_t)req->batch * (int64_t)req->seq_len;
-  for (int64_t i = 0; i < token_count; i++) {
-    int64_t token = (int64_t)req->token_ids[i];
-    if (token < 0) {
-      token = -token;
-    }
-    const int32_t target = (int32_t)(token % (int64_t)vocab_size);
-    const float pos_bias = 1.0f + 0.001f * (float)(i + 1);
-    logits[target] += pos_bias;
-  }
-
-  nk_binary_f32_fn add_fn = g_handle_add_fns[idx];
-  float* add_vec = g_handle_add_vectors[idx];
-  if (add_fn == NULL || add_vec == NULL || add_fn(logits, add_vec, logits, vocab_size) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "add_chain_execute_failed";
-    return res;
-  }
-
-  nk_binary_f32_fn mul_fn = g_handle_mul_fns[idx];
-  float* mul_vec = g_handle_mul_vectors[idx];
-  if (mul_fn == NULL || mul_vec == NULL || mul_fn(logits, mul_vec, logits, vocab_size) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "mul_chain_execute_failed";
-    return res;
-  }
-
-  nk_matmul_f32_fn matmul_fn = g_handle_matmul_fns[idx];
-  if (matmul_fn == NULL) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "matmul_chain_execute_failed";
-    return res;
-  }
-  float lhs[2];
-  lhs[0] = logits[0];
-  lhs[1] = logits[vocab_size > 1 ? 1 : 0];
-  float rhs[2];
-  rhs[0] = g_handle_matmul_rhs_a[idx];
-  rhs[1] = g_handle_matmul_rhs_b[idx];
-  float matmul_scalar = 0.0f;
-  if (matmul_fn(lhs, rhs, &matmul_scalar, 1, 2, 1) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "matmul_chain_execute_failed";
-    return res;
-  }
-  const float matmul_bias = matmul_scalar * 0.0025f;
-  for (int32_t v = 0; v < vocab_size; v++) {
-    logits[v] += matmul_bias;
-  }
-
-  nk_linear_f32_fn linear_fn = g_handle_linear_fns[idx];
-  if (linear_fn == NULL) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "linear_chain_execute_failed";
-    return res;
-  }
-  float linear_x[2];
-  linear_x[0] = logits[0];
-  linear_x[1] = logits[vocab_size > 1 ? 1 : 0];
-  float linear_w[2];
-  linear_w[0] = g_handle_linear_w0[idx];
-  linear_w[1] = g_handle_linear_w1[idx];
-  float linear_b[1];
-  linear_b[0] = g_handle_linear_bias[idx];
-  float linear_y[1] = {0.0f};
-  if (linear_fn(linear_x, linear_w, linear_b, linear_y, 1, 2, 1) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "linear_chain_execute_failed";
-    return res;
-  }
-  const float linear_bias = linear_y[0] * 0.0015f;
-  for (int32_t v = 0; v < vocab_size; v++) {
-    logits[v] += linear_bias;
-  }
-
-  nk_softmax_f32_fn softmax_fn = g_handle_softmax_fns[idx];
-  if (softmax_fn == NULL || softmax_fn(logits, logits, 1, vocab_size) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "softmax_chain_execute_failed";
-    return res;
-  }
-
-  nk_rmsnorm_f32_fn rmsnorm_fn = g_handle_rmsnorm_fns[idx];
-  if (rmsnorm_fn == NULL) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "rmsnorm_chain_execute_failed";
-    return res;
-  }
-  float rms_x[2];
-  rms_x[0] = logits[0];
-  rms_x[1] = logits[vocab_size > 1 ? 1 : 0];
-  float rms_w[2];
-  rms_w[0] = g_handle_rmsnorm_w0[idx];
-  rms_w[1] = g_handle_rmsnorm_w1[idx];
-  float rms_y[2] = {0.0f, 0.0f};
-  if (rmsnorm_fn(rms_x, rms_w, rms_y, 1, 2, g_handle_rmsnorm_eps[idx]) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "rmsnorm_chain_execute_failed";
-    return res;
-  }
-  const float rmsnorm_bias = (rms_y[0] + rms_y[1]) * 0.0005f;
-  for (int32_t v = 0; v < vocab_size; v++) {
-    logits[v] += rmsnorm_bias;
-  }
-
-  nk_binary_f32_fn sub_fn = g_handle_sub_fns[idx];
-  if (sub_fn == NULL || add_vec == NULL || sub_fn(logits, add_vec, logits, vocab_size) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "sub_chain_execute_failed";
-    return res;
-  }
-
-  for (int64_t i = 0; i < token_count; i++) {
-    int64_t token = (int64_t)req->token_ids[i];
-    if (token < 0) {
-      token = -token;
-    }
-    const int32_t target = (int32_t)(token % (int64_t)vocab_size);
-    logits[target] += 0.75f + 0.001f * (float)(i + 1);
-  }
-
-  nk_unary_f32_fn unary_fn = g_handle_unary_fns[idx];
-  if (unary_fn == NULL || unary_fn(logits, logits, vocab_size) != NK_OK) {
-    res.status = NR_ERR_EXECUTION_FAILURE;
-    res.message = "unary_family_execute_failed";
+  res.status = _execute_into_logits(
+      idx, req->token_ids, (int32_t)token_count, logits, &res.message);
+  if (res.status != NR_OK) {
     return res;
   }
 
   res.logits = logits;
+  res.vocab_size = vocab_size;
+  return res;
+}
+
+nr_execute_batch_response_t nr_execute_batch(const nr_execute_request_t* req) {
+  nr_execute_batch_response_t res;
+  res.status = NR_OK;
+  res.logits = NULL;
+  res.batch = 0;
+  res.vocab_size = 0;
+  res.message = "ok";
+
+  if (req == NULL || req->model_handle <= 0) {
+    res.status = NR_ERR_INVALID_ARGUMENT;
+    res.message = "invalid_execute_request";
+    return res;
+  }
+
+  const int idx = _find_handle_index(req->model_handle);
+  if (idx < 0) {
+    res.status = NR_ERR_EXECUTION_FAILURE;
+    res.message = "unknown_model_handle";
+    return res;
+  }
+
+  if (req->token_ids == NULL || req->batch <= 0 || req->seq_len <= 0) {
+    res.status = NR_ERR_INVALID_ARGUMENT;
+    res.message = "invalid_token_payload";
+    return res;
+  }
+
+  if (req->seq_len > g_handle_max_seq_lens[idx]) {
+    res.status = NR_ERR_INVALID_ARGUMENT;
+    res.message = "seq_len_exceeds_compile_limit";
+    return res;
+  }
+
+  const int32_t batch = req->batch;
+  const int32_t seq_len = req->seq_len;
+  const int32_t vocab_size = g_handle_vocab_sizes[idx];
+  res.status =
+      _ensure_batch_logit_capacity(idx, batch, vocab_size, &res.message);
+  if (res.status != NR_OK) {
+    return res;
+  }
+
+  float* batch_logits = g_handle_batch_logits[idx];
+  if (batch_logits == NULL) {
+    res.status = NR_ERR_INTERNAL;
+    res.message = "batch_logit_buffer_missing";
+    return res;
+  }
+
+  for (int32_t row = 0; row < batch; row++) {
+    const int32_t* row_tokens =
+        req->token_ids + ((int64_t)row * (int64_t)seq_len);
+    float* row_logits =
+        batch_logits + ((int64_t)row * (int64_t)vocab_size);
+    res.status =
+        _execute_into_logits(idx, row_tokens, seq_len, row_logits, &res.message);
+    if (res.status != NR_OK) {
+      return res;
+    }
+  }
+
+  res.logits = batch_logits;
+  res.batch = batch;
   res.vocab_size = vocab_size;
   return res;
 }
@@ -1172,6 +1332,7 @@ void nr_release_model(int64_t model_handle) {
     g_handle_max_seq_lens[i] = g_handle_max_seq_lens[i + 1];
     g_handle_ir_hash[i] = g_handle_ir_hash[i + 1];
     g_handle_logits[i] = g_handle_logits[i + 1];
+    g_handle_batch_logits[i] = g_handle_batch_logits[i + 1];
     g_handle_add_vectors[i] = g_handle_add_vectors[i + 1];
     g_handle_mul_vectors[i] = g_handle_mul_vectors[i + 1];
     g_handle_unary_fns[i] = g_handle_unary_fns[i + 1];
@@ -1191,6 +1352,7 @@ void nr_release_model(int64_t model_handle) {
     g_handle_rmsnorm_w1[i] = g_handle_rmsnorm_w1[i + 1];
     g_handle_rmsnorm_eps[i] = g_handle_rmsnorm_eps[i + 1];
     g_handle_unary_names[i] = g_handle_unary_names[i + 1];
+    g_handle_batch_logit_capacities[i] = g_handle_batch_logit_capacities[i + 1];
   }
   g_handle_count -= 1;
   g_handles[g_handle_count] = 0;
@@ -1198,6 +1360,7 @@ void nr_release_model(int64_t model_handle) {
   g_handle_max_seq_lens[g_handle_count] = 0;
   g_handle_ir_hash[g_handle_count] = 0;
   g_handle_logits[g_handle_count] = NULL;
+  g_handle_batch_logits[g_handle_count] = NULL;
   g_handle_add_vectors[g_handle_count] = NULL;
   g_handle_mul_vectors[g_handle_count] = NULL;
   g_handle_unary_fns[g_handle_count] = NULL;
@@ -1217,5 +1380,6 @@ void nr_release_model(int64_t model_handle) {
   g_handle_rmsnorm_w1[g_handle_count] = 0.0f;
   g_handle_rmsnorm_eps[g_handle_count] = 0.0f;
   g_handle_unary_names[g_handle_count] = NULL;
+  g_handle_batch_logit_capacities[g_handle_count] = 0;
   pthread_mutex_unlock(&g_handle_mutex);
 }

@@ -2,14 +2,15 @@
 
 import torch
 import torch.nn.functional as F
-from components._weight_cache import cached_randn
-from components.base import _try_native
+from aria_designer.components._weight_cache import cached_randn
+from aria_designer.runtime.dispatch import KernelDispatcher
 
 
 class ComponentHandler:
     """Fused gated linear: (x @ W) * sigmoid(x @ W_gate)."""
 
     __slots__ = ()
+    _dispatcher = KernelDispatcher(use_native=True)
 
     def validate_config(self, config):
         errors = []
@@ -25,11 +26,6 @@ class ComponentHandler:
         x = inputs["x"]  # (B, S, D)
         D = x.shape[-1]
         out_dim = config.get("out_dim", D)
-
-        # Try native kernel first
-        result = _try_native("gated_linear", x, D, out_dim)
-        if result is not None:
-            return {"y": result}
 
         W = cached_randn(
             out_dim,
@@ -47,4 +43,7 @@ class ComponentHandler:
             dtype=x.dtype,
             scale=D**-0.5,
         )
-        return {"y": F.linear(x, W) * torch.sigmoid(F.linear(x, W_gate))}
+        try:
+            return {"y": self._dispatcher.gated_linear(x, W, None, W_gate, None)}
+        except Exception:
+            return {"y": F.linear(x, W) * torch.sigmoid(F.linear(x, W_gate))}

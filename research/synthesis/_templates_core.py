@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import random
 
-from .graph import ComputationGraph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CONV,
@@ -296,35 +299,34 @@ def tpl_three_way_split(
     m2 = _pick_compatible_motif_from_classes(graph, lane2, rng, _GATE_CLASSES, weights)
     p2 = _instantiate_motif(graph, lane2, m2, rng) if m2 else lane2
 
-    lane_dim = D // 3
+    lane_dim0 = D // 3
+    lane_dim1 = D // 3
+    lane_dim2 = D - lane_dim0 - lane_dim1
     p0 = _add(
         graph,
         "linear_proj_down",
         [p0],
-        {"out_dim": lane_dim},
+        {"out_dim": lane_dim0},
         context="three_way_split.down0",
     )
     p1 = _add(
         graph,
         "linear_proj_down",
         [p1],
-        {"out_dim": lane_dim},
+        {"out_dim": lane_dim1},
         context="three_way_split.down1",
     )
     p2 = _add(
         graph,
         "linear_proj_down",
         [p2],
-        {"out_dim": lane_dim},
+        {"out_dim": lane_dim2},
         context="three_way_split.down2",
     )
 
-    combined = _add(graph, "concat", [p0, p1, p2], context="three_way_split.concat")
-    combined = _fix_dim(graph, combined)
-    merged = _residual(
-        graph, normed, combined, context="three_way_split.inner_residual"
-    )
-    return _residual(graph, input_id, merged, context="three_way_split.output")
+    combined01 = _add(graph, "concat", [p0, p1], context="three_way_split.concat01")
+    combined = _add(graph, "concat", [combined01, p2], context="three_way_split.concat")
+    return _residual(graph, input_id, combined, context="three_way_split.output")
 
 
 def tpl_bottleneck(

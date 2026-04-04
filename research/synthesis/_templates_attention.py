@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import random
 
-from .graph import ComputationGraph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CONV,
@@ -101,7 +104,7 @@ def tpl_attn_three_way_split(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → route(3) → split3 → {attention | FFN | gate} → concat → residual.
+    """norm → route(3) → split3 → {attention | FFN | gate} → add → residual.
 
     Forced-attention variant of three_way_split (86.4% S1).
     Lane 0 is forced to attention instead of random _MIXER_CLASSES.
@@ -174,37 +177,12 @@ def tpl_attn_three_way_split(
     m2 = _pick_compatible_motif_from_classes(graph, lane2, rng, _GATE_CLASSES, weights)
     p2 = _instantiate_motif(graph, lane2, m2, rng) if m2 else lane2
 
-    lane_dim = D // 3
-    p0 = _add(
-        graph,
-        "linear_proj_down",
-        [p0],
-        {"out_dim": lane_dim},
-        context="attn_three_way_split.down0",
-    )
-    p1 = _add(
-        graph,
-        "linear_proj_down",
-        [p1],
-        {"out_dim": lane_dim},
-        context="attn_three_way_split.down1",
-    )
-    p2 = _add(
-        graph,
-        "linear_proj_down",
-        [p2],
-        {"out_dim": lane_dim},
-        context="attn_three_way_split.down2",
-    )
-
-    combined = _add(
-        graph, "concat", [p0, p1, p2], context="attn_three_way_split.concat"
-    )
-    combined = _fix_dim(graph, combined)
-    merged = _residual(
-        graph, normed, combined, context="attn_three_way_split.inner_residual"
-    )
-    return _residual(graph, input_id, merged, context="attn_three_way_split.output")
+    p0 = _fix_dim(graph, p0)
+    p1 = _fix_dim(graph, p1)
+    p2 = _fix_dim(graph, p2)
+    combined01 = _residual(graph, p0, p1, context="attn_three_way_split.merge01")
+    combined = _residual(graph, combined01, p2, context="attn_three_way_split.merge")
+    return _residual(graph, input_id, combined, context="attn_three_way_split.output")
 
 
 def tpl_attn_dense_cascade(
@@ -533,15 +511,24 @@ def tpl_attn_rwkv_hybrid(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → {attention | rwkv_channel} → add → norm → swiglu_mlp → add.
+    """layernorm → {projected attention | rwkv_channel} → add → layernorm → swiglu_mlp → add.
 
-    Attention + RWKV recurrent path, borrowing rwkv_double_norm's FFN.
+    Keep the proven RWKV double-norm backbone and treat attention as a bounded
+    refinement path instead of replacing the pre/post-norm scaffold.
     """
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    D = graph.model_dim
+    normed = _add(graph, "layernorm", [input_id], context="attn_rwkv_hybrid.norm")
 
     attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
     path_attn = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    path_attn = _fix_dim(graph, path_attn)
+    path_attn = _add(
+        graph,
+        "linear_proj",
+        [path_attn],
+        {"out_dim": D},
+        context="attn_rwkv_hybrid.attn_proj",
+    )
     path_attn = _fix_dim(graph, path_attn)
 
     path_rwkv = _add(
@@ -557,17 +544,41 @@ def tpl_attn_rwkv_hybrid(
     merged = _fix_dim(graph, merged)
 
     mid = _residual(graph, input_id, merged, context="attn_rwkv_hybrid.mid")
-
-    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
-    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-
-    ffned = _add(
+    normed2 = _add(graph, "layernorm", [mid], context="attn_rwkv_hybrid.norm2")
+    channel_refine = _pick_compatible_motif_from_classes(
         graph,
-        "swiglu_mlp",
-        [normed2],
-        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
-        context="attn_rwkv_hybrid.ffn",
+        normed2,
+        rng,
+        (MOTIF_CLASS_SSM, MOTIF_CLASS_CONV),
+        weights,
     )
+    if channel_refine:
+        normed2 = _instantiate_motif(graph, normed2, channel_refine, rng)
+        normed2 = _fix_dim(graph, normed2)
+
+    previous_wildcard = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    graph.metadata["_wildcard_slot_prob"] = 0.12
+    try:
+        post_ffn = _pick_compatible_motif_from_classes(
+            graph,
+            normed2,
+            rng,
+            _FFN_CLASSES,
+            weights,
+        )
+    finally:
+        graph.metadata["_wildcard_slot_prob"] = previous_wildcard
+
+    if post_ffn:
+        ffned = _instantiate_motif(graph, normed2, post_ffn, rng)
+    else:
+        ffned = _add(
+            graph,
+            "swiglu_mlp",
+            [normed2],
+            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+            context="attn_rwkv_hybrid.ffn",
+        )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context="attn_rwkv_hybrid.output")
 

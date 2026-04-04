@@ -67,7 +67,6 @@ def native_runner_capability_report() -> Dict[str, Any]:
     report["fallback_metrics"] = {
         **_FALLBACK_METRICS,
         "legacy_compile_count": legacy_count,
-        "legacy_compile_invocations": legacy_count,
         "hybrid_compiles": hybrid,
         "fallback_rate": (float(fallback) / float(native_total))
         if native_total > 0
@@ -79,15 +78,8 @@ def native_runner_capability_report() -> Dict[str, Any]:
         "max_allowed_legacy_compile_count": os.environ.get(
             "NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"
         ),
-        "max_allowed_legacy_compile_invocations": os.environ.get(
-            "NATIVE_RUNNER_MAX_LEGACY_COMPILE_INVOCATIONS"
-        ),
         "samples_considered": native_total,
         "all_compile_calls": total,
-        "deprecated_fields": {
-            "legacy_compile_invocations": "use legacy_compile_count",
-            "max_allowed_legacy_compile_invocations": "use max_allowed_legacy_compile_count",
-        },
     }
     checks: List[Dict[str, Any]] = []
     fallback_limit_raw = os.environ.get("NATIVE_RUNNER_MAX_FALLBACK_RATE")
@@ -116,7 +108,7 @@ def native_runner_capability_report() -> Dict[str, Any]:
         legacy_used = legacy_count
         checks.append(
             {
-                "name": "legacy_compile_invocations",
+                "name": "legacy_compile_count",
                 "active": True,
                 "pass": bool(legacy_used <= legacy_limit),
                 "actual": int(legacy_used),
@@ -233,11 +225,7 @@ def _log_native_fallback_coverage(op_support: Dict[str, Any]) -> None:
 
 def _record_legacy_compile_invocation() -> None:
     _FALLBACK_METRICS["legacy_compile_count"] += 1
-    _FALLBACK_METRICS["legacy_compile_invocations"] += 1
 
 
 def _legacy_compile_count() -> int:
-    canonical = _FALLBACK_METRICS.get("legacy_compile_count")
-    if canonical is not None:
-        return int(canonical)
-    return int(_FALLBACK_METRICS.get("legacy_compile_invocations") or 0)
+    return int(_FALLBACK_METRICS.get("legacy_compile_count") or 0)

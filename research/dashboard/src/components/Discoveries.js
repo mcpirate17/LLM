@@ -221,8 +221,9 @@ function Discoveries({
       setError(null);
     } catch (e) {
       if (!isBackground) setError('Failed to load discoveries: ' + e.message);
+    } finally {
+      if (!isBackground) setLoading(false);
     }
-    if (!isBackground) setLoading(false);
   }, [activeTier, debouncedSearchQuery]);
 
   useEffect(() => {
@@ -413,6 +414,9 @@ function Discoveries({
 
   const counts = data?.counts || data?.tier_counts || {};
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
+  const hasLoadedData = Boolean(
+    data && (Array.isArray(data.entries) || Array.isArray(data.references))
+  );
 
   return (
     <div className="card" style={{ padding: 16 }}>
@@ -652,7 +656,7 @@ function Discoveries({
       {error && <p style={{ color: 'var(--accent-red)', fontSize: 13, marginBottom: 8 }}>{error}</p>}
       {statusError && <p style={{ color: 'var(--accent-red)', fontSize: 12, marginBottom: 8 }}>{statusError}</p>}
 
-      {loading ? (
+      {loading && !hasLoadedData ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading discoveries...</p>
       ) : filtered.length === 0 && !error ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
@@ -665,7 +669,13 @@ function Discoveries({
           )}
         </div>
       ) : (
-        <div {...virtualContainerProps} style={{ ...virtualContainerProps.style, overflowX: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+        <div>
+          {loading && hasLoadedData && (
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 8 }}>
+              Refreshing discoveries...
+            </p>
+          )}
+          <div {...virtualContainerProps} style={{ ...virtualContainerProps.style, overflowX: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
           <table className="data-table table-wide">
             <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
@@ -739,6 +749,7 @@ function Discoveries({
               {bottomPadding > 0 && <tr style={{ height: bottomPadding }} />}
             </tbody>
           </table>
+        </div>
         </div>
       )}
     </div>

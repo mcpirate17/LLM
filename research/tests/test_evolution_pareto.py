@@ -13,6 +13,7 @@ from research.search.evolution import (
 )
 from research.search.native_nsga import (
     compute_crowding_distances,
+    compute_pareto_ranks,
     load_native_nsga_lib,
     reset_native_nsga_lib,
 )
@@ -142,4 +143,28 @@ def test_native_crowding_distance_matches_python_reference():
         if math.isinf(ind.crowding_dist):
             assert math.isinf(float(native))
         else:
-            assert math.isclose(ind.crowding_dist, float(native), rel_tol=1e-6, abs_tol=1e-6)
+            assert math.isclose(
+                ind.crowding_dist, float(native), rel_tol=1e-6, abs_tol=1e-6
+            )
+
+
+def test_native_pareto_ranks_match_fronts():
+    reset_native_nsga_lib()
+    if load_native_nsga_lib() is None:
+        return
+
+    population = [
+        _make_individual(3.0, 1.0),
+        _make_individual(1.0, 3.0),
+        _make_individual(2.0, 1.0),
+        _make_individual(1.0, 2.0),
+        _make_individual(1.0, 1.0),
+    ]
+    objective_matrix = np.asarray(
+        [[ind.fitness, ind.novelty] for ind in population],
+        dtype=np.float32,
+    )
+
+    ranks = compute_pareto_ranks(objective_matrix)
+    assert ranks is not None
+    assert list(ranks) == [1, 1, 2, 2, 3]

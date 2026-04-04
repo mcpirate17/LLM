@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, FrozenSet, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -388,6 +388,23 @@ class GrammarConfig:
 _db_weight_cache = DBTemplateWeightCache(ttl=60.0)
 _slot_adaptation_cache = SlotAdaptationCache(ttl=120.0)
 _ROUTING_COMPRESSION_MOE_OPS = ROUTING_COMPRESSION_MOE_OPS
+
+
+def _config_with_efficiency_prior(
+    config: GrammarConfig, prior: Optional[EfficiencyPrior]
+) -> GrammarConfig:
+    """Apply learned efficiency bias to op weights without mutating the caller's config."""
+    if prior is None:
+        return config
+
+    biased_weights = dict(config.op_weights)
+    for op_name in PRIMITIVE_REGISTRY:
+        if op_name == "input":
+            continue
+        bias = prior.get_bias(op_name)
+        if bias != 1.0:
+            biased_weights[op_name] = biased_weights.get(op_name, 1.0) * bias
+    return replace(config, op_weights=biased_weights)
 
 
 def generate_layer_graph(
@@ -832,6 +849,7 @@ def batch_generate(
     """
     if config is None:
         config = GrammarConfig()
+    config = _config_with_efficiency_prior(config, prior)
 
     graphs: List[ComputationGraph] = []
     fingerprints: set = set()
@@ -895,7 +913,10 @@ class AdaptiveGenerator:
         self.max_flops = 4 * (12 * self.model_dim * self.model_dim * 128)
 
     def generate(self, seed: Optional[int] = None) -> ComputationGraph:
-        return generate_layer_graph(self.config, seed=seed)
+        return generate_layer_graph(
+            _config_with_efficiency_prior(self.config, self.prior),
+            seed=seed,
+        )
 
 
 # ── Shape compatibility check (used by external code) ───────────────

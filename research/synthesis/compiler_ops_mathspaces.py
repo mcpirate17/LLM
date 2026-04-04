@@ -87,14 +87,11 @@ def _op_fixed_point_iter(module, inputs, config):
     return z
 
 
-def _op_tropical_center(_, inputs, __):
+def _op_tropical_center(module, inputs, __):
     """Causal min centering via smooth cummin for gradient flow."""
     from ..mathspaces.tropical import execute_tropical_center
 
-    class _FakeModule:
-        pass
-
-    return execute_tropical_center(_FakeModule(), inputs[0])
+    return execute_tropical_center(module, inputs[0])
 
 
 def _op_ultrametric_attention(module, inputs, config):
@@ -264,12 +261,17 @@ def _op_spectral_filter(module, inputs, config):
     x = inputs[0]
     if not hasattr(module, "freq_mask"):
         return x
-    X_f = torch.fft.rfft(x, dim=-1)
+    orig_dtype = x.dtype
+    # torch.fft does not support bf16 on the current CUDA path.
+    # Compute the FFT in fp32, then restore the original dtype.
+    x_fft = x.float() if x.dtype in (torch.bfloat16, torch.float16) else x
+    X_f = torch.fft.rfft(x_fft, dim=-1)
     # Clamp mask to [-2, 2] to prevent spectral blow-up during training.
     # Values beyond ±2 cause FFT output explosion (48% forward_error rate).
-    mask = module.freq_mask.clamp(-2.0, 2.0)
+    mask = module.freq_mask.clamp(-2.0, 2.0).to(X_f.dtype)
     X_f = X_f * mask
-    return torch.fft.irfft(X_f, n=x.shape[-1], dim=-1)
+    out = torch.fft.irfft(X_f, n=x.shape[-1], dim=-1)
+    return out.to(orig_dtype) if out.dtype != orig_dtype else out
 
 
 # ── Compression ops ──

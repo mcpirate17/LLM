@@ -113,6 +113,20 @@ def test_subgraph_dispatcher_diamond_partial():
     assert dispatcher.all_native is False
 
 
+def test_subgraph_dispatcher_treats_structural_ops_as_native():
+    """Structural ops should not block whole-graph native dispatch."""
+    g = _make_simple_graph(ops=["identity", "relu"])
+    dispatcher = SubgraphDispatcher(g, {"relu"})
+    assert dispatcher.all_native is True
+
+
+def test_subgraph_dispatcher_excludes_scheduler_unsupported_ops():
+    """Per-op native support must not imply Rust scheduler support."""
+    g = _make_simple_graph(ops=["layernorm"])
+    dispatcher = SubgraphDispatcher(g, {"layernorm"})
+    assert dispatcher.all_native is False
+
+
 # ---------------------------------------------------------------------------
 # Test 2: try_dispatch returns None when not all-native
 # ---------------------------------------------------------------------------
@@ -182,6 +196,29 @@ def test_try_dispatch_torch_conversion(mock_cached_dispatch):
     torch.testing.assert_close(result, expected)
 
 
+@patch("research.scientist.native.autograd.dispatch_graph_native_cached")
+def test_try_dispatch_skips_host_bridge_for_non_cpu_tensors(
+    mock_cached_dispatch, monkeypatch
+):
+    g = _make_simple_graph(ops=["relu"])
+    dispatcher = SubgraphDispatcher(g, {"relu"})
+
+    monkeypatch.setattr(
+        "research.scientist.native.autograd.supports_host_array_bridge",
+        lambda *values: False,
+    )
+
+    result = dispatcher.try_dispatch(np.zeros((1, 2, 4), dtype=np.float32))
+
+    assert result is None
+    mock_cached_dispatch.assert_not_called()
+    assert dispatcher.stats["subgraph_dispatches"] == 0
+    assert (
+        dispatcher.stats["last_refusal_reason"]
+        == "host_array_bridge_unsupported_device"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 6: empty graph returns all_native=False
 # ---------------------------------------------------------------------------
@@ -228,6 +265,27 @@ def test_stats_tracking(mock_cached_dispatch):
     assert stats["all_native"] is True
 
 
+@patch("research.scientist.native.autograd.dispatch_graph_native_cached")
+def test_try_dispatch_disables_scheduler_after_unsupported_runtime_failure(
+    mock_cached_dispatch,
+):
+    """Unsupported-op runtime failures should disable future scheduler attempts."""
+    g = _make_simple_graph(ops=["relu"])
+    dispatcher = SubgraphDispatcher(g, {"relu"})
+    mock_cached_dispatch.side_effect = RuntimeError(
+        "op layernorm not registered in native runtime"
+    )
+
+    x = np.zeros((1, 2, 4), dtype=np.float32)
+    first = dispatcher.try_dispatch(x)
+    second = dispatcher.try_dispatch(x)
+
+    assert first is None
+    assert second is None
+    assert dispatcher.all_native is False
+    assert mock_cached_dispatch.call_count == 1
+
+
 def test_dispatch_graph_forward_saved_prefers_rust(monkeypatch):
     g = _make_simple_graph(model_dim=4, ops=["relu"])
 
@@ -259,7 +317,9 @@ def test_dispatch_graph_forward_saved_prefers_rust(monkeypatch):
     )
 
     assert result["output"].shape == (1, 2, 4)
-    np.testing.assert_array_equal(result["output"], np.ones((1, 2, 4), dtype=np.float32))
+    np.testing.assert_array_equal(
+        result["output"], np.ones((1, 2, 4), dtype=np.float32)
+    )
     assert set(result["saved_activations"]) == {0, 1}
     assert result["arena_bytes_used"] == 64
     assert result["arena_capacity"] == 128

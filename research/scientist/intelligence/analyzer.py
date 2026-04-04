@@ -21,6 +21,10 @@ from .digest import (
     HypothesisOutcome,
     OpSynergy,
 )
+from .ml_corpus import (
+    load_deduped_graph_analysis_rows,
+    load_deduped_graph_training_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,43 +191,39 @@ def cluster_architecture_families(
     Uses scipy agglomerative clustering on Jaccard distance matrix.
     """
     try:
-        rows = nb.conn.execute(
-            """
-            SELECT pr.result_id, pr.graph_json, pr.graph_fingerprint,
-                   pr.stage1_passed, pr.novelty_score, pr.loss_ratio
-            FROM program_results pr
-            WHERE pr.stage1_passed = 1
-              AND pr.graph_json IS NOT NULL
-            ORDER BY pr.timestamp DESC
-            LIMIT 500
-            """
-        ).fetchall()
+        rows = [
+            row
+            for row in load_deduped_graph_training_rows(nb.db_path)
+            if row.get("stage1_any_passed")
+        ]
     except Exception as e:
-        logger.warning("Failed to query S1 programs: %s", e)
+        logger.warning("Failed to load deduped S1 programs: %s", e)
         return []
 
+    rows.sort(key=lambda row: float(row.get("latest_timestamp") or 0.0), reverse=True)
+    rows = rows[:500]
     if len(rows) < min_cluster_size:
         return []
 
     # Extract op-sets
     programs = []
     all_ops: set = set()
-    for r in rows:
+    for row in rows:
         try:
-            graph = json.loads(r[1])
+            graph = json.loads(str(row["graph_json"]))
             ops = _extract_ops_from_graph(graph)
             if ops:
                 programs.append(
                     {
-                        "result_id": r[0],
-                        "fingerprint": str(r[2] or ""),
+                        "result_id": str(row.get("canonical_fingerprint") or ""),
+                        "fingerprint": str(row.get("canonical_fingerprint") or ""),
                         "ops": ops,
-                        "novelty": safe_float(r[4]),
-                        "loss_ratio": safe_float(r[5]),
+                        "novelty": 0.0,
+                        "loss_ratio": safe_float(row.get("loss_ratio_best")),
                     }
                 )
                 all_ops.update(ops)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError, KeyError):
             continue
 
     if len(programs) < min_cluster_size:
@@ -405,23 +405,16 @@ def analyze_config_effects(nb) -> List[ConfigEffect]:
 def analyze_op_synergies(nb, min_co_occurrences: int = 5) -> List[OpSynergy]:
     """Op-pair co-occurrence lift in S1 survivors vs all programs."""
     try:
-        s1_rows = nb.conn.execute(
-            """
-            SELECT graph_json FROM program_results
-            WHERE stage1_passed = 1 AND graph_json IS NOT NULL
-            ORDER BY timestamp DESC LIMIT 300
-            """
-        ).fetchall()
-        all_rows = nb.conn.execute(
-            """
-            SELECT graph_json, stage1_passed FROM program_results
-            WHERE graph_json IS NOT NULL
-            ORDER BY timestamp DESC LIMIT 1000
-            """
-        ).fetchall()
+        all_rows = load_deduped_graph_training_rows(nb.db_path)
     except Exception as e:
-        logger.warning("Failed to query op synergies: %s", e)
+        logger.warning("Failed to load deduped op synergies corpus: %s", e)
         return []
+
+    all_rows.sort(
+        key=lambda row: float(row.get("latest_timestamp") or 0.0), reverse=True
+    )
+    all_rows = all_rows[:1000]
+    s1_rows = [row for row in all_rows if row.get("stage1_any_passed")][:300]
 
     def extract_ops(graph_json_str: str) -> set:
         try:
@@ -431,11 +424,11 @@ def analyze_op_synergies(nb, min_co_occurrences: int = 5) -> List[OpSynergy]:
             return set()
 
     # Count op-pair frequencies in S1 vs all
-    def count_pairs(rows, json_idx: int = 0) -> Tuple[Counter, int]:
+    def count_pairs(rows: List[Dict[str, object]]) -> Tuple[Counter, int]:
         pair_counts: Counter = Counter()
         n = 0
-        for r in rows:
-            ops = sorted(extract_ops(r[json_idx]))
+        for row in rows:
+            ops = sorted(extract_ops(str(row.get("graph_json") or "")))
             if len(ops) < 2:
                 continue
             n += 1
@@ -589,34 +582,30 @@ def analyze_efficiency_profiles(
         return []
 
     try:
-        rows = nb.conn.execute(
-            """
-            SELECT pr.result_id, pr.graph_json, pr.loss_ratio,
-                   pr.param_count, pr.graph_n_params_estimate,
-                   pr.novelty_score
-            FROM program_results pr
-            WHERE pr.stage1_passed = 1
-              AND pr.graph_json IS NOT NULL
-              AND pr.loss_ratio IS NOT NULL
-            ORDER BY pr.timestamp DESC
-            LIMIT 500
-            """
-        ).fetchall()
+        rows = [
+            row
+            for row in load_deduped_graph_analysis_rows(nb.db_path)
+            if row.get("stage1_any_passed") and row.get("loss_ratio") is not None
+        ]
     except Exception as e:
-        logger.warning("Failed to query efficiency data: %s", e)
+        logger.warning("Failed to load deduped efficiency data: %s", e)
         return []
 
+    rows.sort(key=lambda row: float(row.get("latest_timestamp") or 0.0), reverse=True)
+    rows = rows[:500]
     if not rows:
         return []
 
     # Map result → (ops, loss_ratio, params)
     program_data = []
-    for r in rows:
+    for row in rows:
         try:
-            graph = json.loads(r[1])
+            graph = json.loads(str(row["graph_json"]))
             ops = _extract_ops_from_graph(graph)
-            loss_ratio = safe_float(r[2], 1.0)
-            params = safe_float(r[3]) or safe_float(r[4])
+            loss_ratio = safe_float(row.get("loss_ratio"), 1.0)
+            params = safe_float(row.get("param_count")) or safe_float(
+                row.get("graph_n_params_estimate")
+            )
             if not ops or params <= 0:
                 continue
             program_data.append(
@@ -626,7 +615,7 @@ def analyze_efficiency_profiles(
                     "params": params,
                 }
             )
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError, KeyError):
             continue
 
     if not program_data:

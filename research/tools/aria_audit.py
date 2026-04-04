@@ -265,8 +265,17 @@ def audit_template_structure(templates_source: str) -> None:
                 weight=0.0,
             )
 
-    # ── 1f. Templates in registry but no function defined ─────────────────────
-    defined_names = set(bodies.keys())
+    # ── 1f. Templates in registry but not callable at runtime ──────────────────
+    # Some templates are generated dynamically by factory functions (e.g.
+    # _make_attn_ffn_template) and won't appear in source as `def tpl_*`.
+    # We check both static source AND the live TEMPLATES dict.
+    try:
+        from research.synthesis.templates import TEMPLATES as _live_templates
+
+        _live_names = set(_live_templates.keys())
+    except ImportError:
+        _live_names = set()
+    defined_names = set(bodies.keys()) | _live_names
     for reg_name in registry:
         if reg_name not in defined_names:
             emit(

@@ -5,7 +5,7 @@ Provides FLOPs estimation, memory profiling, and latency benchmarking
 at both the graph level (static analysis) and runtime level (actual execution).
 
 Usage:
-    from runtime.profiler import profile_workflow
+    from aria_designer.runtime.profiler import profile_workflow
 
     report = profile_workflow(workflow_json, model_dim=256, device="cpu")
 """

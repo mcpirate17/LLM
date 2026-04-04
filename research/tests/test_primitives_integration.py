@@ -161,8 +161,8 @@ class TestCompoundMathSpaceOps(unittest.TestCase):
             )
 
 
-class TestAlternativeLearningRules(unittest.TestCase):
-    """Test that all alternative learning rule optimizers work correctly."""
+class TestSupportedSynthesizedOptimizers(unittest.TestCase):
+    """Test the supported synthesized optimizer set."""
 
     def _make_simple_model(self):
         """Create a simple model for optimizer testing."""
@@ -206,17 +206,11 @@ class TestAlternativeLearningRules(unittest.TestCase):
                 break
         self.assertTrue(changed, f"{optimizer_name} did not update parameters")
 
-    def test_hebbian_optimizer(self):
-        self._run_optimizer_steps("hebbian")
+    def test_muon_optimizer(self):
+        self._run_optimizer_steps("muon")
 
-    def test_forward_forward_optimizer(self):
-        self._run_optimizer_steps("forward_forward")
-
-    def test_perturbation_optimizer(self):
-        self._run_optimizer_steps("perturbation")
-
-    def test_contrastive_local_optimizer(self):
-        self._run_optimizer_steps("contrastive_local")
+    def test_rigl_sparse_optimizer(self):
+        self._run_optimizer_steps("rigl_sparse")
 
     def test_all_recipes_instantiate(self):
         """Verify all OPTIMIZER_RECIPES can be instantiated."""
@@ -227,27 +221,23 @@ class TestAlternativeLearningRules(unittest.TestCase):
 
         model = self._make_simple_model()
         for name, components, desc in OPTIMIZER_RECIPES:
-            try:
-                opt = SynthesizedOptimizer(
-                    name=name,
-                    components=components,
-                    lr=1e-3,
-                    weight_decay=0.01,
-                ).create(model.parameters())
-            except NotImplementedError:
-                continue  # skip unimplemented recipes (e.g. rigl_sparse)
+            opt = SynthesizedOptimizer(
+                name=name,
+                components=components,
+                lr=1e-3,
+                weight_decay=0.01,
+            ).create(model.parameters())
             self.assertIsNotNone(opt, f"Failed to create optimizer: {name}")
 
-    def test_synthesize_optimizer_includes_new_recipes(self):
-        """Verify new recipes appear in random synthesis."""
+    def test_synthesize_optimizer_includes_supported_recipes(self):
+        """Verify supported recipes appear in synthesis config."""
         from research.training.optimizer_synthesis import OPTIMIZER_RECIPES
 
         recipe_names = [r[0] for r in OPTIMIZER_RECIPES]
         for expected in [
-            "hebbian",
-            "forward_forward",
-            "perturbation",
-            "contrastive_local",
+            "adamw_standard",
+            "muon",
+            "rigl_sparse",
         ]:
             self.assertIn(expected, recipe_names, f"Missing recipe: {expected}")
 

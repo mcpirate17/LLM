@@ -14,7 +14,7 @@ from ..shared_api import get_approved_registry_ids, collect_unresolved_nodes
 
 # Optional runtime imports
 try:
-    from runtime.importer import import_survivors, import_single
+    from aria_designer.runtime.importer import import_survivors, import_single
 
     HAS_IMPORTER = True
 except ImportError:
@@ -27,7 +27,7 @@ except ImportError:
         HAS_IMPORTER = False
 
 try:
-    from runtime.export import export_onnx
+    from aria_designer.runtime.export import export_onnx
 except ImportError:
     try:
         from aria_designer.runtime.export import export_onnx

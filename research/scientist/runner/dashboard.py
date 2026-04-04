@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 from ._types import RunConfig
 
+_PROGRAM_RESULT_FLUSH_BATCH = 10
+
 
 class _DashboardMixin:
     """Dashboard data, live loss curve, telemetry."""
@@ -884,9 +886,10 @@ class _DashboardMixin:
         job_results = orchestrator.get_results()
         if not job_results:
             return
-        with nb.batch():
-            for jr in job_results:
-                self._record_orchestrator_result(jr, nb, exp_id, results, config)
+        for start in range(0, len(job_results), _PROGRAM_RESULT_FLUSH_BATCH):
+            with nb.batch():
+                for jr in job_results[start : start + _PROGRAM_RESULT_FLUSH_BATCH]:
+                    self._record_orchestrator_result(jr, nb, exp_id, results, config)
 
     def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
         """Record a single result from the orchestrator into the notebook."""
@@ -903,7 +906,7 @@ class _DashboardMixin:
         final_loss = s1_result.get("final_loss")
         throughput = s1_result.get("throughput")
         training_curve = s1_result.get("training_curve")
-        from ._helpers import screening_wikitext_fields
+        from ._helpers import screening_probe_fields, screening_wikitext_fields
 
         # Training metrics
         program_metrics["initial_loss"] = s1_result.get("initial_loss")
@@ -925,7 +928,10 @@ class _DashboardMixin:
         program_metrics["generalization_gap"] = s1_result.get("generalization_gap")
         program_metrics["discovery_loss"] = s1_result.get("discovery_loss")
         program_metrics["discovery_loss_ratio"] = s1_result.get("discovery_loss_ratio")
+        program_metrics["train_budget_steps"] = config.stage1_steps
         program_metrics.update(screening_wikitext_fields(s1_result))
+        program_metrics.update(screening_probe_fields(s1_result))
+        program_metrics.update(screening_probe_fields(program_metrics))
         program_metrics.update(
             {k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")}
         )

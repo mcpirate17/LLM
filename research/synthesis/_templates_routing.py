@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import random
 
-from .graph import ComputationGraph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from ._template_helpers import (
+    MOTIF_CLASS_CONV,
+    MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_MATH_SPACE,
     MOTIF_CLASS_NORM,
     MotifWeights,
@@ -303,6 +308,101 @@ def tpl_recursive_depth_router(
         input_id,
         processed,
         context="recursive_depth_router.output",
+    )
+
+
+def tpl_depth_token_mask_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """rmsnorm → class signal → score_depth_blend → depth_token_mask → proj → FFN → residual.
+
+    depth_token_mask is highly destructive on its own. Keep the routed branch,
+    force the post-mask projection required by the routing rules, and only let
+    the masked path act as a refinement inside a residual scaffold.
+    """
+    D = graph.model_dim
+    normed = _add(graph, "rmsnorm", [input_id], context="depth_token_mask_block.norm")
+
+    signal = _add(
+        graph,
+        "token_class_proj",
+        [normed],
+        {"n_classes": 4},
+        context="depth_token_mask_block.signal",
+    )
+    routed = _add(
+        graph,
+        "score_depth_blend",
+        [normed, signal],
+        {"max_depth": 3},
+        context="depth_token_mask_block.score",
+    )
+    routed = _fix_dim(graph, routed)
+    masked = _add(
+        graph,
+        "depth_token_mask",
+        [routed],
+        {"capacity_factor": rng.choice([0.875, 0.9])},
+        context="depth_token_mask_block.mask",
+    )
+
+    current = _add(
+        graph,
+        "linear_proj",
+        [masked],
+        {"out_dim": D},
+        context="depth_token_mask_block.proj",
+    )
+    branch_refine = _pick_compatible_motif_from_classes(
+        graph,
+        current,
+        rng,
+        (MOTIF_CLASS_EFFICIENT_PROJ, MOTIF_CLASS_CONV),
+        weights,
+    )
+    if branch_refine:
+        current = _instantiate_motif(graph, current, branch_refine, rng)
+        current = _fix_dim(graph, current)
+    current = _add(
+        graph,
+        "layernorm",
+        [current],
+        context="depth_token_mask_block.post_norm",
+    )
+    previous_wildcard = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    graph.metadata["_wildcard_slot_prob"] = 0.15
+    try:
+        post = _pick_compatible_motif_from_classes(
+            graph, current, rng, list(_FFN_CLASSES), weights
+        )
+    finally:
+        graph.metadata["_wildcard_slot_prob"] = previous_wildcard
+    if post:
+        current = _instantiate_motif(graph, current, post, rng)
+    else:
+        current = _add(
+            graph,
+            "swiglu_mlp",
+            [current],
+            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+            context="depth_token_mask_block.ffn",
+        )
+
+    current = _fix_dim(graph, current)
+    current = _residual(
+        graph,
+        routed,
+        current,
+        context="depth_token_mask_block.branch_output",
+    )
+    return _residual(
+        graph,
+        input_id,
+        current,
+        context="depth_token_mask_block.output",
     )
 
 
@@ -860,8 +960,7 @@ def tpl_topk_retrieval(
     vectors, process selected subset. Inspired by RAG reference arch.
     """
     D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    normed = _add(graph, "rmsnorm", [input_id], context="topk_retrieval.norm")
 
     proj = _add(
         graph,
@@ -885,17 +984,13 @@ def tpl_topk_retrieval(
     )
 
     # Process gathered subset
-    core = _pick_compatible_motif_from_classes(
+    processed = _add(
         graph,
-        gathered,
-        rng,
-        list(_FFN_CLASSES),
-        weights,
+        "swiglu_mlp",
+        [gathered],
+        {"mlp_ratio": rng.choice([2.0, 4.0])},
+        context="topk_retrieval.ffn",
     )
-    if core:
-        processed = _instantiate_motif(graph, gathered, core, rng)
-    else:
-        processed = gathered
     processed = _fix_dim(graph, processed)
 
     return _residual(

@@ -13,6 +13,7 @@ from .compiler_op_utils import (
     _c,
     _c16,
     _flatten_for_kernel,
+    _safe_linear,
     _unflatten_from_kernel,
 )
 
@@ -360,9 +361,7 @@ def _op_linear_common(module, inputs, _):
         bias = getattr(module, "bias", None)
         out = aria_core.linear_f32(xf, module.weight, bias)
         return _unflatten_from_kernel(out, orig_shape)
-    w = module.weight.to(x.dtype)
-    b = getattr(module, "bias", None)
-    return F.linear(x, w, b.to(x.dtype) if b is not None else None)
+    return _safe_linear(x, module.weight, getattr(module, "bias", None))
 
 
 def _op_fused_linear_gelu(module, inputs, _):
@@ -379,9 +378,7 @@ def _op_fused_linear_gelu(module, inputs, _):
     if HAS_KERNELS and x.is_cuda:
         bias = getattr(module, "bias", None)
         return kernels.fused_linear_gelu(x, module.weight, bias)
-    out = F.linear(x, module.weight)
-    if hasattr(module, "bias"):
-        out = out + module.bias
+    out = _safe_linear(x, module.weight, getattr(module, "bias", None))
     return F.gelu(out)
 
 

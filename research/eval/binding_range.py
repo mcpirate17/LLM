@@ -28,6 +28,8 @@ from typing import Any, Dict
 import torch
 import torch.nn as nn
 
+from ._probe_runtime import disable_native_probe_dispatch
+
 logger = logging.getLogger(__name__)
 
 _RESTRICTED_VOCAB = 256
@@ -72,7 +74,7 @@ def _generate_copy_batch(
     return batch
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def binding_range_profile(
     model: nn.Module,
     distances: tuple[int, ...] = (2, 4, 8, 16, 32, 64, 128),
@@ -98,46 +100,49 @@ def binding_range_profile(
     model.eval()
 
     try:
-        for d in sorted(distances):
-            if d + 2 > seq_len:
-                result.distance_accuracies[d] = 0.0
-                continue
-
-            if time.perf_counter() - t0 > timeout_s:
-                result.distance_accuracies[d] = 0.0
-                result.status = "timeout"
-                continue
-
-            correct = 0
-            total = 0
-            remaining = n_eval
-
-            while remaining > 0:
-                bs = min(batch_size, remaining)
-                input_ids = _generate_copy_batch(bs, d, seq_len, device)
-                logits = model(input_ids)  # (B, seq_len, V)
-
-                # Check predictions at positions d+1 through seq_len-1
-                # Position i predicts token i+1, so logits[:, i, :] predicts input_ids[:, i+1]
-                # We want positions where both source and copy pattern are established
-                start = d  # logits at position d predicts token d+1 = copy of token 1
-                end = seq_len - 1  # last valid prediction position
-
-                if start >= end:
-                    remaining -= bs
+        with disable_native_probe_dispatch(model, device=device):
+            for d in sorted(distances):
+                if d + 2 > seq_len:
+                    result.distance_accuracies[d] = 0.0
                     continue
 
-                pred_logits = logits[:, start:end, :_RESTRICTED_VOCAB]
-                targets = input_ids[:, start + 1 : end + 1]
+                if time.perf_counter() - t0 > timeout_s:
+                    result.distance_accuracies[d] = 0.0
+                    result.status = "timeout"
+                    continue
 
-                preds = pred_logits.argmax(dim=-1)  # (B, n_positions)
-                matches = (preds == targets).float()
-                correct += matches.sum().item()
-                total += matches.numel()
-                remaining -= bs
+                correct = 0
+                total = 0
+                remaining = n_eval
+                eval_batches = []
 
-            acc = correct / max(total, 1)
-            result.distance_accuracies[d] = round(acc, 4)
+                while remaining > 0:
+                    bs = min(batch_size, remaining)
+                    eval_batches.append(_generate_copy_batch(bs, d, seq_len, device))
+                    remaining -= bs
+
+                start = d
+                end = seq_len - 1
+                if start >= end:
+                    result.distance_accuracies[d] = 0.0
+                    continue
+
+                for input_ids in eval_batches:
+                    logits = model(input_ids)  # (B, seq_len, V)
+
+                    # Check predictions at positions d+1 through seq_len-1
+                    # Position i predicts token i+1, so logits[:, i, :] predicts input_ids[:, i+1]
+                    # We want positions where both source and copy pattern are established
+                    pred_logits = logits[:, start:end, :_RESTRICTED_VOCAB]
+                    targets = input_ids[:, start + 1 : end + 1]
+
+                    preds = pred_logits.argmax(dim=-1)  # (B, n_positions)
+                    matches = (preds == targets).float()
+                    correct += matches.sum().item()
+                    total += matches.numel()
+
+                acc = correct / max(total, 1)
+                result.distance_accuracies[d] = round(acc, 4)
 
     except Exception as e:
         result.status = f"eval_failed: {e}"

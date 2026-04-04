@@ -88,6 +88,7 @@ class RunConfig:
     optimizer_fused: bool = True
     optimizer_foreach: bool = True
     starvation_check_interval: int = 8
+    enable_starvation_monitoring: bool = False
     enable_cuda_graphs: bool = False
     # Early stopping: halt training when loss plateaus
     early_stop_patience: int = 300  # steps without improvement before stopping
@@ -102,6 +103,16 @@ class RunConfig:
     loss_check_interval: int = 8
     enable_kernel_profiling: bool = False
     kernel_profile_top_k: int = 20
+    profile_enabled: bool = False
+    profile_dir: str = "profiles"
+    profile_wait_steps: int = 0
+    profile_warmup_steps: int = 2
+    profile_active_steps: int = 4
+    profile_record_shapes: bool = True
+    profile_memory: bool = True
+    profile_with_stack: bool = False
+    profile_disable_inflight_checks: bool = False
+    profile_disable_post_eval: bool = False
     # Training data source
     data_mode: str = "corpus"  # "random" | "corpus" | "hydra"
     corpus_path: str = "/home/tim/Projects/LLM/research/corpus/wikitext103_train.npy"
@@ -122,6 +133,8 @@ class RunConfig:
     stage1_compute_discovery_loss: bool = True
     stage1_discovery_batches: int = 2
     stage1_discovery_batch_size: int = 4
+    skip_screening_hellaswag: bool = False
+    skip_binding_probes: bool = False
     # HYDRA data loader settings (data_mode="hydra")
     hydra_data_dir: str = "../HYDRA/data"
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
@@ -371,7 +384,12 @@ class RunConfig:
     category_weights: Optional[Dict[str, float]] = None
     op_weights: Optional[Dict[str, float]] = None
     template_weights: Optional[Dict[str, float]] = None
+    use_learned_candidate_weights: bool = True
+    use_screening_signal_weights: bool = True
     routing_mandatory: bool = True  # require routing/MoE ops in every graph
+    persist_screening_failures: bool = (
+        False  # keep early failed graphs for data collection
+    )
     # Branching / width control (passed to GrammarConfig)
     min_splits: int = 0  # minimum forced split-merge blocks per graph
     three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)

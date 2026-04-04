@@ -1,11 +1,11 @@
-"""Backfill template_stats, op_stats, motif_stats from existing program_results.
+"""Backfill template_stats, op_stats, motif_stats from the deduped training corpus.
 
 Usage:
     python -m research.tools.backfill_stats [--db research/lab_notebook.db]
 
-Reads graph_json from program_results, extracts templates_used/motifs_used/op
-names, and populates the three analytics tables with aggregated statistics.
-Idempotent — safe to re-run.
+Reads the shared deduped ML corpus, extracts templates_used/motifs_used/op
+names, and populates the analytics tables with structural-unique statistics.
+Idempotent and safe to re-run.
 """
 
 from __future__ import annotations
@@ -19,6 +19,21 @@ import time
 from collections import Counter
 from typing import Dict, List, Tuple
 
+from research.scientist.intelligence.ml_corpus import load_deduped_graph_training_rows
+
+
+def _unique_strings(values: object) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
 
 def _extract_graph_info(
     graph_json: str,
@@ -30,8 +45,8 @@ def _extract_graph_info(
         return [], [], [], []
 
     metadata = g.get("metadata", {})
-    templates = metadata.get("templates_used", [])
-    motifs = metadata.get("motifs_used", [])
+    templates = _unique_strings(metadata.get("templates_used", []))
+    motifs = _unique_strings(metadata.get("motifs_used", []))
     slot_usage = metadata.get("template_slot_usage", [])
 
     ops = []
@@ -44,8 +59,8 @@ def _extract_graph_info(
                 ops.append(op)
 
     return (
-        templates if isinstance(templates, list) else [],
-        motifs if isinstance(motifs, list) else [],
+        templates,
+        motifs,
         ops,
         slot_usage if isinstance(slot_usage, list) else [],
     )
@@ -80,12 +95,6 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
 
     now = time.time()
 
-    rows = conn.execute(
-        """SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, novelty_score
-           FROM program_results
-           WHERE graph_json IS NOT NULL"""
-    ).fetchall()
-
     # Accumulators — using lists for losses/novelties, counters for co-occurrence
     tpl_data: Dict[str, list] = {}  # [eval, s0, s1, [losses], [novelties]]
     op_data: Dict[str, list] = {}  # [eval, s0, s1, [losses], [novelties], Counter]
@@ -95,12 +104,19 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
     # Slot stats: slot_key → {eval, s1, [losses], class_outcomes, wc_count, wc_s1, wc_class_outcomes, template_name, slot_index, slot_classes}
     slot_data: Dict[str, dict] = {}
 
-    for graph_json, s0, s1, loss_ratio, novelty in rows:
+    rows = load_deduped_graph_training_rows(db_path)
+
+    for row in rows:
+        graph_json = str(row.get("graph_json") or "")
+        if not graph_json:
+            continue
         templates, motifs, ops, slot_usage = _extract_graph_info(graph_json)
-        s0_pass = 1 if s0 else 0
-        s1_pass = 1 if s1 else 0
-        valid_loss = loss_ratio is not None and math.isfinite(loss_ratio)
-        valid_nov = novelty is not None and math.isfinite(novelty)
+        s0_pass = 1 if row.get("stage0_any_passed") else 0
+        s1_pass = 1 if row.get("stage1_any_passed") else 0
+        loss_ratio = row.get("loss_ratio_best")
+        novelty = None
+        valid_loss = loss_ratio is not None and math.isfinite(float(loss_ratio))
+        valid_nov = novelty is not None and math.isfinite(float(novelty))
 
         for tpl in templates:
             if tpl not in tpl_data:

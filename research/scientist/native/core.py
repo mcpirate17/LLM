@@ -41,7 +41,6 @@ _FALLBACK_METRICS = {
     "parity_passes": 0,
     "parity_failures": 0,
     "legacy_compile_count": 0,
-    "legacy_compile_invocations": 0,
     "selective_mode_candidates": 0,
     "selective_mode_activations": 0,
     "selective_mode_activation_failures": 0,
@@ -82,8 +81,17 @@ def _try_import_cython_bridge() -> Any:
     Returns the aria_bridge module, or None if unavailable.
     """
     global _cython_bridge_cache
-    if _cython_bridge_cache is not False:
+    if _cython_bridge_cache not in {False, None}:
         return _cython_bridge_cache
+
+    try:
+        from .abi import _try_load_native_lib
+
+        _try_load_native_lib()
+    except Exception as exc:
+        logger.debug(
+            "Native runtime preload unavailable before aria_bridge import: %s", exc
+        )
 
     # Try direct import first (may already be on sys.path).
     try:
@@ -109,7 +117,7 @@ def _try_import_cython_bridge() -> Any:
         return _cython_bridge_cache
     except ImportError as exc:
         logger.debug("Cython bridge not available: %s", exc)
-        _cython_bridge_cache = None
+        _cython_bridge_cache = False
         return None
 
 
@@ -122,7 +130,7 @@ def _reset_cython_bridge_cache() -> None:
 def _try_import_rust_scheduler() -> Any:
     """Try to import the Rust scheduler module (aria_scheduler)."""
     global _rust_scheduler_cache
-    if _rust_scheduler_cache is not False:
+    if _rust_scheduler_cache not in {False, None}:
         return _rust_scheduler_cache
 
     try:
@@ -132,8 +140,17 @@ def _try_import_rust_scheduler() -> Any:
         logger.info("Loaded Rust scheduler (aria_scheduler)")
         return _rust_scheduler_cache
     except ImportError as exc:
+        logger.debug("Package-local Rust scheduler not available: %s", exc)
+
+    try:
+        import aria_scheduler  # type: ignore[import-untyped]
+
+        _rust_scheduler_cache = aria_scheduler
+        logger.info("Loaded Rust scheduler (aria_scheduler) via top-level import")
+        return _rust_scheduler_cache
+    except ImportError as exc:
         logger.debug("Rust scheduler not available: %s", exc)
-        _rust_scheduler_cache = None
+        _rust_scheduler_cache = False
         return None
 
 

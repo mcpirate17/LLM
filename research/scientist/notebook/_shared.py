@@ -744,6 +744,46 @@ CREATE TABLE IF NOT EXISTS designer_run_lineage (
 CREATE INDEX IF NOT EXISTS idx_designer_lineage_workflow ON designer_run_lineage(workflow_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_designer_lineage_status ON designer_run_lineage(status, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS scaffold_profile_runs (
+    run_id TEXT PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    device TEXT,
+    config_json TEXT NOT NULL,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS scaffold_profile_results (
+    profile_result_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    family TEXT NOT NULL,
+    case_name TEXT NOT NULL,
+    op_a TEXT,
+    op_b TEXT,
+    status TEXT NOT NULL,
+    graph_json TEXT,
+    graph_fingerprint TEXT,
+    compile_time_ms REAL,
+    sandbox_passed INTEGER,
+    stability_score REAL,
+    causality_passed INTEGER,
+    param_count INTEGER,
+    passed INTEGER,
+    loss_ratio REAL,
+    validation_loss_ratio REAL,
+    discovery_loss_ratio REAL,
+    final_loss REAL,
+    avg_step_time_ms REAL,
+    throughput_tok_s REAL,
+    elapsed_s REAL,
+    error TEXT,
+    metrics_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scaffold_profile_results_run ON scaffold_profile_results(run_id, family, case_name);
+CREATE INDEX IF NOT EXISTS idx_scaffold_profile_results_status ON scaffold_profile_results(status, family);
+CREATE INDEX IF NOT EXISTS idx_scaffold_profile_results_loss ON scaffold_profile_results(validation_loss_ratio, loss_ratio);
+
 CREATE TABLE IF NOT EXISTS knowledge_digests (
     digest_id TEXT PRIMARY KEY,
     timestamp REAL NOT NULL,
@@ -982,6 +1022,17 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "screening_loss_50": "REAL",
     "screening_slope": "REAL",
     "screening_slope_consistent": "INTEGER",
+    "rapid_screening_passed": "INTEGER",
+    "rapid_screening_elapsed_ms": "REAL",
+    "rapid_screening_steps_completed": "INTEGER",
+    "rapid_screening_max_steps": "INTEGER",
+    "rapid_screening_degraded": "INTEGER",
+    "rapid_screening_degraded_reasons_json": "TEXT",
+    "rapid_screening_kill_reason": "TEXT",
+    "rapid_screening_kill_step": "INTEGER",
+    "rapid_screening_kill_metric": "TEXT",
+    "rapid_screening_gpu_minutes_saved": "REAL",
+    "rapid_screening_metrics_json": "TEXT",
     # TinyStories (domain generalization)
     "tinystories_perplexity": "REAL",
     "tinystories_score": "REAL",
@@ -1028,9 +1079,23 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "ar_timed_out": "INTEGER",
     "ar_above_chance": "INTEGER",
     "induction_auc": "REAL",
+    "induction_gap_accuracies_json": "TEXT",
+    "induction_probe_train_steps": "INTEGER",
+    "induction_probe_eval_examples": "INTEGER",
+    "induction_probe_batch_size": "INTEGER",
+    "induction_probe_gaps_json": "TEXT",
+    "induction_probe_elapsed_ms": "REAL",
     "binding_auc": "REAL",
+    "binding_distance_accuracies_json": "TEXT",
+    "binding_probe_eval_examples": "INTEGER",
+    "binding_probe_distances_json": "TEXT",
+    "binding_probe_elapsed_ms": "REAL",
     "binding_composite": "REAL",
     "local_only": "INTEGER",
+    "screening_hellaswag_correct": "INTEGER",
+    "screening_hellaswag_total": "INTEGER",
+    "screening_hellaswag_elapsed_ms": "REAL",
+    "train_budget_steps": "INTEGER",
     # BLiMP linguistic minimal pairs
     "blimp_overall_accuracy": "REAL",
     "blimp_subtask_accuracies_json": "TEXT",

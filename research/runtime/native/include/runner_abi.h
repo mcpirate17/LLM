@@ -44,6 +44,14 @@ typedef struct {
   const char* message;
 } nr_execute_response_t;
 
+typedef struct {
+  nr_status_t status;
+  const float* logits;
+  int32_t batch;
+  int32_t vocab_size;
+  const char* message;
+} nr_execute_batch_response_t;
+
 /* --------------- capability query --------------- */
 
 typedef struct {
@@ -66,6 +74,7 @@ nr_status_t nr_runtime_init(void);
 void nr_runtime_shutdown(void);
 nr_compile_response_t nr_compile(const nr_compile_request_t* req);
 nr_execute_response_t nr_execute(const nr_execute_request_t* req);
+nr_execute_batch_response_t nr_execute_batch(const nr_execute_request_t* req);
 void nr_release_model(int64_t model_handle);
 
 #ifdef __cplusplus

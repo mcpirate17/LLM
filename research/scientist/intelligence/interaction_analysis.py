@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from .ml_corpus import load_deduped_graph_training_rows
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NOTEBOOK_DB = Path(__file__).parents[2] / "lab_notebook.db"
@@ -240,16 +242,13 @@ def build_interaction_matrix(
     # ── Phase 1: Extract from experiment data ──
     if notebook_db.exists():
         try:
-            conn = sqlite3.connect(str(notebook_db), timeout=10)
-            conn.execute("PRAGMA busy_timeout=10000")
-            rows = conn.execute(
-                """SELECT graph_json, stage0_passed, stage1_passed, loss_ratio
-                   FROM program_results
-                   WHERE graph_json IS NOT NULL"""
-            ).fetchall()
-            conn.close()
+            rows = load_deduped_graph_training_rows(notebook_db)
 
-            for graph_json, s0, s1, lr in rows:
+            for row in rows:
+                graph_json = row["graph_json"]
+                s0 = row["stage0_any_passed"]
+                s1 = row["stage1_any_passed"]
+                lr = row.get("loss_ratio_best")
                 pairs = _extract_co_occurring_pairs(graph_json)
                 for a, b in pairs:
                     all_ops.add(a)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import importlib
 import importlib.util
 import sys
 from dataclasses import dataclass
@@ -62,10 +63,13 @@ def detect_adapter_state() -> DesignerRuntimeAdapterState:
 
 def capability_handshake() -> Dict[str, Any]:
     state = detect_adapter_state()
-    supported_ops: List[str] = []
-    unsupported_ops: List[str] = []
     approximate_mappings: Dict[str, str] = {}
     semantic_warnings: List[Dict[str, str]] = []
+    supported_ops: List[str] = []
+    unsupported_ops: List[str] = []
+    scheduler_supported_ops: List[str] = []
+    scheduler_unsupported_ops: List[str] = []
+    native_coverage = 0.0
 
     mapping_path = (
         Path(__file__).resolve().parents[2]
@@ -86,9 +90,31 @@ def capability_handshake() -> Dict[str, Any]:
             for component, note in sorted(approximate_mappings.items())
         ]
 
-    # Phase 1 placeholder: report structural availability and reserved fields.
     if state.enabled and state.designer_runtime_available:
-        supported_ops = ["__designer_runtime_available__"]
+        try:
+            native_dispatch = importlib.import_module(
+                "research.scientist.native.dispatch"
+            )
+
+            supported = set(native_dispatch.NATIVE_STRUCTURAL_OPS)
+            supported.update(native_dispatch._SOFT_BRIDGE_OPS)
+            supported.update(native_dispatch._NATIVE_C_KERNEL_OPS)
+            supported.update(native_dispatch._CYTHON_WRAPPER_OPS)
+            supported_ops = sorted(supported)
+            scheduler_supported_ops = sorted(
+                native_dispatch.scheduler_compatible_ops(set(supported_ops))
+            )
+            scheduler_unsupported_ops = sorted(
+                set(supported_ops) - set(scheduler_supported_ops)
+            )
+            native_coverage = 1.0 if supported_ops else 0.0
+        except Exception as exc:
+            state = DesignerRuntimeAdapterState(
+                enabled=state.enabled,
+                strict=state.strict,
+                designer_runtime_available=state.designer_runtime_available,
+                reason=f"capability_probe_error:{exc}",
+            )
 
     return {
         "enabled": state.enabled,
@@ -97,6 +123,9 @@ def capability_handshake() -> Dict[str, Any]:
         "status": state.reason,
         "supported_ops": supported_ops,
         "unsupported_ops": unsupported_ops,
+        "scheduler_supported_ops": scheduler_supported_ops,
+        "scheduler_unsupported_ops": scheduler_unsupported_ops,
+        "native_coverage": native_coverage,
         "approximate_mappings": approximate_mappings,
         "semantic_warnings": semantic_warnings,
         "semantic_warning_count": len(semantic_warnings),

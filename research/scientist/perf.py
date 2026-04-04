@@ -198,29 +198,23 @@ class GPUStarvationDetector:
 
     def __init__(self, threshold_ms: float = 5.0):
         self.threshold_ms = threshold_ms
-        self.last_event = None
+        self.last_wait_start: Optional[float] = None
         self.starvation_events = []
 
     def start_wait(self):
         """Mark the start of a potential stall (e.g. before data loading)."""
-        if torch.cuda.is_available():
-            self.last_event = torch.cuda.Event(enable_timing=True)
-            self.last_event.record()
+        self.last_wait_start = time.perf_counter()
 
     def end_wait(self) -> Optional[float]:
         """Mark the end of a potential stall and return stall duration in ms."""
-        if not torch.cuda.is_available() or self.last_event is None:
+        if self.last_wait_start is None:
             return None
 
-        end_event = torch.cuda.Event(enable_timing=True)
-        end_event.record()
-        torch.cuda.synchronize()
-
-        duration = self.last_event.elapsed_time(end_event)
+        duration = (time.perf_counter() - self.last_wait_start) * 1000.0
         if duration > self.threshold_ms:
             self.starvation_events.append(duration)
 
-        self.last_event = None
+        self.last_wait_start = None
         return duration
 
     def get_summary(self) -> Dict[str, Any]:

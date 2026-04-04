@@ -78,7 +78,7 @@ def _op_topk_gate(module, inputs, _):
                 return native_out
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("topk_gate_f32", e)
-    logits = F.linear(x, module.gate_proj.to(x.dtype))
+    logits = F.linear(x, module.gate_proj)
     gate_weights = F.softmax(logits, dim=-1)
 
     # Record routing telemetry
@@ -216,7 +216,7 @@ def _op_moe_topk(module, inputs, config):
     if not hasattr(module, "gate_weight"):
         return x
 
-    logits = F.linear(x, module.gate_weight.to(x.dtype))
+    logits = F.linear(x, module.gate_weight)
     logits = _apply_moe_load_balance(module, logits, n_experts)
     weights, indices = logits.topk(top_k, dim=-1)
     weights = F.softmax(weights, dim=-1)
@@ -250,7 +250,7 @@ def _op_moe_2expert(module, inputs, config):
 
     # Compute gate scores with load balancing
     dt = x.dtype
-    logits = F.linear(x, module.gate_proj.to(dt))  # (B, S, 2)
+    logits = F.linear(x, module.gate_proj)  # (B, S, 2)
     logits = _apply_moe_load_balance(module, logits, 2)
     weights = F.softmax(logits, dim=-1)  # (B, S, 2)
 

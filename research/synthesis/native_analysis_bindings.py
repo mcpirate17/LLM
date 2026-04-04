@@ -52,12 +52,12 @@ def load_native_graph_analysis_lib() -> Any:
         Path(__file__).resolve().parents[1]
         / "runtime"
         / "native"
-        / "build"
+        / "build_current"
         / "libaria_native_runtime.so",
         Path(__file__).resolve().parents[1]
         / "runtime"
         / "native"
-        / "build_current"
+        / "build"
         / "libaria_native_runtime.so",
     ):
         if not path.exists():

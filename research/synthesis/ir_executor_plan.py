@@ -11,14 +11,6 @@ from .graph import ComputationGraphIR, ShapeInfo
 from .primitives import REVERSE_OPCODE_MAP
 
 
-@dataclass(slots=True, frozen=True)
-class ExecPlanEntry:
-    node_idx: int
-    in1_idx: int
-    in2_idx: int
-    op: nn.Module
-
-
 @dataclass(slots=True)
 class ExecutorPlan:
     consumer_counts: np.ndarray
@@ -31,8 +23,10 @@ class ExecutorPlan:
     counts_original: list[int]
     counts_buf: list[int]
     input_node_indices: tuple[int, ...]
-    exec_plan: tuple[ExecPlanEntry, ...]
-    exec_plan_node_indices: tuple[int, ...]
+    exec_node_indices: tuple[int, ...]
+    exec_in1_indices: tuple[int, ...]
+    exec_in2_indices: tuple[int, ...]
+    exec_ops: tuple[nn.Module, ...]
 
 
 _LINEAR_OPS = frozenset(
@@ -148,12 +142,12 @@ def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
         if hasattr(consumer_counts, "tolist")
         else list(consumer_counts)
     )
-    exec_plan = tuple(
-        ExecPlanEntry(
-            node_idx=idx,
-            in1_idx=in1_list[idx],
-            in2_idx=in2_list[idx],
-            op=flat_ops[idx],
+    exec_entries = tuple(
+        (
+            idx,
+            in1_list[idx],
+            in2_list[idx],
+            flat_ops[idx],
         )
         for idx, opcode in enumerate(op_codes_list)
         if opcode != 0 and flat_ops[idx] is not None
@@ -171,6 +165,8 @@ def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
         input_node_indices=tuple(
             idx for idx, opcode in enumerate(op_codes_list) if opcode == 0
         ),
-        exec_plan=exec_plan,
-        exec_plan_node_indices=tuple(entry.node_idx for entry in exec_plan),
+        exec_node_indices=tuple(entry[0] for entry in exec_entries),
+        exec_in1_indices=tuple(entry[1] for entry in exec_entries),
+        exec_in2_indices=tuple(entry[2] for entry in exec_entries),
+        exec_ops=tuple(entry[3] for entry in exec_entries),
     )

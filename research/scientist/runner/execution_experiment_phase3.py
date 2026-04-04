@@ -120,9 +120,12 @@ class _ExecutionExperimentPhase3Mixin:
             ):
                 if k in s1_result:
                     program_metrics[k] = s1_result.get(k)
-            from ._helpers import screening_wikitext_fields
+            from ._helpers import screening_probe_fields, screening_wikitext_fields
 
+            program_metrics["train_budget_steps"] = config.stage1_steps
             program_metrics.update(screening_wikitext_fields(s1_result))
+            program_metrics.update(screening_probe_fields(s1_result))
+            program_metrics.update(screening_probe_fields(program_metrics))
             self._merge_s1_telemetry(program_metrics, s1_result)
 
             result_id = nb.record_program_result(

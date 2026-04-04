@@ -3,14 +3,20 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional, Set
 
+import torch
+
+from .capability import classify_graph_native_capability
+from ...synthesis.compiler_op_utils import _get_stacked_params
 from .dispatch import (
+    _PER_OP_BRIDGE_ONLY_OPS,
     dispatch_graph_backward_native,
     dispatch_graph_forward_native_saved,
     dispatch_graph_native,
     dispatch_graph_native_cached,
     dispatch_op_native,
 )
-from .tensor_bridge import to_device_tensor
+from .single_op_bound import dispatch_single_op_bound_native
+from .tensor_bridge import supports_host_array_bridge, to_device_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +139,12 @@ class SubgraphDispatcher:
 
     def __init__(self, graph: Any, supported_ops: Set[str]):
         self._graph = graph
-        self._supported_ops = supported_ops
-        self._all_native = self._check_all_native()
+        self._capability = classify_graph_native_capability(graph, supported_ops)
+        self._supported_ops = self._capability.scheduler_supported_ops
+        self._all_native = self._capability.all_native
         self._dispatch_count = 0
         self._fallback_count = 0
+        self._last_refusal_reason: str | None = self._capability.refusal_reason
         # Lazily-created autograd Function subclass (cached after first grad dispatch).
         self._autograd_fn: Any = None
         # Pre-convert graph to native_ir JSON once; reuse across dispatches.
@@ -149,19 +157,6 @@ class SubgraphDispatcher:
             except Exception as exc:
                 logger.debug("Failed to pre-convert graph to IR JSON: %s", exc)
                 self._ir_json = None
-
-    def _check_all_native(self) -> bool:
-        """Return True if every non-input op in the graph is native-supported."""
-        nodes = getattr(self._graph, "nodes", None)
-        if not isinstance(nodes, dict) or not nodes:
-            return False
-        for node in nodes.values():
-            if getattr(node, "is_input", False):
-                continue
-            op_name = getattr(node, "op_name", "")
-            if op_name not in self._supported_ops:
-                return False
-        return True
 
     @property
     def all_native(self) -> bool:
@@ -186,6 +181,10 @@ class SubgraphDispatcher:
             is not possible (caller should fall back to per-op path).
         """
         if not self._all_native:
+            self._last_refusal_reason = self._capability.refusal_reason
+            return None
+        if not supports_host_array_bridge(x):
+            self._last_refusal_reason = "host_array_bridge_unsupported_device"
             return None
 
         try:
@@ -197,6 +196,7 @@ class SubgraphDispatcher:
                     )
                 result = self._autograd_fn.apply(x)
                 self._dispatch_count += 1
+                self._last_refusal_reason = None
                 return result
 
             # ── Inference path: numpy-based, no autograd ──
@@ -205,6 +205,7 @@ class SubgraphDispatcher:
             else:
                 result = dispatch_graph_native(self._graph, x)
             self._dispatch_count += 1
+            self._last_refusal_reason = None
 
             # Convert back to torch if input was torch
             if hasattr(x, "detach"):
@@ -212,6 +213,15 @@ class SubgraphDispatcher:
             return result
         except Exception as exc:
             logger.debug("Subgraph dispatch failed: %s, falling back to per-op", exc)
+            exc_text = str(exc).lower()
+            if (
+                "not registered in native runtime" in exc_text
+                or "unsupported op" in exc_text
+            ):
+                self._all_native = False
+                self._last_refusal_reason = "runtime_op_unavailable"
+            else:
+                self._last_refusal_reason = "subgraph_dispatch_error"
             self._fallback_count += 1
             return None
 
@@ -221,6 +231,10 @@ class SubgraphDispatcher:
             "all_native": self._all_native,
             "subgraph_dispatches": self._dispatch_count,
             "subgraph_fallbacks": self._fallback_count,
+            "last_refusal_reason": self._last_refusal_reason,
+            "scheduler_unsupported_ops": sorted(
+                self._capability.scheduler_unsupported_ops
+            ),
         }
 
 
@@ -236,8 +250,200 @@ class NativeForwardWrapper:
         self.supported_ops = supported_ops
         self._dispatch_count = 0
         self._fallback_count = 0
+        self._last_fallback_reason: str | None = None
 
-    def dispatch(self, op_name: str, *tensors: Any) -> Any:
+    def _module_dispatch_args(
+        self,
+        op_name: str,
+        module: Any,
+        tensors: tuple[Any, ...],
+    ) -> tuple[tuple[Any, ...], Dict[str, Any]]:
+        if op_name == "gated_linear":
+            if module is None or len(tensors) != 1:
+                raise ValueError("gated_linear native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.linear_weight,
+                module.gate_weight,
+            ), {
+                "bias": getattr(module, "linear_bias", None),
+                "bias_gate": getattr(module, "gate_bias", None),
+            }
+
+        if op_name in {"linear_proj", "linear_proj_down", "linear_proj_up"}:
+            if module is None or len(tensors) != 1:
+                raise ValueError(f"{op_name} native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.weight,
+            ), {}
+
+        if op_name == "rmsnorm":
+            if module is None or len(tensors) != 1:
+                raise ValueError("rmsnorm native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.weight,
+            ), {"eps": 1e-6}
+
+        if op_name == "layernorm":
+            if module is None or len(tensors) != 1:
+                raise ValueError("layernorm native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.weight,
+                module.bias,
+            ), {"eps": 1e-5}
+
+        if op_name == "rwkv_time_mixing":
+            if module is None or len(tensors) != 1:
+                raise ValueError(
+                    "rwkv_time_mixing native dispatch requires module and x"
+                )
+            return (
+                tensors[0],
+                module.w_decay,
+                module.u_bonus,
+                module.W_k,
+                module.W_v,
+                module.W_r,
+            ), {}
+
+        if op_name == "conv1d_seq":
+            if module is None or len(tensors) != 1:
+                raise ValueError("conv1d_seq native dispatch requires module and x")
+            conv_bias = getattr(module, "conv_bias", None)
+            if conv_bias is None:
+                conv_bias = module.conv_weight.new_zeros(module.conv_weight.shape[0])
+            return (
+                tensors[0],
+                module.conv_weight,
+                conv_bias,
+            ), {}
+
+        if op_name == "rwkv_channel":
+            if module is None or len(tensors) != 1:
+                raise ValueError("rwkv_channel native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.mix_k,
+                module.mix_r,
+                module.key_proj.weight,
+                module.receptance_proj.weight,
+                module.value_proj.weight,
+            ), {}
+
+        if op_name in {
+            "depth_weighted_proj",
+            "adaptive_recursion",
+            "gated_lane_blend",
+            "route_lanes",
+            "depth_gated_transform",
+            "route_recursion",
+        }:
+            if module is None or len(tensors) != 1:
+                raise ValueError(
+                    "depth_weighted_proj native dispatch requires module and x"
+                )
+            if op_name in {"gated_lane_blend", "route_lanes"}:
+                scorer = module.lane_scorer
+                stack_name = "lane_projs"
+            elif op_name in {"depth_gated_transform", "route_recursion"}:
+                scorer = module.depth_scorer
+                stack_name = "depth_projs"
+            else:
+                scorer = module.depth_scorer
+                stack_name = "step_projs"
+            max_depth = int(scorer.shape[0])
+            return (
+                tensors[0],
+                scorer,
+                _get_stacked_params(module, stack_name, max_depth, tensors[0].dtype),
+            ), {}
+
+        if op_name == "swiglu_mlp":
+            if module is None or len(tensors) != 1:
+                raise ValueError("swiglu_mlp native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.gate_proj.weight,
+                module.up_proj.weight,
+                module.down_proj.weight,
+                getattr(module.gate_proj, "bias", None),
+                getattr(module.up_proj, "bias", None),
+                getattr(module.down_proj, "bias", None),
+            ), {}
+
+        if op_name == "softmax_attention":
+            if module is None or len(tensors) != 1:
+                raise ValueError(
+                    "softmax_attention native dispatch requires module and x"
+                )
+            return (
+                tensors[0],
+                module.q_proj.weight,
+                module.k_proj.weight,
+                module.v_proj.weight,
+                module.o_proj.weight,
+            ), {"n_heads": int(module.n_heads)}
+
+        if op_name == "linear_attention":
+            if module is None or len(tensors) != 1:
+                raise ValueError(
+                    "linear_attention native dispatch requires module and x"
+                )
+            return (
+                tensors[0],
+                module.q_proj.weight,
+                module.k_proj.weight,
+                module.v_proj.weight,
+                module.o_proj.weight,
+            ), {}
+
+        if op_name == "selective_scan":
+            if module is None or len(tensors) != 1:
+                raise ValueError("selective_scan native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.A_log,
+                module.dt_proj,
+                module.B_proj.weight,
+                module.C_proj.weight,
+            ), {}
+
+        if op_name == "state_space":
+            if module is None or len(tensors) != 1:
+                raise ValueError("state_space native dispatch requires module and x")
+            return (
+                tensors[0],
+                module.ssm_A,
+                module.ssm_B.weight,
+                module.ssm_C.weight,
+                module.ssm_D,
+                module.ssm_dt.weight,
+                module.ssm_dt.bias,
+            ), {}
+
+        if op_name == "gated_delta":
+            if module is None or len(tensors) != 1:
+                raise ValueError("gated_delta native dispatch requires module and x")
+            dim = int(getattr(module, "model_dim", module.q_proj.weight.shape[0]))
+            n_heads = int(getattr(module, "_gated_delta_heads", min(8, dim)))
+            return (
+                tensors[0],
+                module.q_proj.weight,
+                module.k_proj.weight,
+                module.v_proj.weight,
+                module.alpha_proj.weight,
+                module.beta_proj.weight,
+                module.o_proj.weight,
+            ), {"n_heads": n_heads}
+
+        return tensors, {}
+
+    def dispatch(
+        self, op_name: str, *tensors: Any, module: Any = None, **kwargs: Any
+    ) -> Any:
         """Try native dispatch, fall back to numpy/torch if needed.
 
         When any input tensor requires gradients **and** the op has a native
@@ -248,35 +454,73 @@ class NativeForwardWrapper:
         Returns the result tensor/array on success, or ``None`` to signal
         the caller should use the original PyTorch implementation.
         """
-        if op_name in self.supported_ops:
+        if op_name in self.supported_ops or op_name in _PER_OP_BRIDGE_ONLY_OPS:
             try:
+                dispatch_tensors, dispatch_kwargs = self._module_dispatch_args(
+                    op_name, module, tensors
+                )
+                if not supports_host_array_bridge(
+                    *dispatch_tensors, *dispatch_kwargs.values()
+                ):
+                    self._last_fallback_reason = "host_array_bridge_unsupported_device"
+                    return None
+                native_op_name = (
+                    "linear"
+                    if op_name in {"linear_proj", "linear_proj_down", "linear_proj_up"}
+                    else op_name
+                )
+                if kwargs:
+                    dispatch_kwargs = {**dispatch_kwargs, **kwargs}
                 # Check if any torch input requires grad → use autograd path
-                any_requires_grad = any(
-                    getattr(t, "requires_grad", False) for t in tensors
+                any_requires_grad = torch.is_grad_enabled() and any(
+                    getattr(t, "requires_grad", False) for t in dispatch_tensors
                 )
                 if any_requires_grad:
+                    if module is not None:
+                        result = dispatch_single_op_bound_native(
+                            op_name,
+                            module,
+                            tensors[0],
+                            supported_ops=self.supported_ops,
+                        )
+                        if result is not None:
+                            self._dispatch_count += 1
+                            self._last_fallback_reason = None
+                            return result
                     from ..native_autograd import (
                         NATIVE_AUTOGRAD_SUPPORTED_OPS,
                         native_autograd_dispatch,
                     )
 
-                    if op_name in NATIVE_AUTOGRAD_SUPPORTED_OPS:
-                        result = native_autograd_dispatch(op_name, *tensors)
+                    if native_op_name in NATIVE_AUTOGRAD_SUPPORTED_OPS:
+                        result = native_autograd_dispatch(
+                            native_op_name, *dispatch_tensors
+                        )
                         self._dispatch_count += 1
+                        self._last_fallback_reason = None
                         return result
+                    self._fallback_count += 1
+                    self._last_fallback_reason = "native_backward_unavailable"
+                    return None
 
-                result = dispatch_op_native(op_name, *tensors)
+                result = dispatch_op_native(
+                    native_op_name, *dispatch_tensors, **dispatch_kwargs
+                )
                 self._dispatch_count += 1
+                self._last_fallback_reason = None
 
                 # Convert back to torch if input was torch
-                if tensors and hasattr(tensors[0], "detach"):
-                    return to_device_tensor(result, reference=tensors[0])
+                if dispatch_tensors and hasattr(dispatch_tensors[0], "detach"):
+                    return to_device_tensor(result, reference=dispatch_tensors[0])
                 return result
             except Exception as exc:
                 logger.debug(
                     "Native dispatch failed for %s: %s, falling back", op_name, exc
                 )
                 self._fallback_count += 1
+                self._last_fallback_reason = "per_op_dispatch_error"
+        else:
+            self._last_fallback_reason = "op_not_native_supported"
         return None  # Signal to caller: use original implementation
 
     @property
@@ -284,4 +528,5 @@ class NativeForwardWrapper:
         return {
             "native_dispatches": self._dispatch_count,
             "fallbacks": self._fallback_count,
+            "last_fallback_reason": self._last_fallback_reason,
         }

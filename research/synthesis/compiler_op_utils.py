@@ -56,9 +56,11 @@ def _safe_linear(
     (or vice versa after _cast_params_to). This wrapper ensures matching dtypes.
     Fixes 1,206 RuntimeError crashes in the training pipeline (71% of all RuntimeErrors).
     """
-    return F.linear(
-        x, weight.to(x.dtype), bias.to(x.dtype) if bias is not None else None
-    )
+    if weight.dtype != x.dtype:
+        weight = weight.to(x.dtype)
+    if bias is not None and bias.dtype != x.dtype:
+        bias = bias.to(x.dtype)
+    return F.linear(x, weight, bias)
 
 
 def _record_sparse_telemetry(

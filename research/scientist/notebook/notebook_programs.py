@@ -398,6 +398,8 @@ class _ProgramsMixin:
             "stage0_passed",
             "stage05_passed",
             "stage1_passed",
+            "rapid_screening_passed",
+            "rapid_screening_degraded",
             "extreme_input_passed",
             "random_input_passed",
             "has_nan_output",

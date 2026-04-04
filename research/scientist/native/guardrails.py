@@ -99,8 +99,7 @@ def _maybe_warn_deprecated_legacy_only_flag() -> None:
         return
     logger.warning(
         "NATIVE_RUNNER_LEGACY_ONLY is deprecated and scheduled for Phase-D removal; "
-        "prefer NATIVE_RUNNER_ABI_MODEL_ONLY=0 and NATIVE_RUNNER_ALLOW_LEGACY_FALLBACK=1 "
-        "for controlled rollback behavior."
+        "prefer NATIVE_RUNNER_ENABLED=0 for a controlled rollback to the legacy path."
     )
     _legacy_only_deprecation_warned = True
 

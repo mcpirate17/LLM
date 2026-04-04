@@ -27,6 +27,8 @@ from typing import Dict, Optional
 
 import torch
 
+from .fingerprint_native import sequence_self_similarity
+
 logger = logging.getLogger(__name__)
 
 # Required reference families
@@ -194,6 +196,7 @@ class ReferenceCkaStore:
         self._loaded = False
         self._manifest: Optional[ArtifactManifest] = None
         self._references: Optional[Dict[str, torch.Tensor]] = None
+        self._reference_similarities: Optional[Dict[str, torch.Tensor]] = None
         self._load_error: Optional[str] = None
         self._fallback_warned = False
 
@@ -247,6 +250,19 @@ class ReferenceCkaStore:
             self._load()
         return self._references
 
+    def get_reference_similarities(self) -> Optional[Dict[str, torch.Tensor]]:
+        """Get cached reference similarity matrices derived from artifact activations."""
+        with self._lock:
+            self._load()
+            if self._references is None:
+                return None
+            if self._reference_similarities is None:
+                self._reference_similarities = {
+                    family: sequence_self_similarity(ref_tensor.float())
+                    for family, ref_tensor in self._references.items()
+                }
+        return self._reference_similarities
+
     def get_metadata(self) -> Dict[str, str]:
         """Get metadata about the CKA source for provenance tracking."""
         with self._lock:
@@ -294,6 +310,7 @@ class ReferenceCkaStore:
             self._loaded = False
             self._manifest = None
             self._references = None
+            self._reference_similarities = None
             self._load_error = None
             self._fallback_warned = False
 

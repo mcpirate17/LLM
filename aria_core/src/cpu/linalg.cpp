@@ -6,6 +6,10 @@
 extern "C" {
 #endif
 
+#include <algorithm>
+#include <limits>
+#include <vector>
+
 /* ── Reductions ────────────────────────────────────────────────────── */
 
 float aria_sum_f32(const float *x, int64_t n) {
@@ -45,6 +49,240 @@ float aria_linear_cka_f32(const float *X, const float *Y, int64_t n) {
     if (result < 0.0f) return 0.0f;
     if (result > 1.0f) return 1.0f;
     return result;
+}
+
+void aria_sequence_self_similarity_f32(
+    const float *reps, float *out, int64_t n_probes, int64_t seq_len, int64_t dim
+) {
+    if (n_probes <= 0 || seq_len <= 0 || dim <= 0) return;
+    const int64_t sim_size = seq_len * seq_len;
+    memset(out, 0, (size_t)sim_size * sizeof(float));
+
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for collapse(2) schedule(static) if(seq_len * seq_len > 64)
+#endif
+    for (int64_t i = 0; i < seq_len; i++) {
+        for (int64_t j = 0; j < seq_len; j++) {
+            double acc = 0.0;
+            for (int64_t p = 0; p < n_probes; p++) {
+                const float *vi = reps + ((p * seq_len + i) * dim);
+                const float *vj = reps + ((p * seq_len + j) * dim);
+                double dot = 0.0;
+                double norm_i = 0.0;
+                double norm_j = 0.0;
+                for (int64_t k = 0; k < dim; k++) {
+                    const double a = (double)vi[k];
+                    const double b = (double)vj[k];
+                    dot += a * b;
+                    norm_i += a * a;
+                    norm_j += b * b;
+                }
+                const double denom = sqrt(norm_i * norm_j);
+                if (denom > 1e-12) {
+                    acc += dot / denom;
+                }
+            }
+            out[i * seq_len + j] = (float)(acc / (double)n_probes);
+        }
+    }
+}
+
+void aria_mean_abs_linear_delta_f32(
+    const float *delta, const float *weight, float *out,
+    int64_t batch, int64_t seq_len, int64_t dim, int64_t vocab
+) {
+    if (batch <= 0 || seq_len <= 0 || dim <= 0 || vocab <= 0) return;
+
+#ifdef ARIA_HAS_OPENMP
+    #pragma omp parallel for collapse(2) schedule(static) if(batch * seq_len >= 8)
+#endif
+    for (int64_t b = 0; b < batch; ++b) {
+        for (int64_t s = 0; s < seq_len; ++s) {
+            const float *delta_row = delta + ((b * seq_len + s) * dim);
+            double acc = 0.0;
+            for (int64_t v = 0; v < vocab; ++v) {
+                const float *weight_row = weight + (v * dim);
+                double dot = 0.0;
+                for (int64_t k = 0; k < dim; ++k) {
+                    dot += (double)delta_row[k] * (double)weight_row[k];
+                }
+                acc += fabs(dot);
+            }
+            out[b * seq_len + s] = (float)(acc / (double)vocab);
+        }
+    }
+}
+
+static void jacobi_eigenvalues_symmetric(std::vector<double> &mat, int64_t n, std::vector<double> &eigs) {
+    eigs.assign((size_t)n, 0.0);
+    if (n <= 0) return;
+    const int max_sweeps = 64;
+    const double tol = 1e-10;
+
+    for (int sweep = 0; sweep < max_sweeps; ++sweep) {
+        double max_off = 0.0;
+        int64_t p = 0;
+        int64_t q = 1;
+        for (int64_t i = 0; i < n; ++i) {
+            for (int64_t j = i + 1; j < n; ++j) {
+                const double off = fabs(mat[(size_t)i * (size_t)n + (size_t)j]);
+                if (off > max_off) {
+                    max_off = off;
+                    p = i;
+                    q = j;
+                }
+            }
+        }
+        if (max_off < tol) {
+            break;
+        }
+
+        const size_t pp = (size_t)p * (size_t)n + (size_t)p;
+        const size_t qq = (size_t)q * (size_t)n + (size_t)q;
+        const size_t pq = (size_t)p * (size_t)n + (size_t)q;
+        const double app = mat[pp];
+        const double aqq = mat[qq];
+        const double apq = mat[pq];
+        if (fabs(apq) < tol) {
+            continue;
+        }
+
+        const double tau = (aqq - app) / (2.0 * apq);
+        const double t = (tau >= 0.0)
+            ? 1.0 / (tau + sqrt(1.0 + tau * tau))
+            : -1.0 / (-tau + sqrt(1.0 + tau * tau));
+        const double c = 1.0 / sqrt(1.0 + t * t);
+        const double s = t * c;
+
+        for (int64_t k = 0; k < n; ++k) {
+            if (k == p || k == q) continue;
+            const size_t kp = (size_t)k * (size_t)n + (size_t)p;
+            const size_t kq = (size_t)k * (size_t)n + (size_t)q;
+            const size_t pk = (size_t)p * (size_t)n + (size_t)k;
+            const size_t qk = (size_t)q * (size_t)n + (size_t)k;
+            const double akp = mat[kp];
+            const double akq = mat[kq];
+            mat[kp] = c * akp - s * akq;
+            mat[pk] = mat[kp];
+            mat[kq] = s * akp + c * akq;
+            mat[qk] = mat[kq];
+        }
+
+        mat[pp] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
+        mat[qq] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
+        mat[pq] = 0.0;
+        mat[(size_t)q * (size_t)n + (size_t)p] = 0.0;
+    }
+
+    for (int64_t i = 0; i < n; ++i) {
+        eigs[(size_t)i] = mat[(size_t)i * (size_t)n + (size_t)i];
+    }
+    std::sort(eigs.begin(), eigs.end());
+}
+
+void aria_geometry_metrics_f32(
+    const float *reps,
+    const int64_t *row_indices,
+    float *out,
+    int64_t total_rows,
+    int64_t sample_rows,
+    int64_t dim
+) {
+    if (total_rows < 2 || sample_rows < 2 || dim < 2) {
+        out[0] = 0.0f;
+        out[1] = 0.0f;
+        out[2] = 0.0f;
+        return;
+    }
+
+    std::vector<double> mean((size_t)dim, 0.0);
+    for (int64_t r = 0; r < total_rows; ++r) {
+        const float *row = reps + (size_t)r * (size_t)dim;
+        for (int64_t d = 0; d < dim; ++d) {
+            mean[(size_t)d] += (double)row[d];
+        }
+    }
+    const double inv_total_rows = 1.0 / (double)total_rows;
+    for (int64_t d = 0; d < dim; ++d) {
+        mean[(size_t)d] *= inv_total_rows;
+    }
+
+    const bool use_feature_gram = sample_rows >= dim;
+    const int64_t gram_n = use_feature_gram ? dim : sample_rows;
+    std::vector<double> gram((size_t)gram_n * (size_t)gram_n, 0.0);
+    std::vector<double> centered_row((size_t)dim, 0.0);
+
+    if (use_feature_gram) {
+        for (int64_t sample = 0; sample < sample_rows; ++sample) {
+            const int64_t row_idx = row_indices != nullptr ? row_indices[sample] : sample;
+            const float *row = reps + (size_t)row_idx * (size_t)dim;
+            for (int64_t d = 0; d < dim; ++d) {
+                centered_row[(size_t)d] = (double)row[d] - mean[(size_t)d];
+            }
+            for (int64_t i = 0; i < dim; ++i) {
+                const double vi = centered_row[(size_t)i];
+                for (int64_t j = i; j < dim; ++j) {
+                    gram[(size_t)i * (size_t)dim + (size_t)j] += vi * centered_row[(size_t)j];
+                }
+            }
+        }
+        for (int64_t i = 0; i < dim; ++i) {
+            for (int64_t j = i + 1; j < dim; ++j) {
+                gram[(size_t)j * (size_t)dim + (size_t)i] = gram[(size_t)i * (size_t)dim + (size_t)j];
+            }
+        }
+    } else {
+        std::vector<double> centered((size_t)sample_rows * (size_t)dim, 0.0);
+        for (int64_t sample = 0; sample < sample_rows; ++sample) {
+            const int64_t row_idx = row_indices != nullptr ? row_indices[sample] : sample;
+            const float *row = reps + (size_t)row_idx * (size_t)dim;
+            double *dst = centered.data() + (size_t)sample * (size_t)dim;
+            for (int64_t d = 0; d < dim; ++d) {
+                dst[d] = (double)row[d] - mean[(size_t)d];
+            }
+        }
+        for (int64_t i = 0; i < sample_rows; ++i) {
+            const double *ri = centered.data() + (size_t)i * (size_t)dim;
+            for (int64_t j = i; j < sample_rows; ++j) {
+                const double *rj = centered.data() + (size_t)j * (size_t)dim;
+                double dot = 0.0;
+                for (int64_t d = 0; d < dim; ++d) {
+                    dot += ri[d] * rj[d];
+                }
+                gram[(size_t)i * (size_t)sample_rows + (size_t)j] = dot;
+                gram[(size_t)j * (size_t)sample_rows + (size_t)i] = dot;
+            }
+        }
+    }
+
+    std::vector<double> eigs;
+    jacobi_eigenvalues_symmetric(gram, gram_n, eigs);
+
+    std::vector<double> singular_values;
+    singular_values.reserve((size_t)gram_n);
+    double sum_sv = 0.0;
+    double min_sv = std::numeric_limits<double>::infinity();
+    double max_sv = 0.0;
+    for (double eig : eigs) {
+        const double sv = sqrt(std::max(eig, 1e-20));
+        const double clamped = std::max(sv, 1e-10);
+        singular_values.push_back(clamped);
+        sum_sv += clamped;
+        min_sv = std::min(min_sv, clamped);
+        max_sv = std::max(max_sv, clamped);
+    }
+
+    double sum_sq = 0.0;
+    double entropy = 0.0;
+    for (double sv : singular_values) {
+        const double p = sv / sum_sv;
+        sum_sq += p * p;
+        entropy -= p * log(p);
+    }
+
+    out[0] = (float)(1.0 / sum_sq);
+    out[1] = max_sv > 0.0 ? (float)(min_sv / max_sv) : 0.0f;
+    out[2] = (float)(exp(entropy) / (double)singular_values.size());
 }
 
 /* ── Matrix multiply (tiled) ───────────────────────────────────────── */

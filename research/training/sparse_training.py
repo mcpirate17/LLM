@@ -9,8 +9,17 @@ where gradients are large, prune where magnitudes are small.
 
 from __future__ import annotations
 import math
+from dataclasses import dataclass
+
 import torch
-from typing import Dict
+
+from ._rigl_native import load_rigl_native
+
+
+@dataclass(slots=True)
+class _SparseParamState:
+    param: torch.Tensor
+    mask: torch.Tensor
 
 
 class RigLScheduler:
@@ -18,6 +27,19 @@ class RigLScheduler:
     Manages the RigL sparse topology update schedule and mask enforcement.
     Operates on parameterized tensors passed to the optimizer.
     """
+
+    __slots__ = (
+        "optimizer",
+        "dense_allocation",
+        "T_end",
+        "delta",
+        "alpha",
+        "grad_accumulation_n",
+        "step_count",
+        "_sparse_params",
+        "_hook_handles",
+        "_native_ext",
+    )
 
     def __init__(
         self,
@@ -37,23 +59,11 @@ class RigLScheduler:
         self.grad_accumulation_n = grad_accumulation_n
 
         self.step_count = 0
-        self.masks: Dict[int, torch.Tensor] = {}
+        self._sparse_params: list[_SparseParamState] = []
+        self._hook_handles: list[torch.utils.hooks.RemovableHandle] = []
+        self._native_ext = None
 
-        # Identify params to sparsify (typically just 2D+ weights like Linear/Conv)
-        self.target_modules = {}
-        idx = 0
-
-        # Unpack param groups if necessary
-        if isinstance(params, dict):
-            p_list = params.get("params", [])
-        elif (
-            isinstance(params, list) and len(params) > 0 and isinstance(params[0], dict)
-        ):
-            p_list = [p for g in params for p in g["params"]]
-        else:
-            p_list = list(params)
-
-        for param in p_list:
+        for param in _flatten_params(params):
             # We only sparsify weights that are 2D or more (ignore bias and LayerNorm)
             # and ignore embeddings usually handled sparsely by default, but checking dimension is easiest heuristics
             if (
@@ -61,18 +71,22 @@ class RigLScheduler:
                 and param.requires_grad
                 and len(param.shape) >= 2
             ):
-                self.target_modules[idx] = param
-                idx += 1
+                self._sparse_params.append(
+                    _SparseParamState(
+                        param=param,
+                        mask=torch.zeros_like(param, dtype=torch.bool),
+                    )
+                )
 
-        if len(self.target_modules) > 0:
+        if self._sparse_params:
             self.init_masks()
             self.apply_masks()
-            self._hook_handles = []
             self._register_hooks()
 
     def init_masks(self):
         """Randomly initialize sparsity masks according to the dense_allocation."""
-        for name, param in self.target_modules.items():
+        for state in self._sparse_params:
+            param = state.param
             k = int(self.dense_allocation * param.numel())
             # Ensure at least 1 parameter is active
             k = max(1, k)
@@ -81,33 +95,28 @@ class RigLScheduler:
             active_indices = perm[:k]
             mask = torch.zeros_like(param, dtype=torch.bool)
             mask.view(-1)[active_indices] = True
-            self.masks[name] = mask
+            state.mask = mask
 
     def apply_masks(self):
         """Ensure the disabled weights are exactly zero."""
         with torch.no_grad():
-            for name, param in self.target_modules.items():
-                if name in self.masks:
-                    param.data.mul_(self.masks[name])
+            for state in self._sparse_params:
+                state.param.data.mul_(state.mask)
 
     def _register_hooks(self):
         """Register backward hooks to zero out gradients for pruned weights."""
-        for name, param in self.target_modules.items():
+        for state in self._sparse_params:
+            param = state.param
             if param.requires_grad:
 
-                def get_hook(mask):
+                def get_hook(state_ref: _SparseParamState):
                     def hook(grad):
-                        return grad * mask
+                        return grad * state_ref.mask
 
                     return hook
 
-                handle = param.register_hook(get_hook(self.masks[name]))
+                handle = param.register_hook(get_hook(state))
                 self._hook_handles.append(handle)
-
-    def _clear_hooks(self):
-        for handle in getattr(self, "_hook_handles", []):
-            handle.remove()
-        self._hook_handles = []
 
     def cosine_annealing(self) -> float:
         """Compute the fraction of active weights to drop/grow at the current step."""
@@ -121,43 +130,27 @@ class RigLScheduler:
         if drop_fraction <= 0.0:
             return
 
+        if self._native_ext is None:
+            self._native_ext = load_rigl_native()
+
         with torch.no_grad():
-            for name, param in self.target_modules.items():
-                mask = self.masks[name]
+            for state in self._sparse_params:
+                param = state.param
+                mask = state.mask
                 num_active = mask.sum().item()
                 num_to_update = int(num_active * drop_fraction)
 
                 if num_to_update == 0:
                     continue
 
-                # 1. Prune
-                # Mask out inactive weights
-                w_mag = param.abs()
-                w_mag[~mask] = -1.0  # inactive weights are ignored
-
-                keep_k = int(num_active) - num_to_update
-                if keep_k > 0:
-                    _, keep_indices = torch.topk(w_mag.view(-1), keep_k)
-                    new_mask = torch.zeros_like(mask).view(-1)
-                    new_mask[keep_indices] = True
-                else:
-                    new_mask = torch.zeros_like(mask).view(-1)
-
-                # 2. Grow
-                grad_mag = (
-                    param.grad.abs()
-                    if param.grad is not None
-                    else torch.zeros_like(param)
+                grad = param.grad if param.grad is not None else torch.zeros_like(param)
+                new_mask = self._native_ext.compute_new_mask(
+                    param,
+                    grad,
+                    mask,
+                    num_to_update,
                 )
-                # Don't grow where we already kept weights
-                grad_mag.view(-1)[new_mask] = -1.0
-
-                if num_to_update > 0:
-                    _, grow_indices = torch.topk(grad_mag.view(-1), num_to_update)
-                    new_mask[grow_indices] = True
-
-                new_mask = new_mask.view(mask.shape)
-                self.masks[name] = new_mask
+                state.mask = new_mask
 
                 # Apply new mask
                 param.data.mul_(new_mask)
@@ -168,10 +161,6 @@ class RigLScheduler:
                     state["exp_avg"][~new_mask] = 0.0
                 if "exp_avg_sq" in state:
                     state["exp_avg_sq"][~new_mask] = 0.0
-
-        # Replace hooks with new masks
-        self._clear_hooks()
-        self._register_hooks()
 
     def step(self):
         """Called every training step. Periodically updates topology."""
@@ -221,3 +210,11 @@ class RigLOptimizer(torch.optim.Optimizer):
 
     def zero_grad(self, set_to_none=False):
         self.base_optimizer.zero_grad(set_to_none=set_to_none)
+
+
+def _flatten_params(params) -> list[torch.Tensor]:
+    if isinstance(params, dict):
+        return list(params.get("params", []))
+    if isinstance(params, list) and params and isinstance(params[0], dict):
+        return [param for group in params for param in group["params"]]
+    return list(params)

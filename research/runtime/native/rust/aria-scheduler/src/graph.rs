@@ -59,7 +59,8 @@ impl GraphIR {
     pub fn topological_order(&self) -> Result<Vec<NodeId>, AriaError> {
         let node_ids: HashSet<NodeId> = self.nodes.iter().map(|n| n.id).collect();
         let mut in_degree: HashMap<NodeId, usize> = node_ids.iter().map(|&id| (id, 0)).collect();
-        let mut adjacency: HashMap<NodeId, Vec<NodeId>> = node_ids.iter().map(|&id| (id, Vec::new())).collect();
+        let mut adjacency: HashMap<NodeId, Vec<NodeId>> =
+            node_ids.iter().map(|&id| (id, Vec::new())).collect();
 
         for edge in &self.edges {
             *in_degree.entry(edge.target).or_insert(0) += 1;
@@ -172,7 +173,9 @@ impl GraphIR {
             if consumer_counts.get(&parent_id).copied().unwrap_or(0) != 1 {
                 continue;
             }
-            if let Some(fused_name) = fused_pattern_name(parent.op_name.as_str(), node.op_name.as_str()) {
+            if let Some(fused_name) =
+                fused_pattern_name(parent.op_name.as_str(), node.op_name.as_str())
+            {
                 rewrites.insert(parent_id, fused_name.to_string());
                 removed.insert(node.id);
                 if output_node_id == node.id {

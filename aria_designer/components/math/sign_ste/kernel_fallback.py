@@ -1,7 +1,7 @@
 """Python fallback kernel for sign_ste (sign with straight-through estimator)."""
 
 import torch
-from components.base import make_unary_handler
+from aria_designer.components.base import make_unary_handler
 
 
 def _sign_ste(x: torch.Tensor) -> torch.Tensor:

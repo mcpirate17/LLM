@@ -6,9 +6,17 @@ import json
 import logging
 import math
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Tuple
 
+from research.scientist.intelligence.ml_corpus import load_deduped_graph_training_rows
+
 logger = logging.getLogger(__name__)
+
+
+def _scaffold_blend_alpha(support: int) -> float:
+    """Conservative influence for scaffold evidence."""
+    return max(0.0, min(0.45, (float(support) / 16.0) * 0.45))
 
 
 class _WeightsMixin:
@@ -96,14 +104,47 @@ class _WeightsMixin:
         """
         from research.synthesis.context_rules import S1_EXEMPT_OPS
 
-        rates = self.op_success_rates(since_ts=since_ts)
-        if not rates:
+        counts: Dict[str, int] = defaultdict(int)
+        s1_counts: Dict[str, int] = defaultdict(int)
+        for row in self._deduped_graph_rows(since_ts=since_ts):
+            if not row.get("stage0_any_passed"):
+                continue
+            try:
+                graph = json.loads(str(row["graph_json"]))
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue
+            for op in self._graph_ops(graph):
+                if op in S1_EXEMPT_OPS:
+                    continue
+                counts[op] += 1
+                if row.get("stage1_any_passed"):
+                    s1_counts[op] += 1
+        if not counts:
             return {}
         eligible = {
-            op: info
-            for op, info in rates.items()
-            if info["n_used"] >= min_used and op not in S1_EXEMPT_OPS
+            op: {"n_used": n_used, "s1_rate": s1_counts.get(op, 0) / n_used}
+            for op, n_used in counts.items()
+            if n_used >= min_used
         }
+        try:
+            scaffold_stats = self.nb.get_scaffold_component_stats(
+                since_ts=since_ts,
+                min_support=max(2, min_used // 2),
+            )
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            scaffold_stats = {}
+        for op_name, stat in scaffold_stats.items():
+            if op_name in S1_EXEMPT_OPS:
+                continue
+            prior_rate = float(stat.get("prior_rate") or 0.0)
+            support = int(stat.get("support") or 0)
+            if op_name in eligible:
+                alpha = _scaffold_blend_alpha(support)
+                eligible[op_name]["s1_rate"] = (
+                    (1.0 - alpha) * eligible[op_name]["s1_rate"]
+                ) + (alpha * prior_rate)
+            elif support >= min_used:
+                eligible[op_name] = {"n_used": support, "s1_rate": prior_rate}
         if not eligible:
             return {}
         mean_s1 = sum(info["s1_rate"] for info in eligible.values()) / len(eligible)
@@ -150,23 +191,22 @@ class _WeightsMixin:
         from ``graph_json.metadata`` and computes per-item S1 success rates.
         Returns ``{item_name: weight}`` clamped to ``[0.1, 8.0]``.
         """
-        cursor = self.nb.conn.execute(
-            "SELECT graph_json, stage1_passed FROM program_results "
-            "WHERE stage0_passed = 1 AND timestamp >= ? "
-            "AND graph_json IS NOT NULL AND graph_json != '{}'",
-            (since_ts,),
-        )
+        rows = [
+            row
+            for row in self._deduped_graph_rows(since_ts=since_ts)
+            if row.get("stage0_any_passed")
+        ]
         counts: Dict[str, int] = defaultdict(int)
         s1_counts: Dict[str, int] = defaultdict(int)
-        for row in cursor:
+        for row in rows:
             try:
-                meta = json.loads(row[0]).get("metadata", {})
-            except (json.JSONDecodeError, TypeError):
+                meta = json.loads(str(row["graph_json"])).get("metadata", {})
+            except (json.JSONDecodeError, TypeError, KeyError):
                 continue
             items = meta.get(metadata_key)
             if not isinstance(items, list):
                 continue
-            passed = bool(row[1])
+            passed = bool(row.get("stage1_any_passed"))
             for item in items:
                 if not isinstance(item, str):
                     continue
@@ -213,12 +253,11 @@ class _WeightsMixin:
         self, since_ts: float = 0.0, min_used: int = 3
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Compute template and motif weights in a single DB query pass."""
-        cursor = self.nb.conn.execute(
-            "SELECT graph_json, stage1_passed FROM program_results "
-            "WHERE stage0_passed = 1 AND timestamp >= ? "
-            "AND graph_json IS NOT NULL AND graph_json != '{}'",
-            (since_ts,),
-        )
+        rows = [
+            row
+            for row in self._deduped_graph_rows(since_ts=since_ts)
+            if row.get("stage0_any_passed")
+        ]
 
         # Single-pass: accumulate counts for both keys simultaneously
         all_counts: Dict[str, Dict[str, int]] = {
@@ -229,12 +268,12 @@ class _WeightsMixin:
             "templates_used": defaultdict(int),
             "motifs_used": defaultdict(int),
         }
-        for row in cursor:
+        for row in rows:
             try:
-                meta = json.loads(row[0]).get("metadata", {})
-            except (json.JSONDecodeError, TypeError):
+                meta = json.loads(str(row["graph_json"])).get("metadata", {})
+            except (json.JSONDecodeError, TypeError, KeyError):
                 continue
-            passed = bool(row[1])
+            passed = bool(row.get("stage1_any_passed"))
             for mk in ("templates_used", "motifs_used"):
                 items = meta.get(mk)
                 if not isinstance(items, list):
@@ -272,6 +311,36 @@ class _WeightsMixin:
             results[mk] = weights
 
         return results.get("templates_used", {}), results.get("motifs_used", {})
+
+    def _deduped_graph_rows(self, since_ts: float = 0.0) -> List[Dict]:
+        db_path = str(getattr(self.nb, "db_path", Path("research/lab_notebook.db")))
+        rows = load_deduped_graph_training_rows(db_path)
+        if since_ts <= 0:
+            return rows
+        return [
+            row for row in rows if float(row.get("latest_timestamp") or 0.0) >= since_ts
+        ]
+
+    @staticmethod
+    def _graph_ops(graph: Dict) -> set[str]:
+        ops: set[str] = set()
+        nodes = graph.get("nodes", {})
+        if isinstance(nodes, dict):
+            iterator = nodes.values()
+        elif isinstance(nodes, list):
+            iterator = nodes
+        else:
+            return ops
+        for node in iterator:
+            if isinstance(node, dict):
+                op = node.get("op_name") or node.get("op_type") or node.get("op") or ""
+            elif isinstance(node, str):
+                op = node
+            else:
+                continue
+            if op and op not in {"input", "output"}:
+                ops.add(op)
+        return ops
 
     def compute_synergy_boosts(
         self,

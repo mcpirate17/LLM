@@ -8,6 +8,8 @@ import math
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
+from research.scientist.intelligence.ml_corpus import load_deduped_graph_analysis_rows
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,8 +138,7 @@ class _ComparisonsMixin:
         matched_diff = sum(pair_diffs) / len(pair_diffs)
         if len(pair_diffs) > 1:
             diff_std = (
-                sum((d - matched_diff) ** 2 for d in pair_diffs)
-                / (len(pair_diffs) - 1)
+                sum((d - matched_diff) ** 2 for d in pair_diffs) / (len(pair_diffs) - 1)
             ) ** 0.5
             matched_se = diff_std / len(pair_diffs) ** 0.5 if diff_std > 0 else 0.0
             matched_z = matched_diff / matched_se if matched_se > 0 else 0.0
@@ -164,9 +165,7 @@ class _ComparisonsMixin:
         return {r["experiment_id"]: (r["total"] or 0, r["s1"] or 0) for r in rows}
 
     @staticmethod
-    def _s1_stats(
-        exp_ids: list[str], s1_cache: dict[str, tuple[int, int]]
-    ) -> dict:
+    def _s1_stats(exp_ids: list[str], s1_cache: dict[str, tuple[int, int]]) -> dict:
         """Aggregate S1 stats from cache for a list of experiment IDs."""
         total = s1 = 0
         for eid in exp_ids:
@@ -203,13 +202,20 @@ class _ComparisonsMixin:
 
     def top_op_combinations(self, n: int = 10) -> List[Dict]:
         """Find op combinations that co-occur in Stage 1 survivors."""
-        rows = self.nb.conn.execute("""
-            SELECT graph_json, novelty_score, loss_ratio
-            FROM program_results
-            WHERE stage1_passed = 1 AND graph_json IS NOT NULL
-            ORDER BY novelty_score DESC NULLS LAST
-            LIMIT 200
-        """).fetchall()
+        rows = [
+            row
+            for row in load_deduped_graph_analysis_rows(self.nb.db_path)
+            if row.get("stage1_any_passed")
+        ]
+        rows.sort(
+            key=lambda row: (
+                row.get("novelty_score") is None,
+                -(float(row["novelty_score"]))
+                if row.get("novelty_score") is not None
+                else 0.0,
+            )
+        )
+        rows = rows[:200]
 
         # Count op pair co-occurrences
         pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
@@ -233,8 +239,8 @@ class _ComparisonsMixin:
                 for j in range(i + 1, len(ops)):
                     pair = (ops[i], ops[j])
                     pair_counts[pair] += 1
-                    if r["novelty_score"]:
-                        pair_novelty[pair].append(r["novelty_score"])
+                    if r.get("novelty_score"):
+                        pair_novelty[pair].append(float(r["novelty_score"]))
 
         # Sort by frequency
         top_pairs = sorted(pair_counts.items(), key=lambda x: -x[1])[:n]
@@ -278,9 +284,9 @@ class _ComparisonsMixin:
 
         recent = [p.get("adjusted_s1_rate", p["s1_rate"]) for p in points[-5:]]
         recent_rate = sum(recent) / len(recent)
-        mean_y = sum(
-            p.get("adjusted_s1_rate", p["s1_rate"]) for p in points
-        ) / len(points)
+        mean_y = sum(p.get("adjusted_s1_rate", p["s1_rate"]) for p in points) / len(
+            points
+        )
 
         avg_conf_halfwidth = sum(
             p.get("s1_confidence_halfwidth", 0.0) for p in points

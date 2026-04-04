@@ -1,7 +1,7 @@
 """Kernel handler for rope_rotate with an honest Torch fallback."""
 
 import torch
-from components.base import NativeComponentHandler
+from aria_designer.components.base import NativeComponentHandler
 from research.defaults import ROPE_THETA_BASE
 
 

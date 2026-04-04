@@ -457,7 +457,7 @@ def save_workflow(workflow_id: str, workflow: WorkflowGraphModel) -> Dict[str, A
     fingerprint = None
     if HAS_BRIDGE:
         try:
-            from runtime.bridge import workflow_to_graph as _w2g
+            from aria_designer.runtime.bridge import workflow_to_graph as _w2g
 
             model_dim = wf_dict.get("metadata", {}).get("model_dim", 256)
             graph, _ = _w2g(wf_dict, model_dim, return_id_map=True)

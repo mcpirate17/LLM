@@ -353,19 +353,21 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
 
   useEffect(() => {
     if (!experimentId) return;
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([
-      apiCall(`/api/experiments/${experimentId}`).then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      }),
-      apiCall(`/api/experiments/${experimentId}/analysis`).then(r => r.json()).catch(() => null),
-    ]).then(([expData, analysisData]) => {
+    setData(null);
+    setAnalysis(null);
+
+    apiCall(`/api/experiments/${experimentId}`).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }).then((expData) => {
+      if (cancelled) return;
       setData(expData);
-      setAnalysis(analysisData);
       setLoading(false);
     }).catch(e => {
+      if (cancelled) return;
       const msg = e.message.includes('404')
         ? 'This experiment could not be found. It may have been deleted.'
         : e.message.includes('500')
@@ -374,6 +376,19 @@ function ExperimentDetail({ experimentId, onBack, onSelectProgram }) {
       setError(msg);
       setLoading(false);
     });
+
+    apiCall(`/api/experiments/${experimentId}/analysis`)
+      .then(r => r.ok ? r.json() : null)
+      .then((analysisData) => {
+        if (!cancelled) setAnalysis(analysisData);
+      })
+      .catch(() => {
+        if (!cancelled) setAnalysis(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [experimentId]);
 
   if (loading) return <div className="card"><p style={{ color: 'var(--text-muted)' }}>Loading experiment...</p></div>;

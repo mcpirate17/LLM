@@ -164,7 +164,7 @@ def apply_patch(req: ApplyPatchRequest) -> Dict[str, Any]:
             )
     old_fingerprint = workflow.get("metadata", {}).get("graph_fingerprint")
     try:
-        from runtime.bridge import workflow_to_graph as _w2g
+        from aria_designer.runtime.bridge import workflow_to_graph as _w2g
 
         patched_graph, _ = _w2g(patched_workflow, model_dim, return_id_map=True)
         new_fingerprint = patched_graph.fingerprint()
@@ -1383,7 +1383,7 @@ def _build_refinement_quality_snapshot(workflow_json: Dict[str, Any]) -> Dict[st
     }
     try:
         if HAS_BRIDGE:
-            from runtime.bridge import validate_workflow_graph
+            from aria_designer.runtime.bridge import validate_workflow_graph
 
             result = validate_workflow_graph(workflow_json, model_dim=256)
             if not result.get("valid", False):

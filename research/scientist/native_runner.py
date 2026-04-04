@@ -13,6 +13,7 @@ from research.defaults import VOCAB_SIZE
 from .native import abi as _abi_mod
 from .native import autograd as _autograd_mod
 from .native import compiler as _compiler_mod
+from .native import telemetry as _telemetry_mod
 from .native.abi import (
     _maybe_prepare_runner_abi_session as _maybe_prepare_runner_abi_session_impl,
     _try_load_native_lib as _try_load_native_lib_impl,
@@ -23,14 +24,13 @@ from .native.dispatch import (
 )
 
 _legacy_compile_model = _legacy_compile_model_impl
+_autograd_mod.dispatch_op_native = lambda *args, **kwargs: dispatch_op_native(
+    *args, **kwargs
+)
 
 
 class NativeForwardWrapper(_autograd_mod.NativeForwardWrapper):
-    """Facade wrapper that keeps dispatch patching aligned with legacy tests."""
-
-    def dispatch(self, op_name, *tensors):
-        _autograd_mod.dispatch_op_native = dispatch_op_native
-        return super().dispatch(op_name, *tensors)
+    """Compatibility alias for legacy imports."""
 
 
 def _try_load_native_lib():
@@ -74,3 +74,11 @@ def compile_model_native_first(
         max_seq_len=max_seq_len,
         **kwargs,
     )
+
+
+def native_runner_capability_report():
+    return _telemetry_mod.native_runner_capability_report()
+
+
+def reset_native_runner_telemetry():
+    return _telemetry_mod.reset_native_runner_telemetry()

@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from components.base import BaseComponentHandler, _try_native
+from aria_designer.components.base import BaseComponentHandler, _try_native
 
 
 class ComponentHandler(BaseComponentHandler):

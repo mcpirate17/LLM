@@ -30,6 +30,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from research.synthesis.primitives import PRIMITIVE_REGISTRY
+from .ml_corpus import (
+    CorpusIntegrityError,
+    load_deduped_graph_training_rows,
+    rerun_confidence_weight,
+)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_NOTEBOOK_DB = Path(__file__).parents[2] / "lab_notebook.db"
@@ -38,10 +45,117 @@ _DEFAULT_PROFILING_DB = (
 )
 
 _MIN_SAMPLES = 50
+_POLY_FEATURE_BASES = (
+    "meta_n_templates",
+    "meta_n_motifs",
+    "meta_template_per_op",
+    "meta_motif_per_op",
+    "residual_coverage",
+    "topo_n_split_nodes",
+    "topo_n_merge_nodes",
+    "topo_depth_per_op",
+    "output_parent_depth_mean",
+    "depth_frac_late",
+    "cat_frac_parameterized",
+    "path_max_risk_accum",
+    "topo_n_ops",
+    "topo_edge_density",
+)
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -15, 15)))
+
+
+def _augment_feature_space(
+    base_feature_names: List[str], X: np.ndarray
+) -> Tuple[List[str], np.ndarray]:
+    """Add targeted polynomial terms for the most discriminative structure features."""
+    if X.ndim != 2 or X.shape[1] != len(base_feature_names):
+        return base_feature_names, X
+
+    name_to_idx = {name: i for i, name in enumerate(base_feature_names)}
+    selected = [name for name in _POLY_FEATURE_BASES if name in name_to_idx]
+    if len(selected) < 2:
+        return base_feature_names, X
+
+    extra_cols: List[np.ndarray] = []
+    extra_names: List[str] = []
+    for name in selected:
+        col = X[:, name_to_idx[name]]
+        extra_cols.append((col * col)[:, None])
+        extra_names.append(f"{name}__sq")
+
+    for i, left in enumerate(selected):
+        left_col = X[:, name_to_idx[left]]
+        for right in selected[i + 1 :]:
+            right_col = X[:, name_to_idx[right]]
+            extra_cols.append((left_col * right_col)[:, None])
+            extra_names.append(f"{left}__x__{right}")
+
+    if not extra_cols:
+        return base_feature_names, X
+
+    X_aug = np.concatenate([X, *extra_cols], axis=1)
+    return [*base_feature_names, *extra_names], X_aug
+
+
+def _materialize_feature_dict(feats: Dict[str, float]) -> Dict[str, float]:
+    """Compute derived polynomial features for inference from a base feature dict."""
+    augmented = dict(feats)
+    selected = [name for name in _POLY_FEATURE_BASES if name in feats]
+    for name in selected:
+        value = float(feats.get(name, 0.0))
+        augmented[f"{name}__sq"] = value * value
+    for i, left in enumerate(selected):
+        left_value = float(feats.get(left, 0.0))
+        for right in selected[i + 1 :]:
+            augmented[f"{left}__x__{right}"] = left_value * float(feats.get(right, 0.0))
+    return augmented
+
+
+def _grouped_stratified_split(
+    signatures: List[str], labels: np.ndarray, seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
+    """Split rows by exact-graph signature to avoid duplicate leakage."""
+    groups: Dict[str, List[int]] = defaultdict(list)
+    for idx, sig in enumerate(signatures):
+        groups[sig].append(idx)
+
+    rng = np.random.RandomState(seed)
+    pos_groups: List[str] = []
+    neg_groups: List[str] = []
+    ambiguous_groups = 0
+    for sig, idxs in groups.items():
+        rate = float(np.mean(labels[idxs]))
+        if 0.0 < rate < 1.0:
+            ambiguous_groups += 1
+        if rate >= 0.5:
+            pos_groups.append(sig)
+        else:
+            neg_groups.append(sig)
+
+    rng.shuffle(pos_groups)
+    rng.shuffle(neg_groups)
+    pos_split = int(len(pos_groups) * 0.8)
+    neg_split = int(len(neg_groups) * 0.8)
+    train_groups = set(pos_groups[:pos_split]) | set(neg_groups[:neg_split])
+    val_groups = set(pos_groups[pos_split:]) | set(neg_groups[neg_split:])
+
+    train_idx = np.array(
+        [idx for sig, idxs in groups.items() if sig in train_groups for idx in idxs],
+        dtype=np.int32,
+    )
+    val_idx = np.array(
+        [idx for sig, idxs in groups.items() if sig in val_groups for idx in idxs],
+        dtype=np.int32,
+    )
+    stats = {
+        "n_unique_graphs": len(groups),
+        "n_duplicate_groups": int(sum(1 for idxs in groups.values() if len(idxs) > 1)),
+        "n_ambiguous_duplicate_groups": int(ambiguous_groups),
+    }
+    return train_idx, val_idx, stats
 
 
 def _load_op_profiles(profiling_db: Path) -> Dict[str, Dict[str, float]]:
@@ -134,6 +248,8 @@ def extract_topology_features(
                 children[parent_idx].append(idx)
                 parents[idx].append(parent_idx)
 
+    metadata = graph_json.get("metadata") or {}
+
     # Op names per node
     op_names = [nodes[nid].get("op_name", "") for nid in node_ids]
 
@@ -164,14 +280,24 @@ def extract_topology_features(
     features["topo_n_ops"] = float(n_ops)
     features["topo_depth"] = float(max_depth)
     features["topo_edge_density"] = n_edges / max(n, 1)
+    features["topo_edges_per_op"] = n_edges / max(n_ops, 1)
+    features["topo_depth_per_op"] = max_depth / max(n_ops, 1)
 
     # Fan-in / fan-out statistics
     fan_ins = [len(parents[i]) for i in range(n)]
     fan_outs = [len(children[i]) for i in range(n)]
     features["topo_max_fan_in"] = float(max(fan_ins)) if fan_ins else 0.0
     features["topo_max_fan_out"] = float(max(fan_outs)) if fan_outs else 0.0
+    features["topo_mean_fan_in"] = float(np.mean(fan_ins)) if fan_ins else 0.0
+    features["topo_mean_fan_out"] = float(np.mean(fan_outs)) if fan_outs else 0.0
     features["topo_n_merge_nodes"] = float(sum(1 for f in fan_ins if f > 1))
     features["topo_n_split_nodes"] = float(sum(1 for f in fan_outs if f > 1))
+    features["topo_leaf_fraction"] = float(sum(1 for f in fan_outs if f == 0)) / max(
+        n, 1
+    )
+    features["topo_root_fraction"] = float(sum(1 for f in fan_ins if f == 0)) / max(
+        n, 1
+    )
 
     # ── 2. Profiling-grounded path features ──
     # Lipschitz chain: product along paths (measures amplification risk)
@@ -294,13 +420,70 @@ def extract_topology_features(
     # ── 6. Structural patterns ──
     # Residual coverage: fraction of ops with skip connections (add nodes w/ depth gap)
     n_skip = 0
+    skip_spans = []
     for idx in range(n):
         if op_names[idx] == "add" and len(parents[idx]) >= 2:
             depths = [depth[p] for p in parents[idx] if depth[p] >= 0]
             if depths and max(depths) - min(depths) > 0:
                 n_skip += 1
+                skip_spans.append(max(depths) - min(depths))
     features["residual_coverage"] = float(n_skip) / max(n_ops, 1)
+    features["residual_span_mean"] = float(np.mean(skip_spans)) if skip_spans else 0.0
+    features["residual_span_max"] = float(max(skip_spans)) if skip_spans else 0.0
 
+    # ── 7. Depth-bucket and op-category structure ──
+    early = mid = late = 0
+    mixing = math_space = parameterized = reduction = 0
+    param_ops = 0
+    math_late = 0.0
+    mixing_late = 0.0
+    for i, op in enumerate(op_names):
+        if not op or op == "input":
+            continue
+        d_norm = depth_weights[i]
+        if d_norm <= 0.34:
+            early += 1
+        elif d_norm <= 0.67:
+            mid += 1
+        else:
+            late += 1
+
+        prim = PRIMITIVE_REGISTRY.get(op)
+        if prim is not None:
+            cat_name = str(getattr(prim.category, "value", prim.category)).lower()
+            if "mix" in cat_name:
+                mixing += 1
+                mixing_late += d_norm
+            elif "math" in cat_name:
+                math_space += 1
+                math_late += d_norm
+            elif "param" in cat_name:
+                parameterized += 1
+            elif "reduction" in cat_name:
+                reduction += 1
+            if getattr(prim, "has_params", False):
+                param_ops += 1
+
+    features["depth_frac_early"] = early / max(n_ops, 1)
+    features["depth_frac_mid"] = mid / max(n_ops, 1)
+    features["depth_frac_late"] = late / max(n_ops, 1)
+    features["cat_frac_mixing"] = mixing / max(n_ops, 1)
+    features["cat_frac_math_space"] = math_space / max(n_ops, 1)
+    features["cat_frac_parameterized"] = parameterized / max(n_ops, 1)
+    features["cat_frac_reduction"] = reduction / max(n_ops, 1)
+    features["param_op_fraction"] = param_ops / max(n_ops, 1)
+    features["late_mixing_density"] = mixing_late / max(n_ops, 1)
+    features["late_math_density"] = math_late / max(n_ops, 1)
+
+    # ── 8. Metadata structure ──
+    templates_used = metadata.get("templates_used") or []
+    motifs_used = metadata.get("motifs_used") or []
+    features["meta_n_templates"] = float(len(templates_used))
+    features["meta_n_motifs"] = float(len(motifs_used))
+    features["meta_template_per_op"] = float(len(templates_used)) / max(n_ops, 1)
+    features["meta_motif_per_op"] = float(len(motifs_used)) / max(n_ops, 1)
+
+    # ── 9. Output structure ──
     # Has normalization before output
     output_id = graph_json.get("output_node_id")
     if output_id is not None and str(output_id) in nodes:
@@ -312,8 +495,17 @@ def extract_topology_features(
             for p in output_parents
         )
         features["has_norm_before_output"] = float(has_norm_before_output)
+        parent_depths = [
+            depth[id_to_idx[p]]
+            for p in output_parents
+            if p in id_to_idx and depth[id_to_idx[p]] >= 0
+        ]
+        features["output_parent_depth_mean"] = (
+            float(np.mean(parent_depths)) if parent_depths else 0.0
+        )
     else:
         features["has_norm_before_output"] = 0.0
+        features["output_parent_depth_mean"] = 0.0
 
     return features
 
@@ -340,6 +532,9 @@ class GraphPredictor:
     pair_stability: Dict[Tuple[str, str], float] = field(default_factory=dict)
     imodel: Optional[Any] = None  # InteractionModel, cached for feature extraction
     # Metadata
+    gate_threshold: float = 0.5
+    gate_calibration_a: float = 1.0
+    gate_calibration_b: float = 0.0
     n_train: int = 0
     _trained: bool = False
     _train_metrics: Dict[str, float] = field(default_factory=dict)
@@ -353,6 +548,7 @@ class GraphPredictor:
         )
         if feats is None:
             return None
+        feats = _materialize_feature_dict(feats)
         x = np.array([feats.get(k, 0.0) for k in self.feature_names], dtype=np.float64)
         x = (x - self.feature_mean) / self.feature_std
         return x
@@ -365,7 +561,8 @@ class GraphPredictor:
         if x is None:
             return 0.5
         logit = float(x @ self.w_gate + self.b_gate)
-        return float(_sigmoid(np.array([logit]))[0])
+        calibrated = self.gate_calibration_a * logit + self.gate_calibration_b
+        return float(_sigmoid(np.array([calibrated]))[0])
 
     def predict_rank(self, graph_json: Any) -> float:
         """Predict wikitext perplexity. Returns 1e6 if not fitted."""
@@ -422,6 +619,9 @@ class GraphPredictor:
         _empty_kwargs = dict(
             w_gate=np.zeros(0),
             b_gate=0.0,
+            gate_threshold=0.5,
+            gate_calibration_a=1.0,
+            gate_calibration_b=0.0,
             w_rank=np.zeros(0),
             b_rank=5.0,
             w_loss=np.zeros(0),
@@ -435,15 +635,9 @@ class GraphPredictor:
             return cls(**_empty_kwargs)
 
         try:
-            conn = sqlite3.connect(str(notebook_db), timeout=10)
-            conn.execute("PRAGMA busy_timeout=10000")
-            rows = conn.execute(
-                """SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio
-                   FROM program_results
-                   WHERE graph_json IS NOT NULL
-                   ORDER BY RANDOM() LIMIT 8000"""
-            ).fetchall()
-            conn.close()
+            rows = load_deduped_graph_training_rows(notebook_db, validate=True)
+        except CorpusIntegrityError:
+            raise
         except Exception as e:
             logger.warning("GraphPredictor training data query failed: %s", e)
             return cls(**_empty_kwargs)
@@ -453,17 +647,35 @@ class GraphPredictor:
         gate_labels: List[int] = []
         rank_labels: List[float] = []
         loss_labels: List[float] = []
+        gate_sample_weights: List[float] = []
+        graph_signatures: List[str] = []
 
         for row in rows:
-            gj, s1, ppl = row[0], row[1], row[2]
-            lr = row[3] if len(row) > 3 else None
+            gj = row["graph_json"]
+            s1 = bool(row["stage1_any_passed"])
+            ppl = row.get("wikitext_perplexity_best")
+            lr = row.get("loss_ratio_best")
+            s0 = bool(row.get("stage0_any_passed"))
+            s05 = bool(row.get("stage05_any_passed"))
+            rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
+            signature = str(row.get("canonical_fingerprint") or "")
+            if not signature:
+                continue
             feats = extract_topology_features(
                 gj, op_profiles, pair_stability, imodel=trained_imodel
             )
             if feats is None:
                 continue
             feat_dicts.append(feats)
+            graph_signatures.append(signature)
             gate_labels.append(int(s1 or 0))
+            hard_neg_mult = 1.0
+            if not s1:
+                if s05:
+                    hard_neg_mult = 2.5
+                elif s0:
+                    hard_neg_mult = 1.5
+            gate_sample_weights.append(hard_neg_mult * rerun_weight)
             rank_labels.append(
                 float(ppl)
                 if ppl is not None and math.isfinite(float(ppl))
@@ -483,6 +695,7 @@ class GraphPredictor:
             return cls(
                 w_gate=np.zeros(0),
                 b_gate=0.0,
+                gate_threshold=0.5,
                 w_rank=np.zeros(0),
                 b_rank=5.0,
                 op_profiles=op_profiles,
@@ -495,29 +708,44 @@ class GraphPredictor:
         for i, d in enumerate(feat_dicts):
             for j, k in enumerate(feature_names):
                 X[i, j] = d.get(k, 0.0)
+        feature_names, X = _augment_feature_space(feature_names, X)
 
         y_gate = np.array(gate_labels, dtype=np.float64)
         y_rank = np.array(rank_labels, dtype=np.float64)
+        sample_weights = np.array(gate_sample_weights, dtype=np.float64)
 
-        # Standardize
-        feat_mean = X.mean(axis=0)
-        feat_std = X.std(axis=0)
+        # Train/val split grouped by exact graph to avoid duplicate leakage.
+        train_idx, val_idx, split_stats = _grouped_stratified_split(
+            graph_signatures, y_gate.astype(np.int32), seed=seed
+        )
+        if len(train_idx) == 0 or len(val_idx) == 0:
+            logger.warning(
+                "GraphPredictor grouped split failed; falling back to row split"
+            )
+            rng = np.random.RandomState(seed)
+            pos_idx = np.where(y_gate == 1)[0]
+            neg_idx = np.where(y_gate == 0)[0]
+            rng.shuffle(pos_idx)
+            rng.shuffle(neg_idx)
+            pos_split = int(len(pos_idx) * 0.8)
+            neg_split = int(len(neg_idx) * 0.8)
+            train_idx = np.concatenate([pos_idx[:pos_split], neg_idx[:neg_split]])
+            val_idx = np.concatenate([pos_idx[pos_split:], neg_idx[neg_split:]])
+            split_stats = {
+                "n_unique_graphs": n_total,
+                "n_duplicate_groups": 0,
+                "n_ambiguous_duplicate_groups": 0,
+            }
+
+        # Standardize on train only.
+        feat_mean = X[train_idx].mean(axis=0)
+        feat_std = X[train_idx].std(axis=0)
         feat_std[feat_std < 1e-8] = 1.0
         X_norm = (X - feat_mean) / feat_std
 
-        # Train/val split (stratified)
-        rng = np.random.RandomState(seed)
-        pos_idx = np.where(y_gate == 1)[0]
-        neg_idx = np.where(y_gate == 0)[0]
-        rng.shuffle(pos_idx)
-        rng.shuffle(neg_idx)
-        pos_split = int(len(pos_idx) * 0.8)
-        neg_split = int(len(neg_idx) * 0.8)
-        train_idx = np.concatenate([pos_idx[:pos_split], neg_idx[:neg_split]])
-        val_idx = np.concatenate([pos_idx[pos_split:], neg_idx[neg_split:]])
-
         X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
         y_gate_tr, y_gate_va = y_gate[train_idx], y_gate[val_idx]
+        gate_w_tr = sample_weights[train_idx]
 
         n_features = X_tr.shape[1]
         logger.info(
@@ -526,27 +754,69 @@ class GraphPredictor:
             n_features,
         )
 
-        # ── Gate: logistic regression via SGD ──
-        w_gate = rng.randn(n_features).astype(np.float64) * 0.01
-        b_gate = 0.0
-        lr = 0.01
+        # ── Gate: regularized logistic regression ──
+        n_pos_tr = float(np.sum(y_gate_tr))
+        n_neg_tr = float(len(y_gate_tr) - n_pos_tr)
+        pos_weight = max(n_neg_tr / max(n_pos_tr, 1.0), 1.0)
+        fit_sample_weight = np.where(y_gate_tr > 0.5, pos_weight, 1.0) * gate_w_tr
+        gate_threshold = 0.5
+        try:
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.metrics import roc_auc_score
 
-        for epoch in range(80):
-            perm = rng.permutation(len(X_tr))
-            for start in range(0, len(X_tr), 128):
-                idx = perm[start : start + 128]
-                x_b = X_tr[idx]
-                y_b = y_gate_tr[idx]
-                logits = x_b @ w_gate + b_gate
-                preds = _sigmoid(logits)
-                grad = (preds - y_b)[:, None] * x_b
-                w_gate -= lr * grad.mean(axis=0) + lr * alpha * 0.001 * w_gate  # L2
-                b_gate -= lr * float((preds - y_b).mean())
+            clf = LogisticRegression(
+                C=float(1.0 / max(alpha, 1e-6)),
+                solver="lbfgs",
+                max_iter=1200,
+                random_state=seed,
+            )
+            clf.fit(X_tr, y_gate_tr.astype(np.int32), sample_weight=fit_sample_weight)
+            w_gate = clf.coef_[0].astype(np.float64)
+            b_gate = float(clf.intercept_[0])
+            val_preds = clf.predict_proba(X_va)[:, 1]
+            val_auc = float(roc_auc_score(y_gate_va, val_preds))
+        except Exception:
+            # Fallback: unweighted logistic SGD if sklearn is unavailable.
+            w_gate = rng.randn(n_features).astype(np.float64) * 0.01
+            b_gate = 0.0
+            gate_lr = 0.01
+            for _ in range(80):
+                perm = rng.permutation(len(X_tr))
+                for start in range(0, len(X_tr), 128):
+                    idx = perm[start : start + 128]
+                    x_b = X_tr[idx]
+                    y_b = y_gate_tr[idx]
+                    logits = x_b @ w_gate + b_gate
+                    preds = _sigmoid(logits)
+                    grad = (preds - y_b)[:, None] * x_b
+                    w_gate -= (
+                        gate_lr * grad.mean(axis=0) + gate_lr * alpha * 0.001 * w_gate
+                    )
+                    b_gate -= gate_lr * float((preds - y_b).mean())
+            val_preds = _sigmoid(X_va @ w_gate + b_gate)
+            val_auc = 0.0
+
+        # Calibrate raw logits to better probabilities while preserving ranking.
+        raw_val_logits = X_va @ w_gate + b_gate
+        gate_calibration_a = 1.0
+        gate_calibration_b = 0.0
+        try:
+            from sklearn.linear_model import LogisticRegression
+
+            cal = LogisticRegression(
+                C=1e6,
+                solver="lbfgs",
+                max_iter=200,
+                random_state=seed,
+            )
+            cal.fit(raw_val_logits.reshape(-1, 1), y_gate_va.astype(np.int32))
+            gate_calibration_a = float(cal.coef_[0][0])
+            gate_calibration_b = float(cal.intercept_[0])
+        except Exception:
+            pass
 
         # Val metrics
-        val_preds = _sigmoid(X_va @ w_gate + b_gate)
-        val_correct = int(np.sum((val_preds > 0.5) == y_gate_va))
-        val_acc = val_correct / max(len(X_va), 1)
+        val_preds = _sigmoid(raw_val_logits * gate_calibration_a + gate_calibration_b)
         eps = 1e-8
         val_loss = float(
             -np.mean(
@@ -554,6 +824,32 @@ class GraphPredictor:
                 + (1 - y_gate_va) * np.log(1 - val_preds + eps)
             )
         )
+        try:
+            from sklearn.metrics import (
+                precision_score,
+                recall_score,
+                roc_auc_score,
+                roc_curve,
+            )
+
+            fpr, tpr, thresholds = roc_curve(y_gate_va, val_preds)
+            best_i = int(np.argmax(tpr - fpr))
+            gate_threshold = float(thresholds[best_i])
+
+            val_pred_labels = (val_preds > gate_threshold).astype(np.int32)
+            val_acc = float(np.mean(val_pred_labels == y_gate_va))
+            val_auc = float(roc_auc_score(y_gate_va, val_preds))
+            val_precision = float(
+                precision_score(y_gate_va, val_pred_labels, zero_division=0)
+            )
+            val_recall = float(
+                recall_score(y_gate_va, val_pred_labels, zero_division=0)
+            )
+        except Exception:
+            val_acc = float(np.mean((val_preds > gate_threshold) == y_gate_va))
+            val_auc = 0.0
+            val_precision = 0.0
+            val_recall = 0.0
 
         # ── Rank: Ridge regression on log-ppl ──
         rank_mask = np.isfinite(y_rank[train_idx])
@@ -599,6 +895,9 @@ class GraphPredictor:
         return cls(
             w_gate=w_gate.astype(np.float32),
             b_gate=float(b_gate),
+            gate_threshold=float(gate_threshold),
+            gate_calibration_a=float(gate_calibration_a),
+            gate_calibration_b=float(gate_calibration_b),
             w_rank=w_rank.astype(np.float32),
             b_rank=float(b_rank),
             w_loss=w_loss.astype(np.float32),
@@ -614,10 +913,16 @@ class GraphPredictor:
             _train_metrics={
                 "val_loss": val_loss,
                 "val_accuracy": val_acc,
+                "val_auc": val_auc,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
+                "gate_threshold": float(gate_threshold),
+                "pos_weight": float(pos_weight),
                 "n_train": len(X_tr),
                 "n_val": len(X_va),
                 "n_features": n_features,
                 "n_positive": int(y_gate.sum()),
+                **split_stats,
             },
         )
 
@@ -637,6 +942,9 @@ class GraphPredictor:
             json.dump(
                 {
                     "b_gate": self.b_gate,
+                    "gate_threshold": self.gate_threshold,
+                    "gate_calibration_a": self.gate_calibration_a,
+                    "gate_calibration_b": self.gate_calibration_b,
                     "b_rank": self.b_rank,
                     "b_loss": self.b_loss,
                     "feature_names": self.feature_names,
@@ -662,6 +970,9 @@ class GraphPredictor:
         return cls(
             w_gate=data["w_gate"],
             b_gate=float(meta.get("b_gate", 0.0)),
+            gate_threshold=float(meta.get("gate_threshold", 0.5)),
+            gate_calibration_a=float(meta.get("gate_calibration_a", 1.0)),
+            gate_calibration_b=float(meta.get("gate_calibration_b", 0.0)),
             w_rank=data["w_rank"],
             b_rank=float(meta.get("b_rank", 5.0)),
             w_loss=data["w_loss"],

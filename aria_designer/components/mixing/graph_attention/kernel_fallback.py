@@ -4,6 +4,8 @@ Identical causal self-attention logic to softmax_attention — delegates to avoi
 (In fallback mode, edge features are not available.)
 """
 
-from components.mixing.softmax_attention.kernel_fallback import ComponentHandler
+from aria_designer.components.mixing.softmax_attention.kernel_fallback import (
+    ComponentHandler,
+)
 
 __all__ = ["ComponentHandler"]

@@ -11,14 +11,29 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import Callable, List, Optional, Protocol
 
 import numpy as np
 import torch
 
+from ._data_native import load_data_native
+
 logger = logging.getLogger(__name__)
+
+
+def _byte_tokenize_tensor(text: str, vocab_size: int) -> torch.Tensor:
+    if vocab_size <= 0 or not text:
+        return torch.empty(0, dtype=torch.long)
+    return load_data_native().byte_tokenize_utf8(text, int(vocab_size))
+
+
+def _whitespace_hash_tokenize_tensor(text: str, vocab_size: int) -> torch.Tensor:
+    if vocab_size <= 0 or not text:
+        return torch.empty(0, dtype=torch.long)
+    return load_data_native().whitespace_hash_tokenize(text, int(vocab_size))
 
 
 class TokenizerAdapter(Protocol):
@@ -31,23 +46,19 @@ class TokenizerAdapter(Protocol):
 class ByteTokenizer:
     """Deterministic byte tokenizer with modulo vocab projection."""
 
+    __slots__ = ()
+
     def encode(self, text: str, vocab_size: int) -> List[int]:
-        if vocab_size <= 0:
-            return []
-        return [b % vocab_size for b in text.encode("utf-8", errors="ignore")]
+        return _byte_tokenize_tensor(text, vocab_size).tolist()
 
 
 class WhitespaceHashTokenizer:
     """Simple hashed-whitespace tokenizer for word-like segmentation."""
 
+    __slots__ = ()
+
     def encode(self, text: str, vocab_size: int) -> List[int]:
-        if vocab_size <= 0:
-            return []
-        ids: List[int] = []
-        for token in text.split():
-            token_id = abs(hash(token)) % vocab_size
-            ids.append(token_id)
-        return ids
+        return _whitespace_hash_tokenize_tensor(text, vocab_size).tolist()
 
 
 class TiktokenAdapter:
@@ -58,6 +69,8 @@ class TiktokenAdapter:
     layer does not need to change. This preserves architecture fingerprints
     while giving proper subword segmentation.
     """
+
+    __slots__ = ("_enc", "native_vocab_size")
 
     def __init__(self, encoding_name: str = "gpt2"):
         import tiktoken
@@ -72,7 +85,7 @@ class TiktokenAdapter:
         return ids
 
 
-@dataclass
+@dataclass(slots=True)
 class CorpusConfig:
     path: str
     fmt: str = "auto"  # auto|txt|jsonl
@@ -87,6 +100,17 @@ class CorpusConfig:
 class CorpusTokenBatcher:
     """Loads corpus text once and emits sampled token batches."""
 
+    __slots__ = (
+        "config",
+        "vocab_size",
+        "path",
+        "_tokenizer",
+        "_tokens",
+        "_train_tokens",
+        "_val_tokens",
+        "_native_ext",
+    )
+
     def __init__(self, config: CorpusConfig, vocab_size: int):
         self.config = config
         self.vocab_size = int(vocab_size)
@@ -94,21 +118,18 @@ class CorpusTokenBatcher:
         self._tokenizer = self._build_tokenizer(
             config.tokenizer, config.tiktoken_encoding
         )
+        self._native_ext = None
         self._tokens = self._load_tokens()
         self._train_tokens, self._val_tokens = self._split_tokens(self._tokens)
 
     @property
-    def token_count(self) -> int:
-        return len(self._tokens)
-
-    @property
     def ready(self) -> bool:
-        return len(self._tokens) > 1
+        return int(self._tokens.numel()) > 1
 
-    def _split_tokens(self, tokens: List[int]) -> tuple[np.ndarray, np.ndarray]:
-        if not tokens:
-            return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
-        arr = np.array(tokens, dtype=np.int64)
+    def _split_tokens(self, tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if tokens.numel() == 0:
+            empty = torch.empty(0, dtype=torch.long)
+            return empty, empty
         train_frac = max(0.0, min(1.0, float(self.config.train_fraction or 0.0)))
         val_frac = max(0.0, min(1.0, float(self.config.val_fraction or 0.0)))
         # Normalize if sum > 1
@@ -120,10 +141,11 @@ class CorpusTokenBatcher:
             train_frac = train_frac / total
             val_frac = val_frac / total
 
-        split_idx = int(len(arr) * train_frac)
-        split_idx = max(1, min(len(arr), split_idx))
-        train_tokens = arr[:split_idx]
-        val_tokens = arr[split_idx:] if val_frac > 0 else np.array([], dtype=np.int64)
+        n_tokens = int(tokens.numel())
+        split_idx = int(n_tokens * train_frac)
+        split_idx = max(1, min(n_tokens, split_idx))
+        train_tokens = tokens[:split_idx]
+        val_tokens = tokens[split_idx:] if val_frac > 0 else tokens.new_empty(0)
         return train_tokens, val_tokens
 
     def _build_tokenizer(
@@ -145,18 +167,35 @@ class CorpusTokenBatcher:
             return "jsonl"
         return "txt"
 
-    def _load_tokens(self) -> List[int]:
+    def _tokens_from_text(self, text: str) -> torch.Tensor:
+        if not text:
+            return torch.empty(0, dtype=torch.long)
+        if isinstance(self._tokenizer, ByteTokenizer):
+            return _byte_tokenize_tensor(text, self.vocab_size)
+        if isinstance(self._tokenizer, WhitespaceHashTokenizer):
+            return _whitespace_hash_tokenize_tensor(text, self.vocab_size)
+
+        encoded = self._tokenizer.encode(text, self.vocab_size)
+        if not encoded:
+            return torch.empty(0, dtype=torch.long)
+        return torch.as_tensor(encoded, dtype=torch.long)
+
+    def _load_tokens(self) -> torch.Tensor:
         if not self.path.exists() or not self.path.is_file():
             logger.warning("Corpus path not found: %s", self.path)
-            return []
+            return torch.empty(0, dtype=torch.long)
 
         # Pretokenized .npy: load directly, skip text encoding
         if self.path.suffix == ".npy":
-            import numpy as np
-
-            tokens = np.load(str(self.path)).tolist()
-            # Modulo vocab_size for safety
-            return [int(t) % self.vocab_size for t in tokens]
+            tokens_np = np.load(str(self.path), mmap_mode="r")
+            tokens_np = np.asarray(tokens_np)
+            if tokens_np.dtype != np.int64:
+                tokens_np = tokens_np.astype(np.int64, copy=False)
+            if self.vocab_size > 0:
+                tokens_np = np.remainder(tokens_np, self.vocab_size).astype(
+                    np.int64, copy=False
+                )
+            return torch.from_numpy(np.ascontiguousarray(tokens_np))
 
         fmt = self._detect_format()
         text_chunks: List[str] = []
@@ -197,8 +236,7 @@ class CorpusTokenBatcher:
                 text_chunks.append(text[: self.config.max_chars])
 
             joined = "\n".join(text_chunks)
-            tokens = self._tokenizer.encode(joined, self.vocab_size)
-            return [int(t) for t in tokens]
+            return self._tokens_from_text(joined)
         except Exception as exc:
             logger.error("Corpus load failed from %s: %s", self.path, exc)
             raise exc
@@ -210,6 +248,7 @@ class CorpusTokenBatcher:
         generator: torch.Generator,
         device: torch.device,
         split: str = "train",
+        timer: Optional[Callable[[str, float], None]] = None,
     ) -> Optional[torch.Tensor]:
         if not self.ready or seq_len <= 0 or batch_size <= 0:
             return None
@@ -219,13 +258,14 @@ class CorpusTokenBatcher:
         else:
             tokens = self._train_tokens
 
-        if tokens is None or len(tokens) == 0:
+        if tokens is None or tokens.numel() == 0:
             return None
 
-        max_start = len(tokens) - seq_len - 1
+        max_start = int(tokens.numel()) - seq_len - 1
         if max_start < 0:
             return None
 
+        sample_t0 = time.perf_counter()
         starts = torch.randint(
             0,
             max_start + 1,
@@ -233,14 +273,23 @@ class CorpusTokenBatcher:
             generator=generator,
             device="cpu",
         )
+        if timer is not None:
+            timer("start_index_sampling_ms", (time.perf_counter() - sample_t0) * 1000.0)
 
-        # Vectorized batch extraction via NumPy advanced indexing.
-        # Build a (batch_size, seq_len) index array and gather in one shot —
-        # no Python loop, no intermediate list of lists.
-        starts_np = starts.numpy()
-        offsets = np.arange(seq_len, dtype=np.int64)
-        indices = starts_np[:, np.newaxis] + offsets  # (batch_size, seq_len)
-        batch_np = tokens[indices]  # single contiguous gather
-
-        batch = torch.from_numpy(batch_np).pin_memory()
-        return batch.to(device, non_blocking=True)
+        if self._native_ext is None:
+            self._native_ext = load_data_native()
+        gather_t0 = time.perf_counter()
+        batch = self._native_ext.gather_token_batch(tokens, starts, seq_len)
+        if timer is not None:
+            timer("native_gather_ms", (time.perf_counter() - gather_t0) * 1000.0)
+        if device.type == "cpu":
+            return batch
+        pin_t0 = time.perf_counter()
+        batch = batch.pin_memory()
+        if timer is not None:
+            timer("pin_memory_ms", (time.perf_counter() - pin_t0) * 1000.0)
+        h2d_t0 = time.perf_counter()
+        batch = batch.to(device, non_blocking=True)
+        if timer is not None:
+            timer("h2d_copy_ms", (time.perf_counter() - h2d_t0) * 1000.0)
+        return batch

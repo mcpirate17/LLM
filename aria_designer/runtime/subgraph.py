@@ -8,7 +8,7 @@ instantiated as a single node in a parent workflow. This enables:
   - Template-based composition
 
 Usage:
-    from runtime.subgraph import extract_block, expand_block, BUILTIN_BLOCKS
+    from aria_designer.runtime.subgraph import extract_block, expand_block, BUILTIN_BLOCKS
 """
 
 from __future__ import annotations

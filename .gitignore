@@ -68,6 +68,13 @@ research/rescore_artifacts/
 research/reports/report_*.md
 research/reports/exploration_*
 research/reports/architecture_features.csv
+research/reports/label_*.json
+research/reports/label_*.md
+research/reports/ml_eval_*.json
+research/reports/ml_eval_*.png
+research/reports/backfill_missing_probe_metrics*.tsv
+research/reports/backpopulate_screening_metrics*.tsv
+research/reports/template_stage_summary.tsv
 
 # Root-level junk patterns
 :memory:*
@@ -86,3 +93,8 @@ research/runtime/learning/
 
 # Performance artifacts
 research/perf_artifacts/
+profiles/
+
+# Backfill runtime state/logs
+research/runtime/backfill/*.log
+research/runtime/backfill/*_state.json

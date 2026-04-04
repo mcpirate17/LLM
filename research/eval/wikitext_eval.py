@@ -10,6 +10,7 @@ Uses the existing CorpusTokenBatcher infrastructure via a cached text file.
 
 from __future__ import annotations
 
+import collections
 import logging
 import math
 import time
@@ -25,7 +26,11 @@ from .utils import (
     micro_train_loop,
     compute_perplexity,
 )
-from research.defaults import VOCAB_SIZE
+from .stateless_training import (
+    clone_module_state,
+    functional_compute_perplexity,
+    functional_micro_train_loop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,16 +149,13 @@ def _download_wikitext(
 
 _BATCH_CACHE_MAX_ENTRIES = 8
 
-_batch_cache: "collections.OrderedDict[tuple, List[torch.Tensor]]" = None  # type: ignore[assignment]
+_batch_cache: "collections.OrderedDict[tuple, List[torch.Tensor]]" = (
+    collections.OrderedDict()
+)
 
 
 def _get_batch_cache() -> "collections.OrderedDict[tuple, List[torch.Tensor]]":
     """Lazy-init the LRU batch cache."""
-    global _batch_cache
-    if _batch_cache is None:
-        import collections
-
-        _batch_cache = collections.OrderedDict()
     return _batch_cache
 
 
@@ -286,7 +288,7 @@ def _prepare_batches(
 
 
 def wikitext_score_from_ppl(
-    ppl: Optional[float], vocab_size: int = VOCAB_SIZE
+    ppl: Optional[float], vocab_size: int = 32000
 ) -> Optional[float]:
     """log(vocab/ppl) / log(vocab) — 1.0 for perfect, 0.0 for random."""
     if ppl is None or ppl <= 0:
@@ -366,10 +368,9 @@ def screening_wikitext_eval(
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return meta
 
-    # Save original weights so micro-training doesn't mutate the live model
     was_training = model.training
     try:
-        original_state = {k: v.clone() for k, v in model.state_dict().items()}
+        params, buffers = clone_module_state(model)
     except Exception as exc:
         meta["screening_wikitext_status"] = "clone_failed"
         meta["error"] = str(exc)
@@ -377,22 +378,28 @@ def screening_wikitext_eval(
         return meta
 
     try:
-        # Pre-training perplexity (eval mode)
-        pre_ppl = compute_perplexity(model, val_batches, vocab_size)
+        model.eval()
+        pre_ppl = functional_compute_perplexity(
+            model, params, buffers, val_batches, vocab_size
+        )
 
-        # Micro-train the model, recording per-step loss trajectory
         loss_trajectory: dict = {}
-        train_final_loss = micro_train_loop(
+        model.train()
+        train_final_loss = functional_micro_train_loop(
             model,
+            params,
+            buffers,
             train_batches,
-            vocab_size,
+            vocab_size=vocab_size,
             n_steps=n_train_steps,
             lr=lr,
             loss_trajectory=loss_trajectory,
         )
 
-        # Post-training perplexity
-        post_ppl = compute_perplexity(model, val_batches, vocab_size)
+        model.eval()
+        post_ppl = functional_compute_perplexity(
+            model, params, buffers, val_batches, vocab_size
+        )
 
         ppl_improvement = None
         if pre_ppl is not None and post_ppl is not None and pre_ppl > 0:
@@ -433,8 +440,6 @@ def screening_wikitext_eval(
         meta["screening_wikitext_status"] = "eval_failed"
         meta["error"] = str(exc)
     finally:
-        # Restore original weights and training mode
-        model.load_state_dict(original_state)
         model.train(was_training)
 
     meta["variant"] = variant

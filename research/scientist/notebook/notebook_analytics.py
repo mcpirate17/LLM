@@ -9,6 +9,7 @@ import time
 import uuid
 from collections import defaultdict
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +17,47 @@ from ._shared import LOGGER
 
 # Lazy-loaded to avoid circular imports at module level
 _OP_CATEGORY_CACHE: Dict[str, str] = {}
+
+
+@lru_cache(maxsize=8192)
+def _cached_extract_op_names(graph_json: str) -> tuple[str, ...]:
+    from research.scientist.analytics.analytics_ops import _OpsMixin
+
+    ops = _OpsMixin._extract_ops_fast(graph_json)
+    if ops is None:
+        ops = _OpsMixin._extract_ops_fallback(graph_json)
+    return tuple(ops or ())
+
+
+@lru_cache(maxsize=8192)
+def _cached_extract_template_name(graph_json: str) -> str:
+    try:
+        data = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("template") or metadata.get("template_name") or "")
+
+
+@lru_cache(maxsize=8192)
+def _cached_extract_unique_ops(graph_json: str) -> tuple[str, ...]:
+    try:
+        graph_data = json.loads(graph_json)
+    except (json.JSONDecodeError, TypeError):
+        return ()
+    nodes = graph_data.get("nodes", {})
+    if not isinstance(nodes, dict):
+        return ()
+    ops = {
+        str(node_data.get("op_name", ""))
+        for node_data in nodes.values()
+        if isinstance(node_data, dict)
+        and node_data.get("op_name")
+        and node_data.get("op_name") != "input"
+    }
+    return tuple(sorted(ops))
 
 
 def _get_op_category(op_name: str) -> str:
@@ -88,6 +130,308 @@ class _AnalyticsMixin:
 
     __slots__ = ()
 
+    _GRAPH_NODES_JSON_EXPR = (
+        "CASE "
+        "WHEN json_type(pr.graph_json, '$.nodes') IN ('object', 'array') "
+        "THEN json_extract(pr.graph_json, '$.nodes') "
+        "ELSE '{}' END"
+    )
+
+    def _json1_available(self) -> bool:
+        try:
+            return bool(
+                self.conn.execute("SELECT json_valid('{\"ok\":1}')").fetchone()[0]
+            )
+        except Exception:
+            return False
+
+    def _query_op_stats_sql(
+        self, where_sql: str, params: tuple[Any, ...]
+    ) -> Optional[List[Dict[str, Any]]]:
+        if not self._json1_available():
+            return None
+        rows = self.conn.execute(
+            f"""
+            WITH node_ops AS (
+                SELECT DISTINCT
+                    pr.result_id AS result_id,
+                    json_extract(node.value, '$.op_name') AS op_name,
+                    pr.stage0_passed AS stage0_passed,
+                    pr.stage05_passed AS stage05_passed,
+                    pr.stage1_passed AS stage1_passed,
+                    pr.loss_ratio AS loss_ratio,
+                    pr.novelty_score AS novelty_score,
+                    pr.novelty_confidence AS novelty_confidence
+                FROM program_results pr
+                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
+                WHERE {where_sql}
+            )
+            SELECT
+                op_name,
+                COUNT(*) AS n_used,
+                SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END) AS n_stage0_passed,
+                SUM(CASE WHEN stage05_passed THEN 1 ELSE 0 END) AS n_stage05_passed,
+                SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
+                AVG(loss_ratio) AS avg_loss_ratio,
+                AVG(novelty_score) AS avg_novelty,
+                AVG(novelty_confidence) AS avg_novelty_confidence
+            FROM node_ops
+            WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
+            GROUP BY op_name
+            ORDER BY n_stage1_passed DESC, n_used DESC
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _query_bigram_stats_sql(
+        self,
+        where_sql: str,
+        params: tuple[Any, ...],
+        *,
+        include_error_types: bool = False,
+    ) -> Optional[List[Dict[str, Any]]]:
+        if not self._json1_available():
+            return None
+        error_select = (
+            ", substr(group_concat(DISTINCT CASE "
+            "WHEN stage1_passed = 0 AND error_type IS NOT NULL AND error_type <> '' "
+            "THEN error_type END), 1, 255) AS error_types"
+            if include_error_types
+            else ""
+        )
+        rows = self.conn.execute(
+            f"""
+            WITH nodes AS (
+                SELECT
+                    pr.result_id AS result_id,
+                    node.value AS node_json,
+                    CAST(COALESCE(json_extract(node.value, '$.id'), node.key) AS TEXT) AS node_id,
+                    json_extract(node.value, '$.op_name') AS op_name,
+                    pr.stage1_passed AS stage1_passed,
+                    pr.loss_ratio AS loss_ratio,
+                    pr.novelty_score AS novelty_score,
+                    pr.error_type AS error_type
+                FROM program_results pr
+                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
+                WHERE {where_sql}
+            ),
+            signatures AS (
+                SELECT DISTINCT
+                    child.result_id AS result_id,
+                    parent.op_name || '->' || child.op_name AS signature,
+                    child.stage1_passed AS stage1_passed,
+                    child.loss_ratio AS loss_ratio,
+                    child.novelty_score AS novelty_score,
+                    child.error_type AS error_type
+                FROM nodes child
+                JOIN json_each(child.node_json, '$.input_ids') AS inp
+                JOIN nodes parent
+                  ON parent.result_id = child.result_id
+                 AND parent.node_id = CAST(inp.value AS TEXT)
+                WHERE child.op_name IS NOT NULL
+                  AND child.op_name <> ''
+                  AND child.op_name <> 'input'
+                  AND parent.op_name IS NOT NULL
+                  AND parent.op_name <> ''
+                  AND parent.op_name <> 'input'
+            )
+            SELECT
+                signature,
+                COUNT(*) AS support,
+                SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
+                SUM(CASE WHEN stage1_passed THEN 0 ELSE 1 END) AS n_failures,
+                SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_successes,
+                AVG(loss_ratio) AS avg_loss_ratio,
+                AVG(novelty_score) AS avg_novelty
+                {error_select}
+            FROM signatures
+            GROUP BY signature
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _query_graph_feature_rows_sql(self) -> Optional[List[Dict[str, Any]]]:
+        if not self._json1_available():
+            return None
+        rows = self.conn.execute(
+            f"""
+            WITH nodes AS (
+                SELECT
+                    pr.result_id AS result_id,
+                    pr.graph_json AS graph_json,
+                    pr.stage1_passed AS stage1_passed,
+                    pr.novelty_score AS novelty_score,
+                    pr.graph_category_histogram AS graph_category_histogram,
+                    pr.fp_interaction_sparsity AS fp_interaction_sparsity,
+                    pr.fp_cka_vs_transformer AS fp_cka_vs_transformer,
+                    pr.fp_cka_vs_ssm AS fp_cka_vs_ssm,
+                    pr.fp_cka_vs_conv AS fp_cka_vs_conv,
+                    json_extract(node.value, '$.op_name') AS op_name,
+                    node.value AS node_json,
+                    CAST(COALESCE(json_extract(node.value, '$.id'), node.key) AS TEXT) AS node_id,
+                    json_extract(pr.graph_json, '$.metadata.template') AS template_a,
+                    json_extract(pr.graph_json, '$.metadata.template_name') AS template_b
+                FROM program_results pr
+                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
+                WHERE pr.graph_json IS NOT NULL
+            ),
+            op_rows AS (
+                SELECT DISTINCT
+                    result_id,
+                    op_name
+                FROM nodes
+                WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
+            ),
+            pair_rows AS (
+                SELECT DISTINCT
+                    child.result_id AS result_id,
+                    parent.op_name || '->' || child.op_name AS signature
+                FROM nodes child
+                JOIN json_each(child.node_json, '$.input_ids') AS inp
+                JOIN nodes parent
+                  ON parent.result_id = child.result_id
+                 AND parent.node_id = CAST(inp.value AS TEXT)
+                WHERE child.op_name IS NOT NULL AND child.op_name <> '' AND child.op_name <> 'input'
+                  AND parent.op_name IS NOT NULL AND parent.op_name <> '' AND parent.op_name <> 'input'
+            )
+            SELECT
+                base.result_id,
+                base.graph_json,
+                base.stage1_passed,
+                base.novelty_score,
+                base.graph_category_histogram,
+                base.fp_interaction_sparsity,
+                base.fp_cka_vs_transformer,
+                base.fp_cka_vs_ssm,
+                base.fp_cka_vs_conv,
+                COALESCE(base.template_a, base.template_b, '') AS template_name,
+                COALESCE(
+                    (SELECT group_concat(op_name, char(31)) FROM (
+                        SELECT op_name FROM op_rows WHERE result_id = base.result_id ORDER BY op_name
+                    )),
+                    ''
+                ) AS ops_blob,
+                COALESCE(
+                    (SELECT group_concat(signature, char(31)) FROM (
+                        SELECT signature FROM pair_rows WHERE result_id = base.result_id ORDER BY signature
+                    )),
+                    ''
+                ) AS pairs_blob
+            FROM (
+                SELECT DISTINCT
+                    result_id,
+                    graph_json,
+                    stage1_passed,
+                    novelty_score,
+                    graph_category_histogram,
+                    fp_interaction_sparsity,
+                    fp_cka_vs_transformer,
+                    fp_cka_vs_ssm,
+                    fp_cka_vs_conv,
+                    template_a,
+                    template_b
+                FROM nodes
+            ) AS base
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _query_nearest_peers_sql(
+        self, graph_fingerprint: str, limit: int = 500
+    ) -> Optional[List[Dict[str, Any]]]:
+        if not self._json1_available():
+            return None
+        rows = self.conn.execute(
+            f"""
+            WITH fingerprint_rows AS (
+                SELECT
+                    pr.result_id,
+                    pr.graph_fingerprint,
+                    pr.loss_ratio,
+                    pr.novelty_score,
+                    pr.stage1_passed,
+                    pr.timestamp,
+                    l.tier,
+                    l.composite_score
+                FROM program_results pr
+                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+                WHERE pr.graph_fingerprint IS NOT NULL
+                  AND pr.graph_json IS NOT NULL
+            ),
+            latest_rows AS (
+                SELECT fr.*
+                FROM fingerprint_rows fr
+                WHERE fr.result_id = (
+                    SELECT fr2.result_id
+                    FROM fingerprint_rows fr2
+                    WHERE fr2.graph_fingerprint = fr.graph_fingerprint
+                    ORDER BY fr2.timestamp DESC, fr2.result_id DESC
+                    LIMIT 1
+                )
+            ),
+            node_ops AS (
+                SELECT DISTINCT
+                    pr.graph_fingerprint AS graph_fingerprint,
+                    json_extract(node.value, '$.op_name') AS op_name
+                FROM program_results pr
+                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
+                WHERE pr.graph_fingerprint IS NOT NULL
+                  AND pr.graph_json IS NOT NULL
+                  AND json_extract(node.value, '$.op_name') IS NOT NULL
+                  AND json_extract(node.value, '$.op_name') <> ''
+                  AND json_extract(node.value, '$.op_name') <> 'input'
+            ),
+            target_ops AS (
+                SELECT op_name
+                FROM node_ops
+                WHERE graph_fingerprint = ?
+            ),
+            target_count AS (
+                SELECT COUNT(*) AS n FROM target_ops
+            ),
+            peer_counts AS (
+                SELECT graph_fingerprint, COUNT(*) AS peer_op_count
+                FROM node_ops
+                WHERE graph_fingerprint <> ?
+                GROUP BY graph_fingerprint
+            ),
+            intersections AS (
+                SELECT
+                    n.graph_fingerprint AS graph_fingerprint,
+                    COUNT(*) AS overlap
+                FROM node_ops n
+                JOIN target_ops t ON t.op_name = n.op_name
+                WHERE n.graph_fingerprint <> ?
+                GROUP BY n.graph_fingerprint
+            )
+            SELECT
+                lr.graph_fingerprint AS fingerprint,
+                ROUND(
+                    CAST(i.overlap AS FLOAT) /
+                    CAST((pc.peer_op_count + tc.n - i.overlap) AS FLOAT),
+                    4
+                ) AS jaccard_similarity,
+                lr.loss_ratio,
+                lr.novelty_score,
+                lr.stage1_passed,
+                COALESCE(lr.tier, '') AS tier,
+                lr.composite_score
+            FROM intersections i
+            JOIN peer_counts pc ON pc.graph_fingerprint = i.graph_fingerprint
+            JOIN target_count tc
+            JOIN latest_rows lr ON lr.graph_fingerprint = i.graph_fingerprint
+            WHERE tc.n > 0
+              AND (pc.peer_op_count + tc.n - i.overlap) > 0
+              AND CAST(i.overlap AS FLOAT) / CAST((pc.peer_op_count + tc.n - i.overlap) AS FLOAT) >= 0.1
+            ORDER BY jaccard_similarity DESC, lr.timestamp DESC
+            LIMIT ?
+            """,
+            (graph_fingerprint, graph_fingerprint, graph_fingerprint, int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     # ── Op Success Rates ──
 
     def update_op_success_rates(self, experiment_id: str) -> None:
@@ -96,127 +440,139 @@ class _AnalyticsMixin:
         Uses a targeted query (only needed columns) and avoids dict(r)
         conversion overhead from get_program_results.
         """
-        rows = self.conn.execute(
-            """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
-                      loss_ratio, novelty_score, novelty_confidence
-               FROM program_results
-               WHERE experiment_id = ? AND graph_json IS NOT NULL""",
+        sql_rows = self._query_op_stats_sql(
+            "pr.experiment_id = ? AND pr.graph_json IS NOT NULL",
             (experiment_id,),
-        ).fetchall()
+        )
+        if sql_rows is None:
+            rows = self.conn.execute(
+                """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
+                          loss_ratio, novelty_score, novelty_confidence
+                   FROM program_results
+                   WHERE experiment_id = ? AND graph_json IS NOT NULL""",
+                (experiment_id,),
+            ).fetchall()
 
-        op_stats: Dict[str, Dict] = {}
-        # Reusable reference to avoid repeated dict key hashing
-        _OP_NAME = "op_name"
+            op_stats: Dict[str, Dict] = {}
 
-        for r in rows:
-            graph_json = r[0]  # access by index — faster than by name
-            if not graph_json:
-                continue
-            try:
-                graph_data = json.loads(graph_json)
-                nodes = graph_data.get("nodes", {})
-            except (json.JSONDecodeError, TypeError):
-                continue
+            for r in rows:
+                graph_json = r[0]
+                if not graph_json:
+                    continue
+                ops_in_graph = _cached_extract_unique_ops(graph_json)
+                if not ops_in_graph:
+                    continue
 
-            ops_in_graph = set()
-            for node_data in nodes.values():
-                op_name = node_data.get(_OP_NAME, "")
-                if op_name and op_name != "input":
-                    ops_in_graph.add(op_name)
+                s0 = r[1]
+                s05 = r[2]
+                s1 = r[3]
+                lr = r[4]
+                nov = r[5]
+                nov_conf = r[6]
 
-            s0 = r[1]  # stage0_passed
-            s05 = r[2]  # stage05_passed
-            s1 = r[3]  # stage1_passed
-            lr = r[4]  # loss_ratio
-            nov = r[5]  # novelty_score
-            nov_conf = r[6]  # novelty_confidence
-
-            for op_name in ops_in_graph:
-                if op_name not in op_stats:
-                    op_stats[op_name] = {
-                        "n_used": 0,
-                        "n_s0": 0,
-                        "n_s05": 0,
-                        "n_s1": 0,
-                        "lr_sum": 0.0,
-                        "lr_n": 0,
-                        "nov_sum": 0.0,
-                        "nov_n": 0,
-                        "nov_conf_sum": 0.0,
-                        "nov_conf_n": 0,
-                    }
-                stats = op_stats[op_name]
-                stats["n_used"] += 1
-                if s0:
-                    stats["n_s0"] += 1
-                if s05:
-                    stats["n_s05"] += 1
-                if s1:
-                    stats["n_s1"] += 1
-                if lr is not None:
-                    stats["lr_sum"] += lr
-                    stats["lr_n"] += 1
-                if nov is not None:
-                    stats["nov_sum"] += nov
-                    stats["nov_n"] += 1
-                if nov_conf is not None:
-                    stats["nov_conf_sum"] += nov_conf
-                    stats["nov_conf_n"] += 1
-
+                for op_name in ops_in_graph:
+                    if op_name not in op_stats:
+                        op_stats[op_name] = {
+                            "n_used": 0,
+                            "n_s0": 0,
+                            "n_s05": 0,
+                            "n_s1": 0,
+                            "lr_sum": 0.0,
+                            "lr_n": 0,
+                            "nov_sum": 0.0,
+                            "nov_n": 0,
+                            "nov_conf_sum": 0.0,
+                            "nov_conf_n": 0,
+                        }
+                    stats = op_stats[op_name]
+                    stats["n_used"] += 1
+                    if s0:
+                        stats["n_s0"] += 1
+                    if s05:
+                        stats["n_s05"] += 1
+                    if s1:
+                        stats["n_s1"] += 1
+                    if lr is not None:
+                        stats["lr_sum"] += lr
+                        stats["lr_n"] += 1
+                    if nov is not None:
+                        stats["nov_sum"] += nov
+                        stats["nov_n"] += 1
+                    if nov_conf is not None:
+                        stats["nov_conf_sum"] += nov_conf
+                        stats["nov_conf_n"] += 1
+            sql_rows = [
+                {
+                    "op_name": op_name,
+                    "n_used": stats["n_used"],
+                    "n_stage0_passed": stats["n_s0"],
+                    "n_stage05_passed": stats["n_s05"],
+                    "n_stage1_passed": stats["n_s1"],
+                    "avg_loss_ratio": (
+                        stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
+                    ),
+                    "avg_novelty": (
+                        stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
+                    ),
+                    "avg_novelty_confidence": (
+                        stats["nov_conf_sum"] / stats["nov_conf_n"]
+                        if stats["nov_conf_n"]
+                        else None
+                    ),
+                }
+                for op_name, stats in op_stats.items()
+            ]
         now = time.time()
-        for op_name, stats in op_stats.items():
-            avg_lr = stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
-            avg_nov = stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
-            avg_nov_conf = (
-                stats["nov_conf_sum"] / stats["nov_conf_n"]
-                if stats["nov_conf_n"]
-                else None
-            )
-            self.conn.execute(
-                """INSERT INTO op_success_rates
-                   (op_name, n_used, n_stage0_passed, n_stage05_passed,
-                    n_stage1_passed, avg_loss_ratio, avg_novelty,
-                    avg_novelty_confidence, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(op_name) DO UPDATE SET
-                    n_used = n_used + excluded.n_used,
-                    n_stage0_passed = n_stage0_passed + excluded.n_stage0_passed,
-                    n_stage05_passed = n_stage05_passed + excluded.n_stage05_passed,
-                    n_stage1_passed = n_stage1_passed + excluded.n_stage1_passed,
-                    avg_loss_ratio = CASE
-                        WHEN op_success_rates.n_used = 0 THEN excluded.avg_loss_ratio
-                        WHEN excluded.avg_loss_ratio IS NULL THEN op_success_rates.avg_loss_ratio
-                        ELSE (op_success_rates.avg_loss_ratio * op_success_rates.n_used
-                              + excluded.avg_loss_ratio * excluded.n_used)
-                             / (op_success_rates.n_used + excluded.n_used)
-                    END,
-                    avg_novelty = CASE
-                        WHEN op_success_rates.n_used = 0 THEN excluded.avg_novelty
-                        WHEN excluded.avg_novelty IS NULL THEN op_success_rates.avg_novelty
-                        ELSE (op_success_rates.avg_novelty * op_success_rates.n_used
-                              + excluded.avg_novelty * excluded.n_used)
-                             / (op_success_rates.n_used + excluded.n_used)
-                    END,
-                    avg_novelty_confidence = CASE
-                        WHEN op_success_rates.n_used = 0 THEN excluded.avg_novelty_confidence
-                        WHEN excluded.avg_novelty_confidence IS NULL THEN op_success_rates.avg_novelty_confidence
-                        ELSE (op_success_rates.avg_novelty_confidence * op_success_rates.n_used
-                              + excluded.avg_novelty_confidence * excluded.n_used)
-                             / (op_success_rates.n_used + excluded.n_used)
-                    END,
-                    last_updated = excluded.last_updated""",
+        rows_to_write = []
+        for stats in sql_rows:
+            rows_to_write.append(
                 (
-                    op_name,
+                    stats["op_name"],
                     stats["n_used"],
-                    stats["n_s0"],
-                    stats["n_s05"],
-                    stats["n_s1"],
-                    avg_lr,
-                    avg_nov,
-                    avg_nov_conf,
+                    stats["n_stage0_passed"],
+                    stats["n_stage05_passed"],
+                    stats["n_stage1_passed"],
+                    stats["avg_loss_ratio"],
+                    stats["avg_novelty"],
+                    stats["avg_novelty_confidence"],
                     now,
-                ),
+                )
             )
+        self.conn.executemany(
+            """INSERT INTO op_success_rates
+               (op_name, n_used, n_stage0_passed, n_stage05_passed,
+                n_stage1_passed, avg_loss_ratio, avg_novelty,
+                avg_novelty_confidence, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(op_name) DO UPDATE SET
+                n_used = n_used + excluded.n_used,
+                n_stage0_passed = n_stage0_passed + excluded.n_stage0_passed,
+                n_stage05_passed = n_stage05_passed + excluded.n_stage05_passed,
+                n_stage1_passed = n_stage1_passed + excluded.n_stage1_passed,
+                avg_loss_ratio = CASE
+                    WHEN op_success_rates.n_used = 0 THEN excluded.avg_loss_ratio
+                    WHEN excluded.avg_loss_ratio IS NULL THEN op_success_rates.avg_loss_ratio
+                    ELSE (op_success_rates.avg_loss_ratio * op_success_rates.n_used
+                          + excluded.avg_loss_ratio * excluded.n_used)
+                         / (op_success_rates.n_used + excluded.n_used)
+                END,
+                avg_novelty = CASE
+                    WHEN op_success_rates.n_used = 0 THEN excluded.avg_novelty
+                    WHEN excluded.avg_novelty IS NULL THEN op_success_rates.avg_novelty
+                    ELSE (op_success_rates.avg_novelty * op_success_rates.n_used
+                          + excluded.avg_novelty * excluded.n_used)
+                         / (op_success_rates.n_used + excluded.n_used)
+                END,
+                avg_novelty_confidence = CASE
+                    WHEN op_success_rates.n_used = 0 THEN excluded.avg_novelty_confidence
+                    WHEN excluded.avg_novelty_confidence IS NULL THEN op_success_rates.avg_novelty_confidence
+                    ELSE (op_success_rates.avg_novelty_confidence * op_success_rates.n_used
+                          + excluded.avg_novelty_confidence * excluded.n_used)
+                         / (op_success_rates.n_used + excluded.n_used)
+                END,
+                last_updated = excluded.last_updated""",
+            rows_to_write,
+        )
         self._maybe_commit()
 
     def get_op_success_rates(self) -> List[Dict]:
@@ -232,6 +588,13 @@ class _AnalyticsMixin:
 
         Read-only windowed view — does not write to the accumulated table.
         """
+        sql_rows = self._query_op_stats_sql(
+            "pr.timestamp > ? AND pr.graph_json IS NOT NULL",
+            (since_ts,),
+        )
+        if sql_rows is not None:
+            return sql_rows
+
         rows = self.conn.execute(
             """SELECT graph_json, stage0_passed, stage05_passed, stage1_passed,
                       loss_ratio, novelty_score, novelty_confidence
@@ -239,34 +602,19 @@ class _AnalyticsMixin:
                WHERE timestamp > ? AND graph_json IS NOT NULL""",
             (since_ts,),
         ).fetchall()
-
         op_stats: Dict[str, Dict] = {}
         for r in rows:
             graph_json = r[0]
             if not graph_json:
                 continue
-            try:
-                graph_data = json.loads(graph_json)
-                nodes = graph_data.get("nodes", {})
-            except (json.JSONDecodeError, TypeError):
+            ops_in_graph = _cached_extract_unique_ops(graph_json)
+            if not ops_in_graph:
                 continue
-
-            ops_in_graph = set()
-            for node_data in nodes.values():
-                op_name = node_data.get("op_name", "")
-                if op_name and op_name != "input":
-                    ops_in_graph.add(op_name)
-
-            s0 = r[1]
-            s05 = r[2]
-            s1 = r[3]
-            lr = r[4]
-            nov = r[5]
-            nov_conf = r[6]
-
+            s0, s05, s1, lr, nov, nov_conf = r[1], r[2], r[3], r[4], r[5], r[6]
             for op_name in ops_in_graph:
-                if op_name not in op_stats:
-                    op_stats[op_name] = {
+                stats = op_stats.setdefault(
+                    op_name,
+                    {
                         "n_used": 0,
                         "n_s0": 0,
                         "n_s05": 0,
@@ -277,8 +625,8 @@ class _AnalyticsMixin:
                         "nov_n": 0,
                         "nov_conf_sum": 0.0,
                         "nov_conf_n": 0,
-                    }
-                stats = op_stats[op_name]
+                    },
+                )
                 stats["n_used"] += 1
                 if s0:
                     stats["n_s0"] += 1
@@ -295,18 +643,10 @@ class _AnalyticsMixin:
                 if nov_conf is not None:
                     stats["nov_conf_sum"] += nov_conf
                     stats["nov_conf_n"] += 1
-
         result = []
         for op_name, stats in sorted(
             op_stats.items(), key=lambda x: (-x[1]["n_s1"], -x[1]["n_used"])
         ):
-            avg_lr = stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
-            avg_nov = stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
-            avg_nov_conf = (
-                stats["nov_conf_sum"] / stats["nov_conf_n"]
-                if stats["nov_conf_n"]
-                else None
-            )
             result.append(
                 {
                     "op_name": op_name,
@@ -314,9 +654,17 @@ class _AnalyticsMixin:
                     "n_stage0_passed": stats["n_s0"],
                     "n_stage05_passed": stats["n_s05"],
                     "n_stage1_passed": stats["n_s1"],
-                    "avg_loss_ratio": avg_lr,
-                    "avg_novelty": avg_nov,
-                    "avg_novelty_confidence": avg_nov_conf,
+                    "avg_loss_ratio": (
+                        stats["lr_sum"] / stats["lr_n"] if stats["lr_n"] else None
+                    ),
+                    "avg_novelty": (
+                        stats["nov_sum"] / stats["nov_n"] if stats["nov_n"] else None
+                    ),
+                    "avg_novelty_confidence": (
+                        stats["nov_conf_sum"] / stats["nov_conf_n"]
+                        if stats["nov_conf_n"]
+                        else None
+                    ),
                 }
             )
         return result
@@ -325,30 +673,57 @@ class _AnalyticsMixin:
         self, min_support: int = 5, limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Aggregate op bigram priors from program results."""
-        rows = self.conn.execute(
-            """SELECT graph_json, stage1_passed, loss_ratio, novelty_score
-               FROM program_results
-               WHERE graph_json IS NOT NULL"""
-        ).fetchall()
-        aggregates: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            for signature in self._extract_op_bigrams(row["graph_json"]):
-                bucket = aggregates.setdefault(
-                    signature, self._new_pair_bucket(signature)
-                )
-                bucket["support"] += 1
-                bucket["n_stage1_passed"] += int(bool(row["stage1_passed"]))
-                if row["loss_ratio"] is not None:
-                    bucket["loss_sum"] += float(row["loss_ratio"])
-                    bucket["loss_n"] += 1
-                if row["novelty_score"] is not None:
-                    bucket["novelty_sum"] += float(row["novelty_score"])
-                    bucket["novelty_n"] += 1
-        priors = [
-            self._finalize_pair_bucket(signature, bucket)
-            for signature, bucket in aggregates.items()
-            if bucket["support"] >= min_support
-        ]
+        sql_rows = self._query_bigram_stats_sql(
+            "pr.graph_json IS NOT NULL",
+            (),
+        )
+        if sql_rows is not None:
+            priors = [
+                {
+                    "signature": row["signature"],
+                    "success_rate": round(
+                        float(row["n_stage1_passed"]) / int(row["support"]), 4
+                    ),
+                    "support": int(row["support"]),
+                    "avg_loss_ratio": (
+                        round(float(row["avg_loss_ratio"]), 4)
+                        if row["avg_loss_ratio"] is not None
+                        else None
+                    ),
+                    "avg_novelty": (
+                        round(float(row["avg_novelty"]), 4)
+                        if row["avg_novelty"] is not None
+                        else None
+                    ),
+                }
+                for row in sql_rows
+                if int(row["support"]) >= min_support
+            ]
+        else:
+            rows = self.conn.execute(
+                """SELECT graph_json, stage1_passed, loss_ratio, novelty_score
+                   FROM program_results
+                   WHERE graph_json IS NOT NULL"""
+            ).fetchall()
+            aggregates: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                for signature in self._extract_op_bigrams(row["graph_json"]):
+                    bucket = aggregates.setdefault(
+                        signature, self._new_pair_bucket(signature)
+                    )
+                    bucket["support"] += 1
+                    bucket["n_stage1_passed"] += int(bool(row["stage1_passed"]))
+                    if row["loss_ratio"] is not None:
+                        bucket["loss_sum"] += float(row["loss_ratio"])
+                        bucket["loss_n"] += 1
+                    if row["novelty_score"] is not None:
+                        bucket["novelty_sum"] += float(row["novelty_score"])
+                        bucket["novelty_n"] += 1
+            priors = [
+                self._finalize_pair_bucket(signature, bucket)
+                for signature, bucket in aggregates.items()
+                if bucket["support"] >= min_support
+            ]
         return heapq.nlargest(
             limit, priors, key=lambda item: (item["success_rate"], item["support"])
         )
@@ -362,12 +737,19 @@ class _AnalyticsMixin:
         - top_routing_ops: top-3 routing/compression/MoE ops by frequency
         - template_signature: most common template name in the bucket
         """
-        rows = self.conn.execute(
-            """SELECT graph_json, stage1_passed, novelty_score, graph_category_histogram,
-                      fp_interaction_sparsity, fp_cka_vs_transformer, fp_cka_vs_ssm, fp_cka_vs_conv
-               FROM program_results
-               WHERE graph_json IS NOT NULL"""
-        ).fetchall()
+        sql_rows = self._query_graph_feature_rows_sql()
+        if sql_rows is not None:
+            rows = sql_rows
+        else:
+            rows = [
+                dict(row)
+                for row in self.conn.execute(
+                    """SELECT graph_json, stage1_passed, novelty_score, graph_category_histogram,
+                              fp_interaction_sparsity, fp_cka_vs_transformer, fp_cka_vs_ssm, fp_cka_vs_conv
+                       FROM program_results
+                       WHERE graph_json IS NOT NULL"""
+                ).fetchall()
+            ]
         buckets: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             record = dict(row)
@@ -375,8 +757,26 @@ class _AnalyticsMixin:
             bucket = buckets.setdefault(
                 bucket_name, self._new_fingerprint_bucket(bucket_name)
             )
-            ops = self._extract_op_names(record["graph_json"])
-            pairs = self._extract_op_bigrams(record["graph_json"])
+            if "ops_blob" in record:
+                ops = (
+                    [op for op in str(record.get("ops_blob") or "").split("\x1f") if op]
+                    if record.get("ops_blob")
+                    else []
+                )
+                pairs = (
+                    [
+                        sig
+                        for sig in str(record.get("pairs_blob") or "").split("\x1f")
+                        if sig
+                    ]
+                    if record.get("pairs_blob")
+                    else []
+                )
+                template_name = str(record.get("template_name") or "")
+            else:
+                ops = self._extract_op_names(record["graph_json"])
+                pairs = self._extract_op_bigrams(record["graph_json"])
+                template_name = self._extract_template_name(record["graph_json"])
             bucket["n_graphs"] += 1
             bucket["n_stage1_passed"] += int(bool(record["stage1_passed"]))
             if record["novelty_score"] is not None:
@@ -397,8 +797,6 @@ class _AnalyticsMixin:
                 bucket["pair_counts"][signature] = (
                     bucket["pair_counts"].get(signature, 0) + 1
                 )
-            # Extract template signature from graph metadata
-            template_name = self._extract_template_name(record["graph_json"])
             if template_name:
                 bucket["template_counts"][template_name] = (
                     bucket["template_counts"].get(template_name, 0) + 1
@@ -417,7 +815,33 @@ class _AnalyticsMixin:
         in program_results. Returns peers sorted by descending Jaccard similarity,
         each with loss_ratio, novelty_score, tier, and composite_score.
         """
-        # Get target ops
+        sql_rows = self._query_nearest_peers_sql(graph_fingerprint, limit=max(n, 500))
+        if sql_rows is not None:
+            return [
+                {
+                    "fingerprint": str(row["fingerprint"]),
+                    "jaccard_similarity": float(row["jaccard_similarity"]),
+                    "loss_ratio": (
+                        float(row["loss_ratio"])
+                        if row["loss_ratio"] is not None
+                        else None
+                    ),
+                    "novelty_score": (
+                        float(row["novelty_score"])
+                        if row["novelty_score"] is not None
+                        else None
+                    ),
+                    "stage1_passed": bool(row["stage1_passed"]),
+                    "tier": str(row["tier"] or ""),
+                    "composite_score": (
+                        float(row["composite_score"])
+                        if row["composite_score"] is not None
+                        else None
+                    ),
+                }
+                for row in sql_rows[:n]
+            ]
+
         target_row = self.conn.execute(
             """SELECT graph_json FROM program_results
                WHERE graph_fingerprint = ? AND graph_json IS NOT NULL
@@ -429,8 +853,6 @@ class _AnalyticsMixin:
         target_ops = frozenset(self._extract_op_names(target_row[0]))
         if not target_ops:
             return []
-
-        # Get all distinct fingerprints with their ops and scores
         rows = self.conn.execute(
             """SELECT pr.graph_fingerprint, pr.graph_json, pr.loss_ratio,
                       pr.novelty_score, pr.stage1_passed,
@@ -445,7 +867,6 @@ class _AnalyticsMixin:
                LIMIT 500""",
             (graph_fingerprint,),
         ).fetchall()
-
         peers: List[Dict[str, Any]] = []
         for row in rows:
             peer_ops = frozenset(self._extract_op_names(row[1]))
@@ -467,7 +888,6 @@ class _AnalyticsMixin:
                     "composite_score": float(row[6]) if row[6] is not None else None,
                 }
             )
-
         peers.sort(key=lambda p: p["jaccard_similarity"], reverse=True)
         return peers[:n]
 
@@ -759,24 +1179,16 @@ class _AnalyticsMixin:
         return ""
 
     def _extract_op_names(self, graph_json: str) -> List[str]:
-        from research.scientist.analytics.analytics_ops import _OpsMixin
-
-        ops = _OpsMixin._extract_ops_fast(graph_json)
-        if ops is None:
-            ops = _OpsMixin._extract_ops_fallback(graph_json)
-        return list(ops or [])
+        if not isinstance(graph_json, str) or not graph_json:
+            return []
+        return list(_cached_extract_op_names(graph_json))
 
     @staticmethod
     def _extract_template_name(graph_json: str) -> str:
         """Extract the template name from graph JSON metadata, if present."""
-        try:
-            data = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
-        except (json.JSONDecodeError, TypeError):
+        if not isinstance(graph_json, str) or not graph_json:
             return ""
-        metadata = data.get("metadata")
-        if not isinstance(metadata, dict):
-            return ""
-        return str(metadata.get("template") or metadata.get("template_name") or "")
+        return _cached_extract_template_name(graph_json)
 
     def _leaderboard_by_fingerprint(self) -> Dict[str, Dict[str, Any]]:
         rows = self.conn.execute(
@@ -891,6 +1303,36 @@ class _AnalyticsMixin:
         each bigram appears in failed vs successful programs.  This gives
         Aria a compact memory of which structural patterns to avoid.
         """
+        sql_rows = self._query_bigram_stats_sql(
+            "pr.experiment_id = ? AND pr.graph_json IS NOT NULL "
+            "AND pr.stage0_passed = 1 AND pr.stage05_passed = 1",
+            (experiment_id,),
+            include_error_types=True,
+        )
+        if sql_rows is not None:
+            now = time.time()
+            self.conn.executemany(
+                """INSERT INTO failure_signatures
+                   (signature, n_failures, n_successes, error_types, last_updated)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(signature) DO UPDATE SET
+                    n_failures = n_failures + excluded.n_failures,
+                    n_successes = n_successes + excluded.n_successes,
+                    error_types = COALESCE(excluded.error_types, error_types),
+                    last_updated = excluded.last_updated""",
+                [
+                    (
+                        row["signature"],
+                        int(row["n_failures"]),
+                        int(row["n_successes"]),
+                        row.get("error_types"),
+                        now,
+                    )
+                    for row in sql_rows
+                ],
+            )
+            self._maybe_commit()
+            return
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, error_type
                FROM program_results
@@ -898,7 +1340,6 @@ class _AnalyticsMixin:
                  AND stage0_passed = 1 AND stage05_passed = 1""",
             (experiment_id,),
         ).fetchall()
-
         sig_stats: Dict[str, Dict] = {}
         for r in rows:
             bigrams = self._extract_op_bigrams(r[0])
@@ -913,10 +1354,8 @@ class _AnalyticsMixin:
                     sig_stats[bg]["n_f"] += 1
                     if err:
                         sig_stats[bg]["errs"].add(err)
-
         now = time.time()
         for sig, st in sig_stats.items():
-            # Keep error_types compact: top 3, comma-separated
             errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
             self.conn.execute(
                 """INSERT INTO failure_signatures
@@ -941,6 +1380,34 @@ class _AnalyticsMixin:
         ).fetchone()[0]
         if existing > 0:
             return 0
+        sql_rows = self._query_bigram_stats_sql(
+            "pr.graph_json IS NOT NULL AND pr.stage0_passed = 1 AND pr.stage05_passed = 1",
+            (),
+            include_error_types=True,
+        )
+        if sql_rows is not None:
+            now = time.time()
+            self.conn.executemany(
+                """INSERT INTO failure_signatures
+                   (signature, n_failures, n_successes, error_types, last_updated)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (
+                        row["signature"],
+                        int(row["n_failures"]),
+                        int(row["n_successes"]),
+                        row.get("error_types"),
+                        now,
+                    )
+                    for row in sql_rows
+                ],
+            )
+            self._maybe_commit()
+            LOGGER.info(
+                "Backfilled %d failure signatures from existing results",
+                len(sql_rows),
+            )
+            return len(sql_rows)
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, error_type
                FROM program_results
@@ -984,6 +1451,33 @@ class _AnalyticsMixin:
         This cleans up historically contaminated data from S0.5 causality failures.
         """
         self.conn.execute("DELETE FROM failure_signatures")
+        sql_rows = self._query_bigram_stats_sql(
+            "pr.graph_json IS NOT NULL AND pr.stage0_passed = 1 AND pr.stage05_passed = 1",
+            (),
+            include_error_types=True,
+        )
+        if sql_rows is not None:
+            now = time.time()
+            self.conn.executemany(
+                """INSERT INTO failure_signatures
+                   (signature, n_failures, n_successes, error_types, last_updated)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (
+                        row["signature"],
+                        int(row["n_failures"]),
+                        int(row["n_successes"]),
+                        row.get("error_types"),
+                        now,
+                    )
+                    for row in sql_rows
+                ],
+            )
+            self._maybe_commit()
+            LOGGER.info(
+                "Recomputed %d failure signatures (S1-only failures)", len(sql_rows)
+            )
+            return len(sql_rows)
         rows = self.conn.execute(
             """SELECT graph_json, stage1_passed, error_type
                FROM program_results
@@ -1309,6 +1803,240 @@ class _AnalyticsMixin:
                 d["metrics"] = {}
             out.append(d)
         return out
+
+    # ── Scaffold Profiling ──
+
+    def save_scaffold_profile_run(
+        self,
+        *,
+        run_id: str,
+        config: Dict[str, Any],
+        device: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        now = time.time()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO scaffold_profile_runs
+               (run_id, timestamp, device, config_json, metadata_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                now,
+                device,
+                json.dumps(config or {}),
+                json.dumps(metadata or {}),
+            ),
+        )
+        self._maybe_commit()
+
+    def save_scaffold_profile_result(
+        self,
+        *,
+        run_id: str,
+        family: str,
+        case_name: str,
+        status: str,
+        metrics: Dict[str, Any],
+        graph_json: Optional[str] = None,
+        graph_fingerprint: Optional[str] = None,
+        op_a: Optional[str] = None,
+        op_b: Optional[str] = None,
+    ) -> str:
+        now = time.time()
+        result_id = str(uuid.uuid4())[:12]
+        self.conn.execute(
+            """INSERT INTO scaffold_profile_results
+               (profile_result_id, run_id, timestamp, family, case_name, op_a, op_b,
+                status, graph_json, graph_fingerprint, compile_time_ms,
+                sandbox_passed, stability_score, causality_passed, param_count,
+                passed, loss_ratio, validation_loss_ratio, discovery_loss_ratio,
+                final_loss, avg_step_time_ms, throughput_tok_s, elapsed_s, error,
+                metrics_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                result_id,
+                run_id,
+                now,
+                family,
+                case_name,
+                op_a,
+                op_b,
+                status,
+                graph_json,
+                graph_fingerprint,
+                metrics.get("compile_time_ms"),
+                int(bool(metrics.get("sandbox_passed")))
+                if metrics.get("sandbox_passed") is not None
+                else None,
+                metrics.get("stability_score"),
+                int(bool(metrics.get("causality_passed")))
+                if metrics.get("causality_passed") is not None
+                else None,
+                metrics.get("param_count"),
+                int(bool(metrics.get("passed")))
+                if metrics.get("passed") is not None
+                else None,
+                metrics.get("loss_ratio"),
+                metrics.get("validation_loss_ratio"),
+                metrics.get("discovery_loss_ratio"),
+                metrics.get("final_loss"),
+                metrics.get("avg_step_time_ms"),
+                metrics.get("throughput_tok_s"),
+                metrics.get("elapsed_s"),
+                metrics.get("error"),
+                json.dumps(metrics or {}),
+            ),
+        )
+        self._maybe_commit()
+        return result_id
+
+    def list_scaffold_profile_results(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM scaffold_profile_results"
+        params: List[Any] = []
+        if run_id:
+            query += " WHERE run_id = ?"
+            params.append(run_id)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(int(max(1, limit)))
+        rows = self.conn.execute(query, params).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["metrics"] = json.loads(d.get("metrics_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                d["metrics"] = {}
+            out.append(d)
+        return out
+
+    def get_scaffold_component_stats(
+        self,
+        *,
+        since_ts: float = 0.0,
+        min_support: int = 1,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Aggregate per-op scaffold profiling evidence for governance.
+
+        Returns component-level evidence distilled from scaffold profiling runs.
+        The score is intentionally conservative: compile/sandbox/train success
+        dominate, while loss and throughput provide smaller tie-break signals.
+        """
+        query = (
+            "SELECT family, status, op_a, op_b, sandbox_passed, passed, "
+            "loss_ratio, validation_loss_ratio, throughput_tok_s "
+            "FROM scaffold_profile_results"
+        )
+        params: List[Any] = []
+        if since_ts > 0:
+            query += " WHERE timestamp >= ?"
+            params.append(float(since_ts))
+        rows = self.conn.execute(query, params).fetchall()
+
+        buckets: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            record = dict(row)
+            ops = {
+                str(record.get("op_a") or "").strip(),
+                str(record.get("op_b") or "").strip(),
+            }
+            ops.discard("")
+            if not ops:
+                continue
+            family = str(record.get("family") or "").strip()
+            status = str(record.get("status") or "").strip()
+            sandbox_passed = int(bool(record.get("sandbox_passed")))
+            passed = int(bool(record.get("passed")))
+            loss_ratio = record.get("validation_loss_ratio")
+            if loss_ratio is None:
+                loss_ratio = record.get("loss_ratio")
+            throughput = record.get("throughput_tok_s")
+            for op_name in ops:
+                bucket = buckets.setdefault(
+                    op_name,
+                    {
+                        "support": 0,
+                        "n_ok": 0,
+                        "n_screen_fail": 0,
+                        "n_error": 0,
+                        "n_sandbox_passed": 0,
+                        "n_passed": 0,
+                        "loss_sum": 0.0,
+                        "loss_n": 0,
+                        "throughput_sum": 0.0,
+                        "throughput_n": 0,
+                        "family_counts": defaultdict(int),
+                    },
+                )
+                bucket["support"] += 1
+                if status == "ok":
+                    bucket["n_ok"] += 1
+                elif status == "screen_fail":
+                    bucket["n_screen_fail"] += 1
+                elif status == "error":
+                    bucket["n_error"] += 1
+                bucket["n_sandbox_passed"] += sandbox_passed
+                bucket["n_passed"] += passed
+                if isinstance(loss_ratio, (int, float)):
+                    bucket["loss_sum"] += float(loss_ratio)
+                    bucket["loss_n"] += 1
+                if isinstance(throughput, (int, float)):
+                    bucket["throughput_sum"] += float(throughput)
+                    bucket["throughput_n"] += 1
+                if family:
+                    bucket["family_counts"][family] += 1
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for op_name, bucket in buckets.items():
+            support = int(bucket["support"])
+            if support < max(1, int(min_support)):
+                continue
+            ok_rate = bucket["n_ok"] / support
+            sandbox_rate = bucket["n_sandbox_passed"] / support
+            pass_rate = bucket["n_passed"] / support
+            avg_loss = (
+                bucket["loss_sum"] / bucket["loss_n"] if bucket["loss_n"] else None
+            )
+            avg_tp = (
+                bucket["throughput_sum"] / bucket["throughput_n"]
+                if bucket["throughput_n"]
+                else None
+            )
+            loss_term = 0.5
+            if isinstance(avg_loss, float):
+                loss_term = max(0.0, min(1.0, 1.0 - (avg_loss / 1.5)))
+            throughput_term = 0.5
+            if isinstance(avg_tp, float):
+                throughput_term = max(0.0, min(1.0, avg_tp / 5000.0))
+            raw_quality = (
+                0.35 * ok_rate
+                + 0.30 * pass_rate
+                + 0.20 * sandbox_rate
+                + 0.10 * loss_term
+                + 0.05 * throughput_term
+            )
+            confidence = min(1.0, support / 12.0)
+            prior_rate = (confidence * raw_quality) + ((1.0 - confidence) * 0.5)
+            result[op_name] = {
+                "support": support,
+                "ok_rate": round(ok_rate, 4),
+                "sandbox_rate": round(sandbox_rate, 4),
+                "pass_rate": round(pass_rate, 4),
+                "avg_loss_ratio": round(avg_loss, 6)
+                if isinstance(avg_loss, float)
+                else None,
+                "avg_throughput_tok_s": round(avg_tp, 3)
+                if isinstance(avg_tp, float)
+                else None,
+                "quality_score": round(raw_quality, 4),
+                "prior_rate": round(prior_rate, 4),
+                "families": dict(bucket["family_counts"]),
+            }
+        return result
 
     def get_report_snapshot(
         self,

@@ -241,6 +241,21 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
             for t in refs.values():
                 self.assertEqual(tuple(t.shape[-2:]), (16, 32))
 
+    def test_reference_similarity_cache_reuses_precomputed_matrices(self):
+        """ReferenceCkaStore caches prepared similarity matrices across calls."""
+        from research.eval.cka_references import ReferenceCkaStore
+
+        with tempfile.TemporaryDirectory() as d:
+            art_dir = self._make_artifact_dir(d)
+            store = ReferenceCkaStore(artifact_dir=art_dir)
+            first = store.get_reference_similarities()
+            second = store.get_reference_similarities()
+            self.assertIsNotNone(first)
+            self.assertIs(first, second)
+            self.assertEqual(set(first.keys()), {"transformer", "ssm", "conv"})
+            for sim in first.values():
+                self.assertEqual(tuple(sim.shape), (16, 16))
+
     def test_load_reference_activations_missing_file(self):
         """Missing .pt file raises ValueError."""
         from research.eval.cka_references import (

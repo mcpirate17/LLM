@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import random
 
-from .graph import ComputationGraph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SPARSE,
@@ -757,8 +760,7 @@ def tpl_mamba_reference(
     """
     D = graph.model_dim
     # SSM sub-block
-    norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    normed1 = _add(graph, "rmsnorm", [input_id], context="mamba_reference.norm1")
 
     convolved = _add(
         graph, "conv1d_seq", [normed1], context="mamba_reference.convolved"
@@ -777,8 +779,7 @@ def tpl_mamba_reference(
     mid = _residual(graph, input_id, proj1, context="mamba_reference.mid")
 
     # FFN sub-block
-    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
-    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+    normed2 = _add(graph, "rmsnorm", [mid], context="mamba_reference.norm2")
 
     ffn = _add(
         graph,

@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
-project(aria_native_kernels C)
+project(aria_native_kernels C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -march=native -Wall -Wextra -fPIC")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -Wall -Wextra -fPIC")
 
 # Use DT_RPATH (transitive) instead of DT_RUNPATH so bundled OpenBLAS
 # can find its own deps (e.g. libgfortran) in the same directory
@@ -17,6 +19,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/include)
 
 # Local native kernel sources
 file(GLOB NATIVE_SRCS src/*.c)
+set(ARIA_CORE_CPU_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/src/cpu/clifford.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/src/cpu/hyperbolic.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/src/cpu/kernels.cpp
+)
 
 # Shared aria_designer kernel sources (reuse if present, skip in CI)
 set(DESIGNER_KERNELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_designer/runtime/src)
@@ -30,11 +37,11 @@ else()
 endif()
 
 # Build shared library linking both local + designer kernels (if present)
-add_library(aria_native_runtime SHARED ${NATIVE_SRCS} ${DESIGNER_SRCS})
+add_library(aria_native_runtime SHARED ${NATIVE_SRCS} ${DESIGNER_SRCS} ${ARIA_CORE_CPU_SRCS})
 target_link_libraries(aria_native_runtime m)
 
 # Build static library too for Rust FFI
-add_library(aria_native_runtime_static STATIC ${NATIVE_SRCS} ${DESIGNER_SRCS})
+add_library(aria_native_runtime_static STATIC ${NATIVE_SRCS} ${DESIGNER_SRCS} ${ARIA_CORE_CPU_SRCS})
 target_link_libraries(aria_native_runtime_static m)
 
 # Find OpenBLAS — check system first (standard symbol names)

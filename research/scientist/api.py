@@ -9,6 +9,9 @@ Uses Flask for simplicity, SSE for real-time streaming.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
 import threading
 import traceback
 from collections import defaultdict
@@ -22,6 +25,9 @@ from research.defaults import LAB_NOTEBOOK_DB
 from .api_routes import _designer as _designer_mod
 
 logger = logging.getLogger(__name__)
+
+_DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
+_DEFAULT_DASHBOARD_BUILD_DIR = _DASHBOARD_DIR / "build"
 
 # ── API health counters (consumed by /api/observability/api-health) ──
 _api_health_counters: dict = defaultdict(int)
@@ -58,7 +64,9 @@ def create_app(
     """Create the Flask API app."""
 
     if static_folder is None:
-        static_folder = str(Path(__file__).parent.parent / "dashboard" / "build")
+        static_folder = str(_DEFAULT_DASHBOARD_BUILD_DIR)
+
+    _ensure_default_dashboard_build(static_folder)
 
     app = Flask(__name__, static_folder=static_folder, static_url_path="")
 
@@ -214,6 +222,73 @@ def create_app(
     register_misc_routes(app, context)
 
     return app
+
+
+def _ensure_default_dashboard_build(static_folder: Optional[str]) -> None:
+    """Best-effort build of the bundled dashboard when its production assets are absent."""
+
+    if not static_folder:
+        return
+    if os.environ.get("ARIA_AUTO_BUILD_DASHBOARD", "1") in {"0", "false", "False"}:
+        return
+
+    try:
+        static_path = Path(static_folder).resolve()
+        default_build_path = _DEFAULT_DASHBOARD_BUILD_DIR.resolve()
+    except OSError:
+        return
+
+    if static_path != default_build_path:
+        return
+    if (default_build_path / "index.html").is_file():
+        return
+
+    npm_path = shutil.which("npm")
+    package_json = _DASHBOARD_DIR / "package.json"
+    node_modules = _DASHBOARD_DIR / "node_modules"
+
+    if not package_json.is_file():
+        logger.warning(
+            "Dashboard build missing at %s and %s is unavailable",
+            default_build_path,
+            package_json,
+        )
+        return
+    if not node_modules.is_dir():
+        logger.warning(
+            "Dashboard build missing at %s and %s is unavailable; skipping auto-build",
+            default_build_path,
+            node_modules,
+        )
+        return
+    if not npm_path:
+        logger.warning(
+            "Dashboard build missing at %s and npm is not installed; skipping auto-build",
+            default_build_path,
+        )
+        return
+
+    logger.info("Dashboard build missing at %s; running npm build", default_build_path)
+    try:
+        subprocess.run(
+            [npm_path, "run", "build"],
+            cwd=str(_DASHBOARD_DIR),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        error_output = (exc.stderr or exc.stdout or str(exc)).strip()
+        logger.warning("Dashboard auto-build failed: %s", error_output)
+        return
+
+    if (default_build_path / "index.html").is_file():
+        logger.info("Dashboard auto-build completed successfully")
+    else:
+        logger.warning(
+            "Dashboard auto-build finished without producing %s",
+            default_build_path / "index.html",
+        )
 
 
 class _PollEndpointFilter(logging.Filter):

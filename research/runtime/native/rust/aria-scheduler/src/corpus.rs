@@ -1,0 +1,504 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use rusqlite::{Connection, OptionalExtension};
+use serde::Serialize;
+
+use crate::error::AriaError;
+use crate::notebook_graph::NotebookGraph;
+
+#[derive(Clone)]
+struct GraphTrainingInput {
+    graph_json: String,
+    stage1_passed: bool,
+    wikitext_perplexity: Option<f64>,
+    loss_ratio: Option<f64>,
+    stage0_passed: bool,
+    stage05_passed: bool,
+    timestamp: f64,
+}
+
+#[derive(Clone)]
+struct PredictorTrainingInput {
+    graph_json: String,
+    fingerprint_json: String,
+    novelty_score: Option<f64>,
+    structural_novelty: Option<f64>,
+    target_loss_ratio: f64,
+    tier: String,
+    timestamp: f64,
+}
+
+#[derive(Serialize)]
+pub struct GraphTrainingRow {
+    pub canonical_fingerprint: String,
+    pub graph_json: String,
+    pub stage1_any_passed: bool,
+    pub stage1_pass_rate: f64,
+    pub stage0_any_passed: bool,
+    pub stage05_any_passed: bool,
+    pub wikitext_perplexity_best: Option<f64>,
+    pub loss_ratio_best: Option<f64>,
+    pub n_rows: usize,
+    pub latest_timestamp: f64,
+}
+
+#[derive(Serialize)]
+pub struct PredictorTrainingRow {
+    pub canonical_fingerprint: String,
+    pub fingerprint_json: String,
+    pub novelty_score: Option<f64>,
+    pub structural_novelty: Option<f64>,
+    pub target_loss_ratio: f64,
+    pub tier: String,
+    pub n_rows: usize,
+}
+
+struct GraphAccumulator {
+    canonical_fingerprint: String,
+    representative: Option<GraphTrainingInput>,
+    n_rows: usize,
+    n_stage1_passed: usize,
+    stage0_any_passed: bool,
+    stage05_any_passed: bool,
+    wikitext_perplexity_best: Option<f64>,
+    loss_ratio_best: Option<f64>,
+    latest_timestamp: f64,
+}
+
+impl GraphAccumulator {
+    fn new(canonical_fingerprint: String) -> Self {
+        Self {
+            canonical_fingerprint,
+            representative: None,
+            n_rows: 0,
+            n_stage1_passed: 0,
+            stage0_any_passed: false,
+            stage05_any_passed: false,
+            wikitext_perplexity_best: None,
+            loss_ratio_best: None,
+            latest_timestamp: 0.0,
+        }
+    }
+
+    fn absorb(&mut self, row: GraphTrainingInput) {
+        self.n_rows += 1;
+        if row.stage1_passed {
+            self.n_stage1_passed += 1;
+        }
+        self.stage0_any_passed |= row.stage0_passed;
+        self.stage05_any_passed |= row.stage05_passed;
+        self.wikitext_perplexity_best =
+            min_option(self.wikitext_perplexity_best, row.wikitext_perplexity);
+        self.loss_ratio_best = min_option(self.loss_ratio_best, row.loss_ratio);
+        self.latest_timestamp = self.latest_timestamp.max(row.timestamp);
+
+        let replace = self
+            .representative
+            .as_ref()
+            .map(|current| graph_row_rank(&row) < graph_row_rank(current))
+            .unwrap_or(true);
+        if replace {
+            self.representative = Some(row);
+        }
+    }
+
+    fn finish(self) -> Result<GraphTrainingRow, AriaError> {
+        let representative = self.representative.ok_or_else(|| {
+            AriaError::ExecutionFailed("graph corpus accumulator missing representative".into())
+        })?;
+        Ok(GraphTrainingRow {
+            canonical_fingerprint: self.canonical_fingerprint,
+            graph_json: representative.graph_json,
+            stage1_any_passed: self.n_stage1_passed > 0,
+            stage1_pass_rate: self.n_stage1_passed as f64 / self.n_rows.max(1) as f64,
+            stage0_any_passed: self.stage0_any_passed,
+            stage05_any_passed: self.stage05_any_passed,
+            wikitext_perplexity_best: self.wikitext_perplexity_best,
+            loss_ratio_best: self.loss_ratio_best,
+            n_rows: self.n_rows,
+            latest_timestamp: self.latest_timestamp,
+        })
+    }
+}
+
+struct PredictorAccumulator {
+    canonical_fingerprint: String,
+    representative: Option<PredictorTrainingInput>,
+    n_rows: usize,
+}
+
+impl PredictorAccumulator {
+    fn new(canonical_fingerprint: String) -> Self {
+        Self {
+            canonical_fingerprint,
+            representative: None,
+            n_rows: 0,
+        }
+    }
+
+    fn absorb(&mut self, row: PredictorTrainingInput) {
+        self.n_rows += 1;
+        let replace = self
+            .representative
+            .as_ref()
+            .map(|current| predictor_row_rank(&row) < predictor_row_rank(current))
+            .unwrap_or(true);
+        if replace {
+            self.representative = Some(row);
+        }
+    }
+
+    fn finish(self) -> Result<PredictorTrainingRow, AriaError> {
+        let representative = self.representative.ok_or_else(|| {
+            AriaError::ExecutionFailed("predictor corpus accumulator missing representative".into())
+        })?;
+        Ok(PredictorTrainingRow {
+            canonical_fingerprint: self.canonical_fingerprint,
+            fingerprint_json: representative.fingerprint_json,
+            novelty_score: representative.novelty_score,
+            structural_novelty: representative.structural_novelty,
+            target_loss_ratio: representative.target_loss_ratio,
+            tier: representative.tier,
+            n_rows: self.n_rows,
+        })
+    }
+}
+
+pub fn fingerprint_notebook_graph_json(graph_json: &str) -> Result<String, AriaError> {
+    NotebookGraph::from_json(graph_json)?.fingerprint()
+}
+
+pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaError> {
+    let conn = open_notebook_db(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio,
+                   stage0_passed, stage05_passed, timestamp
+            FROM program_results
+            WHERE TRIM(COALESCE(graph_json, '')) <> ''
+              AND graph_json <> '{}'
+            ",
+        )
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(GraphTrainingInput {
+                graph_json: row.get(0)?,
+                stage1_passed: row.get::<_, Option<i64>>(1)?.unwrap_or(0) != 0,
+                wikitext_perplexity: row.get(2)?,
+                loss_ratio: row.get(3)?,
+                stage0_passed: row.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
+                stage05_passed: row.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0,
+                timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+            })
+        })
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+
+    let mut groups: HashMap<String, GraphAccumulator> = HashMap::new();
+    for row in rows {
+        let row = row.map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+        let canonical_fingerprint = fingerprint_notebook_graph_json(&row.graph_json)?;
+        groups
+            .entry(canonical_fingerprint.clone())
+            .or_insert_with(|| GraphAccumulator::new(canonical_fingerprint))
+            .absorb(row);
+    }
+
+    let mut deduped: Vec<GraphTrainingRow> = groups
+        .into_values()
+        .map(GraphAccumulator::finish)
+        .collect::<Result<Vec<_>, _>>()?;
+    deduped.sort_by(|a, b| a.canonical_fingerprint.cmp(&b.canonical_fingerprint));
+    serde_json::to_string(&deduped).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+pub fn build_predictor_training_corpus_json(db_path: &Path) -> Result<String, AriaError> {
+    let conn = open_notebook_db(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT pr.graph_json,
+                   pr.fingerprint_json,
+                   pr.novelty_score,
+                   pr.structural_novelty,
+                   COALESCE(l.investigation_loss_ratio, pr.loss_ratio) AS target_loss_ratio,
+                   COALESCE(l.tier, 'screening') AS tier,
+                   pr.timestamp
+            FROM program_results pr
+            JOIN leaderboard l ON l.result_id = pr.result_id
+            WHERE TRIM(COALESCE(pr.graph_json, '')) <> ''
+              AND pr.graph_json <> '{}'
+              AND pr.fingerprint_json IS NOT NULL
+              AND COALESCE(l.investigation_loss_ratio, pr.loss_ratio) IS NOT NULL
+            ",
+        )
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(PredictorTrainingInput {
+                graph_json: row.get(0)?,
+                fingerprint_json: row.get(1)?,
+                novelty_score: row.get(2)?,
+                structural_novelty: row.get(3)?,
+                target_loss_ratio: row.get(4)?,
+                tier: row
+                    .get::<_, Option<String>>(5)?
+                    .unwrap_or_else(|| "screening".into()),
+                timestamp: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+            })
+        })
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+
+    let mut groups: HashMap<String, PredictorAccumulator> = HashMap::new();
+    for row in rows {
+        let row = row.map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+        let canonical_fingerprint = fingerprint_notebook_graph_json(&row.graph_json)?;
+        groups
+            .entry(canonical_fingerprint.clone())
+            .or_insert_with(|| PredictorAccumulator::new(canonical_fingerprint))
+            .absorb(row);
+    }
+
+    let mut deduped: Vec<PredictorTrainingRow> = groups
+        .into_values()
+        .map(PredictorAccumulator::finish)
+        .collect::<Result<Vec<_>, _>>()?;
+    deduped.sort_by(|a, b| a.canonical_fingerprint.cmp(&b.canonical_fingerprint));
+    serde_json::to_string(&deduped).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+fn open_notebook_db(db_path: &Path) -> Result<Connection, AriaError> {
+    let conn = Connection::open(db_path).map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    conn.pragma_update(None, "busy_timeout", 10000)
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    let _: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='program_results'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    Ok(conn)
+}
+
+fn min_option(current: Option<f64>, candidate: Option<f64>) -> Option<f64> {
+    match (current, candidate) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (None, Some(b)) => Some(b),
+        (Some(a), None) => Some(a),
+        (None, None) => None,
+    }
+}
+
+fn graph_row_rank(row: &GraphTrainingInput) -> (i32, bool, String, u64) {
+    (
+        if row.stage1_passed { 0 } else { 1 },
+        row.loss_ratio.is_none(),
+        sortable_f64_text(row.loss_ratio.unwrap_or(f64::INFINITY)),
+        row.timestamp.to_bits(),
+    )
+}
+
+fn predictor_row_rank(row: &PredictorTrainingInput) -> (i32, String, u64) {
+    (
+        tier_rank(&row.tier),
+        sortable_f64_text(row.target_loss_ratio),
+        row.timestamp.to_bits(),
+    )
+}
+
+fn tier_rank(tier: &str) -> i32 {
+    match tier {
+        "breakthrough" => 0,
+        "validation" => 1,
+        "investigation" => 2,
+        "investigation_failed" => 3,
+        "investigation_fingerprint_incomplete" => 4,
+        "screening" => 5,
+        "screened_out" => 6,
+        _ => 7,
+    }
+}
+
+fn sortable_f64_text(value: f64) -> String {
+    format!("{:020.10}", value)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rusqlite::Connection;
+
+    use super::{
+        build_graph_training_corpus_json, build_predictor_training_corpus_json,
+        fingerprint_notebook_graph_json,
+    };
+
+    fn temp_db_path(name: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}.sqlite3", name, suffix))
+    }
+
+    fn sample_graph_json(metadata: &str) -> String {
+        format!(
+            r#"{{
+                "model_dim":256,
+                "nodes":{{
+                    "0":{{"id":0,"op_name":"input","input_ids":[],"config":{{}}}},
+                    "1":{{"id":1,"op_name":"layernorm","input_ids":[0],"config":{{}}}},
+                    "2":{{"id":2,"op_name":"add","input_ids":[0,1],"config":{{}}}}
+                }},
+                "metadata":{}
+            }}"#,
+            metadata
+        )
+    }
+
+    fn run_with_large_stack<F>(name: &str, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let handle = thread::Builder::new()
+            .name(name.to_string())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("failed to spawn test thread");
+        match handle.join() {
+            Ok(()) => {}
+            Err(err) => std::panic::resume_unwind(err),
+        }
+    }
+
+    #[test]
+    fn graph_training_corpus_dedupes_metadata_only_repeats() {
+        run_with_large_stack(
+            "graph_training_corpus_dedupes_metadata_only_repeats",
+            || {
+                let path = temp_db_path("graph_corpus");
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "
+                CREATE TABLE program_results (
+                    graph_json TEXT,
+                    stage1_passed INTEGER,
+                    wikitext_perplexity REAL,
+                    loss_ratio REAL,
+                    stage0_passed INTEGER,
+                    stage05_passed INTEGER,
+                    timestamp REAL
+                );
+                ",
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO program_results VALUES (?1, 0, 10.0, 1.2, 1, 0, 1.0)",
+                    [sample_graph_json(r#"{"templates_used":["a"]}"#)],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO program_results VALUES (?1, 1, 8.0, 0.7, 1, 1, 2.0)",
+                    [sample_graph_json(
+                        r#"{"templates_used":["b"],"lineage":{"parent":"x"}}"#,
+                    )],
+                )
+                .unwrap();
+
+                let payload = build_graph_training_corpus_json(&path).unwrap();
+                assert!(payload.contains(r#""n_rows":2"#));
+                assert!(payload.contains(r#""stage1_any_passed":true"#));
+
+                let _ = fs::remove_file(path);
+            },
+        );
+    }
+
+    #[test]
+    fn predictor_corpus_keeps_best_tier_representative() {
+        run_with_large_stack("predictor_corpus_keeps_best_tier_representative", || {
+            let path = temp_db_path("predictor_corpus");
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE program_results (
+                    result_id TEXT,
+                    graph_json TEXT,
+                    fingerprint_json TEXT,
+                    novelty_score REAL,
+                    structural_novelty REAL,
+                    loss_ratio REAL,
+                    timestamp REAL
+                );
+                CREATE TABLE leaderboard (
+                    result_id TEXT,
+                    investigation_loss_ratio REAL,
+                    tier TEXT
+                );
+                ",
+            )
+            .unwrap();
+            let graph_json = sample_graph_json(r#"{"templates_used":["a"]}"#);
+            conn.execute(
+                "INSERT INTO program_results VALUES ('r1', ?1, '{\"k\":1}', 1.0, 2.0, 0.9, 1.0)",
+                [graph_json.clone()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO leaderboard VALUES ('r1', NULL, 'screening')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO program_results VALUES ('r2', ?1, '{\"k\":2}', 1.5, 2.5, 0.8, 2.0)",
+                [graph_json],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO leaderboard VALUES ('r2', 0.4, 'validation')",
+                [],
+            )
+            .unwrap();
+
+            let payload = build_predictor_training_corpus_json(&path).unwrap();
+            assert!(payload.contains(r#""tier":"validation""#));
+            assert!(payload.contains(r#""target_loss_ratio":0.4"#));
+
+            let _ = fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn notebook_graph_fingerprint_is_stable_for_reordered_ids() {
+        let graph_a = r#"{
+            "model_dim":256,
+            "nodes":{
+                "5":{"id":5,"op_name":"add","input_ids":[2,3],"config":{}},
+                "2":{"id":2,"op_name":"input","input_ids":[],"config":{}},
+                "3":{"id":3,"op_name":"layernorm","input_ids":[2],"config":{}}
+            },
+            "metadata":{}
+        }"#;
+        let graph_b = r#"{
+            "model_dim":256,
+            "nodes":{
+                "10":{"id":10,"op_name":"input","input_ids":[],"config":{}},
+                "11":{"id":11,"op_name":"layernorm","input_ids":[10],"config":{}},
+                "12":{"id":12,"op_name":"add","input_ids":[10,11],"config":{}}
+            },
+            "metadata":{}
+        }"#;
+        let fp_a = fingerprint_notebook_graph_json(graph_a).unwrap();
+        let fp_b = fingerprint_notebook_graph_json(graph_b).unwrap();
+        assert_eq!(fp_a, fp_b);
+    }
+}

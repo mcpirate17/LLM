@@ -1,6 +1,6 @@
 """Kernel handler for poincare_add — delegates to research.mathspaces.hyperbolic."""
 
-from runtime.fallback_templates import make_mathspace_unary_handler
+from aria_designer.runtime.fallback_templates import make_mathspace_unary_handler
 
 
 def _native_args(inputs, config):

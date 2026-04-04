@@ -1,7 +1,7 @@
 """Python fallback kernel for speculative verification blend."""
 
 import torch
-from components._weight_cache import cached_randn
+from aria_designer.components._weight_cache import cached_randn
 
 
 class ComponentHandler:

@@ -56,7 +56,6 @@ impl NodeBuffer {
             NodeBuffer::Heap(v) => v,
         }
     }
-
 }
 
 /// Holds intermediate outputs during graph execution.
@@ -114,12 +113,12 @@ pub struct NativeKernelDispatch;
 
 impl NativeKernelDispatch {
     /// Determine the output length for a given op based on inputs and config.
-    fn output_len(
-        op_name: &str,
-        inputs: &[&[f32]],
-        config: &serde_json::Value,
-    ) -> usize {
-        let mut output_len = if !inputs.is_empty() { inputs[0].len() } else { 0 };
+    fn output_len(op_name: &str, inputs: &[&[f32]], config: &serde_json::Value) -> usize {
+        let mut output_len = if !inputs.is_empty() {
+            inputs[0].len()
+        } else {
+            0
+        };
 
         if op_name == "linear" {
             if let Some(dim_out) = config.get("dim_out").and_then(|v| v.as_i64()) {
@@ -133,7 +132,10 @@ impl NativeKernelDispatch {
             ) {
                 output_len = (m * n) as usize;
             }
-        } else if op_name == "matmul_relu" || op_name == "matmul_gelu" || op_name == "matmul_bias_relu" {
+        } else if op_name == "matmul_relu"
+            || op_name == "matmul_gelu"
+            || op_name == "matmul_bias_relu"
+        {
             if let (Some(m), Some(n)) = (
                 config.get("m").and_then(|v| v.as_i64()),
                 config.get("n").and_then(|v| v.as_i64()),
@@ -169,7 +171,24 @@ impl NativeKernelDispatch {
             ) {
                 output_len = (batch * dim) as usize;
             }
-        } else if op_name == "rope_rotate" || op_name == "rwkv_time_mixing" {
+        } else if op_name == "rope_rotate"
+            || op_name == "rwkv_time_mixing"
+            || op_name == "conv1d_seq"
+        {
+            if let (Some(batch), Some(seq), Some(dim)) = (
+                config.get("batch").and_then(|v| v.as_i64()),
+                config.get("seq").and_then(|v| v.as_i64()),
+                config.get("dim").and_then(|v| v.as_i64()),
+            ) {
+                output_len = (batch * seq * dim) as usize;
+            }
+        } else if op_name == "softmax_attention"
+            || op_name == "linear_attention"
+            || op_name == "depth_weighted_proj"
+            || op_name == "selective_scan"
+            || op_name == "state_space"
+            || op_name == "gated_delta"
+        {
             if let (Some(batch), Some(seq), Some(dim)) = (
                 config.get("batch").and_then(|v| v.as_i64()),
                 config.get("seq").and_then(|v| v.as_i64()),
@@ -215,31 +234,52 @@ impl NativeKernelDispatch {
         output: &mut [f32],
     ) -> Result<(), AriaError> {
         ensure_registry_init();
-        let c_op_name = CString::new(op_name).map_err(|_| {
-            AriaError::ExecutionFailed(format!("invalid op name: {}", op_name))
-        })?;
+        let c_op_name = CString::new(op_name)
+            .map_err(|_| AriaError::ExecutionFailed(format!("invalid op name: {}", op_name)))?;
 
         // Intercept tier 3 / math space research ops that are not in NkRegistration
         match op_name {
             "exp_map" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
                 let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_exp_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c); }
+                unsafe {
+                    ffi::aria_exp_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c);
+                }
                 return Ok(());
             }
             "log_map" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
                 let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_log_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c); }
+                unsafe {
+                    ffi::aria_log_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c);
+                }
                 return Ok(());
             }
             "poincare_add" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
                 let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_poincare_add_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim, c); }
+                unsafe {
+                    ffi::aria_poincare_add_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        c,
+                    );
+                }
                 return Ok(());
             }
             "hyp_linear" => {
@@ -247,78 +287,497 @@ impl NativeKernelDispatch {
                 let dim_in = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or(0);
                 let dim_out = config.get("dim_out").and_then(|v| v.as_i64()).unwrap_or(0);
                 let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_hyp_linear_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim_in, dim_out, c); }
+                unsafe {
+                    ffi::aria_hyp_linear_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim_in,
+                        dim_out,
+                        c,
+                    );
+                }
                 return Ok(());
             }
             "hyp_tangent_nonlinear" => {
                 let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_hyp_tangent_nonlinear_f32(inputs[0].as_ptr(), output.as_mut_ptr(), output.len() as i64, c); }
+                unsafe {
+                    ffi::aria_hyp_tangent_nonlinear_f32(
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        output.len() as i64,
+                        c,
+                    );
+                }
                 return Ok(());
             }
             "hyperbolic_norm" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
                 let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
                 let eps = config.get("eps").and_then(|v| v.as_f64()).unwrap_or(1e-5) as f32;
-                unsafe { ffi::aria_hyperbolic_norm_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(), output.as_mut_ptr(), batch, dim, c, eps); }
+                unsafe {
+                    ffi::aria_hyperbolic_norm_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        c,
+                        eps,
+                    );
+                }
                 return Ok(());
             }
             "tropical_attention" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
                 let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
-                let seq = config.get("seq").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
-                let temperature = config.get("temperature").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_tropical_attention_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim, temperature); }
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
+                let temperature = config
+                    .get("temperature")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0) as f32;
+                unsafe {
+                    ffi::aria_tropical_attention_f32(
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        temperature,
+                    );
+                }
                 return Ok(());
             }
             "tropical_gate" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
                 let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
-                let seq = config.get("seq").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
-                let temperature = config.get("temperature").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe { ffi::aria_tropical_gate_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim, temperature); }
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
+                let temperature = config
+                    .get("temperature")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0) as f32;
+                unsafe {
+                    ffi::aria_tropical_gate_f32(
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        temperature,
+                    );
+                }
                 return Ok(());
             }
             "tropical_add" => {
-                unsafe { ffi::aria_tropical_add_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), output.len() as i64); }
+                unsafe {
+                    ffi::aria_tropical_add_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        output.len() as i64,
+                    );
+                }
                 return Ok(());
             }
             "tropical_matmul" => {
-                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| AriaError::ExecutionFailed("tropical_matmul missing m".to_string()))?;
-                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| AriaError::ExecutionFailed("tropical_matmul missing k".to_string()))?;
-                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| AriaError::ExecutionFailed("tropical_matmul missing n".to_string()))?;
-                unsafe { ffi::aria_tropical_matmul_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), m, k, n); }
+                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("tropical_matmul missing m".to_string())
+                })?;
+                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("tropical_matmul missing k".to_string())
+                })?;
+                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("tropical_matmul missing n".to_string())
+                })?;
+                unsafe {
+                    ffi::aria_tropical_matmul_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        m,
+                        k,
+                        n,
+                    );
+                }
                 return Ok(());
             }
             "rotor_transform" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
-                unsafe { ffi::aria_rotor_transform_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim); }
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
+                unsafe {
+                    ffi::aria_rotor_transform_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                    );
+                }
                 return Ok(());
             }
             "grade_select" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
                 let grade = config.get("grade").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                unsafe { ffi::aria_grade_select_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, grade); }
+                unsafe {
+                    ffi::aria_grade_select_f32(
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        grade,
+                    );
+                }
                 return Ok(());
             }
             "grade_mix" => {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "grade_mix dispatch requires x and alpha".to_string(),
+                    ));
+                }
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / batch.max(1));
-                unsafe { ffi::aria_grade_mix_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), batch, dim); }
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / batch.max(1));
+                unsafe {
+                    ffi::aria_grade_mix_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                    );
+                }
                 return Ok(());
             }
             "clifford_attention" => {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
                 let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
-                let seq = config.get("seq").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
-                unsafe { ffi::aria_clifford_attention_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim); }
+                let seq = config
+                    .get("seq")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
+                unsafe {
+                    ffi::aria_clifford_attention_f32(
+                        inputs[0].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                    );
+                }
+                return Ok(());
+            }
+            "softmax_attention" => {
+                if inputs.len() < 5 {
+                    return Err(AriaError::ExecutionFailed(
+                        "softmax_attention dispatch requires x, Wq, Wk, Wv, Wo".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("softmax_attention missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("softmax_attention missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("softmax_attention missing dim".to_string())
+                })?;
+                let n_heads = config
+                    .get("n_heads")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("softmax_attention missing n_heads".to_string())
+                    })?;
+                unsafe {
+                    ffi::aria_softmax_attention_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        n_heads,
+                    );
+                }
+                return Ok(());
+            }
+            "linear_attention" => {
+                if inputs.len() < 5 {
+                    return Err(AriaError::ExecutionFailed(
+                        "linear_attention dispatch requires x, Wq, Wk, Wv, Wo".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("linear_attention missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("linear_attention missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("linear_attention missing dim".to_string())
+                })?;
+                let x_ptr = inputs[0].as_ptr();
+                let wq_ptr = inputs[1].as_ptr();
+                let wk_ptr = inputs[2].as_ptr();
+                let wv_ptr = inputs[3].as_ptr();
+                let wo_ptr = inputs[4].as_ptr();
+                let y_ptr = output.as_mut_ptr();
+                unsafe {
+                    ffi::aria_linear_attention_f32(
+                        x_ptr, wq_ptr, wk_ptr, wv_ptr, wo_ptr, y_ptr, batch, seq, dim,
+                    );
+                }
+                return Ok(());
+            }
+            "depth_weighted_proj" => {
+                if inputs.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "depth_weighted_proj dispatch requires x, depth_scorer, step_projs"
+                            .to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed(
+                            "depth_weighted_proj missing batch".to_string(),
+                        )
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("depth_weighted_proj missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("depth_weighted_proj missing dim".to_string())
+                })?;
+                let max_depth = config
+                    .get("max_depth")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed(
+                            "depth_weighted_proj missing max_depth".to_string(),
+                        )
+                    })?;
+                unsafe {
+                    ffi::aria_depth_weighted_proj_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        max_depth,
+                    );
+                }
+                return Ok(());
+            }
+            "layernorm" => {
+                if inputs.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "layernorm dispatch requires x, weight, bias".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("layernorm missing batch".to_string())
+                    })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("layernorm missing dim".to_string())
+                })?;
+                let eps = config
+                    .get("eps")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(1e-5f32);
+                unsafe {
+                    ffi::aria_layernorm_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        dim,
+                        eps,
+                    );
+                }
+                return Ok(());
+            }
+            "selective_scan" => {
+                if inputs.len() < 5 {
+                    return Err(AriaError::ExecutionFailed(
+                        "selective_scan dispatch requires x, A_log, dt_proj, B_weight, C_weight"
+                            .to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("selective_scan missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("selective_scan missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("selective_scan missing dim".to_string())
+                })?;
+                unsafe {
+                    ffi::aria_selective_scan_compiled_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                    );
+                }
+                return Ok(());
+            }
+            "state_space" => {
+                if inputs.len() < 7 {
+                    return Err(AriaError::ExecutionFailed(
+                        "state_space dispatch requires x, ssm_A, ssm_B_weight, ssm_C_weight, ssm_D, ssm_dt_weight, ssm_dt_bias".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("state_space missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("state_space missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("state_space missing dim".to_string())
+                })?;
+                let state_dim = config
+                    .get("state_dim")
+                    .and_then(|v| v.as_i64())
+                    .or_else(|| {
+                        if dim > 0 {
+                            let len = inputs[1].len() as i64;
+                            if len % dim == 0 {
+                                Some(len / dim)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("state_space missing state_dim".to_string())
+                    })?;
+                unsafe {
+                    ffi::aria_state_space_compiled_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        inputs[5].as_ptr(),
+                        inputs[6].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        state_dim,
+                    );
+                }
+                return Ok(());
+            }
+            "gated_delta" => {
+                if inputs.len() < 7 {
+                    return Err(AriaError::ExecutionFailed(
+                        "gated_delta dispatch requires x, q_weight, k_weight, v_weight, alpha_weight, beta_weight, o_weight".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gated_delta missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("gated_delta missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("gated_delta missing dim".to_string())
+                })?;
+                let n_heads = config
+                    .get("n_heads")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gated_delta missing n_heads".to_string())
+                    })?;
+                unsafe {
+                    ffi::aria_gated_delta_compiled_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        inputs[2].as_ptr(),
+                        inputs[3].as_ptr(),
+                        inputs[4].as_ptr(),
+                        inputs[5].as_ptr(),
+                        inputs[6].as_ptr(),
+                        output.as_mut_ptr(),
+                        batch,
+                        seq,
+                        dim,
+                        n_heads,
+                    );
+                }
                 return Ok(());
             }
             "geometric_product" => {
-                let n_multivectors = config.get("n_multivectors").and_then(|v| v.as_i64()).unwrap_or(output.len() as i64 / 8);
-                unsafe { ffi::aria_clifford_geometric_product_cl30_f32(inputs[0].as_ptr(), inputs[1].as_ptr(), output.as_mut_ptr(), n_multivectors); }
+                let n_multivectors = config
+                    .get("n_multivectors")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(output.len() as i64 / 8);
+                unsafe {
+                    ffi::aria_clifford_geometric_product_cl30_f32(
+                        inputs[0].as_ptr(),
+                        inputs[1].as_ptr(),
+                        output.as_mut_ptr(),
+                        n_multivectors,
+                    );
+                }
                 return Ok(());
             }
             _ => {} // Fall through to standard registry
@@ -370,10 +829,14 @@ impl NativeKernelDispatch {
                 let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
                 let dim_in = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or(0);
                 let dim_out = config.get("dim_out").and_then(|v| v.as_i64()).unwrap_or(0);
+                let bias_ptr = inputs
+                    .get(2)
+                    .map(|input| input.as_ptr())
+                    .unwrap_or(std::ptr::null());
                 linear(
                     inputs[0].as_ptr(),
                     inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
+                    bias_ptr,
                     output.as_mut_ptr(),
                     batch,
                     dim_in,
@@ -411,18 +874,15 @@ impl NativeKernelDispatch {
                     eps,
                 )
             } else if let Some(matmul_relu) = reg.matmul_relu_fn {
-                let m = config
-                    .get("m")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_relu missing m".to_string()))?;
-                let k = config
-                    .get("k")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_relu missing k".to_string()))?;
-                let n = config
-                    .get("n")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_relu missing n".to_string()))?;
+                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_relu missing m".to_string())
+                })?;
+                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_relu missing k".to_string())
+                })?;
+                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_relu missing n".to_string())
+                })?;
                 matmul_relu(
                     inputs[0].as_ptr(),
                     inputs[1].as_ptr(),
@@ -437,18 +897,15 @@ impl NativeKernelDispatch {
                         "matmul_bias_relu dispatch requires A, B, bias".to_string(),
                     ));
                 }
-                let m = config
-                    .get("m")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_bias_relu missing m".to_string()))?;
-                let k = config
-                    .get("k")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_bias_relu missing k".to_string()))?;
-                let n = config
-                    .get("n")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_bias_relu missing n".to_string()))?;
+                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_bias_relu missing m".to_string())
+                })?;
+                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_bias_relu missing k".to_string())
+                })?;
+                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_bias_relu missing n".to_string())
+                })?;
                 matmul_bias_relu(
                     inputs[0].as_ptr(),
                     inputs[1].as_ptr(),
@@ -464,14 +921,12 @@ impl NativeKernelDispatch {
                         "layernorm_residual dispatch requires x, residual, gamma, beta".to_string(),
                     ));
                 }
-                let rows = config
-                    .get("rows")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("layernorm_residual missing rows".to_string()))?;
-                let cols = config
-                    .get("cols")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("layernorm_residual missing cols".to_string()))?;
+                let rows = config.get("rows").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("layernorm_residual missing rows".to_string())
+                })?;
+                let cols = config.get("cols").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("layernorm_residual missing cols".to_string())
+                })?;
                 let eps = config
                     .get("eps")
                     .and_then(|v| v.as_f64())
@@ -488,18 +943,15 @@ impl NativeKernelDispatch {
                     eps,
                 )
             } else if let Some(matmul_gelu) = reg.matmul_gelu_fn {
-                let m = config
-                    .get("m")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_gelu missing m".to_string()))?;
-                let k = config
-                    .get("k")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_gelu missing k".to_string()))?;
-                let n = config
-                    .get("n")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul_gelu missing n".to_string()))?;
+                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_gelu missing m".to_string())
+                })?;
+                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_gelu missing k".to_string())
+                })?;
+                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("matmul_gelu missing n".to_string())
+                })?;
                 matmul_gelu(
                     inputs[0].as_ptr(),
                     inputs[1].as_ptr(),
@@ -511,13 +963,16 @@ impl NativeKernelDispatch {
             } else if let Some(swiglu) = reg.swiglu_fn {
                 if inputs.len() < 7 {
                     return Err(AriaError::ExecutionFailed(
-                        "swiglu dispatch requires x, W_gate, W_up, W_down, b_gate, b_up, b_down".to_string(),
+                        "swiglu dispatch requires x, W_gate, W_up, W_down, b_gate, b_up, b_down"
+                            .to_string(),
                     ));
                 }
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing batch".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("swiglu missing batch".to_string())
+                    })?;
                 let dim = config
                     .get("dim")
                     .and_then(|v| v.as_i64())
@@ -525,7 +980,9 @@ impl NativeKernelDispatch {
                 let hidden_dim = config
                     .get("hidden_dim")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing hidden_dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("swiglu missing hidden_dim".to_string())
+                    })?;
 
                 let mut tmp_gate = vec![0.0f32; (batch * hidden_dim) as usize];
                 let mut tmp_up = vec![0.0f32; (batch * hidden_dim) as usize];
@@ -553,19 +1010,21 @@ impl NativeKernelDispatch {
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing batch".to_string()))?;
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing seq".to_string()))?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("rwkv_channel missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("rwkv_channel missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("rwkv_channel missing dim".to_string())
+                })?;
                 let hidden_dim = config
                     .get("hidden_dim")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing hidden_dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("rwkv_channel missing hidden_dim".to_string())
+                    })?;
 
                 let mut tmp_xk = vec![0.0f32; (batch * seq * dim) as usize];
                 let mut tmp_xr = vec![0.0f32; (batch * seq * dim) as usize];
@@ -586,6 +1045,33 @@ impl NativeKernelDispatch {
                     dim,
                     hidden_dim,
                 )
+            } else if let Some(conv1d_seq) = reg.conv1d_seq_fn {
+                if inputs.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "conv1d_seq dispatch requires x, weight, bias".to_string(),
+                    ));
+                }
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("conv1d_seq missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("conv1d_seq missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("conv1d_seq missing dim".to_string())
+                })?;
+                conv1d_seq(
+                    inputs[0].as_ptr(),
+                    inputs[1].as_ptr(),
+                    inputs[2].as_ptr(),
+                    output.as_mut_ptr(),
+                    batch,
+                    seq,
+                    dim,
+                )
             } else if let Some(embedding_lookup) = reg.embedding_lookup_fn {
                 if inputs.len() < 2 {
                     return Err(AriaError::ExecutionFailed(
@@ -595,15 +1081,20 @@ impl NativeKernelDispatch {
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("embedding_lookup missing batch".to_string()))?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("embedding_lookup missing dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("embedding_lookup missing batch".to_string())
+                    })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("embedding_lookup missing dim".to_string())
+                })?;
                 let vocab_size = config
                     .get("vocab_size")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("embedding_lookup missing vocab_size".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed(
+                            "embedding_lookup missing vocab_size".to_string(),
+                        )
+                    })?;
                 // inputs[1] is indices as f32-reinterpreted i32
                 let indices_ptr = inputs[1].as_ptr() as *const i32;
                 let pos_embed_ptr = if inputs.len() > 2 {
@@ -624,15 +1115,15 @@ impl NativeKernelDispatch {
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rope_rotate missing batch".to_string()))?;
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rope_rotate missing seq".to_string()))?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rope_rotate missing dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("rope_rotate missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("rope_rotate missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("rope_rotate missing dim".to_string())
+                })?;
                 let theta_base = config
                     .get("theta_base")
                     .and_then(|v| v.as_f64())
@@ -649,21 +1140,28 @@ impl NativeKernelDispatch {
             } else if let Some(gated_linear) = reg.gated_linear_fn {
                 if inputs.len() < 4 {
                     return Err(AriaError::ExecutionFailed(
-                        "gated_linear dispatch requires x, W, b, W_gate (+ optional b_gate)".to_string(),
+                        "gated_linear dispatch requires x, W, b, W_gate (+ optional b_gate)"
+                            .to_string(),
                     ));
                 }
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gated_linear missing batch".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gated_linear missing batch".to_string())
+                    })?;
                 let dim_in = config
                     .get("dim_in")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gated_linear missing dim_in".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gated_linear missing dim_in".to_string())
+                    })?;
                 let dim_out = config
                     .get("dim_out")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gated_linear missing dim_out".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gated_linear missing dim_out".to_string())
+                    })?;
                 let b_gate_ptr = if inputs.len() > 4 {
                     inputs[4].as_ptr()
                 } else {
@@ -691,15 +1189,15 @@ impl NativeKernelDispatch {
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("cosine_similarity missing batch".to_string()))?;
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("cosine_similarity missing seq".to_string()))?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("cosine_similarity missing dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("cosine_similarity missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("cosine_similarity missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("cosine_similarity missing dim".to_string())
+                })?;
                 cosine_similarity(
                     inputs[0].as_ptr(),
                     inputs[1].as_ptr(),
@@ -717,19 +1215,21 @@ impl NativeKernelDispatch {
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing batch".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gather_topk missing batch".to_string())
+                    })?;
                 let n_items = config
                     .get("n_items")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing n_items".to_string()))?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing dim".to_string()))?;
-                let k = config
-                    .get("k")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("gather_topk missing k".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("gather_topk missing n_items".to_string())
+                    })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("gather_topk missing dim".to_string())
+                })?;
+                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("gather_topk missing k".to_string())
+                })?;
                 let mut out_indices = vec![0i32; (batch * k) as usize];
                 gather_topk(
                     inputs[0].as_ptr(),
@@ -744,21 +1244,22 @@ impl NativeKernelDispatch {
             } else if let Some(rwkv_time_mixing) = reg.rwkv_time_mixing_fn {
                 if inputs.len() < 6 {
                     return Err(AriaError::ExecutionFailed(
-                        "rwkv_time_mixing dispatch requires x, w_decay, u_bonus, W_k, W_v, W_r".to_string(),
+                        "rwkv_time_mixing dispatch requires x, w_decay, u_bonus, W_k, W_v, W_r"
+                            .to_string(),
                     ));
                 }
                 let batch = config
                     .get("batch")
                     .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing batch".to_string()))?;
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing seq".to_string()))?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing dim".to_string()))?;
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed("rwkv_time_mixing missing batch".to_string())
+                    })?;
+                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("rwkv_time_mixing missing seq".to_string())
+                })?;
+                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
+                    AriaError::ExecutionFailed("rwkv_time_mixing missing dim".to_string())
+                })?;
                 rwkv_time_mixing(
                     inputs[0].as_ptr(),
                     inputs[1].as_ptr(),
@@ -789,7 +1290,8 @@ impl NativeKernelDispatch {
                 )
             } else if reg.split_fn.is_some() {
                 return Err(AriaError::ExecutionFailed(
-                    "split op is multi-output and is not supported by single-output executor path".to_string(),
+                    "split op is multi-output and is not supported by single-output executor path"
+                        .to_string(),
                 ));
             } else {
                 return Err(AriaError::ExecutionFailed(format!(
@@ -851,7 +1353,11 @@ fn estimate_arena_capacity(graph: &GraphIR, input_len: usize) -> usize {
             // For linear/matmul, check config for dim_out.
             if node.op_name == "linear" || node.op_name == "matmul" {
                 if let Some(dim_out) = node.config.get("dim_out").and_then(|v| v.as_i64()) {
-                    let batch = node.config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
+                    let batch = node
+                        .config
+                        .get("batch")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(1);
                     (batch * dim_out) as usize
                 } else {
                     // Fall back to input size estimate.
@@ -895,6 +1401,34 @@ pub struct ExecutionResult {
     pub node_profiles: Vec<NodeProfile>,
     /// Peak memory reported by profiler (0 when profiling is disabled).
     pub peak_memory_bytes: i64,
+}
+
+#[derive(Clone, Copy)]
+enum InputBinding<'a> {
+    Shared(&'a [f32]),
+    Distinct(&'a [&'a [f32]]),
+}
+
+impl<'a> InputBinding<'a> {
+    fn estimate_input_len(&self) -> usize {
+        match self {
+            Self::Shared(input) => input.len(),
+            Self::Distinct(inputs) => inputs.first().map(|input| input.len()).unwrap_or(0),
+        }
+    }
+
+    fn slice_for_input_node(&self, ordinal: usize) -> Result<&'a [f32], AriaError> {
+        match self {
+            Self::Shared(input) => Ok(input),
+            Self::Distinct(inputs) => inputs.get(ordinal).copied().ok_or_else(|| {
+                AriaError::ExecutionFailed(format!(
+                    "graph requires input node {} but only {} input buffers were provided",
+                    ordinal,
+                    inputs.len(),
+                ))
+            }),
+        }
+    }
 }
 
 fn is_all_zero(buf: &[f32]) -> bool {
@@ -1008,16 +1542,16 @@ fn execute_conditional_gather(inputs: &[&[f32]]) -> Result<Vec<f32>, AriaError> 
 ///    (falling back to heap if the arena is exhausted).
 /// 3. Dispatches kernels directly into the pre-allocated buffers.
 /// 4. Returns the output tensor and arena usage statistics.
-pub fn execute_with_arena(
+fn execute_with_input_binding(
     graph: &GraphIR,
     dispatcher: &dyn KernelDispatch,
-    input: &[f32],
+    input_binding: InputBinding<'_>,
 ) -> Result<ExecutionResult, AriaError> {
     let optimized_graph = graph.fuse_supported_patterns();
     let graph = &optimized_graph;
     let order = graph.topological_order()?;
 
-    let arena_capacity = estimate_arena_capacity(graph, input.len());
+    let arena_capacity = estimate_arena_capacity(graph, input_binding.estimate_input_len());
     let mut arena = Arena::new(arena_capacity);
     let mut stats = ArenaStats {
         arena_capacity,
@@ -1035,6 +1569,7 @@ pub fn execute_with_arena(
         unsafe { ffi::np_reset_counters() };
     }
 
+    let mut input_ordinal = 0usize;
     for &node_id in &order {
         let node = node_map.get(&node_id).ok_or_else(|| {
             AriaError::InvalidIR(format!(
@@ -1044,6 +1579,8 @@ pub fn execute_with_arena(
         })?;
 
         if node.is_input {
+            let input = input_binding.slice_for_input_node(input_ordinal)?;
+            input_ordinal += 1;
             // Allocate from arena and copy input data in.
             match arena.alloc_f32_raw(input.len()) {
                 Ok((ptr, len)) => {
@@ -1067,12 +1604,15 @@ pub fn execute_with_arena(
             .input_ids
             .iter()
             .map(|id| {
-                ctx.outputs.get(id).map(|buf| buf.as_slice()).ok_or_else(|| {
-                    AriaError::ExecutionFailed(format!(
-                        "node {} requires input from node {} which has no output",
-                        node_id.0, id.0
-                    ))
-                })
+                ctx.outputs
+                    .get(id)
+                    .map(|buf| buf.as_slice())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed(format!(
+                            "node {} requires input from node {} which has no output",
+                            node_id.0, id.0
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1087,7 +1627,8 @@ pub fn execute_with_arena(
                         stats.arena_alloc_count += 1;
                     }
                     Err(_) => {
-                        ctx.outputs.insert(node_id, NodeBuffer::Heap(first.to_vec()));
+                        ctx.outputs
+                            .insert(node_id, NodeBuffer::Heap(first.to_vec()));
                         stats.heap_fallback_count += 1;
                     }
                 }
@@ -1119,32 +1660,27 @@ pub fn execute_with_arena(
         }
 
         // Determine output size.
-        let output_len = NativeKernelDispatch::output_len(
-            &node.op_name,
-            &input_slices,
-            &node.config,
-        );
+        let output_len =
+            NativeKernelDispatch::output_len(&node.op_name, &input_slices, &node.config);
 
         // Record start time if profiling.
-        let t_start = if profiling { unsafe { ffi::np_clock_ns() } } else { 0 };
+        let t_start = if profiling {
+            unsafe { ffi::np_clock_ns() }
+        } else {
+            0
+        };
 
         // Try arena allocation first, fall back to heap.
         match arena.alloc_f32_raw(output_len) {
             Ok((ptr, len)) => {
                 let out_slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
-                dispatcher.dispatch_into(
-                    &node.op_name,
-                    &input_slices,
-                    &node.config,
-                    out_slice,
-                )?;
+                dispatcher.dispatch_into(&node.op_name, &input_slices, &node.config, out_slice)?;
                 ctx.outputs.insert(node_id, NodeBuffer::Arena { ptr, len });
                 stats.arena_alloc_count += 1;
             }
             Err(_) => {
                 // Graceful degradation: fall back to dispatch() which heap-allocates.
-                let result =
-                    dispatcher.dispatch(&node.op_name, &input_slices, &node.config)?;
+                let result = dispatcher.dispatch(&node.op_name, &input_slices, &node.config)?;
                 ctx.outputs.insert(node_id, NodeBuffer::Heap(result));
                 stats.heap_fallback_count += 1;
             }
@@ -1232,6 +1768,22 @@ pub fn execute_with_arena(
     })
 }
 
+pub fn execute_with_arena(
+    graph: &GraphIR,
+    dispatcher: &dyn KernelDispatch,
+    input: &[f32],
+) -> Result<ExecutionResult, AriaError> {
+    execute_with_input_binding(graph, dispatcher, InputBinding::Shared(input))
+}
+
+pub fn execute_with_arena_multi_input(
+    graph: &GraphIR,
+    dispatcher: &dyn KernelDispatch,
+    inputs: &[&[f32]],
+) -> Result<ExecutionResult, AriaError> {
+    execute_with_input_binding(graph, dispatcher, InputBinding::Distinct(inputs))
+}
+
 // ── Backward pass infrastructure ──────────────────────────────────────
 
 /// Result of a backward kernel dispatch.
@@ -1241,6 +1793,8 @@ pub enum BackwardGrads {
     Single(Vec<f32>),
     /// Two gradients (binary ops: grad_a, grad_b).
     Pair(Vec<f32>, Vec<f32>),
+    /// Arbitrary per-input gradients in input order.
+    Many(Vec<Vec<f32>>),
 }
 
 /// Result of full backward graph execution.
@@ -1250,6 +1804,794 @@ pub struct BackwardResult {
     pub grads: HashMap<u32, Vec<f32>>,
     /// Arena memory usage statistics for the backward pass.
     pub arena_stats: ArenaStats,
+}
+
+fn silu_derivative(x: f32) -> f32 {
+    let sig = 1.0f32 / (1.0f32 + (-x).exp());
+    sig * (1.0f32 + x * (1.0f32 - sig))
+}
+
+fn conv1d_seq_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 3 {
+        return Err(AriaError::ExecutionFailed(
+            "conv1d_seq backward: need x, weight, bias".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let weight = saved_tensors[1];
+    let bias = saved_tensors[2];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("conv1d_seq missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("conv1d_seq missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("conv1d_seq missing dim".into()))?;
+    let kernel = if dim > 0 {
+        weight.len() as i64 / dim
+    } else {
+        0
+    };
+    if kernel <= 0 {
+        return Err(AriaError::ExecutionFailed(
+            "conv1d_seq backward: invalid kernel shape".into(),
+        ));
+    }
+
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_weight = vec![0.0f32; weight.len()];
+    let mut grad_bias = vec![0.0f32; bias.len()];
+
+    for b in 0..batch as usize {
+        for s in 0..seq as usize {
+            for d in 0..dim as usize {
+                let grad_idx = (b * seq as usize + s) * dim as usize + d;
+                let go = grad_output[grad_idx];
+                grad_bias[d] += go;
+                for k in 0..kernel as usize {
+                    let src_s = s as i64 + k as i64 - (kernel - 1);
+                    if !(0..seq).contains(&src_s) {
+                        continue;
+                    }
+                    let src_idx = (b * seq as usize + src_s as usize) * dim as usize + d;
+                    let weight_idx = d * kernel as usize + k;
+                    grad_x[src_idx] += go * weight[weight_idx];
+                    grad_weight[weight_idx] += go * x[src_idx];
+                }
+            }
+        }
+    }
+
+    Ok(BackwardGrads::Many(vec![grad_x, grad_weight, grad_bias]))
+}
+
+fn swiglu_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 7 {
+        return Err(AriaError::ExecutionFailed(
+            "swiglu backward: need x, W_gate, W_up, W_down, b_gate, b_up, b_down".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let w_gate = saved_tensors[1];
+    let w_up = saved_tensors[2];
+    let w_down = saved_tensors[3];
+    let b_gate = saved_tensors[4];
+    let b_up = saved_tensors[5];
+    let b_down = saved_tensors[6];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing batch".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing dim".into()))?;
+    let hidden_dim = config
+        .get("hidden_dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing hidden_dim".into()))?;
+
+    let rows = batch as usize;
+    let dim_usize = dim as usize;
+    let hidden_usize = hidden_dim as usize;
+
+    let mut gate_linear = vec![0.0f32; rows * hidden_usize];
+    let mut gate_act = vec![0.0f32; rows * hidden_usize];
+    let mut up_linear = vec![0.0f32; rows * hidden_usize];
+    let mut hidden = vec![0.0f32; rows * hidden_usize];
+    for row in 0..rows {
+        for h in 0..hidden_usize {
+            let mut gate_sum = b_gate.get(h).copied().unwrap_or(0.0f32);
+            let mut up_sum = b_up.get(h).copied().unwrap_or(0.0f32);
+            for d in 0..dim_usize {
+                let x_val = x[row * dim_usize + d];
+                gate_sum += x_val * w_gate[h * dim_usize + d];
+                up_sum += x_val * w_up[h * dim_usize + d];
+            }
+            let gate_idx = row * hidden_usize + h;
+            gate_linear[gate_idx] = gate_sum;
+            gate_act[gate_idx] = gate_sum / (1.0f32 + (-gate_sum).exp());
+            up_linear[gate_idx] = up_sum;
+            hidden[gate_idx] = gate_act[gate_idx] * up_sum;
+        }
+    }
+
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_w_gate = vec![0.0f32; w_gate.len()];
+    let mut grad_w_up = vec![0.0f32; w_up.len()];
+    let mut grad_w_down = vec![0.0f32; w_down.len()];
+    let mut grad_b_gate = vec![0.0f32; b_gate.len()];
+    let mut grad_b_up = vec![0.0f32; b_up.len()];
+    let mut grad_b_down = vec![0.0f32; b_down.len()];
+    let mut grad_hidden = vec![0.0f32; hidden.len()];
+
+    for row in 0..rows {
+        for out_d in 0..dim_usize {
+            let go = grad_output[row * dim_usize + out_d];
+            if out_d < grad_b_down.len() {
+                grad_b_down[out_d] += go;
+            }
+            for h in 0..hidden_usize {
+                grad_w_down[out_d * hidden_usize + h] += go * hidden[row * hidden_usize + h];
+                grad_hidden[row * hidden_usize + h] += go * w_down[out_d * hidden_usize + h];
+            }
+        }
+    }
+
+    for row in 0..rows {
+        for h in 0..hidden_usize {
+            let idx = row * hidden_usize + h;
+            let grad_gate_act = grad_hidden[idx] * up_linear[idx];
+            let grad_up = grad_hidden[idx] * gate_act[idx];
+            let grad_gate = grad_gate_act * silu_derivative(gate_linear[idx]);
+            if h < grad_b_gate.len() {
+                grad_b_gate[h] += grad_gate;
+            }
+            if h < grad_b_up.len() {
+                grad_b_up[h] += grad_up;
+            }
+            for d in 0..dim_usize {
+                let x_val = x[row * dim_usize + d];
+                grad_w_gate[h * dim_usize + d] += grad_gate * x_val;
+                grad_w_up[h * dim_usize + d] += grad_up * x_val;
+                grad_x[row * dim_usize + d] +=
+                    grad_gate * w_gate[h * dim_usize + d] + grad_up * w_up[h * dim_usize + d];
+            }
+        }
+    }
+
+    Ok(BackwardGrads::Many(vec![
+        grad_x,
+        grad_w_gate,
+        grad_w_up,
+        grad_w_down,
+        grad_b_gate,
+        grad_b_up,
+        grad_b_down,
+    ]))
+}
+
+fn rwkv_channel_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 6 {
+        return Err(AriaError::ExecutionFailed(
+            "rwkv_channel backward: need x, mix_k, mix_r, W_k, W_r, W_v".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let mix_k = saved_tensors[1];
+    let mix_r = saved_tensors[2];
+    let w_k = saved_tensors[3];
+    let w_r = saved_tensors[4];
+    let w_v = saved_tensors[5];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing dim".into()))?;
+    let hidden_dim = config
+        .get("hidden_dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_channel missing hidden_dim".into()))?;
+
+    let batch_usize = batch as usize;
+    let seq_usize = seq as usize;
+    let dim_usize = dim as usize;
+    let hidden_usize = hidden_dim as usize;
+
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_mix_k = vec![0.0f32; mix_k.len()];
+    let mut grad_mix_r = vec![0.0f32; mix_r.len()];
+    let mut grad_w_k = vec![0.0f32; w_k.len()];
+    let mut grad_w_r = vec![0.0f32; w_r.len()];
+    let mut grad_w_v = vec![0.0f32; w_v.len()];
+
+    let batch_stride = seq_usize * dim_usize;
+    for b in 0..batch_usize {
+        let batch_offset = b * batch_stride;
+        for t in 0..seq_usize {
+            let token_offset = batch_offset + t * dim_usize;
+            let prev_offset = if t == 0 {
+                token_offset
+            } else {
+                batch_offset + (t - 1) * dim_usize
+            };
+
+            let mut xk = vec![0.0f32; dim_usize];
+            let mut xr = vec![0.0f32; dim_usize];
+            for d in 0..dim_usize {
+                let xt = x[token_offset + d];
+                let xprev = x[prev_offset + d];
+                let mk = mix_k.get(d).copied().unwrap_or(0.5f32);
+                let mr = mix_r.get(d).copied().unwrap_or(0.5f32);
+                xk[d] = if t == 0 {
+                    xt
+                } else {
+                    mk * xt + (1.0f32 - mk) * xprev
+                };
+                xr[d] = if t == 0 {
+                    xt
+                } else {
+                    mr * xt + (1.0f32 - mr) * xprev
+                };
+            }
+
+            let mut k_pre = vec![0.0f32; hidden_usize];
+            let mut k_relu = vec![0.0f32; hidden_usize];
+            let mut k_sq = vec![0.0f32; hidden_usize];
+            for h in 0..hidden_usize {
+                let mut sum = 0.0f32;
+                for d in 0..dim_usize {
+                    sum += w_k[h * dim_usize + d] * xk[d];
+                }
+                k_pre[h] = sum;
+                k_relu[h] = sum.max(0.0f32);
+                k_sq[h] = k_relu[h] * k_relu[h];
+            }
+
+            let mut r_pre = vec![0.0f32; dim_usize];
+            let mut r = vec![0.0f32; dim_usize];
+            let mut v = vec![0.0f32; dim_usize];
+            for out_d in 0..dim_usize {
+                let mut r_sum = 0.0f32;
+                let mut v_sum = 0.0f32;
+                for d in 0..dim_usize {
+                    r_sum += w_r[out_d * dim_usize + d] * xr[d];
+                }
+                for h in 0..hidden_usize {
+                    v_sum += w_v[out_d * hidden_usize + h] * k_sq[h];
+                }
+                r_pre[out_d] = r_sum;
+                r[out_d] = 1.0f32 / (1.0f32 + (-r_sum).exp());
+                v[out_d] = v_sum;
+            }
+
+            let mut grad_xk = vec![0.0f32; dim_usize];
+            let mut grad_xr = vec![0.0f32; dim_usize];
+            let mut grad_k_sq = vec![0.0f32; hidden_usize];
+            for out_d in 0..dim_usize {
+                let go = grad_output[token_offset + out_d];
+                let grad_r = go * v[out_d];
+                let grad_v = go * r[out_d];
+                let grad_r_pre = grad_r * r[out_d] * (1.0f32 - r[out_d]);
+                for h in 0..hidden_usize {
+                    grad_w_v[out_d * hidden_usize + h] += grad_v * k_sq[h];
+                    grad_k_sq[h] += grad_v * w_v[out_d * hidden_usize + h];
+                }
+                for d in 0..dim_usize {
+                    grad_w_r[out_d * dim_usize + d] += grad_r_pre * xr[d];
+                    grad_xr[d] += grad_r_pre * w_r[out_d * dim_usize + d];
+                }
+            }
+
+            for h in 0..hidden_usize {
+                let grad_k_pre = if k_pre[h] > 0.0f32 {
+                    grad_k_sq[h] * 2.0f32 * k_relu[h]
+                } else {
+                    0.0f32
+                };
+                for d in 0..dim_usize {
+                    grad_w_k[h * dim_usize + d] += grad_k_pre * xk[d];
+                    grad_xk[d] += grad_k_pre * w_k[h * dim_usize + d];
+                }
+            }
+
+            for d in 0..dim_usize {
+                let xt = x[token_offset + d];
+                if t == 0 {
+                    grad_x[token_offset + d] += grad_xk[d] + grad_xr[d];
+                    continue;
+                }
+                let xprev = x[prev_offset + d];
+                let mk = mix_k.get(d).copied().unwrap_or(0.5f32);
+                let mr = mix_r.get(d).copied().unwrap_or(0.5f32);
+                grad_x[token_offset + d] += grad_xk[d] * mk + grad_xr[d] * mr;
+                grad_x[prev_offset + d] += grad_xk[d] * (1.0f32 - mk) + grad_xr[d] * (1.0f32 - mr);
+                grad_mix_k[d] += grad_xk[d] * (xt - xprev);
+                grad_mix_r[d] += grad_xr[d] * (xt - xprev);
+            }
+        }
+    }
+
+    Ok(BackwardGrads::Many(vec![
+        grad_x, grad_mix_k, grad_mix_r, grad_w_k, grad_w_r, grad_w_v,
+    ]))
+}
+
+fn gated_linear_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 5 {
+        return Err(AriaError::ExecutionFailed(
+            "gated_linear backward: need x, W, bias, W_gate, bias_gate".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let w = saved_tensors[1];
+    let w_gate = saved_tensors[3];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| if !x.is_empty() { 1 } else { 0 });
+    let dim_in = config
+        .get("dim_in")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| if batch > 0 { x.len() as i64 / batch } else { 0 });
+    let dim_out = config
+        .get("dim_out")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| w.len() as i64 / dim_in.max(1));
+    let mut gate_sigmoid = vec![0.0f32; (batch * dim_out) as usize];
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_w = vec![0.0f32; w.len()];
+    let mut grad_w_gate = vec![0.0f32; w_gate.len()];
+    let mut grad_b = vec![0.0f32; dim_out as usize];
+    let mut grad_b_gate = vec![0.0f32; dim_out as usize];
+
+    for row in 0..batch as usize {
+        let x_row = &x[row * dim_in as usize..(row + 1) * dim_in as usize];
+        let gate_slice = &mut gate_sigmoid[row * dim_out as usize..(row + 1) * dim_out as usize];
+        for out_idx in 0..dim_out as usize {
+            let w_row = &w_gate[out_idx * dim_in as usize..(out_idx + 1) * dim_in as usize];
+            let mut sum = saved_tensors[4][out_idx];
+            for in_idx in 0..dim_in as usize {
+                sum += x_row[in_idx] * w_row[in_idx];
+            }
+            gate_slice[out_idx] = 1.0f32 / (1.0f32 + (-sum).exp());
+        }
+    }
+
+    unsafe {
+        ffi::aria_gated_linear_backward_f32(
+            grad_output.as_ptr(),
+            x.as_ptr(),
+            w.as_ptr(),
+            w_gate.as_ptr(),
+            gate_sigmoid.as_ptr(),
+            grad_x.as_mut_ptr(),
+            grad_w.as_mut_ptr(),
+            grad_w_gate.as_mut_ptr(),
+            grad_b.as_mut_ptr(),
+            grad_b_gate.as_mut_ptr(),
+            batch,
+            dim_in,
+            dim_out,
+        );
+    }
+    Ok(BackwardGrads::Many(vec![
+        grad_x,
+        grad_w,
+        grad_b,
+        grad_w_gate,
+        grad_b_gate,
+    ]))
+}
+
+fn softmax_attention_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 5 {
+        return Err(AriaError::ExecutionFailed(
+            "softmax_attention backward: need x, Wq, Wk, Wv, Wo".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let wq = saved_tensors[1];
+    let wk = saved_tensors[2];
+    let wv = saved_tensors[3];
+    let wo = saved_tensors[4];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("softmax_attention missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("softmax_attention missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("softmax_attention missing dim".into()))?;
+    let n_heads = config
+        .get("n_heads")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("softmax_attention missing n_heads".into()))?;
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_wq = vec![0.0f32; wq.len()];
+    let mut grad_wk = vec![0.0f32; wk.len()];
+    let mut grad_wv = vec![0.0f32; wv.len()];
+    let mut grad_wo = vec![0.0f32; wo.len()];
+    unsafe {
+        ffi::aria_softmax_attention_backward_f32(
+            grad_output.as_ptr(),
+            x.as_ptr(),
+            wq.as_ptr(),
+            wk.as_ptr(),
+            wv.as_ptr(),
+            wo.as_ptr(),
+            grad_x.as_mut_ptr(),
+            grad_wq.as_mut_ptr(),
+            grad_wk.as_mut_ptr(),
+            grad_wv.as_mut_ptr(),
+            grad_wo.as_mut_ptr(),
+            batch,
+            seq,
+            dim,
+            n_heads,
+        );
+    }
+    Ok(BackwardGrads::Many(vec![
+        grad_x, grad_wq, grad_wk, grad_wv, grad_wo,
+    ]))
+}
+
+fn selective_scan_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 5 {
+        return Err(AriaError::ExecutionFailed(
+            "selective_scan backward: need x, A_log, dt_proj, B_weight, C_weight".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let a_log = saved_tensors[1];
+    let dt_proj = saved_tensors[2];
+    let b_weight = saved_tensors[3];
+    let c_weight = saved_tensors[4];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("selective_scan missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("selective_scan missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("selective_scan missing dim".into()))?;
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_a_log = vec![0.0f32; a_log.len()];
+    let mut grad_dt_proj = vec![0.0f32; dt_proj.len()];
+    let mut grad_b_weight = vec![0.0f32; b_weight.len()];
+    let mut grad_c_weight = vec![0.0f32; c_weight.len()];
+    unsafe {
+        ffi::aria_selective_scan_compiled_backward_f32(
+            grad_output.as_ptr(),
+            x.as_ptr(),
+            a_log.as_ptr(),
+            dt_proj.as_ptr(),
+            b_weight.as_ptr(),
+            c_weight.as_ptr(),
+            grad_x.as_mut_ptr(),
+            grad_a_log.as_mut_ptr(),
+            grad_dt_proj.as_mut_ptr(),
+            grad_b_weight.as_mut_ptr(),
+            grad_c_weight.as_mut_ptr(),
+            batch,
+            seq,
+            dim,
+        );
+    }
+    Ok(BackwardGrads::Many(vec![
+        grad_x,
+        grad_a_log,
+        grad_dt_proj,
+        grad_b_weight,
+        grad_c_weight,
+    ]))
+}
+
+fn state_space_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 7 {
+        return Err(AriaError::ExecutionFailed(
+            "state_space backward: need x, ssm_A, ssm_B_weight, ssm_C_weight, ssm_D, ssm_dt_weight, ssm_dt_bias".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let ssm_a = saved_tensors[1];
+    let ssm_b_weight = saved_tensors[2];
+    let ssm_c_weight = saved_tensors[3];
+    let ssm_d = saved_tensors[4];
+    let ssm_dt_weight = saved_tensors[5];
+    let ssm_dt_bias = saved_tensors[6];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("state_space missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("state_space missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("state_space missing dim".into()))?;
+    let state_dim = config
+        .get("state_dim")
+        .and_then(|v| v.as_i64())
+        .or_else(|| {
+            if dim > 0 {
+                let len = ssm_a.len() as i64;
+                if len % dim == 0 {
+                    Some(len / dim)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| AriaError::ExecutionFailed("state_space missing state_dim".into()))?;
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_ssm_a = vec![0.0f32; ssm_a.len()];
+    let mut grad_ssm_b_weight = vec![0.0f32; ssm_b_weight.len()];
+    let mut grad_ssm_c_weight = vec![0.0f32; ssm_c_weight.len()];
+    let mut grad_ssm_d = vec![0.0f32; ssm_d.len()];
+    let mut grad_ssm_dt_weight = vec![0.0f32; ssm_dt_weight.len()];
+    let mut grad_ssm_dt_bias = vec![0.0f32; ssm_dt_bias.len()];
+    unsafe {
+        ffi::aria_state_space_compiled_backward_f32(
+            grad_output.as_ptr(),
+            x.as_ptr(),
+            ssm_a.as_ptr(),
+            ssm_b_weight.as_ptr(),
+            ssm_c_weight.as_ptr(),
+            ssm_d.as_ptr(),
+            ssm_dt_weight.as_ptr(),
+            ssm_dt_bias.as_ptr(),
+            grad_x.as_mut_ptr(),
+            grad_ssm_a.as_mut_ptr(),
+            grad_ssm_b_weight.as_mut_ptr(),
+            grad_ssm_c_weight.as_mut_ptr(),
+            grad_ssm_d.as_mut_ptr(),
+            grad_ssm_dt_weight.as_mut_ptr(),
+            grad_ssm_dt_bias.as_mut_ptr(),
+            batch,
+            seq,
+            dim,
+            state_dim,
+        );
+    }
+    Ok(BackwardGrads::Many(vec![
+        grad_x,
+        grad_ssm_a,
+        grad_ssm_b_weight,
+        grad_ssm_c_weight,
+        grad_ssm_d,
+        grad_ssm_dt_weight,
+        grad_ssm_dt_bias,
+    ]))
+}
+
+fn gated_delta_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 7 {
+        return Err(AriaError::ExecutionFailed(
+            "gated_delta backward: need x, q_weight, k_weight, v_weight, alpha_weight, beta_weight, o_weight".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let q_weight = saved_tensors[1];
+    let k_weight = saved_tensors[2];
+    let v_weight = saved_tensors[3];
+    let alpha_weight = saved_tensors[4];
+    let beta_weight = saved_tensors[5];
+    let o_weight = saved_tensors[6];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("gated_delta missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("gated_delta missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("gated_delta missing dim".into()))?;
+    let n_heads = config
+        .get("n_heads")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("gated_delta missing n_heads".into()))?;
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_q_weight = vec![0.0f32; q_weight.len()];
+    let mut grad_k_weight = vec![0.0f32; k_weight.len()];
+    let mut grad_v_weight = vec![0.0f32; v_weight.len()];
+    let mut grad_alpha_weight = vec![0.0f32; alpha_weight.len()];
+    let mut grad_beta_weight = vec![0.0f32; beta_weight.len()];
+    let mut grad_o_weight = vec![0.0f32; o_weight.len()];
+    unsafe {
+        ffi::aria_gated_delta_compiled_backward_f32(
+            grad_output.as_ptr(),
+            x.as_ptr(),
+            q_weight.as_ptr(),
+            k_weight.as_ptr(),
+            v_weight.as_ptr(),
+            alpha_weight.as_ptr(),
+            beta_weight.as_ptr(),
+            o_weight.as_ptr(),
+            grad_x.as_mut_ptr(),
+            grad_q_weight.as_mut_ptr(),
+            grad_k_weight.as_mut_ptr(),
+            grad_v_weight.as_mut_ptr(),
+            grad_alpha_weight.as_mut_ptr(),
+            grad_beta_weight.as_mut_ptr(),
+            grad_o_weight.as_mut_ptr(),
+            batch,
+            seq,
+            dim,
+            n_heads,
+        );
+    }
+    Ok(BackwardGrads::Many(vec![
+        grad_x,
+        grad_q_weight,
+        grad_k_weight,
+        grad_v_weight,
+        grad_alpha_weight,
+        grad_beta_weight,
+        grad_o_weight,
+    ]))
+}
+
+fn rwkv_time_mixing_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if saved_tensors.len() < 6 {
+        return Err(AriaError::ExecutionFailed(
+            "rwkv_time_mixing backward: need x, w_decay, u_bonus, W_k, W_v, W_r".into(),
+        ));
+    }
+    let x = saved_tensors[0];
+    let w_decay = saved_tensors[1];
+    let u_bonus = saved_tensors[2];
+    let w_k = saved_tensors[3];
+    let w_v = saved_tensors[4];
+    let w_r = saved_tensors[5];
+    let batch = config
+        .get("batch")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing batch".into()))?;
+    let seq = config
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing seq".into()))?;
+    let dim = config
+        .get("dim")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AriaError::ExecutionFailed("rwkv_time_mixing missing dim".into()))?;
+    let mut grad_x = vec![0.0f32; x.len()];
+    let mut grad_w_decay = vec![0.0f32; w_decay.len()];
+    let mut grad_u_bonus = vec![0.0f32; u_bonus.len()];
+    let mut grad_w_k = vec![0.0f32; w_k.len()];
+    let mut grad_w_v = vec![0.0f32; w_v.len()];
+    let mut grad_w_r = vec![0.0f32; w_r.len()];
+    unsafe {
+        ffi::aria_rwkv_time_mixing_backward_f32(
+            grad_output.as_ptr(),
+            x.as_ptr(),
+            w_decay.as_ptr(),
+            u_bonus.as_ptr(),
+            w_k.as_ptr(),
+            w_v.as_ptr(),
+            w_r.as_ptr(),
+            grad_x.as_mut_ptr(),
+            grad_w_decay.as_mut_ptr(),
+            grad_u_bonus.as_mut_ptr(),
+            grad_w_k.as_mut_ptr(),
+            grad_w_v.as_mut_ptr(),
+            grad_w_r.as_mut_ptr(),
+            batch,
+            seq,
+            dim,
+        );
+    }
+    Ok(BackwardGrads::Many(vec![
+        grad_x,
+        grad_w_decay,
+        grad_u_bonus,
+        grad_w_k,
+        grad_w_v,
+        grad_w_r,
+    ]))
+}
+
+fn conditional_dispatch_backward(
+    grad_output: &[f32],
+    config: &serde_json::Value,
+) -> Result<BackwardGrads, AriaError> {
+    if config
+        .get("active_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1)
+        <= 0
+    {
+        Ok(BackwardGrads::Single(vec![0.0f32; grad_output.len()]))
+    } else {
+        Ok(BackwardGrads::Single(grad_output.to_vec()))
+    }
+}
+
+fn conditional_gather_backward(
+    grad_output: &[f32],
+    saved_tensors: &[&[f32]],
+) -> Result<BackwardGrads, AriaError> {
+    let a = saved_tensors.first().copied().unwrap_or(&[]);
+    let b = saved_tensors.get(1).copied().unwrap_or(&[]);
+    let a_nonzero = !a.is_empty() && !is_all_zero(a);
+    let b_nonzero = !b.is_empty() && !is_all_zero(b);
+    let mut ga = vec![0.0f32; grad_output.len()];
+    let mut gb = vec![0.0f32; grad_output.len()];
+    if a_nonzero && b_nonzero {
+        for (i, g) in grad_output.iter().enumerate() {
+            ga[i] = 0.5f32 * g;
+            gb[i] = 0.5f32 * g;
+        }
+    } else if a_nonzero {
+        ga.copy_from_slice(grad_output);
+    } else if b_nonzero {
+        gb.copy_from_slice(grad_output);
+    }
+    Ok(BackwardGrads::Pair(ga, gb))
 }
 
 impl NativeKernelDispatch {
@@ -1347,6 +2689,97 @@ impl NativeKernelDispatch {
                 }
                 Ok(BackwardGrads::Single(grad_in))
             }
+            "rmsnorm" => {
+                if saved_tensors.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "rmsnorm backward: need input and gamma".into(),
+                    ));
+                }
+                let input = saved_tensors[0];
+                let gamma = saved_tensors[1];
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_else(|| {
+                        let dim = gamma.len() as i64;
+                        if dim > 0 {
+                            input.len() as i64 / dim
+                        } else {
+                            0
+                        }
+                    });
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(gamma.len() as i64);
+                let eps = config
+                    .get("eps")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(1e-6f32);
+                let mut grad_in = vec![0.0f32; input.len()];
+                let mut grad_gamma = vec![0.0f32; gamma.len()];
+                unsafe {
+                    ffi::aria_rmsnorm_backward_f32(
+                        grad_output.as_ptr(),
+                        input.as_ptr(),
+                        gamma.as_ptr(),
+                        grad_in.as_mut_ptr(),
+                        grad_gamma.as_mut_ptr(),
+                        batch,
+                        dim,
+                        eps,
+                    );
+                }
+                Ok(BackwardGrads::Pair(grad_in, grad_gamma))
+            }
+            "layernorm" => {
+                if saved_tensors.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "layernorm backward: need input, gamma, beta".into(),
+                    ));
+                }
+                let input = saved_tensors[0];
+                let gamma = saved_tensors[1];
+                let beta = saved_tensors[2];
+                let batch = config
+                    .get("batch")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_else(|| {
+                        let dim = gamma.len() as i64;
+                        if dim > 0 {
+                            input.len() as i64 / dim
+                        } else {
+                            0
+                        }
+                    });
+                let dim = config
+                    .get("dim")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(gamma.len() as i64);
+                let eps = config
+                    .get("eps")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .unwrap_or(1e-5f32);
+                let mut grad_in = vec![0.0f32; input.len()];
+                let mut grad_gamma = vec![0.0f32; gamma.len()];
+                let mut grad_beta = vec![0.0f32; beta.len()];
+                unsafe {
+                    ffi::aria_layernorm_backward_f32(
+                        grad_output.as_ptr(),
+                        input.as_ptr(),
+                        gamma.as_ptr(),
+                        grad_in.as_mut_ptr(),
+                        grad_gamma.as_mut_ptr(),
+                        grad_beta.as_mut_ptr(),
+                        batch,
+                        dim,
+                        eps,
+                    );
+                }
+                Ok(BackwardGrads::Many(vec![grad_in, grad_gamma, grad_beta]))
+            }
 
             // ── Binary backward ops ──────────────────────────────
             "add" => {
@@ -1401,23 +2834,38 @@ impl NativeKernelDispatch {
             // ── Matmul backward ──────────────────────────────────
             "matmul" | "linear" => {
                 if saved_tensors.len() < 2 {
-                    return Err(AriaError::ExecutionFailed(
-                        format!("{} backward: need 2 saved tensors (A, B)", op_name),
-                    ));
+                    return Err(AriaError::ExecutionFailed(format!(
+                        "{} backward: need 2 saved tensors (A, B)",
+                        op_name
+                    )));
                 }
                 let a = saved_tensors[0];
                 let b = saved_tensors[1];
 
                 // Extract dimensions from config or infer.
                 let m = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let k_val = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or_else(|| {
-                    // Infer K from A.len / M.
-                    if m > 0 { a.len() as i64 / m } else { a.len() as i64 }
-                });
-                let n_val = config.get("dim_out").and_then(|v| v.as_i64()).unwrap_or_else(|| {
-                    // Infer N from grad_output.len / M.
-                    if m > 0 { grad_output.len() as i64 / m } else { grad_output.len() as i64 }
-                });
+                let k_val = config
+                    .get("dim_in")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_else(|| {
+                        // Infer K from A.len / M.
+                        if m > 0 {
+                            a.len() as i64 / m
+                        } else {
+                            a.len() as i64
+                        }
+                    });
+                let n_val = config
+                    .get("dim_out")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_else(|| {
+                        // Infer N from grad_output.len / M.
+                        if m > 0 {
+                            grad_output.len() as i64 / m
+                        } else {
+                            grad_output.len() as i64
+                        }
+                    });
 
                 let mut grad_a = vec![0.0f32; (m * k_val) as usize];
                 let mut grad_b = vec![0.0f32; (k_val * n_val) as usize];
@@ -1435,48 +2883,22 @@ impl NativeKernelDispatch {
                 }
                 Ok(BackwardGrads::Pair(grad_a, grad_b))
             }
+            "gated_linear" => gated_linear_backward(grad_output, saved_tensors, config),
+            "softmax_attention" => softmax_attention_backward(grad_output, saved_tensors, config),
+            "selective_scan" => selective_scan_backward(grad_output, saved_tensors, config),
+            "state_space" => state_space_backward(grad_output, saved_tensors, config),
+            "gated_delta" => gated_delta_backward(grad_output, saved_tensors, config),
+            "rwkv_time_mixing" => rwkv_time_mixing_backward(grad_output, saved_tensors, config),
+            "conv1d_seq" => conv1d_seq_backward(grad_output, saved_tensors, config),
+            "swiglu" => swiglu_backward(grad_output, saved_tensors, config),
+            "rwkv_channel" => rwkv_channel_backward(grad_output, saved_tensors, config),
 
             // ── Conditional adaptive-routing ops ─────────────────
-            "conditional_dispatch" => {
-                // Dispatch is identity/passthrough unless lane is marked inactive.
-                if config
-                    .get("active_tokens")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(1)
-                    <= 0
-                {
-                    Ok(BackwardGrads::Single(vec![0.0f32; grad_output.len()]))
-                } else {
-                    Ok(BackwardGrads::Single(grad_output.to_vec()))
-                }
-            }
-            "conditional_gather" => {
-                // Mirror forward gather semantics:
-                // - if one lane is effectively empty/zero, route full grad to the other;
-                // - if both contribute, split equally due to averaging.
-                let a = saved_tensors.first().copied().unwrap_or(&[]);
-                let b = saved_tensors.get(1).copied().unwrap_or(&[]);
-                let a_nonzero = !a.is_empty() && !is_all_zero(a);
-                let b_nonzero = !b.is_empty() && !is_all_zero(b);
-                let mut ga = vec![0.0f32; grad_output.len()];
-                let mut gb = vec![0.0f32; grad_output.len()];
-                if a_nonzero && b_nonzero {
-                    for (i, g) in grad_output.iter().enumerate() {
-                        ga[i] = 0.5f32 * g;
-                        gb[i] = 0.5f32 * g;
-                    }
-                } else if a_nonzero {
-                    ga.copy_from_slice(grad_output);
-                } else if b_nonzero {
-                    gb.copy_from_slice(grad_output);
-                }
-                Ok(BackwardGrads::Pair(ga, gb))
-            }
+            "conditional_dispatch" => conditional_dispatch_backward(grad_output, config),
+            "conditional_gather" => conditional_gather_backward(grad_output, saved_tensors),
 
             // ── Passthrough for input/output nodes ───────────────
-            "input" | "output" => {
-                Ok(BackwardGrads::Single(grad_output.to_vec()))
-            }
+            "input" | "output" => Ok(BackwardGrads::Single(grad_output.to_vec())),
 
             _ => Err(AriaError::UnsupportedOp(format!(
                 "no backward kernel for op: {}",
@@ -1505,25 +2927,40 @@ pub fn execute_forward_saving_activations(
     dispatcher: &dyn KernelDispatch,
     input: &[f32],
 ) -> Result<ForwardForBackwardResult, AriaError> {
-    let result = execute_with_arena(graph, dispatcher, input)?;
+    execute_forward_saving_with_input_binding(graph, dispatcher, InputBinding::Shared(input))
+}
 
-    // Re-execute to capture all intermediate activations.
-    // (The arena execution already computed them but they were dropped.
-    // We do a second pass using heap allocation to save everything.)
+pub fn execute_forward_saving_activations_multi_input(
+    graph: &GraphIR,
+    dispatcher: &dyn KernelDispatch,
+    inputs: &[&[f32]],
+) -> Result<ForwardForBackwardResult, AriaError> {
+    execute_forward_saving_with_input_binding(graph, dispatcher, InputBinding::Distinct(inputs))
+}
+
+fn execute_forward_saving_with_input_binding(
+    graph: &GraphIR,
+    dispatcher: &dyn KernelDispatch,
+    input_binding: InputBinding<'_>,
+) -> Result<ForwardForBackwardResult, AriaError> {
+    let result = execute_with_input_binding(graph, dispatcher, input_binding)?;
+
     let order = graph.topological_order()?;
     let node_map: HashMap<NodeId, &crate::graph::Node> =
         graph.nodes.iter().map(|n| (n.id, n)).collect();
 
     let mut saved: HashMap<u32, Vec<f32>> = HashMap::new();
     let mut ctx = ExecutionContext::new();
+    let mut input_ordinal = 0usize;
 
     for &node_id in &order {
-        let node = node_map.get(&node_id).ok_or_else(|| {
-            AriaError::InvalidIR(format!("node {} missing", node_id.0))
-        })?;
+        let node = node_map
+            .get(&node_id)
+            .ok_or_else(|| AriaError::InvalidIR(format!("node {} missing", node_id.0)))?;
 
         if node.is_input {
-            let buf = input.to_vec();
+            let buf = input_binding.slice_for_input_node(input_ordinal)?.to_vec();
+            input_ordinal += 1;
             saved.insert(node_id.0, buf.clone());
             ctx.outputs.insert(node_id, NodeBuffer::Heap(buf));
             continue;
@@ -1533,12 +2970,15 @@ pub fn execute_forward_saving_activations(
             .input_ids
             .iter()
             .map(|id| {
-                ctx.outputs.get(id).map(|buf| buf.as_slice()).ok_or_else(|| {
-                    AriaError::ExecutionFailed(format!(
-                        "node {} requires input from node {} which has no output",
-                        node_id.0, id.0
-                    ))
-                })
+                ctx.outputs
+                    .get(id)
+                    .map(|buf| buf.as_slice())
+                    .ok_or_else(|| {
+                        AriaError::ExecutionFailed(format!(
+                            "node {} requires input from node {} which has no output",
+                            node_id.0, id.0
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1578,18 +3018,6 @@ pub fn execute_backward_with_arena(
     let order = graph.topological_order()?;
     let node_map: HashMap<NodeId, &crate::graph::Node> =
         graph.nodes.iter().map(|n| (n.id, n)).collect();
-
-    // Build adjacency: for each node, which downstream nodes consume it?
-    // This tells us how to route gradients backward.
-    let mut consumers: HashMap<NodeId, Vec<(NodeId, usize)>> = HashMap::new();
-    for node in &graph.nodes {
-        for (port_idx, &input_id) in node.input_ids.iter().enumerate() {
-            consumers
-                .entry(input_id)
-                .or_default()
-                .push((node.id, port_idx));
-        }
-    }
 
     // Arena for backward intermediate buffers.
     let est_capacity = grad_output.len() * 4 * order.len() * 2 + 4096;
@@ -1658,7 +3086,9 @@ pub fn execute_backward_with_arena(
             BackwardGrads::Single(g) => {
                 // Single gradient goes to the first (only) input.
                 if let Some(&input_id) = node.input_ids.first() {
-                    let entry = grads.entry(input_id).or_insert_with(|| vec![0.0f32; g.len()]);
+                    let entry = grads
+                        .entry(input_id)
+                        .or_insert_with(|| vec![0.0f32; g.len()]);
                     for (i, val) in g.iter().enumerate() {
                         if i < entry.len() {
                             entry[i] += val;
@@ -1688,14 +3118,24 @@ pub fn execute_backward_with_arena(
                     stats.arena_alloc_count += 1;
                 }
             }
+            BackwardGrads::Many(grads_many) => {
+                for (input_id, grad_in) in node.input_ids.iter().zip(grads_many.into_iter()) {
+                    let entry = grads
+                        .entry(*input_id)
+                        .or_insert_with(|| vec![0.0f32; grad_in.len()]);
+                    for (i, val) in grad_in.iter().enumerate() {
+                        if i < entry.len() {
+                            entry[i] += val;
+                        }
+                    }
+                    stats.arena_alloc_count += 1;
+                }
+            }
         }
     }
 
     // Convert NodeId keys to u32 for the public API.
-    let grads_u32: HashMap<u32, Vec<f32>> = grads
-        .into_iter()
-        .map(|(id, g)| (id.0, g))
-        .collect();
+    let grads_u32: HashMap<u32, Vec<f32>> = grads.into_iter().map(|(id, g)| (id.0, g)).collect();
 
     Ok(BackwardResult {
         grads: grads_u32,
@@ -1719,6 +3159,7 @@ pub fn execute(
 mod tests {
     use super::*;
     use crate::graph::GraphIR;
+    use std::thread;
 
     /// A trivial dispatcher that passes the first input through unchanged.
     struct PassthroughDispatcher;
@@ -1767,6 +3208,21 @@ mod tests {
             "output_node_id": 2,
             "metadata": null
         }"#
+    }
+
+    fn run_with_large_stack<F>(name: &str, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let handle = thread::Builder::new()
+            .name(name.to_string())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("failed to spawn test thread");
+        match handle.join() {
+            Ok(()) => {}
+            Err(err) => std::panic::resume_unwind(err),
+        }
     }
 
     #[test]
@@ -1828,7 +3284,10 @@ mod tests {
         let result = execute_with_arena(&graph, &PassthroughDispatcher, &input).unwrap();
         let stats = &result.arena_stats;
         assert!(stats.arena_capacity > 0, "arena capacity should be nonzero");
-        assert!(stats.arena_bytes_used > 0, "arena should have used some bytes");
+        assert!(
+            stats.arena_bytes_used > 0,
+            "arena should have used some bytes"
+        );
         assert_eq!(
             stats.arena_alloc_count + stats.heap_fallback_count,
             3,
@@ -1840,9 +3299,8 @@ mod tests {
     fn test_forward_saving_activations() {
         let graph = GraphIR::from_json(sample_graph_json()).unwrap();
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let result = execute_forward_saving_activations(
-            &graph, &PassthroughDispatcher, &input
-        ).unwrap();
+        let result =
+            execute_forward_saving_activations(&graph, &PassthroughDispatcher, &input).unwrap();
         assert_eq!(result.output, input);
         // All 3 nodes should have saved activations (input, linear, output).
         assert_eq!(result.saved_activations.len(), 3);
@@ -1857,14 +3315,11 @@ mod tests {
         // With passthrough, backward should propagate gradient unchanged.
         let graph = GraphIR::from_json(sample_graph_json()).unwrap();
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let fwd = execute_forward_saving_activations(
-            &graph, &PassthroughDispatcher, &input
-        ).unwrap();
+        let fwd =
+            execute_forward_saving_activations(&graph, &PassthroughDispatcher, &input).unwrap();
 
         let grad_out = vec![1.0, 1.0, 1.0, 1.0];
-        let result = execute_backward_with_arena(
-            &graph, &grad_out, &fwd.saved_activations
-        );
+        let result = execute_backward_with_arena(&graph, &grad_out, &fwd.saved_activations);
         // This will fail with UnsupportedOp for "linear" since we don't have
         // the C kernels in unit tests. That's expected — the integration test
         // via Python + C library covers the full path.
@@ -1872,7 +3327,10 @@ mod tests {
         match result {
             Ok(bwd) => {
                 // If somehow it succeeds (unlikely without C lib), check structure.
-                assert!(bwd.grads.contains_key(&0), "should have grad for input node");
+                assert!(
+                    bwd.grads.contains_key(&0),
+                    "should have grad for input node"
+                );
             }
             Err(AriaError::UnsupportedOp(msg)) => {
                 assert!(msg.contains("linear"), "should fail on linear op");
@@ -1882,7 +3340,8 @@ mod tests {
                 let msg = format!("{}", e);
                 assert!(
                     msg.contains("linear") || msg.contains("backward") || msg.contains("kernel"),
-                    "unexpected error: {}", msg
+                    "unexpected error: {}",
+                    msg
                 );
             }
         }
@@ -1942,28 +3401,29 @@ mod tests {
     #[test]
     fn test_conditional_graph_forward_backward_integration() {
         let json = r#"{
-            "schema_version": "0.1", "model_dim": 4,
-            "nodes": [
-                {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
-                {"id": 1, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 0, "active_tokens": 0}, "is_input": false, "is_output": false},
-                {"id": 2, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 1, "active_tokens": 4}, "is_input": false, "is_output": false},
-                {"id": 3, "op_name": "conditional_gather", "input_ids": [1, 2], "config": {}, "is_input": false, "is_output": false},
-                {"id": 4, "op_name": "output", "input_ids": [3], "config": {}, "is_input": false, "is_output": true}
-            ],
-            "edges": [
-                {"source": 0, "target": 1, "source_port": null, "target_port": null},
-                {"source": 0, "target": 2, "source_port": null, "target_port": null},
-                {"source": 1, "target": 3, "source_port": null, "target_port": null},
-                {"source": 2, "target": 3, "source_port": null, "target_port": null},
-                {"source": 3, "target": 4, "source_port": null, "target_port": null}
-            ],
-            "output_node_id": 4,
-            "metadata": null
+                "schema_version": "0.1", "model_dim": 4,
+                "nodes": [
+                    {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                    {"id": 1, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 0, "active_tokens": 0}, "is_input": false, "is_output": false},
+                    {"id": 2, "op_name": "conditional_dispatch", "input_ids": [0], "config": {"lane": 1, "active_tokens": 4}, "is_input": false, "is_output": false},
+                    {"id": 3, "op_name": "conditional_gather", "input_ids": [1, 2], "config": {}, "is_input": false, "is_output": false},
+                    {"id": 4, "op_name": "output", "input_ids": [3], "config": {}, "is_input": false, "is_output": true}
+                ],
+                "edges": [
+                    {"source": 0, "target": 1, "source_port": null, "target_port": null},
+                    {"source": 0, "target": 2, "source_port": null, "target_port": null},
+                    {"source": 1, "target": 3, "source_port": null, "target_port": null},
+                    {"source": 2, "target": 3, "source_port": null, "target_port": null},
+                    {"source": 3, "target": 4, "source_port": null, "target_port": null}
+                ],
+                "output_node_id": 4,
+                "metadata": null
         }"#;
         let graph = GraphIR::from_json(json).unwrap();
         let input = vec![0.5f32, -0.25f32, 1.25f32, -2.0f32];
 
-        let fwd = execute_forward_saving_activations(&graph, &PassthroughDispatcher, &input).unwrap();
+        let fwd =
+            execute_forward_saving_activations(&graph, &PassthroughDispatcher, &input).unwrap();
         assert_eq!(fwd.output, input);
 
         let grad_out = vec![1.0f32, 1.0f32, 1.0f32, 1.0f32];
@@ -1972,7 +3432,130 @@ mod tests {
         let grad_input = bwd.grads.get(&0).expect("input gradient missing");
         assert_eq!(grad_input.len(), grad_out.len());
         assert!(grad_input.iter().all(|v| v.is_finite()));
-        // lane0 is inactive, so gather should route full gradient through lane1 path.
         assert_eq!(grad_input, &grad_out);
+    }
+
+    #[test]
+    fn test_execute_with_arena_multi_input_state_space_weighted_graph() {
+        run_with_large_stack(
+            "test_execute_with_arena_multi_input_state_space_weighted_graph",
+            || {
+                let json = r#"{
+                    "schema_version": "native_ir.v1", "model_dim": 4,
+                    "nodes": [
+                        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 2, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 3, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 4, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 5, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 6, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 7, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 1, "op_name": "state_space", "input_ids": [0, 2, 3, 4, 5, 6, 7], "config": {"batch": 1, "seq": 2, "dim": 4, "state_dim": 2}, "is_input": false, "is_output": false},
+                        {"id": 8, "op_name": "output", "input_ids": [1], "config": {}, "is_input": false, "is_output": true}
+                    ],
+                    "edges": [
+                        {"source": 0, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 2, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 3, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 4, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 5, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 6, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 7, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 1, "target": 8, "source_port": null, "target_port": null}
+                    ],
+                    "output_node_id": 8,
+                    "metadata": null
+                }"#;
+                let graph = GraphIR::from_json(json).unwrap();
+                let x = vec![0.1f32, -0.2, 0.3, -0.4, 0.2, 0.1, -0.3, 0.5];
+                let ssm_a = vec![0.05f32; 8];
+                let ssm_b_weight = vec![0.02f32; 32];
+                let ssm_c_weight = vec![0.03f32; 32];
+                let ssm_d = vec![1.0f32, 1.0, 1.0, 1.0];
+                let ssm_dt_weight = vec![0.01f32; 16];
+                let ssm_dt_bias = vec![0.1f32; 4];
+                let inputs: [&[f32]; 7] = [
+                    &x,
+                    &ssm_a,
+                    &ssm_b_weight,
+                    &ssm_c_weight,
+                    &ssm_d,
+                    &ssm_dt_weight,
+                    &ssm_dt_bias,
+                ];
+                let result =
+                    execute_with_arena_multi_input(&graph, &NativeKernelDispatch, &inputs).unwrap();
+                assert_eq!(result.output.len(), x.len());
+                assert!(result.output.iter().all(|v| v.is_finite()));
+            },
+        );
+    }
+
+    #[test]
+    fn test_execute_backward_with_arena_multi_input_state_space_weighted_graph() {
+        run_with_large_stack(
+            "test_execute_backward_with_arena_multi_input_state_space_weighted_graph",
+            || {
+                let json = r#"{
+                    "schema_version": "native_ir.v1", "model_dim": 4,
+                    "nodes": [
+                        {"id": 0, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 2, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 3, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 4, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 5, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 6, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 7, "op_name": "input", "input_ids": [], "config": {}, "is_input": true, "is_output": false},
+                        {"id": 1, "op_name": "state_space", "input_ids": [0, 2, 3, 4, 5, 6, 7], "config": {"batch": 1, "seq": 2, "dim": 4, "state_dim": 2}, "is_input": false, "is_output": false},
+                        {"id": 8, "op_name": "output", "input_ids": [1], "config": {}, "is_input": false, "is_output": true}
+                    ],
+                    "edges": [
+                        {"source": 0, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 2, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 3, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 4, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 5, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 6, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 7, "target": 1, "source_port": null, "target_port": null},
+                        {"source": 1, "target": 8, "source_port": null, "target_port": null}
+                    ],
+                    "output_node_id": 8,
+                    "metadata": null
+                }"#;
+                let graph = GraphIR::from_json(json).unwrap();
+                let x = vec![0.1f32, -0.2, 0.3, -0.4, 0.2, 0.1, -0.3, 0.5];
+                let ssm_a = vec![0.05f32; 8];
+                let ssm_b_weight = vec![0.02f32; 32];
+                let ssm_c_weight = vec![0.03f32; 32];
+                let ssm_d = vec![1.0f32, 1.0, 1.0, 1.0];
+                let ssm_dt_weight = vec![0.01f32; 16];
+                let ssm_dt_bias = vec![0.1f32; 4];
+                let inputs: [&[f32]; 7] = [
+                    &x,
+                    &ssm_a,
+                    &ssm_b_weight,
+                    &ssm_c_weight,
+                    &ssm_d,
+                    &ssm_dt_weight,
+                    &ssm_dt_bias,
+                ];
+                let fwd = execute_forward_saving_activations_multi_input(
+                    &graph,
+                    &NativeKernelDispatch,
+                    &inputs,
+                )
+                .unwrap();
+                let grad_out = vec![1.0f32; x.len()];
+                let bwd =
+                    execute_backward_with_arena(&graph, &grad_out, &fwd.saved_activations).unwrap();
+                for node_id in [0u32, 2, 3, 4, 5, 6, 7] {
+                    let grad = bwd
+                        .grads
+                        .get(&node_id)
+                        .expect("missing weighted input grad");
+                    assert!(grad.iter().all(|v| v.is_finite()));
+                }
+            },
+        );
     }
 }

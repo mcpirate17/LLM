@@ -135,10 +135,19 @@ class _ExecutionCandidatesMixin:
                 logger.warning("morphological_box or arch_builder not available")
             return candidates
 
-        # Default: graph_synthesis — load analytics-derived weights from notebook
-        op_weights, template_weights, motif_weights, category_weights = (
-            self._load_learned_weights(nb=nb)
-        )
+        # Default: graph_synthesis — optionally blend notebook-derived weights.
+        if getattr(config, "use_learned_candidate_weights", True):
+            op_weights, template_weights, motif_weights, category_weights = (
+                self._load_learned_weights(nb=nb)
+            )
+        else:
+            op_weights, template_weights, motif_weights, category_weights = (
+                {},
+                {},
+                {},
+                {},
+            )
+            logger.info("Candidate generation learned weights disabled for this run")
         grammar = self._build_grammar_config(
             config,
             op_weights=op_weights,

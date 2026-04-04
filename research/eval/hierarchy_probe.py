@@ -13,8 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Dict
 
-import torch
 import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,47 @@ try:
 except ImportError:
     _HAS_GROMOV_C = False
 
+try:
+    from numba import njit
+
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+
+    def njit(*args, **kwargs):  # type: ignore[no-redef]
+        def decorator(fn):
+            return fn
+
+        return decorator
+
+
 # Maximum number of point samples for delta computation (O(n^4) complexity)
 _MAX_SAMPLE_POINTS = 30
+
+
+@njit(cache=True)
+def _gromov_delta_numba(d: np.ndarray) -> float:
+    n = d.shape[0]
+    max_delta = 0.0
+    for x in range(n - 3):
+        for y in range(x + 1, n - 2):
+            for z in range(y + 1, n - 1):
+                for w in range(z + 1, n):
+                    s1 = d[x, y] + d[z, w]
+                    s2 = d[x, z] + d[y, w]
+                    s3 = d[x, w] + d[y, z]
+
+                    if s1 > s2:
+                        s1, s2 = s2, s1
+                    if s2 > s3:
+                        s2, s3 = s3, s2
+                    if s1 > s2:
+                        s1, s2 = s2, s1
+
+                    delta = 0.5 * (s3 - s2)
+                    if delta > max_delta:
+                        max_delta = delta
+    return max_delta
 
 
 def gromov_delta(distance_matrix: np.ndarray) -> float:
@@ -66,8 +105,10 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
         idx_tensor = torch.from_numpy(indices.astype(np.int32))
         return float(aria_core.gromov_delta_f32(d_tensor, idx_tensor))
 
-    # Vectorized: enumerate all 4-tuples via index arrays (avoids materializing
-    # a Python list of tuples — ~3x faster and ~10x less peak memory for n=30)
+    if _HAS_NUMBA:
+        d_contig = np.ascontiguousarray(d, dtype=np.float32)
+        return float(_gromov_delta_numba(d_contig))
+
     idx = np.array(indices)
     n_idx = len(idx)
     i0, i1, i2, i3 = np.meshgrid(
@@ -88,9 +129,7 @@ def gromov_delta(distance_matrix: np.ndarray) -> float:
     sums = np.stack([s1, s2, s3], axis=1)
     sums.sort(axis=1)
     deltas = (sums[:, 2] - sums[:, 1]) / 2.0
-    max_delta = float(deltas.max()) if len(deltas) > 0 else 0.0
-
-    return float(max_delta)
+    return float(deltas.max()) if len(deltas) > 0 else 0.0
 
 
 def hierarchy_fitness(

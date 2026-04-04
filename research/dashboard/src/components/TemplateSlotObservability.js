@@ -134,6 +134,12 @@ export default function TemplateSlotObservability() {
               {overview.zero_slot_templates.length > 4 ? ` +${overview.zero_slot_templates.length - 4}` : ''}
             </div>
           )}
+          {Array.isArray(overview.inactive_template_names) && overview.inactive_template_names.length > 0 && (
+            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              Inactive templates hidden from rankings: {overview.inactive_template_names.slice(0, 4).join(', ')}
+              {overview.inactive_template_names.length > 4 ? ` +${overview.inactive_template_names.length - 4}` : ''}
+            </div>
+          )}
           {motifs.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase' }}>

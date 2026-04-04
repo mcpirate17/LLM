@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if native-enabled ABI model-only path falls back to legacy compile."""
+"""Fail if native-enabled path falls back to legacy compile."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ def main() -> int:
     expected = {
         "NATIVE_RUNNER_ENABLED": "1",
         "NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED": "1",
-        "NATIVE_RUNNER_ABI_MODEL_ONLY": "1",
     }
     missing: List[str] = []
     for key, val in expected.items():
@@ -75,9 +74,9 @@ def main() -> int:
 
     capability = native_runner_capability_report()
     metrics = capability.get("fallback_metrics") or {}
-    if int(metrics.get("legacy_compile_invocations") or 0) > 0:
+    if int(metrics.get("legacy_compile_count") or 0) > 0:
         print(
-            "[no-legacy-compile] ERROR: legacy compile invocations recorded.",
+            "[no-legacy-compile] ERROR: legacy compile count recorded.",
             file=sys.stderr,
         )
         return 2
@@ -89,7 +88,7 @@ def main() -> int:
         )
         return 2
 
-    print("[no-legacy-compile] OK: ABI model-only path avoided legacy compile.")
+    print("[no-legacy-compile] OK: native path avoided legacy compile.")
     return 0
 
 

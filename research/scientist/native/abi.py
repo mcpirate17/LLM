@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import ctypes
 import logging
+from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 
 from .core import NativeRunnerState, _FALLBACK_METRICS, _env_flag
 
@@ -46,6 +47,16 @@ class _NrExecuteResponse(ctypes.Structure):
     ]
 
 
+class _NrExecuteBatchResponse(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("logits", ctypes.POINTER(ctypes.c_float)),
+        ("batch", ctypes.c_int32),
+        ("vocab_size", ctypes.c_int32),
+        ("message", ctypes.c_char_p),
+    ]
+
+
 def _try_load_native_lib() -> Any:
     """Try to load the native C kernel library. Returns ctypes CDLL or None.
 
@@ -70,7 +81,10 @@ def _try_load_native_lib() -> Any:
     for p in lib_paths:
         if p.exists():
             try:
-                _native_lib_cache = ctypes.CDLL(str(p))
+                _native_lib_cache = ctypes.CDLL(
+                    str(p),
+                    mode=getattr(ctypes, "RTLD_GLOBAL", 0),
+                )
                 logger.info("Loaded native kernel library from %s", p)
                 return _native_lib_cache
             except OSError as exc:
@@ -148,17 +162,19 @@ def _build_native_abi_only_model(
             seq_len = int(input_ids.shape[1])
             if seq_len <= 0:
                 raise ValueError("input_ids sequence length must be > 0")
-            out = torch.empty(
-                (batch_size, seq_len, self.vocab_size),
+            token_rows = [
+                tuple(int(v) for v in row)
+                for row in input_ids.detach().to(device="cpu").tolist()
+            ]
+            row_logits = self._abi_session.execute_token_rows(token_rows)
+            out = torch.tensor(
+                row_logits,
                 dtype=torch.float32,
                 device=input_ids.device,
             )
-            for b in range(batch_size):
-                token_ids = [int(v) for v in input_ids[b].detach().cpu().tolist()]
-                logits = self._abi_session.execute_tokens(token_ids, batch=1)
-                row = torch.tensor(logits, dtype=torch.float32, device=input_ids.device)
-                out[b, :, :] = row.view(1, -1).expand(seq_len, -1)
-            return out
+            return out.view(batch_size, 1, self.vocab_size).expand(
+                batch_size, seq_len, -1
+            )
 
     return _NativeAbiOnlyModel(abi_session, vocab_size, model_dim)
 
@@ -174,28 +190,125 @@ class NativeRunnerAbiSession:
         self.vocab_size = int(vocab_size)
         self.max_seq_len = int(max_seq_len)
         self._closed = False
+        self._execute_cache: "OrderedDict[Tuple[int, Tuple[int, ...]], Tuple[float, ...]]" = OrderedDict()
+        self._execute_cache_limit = 256
+        self._has_batch_execute = hasattr(native_lib, "nr_execute_batch")
+
+    def _cache_get(
+        self, cache_key: Tuple[int, Tuple[int, ...]]
+    ) -> Optional[Tuple[float, ...]]:
+        cached = self._execute_cache.get(cache_key)
+        if cached is None:
+            return None
+        self._execute_cache.move_to_end(cache_key)
+        return cached
+
+    def _cache_put(
+        self, cache_key: Tuple[int, Tuple[int, ...]], logits: Sequence[float]
+    ) -> Tuple[float, ...]:
+        cached_logits = tuple(float(v) for v in logits)
+        self._execute_cache[cache_key] = cached_logits
+        self._execute_cache.move_to_end(cache_key)
+        if len(self._execute_cache) > self._execute_cache_limit:
+            self._execute_cache.popitem(last=False)
+        return cached_logits
 
     def execute_tokens(self, token_ids: List[int], batch: int = 1) -> List[float]:
         if self._closed:
             raise RuntimeError("native ABI session already closed")
-        seq_len = int(len(token_ids))
+        flat_token_ids = tuple(int(t) for t in token_ids)
+        flat_count = int(len(flat_token_ids))
+        batch = int(batch)
+        if batch <= 0:
+            raise ValueError("batch must be > 0")
+        if flat_count <= 0:
+            raise ValueError("token_ids must be non-empty")
+        if flat_count % batch != 0:
+            raise ValueError("token_ids length must be divisible by batch")
+        seq_len = flat_count // batch
         if seq_len <= 0:
             raise ValueError("token_ids must be non-empty")
         if seq_len > self.max_seq_len:
             raise ValueError("token length exceeds compiled max_seq_len")
+        cache_key = (batch, flat_token_ids)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return list(cached)
 
-        token_buf = (ctypes.c_int32 * seq_len)(*([int(t) for t in token_ids]))
+        token_buf = (ctypes.c_int32 * flat_count)(*flat_token_ids)
         req = _NrExecuteRequest(
             model_handle=self.model_handle,
             token_ids=token_buf,
-            batch=int(batch),
+            batch=batch,
             seq_len=seq_len,
         )
         resp = self._native_lib.nr_execute(ctypes.byref(req))
         if int(resp.status) != 0 or not bool(resp.logits):
             raise RuntimeError(f"runner ABI execute failed: status={int(resp.status)}")
         n_vocab = int(resp.vocab_size)
-        return [float(resp.logits[i]) for i in range(n_vocab)]
+        return list(
+            self._cache_put(cache_key, (float(resp.logits[i]) for i in range(n_vocab)))
+        )
+
+    def execute_token_rows(
+        self, token_rows: Sequence[Sequence[int]]
+    ) -> List[Tuple[float, ...]]:
+        row_keys = [tuple(int(t) for t in row) for row in token_rows]
+        if not row_keys:
+            return []
+        if self._has_batch_execute:
+            uncached_rows = [
+                row_key
+                for row_key in dict.fromkeys(row_keys)
+                if self._cache_get((1, row_key)) is None
+            ]
+            if uncached_rows:
+                flat_tokens = [token for row_key in uncached_rows for token in row_key]
+                seq_len = len(uncached_rows[0])
+                if any(len(row_key) != seq_len for row_key in uncached_rows):
+                    raise ValueError(
+                        "all token rows must have the same sequence length"
+                    )
+                token_buf = (ctypes.c_int32 * len(flat_tokens))(*flat_tokens)
+                req = _NrExecuteRequest(
+                    model_handle=self.model_handle,
+                    token_ids=token_buf,
+                    batch=len(uncached_rows),
+                    seq_len=seq_len,
+                )
+                resp = self._native_lib.nr_execute_batch(ctypes.byref(req))
+                if int(resp.status) != 0 or not bool(resp.logits):
+                    raise RuntimeError(
+                        f"runner ABI batch execute failed: status={int(resp.status)}"
+                    )
+                if int(resp.batch) != len(uncached_rows):
+                    raise RuntimeError(
+                        f"runner ABI batch execute returned unexpected batch: {int(resp.batch)}"
+                    )
+                if int(resp.vocab_size) != self.vocab_size:
+                    raise RuntimeError(
+                        f"runner ABI batch execute returned unexpected vocab: {int(resp.vocab_size)}"
+                    )
+                vocab_size = self.vocab_size
+                for row_idx, row_key in enumerate(uncached_rows):
+                    base = row_idx * vocab_size
+                    self._cache_put(
+                        (1, row_key),
+                        (
+                            float(resp.logits[base + offset])
+                            for offset in range(vocab_size)
+                        ),
+                    )
+        deduped: Dict[Tuple[int, ...], Tuple[float, ...]] = {}
+        for row_key in row_keys:
+            if row_key in deduped:
+                continue
+            cached = self._cache_get((1, row_key))
+            if cached is None:
+                deduped[row_key] = tuple(self.execute_tokens(list(row_key), batch=1))
+            else:
+                deduped[row_key] = cached
+        return [deduped[row_key] for row_key in row_keys]
 
     def close(self) -> None:
         if self._closed:
@@ -205,6 +318,7 @@ class NativeRunnerAbiSession:
         except Exception as exc:
             logger.debug("Suppressed error: %s", exc)
         self._closed = True
+        self._execute_cache.clear()
 
 
 def _maybe_prepare_runner_abi_session(
@@ -408,6 +522,9 @@ def _maybe_prepare_runner_abi_session(
         native_lib.nr_compile.restype = _NrCompileResponse
         native_lib.nr_execute.argtypes = [ctypes.POINTER(_NrExecuteRequest)]
         native_lib.nr_execute.restype = _NrExecuteResponse
+        if hasattr(native_lib, "nr_execute_batch"):
+            native_lib.nr_execute_batch.argtypes = [ctypes.POINTER(_NrExecuteRequest)]
+            native_lib.nr_execute_batch.restype = _NrExecuteBatchResponse
         native_lib.nr_release_model.argtypes = [ctypes.c_int64]
 
         init_status = int(native_lib.nr_runtime_init())

@@ -140,10 +140,3 @@ class CheckpointManager:
         if exp_dir.exists():
             shutil.rmtree(str(exp_dir), ignore_errors=True)
             logger.info("Cleaned up checkpoints for experiment %s", experiment_id)
-
-    def has_checkpoint(self, experiment_id: str) -> bool:
-        """Check if any checkpoint exists for the given experiment."""
-        exp_dir = self._exp_dir(experiment_id)
-        if not exp_dir.exists():
-            return False
-        return any(exp_dir.iterdir())

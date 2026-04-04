@@ -143,7 +143,10 @@ def train_ensemble_full(save: bool = False) -> dict:
 
 def evaluate_all() -> dict:
     """Evaluate all predictors and report metrics."""
-    from research.scientist.intelligence.predictor import evaluate_gbm
+    from research.scientist.intelligence.predictor import (
+        analyze_graph_label_quality,
+        evaluate_gbm,
+    )
 
     results = {}
 
@@ -158,6 +161,14 @@ def evaluate_all() -> dict:
         )
     except Exception as e:
         results["gbm"] = {"error": str(e)}
+
+    # Label-quality summary
+    try:
+        label_quality = analyze_graph_label_quality(str(_NOTEBOOK_DB))
+        results["label_quality"] = label_quality
+        logger.info("Label quality: %s", label_quality)
+    except Exception as e:
+        results["label_quality"] = {"error": str(e)}
 
     # Graph predictor evaluation
     try:

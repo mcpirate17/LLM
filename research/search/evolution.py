@@ -21,7 +21,7 @@ from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
 from ..synthesis.primitives import get_primitive, list_primitives
 from ..scientist.shared_utils import clamp
-from .native_nsga import compute_crowding_distances
+from .native_nsga import compute_crowding_distances, compute_pareto_ranks
 
 logger = logging.getLogger(__name__)
 
@@ -506,38 +506,61 @@ def fast_non_dominated_sort(
         * signs
     )  # (n, m)
 
-    # Vectorized dominance: i dominates j iff all(vals[i] >= vals[j]) and any(vals[i] > vals[j])
-    # Compare every pair via broadcasting: (n, 1, m) vs (1, n, m)
-    diff = vals[:, np.newaxis, :] - vals[np.newaxis, :, :]  # (n, n, m)
-    ge_all = np.all(diff >= 0, axis=2)  # (n, n) — i >= j on all objectives
-    gt_any = np.any(diff > 0, axis=2)  # (n, n) — i > j on at least one
-    dominates = ge_all & gt_any  # (n, n) — i dominates j
+    native_ranks = compute_pareto_ranks(vals)
+    if native_ranks is not None:
+        return _fronts_from_rank_array(population, native_ranks)
 
-    # domination_count[j] = number of individuals that dominate j
-    domination_count = dominates.sum(axis=0)  # sum over i dimension
+    return _fast_non_dominated_sort_in_python(population, vals)
 
-    # Build fronts iteratively
+
+def _fronts_from_rank_array(
+    population: List[Individual], ranks: np.ndarray
+) -> List[List[Individual]]:
+    fronts: List[List[Individual]] = []
+    if ranks.size == 0:
+        return fronts
+    max_rank = int(np.max(ranks))
+    for rank in range(1, max_rank + 1):
+        indices = np.where(ranks == rank)[0]
+        if indices.size == 0:
+            continue
+        front: List[Individual] = []
+        for idx in indices:
+            population[int(idx)].pareto_rank = rank
+            front.append(population[int(idx)])
+        fronts.append(front)
+    return fronts
+
+
+def _fast_non_dominated_sort_in_python(
+    population: List[Individual], vals: np.ndarray
+) -> List[List[Individual]]:
+    """Reference NumPy implementation for Pareto fronts."""
+    diff = vals[:, np.newaxis, :] - vals[np.newaxis, :, :]
+    ge_all = np.all(diff >= 0, axis=2)
+    gt_any = np.any(diff > 0, axis=2)
+    dominates = ge_all & gt_any
+    domination_count = dominates.sum(axis=0)
+
     fronts: List[List[Individual]] = []
     rank = 1
-    remaining = np.ones(n, dtype=bool)
+    remaining = np.ones(len(population), dtype=bool)
 
     while True:
-        # Current front: individuals with domination_count == 0 among remaining
         front_mask = remaining & (domination_count == 0)
         front_indices = np.where(front_mask)[0]
         if len(front_indices) == 0:
             break
 
-        front = []
+        front: List[Individual] = []
         for i in front_indices:
-            population[i].pareto_rank = rank
-            front.append(population[i])
+            population[int(i)].pareto_rank = rank
+            front.append(population[int(i)])
         fronts.append(front)
 
-        # Remove front members and decrement counts for those they dominated
         remaining[front_indices] = False
         for i in front_indices:
-            dominated_by_i = np.where(dominates[i] & remaining)[0]
+            dominated_by_i = np.where(dominates[int(i)] & remaining)[0]
             domination_count[dominated_by_i] -= 1
 
         rank += 1

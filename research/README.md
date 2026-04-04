@@ -67,17 +67,15 @@ Native runner telemetry endpoint:
     "fallback_compiles": 3,
     "fallback_rate": 0.0714,
     "legacy_compile_count": 3,
-    "legacy_compile_invocations": 3,
     "max_allowed_fallback_rate": "0.10",
-    "max_allowed_legacy_compile_count": "5",
-    "max_allowed_legacy_compile_invocations": "5"
+    "max_allowed_legacy_compile_count": "5"
   },
   "cutover_gate": {
     "ready": true,
     "status": "ready",
     "checks": [
       { "name": "fallback_rate", "active": true, "pass": true, "actual": 0.0714, "limit": 0.1 },
-      { "name": "legacy_compile_invocations", "active": true, "pass": true, "actual": 3, "limit": 5 }
+      { "name": "legacy_compile_count", "active": true, "pass": true, "actual": 3, "limit": 5 }
     ]
   }
 }
@@ -89,16 +87,13 @@ Native runner cutover env controls:
 - `NATIVE_RUNNER_REQUIRE_PARITY_PASS` (`1|0`): include sampled ABI parity as required cutover gate
 - `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE` (`1|0`): hard gate that rejects compile when legacy compile path would be used (use for final cutover canaries)
 - `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED` (`1|0`): rejects legacy compile whenever native-runner mode is enabled (`NATIVE_RUNNER_ENABLED=1`), while leaving disabled-mode fallback behavior unchanged
-- `NATIVE_RUNNER_ABI_MODEL_ONLY` (`1|0`): when native runner is enabled, build an inference-only model backed by runner ABI session instead of legacy compiler; requires successful ABI session preparation
 
 Deprecated (compatibility window before Phase-D removal):
 - `NATIVE_RUNNER_LEGACY_ONLY` (`1|0`): deprecated emergency bypass for native logic.
-- `fallback_metrics.legacy_compile_invocations`: deprecated alias of `fallback_metrics.legacy_compile_count`.
 
 Strict native no-legacy canary lane (CI/verification):
 - `NATIVE_RUNNER_ENABLED=1`
 - `NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED=1`
-- `NATIVE_RUNNER_ABI_MODEL_ONLY=1`
 - verify with:
   - `python -m research.tools.check_no_legacy_compile`
   - `python -m research.tools.check_no_legacy_execution_paths`

@@ -26,6 +26,8 @@ from ._helpers import (
     promote_validation_candidate,
     run_trajectory_probe,
     handle_breakthrough,
+    screening_probe_fields,
+    screening_wikitext_fields,
 )
 
 import logging
@@ -759,6 +761,10 @@ class _ExecutionValidationMixin:
                     "discovery_loss_ratio",
                 ]:
                     program_metrics[key] = s1_result.get(key)
+                program_metrics["train_budget_steps"] = config.scale_up_steps
+                program_metrics.update(screening_wikitext_fields(s1_result))
+                program_metrics.update(screening_probe_fields(s1_result))
+                program_metrics.update(screening_probe_fields(program_metrics))
                 self._merge_s1_telemetry(program_metrics, s1_result)
 
                 if s1_passed:

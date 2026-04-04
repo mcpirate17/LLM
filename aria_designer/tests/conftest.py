@@ -1,8 +1,7 @@
 """Shared test configuration for aria_designer tests.
 
-Adds aria_designer/ to sys.path so that component kernel_fallback.py files
-can use bare imports (``from runtime.``, ``from components.``) as they do
-in production when the working directory is aria_designer/.
+Adds the repository-local ``aria_designer/`` package root to ``sys.path`` so
+tests can import package modules directly without depending on the shell cwd.
 """
 
 import sys

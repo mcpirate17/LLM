@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, FrozenSet, Iterable, List, Optional
+from typing import TYPE_CHECKING, Dict, FrozenSet, Iterable, List, Optional
 
-from .graph import ComputationGraph
+if TYPE_CHECKING:
+    from .graph import ComputationGraph
 from .primitives import PRIMITIVE_REGISTRY
 
 from ._context_op_sets import (
-    _CAUSAL_SENSITIVE_OPS,
     _LOCAL_WINDOW_VALID_PREDS,
     _MASK_VALID_SUCCESSORS,
     _REDUCTION_RESTORE_OPS,
@@ -178,15 +178,9 @@ def _check_op_structural_rules(
             violations.append("stdp_attention requires spiking predecessor context")
     elif op_name in {"geometric_product", "tropical_matmul"}:
         if not _has_ancestor_op(graph, nid, _LOCAL_WINDOW_VALID_PREDS):
-            violations.append(
-                f"{op_name} requires normalized predecessor context"
-            )
-        if not _has_descendant_op(
-            graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children
-        ):
-            violations.append(
-                f"{op_name} must feed projection/residual context"
-            )
+            violations.append(f"{op_name} requires normalized predecessor context")
+        if not _has_descendant_op(graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children):
+            violations.append(f"{op_name} must feed projection/residual context")
     elif op_name == "n_way_sparse_router":
         if not _has_ancestor_op(graph, nid, _LOCAL_WINDOW_VALID_PREDS):
             violations.append(
@@ -201,12 +195,8 @@ def _check_op_structural_rules(
             violations.append(
                 "tropical_center requires tropical or normalized predecessor context"
             )
-        if not _has_descendant_op(
-            graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children
-        ):
-            violations.append(
-                "tropical_center must feed projection/residual context"
-            )
+        if not _has_descendant_op(graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children):
+            violations.append("tropical_center must feed projection/residual context")
     elif op_name == "early_exit":
         if not _has_descendant_op(graph, nid, {"add"}, children):
             violations.append("early_exit must sit inside a residual/routing block")
@@ -231,13 +221,27 @@ def _check_op_numerical_rules(
         _check_linalg_numerical(graph, nid, op_name, children, violations)
 
 
-_ELEMENTWISE_NUMERICAL_OPS = frozenset({
-    "reciprocal", "exp", "log", "div_safe", "sign_ste", "sub", "minimum", "cumsum",
-})
+_ELEMENTWISE_NUMERICAL_OPS = frozenset(
+    {
+        "reciprocal",
+        "exp",
+        "log",
+        "div_safe",
+        "sign_ste",
+        "sub",
+        "minimum",
+        "cumsum",
+    }
+)
 
-_LINALG_NUMERICAL_OPS = frozenset({
-    "matmul", "cosine_similarity", "outer_product", "tropical_matmul",
-})
+_LINALG_NUMERICAL_OPS = frozenset(
+    {
+        "matmul",
+        "cosine_similarity",
+        "outer_product",
+        "tropical_matmul",
+    }
+)
 
 
 def _check_elementwise_numerical(
@@ -314,9 +318,7 @@ def _check_elementwise_numerical(
                 "sub requires immediate stabilizer successor (proj/norm/mul)"
             )
     elif op_name == "minimum":
-        if not _has_descendant_op(
-            graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children
-        ):
+        if not _has_descendant_op(graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children):
             violations.append("minimum must feed projection/residual context")
     elif op_name == "cumsum":
         if not _has_immediate_successor_op(
@@ -423,8 +425,14 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
 
         # Delegate to per-op structural/numerical checks
         _check_op_structural_rules(
-            graph, nid, node.op_name, child_ops, parent_ops,
-            children, non_input_count, violations,
+            graph,
+            nid,
+            node.op_name,
+            child_ops,
+            parent_ops,
+            children,
+            non_input_count,
+            violations,
         )
 
     return violations

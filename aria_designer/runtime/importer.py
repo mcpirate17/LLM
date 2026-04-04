@@ -7,7 +7,7 @@ LabNotebook and converts them into editable aria_designer workflow JSON.
 This is the reverse of bridge.py (which goes workflow → ComputationGraph).
 
 Usage:
-    from runtime.importer import import_survivors, graph_to_workflow
+    from aria_designer.runtime.importer import import_survivors, graph_to_workflow
 
     workflows = import_survivors(n=10, sort_by="validation_loss_ratio")
 """

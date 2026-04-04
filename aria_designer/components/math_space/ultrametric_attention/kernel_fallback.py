@@ -1,6 +1,6 @@
 """Kernel handler for ultrametric_attention — delegates to research.mathspaces.padic."""
 
-from runtime.fallback_templates import make_mathspace_unary_handler
+from aria_designer.runtime.fallback_templates import make_mathspace_unary_handler
 
 
 def _native_args(inputs, config):

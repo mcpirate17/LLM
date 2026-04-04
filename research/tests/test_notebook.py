@@ -578,6 +578,86 @@ class TestNotebook(unittest.TestCase):
             48.5,
         )
 
+    def test_screening_probe_metadata_round_trips(self):
+        """Rapid-screening and binding-probe metadata should persist explicitly."""
+        exp_id = self.nb.start_experiment("synthesis", {}, "probe metadata")
+        rid = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_probe_meta",
+            graph_json="{}",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            rapid_screening_passed=True,
+            rapid_screening_elapsed_ms=1812.0,
+            rapid_screening_steps_completed=150,
+            rapid_screening_max_steps=150,
+            rapid_screening_degraded=False,
+            rapid_screening_degraded_reasons_json='["loss_spike"]',
+            rapid_screening_metrics_json='{"steps_completed":150,"has_routing":false}',
+            induction_auc=0.008,
+            induction_gap_accuracies_json='{"4":0.1,"8":0.2}',
+            induction_probe_train_steps=1000,
+            induction_probe_eval_examples=100,
+            induction_probe_batch_size=16,
+            induction_probe_gaps_json="[4,8,16,32,64]",
+            induction_probe_elapsed_ms=5976.0,
+            binding_auc=0.006,
+            binding_distance_accuracies_json='{"2":0.2,"4":0.1}',
+            binding_probe_eval_examples=100,
+            binding_probe_distances_json="[2,4,8,16,32,64]",
+            binding_probe_elapsed_ms=606.0,
+            binding_composite=0.004,
+            train_budget_steps=500,
+            screening_hellaswag_correct=7,
+            screening_hellaswag_total=10,
+            screening_hellaswag_elapsed_ms=321.0,
+        )
+        self.nb.flush_writes()
+        row = self.nb.conn.execute(
+            "SELECT rapid_screening_passed, rapid_screening_elapsed_ms, "
+            "rapid_screening_steps_completed, rapid_screening_max_steps, "
+            "rapid_screening_degraded_reasons_json, rapid_screening_metrics_json, "
+            "induction_auc, induction_gap_accuracies_json, "
+            "induction_probe_train_steps, induction_probe_eval_examples, "
+            "induction_probe_batch_size, induction_probe_gaps_json, "
+            "induction_probe_elapsed_ms, binding_auc, "
+            "binding_distance_accuracies_json, binding_probe_eval_examples, "
+            "binding_probe_distances_json, binding_probe_elapsed_ms, "
+            "binding_composite, train_budget_steps, "
+            "screening_hellaswag_correct, screening_hellaswag_total, "
+            "screening_hellaswag_elapsed_ms "
+            "FROM program_results WHERE result_id = ?",
+            (rid,),
+        ).fetchone()
+
+        self.assertEqual(row["rapid_screening_passed"], 1)
+        self.assertAlmostEqual(row["rapid_screening_elapsed_ms"], 1812.0)
+        self.assertEqual(row["rapid_screening_steps_completed"], 150)
+        self.assertEqual(row["rapid_screening_max_steps"], 150)
+        self.assertEqual(row["rapid_screening_degraded_reasons_json"], '["loss_spike"]')
+        self.assertEqual(
+            row["rapid_screening_metrics_json"],
+            '{"steps_completed":150,"has_routing":false}',
+        )
+        self.assertAlmostEqual(row["induction_auc"], 0.008)
+        self.assertEqual(row["induction_gap_accuracies_json"], '{"4":0.1,"8":0.2}')
+        self.assertEqual(row["induction_probe_train_steps"], 1000)
+        self.assertEqual(row["induction_probe_eval_examples"], 100)
+        self.assertEqual(row["induction_probe_batch_size"], 16)
+        self.assertEqual(row["induction_probe_gaps_json"], "[4,8,16,32,64]")
+        self.assertAlmostEqual(row["induction_probe_elapsed_ms"], 5976.0)
+        self.assertAlmostEqual(row["binding_auc"], 0.006)
+        self.assertEqual(row["binding_distance_accuracies_json"], '{"2":0.2,"4":0.1}')
+        self.assertEqual(row["binding_probe_eval_examples"], 100)
+        self.assertEqual(row["binding_probe_distances_json"], "[2,4,8,16,32,64]")
+        self.assertAlmostEqual(row["binding_probe_elapsed_ms"], 606.0)
+        self.assertAlmostEqual(row["binding_composite"], 0.004)
+        self.assertEqual(row["train_budget_steps"], 500)
+        self.assertEqual(row["screening_hellaswag_correct"], 7)
+        self.assertEqual(row["screening_hellaswag_total"], 10)
+        self.assertAlmostEqual(row["screening_hellaswag_elapsed_ms"], 321.0)
+
     def test_insights_crud(self):
         """Record and query insights."""
         exp_id = self.nb.start_experiment("synthesis", {}, "test")

@@ -12,14 +12,23 @@ eval, enabling cheap rejection of hopeless graphs at screening time:
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+from .ml_corpus import (
+    CorpusIntegrityError,
+    load_deduped_graph_training_rows,
+    load_deduped_predictor_training_rows,
+    rerun_confidence_weight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +132,9 @@ def _query_training_data(nb) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     falling back to loss_ratio. Screening entries use loss_ratio (short training).
     """
     try:
-        rows = nb.conn.execute(
-            """
-            SELECT pr.fingerprint_json, pr.novelty_score,
-                   pr.structural_novelty, pr.loss_ratio,
-                   l.investigation_loss_ratio, l.tier
-            FROM program_results pr
-            JOIN leaderboard l ON l.result_id = pr.result_id
-            WHERE pr.fingerprint_json IS NOT NULL
-              AND pr.loss_ratio IS NOT NULL
-            ORDER BY pr.timestamp ASC
-            """
-        ).fetchall()
+        rows = load_deduped_predictor_training_rows(nb.db_path, validate=True)
+    except CorpusIntegrityError:
+        raise
     except Exception as e:
         logger.warning("Predictor training data query failed: %s", e)
         return np.zeros((0, 18)), np.zeros(0), np.zeros(0)
@@ -145,28 +145,23 @@ def _query_training_data(nb) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     n_inv = 0
 
     for row in rows:
-        fp_json = row[0] if not isinstance(row, dict) else row["fingerprint_json"]
-        novelty = row[1] if not isinstance(row, dict) else row["novelty_score"]
-        struct_nov = row[2] if not isinstance(row, dict) else row["structural_novelty"]
-        loss_ratio = row[3] if not isinstance(row, dict) else row["loss_ratio"]
-        inv_lr = (
-            row[4] if not isinstance(row, dict) else row["investigation_loss_ratio"]
-        )
-        tier = row[5] if not isinstance(row, dict) else row["tier"]
+        fp_json = row["fingerprint_json"]
+        novelty = row["novelty_score"]
+        struct_nov = row["structural_novelty"]
+        target = row["target_loss_ratio"]
+        tier = row["tier"]
+        rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
 
         feats = _extract_features(fp_json, novelty, struct_nov)
         if feats is None:
             continue
 
-        # Use investigation_loss_ratio when available (more training steps),
-        # fall back to screening loss_ratio
-        target = inv_lr if inv_lr is not None else loss_ratio
         lr = float(target)
         if not np.isfinite(lr):
             continue
 
         tier_str = str(tier) if tier else "screening"
-        weight = _TIER_WEIGHT.get(tier_str, 1.0)
+        weight = _TIER_WEIGHT.get(tier_str, 1.0) * rerun_weight
 
         X_list.append(feats)
         y_list.append(lr)
@@ -334,9 +329,135 @@ _MIN_GBM_SAMPLES = 50  # minimum rows to train
 _RETRAIN_INTERVAL = 50  # retrain every N new experiments
 
 
+def _graph_signature(graph_json: Any) -> Optional[str]:
+    """Return a stable hash for exact-graph grouping."""
+    if isinstance(graph_json, str):
+        try:
+            graph_json = json.loads(graph_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(graph_json, dict):
+        return None
+    try:
+        canonical = json.dumps(graph_json, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
+
+
+def _grouped_stratified_split(
+    signatures: List[str], labels: np.ndarray, seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
+    """Split rows by exact-graph signature to avoid duplicate leakage."""
+    groups: Dict[str, List[int]] = defaultdict(list)
+    for idx, sig in enumerate(signatures):
+        groups[sig].append(idx)
+
+    rng = np.random.RandomState(seed)
+    pos_groups: List[str] = []
+    neg_groups: List[str] = []
+    ambiguous_groups = 0
+    for sig, idxs in groups.items():
+        rate = float(np.mean(labels[idxs]))
+        if 0.0 < rate < 1.0:
+            ambiguous_groups += 1
+        if rate >= 0.5:
+            pos_groups.append(sig)
+        else:
+            neg_groups.append(sig)
+
+    rng.shuffle(pos_groups)
+    rng.shuffle(neg_groups)
+    pos_split = int(len(pos_groups) * 0.8)
+    neg_split = int(len(neg_groups) * 0.8)
+    train_groups = set(pos_groups[:pos_split]) | set(neg_groups[:neg_split])
+    val_groups = set(pos_groups[pos_split:]) | set(neg_groups[neg_split:])
+
+    train_idx = np.array(
+        [idx for sig, idxs in groups.items() if sig in train_groups for idx in idxs],
+        dtype=np.int32,
+    )
+    val_idx = np.array(
+        [idx for sig, idxs in groups.items() if sig in val_groups for idx in idxs],
+        dtype=np.int32,
+    )
+    stats = {
+        "n_unique_graphs": len(groups),
+        "n_duplicate_groups": int(sum(1 for idxs in groups.values() if len(idxs) > 1)),
+        "n_ambiguous_duplicate_groups": int(ambiguous_groups),
+    }
+    return train_idx, val_idx, stats
+
+
+def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
+    """Summarize duplicate-graph ambiguity and hard-negative composition."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        rows = conn.execute(
+            """SELECT graph_json, stage1_passed, stage0_passed, stage05_passed
+               FROM program_results
+               WHERE graph_json IS NOT NULL"""
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        return {"error": f"label_quality_query_failed: {e}"}
+
+    group_labels: Dict[str, List[int]] = defaultdict(list)
+    n_rows = 0
+    n_pos = 0
+    n_fail_s05 = 0
+    n_fail_pre_s0 = 0
+    for row in rows:
+        gj = row["graph_json"]
+        try:
+            gj_dict = json.loads(gj) if isinstance(gj, str) else gj
+        except (json.JSONDecodeError, TypeError):
+            continue
+        signature = _graph_signature(gj_dict)
+        if signature is None:
+            continue
+        s1 = int(row["stage1_passed"] or 0)
+        s0 = bool(row["stage0_passed"])
+        s05 = bool(row["stage05_passed"])
+        n_rows += 1
+        n_pos += s1
+        if not s1:
+            if s05:
+                n_fail_s05 += 1
+            elif not s0:
+                n_fail_pre_s0 += 1
+        group_labels[signature].append(s1)
+
+    duplicate_groups = [vals for vals in group_labels.values() if len(vals) > 1]
+    ambiguous_groups = [
+        vals for vals in duplicate_groups if 0.0 < float(np.mean(vals)) < 1.0
+    ]
+    ambiguous_rows = int(sum(len(vals) for vals in ambiguous_groups))
+    ambiguity_rates = [float(np.mean(vals)) for vals in ambiguous_groups]
+
+    return {
+        "n_rows": n_rows,
+        "n_unique_graphs": len(group_labels),
+        "n_duplicate_groups": len(duplicate_groups),
+        "rows_in_duplicate_groups": int(sum(len(vals) for vals in duplicate_groups)),
+        "n_ambiguous_duplicate_groups": len(ambiguous_groups),
+        "rows_in_ambiguous_duplicate_groups": ambiguous_rows,
+        "ambiguous_row_fraction": (float(ambiguous_rows / n_rows) if n_rows else 0.0),
+        "ambiguous_group_mean_s1_rate": (
+            float(np.mean(ambiguity_rates)) if ambiguity_rates else 0.0
+        ),
+        "n_positive": n_pos,
+        "n_fail_s05": n_fail_s05,
+        "n_fail_pre_s0": n_fail_pre_s0,
+        "fail_s05_fraction_of_negatives": (float(n_fail_s05 / max(n_rows - n_pos, 1))),
+    }
+
+
 def _query_graph_training_data(
     db_path: str,
-) -> Tuple[List[Dict[str, float]], np.ndarray, np.ndarray]:
+) -> Tuple[List[Dict[str, float]], np.ndarray, np.ndarray, np.ndarray, List[str]]:
     """Query graph_json + labels from ALL program_results for GBM training.
 
     Uses every graph — including failures without final_loss (they're known
@@ -356,19 +477,12 @@ def _query_graph_training_data(
     )
 
     try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
-        rows = conn.execute(
-            """SELECT graph_json, stage1_passed, wikitext_perplexity
-               FROM program_results
-               WHERE graph_json IS NOT NULL
-               ORDER BY timestamp ASC"""
-        ).fetchall()
-        conn.close()
+        rows = load_deduped_graph_training_rows(db_path, validate=True)
+    except CorpusIntegrityError:
+        raise
     except Exception as e:
         logger.warning("GBM training data query failed: %s", e)
-        return [], np.zeros(0), np.zeros(0)
+        return [], np.zeros(0), np.zeros(0), np.zeros(0), []
 
     # Load op_stats ONCE for all rows (avoids N+1 DB queries)
     op_stats_cache = load_op_stats(db_path)
@@ -376,6 +490,8 @@ def _query_graph_training_data(
     feat_dicts: List[Dict[str, float]] = []
     gate_labels: List[int] = []
     rank_labels: List[float] = []
+    sample_weights: List[float] = []
+    graph_signatures: List[str] = []
 
     for row in rows:
         gj = row["graph_json"]
@@ -384,6 +500,11 @@ def _query_graph_training_data(
         try:
             gj_dict = json.loads(gj) if isinstance(gj, str) else gj
         except (json.JSONDecodeError, TypeError):
+            continue
+        signature = str(row.get("canonical_fingerprint") or "")
+        if not signature:
+            signature = _graph_signature(gj_dict) or ""
+        if not signature:
             continue
         feats = extract_graph_features(gj_dict)
         if not feats:
@@ -400,14 +521,18 @@ def _query_graph_training_data(
                 feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
         enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
         feat_dicts.append(feats)
-        gate_labels.append(1 if row["stage1_passed"] else 0)
-        ppl = row["wikitext_perplexity"]
+        graph_signatures.append(signature)
+        gate_labels.append(1 if row["stage1_any_passed"] else 0)
+        sample_weights.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
+        ppl = row.get("wikitext_perplexity_best")
         rank_labels.append(float(ppl) if ppl is not None else float("nan"))
 
     return (
         feat_dicts,
         np.array(gate_labels, dtype=np.int32),
         np.array(rank_labels, dtype=np.float64),
+        np.array(sample_weights, dtype=np.float64),
+        graph_signatures,
     )
 
 
@@ -543,7 +668,9 @@ def train_gbm(
         logger.info("lightgbm not installed, GBM predictor unavailable")
         return GBMPredictor()
 
-    feat_dicts, y_gate, y_rank = _query_graph_training_data(db_path)
+    feat_dicts, y_gate, y_rank, sample_weights, graph_signatures = (
+        _query_graph_training_data(db_path)
+    )
 
     if len(feat_dicts) < _MIN_GBM_SAMPLES:
         logger.info(
@@ -556,8 +683,6 @@ def train_gbm(
     X, feature_names = _dicts_to_matrix(feat_dicts)
     n_total = len(X)
 
-    # Random stratified 80/20 split (NOT temporal — distribution shifts over time
-    # as grammar rules evolve, causing massive train/test divergence with temporal splits)
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
     if n_pos < 5 or n_neg < 5:
@@ -566,21 +691,17 @@ def train_gbm(
         )
         return GBMPredictor()
 
-    rng = np.random.RandomState(42)
-    pos_idx = np.where(y_gate == 1)[0]
-    neg_idx = np.where(y_gate == 0)[0]
-    rng.shuffle(pos_idx)
-    rng.shuffle(neg_idx)
-    pos_split = int(len(pos_idx) * 0.8)
-    neg_split = int(len(neg_idx) * 0.8)
-    train_idx = np.concatenate([pos_idx[:pos_split], neg_idx[:neg_split]])
-    val_idx = np.concatenate([pos_idx[pos_split:], neg_idx[neg_split:]])
-    rng.shuffle(train_idx)
-    rng.shuffle(val_idx)
+    train_idx, val_idx, split_stats = _grouped_stratified_split(
+        graph_signatures, y_gate, seed=42
+    )
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        logger.info("GBM predictor: grouped split failed, skipping")
+        return GBMPredictor()
 
     X_train, X_val = X[train_idx], X[val_idx]
     y_gate_train, y_gate_val = y_gate[train_idx], y_gate[val_idx]
     y_rank_train_full, y_rank_val_full = y_rank[train_idx], y_rank[val_idx]
+    w_train, w_val = sample_weights[train_idx], sample_weights[val_idx]
 
     # Class imbalance handling
     pos_count = int(y_gate_train.sum())
@@ -606,9 +727,18 @@ def train_gbm(
         "n_jobs": 1,
         "seed": 42,
     }
-    train_set = lgb.Dataset(X_train, label=y_gate_train, feature_name=feature_names)
+    train_set = lgb.Dataset(
+        X_train,
+        label=y_gate_train,
+        weight=w_train,
+        feature_name=feature_names,
+    )
     val_set = lgb.Dataset(
-        X_val, label=y_gate_val, feature_name=feature_names, reference=train_set
+        X_val,
+        label=y_gate_val,
+        weight=w_val,
+        feature_name=feature_names,
+        reference=train_set,
     )
 
     gate_model = lgb.train(
@@ -650,10 +780,17 @@ def train_gbm(
             "seed": 42,
         }
         r_train = lgb.Dataset(
-            X_rank_train, label=y_rank_train, feature_name=feature_names
+            X_rank_train,
+            label=y_rank_train,
+            weight=w_train[rank_mask_tr],
+            feature_name=feature_names,
         )
         r_val = lgb.Dataset(
-            X_rank_val, label=y_rank_val, feature_name=feature_names, reference=r_train
+            X_rank_val,
+            label=y_rank_val,
+            weight=w_val[rank_mask_va],
+            feature_name=feature_names,
+            reference=r_train,
         )
         rank_model = lgb.train(
             rank_params,
@@ -677,11 +814,14 @@ def train_gbm(
     )
 
     logger.info(
-        "GBM predictor trained: %d samples, %d features, gate_spw=%.1f, rank=%s",
+        "GBM predictor trained: %d samples, %d features, gate_spw=%.1f, rank=%s, unique_graphs=%d, dup_groups=%d, ambiguous_dup_groups=%d",
         n_trained,
         len(feature_names),
         spw,
         "yes" if rank_model else "no",
+        split_stats["n_unique_graphs"],
+        split_stats["n_duplicate_groups"],
+        split_stats["n_ambiguous_duplicate_groups"],
     )
     return predictor
 
@@ -698,32 +838,30 @@ def evaluate_gbm(
     except ImportError:
         return {"error": "lightgbm_not_installed"}
 
-    feat_dicts, y_gate, y_rank = _query_graph_training_data(db_path)
+    feat_dicts, y_gate, y_rank, sample_weights, graph_signatures = (
+        _query_graph_training_data(db_path)
+    )
     n_total = len(feat_dicts)
     if n_total < _MIN_GBM_SAMPLES:
         return {"error": "insufficient_data", "n_total": n_total}
 
     X, feature_names = _dicts_to_matrix(feat_dicts)
 
-    # Random stratified split (matches train_gbm)
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
     if n_pos < 5 or n_neg < 5:
         return {"error": "insufficient_balance", "n_pos": n_pos, "n_neg": n_neg}
 
-    rng = np.random.RandomState(42)
-    pos_idx = np.where(y_gate == 1)[0]
-    neg_idx = np.where(y_gate == 0)[0]
-    rng.shuffle(pos_idx)
-    rng.shuffle(neg_idx)
-    pos_split = int(len(pos_idx) * 0.8)
-    neg_split = int(len(neg_idx) * 0.8)
-    train_idx = np.concatenate([pos_idx[:pos_split], neg_idx[:neg_split]])
-    val_idx = np.concatenate([pos_idx[pos_split:], neg_idx[neg_split:]])
+    train_idx, val_idx, split_stats = _grouped_stratified_split(
+        graph_signatures, y_gate, seed=42
+    )
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        return {"error": "grouped_split_failed", "n_total": n_total}
 
     X_train, X_test = X[train_idx], X[val_idx]
     y_gate_train, y_gate_test = y_gate[train_idx], y_gate[val_idx]
     y_rank_train_full, y_rank_test_full = y_rank[train_idx], y_rank[val_idx]
+    w_train, w_test = sample_weights[train_idx], sample_weights[val_idx]
     n_train = len(X_train)
     n_test = len(X_test)
 
@@ -747,9 +885,18 @@ def evaluate_gbm(
         "n_jobs": 1,
         "seed": 42,
     }
-    train_set = lgb.Dataset(X_train, label=y_gate_train, feature_name=feature_names)
+    train_set = lgb.Dataset(
+        X_train,
+        label=y_gate_train,
+        weight=w_train,
+        feature_name=feature_names,
+    )
     val_set = lgb.Dataset(
-        X_test, label=y_gate_test, feature_name=feature_names, reference=train_set
+        X_test,
+        label=y_gate_test,
+        weight=w_test,
+        feature_name=feature_names,
+        reference=train_set,
     )
 
     gate_model = lgb.train(
@@ -800,11 +947,13 @@ def evaluate_gbm(
         r_train = lgb.Dataset(
             X_train[rank_mask_tr],
             label=y_rank_train_full[rank_mask_tr],
+            weight=w_train[rank_mask_tr],
             feature_name=feature_names,
         )
         r_val = lgb.Dataset(
             X_test[rank_mask_te],
             label=y_rank_test_full[rank_mask_te],
+            weight=w_test[rank_mask_te],
             feature_name=feature_names,
             reference=r_train,
         )
@@ -836,6 +985,7 @@ def evaluate_gbm(
         "n_test": n_test,
         "n_positive": int(y_gate.sum()),
         "n_total": n_total,
+        **split_stats,
         "top_features": top_features,
     }
 
@@ -1217,18 +1367,15 @@ def _calibrate_ensemble(
     Fits a logistic regression on component scores → actual S1 labels.
     This learns which components to trust more and the optimal threshold.
     """
-    import sqlite3
+    import random
 
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("PRAGMA busy_timeout=10000")
-    rows = conn.execute(
-        """SELECT graph_json, stage1_passed
-           FROM program_results
-           WHERE graph_json IS NOT NULL AND stage0_passed = 1
-           ORDER BY RANDOM() LIMIT ?""",
-        (n_samples,),
-    ).fetchall()
-    conn.close()
+    rows = [
+        row
+        for row in load_deduped_graph_training_rows(db_path)
+        if bool(row.get("stage0_any_passed"))
+    ]
+    if len(rows) > n_samples:
+        rows = random.Random(0).sample(rows, n_samples)
 
     if len(rows) < 100:
         return
@@ -1243,11 +1390,21 @@ def _calibrate_ensemble(
     op_stats_cache = load_op_stats(db_path)
     score_rows: list = []
     labels: list = []
+    sample_weights: list = []
+    graph_signatures: List[str] = []
 
-    for gj, s1 in rows:
+    for row in rows:
+        gj = row["graph_json"]
+        s1 = int(bool(row["stage1_any_passed"]))
+        rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
         try:
             gj_dict = json.loads(gj) if isinstance(gj, str) else gj
         except (json.JSONDecodeError, TypeError):
+            continue
+        signature = str(row.get("canonical_fingerprint") or "")
+        if not signature:
+            signature = _graph_signature(gj_dict) or ""
+        if not signature:
             continue
 
         scores = []
@@ -1315,33 +1472,33 @@ def _calibrate_ensemble(
 
         score_rows.append(scores)
         labels.append(int(s1 or 0))
+        sample_weights.append(rerun_weight)
+        graph_signatures.append(signature)
 
     if len(score_rows) < 100:
         return
 
     X = np.array(score_rows, dtype=np.float64)
     y = np.array(labels, dtype=np.float64)
+    sample_w = np.array(sample_weights, dtype=np.float64)
     n_dims = X.shape[1]
 
-    # Standardize scores (components have different scales/ranges)
-    score_mean = X.mean(axis=0)
-    score_std = X.std(axis=0)
+    train_idx, val_idx, split_stats = _grouped_stratified_split(
+        graph_signatures, y.astype(np.int32), seed=42
+    )
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        return
+
+    # Standardize scores using train statistics only.
+    score_mean = X[train_idx].mean(axis=0)
+    score_std = X[train_idx].std(axis=0)
     score_std[score_std < 1e-8] = 1.0
     X_norm = (X - score_mean) / score_std
 
-    # Stratified split
     rng = np.random.RandomState(42)
-    pos_idx = np.where(y == 1)[0]
-    neg_idx = np.where(y == 0)[0]
-    rng.shuffle(pos_idx)
-    rng.shuffle(neg_idx)
-    split_p = int(len(pos_idx) * 0.8)
-    split_n = int(len(neg_idx) * 0.8)
-    train_idx = np.concatenate([pos_idx[:split_p], neg_idx[:split_n]])
-    val_idx = np.concatenate([pos_idx[split_p:], neg_idx[split_n:]])
-
     X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
     y_tr, y_va = y[train_idx], y[val_idx]
+    w_tr = sample_w[train_idx]
 
     # Logistic regression via SGD
     w = rng.randn(n_dims).astype(np.float64) * 0.01
@@ -1356,10 +1513,13 @@ def _calibrate_ensemble(
             idx = perm[start : start + 128]
             x_b = X_tr[idx]
             y_b = y_tr[idx]
+            w_b = w_tr[idx]
             preds = _sig(x_b @ w + b)
-            grad = (preds - y_b)[:, None] * x_b
-            w -= lr * grad.mean(axis=0) + lr * 0.01 * w
-            b -= lr * float((preds - y_b).mean())
+            err = (preds - y_b) * w_b
+            grad = err[:, None] * x_b
+            denom = max(float(np.sum(w_b)), 1e-8)
+            w -= lr * (grad.sum(axis=0) / denom) + lr * 0.01 * w
+            b -= lr * float(err.sum() / denom)
 
     # Validate
     val_preds = _sig(X_va @ w + b)
@@ -1374,11 +1534,14 @@ def _calibrate_ensemble(
 
     logger.info(
         "Ensemble calibrated: %d-dim logistic regression, val_acc=%.3f, "
-        "weights=[%s], bias=%.3f (%d train, %d val)",
+        "weights=[%s], bias=%.3f (%d train, %d val, unique_graphs=%d, dup_groups=%d, ambiguous_dup_groups=%d)",
         n_dims,
         val_acc,
         ", ".join(f"{wi:.3f}" for wi in w),
         b,
         len(X_tr),
         len(X_va),
+        split_stats["n_unique_graphs"],
+        split_stats["n_duplicate_groups"],
+        split_stats["n_ambiguous_duplicate_groups"],
     )

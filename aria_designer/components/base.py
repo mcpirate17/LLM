@@ -42,6 +42,11 @@ def _try_native(op_name, *tensors):
         return None
 
 
+def _result_is_finite(result):
+    """Reject invalid native outputs so domain-safe Python fallbacks can take over."""
+    return not isinstance(result, torch.Tensor) or torch.isfinite(result).all()
+
+
 class BaseComponentHandler:
     """Base class for component handlers to reduce boilerplate."""
 
@@ -58,12 +63,19 @@ class BaseComponentHandler:
 class SimpleBinaryOpHandler(BaseComponentHandler):
     """Generic handler for binary operations like add, mul, sub."""
 
-    __slots__ = ("module_cls", "op_fn", "native_op_name")
+    __slots__ = ("module_cls", "op_fn", "native_op_name", "native_result_validator")
 
-    def __init__(self, module_cls, op_fn, native_op_name=None):
+    def __init__(
+        self,
+        module_cls,
+        op_fn,
+        native_op_name=None,
+        native_result_validator=None,
+    ):
         self.module_cls = module_cls
         self.op_fn = op_fn
         self.native_op_name = native_op_name
+        self.native_result_validator = native_result_validator or _result_is_finite
 
     def build(self, config):
         return self.module_cls()
@@ -78,7 +90,7 @@ class SimpleBinaryOpHandler(BaseComponentHandler):
                 b = b if b is not None else inputs[keys[1]]
         if self.native_op_name is not None:
             result = _try_native(self.native_op_name, a, b)
-            if result is not None:
+            if result is not None and self.native_result_validator(result):
                 return {"y": result}
         return {"y": self.op_fn(a, b)}
 
@@ -86,12 +98,19 @@ class SimpleBinaryOpHandler(BaseComponentHandler):
 class SimpleUnaryOpHandler(BaseComponentHandler):
     """Generic handler for unary operations like relu, sigmoid, exp."""
 
-    __slots__ = ("module_cls", "op_fn", "native_op_name")
+    __slots__ = ("module_cls", "op_fn", "native_op_name", "native_result_validator")
 
-    def __init__(self, module_cls, op_fn, native_op_name=None):
+    def __init__(
+        self,
+        module_cls,
+        op_fn,
+        native_op_name=None,
+        native_result_validator=None,
+    ):
         self.module_cls = module_cls
         self.op_fn = op_fn
         self.native_op_name = native_op_name
+        self.native_result_validator = native_result_validator or _result_is_finite
 
     def build(self, config):
         return self.module_cls()
@@ -104,12 +123,12 @@ class SimpleUnaryOpHandler(BaseComponentHandler):
                 x = inputs[keys[0]]
         if self.native_op_name is not None:
             result = _try_native(self.native_op_name, x)
-            if result is not None:
+            if result is not None and self.native_result_validator(result):
                 return {"y": result}
         return {"y": self.op_fn(x)}
 
 
-def make_unary_handler(op_fn, native_op_name=None):
+def make_unary_handler(op_fn, native_op_name=None, native_result_validator=None):
     """Factory: generate a ComponentHandler class for a unary op.
 
     ``op_fn`` takes a single tensor and returns a tensor.
@@ -136,14 +155,15 @@ def make_unary_handler(op_fn, native_op_name=None):
                 x = next(iter(inputs.values()))
             if native_op_name is not None:
                 result = _try_native(native_op_name, x)
-                if result is not None:
+                validator = native_result_validator or _result_is_finite
+                if result is not None and validator(result):
                     return {"y": result}
             return {"y": op_fn(x)}
 
     return ComponentHandler
 
 
-def make_binary_handler(op_fn, native_op_name=None):
+def make_binary_handler(op_fn, native_op_name=None, native_result_validator=None):
     """Factory: generate a ComponentHandler class for a binary op.
 
     ``op_fn`` takes two tensors (a, b) and returns a tensor.
@@ -172,7 +192,8 @@ def make_binary_handler(op_fn, native_op_name=None):
                     b = b if b is not None else inputs[keys[1]]
             if native_op_name is not None:
                 result = _try_native(native_op_name, a, b)
-                if result is not None:
+                validator = native_result_validator or _result_is_finite
+                if result is not None and validator(result):
                     return {"y": result}
             return {"y": op_fn(a, b)}
 

@@ -1847,7 +1847,10 @@ def test_all_target_ops_reachable_via_grammar():
 
 def test_template_graph_mapping():
     """Map each component graph to the template(s) that could generate similar structure."""
-    from research.synthesis.templates import TEMPLATES
+    from research.synthesis.templates import (
+        TEMPLATES,
+        is_component_graph_exempt_template,
+    )
 
     # Each graph builder maps to template families it resembles
     graph_to_templates = {
@@ -1936,13 +1939,17 @@ def test_template_graph_mapping():
         referenced.update(tlist)
 
     all_templates = set(TEMPLATES.keys())
-    unreferenced = all_templates - referenced
+    unreferenced = {
+        name
+        for name in (all_templates - referenced)
+        if not is_component_graph_exempt_template(name)
+    }
     print(
         f"\nTemplates referenced by component graphs: {len(referenced)}/{len(all_templates)}"
     )
     if unreferenced:
         print(f"Unreferenced templates: {sorted(unreferenced)}")
-    # All templates should map to at least one component graph
+    # Non-exempt templates should still map to at least one component graph.
     assert len(unreferenced) <= 5, (
         f"Too many unreferenced templates: {sorted(unreferenced)}"
     )
