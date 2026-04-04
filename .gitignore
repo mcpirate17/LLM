@@ -6,10 +6,9 @@ dist/
 build/
 *.egg
 
-# Checkpoints & model weights (keep artifacts/ tracked)
+# Checkpoints & model weights
 checkpoints/
 *.pt
-!research/artifacts/**/*.pt
 
 # Environment & IDE
 .env
@@ -64,17 +63,8 @@ personaplex/
 research/corpus/
 research/rescore_artifacts/
 
-# Auto-generated reports (data lives in lab_notebook.db)
-research/reports/report_*.md
-research/reports/exploration_*
-research/reports/architecture_features.csv
-research/reports/label_*.json
-research/reports/label_*.md
-research/reports/ml_eval_*.json
-research/reports/ml_eval_*.png
-research/reports/backfill_missing_probe_metrics*.tsv
-research/reports/backpopulate_screening_metrics*.tsv
-research/reports/template_stage_summary.tsv
+# Auto-generated reports
+research/reports/
 
 # Root-level junk patterns
 :memory:*
@@ -85,14 +75,15 @@ new *.txt
 audit_results/
 audit_report.*
 
-# Scale test checkpoints (multi-GB)
-research/artifacts/scale_test/*.pt
+# Artifacts
+research/artifacts/
 
 # Runtime learning state
 research/runtime/learning/
 
 # Performance artifacts
 research/perf_artifacts/
+research/profiling/
 profiles/
 
 # Backfill runtime state/logs
