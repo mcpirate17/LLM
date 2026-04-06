@@ -32,6 +32,7 @@ research/dashboard/build/
 *.log
 *.log.[0-9]
 *.db.bak.*
+*.db.bak_*
 
 # SQLite databases & WAL files
 *.db
@@ -89,3 +90,6 @@ profiles/
 # Backfill runtime state/logs
 research/runtime/backfill/*.log
 research/runtime/backfill/*_state.json
+
+# Induction probe generated datasets/results
+tasks/induction_native_probe/*.csv
