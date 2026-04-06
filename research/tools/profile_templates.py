@@ -6,7 +6,7 @@ run targeted batches to backfill missing evidence before scoring governance.
 
 Usage:
     python -m research.tools.profile_templates --db research/lab_notebook.db
-    python -m research.tools.profile_templates --run --target-eval 6 --batch-size 6
+    python -m research.tools.profile_templates --run --target-eval 10 --batch-size 6
     python -m research.tools.profile_templates --templates mamba_reference topk_retrieval
 """
 
@@ -25,6 +25,8 @@ from research.tools.backfill_templates import (
     get_template_stats,
     run_template_batch,
 )
+
+MIN_TEMPLATE_EVIDENCE_RUNS = 10
 
 
 def _load_program_rows(db_path: Path) -> list[sqlite3.Row]:
@@ -246,19 +248,21 @@ def _run_targeted_profiles(
     batch_size: int,
     weights: str,
 ) -> None:
-    current = get_template_stats(db_path)
     for name in templates:
-        current_eval = int(current.get(name, {}).get("eval", 0))
-        if current_eval >= target_eval:
-            continue
-        run_template_batch(
-            template_name=name,
-            n_programs=max(batch_size, target_eval - current_eval),
-            device=device,
-            db_path=str(db_path),
-            weight_mode=weights,
-        )
-        current = get_template_stats(db_path)
+        current_eval = int(get_template_stats(db_path).get(name, {}).get("eval", 0))
+        while current_eval < target_eval:
+            remaining = target_eval - current_eval
+            run_template_batch(
+                template_name=name,
+                n_programs=min(batch_size, remaining),
+                device=device,
+                db_path=str(db_path),
+                weight_mode=weights,
+            )
+            updated_eval = int(get_template_stats(db_path).get(name, {}).get("eval", 0))
+            if updated_eval <= current_eval:
+                break
+            current_eval = updated_eval
 
 
 def render_report(
@@ -301,7 +305,7 @@ def main() -> None:
     parser.add_argument(
         "--run", action="store_true", help="Run targeted batches before profiling"
     )
-    parser.add_argument("--target-eval", type=int, default=6)
+    parser.add_argument("--target-eval", type=int, default=MIN_TEMPLATE_EVIDENCE_RUNS)
     parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument(
         "--weights", choices=["uniform", "random", "default"], default="uniform"

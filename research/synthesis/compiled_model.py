@@ -78,6 +78,7 @@ class CompiledLayer(nn.Module):
                 op = self.ops[nid_str]
                 is_boundary = nid_str in self._mathspace_boundary_nids
                 self._fwd_plan.append((nid, False, op, node.input_ids, is_boundary))
+        self._routing_progress = 1.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dispatcher = getattr(self, "_subgraph_dispatcher", None)
@@ -121,6 +122,12 @@ class CompiledLayer(nn.Module):
         node_outputs.clear()
         return out
 
+    def set_routing_progress(self, progress: float) -> None:
+        clipped = float(max(0.0, min(1.0, progress)))
+        self._routing_progress = clipped
+        for op in self.ops.values():
+            object.__setattr__(op, "_routing_progress", clipped)
+
     def set_capture_heatmap(self, enabled: bool = True) -> None:
         for op in self.ops.values():
             op._capture_heatmap = enabled
@@ -147,6 +154,8 @@ class SynthesizedModel(nn.Module):
         self.lm_head.weight = self.embed.weight
         self._layer_graphs = layer_graphs
         self.layer_needs_residual = [not g.has_residual_path() for g in layer_graphs]
+        self._routing_progress = 1.0
+        self.set_routing_progress(1.0)
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         x = self.embed(input_ids)
@@ -187,6 +196,13 @@ class SynthesizedModel(nn.Module):
         for layer in self.layers:
             if hasattr(layer, "set_capture_heatmap"):
                 layer.set_capture_heatmap(enabled)
+
+    def set_routing_progress(self, progress: float) -> None:
+        clipped = float(max(0.0, min(1.0, progress)))
+        self._routing_progress = clipped
+        for layer in self.layers:
+            if hasattr(layer, "set_routing_progress"):
+                layer.set_routing_progress(clipped)
 
     @property
     def has_mathspace_ops(self) -> bool:

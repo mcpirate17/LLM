@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -21,7 +22,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from research.defaults import VOCAB_SIZE
 from research.eval.associative_recall import associative_recall_score
 from research.eval.binding_range import binding_range_profile
-from research.eval.induction_probe import induction_score
+from research.eval.native_induction import (
+    induction_result_metadata,
+    induction_score_gold,
+)
 from research.scientist.leaderboard_scoring import (
     build_score_kwargs_from_prefetch,
     compute_composite,
@@ -64,14 +68,7 @@ def _run_probes(model, device: str):
     ar = associative_recall_score(
         model, n_pairs=20, n_eval=200, n_train_steps=500, batch_size=16, device=device
     )
-    ind = induction_score(
-        model,
-        gaps=(4, 8, 16, 32, 64),
-        n_train_steps=1000,
-        n_eval=200,
-        batch_size=32,
-        device=device,
-    )
+    ind = induction_score_gold(model, device=device)
     br = binding_range_profile(
         model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=device
     )
@@ -97,17 +94,59 @@ def _store_results(
     br_auc: float,
     bc: float,
     is_local: int,
+    ind_meta: dict,
 ):
     """Write probe results to program_results and leaderboard."""
     nb.conn.execute(
         "UPDATE program_results SET ar_auc=?, induction_auc=?, binding_auc=?, "
-        "binding_composite=?, local_only=? WHERE result_id=?",
-        (ar_auc, ind_auc, br_auc, bc, is_local, result_id),
+        "binding_composite=?, local_only=?, induction_gap_accuracies_json=?, "
+        "induction_probe_train_steps=?, induction_probe_eval_examples=?, "
+        "induction_probe_batch_size=?, induction_probe_gaps_json=?, induction_probe_elapsed_ms=?, "
+        "induction_probe_metric_version=?, induction_probe_speed_mode=?, induction_probe_pool_size=? "
+        "WHERE result_id=?",
+        (
+            ar_auc,
+            ind_auc,
+            br_auc,
+            bc,
+            is_local,
+            json.dumps(
+                ind_meta.get("induction_gap_accuracies", {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            ind_meta.get("induction_probe_train_steps"),
+            ind_meta.get("induction_probe_eval_examples"),
+            ind_meta.get("induction_probe_batch_size"),
+            json.dumps(
+                ind_meta.get("induction_probe_gaps", []),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            ind_meta.get("induction_probe_elapsed_ms"),
+            ind_meta.get("induction_probe_metric_version"),
+            ind_meta.get("induction_probe_speed_mode"),
+            ind_meta.get("induction_probe_pool_size"),
+            result_id,
+        ),
     )
     nb.conn.execute(
         "UPDATE leaderboard SET ar_auc=?, induction_auc=?, binding_auc=?, "
         "binding_composite=?, local_only=? WHERE result_id=?",
         (ar_auc, ind_auc, br_auc, bc, is_local, result_id),
+    )
+    fp_row = nb.conn.execute(
+        "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+        (result_id,),
+    ).fetchone()
+    nb.upsert_induction_metric_v2(
+        graph_fingerprint=str(fp_row["graph_fingerprint"] if fp_row else ""),
+        result_id=str(result_id),
+        row={
+            **ind_meta,
+            "induction_auc": ind_auc,
+        },
+        source_cohort="runtime_backfill",
     )
 
 
@@ -242,7 +281,16 @@ def main():
             if is_local:
                 local_only_count += 1
 
-            _store_results(nb, result_id, ar.auc, ind.auc, br.auc, bc, is_local)
+            _store_results(
+                nb,
+                result_id,
+                ar.auc,
+                ind.auc,
+                br.auc,
+                bc,
+                is_local,
+                induction_result_metadata(ind),
+            )
             new_score, old_score = _rescore_entry(
                 nb, entry_id, result_id, ar.auc, ind.auc, is_ref, pr_cache
             )

@@ -1,0 +1,54 @@
+id: hybrid_token_gate
+version: 1.0.0
+name: Token Gate
+category: routing
+tags:
+- dynamic_routing
+- token_gate
+- hybrid_router
+status: approved
+description: Cheap single-token gate for default-path vs sparse routed traffic.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  threshold:
+    type: number
+    default: 0.5
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D
+  preserves_gradient: true
+  numerically_risky: false
+slots:
+- name: default_path
+  kind: fallback
+  required: true
+  description: Cheap path for tokens rejected by the gate.
+  compatible_components:
+  - routing/default_path
+- name: sparse_route
+  kind: path
+  required: true
+  description: Routed branch that feeds sparse span extraction.
+  compatible_components:
+  - routing/sparse_span_builder
+templates:
+- id: hybrid_sparse_triplet_router
+  label: Hybrid Sparse Triplet Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Gate stage for the promoted default-path plus sparse-route template.
+  slot_bindings:
+    default_path: default_path
+    sparse_route: sparse_span_builder

@@ -76,6 +76,8 @@ def get_component_properties(component_id: str) -> Dict[str, Any]:
         "description": comp.get("description", ""),
         "inputs": comp.get("inputs", []),
         "outputs": comp.get("outputs", []),
+        "slots": comp.get("slots", []),
+        "templates": comp.get("templates", []),
         "properties": properties,
     }
 

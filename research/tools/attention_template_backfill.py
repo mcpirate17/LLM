@@ -78,6 +78,7 @@ _TIER_TEMPLATES: "OrderedDict[str, list[str]]" = OrderedDict(
             "attn_gated_maximum",
             "attn_hyperbolic",
             "attn_normalized_matmul",
+            "attn_linear_normalized_matmul_control",
             "attn_safe_division",
             "attn_spiking_hybrid",
             "linear_attn_ffn_block",
@@ -240,6 +241,7 @@ def _refresh_models(db: Path, mode: str, log_path: Path) -> None:
 
         from research.tools.train_predictors import (
             train_bayesian,
+            train_ensemble_full,
             train_graph_predictor,
         )
 
@@ -247,6 +249,8 @@ def _refresh_models(db: Path, mode: str, log_path: Path) -> None:
         log.write("Bayesian tracker refreshed\n")
         train_graph_predictor(save=True)
         log.write("Graph predictor refreshed\n")
+        train_ensemble_full(save=True)
+        log.write("Ensemble predictor refreshed\n")
         log.flush()
 
         if mode == "all":

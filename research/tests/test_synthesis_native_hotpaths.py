@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import torch
 
@@ -90,6 +91,79 @@ def test_ir_executor_prefers_native_subgraph_dispatch(monkeypatch):
     assert torch.equal(out, x + 5)
     assert executor.execution_stats["last_execution_path"] == "native_subgraph"
     assert executor.execution_stats["native_subgraph_dispatches"] == 1
+
+
+def test_compile_model_native_first_short_circuits_on_abi_model(monkeypatch):
+    import research.scientist.native.compiler as native_compiler
+
+    class DummySession:
+        pass
+
+    class DummyModel:
+        pass
+
+    monkeypatch.setattr(
+        native_compiler,
+        "detect_native_state",
+        lambda: SimpleNamespace(
+            enabled=True, strict=False, designer_runtime_available=False
+        ),
+    )
+    monkeypatch.setattr(
+        native_compiler,
+        "native_runner_capability_report",
+        lambda: {"enabled": True, "strict": False, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        native_compiler, "_requested_execution_mode", lambda: "model_only"
+    )
+    monkeypatch.setattr(native_compiler, "_try_load_native_lib", lambda: object())
+    monkeypatch.setattr(
+        native_compiler,
+        "_maybe_prepare_runner_abi_session",
+        lambda **kwargs: {
+            "requested": True,
+            "attempted": True,
+            "succeeded": True,
+            "reason": "ok",
+            "model_handle": 7,
+            "session": DummySession(),
+        },
+    )
+    monkeypatch.setattr(
+        native_compiler,
+        "_build_native_abi_only_model",
+        lambda **kwargs: DummyModel(),
+    )
+    monkeypatch.setattr(native_compiler, "_maybe_fail_on_fallback_rate", lambda: None)
+    monkeypatch.setattr(
+        native_compiler, "_maybe_fail_on_legacy_compile_usage", lambda: None
+    )
+    monkeypatch.setattr(
+        native_compiler,
+        "_check_native_op_support",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("op support scan should be skipped for ABI-only success")
+        ),
+    )
+    monkeypatch.setattr(
+        native_compiler,
+        "try_designer_runtime_probe",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("designer probe should be skipped for ABI-only success")
+        ),
+    )
+
+    model = native_compiler.compile_model_native_first(
+        [object()], vocab_size=16, max_seq_len=4
+    )
+
+    assert isinstance(model, DummyModel)
+    assert getattr(model, "_native_runner_abi_session").__class__ is DummySession
+    assert (
+        getattr(model, "_native_runner_report")["execution_path"]
+        == "native_abi_model_only"
+    )
 
 
 def test_ir_executor_falls_back_to_python_loop(monkeypatch):
@@ -563,6 +637,41 @@ def test_ir_executor_skips_bound_native_parameter_chain_for_rank1_input(monkeypa
 
     assert executor.execution_stats["native_chain_segments"] == 1
     assert dispatcher.try_dispatch(torch.randn(8, dtype=torch.float32)) is None
+
+
+def test_bound_native_chain_skips_host_bridge_for_non_cpu_payloads(monkeypatch):
+    import research.synthesis.native_bound_segments as native_bound_segments
+
+    graph = ComputationGraph(8)
+    inp = graph.add_input()
+    proj = graph.add_op("linear_proj", [inp], {"out_dim": 8})
+    relu = graph.add_op("relu", [proj])
+    out = graph.add_op("cumsum", [relu])
+    graph.set_output(out)
+
+    layer = compile_graph(graph, use_ir=False)
+    dispatcher = native_bound_segments.BoundNativeChainDispatcher(
+        [
+            native_bound_segments._BoundChainNode("linear_proj", layer.ops[str(proj)]),
+            native_bound_segments._BoundChainNode("relu", layer.ops[str(relu)]),
+        ]
+    )
+
+    monkeypatch.setattr(
+        native_bound_segments,
+        "supports_host_array_bridge",
+        lambda *values: False,
+    )
+    monkeypatch.setattr(
+        native_bound_segments,
+        "dispatch_graph_native_multi_input_cached",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("host bridge should be skipped")
+        ),
+    )
+
+    x = torch.randn(2, 3, 8, dtype=torch.float32)
+    assert dispatcher.try_dispatch(x) is None
 
 
 def test_fingerprint_representations_preserve_rank_under_no_grad():

@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function ReportCard({ label, stats, highlight, onClick }) {
+export default function ReportCard({ label, stats, highlight, selected = false, onClick }) {
   const isEmpty = stats && stats.experiments === 0;
   const isThemeCard = stats && stats.experiments === null;
 
@@ -11,7 +11,13 @@ export default function ReportCard({ label, stats, highlight, onClick }) {
       style={{
         cursor: 'pointer',
         opacity: isEmpty ? 0.5 : 1,
-        borderLeft: highlight ? '3px solid var(--accent-purple)' : undefined,
+        borderLeft: selected
+          ? '3px solid var(--accent-blue)'
+          : highlight
+            ? '3px solid var(--accent-purple)'
+            : undefined,
+        borderColor: selected ? 'var(--accent-blue)' : undefined,
+        boxShadow: selected ? '0 0 0 1px rgba(88, 166, 255, 0.24), var(--shadow-elevated)' : undefined,
         transition: 'transform 0.1s ease, box-shadow 0.1s ease',
       }}
       onMouseEnter={e => {

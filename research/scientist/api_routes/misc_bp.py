@@ -5,10 +5,52 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from flask import send_from_directory
+import requests
+from flask import Response, request, send_from_directory
+
+from research.defaults import DESIGNER_UI_BASE
 from .deps import ApiRouteContext
 
 logger = logging.getLogger(__name__)
+
+_PROXY_TIMEOUT_S = 10.0
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _proxy_designer_ui(subpath: str = ""):
+    """Proxy embedded designer UI requests to the live Vite dev server."""
+    upstream = f"{DESIGNER_UI_BASE.rstrip('/')}/{subpath.lstrip('/')}"
+    if not subpath:
+        upstream = f"{DESIGNER_UI_BASE.rstrip('/')}/"
+    try:
+        upstream_response = requests.get(
+            upstream,
+            params=request.args,
+            timeout=_PROXY_TIMEOUT_S,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Designer UI proxy failed for %s: %s", upstream, exc)
+        return Response("Designer UI unavailable", status=502)
+
+    headers = [
+        (key, value)
+        for key, value in upstream_response.headers.items()
+        if key.lower() not in _HOP_BY_HOP_HEADERS
+    ]
+    return Response(
+        upstream_response.content,
+        status=upstream_response.status_code,
+        headers=headers,
+    )
 
 
 def register_misc_routes(app, context: ApiRouteContext):
@@ -19,16 +61,22 @@ def register_misc_routes(app, context: ApiRouteContext):
     designer_dist = str(
         Path(__file__).resolve().parents[3] / "aria_designer" / "ui" / "dist"
     )
+    designer_dist_path = Path(designer_dist)
 
     @app.route("/designer-proxy/")
     def designer_index():
         """Serve the built aria_designer index for the embedded iframe."""
-        return send_from_directory(designer_dist, "index.html")
+        if (designer_dist_path / "index.html").is_file():
+            return send_from_directory(designer_dist, "index.html")
+        return _proxy_designer_ui()
 
     @app.route("/designer-proxy/<path:subpath>")
     def designer_assets(subpath):
         """Serve aria_designer static assets."""
-        return send_from_directory(designer_dist, subpath)
+        asset_path = designer_dist_path / subpath
+        if asset_path.is_file():
+            return send_from_directory(designer_dist, subpath)
+        return _proxy_designer_ui(subpath)
 
     @app.route("/")
     def index():

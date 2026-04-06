@@ -7,3 +7,4 @@ from .profiling import *
 from .designer import *
 from .autograd import *
 from .compiler import *
+from .intelligent_router import *

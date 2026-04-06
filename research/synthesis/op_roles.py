@@ -93,6 +93,11 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "adjacent_token_merge": OpRole.ROUTE,  # was: token_merge
     "learned_token_gate": OpRole.ROUTE,  # was: cascade
     "cheap_verify_blend": OpRole.ROUTE,  # was: speculative
+    "hybrid_token_gate": OpRole.ROUTE,
+    "sparse_span_builder": OpRole.ROUTE,
+    "hybrid_sparse_router": OpRole.ROUTE,
+    "lane_conditioned_block": OpRole.ROUTE,
+    "default_path": OpRole.ROUTE,
     "feature_sparsity": OpRole.ROUTE,
     "route_topk": OpRole.ROUTE,  # alias for feature_sparsity
     "gated_lane_blend": OpRole.ROUTE,

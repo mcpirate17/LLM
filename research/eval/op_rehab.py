@@ -59,23 +59,14 @@ def test_op_in_isolation(
             # n_inputs >= 3: replicate input
             op_id = g.add_op(op_name, [inp] * prim.n_inputs)
 
-        # Check if output shape matches model_dim for set_output
         node = g.nodes[op_id]
         if node.output_shape.dim != model_dim or not node.output_shape.is_standard:
-            # Try adding a linear_proj to fix the shape
-            try:
-                proj_id = g.add_op("linear_proj", [op_id])
-                g.set_output(proj_id)
-            except Exception:
-                # If that also fails, the op's shape is fundamentally incompatible
-                # with the standard (B, S, D) pipeline — mark as compile failure
-                result["error_message"] = (
-                    f"Output shape mismatch: dim={node.output_shape.dim}, "
-                    f"is_standard={node.output_shape.is_standard}"
-                )
-                return result
-        else:
-            g.set_output(op_id)
+            result["error_message"] = (
+                f"Output shape mismatch: dim={node.output_shape.dim}, "
+                f"is_standard={node.output_shape.is_standard}"
+            )
+            return result
+        g.set_output(op_id)
 
     except Exception as e:
         result["error_message"] = f"Graph build error: {e}"

@@ -21,7 +21,7 @@ def _make_notebook_with_novelty():
     db_path = os.path.join(tmpdir, "evidence_pack.db")
     nb = LabNotebook(db_path)
     exp_id = nb.start_experiment("synthesis", config={})
-    fingerprint = {"similarity_path": "_compute_reference_cka"}
+    fingerprint = {"similarity_path": "compute_reference_cka"}
     nb.record_program_result(
         experiment_id=exp_id,
         graph_fingerprint="fp123",

@@ -190,6 +190,7 @@ function AppContent({ onRunningChange }) {
   const [showHelp, setShowHelp] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [reportsDeferredReady, setReportsDeferredReady] = useState(false);
 
   const [experimentsPageSize, setExperimentsPageSize] = useState(DEFAULT_EXPERIMENTS_PAGE_SIZE);
   const [experimentsHasMore, setExperimentsHasMore] = useState(true);
@@ -205,6 +206,38 @@ function AppContent({ onRunningChange }) {
     }
     refreshAnalyticsData();
   }, [activeTab, refreshAnalyticsData]);
+
+  useEffect(() => {
+    if (activeTab !== 'reports') {
+      setReportsDeferredReady(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timeoutId = null;
+    let idleId = null;
+    const activate = () => {
+      if (!cancelled) {
+        setReportsDeferredReady(true);
+      }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(activate, { timeout: 300 });
+    } else {
+      timeoutId = window.setTimeout(activate, 150);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId !== null && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null && typeof window !== 'undefined') {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [activeTab]);
 
   // Drill-down state
   const [selectedExperiment, setSelectedExperiment] = useState(null);
@@ -1326,19 +1359,29 @@ function AppContent({ onRunningChange }) {
               eligibilityByResultId={eligibilityByResultId}
               onHypothesisHandoff={handleHypothesisHandoff}
             />
-            <div style={{ marginTop: 16 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Campaigns</h3>
-              <CampaignView
-                onSelectExperiment={handleSelectExperiment}
-                selectedCampaignId={selectedCampaignId}
-                onCampaignIdClear={() => setSelectedCampaignId(null)}
-                onHypothesisHandoff={handleHypothesisHandoff}
-              />
-            </div>
-            <div style={{ marginTop: 16 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Knowledge Base</h3>
-              <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
-            </div>
+            {reportsDeferredReady ? (
+              <>
+                <div style={{ marginTop: 16 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Campaigns</h3>
+                  <CampaignView
+                    onSelectExperiment={handleSelectExperiment}
+                    selectedCampaignId={selectedCampaignId}
+                    onCampaignIdClear={() => setSelectedCampaignId(null)}
+                    onHypothesisHandoff={handleHypothesisHandoff}
+                  />
+                </div>
+                <div style={{ marginTop: 16 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Knowledge Base</h3>
+                  <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
+                </div>
+              </>
+            ) : (
+              <div className="card" style={{ marginTop: 16 }}>
+                <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+                  Loading campaigns and knowledge base...
+                </p>
+              </div>
+            )}
           </Suspense>
         )}
 

@@ -1,5 +1,6 @@
 from research.scientist.notebook import LabNotebook
 from research.tools.backfill_templates import (
+    _NON_ROUTING_TEMPLATES,
     _phase_settings,
     _scaffold_guided_priors,
 )
@@ -41,3 +42,10 @@ def test_scaffold_guided_priors_build_weights_from_scaffold_stats(tmp_path):
         assert "mixing" in category_weights or "sequence" in category_weights
     finally:
         nb.close()
+
+
+def test_non_routing_template_whitelist_covers_attention_ablations():
+    assert "attn_softmax_normalized_matmul" in _NON_ROUTING_TEMPLATES
+    assert "attn_linear_no_matmul_ffn" in _NON_ROUTING_TEMPLATES
+    assert "attn_linear_matmul_sparse_tail" in _NON_ROUTING_TEMPLATES
+    assert "attn_linear_matmul_router_sidecar" not in _NON_ROUTING_TEMPLATES

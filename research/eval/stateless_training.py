@@ -75,6 +75,7 @@ def functional_micro_train_loop(
     clip_grad: float = 1.0,
     warmup_steps: int = 10,
     loss_trajectory: Optional[dict] = None,
+    step_callback=None,
 ) -> float:
     """Train cloned parameters only; leave the live module untouched."""
     if not batches:
@@ -86,6 +87,8 @@ def functional_micro_train_loop(
         param_values = list(params.values())
 
         def compute_loss(step: int) -> torch.Tensor:
+            if step_callback is not None:
+                step_callback(step, n_steps)
             batch = batches[step % len(batches)]
             logits = functional_logits(model, params, buffers, batch)
             return language_model_loss(logits, batch, vocab_size)
@@ -103,6 +106,8 @@ def functional_micro_train_loop(
         return result.final_loss
 
     result = _run(lr)
+    if hasattr(model, "set_routing_progress"):
+        model.set_routing_progress(1.0)
     if math.isfinite(result):
         return result
 
@@ -111,4 +116,7 @@ def functional_micro_train_loop(
     reset_parameters_(params, template_params)
     for tensor in params.values():
         tensor.grad = None
-    return _run(lr * 0.1)
+    result = _run(lr * 0.1)
+    if hasattr(model, "set_routing_progress"):
+        model.set_routing_progress(1.0)
+    return result

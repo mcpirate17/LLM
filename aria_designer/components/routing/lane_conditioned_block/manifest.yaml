@@ -1,0 +1,53 @@
+id: lane_conditioned_block
+version: 1.0.0
+name: Lane Conditioned Block
+category: routing
+tags:
+- lane_block
+- hybrid_router
+status: approved
+description: Lane-conditioned downstream compute block for routed activations.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  lane_id:
+    type: integer
+    default: 0
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D
+  preserves_gradient: true
+  numerically_risky: false
+slots:
+- name: routed_lane
+  kind: lane
+  required: true
+  description: Lane-specific compute branch fed by the hybrid sparse router.
+  compatible_components:
+  - routing/hybrid_sparse_router
+- name: merge_target
+  kind: merge
+  required: true
+  description: Residual merge target that rejoins the default path.
+  compatible_components:
+  - add
+templates:
+- id: hybrid_sparse_triplet_router
+  label: Hybrid Sparse Triplet Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Lane-conditioned compute stage used after sparse lane assignment.
+  slot_bindings:
+    routed_lane: hybrid_sparse_router
+    merge_target: add

@@ -17,6 +17,25 @@ from ...synthesis.serializer import graph_to_json
 logger = logging.getLogger(__name__)
 
 
+def _accumulate_expert_counts(
+    running: Optional[torch.Tensor], incoming: torch.Tensor
+) -> torch.Tensor:
+    """Sum routing expert-count tensors even when layers use different expert widths."""
+    incoming = incoming.detach()
+    if running is None:
+        return incoming.clone()
+    if running.shape == incoming.shape:
+        return running + incoming
+
+    max_len = max(int(running.numel()), int(incoming.numel()))
+    device = running.device
+    dtype = running.dtype
+    merged = torch.zeros(max_len, device=device, dtype=dtype)
+    merged[: running.numel()] += running
+    merged[: incoming.numel()] += incoming.to(device=device, dtype=dtype)
+    return merged
+
+
 class _ResultsAnalysisMixin:
     """Graph/sandbox metric extraction and post-evaluation callbacks."""
 
@@ -422,6 +441,14 @@ class _ResultsAnalysisMixin:
         rt_confidence_count = 0
         rt_count = 0
         rt_expert_counts: Optional[torch.Tensor] = None
+        rt_lane_histogram: Optional[torch.Tensor] = None
+        rt_keep_count = 0
+        rt_drop_count = 0
+        rt_default_path_count = 0
+        rt_sparse_span_count = 0
+        rt_sparse_span_width_sum = 0.0
+        rt_sparse_span_width_count = 0
+        rt_sparse_span_coverage_tokens = 0
 
         # 3. Adaptive Telemetry (MoD/MoR)
         at_savings_sum = 0.0
@@ -448,10 +475,27 @@ class _ResultsAnalysisMixin:
                     rt_count += rt.get("count", 0)
                     ec = rt.get("expert_counts")
                     if isinstance(ec, torch.Tensor):
-                        if rt_expert_counts is None:
-                            rt_expert_counts = ec.clone()
-                        else:
-                            rt_expert_counts += ec
+                        rt_expert_counts = _accumulate_expert_counts(
+                            rt_expert_counts, ec
+                        )
+                    rt_keep_count += int(rt.get("keep_count", 0) or 0)
+                    rt_drop_count += int(rt.get("drop_count", 0) or 0)
+                    rt_default_path_count += int(rt.get("default_path_count", 0) or 0)
+                    rt_sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
+                    rt_sparse_span_width_sum += float(
+                        rt.get("sparse_span_width_sum", 0.0) or 0.0
+                    )
+                    rt_sparse_span_width_count += int(
+                        rt.get("sparse_span_width_count", 0) or 0
+                    )
+                    rt_sparse_span_coverage_tokens += int(
+                        rt.get("sparse_span_coverage_tokens", 0) or 0
+                    )
+                    lh = rt.get("lane_histogram")
+                    if isinstance(lh, torch.Tensor):
+                        rt_lane_histogram = _accumulate_expert_counts(
+                            rt_lane_histogram, lh
+                        )
 
                 # Adaptive (MoD/MoR)
                 at = getattr(routing, "adaptive_telemetry", None)
@@ -535,10 +579,27 @@ class _ResultsAnalysisMixin:
                     rt_count += rt.get("count", 0)
                     ec = rt.get("expert_counts")
                     if isinstance(ec, torch.Tensor):
-                        if rt_expert_counts is None:
-                            rt_expert_counts = ec.clone()
-                        else:
-                            rt_expert_counts += ec
+                        rt_expert_counts = _accumulate_expert_counts(
+                            rt_expert_counts, ec
+                        )
+                    rt_keep_count += int(rt.get("keep_count", 0) or 0)
+                    rt_drop_count += int(rt.get("drop_count", 0) or 0)
+                    rt_default_path_count += int(rt.get("default_path_count", 0) or 0)
+                    rt_sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
+                    rt_sparse_span_width_sum += float(
+                        rt.get("sparse_span_width_sum", 0.0) or 0.0
+                    )
+                    rt_sparse_span_width_count += int(
+                        rt.get("sparse_span_width_count", 0) or 0
+                    )
+                    rt_sparse_span_coverage_tokens += int(
+                        rt.get("sparse_span_coverage_tokens", 0) or 0
+                    )
+                    lh = rt.get("lane_histogram")
+                    if isinstance(lh, torch.Tensor):
+                        rt_lane_histogram = _accumulate_expert_counts(
+                            rt_lane_histogram, lh
+                        )
 
                 # Adaptive
                 at = getattr(compiled_op, "adaptive_telemetry", None)
@@ -660,6 +721,28 @@ class _ResultsAnalysisMixin:
                 metrics["routing_expert_count"] = int(len(rt_expert_counts))
                 metrics["routing_expert_utilization_json"] = json.dumps(
                     rt_expert_counts.cpu().tolist()
+                )
+            if rt_keep_count or rt_drop_count:
+                denom = max(1, rt_keep_count + rt_drop_count)
+                metrics["routing_keep_ratio"] = rt_keep_count / denom
+                metrics["routing_drop_ratio"] = rt_drop_count / denom
+            if rt_default_path_count > 0 and rt_tokens_total > 0:
+                metrics["routing_default_path_fraction"] = (
+                    rt_default_path_count / rt_tokens_total
+                )
+            if rt_sparse_span_count > 0:
+                metrics["routing_sparse_span_count"] = rt_sparse_span_count
+            if rt_sparse_span_width_count > 0:
+                metrics["routing_sparse_span_width_mean"] = (
+                    rt_sparse_span_width_sum / rt_sparse_span_width_count
+                )
+            if rt_sparse_span_coverage_tokens > 0 and rt_tokens_total > 0:
+                metrics["routing_sparse_span_coverage"] = (
+                    rt_sparse_span_coverage_tokens / rt_tokens_total
+                )
+            if rt_lane_histogram is not None:
+                metrics["routing_lane_utilization_json"] = json.dumps(
+                    rt_lane_histogram.cpu().tolist()
                 )
 
         # Detect token_entropy ops and flag NULL routing_utilization_entropy

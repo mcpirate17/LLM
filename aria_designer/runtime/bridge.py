@@ -241,11 +241,62 @@ def bridge_analyze_routing(model, graph) -> List[Dict[str, Any]]:
                         "op_name": getattr(module, "op_name", "unknown"),
                         "savings_ratio": rt.get("savings_ratio"),
                         "heatmap": rt.get("heatmap"),
+                        "keep_drop_ratio": rt.get("keep_drop_ratio"),
+                        "lane_histogram": rt.get("lane_histogram")
+                        .detach()
+                        .cpu()
+                        .tolist()
+                        if hasattr(rt.get("lane_histogram"), "detach")
+                        else rt.get("lane_histogram"),
+                        "route_confidence_mean": rt.get("route_confidence_mean"),
+                        "span_type": rt.get("span_type"),
+                        "gate_type": rt.get("gate_type"),
+                        "trace_payload": rt.get("trace_payload"),
                     }
                 )
             except (ValueError, IndexError):
                 continue
     return results
+
+
+def _validate_hybrid_routing_workflow(workflow_json: Dict[str, Any]) -> list[str]:
+    nodes = workflow_json.get("nodes", [])
+    node_types = {str(node.get("component_type", "")).split("/")[-1] for node in nodes}
+    errors: list[str] = []
+    has_hybrid_router = "hybrid_sparse_router" in node_types
+    has_default_path = "default_path" in node_types
+    if has_hybrid_router and not has_default_path:
+        errors.append("Routed blocks must define a default_path node.")
+    for node in nodes:
+        leaf = str(node.get("component_type", "")).split("/")[-1]
+        params = node.get("params", {})
+        if leaf == "sparse_span_builder":
+            if "span_width" not in params:
+                errors.append(
+                    f"sparse_span_builder '{node.get('id')}' must define span_width."
+                )
+            if "fallback_behavior" not in params:
+                errors.append(
+                    f"sparse_span_builder '{node.get('id')}' must define fallback_behavior."
+                )
+        if leaf == "hybrid_sparse_router":
+            if int(params.get("lane_count", 0) or 0) <= 0:
+                errors.append(
+                    f"hybrid_sparse_router '{node.get('id')}' must define lane_count."
+                )
+            if (
+                "lane_conditioned_block" not in node_types
+                and "default_path" not in node_types
+            ):
+                errors.append(
+                    "lane_router must define downstream lanes or lane-conditioned edges."
+                )
+        if (
+            leaf in {"learned_token_gate", "confidence_token_gate", "hybrid_token_gate"}
+            and not has_default_path
+        ):
+            errors.append(f"{leaf} is used without a cheap/default_path.")
+    return list(dict.fromkeys(errors))
 
 
 # ── Main evaluation pipeline ─────────────────────────────────────────
@@ -365,6 +416,17 @@ def validate_workflow_graph(
 ) -> Dict[str, Any]:
     """Validate that a workflow can be converted to a valid ComputationGraph."""
     try:
+        routing_errors = _validate_hybrid_routing_workflow(workflow_json)
+        if routing_errors:
+            return {
+                "valid": False,
+                "error": routing_errors[0],
+                "routing_errors": routing_errors,
+                "design_suggestions": [
+                    "recommend sparse routing when many cheap/default ops are present",
+                    "recommend pair/triplet routing around local structural operators",
+                ],
+            }
         graph = workflow_to_graph(workflow_json, model_dim=model_dim)
 
         # Wiring constraint check — catch misconnected signal chains
@@ -389,6 +451,36 @@ def validate_workflow_graph(
                 "model_dim": model_dim,
                 "has_gradient_path": bool(graph.has_gradient_path()),
             },
+            "design_suggestions": [
+                msg
+                for msg in (
+                    "recommend sparse routing when graph contains many cheap/default ops"
+                    if any(
+                        str(node.get("component_type", "")).split("/")[-1]
+                        in {
+                            "default_path",
+                            "hybrid_token_gate",
+                            "learned_token_gate",
+                            "confidence_token_gate",
+                        }
+                        for node in workflow_json.get("nodes", [])
+                    )
+                    else None,
+                    "recommend pair/triplet routing when graph contains local structural operators"
+                    if any(
+                        str(node.get("component_type", "")).split("/")[-1]
+                        in {
+                            "conv_only",
+                            "local_window_attn",
+                            "adjacent_token_merge",
+                            "sparse_span_builder",
+                        }
+                        for node in workflow_json.get("nodes", [])
+                    )
+                    else None,
+                )
+                if msg
+            ],
         }
     except Exception as e:
         return {"valid": False, "error": str(e)}

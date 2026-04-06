@@ -495,14 +495,32 @@ class TestCrossTaskEval:
 
         return fn
 
-    def test_synthetic_fallback(self):
-        """Tests with synthetic code fallback (no heavy download needed)."""
-        from research.eval.cross_task_eval import _generate_synthetic_python
+    def test_code_download_failure_returns_error(self, monkeypatch):
+        """Cross-task eval should fail closed when the code corpus is unavailable."""
+        import tempfile
+        from research.eval import cross_task_eval
+        from pathlib import Path
 
-        snippets = _generate_synthetic_python(10000)
-        assert len(snippets) > 0
-        total = sum(len(s) for s in snippets)
-        assert total >= 10000
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("code corpus unavailable")
+
+        monkeypatch.setattr(cross_task_eval, "cache_hf_text_splits", _boom)
+        monkeypatch.setattr(
+            cross_task_eval, "_CACHE_DIR", Path(tempfile.mkdtemp()) / "missing"
+        )
+        result = cross_task_eval.evaluate_cross_task_robustness(
+            self._make_model_fn(),
+            vocab_size=256,
+            device=torch.device("cpu"),
+            n_train_steps=1,
+            seq_len=16,
+            n_train_batches=1,
+            n_eval_batches=1,
+            batch_size=1,
+            max_chars=1000,
+        )
+        assert result["cross_task_score"] is None
+        assert "download_failed" in result["error"]
 
     def test_full_eval(self):
         from research.eval.cross_task_eval import evaluate_cross_task_robustness

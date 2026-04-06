@@ -16,6 +16,7 @@ from .native_support import (
 )
 from .primitives import PRIMITIVE_REGISTRY
 from ..scientist.native.dispatch import dispatch_graph_native_multi_input_cached
+from ..scientist.native.tensor_bridge import supports_host_array_bridge
 
 
 @dataclass(slots=True)
@@ -401,10 +402,13 @@ class BoundNativeChainDispatcher:
     def try_dispatch(self, x: torch.Tensor):
         if getattr(x, "requires_grad", False) or not self._supports_input(x):
             return None
+        payloads = self._input_payloads(x)
+        if not supports_host_array_bridge(*payloads):
+            return None
         ir_json, output_shape = self._build_ir(x)
         return dispatch_graph_native_multi_input_cached(
             ir_json,
-            self._input_payloads(x),
+            payloads,
             output_shape=output_shape,
         )
 

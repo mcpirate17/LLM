@@ -164,11 +164,14 @@ def _build_native_abi_only_model(
             seq_len = int(input_ids.shape[1])
             if seq_len <= 0:
                 raise ValueError("input_ids sequence length must be > 0")
-            token_rows = [
-                tuple(int(v) for v in row)
-                for row in input_ids.detach().to(device="cpu").tolist()
-            ]
-            row_logits = self._abi_session.execute_token_rows(token_rows)
+            if hasattr(self._abi_session, "execute_token_rows_tensor"):
+                row_logits = self._abi_session.execute_token_rows_tensor(input_ids)
+            else:
+                token_rows = [
+                    tuple(int(v) for v in row)
+                    for row in input_ids.detach().to(device="cpu").tolist()
+                ]
+                row_logits = self._abi_session.execute_token_rows(token_rows)
             out = torch.tensor(
                 row_logits,
                 dtype=torch.float32,
@@ -356,6 +359,60 @@ class NativeRunnerAbiSession:
             else:
                 deduped[row_key] = cached
         return [deduped[row_key] for row_key in row_keys]
+
+    def execute_token_rows_tensor(
+        self, token_rows: torch.Tensor
+    ) -> List[Tuple[float, ...]]:
+        if self._closed:
+            raise RuntimeError("native ABI session already closed")
+        if token_rows.dim() != 2:
+            raise ValueError("token_rows tensor must be rank-2 [B, S]")
+        batch = int(token_rows.shape[0])
+        seq_len = int(token_rows.shape[1])
+        if batch <= 0 or seq_len <= 0:
+            raise ValueError("token_rows tensor must be non-empty")
+        if seq_len > self.max_seq_len:
+            raise ValueError("token length exceeds compiled max_seq_len")
+
+        if self._has_batch_execute:
+            token_buf = token_rows.detach()
+            if token_buf.device.type != "cpu":
+                token_buf = token_buf.to(device="cpu", dtype=torch.int32)
+            else:
+                token_buf = token_buf.to(dtype=torch.int32, copy=False)
+            token_buf = token_buf.contiguous().view(-1)
+            req = _NrExecuteRequest(
+                model_handle=self.model_handle,
+                token_ids=ctypes.cast(
+                    token_buf.data_ptr(),
+                    ctypes.POINTER(ctypes.c_int32),
+                ),
+                batch=batch,
+                seq_len=seq_len,
+            )
+            resp = self._native_lib.nr_execute_batch(ctypes.byref(req))
+            if int(resp.status) != 0 or not bool(resp.logits):
+                raise RuntimeError(
+                    f"runner ABI batch execute failed: status={int(resp.status)}"
+                )
+            if int(resp.batch) != batch:
+                raise RuntimeError(
+                    f"runner ABI batch execute returned unexpected batch: {int(resp.batch)}"
+                )
+            if int(resp.vocab_size) != self.vocab_size:
+                raise RuntimeError(
+                    f"runner ABI batch execute returned unexpected vocab: {int(resp.vocab_size)}"
+                )
+            vocab_size = self.vocab_size
+            return [
+                tuple(
+                    float(resp.logits[row_idx * vocab_size + offset])
+                    for offset in range(vocab_size)
+                )
+                for row_idx in range(batch)
+            ]
+
+        return self.execute_token_rows(token_rows.detach().to(device="cpu").tolist())
 
     def close(self) -> None:
         if self._closed:

@@ -18,6 +18,7 @@ from ._helpers import (
 )
 from ._strategy_preflight import (
     normalize_start_mode,
+    apply_live_screening_bias,
     run_launch_preflight,
     run_pipeline_sample_check,
 )
@@ -177,6 +178,9 @@ def register_system_routes(app, context: ApiRouteContext):
         auto_harden = bool(body.pop("auto_harden", True))
         runner = get_runner(notebook_path)
         config = RunConfig.from_dict(body) if body else RunConfig()
+        if mode == "live_screening":
+            apply_live_screening_bias(config)
+            mode = "single"
         config, prescreen = runner.prescreen_run_config(
             config,
             mode=mode,

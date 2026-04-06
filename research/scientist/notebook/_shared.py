@@ -857,6 +857,50 @@ CREATE INDEX IF NOT EXISTS idx_template_stats_loss ON template_stats(mean_loss);
 CREATE INDEX IF NOT EXISTS idx_op_stats_loss ON op_stats(mean_loss);
 CREATE INDEX IF NOT EXISTS idx_motif_stats_loss ON motif_stats(mean_loss);
 CREATE INDEX IF NOT EXISTS idx_slot_stats_template ON slot_stats(template_name);
+
+CREATE TABLE IF NOT EXISTS induction_metrics_v2 (
+    graph_fingerprint TEXT PRIMARY KEY,
+    result_id TEXT,
+    source_cohort TEXT NOT NULL,
+    metric_version TEXT NOT NULL,
+    speed_mode TEXT NOT NULL,
+    train_steps INTEGER NOT NULL,
+    eval_examples INTEGER NOT NULL,
+    batch_size INTEGER NOT NULL,
+    pool_size INTEGER NOT NULL,
+    gaps_json TEXT NOT NULL,
+    auc REAL NOT NULL,
+    gap_4 REAL,
+    gap_8 REAL,
+    gap_16 REAL,
+    gap_32 REAL,
+    gap_64 REAL,
+    wall_ms REAL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS induction_metrics_archive (
+    archive_id TEXT PRIMARY KEY,
+    archived_at REAL NOT NULL,
+    source_table TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    result_id TEXT,
+    graph_fingerprint TEXT,
+    induction_auc REAL,
+    induction_gap_accuracies_json TEXT,
+    induction_probe_train_steps INTEGER,
+    induction_probe_eval_examples INTEGER,
+    induction_probe_batch_size INTEGER,
+    induction_probe_gaps_json TEXT,
+    induction_probe_elapsed_ms REAL,
+    induction_probe_metric_version TEXT,
+    induction_probe_speed_mode TEXT,
+    induction_probe_pool_size INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_induction_metrics_v2_auc ON induction_metrics_v2(auc);
+CREATE INDEX IF NOT EXISTS idx_induction_metrics_v2_cohort ON induction_metrics_v2(source_cohort);
+CREATE INDEX IF NOT EXISTS idx_induction_metrics_archive_fp ON induction_metrics_archive(graph_fingerprint);
 """
 
 # Columns added in the schema expansion — used for migration
@@ -1085,6 +1129,9 @@ _PROGRAM_RESULTS_NEW_COLUMNS = {
     "induction_probe_batch_size": "INTEGER",
     "induction_probe_gaps_json": "TEXT",
     "induction_probe_elapsed_ms": "REAL",
+    "induction_probe_metric_version": "TEXT",
+    "induction_probe_speed_mode": "TEXT",
+    "induction_probe_pool_size": "INTEGER",
     "binding_auc": "REAL",
     "binding_distance_accuracies_json": "TEXT",
     "binding_probe_eval_examples": "INTEGER",

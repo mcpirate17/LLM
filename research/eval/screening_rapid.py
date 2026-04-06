@@ -104,6 +104,320 @@ class RapidScreeningCheck:
         self.lr = lr
         self.clip_grad = clip_grad
 
+    def _init_run(
+        self,
+        model: nn.Module,
+        device: str,
+    ) -> tuple[torch.device, List[torch.Tensor], torch.optim.Optimizer]:
+        dev = torch.device(device)
+        model = model.to(dev)
+        model.train()
+        param_values = [param for param in model.parameters() if param.requires_grad]
+        opt = make_adamw(param_values, lr=self.lr)
+        return dev, param_values, opt
+
+    def _handle_forward(
+        self,
+        model: nn.Module,
+        batch: torch.Tensor,
+        result: ScreeningResult,
+        step: int,
+    ) -> Optional[torch.Tensor]:
+        try:
+            return model(batch)
+        except Exception as e:
+            self._kill(
+                result,
+                step,
+                "forward_error",
+                None,
+                None,
+                f"Forward pass error at step {step}: {e}",
+            )
+            return None
+
+    def _handle_backward(
+        self,
+        loss: torch.Tensor,
+        result: ScreeningResult,
+        step: int,
+    ) -> bool:
+        try:
+            loss.backward()
+            return True
+        except Exception as e:
+            self._kill(
+                result,
+                step,
+                "backward_error",
+                None,
+                None,
+                f"Backward pass error at step {step}: {e}",
+            )
+            return False
+
+    def _sample_entropy_gate(
+        self,
+        step: int,
+        has_entropy_gate: bool,
+        entropy_values: List[float],
+        entropy_gate_trajectory: List[float],
+        metrics: Dict[str, Any],
+        result: ScreeningResult,
+    ) -> bool:
+        should_sample_entropy = has_entropy_gate and step in _ENTROPY_SAMPLE_STEPS
+        if not should_sample_entropy or not entropy_values:
+            return True
+        eg_val = sum(entropy_values) / len(entropy_values)
+        entropy_gate_trajectory.append(eg_val)
+        if eg_val < 0.05:
+            metrics["routing_collapse_score"] = 1.0
+            logger.warning(
+                "entropy_gate_collapse_detected at step %d: value=%.4f",
+                step,
+                eg_val,
+            )
+            if step >= 50:
+                self._kill(
+                    result,
+                    step,
+                    "entropy_gate_collapse",
+                    eg_val,
+                    0.05,
+                    f"Entropy gate collapsed to {eg_val:.4f} at step {step} "
+                    f"— branch death imminent",
+                )
+                return False
+        return True
+
+    def _check_step_thresholds(
+        self,
+        step: int,
+        loss_val: float,
+        grad_norm: float,
+        has_routing: bool,
+        routing_modules: List[nn.Module],
+        metrics: Dict[str, Any],
+        result: ScreeningResult,
+        min_loss_so_far: float,
+        vocab_size: int,
+    ) -> bool:
+        if step == 25 and loss_val > self.loss_at_step_25_limit:
+            self._kill(
+                result,
+                step,
+                "loss_stalled_25",
+                loss_val,
+                self.loss_at_step_25_limit,
+                f"Loss {loss_val:.1f} > {self.loss_at_step_25_limit} at step 25",
+            )
+            return False
+        if step == 50 and loss_val > self.loss_at_step_50_limit:
+            self._kill(
+                result,
+                step,
+                "loss_stalled_50",
+                loss_val,
+                self.loss_at_step_50_limit,
+                f"Loss {loss_val:.1f} > {self.loss_at_step_50_limit} at step 50",
+            )
+            return False
+        if step == 50 and has_routing:
+            entropy = self._measure_routing_entropy(routing_modules)
+            metrics["routing_entropy"] = entropy
+            if entropy is not None and entropy < self.routing_entropy_minimum:
+                self._kill(
+                    result,
+                    step,
+                    "routing_collapse",
+                    entropy,
+                    self.routing_entropy_minimum,
+                    f"Routing entropy {entropy:.4f} < {self.routing_entropy_minimum} at step 50",
+                )
+                return False
+        if (
+            step == 50
+            and math.isfinite(grad_norm)
+            and grad_norm > self.grad_norm_warning
+        ):
+            result.degraded = True
+            result.degraded_reasons.append(
+                f"Grad norm {grad_norm:.1f} > {self.grad_norm_warning} at step 50"
+            )
+        if (
+            step == 100
+            and min_loss_so_far > 0
+            and loss_val > min_loss_so_far * self.loss_spike_ratio
+        ):
+            self._kill(
+                result,
+                step,
+                "loss_spike_post_minimum",
+                loss_val,
+                min_loss_so_far * self.loss_spike_ratio,
+                f"Loss spiked from {min_loss_so_far:.3f} to {loss_val:.3f} "
+                f"at step {step} — entropy collapse suspected",
+            )
+            return False
+        if step == self.max_steps and len(metrics["losses"]) >= self.max_steps:
+            init_l = metrics["losses"][0]
+            if init_l > 0:
+                entropy_floor = math.log(vocab_size) if vocab_size > 0 else 10.37
+                if init_l >= entropy_floor * 1.15:
+                    improvement_rate = 0.02 * min(1.0, init_l / 25.0)
+                    threshold = init_l * (1.0 - improvement_rate)
+                    if loss_val >= threshold:
+                        self._kill(
+                            result,
+                            step,
+                            "no_learning_signal",
+                            loss_val,
+                            threshold,
+                            f"No learning after {step} steps: "
+                            f"init={init_l:.3f} final={loss_val:.3f} "
+                            f"(threshold={threshold:.3f}, rate={improvement_rate:.3f})",
+                        )
+                        return False
+        return True
+
+    def _finalize_run(
+        self,
+        result: ScreeningResult,
+        metrics: Dict[str, Any],
+        entropy_gate_trajectory: List[float],
+        t0: float,
+    ) -> ScreeningResult:
+        if entropy_gate_trajectory:
+            metrics["entropy_gate_trajectory_json"] = entropy_gate_trajectory
+        if metrics["losses"]:
+            metrics["initial_loss"] = metrics["losses"][0]
+            metrics["final_loss"] = metrics["losses"][-1]
+            for checkpoint in (10, 25, 50, 75, 100, 150):
+                if len(metrics["losses"]) >= checkpoint:
+                    metrics[f"loss_at_{checkpoint}"] = metrics["losses"][checkpoint - 1]
+        if metrics["grad_norms"]:
+            finite_norms = [g for g in metrics["grad_norms"] if math.isfinite(g)]
+            if finite_norms:
+                metrics["max_grad_norm"] = max(finite_norms)
+                metrics["mean_grad_norm"] = sum(finite_norms) / len(finite_norms)
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        result.elapsed_ms = round(elapsed_ms, 1)
+        if not result.passed:
+            result.gpu_minutes_saved = round(_AVG_S1_GPU_MINUTES, 2)
+        if result.passed:
+            logger.info(
+                "Rapid screening PASSED (%.0fms, %d steps)",
+                elapsed_ms,
+                metrics.get("steps_completed", 0),
+            )
+        else:
+            logger.info(
+                "Rapid screening KILLED at step %d: %s (saved ~%.1f GPU-min, %.0fms)",
+                result.kill_step or 0,
+                result.kill_reason or "unknown",
+                result.gpu_minutes_saved,
+                elapsed_ms,
+            )
+        return result
+
+    def _run_step(
+        self,
+        model: nn.Module,
+        batch: torch.Tensor,
+        opt: torch.optim.Optimizer,
+        param_values: List[torch.Tensor],
+        step: int,
+        vocab_size: int,
+        has_entropy_gate: bool,
+        has_routing: bool,
+        routing_modules: List[nn.Module],
+        entropy_values: List[float],
+        entropy_gate_trajectory: List[float],
+        metrics: Dict[str, Any],
+        result: ScreeningResult,
+        min_loss_so_far: float,
+    ) -> tuple[bool, float]:
+        should_sample_entropy = has_entropy_gate and step in _ENTROPY_SAMPLE_STEPS
+        entropy_values.clear()
+        logits = self._handle_forward(model, batch, result, step)
+        if logits is None:
+            return False, min_loss_so_far
+        loss = language_model_loss(logits, batch, vocab_size)
+        loss_val = loss.item()
+        metrics["losses"].append(loss_val)
+
+        if not math.isfinite(loss_val):
+            self._kill(
+                result,
+                step,
+                "loss_nan_inf",
+                loss_val,
+                None,
+                f"Loss is {'NaN' if math.isnan(loss_val) else 'Inf'} at step {step}",
+            )
+            return False, min_loss_so_far
+        if not self._handle_backward(loss, result, step):
+            return False, min_loss_so_far
+
+        if self.clip_grad > 0:
+            grad_norm = float(
+                torch.nn.utils.clip_grad_norm_(param_values, self.clip_grad)
+            )
+        else:
+            grad_norm = self._compute_grad_norm(param_values)
+        metrics["grad_norms"].append(grad_norm)
+
+        if step <= self.nan_grace_steps and not math.isfinite(grad_norm):
+            self._kill(
+                result,
+                step,
+                "grad_nan_inf",
+                grad_norm,
+                None,
+                f"Gradient NaN/Inf at step {step} (within grace period)",
+            )
+            return False, min_loss_so_far
+        if (
+            step >= 10
+            and math.isfinite(grad_norm)
+            and grad_norm > self.grad_norm_hard_limit
+        ):
+            self._kill(
+                result,
+                step,
+                "grad_norm_exploding",
+                grad_norm,
+                self.grad_norm_hard_limit,
+                f"Grad norm {grad_norm:.1f} > {self.grad_norm_hard_limit} at step {step}",
+            )
+            return False, min_loss_so_far
+
+        opt.step()
+        metrics["steps_completed"] = step
+        min_loss_so_far = min(min_loss_so_far, loss_val)
+        if not self._sample_entropy_gate(
+            step,
+            should_sample_entropy,
+            entropy_values,
+            entropy_gate_trajectory,
+            metrics,
+            result,
+        ):
+            return False, min_loss_so_far
+        ok = self._check_step_thresholds(
+            step,
+            loss_val,
+            grad_norm,
+            has_routing,
+            routing_modules,
+            metrics,
+            result,
+            min_loss_so_far,
+            vocab_size,
+        )
+        return ok, min_loss_so_far
+
     def run(
         self,
         model: nn.Module,
@@ -129,11 +443,7 @@ class RapidScreeningCheck:
         }
         result.metrics = metrics
 
-        dev = torch.device(device)
-        model = model.to(dev)
-        model.train()
-        param_values = [param for param in model.parameters() if param.requires_grad]
-        opt = make_adamw(param_values, lr=self.lr)
+        dev, param_values, opt = self._init_run(model, device)
 
         entropy_modules, routing_modules = self._collect_probe_modules(model)
         has_routing = bool(routing_modules)
@@ -156,249 +466,34 @@ class RapidScreeningCheck:
             for step in range(1, self.max_steps + 1):
                 batch.random_(0, vocab_size)
                 opt.zero_grad(set_to_none=True)
-
-                should_sample_entropy = (
+                entropy_capture_enabled = (
                     has_entropy_gate and step in _ENTROPY_SAMPLE_STEPS
                 )
-                entropy_values.clear()
-                entropy_capture_enabled = should_sample_entropy
                 try:
-                    logits = model(batch)
-                except Exception as e:
-                    self._kill(
-                        result,
+                    ok, min_loss_so_far = self._run_step(
+                        model,
+                        batch,
+                        opt,
+                        param_values,
                         step,
-                        "forward_error",
-                        None,
-                        None,
-                        f"Forward pass error at step {step}: {e}",
+                        vocab_size,
+                        has_entropy_gate,
+                        has_routing,
+                        routing_modules,
+                        entropy_values,
+                        entropy_gate_trajectory,
+                        metrics,
+                        result,
+                        min_loss_so_far,
                     )
-                    break
                 finally:
                     entropy_capture_enabled = False
-
-                loss = language_model_loss(logits, batch, vocab_size)
-                loss_val = loss.item()
-                metrics["losses"].append(loss_val)
-
-                if not math.isfinite(loss_val):
-                    self._kill(
-                        result,
-                        step,
-                        "loss_nan_inf",
-                        loss_val,
-                        None,
-                        f"Loss is {'NaN' if math.isnan(loss_val) else 'Inf'} at step {step}",
-                    )
+                if not ok:
                     break
-
-                try:
-                    loss.backward()
-                except Exception as e:
-                    self._kill(
-                        result,
-                        step,
-                        "backward_error",
-                        None,
-                        None,
-                        f"Backward pass error at step {step}: {e}",
-                    )
-                    break
-
-                if self.clip_grad > 0:
-                    grad_norm = float(
-                        torch.nn.utils.clip_grad_norm_(param_values, self.clip_grad)
-                    )
-                else:
-                    grad_norm = self._compute_grad_norm(param_values)
-                metrics["grad_norms"].append(grad_norm)
-
-                if step <= self.nan_grace_steps and not math.isfinite(grad_norm):
-                    self._kill(
-                        result,
-                        step,
-                        "grad_nan_inf",
-                        grad_norm,
-                        None,
-                        f"Gradient NaN/Inf at step {step} (within grace period)",
-                    )
-                    break
-
-                if (
-                    step >= 10
-                    and math.isfinite(grad_norm)
-                    and grad_norm > self.grad_norm_hard_limit
-                ):
-                    self._kill(
-                        result,
-                        step,
-                        "grad_norm_exploding",
-                        grad_norm,
-                        self.grad_norm_hard_limit,
-                        f"Grad norm {grad_norm:.1f} > {self.grad_norm_hard_limit} at step {step}",
-                    )
-                    break
-
-                opt.step()
-                metrics["steps_completed"] = step
-                min_loss_so_far = min(min_loss_so_far, loss_val)
-
-                if should_sample_entropy and entropy_values:
-                    eg_val = sum(entropy_values) / len(entropy_values)
-                    entropy_gate_trajectory.append(eg_val)
-                    if eg_val < 0.05:
-                        metrics["routing_collapse_score"] = 1.0
-                        logger.warning(
-                            "entropy_gate_collapse_detected at step %d: value=%.4f",
-                            step,
-                            eg_val,
-                        )
-                        if step >= 50:
-                            self._kill(
-                                result,
-                                step,
-                                "entropy_gate_collapse",
-                                eg_val,
-                                0.05,
-                                f"Entropy gate collapsed to {eg_val:.4f} at step {step} "
-                                f"— branch death imminent",
-                            )
-                            break
-
-                if step == 25 and loss_val > self.loss_at_step_25_limit:
-                    self._kill(
-                        result,
-                        step,
-                        "loss_stalled_25",
-                        loss_val,
-                        self.loss_at_step_25_limit,
-                        f"Loss {loss_val:.1f} > {self.loss_at_step_25_limit} at step 25",
-                    )
-                    break
-
-                if step == 50 and loss_val > self.loss_at_step_50_limit:
-                    self._kill(
-                        result,
-                        step,
-                        "loss_stalled_50",
-                        loss_val,
-                        self.loss_at_step_50_limit,
-                        f"Loss {loss_val:.1f} > {self.loss_at_step_50_limit} at step 50",
-                    )
-                    break
-
-                if step == 50 and has_routing:
-                    entropy = self._measure_routing_entropy(routing_modules)
-                    metrics["routing_entropy"] = entropy
-                    if entropy is not None and entropy < self.routing_entropy_minimum:
-                        self._kill(
-                            result,
-                            step,
-                            "routing_collapse",
-                            entropy,
-                            self.routing_entropy_minimum,
-                            f"Routing entropy {entropy:.4f} < {self.routing_entropy_minimum} at step 50",
-                        )
-                        break
-
-                if (
-                    step == 50
-                    and math.isfinite(grad_norm)
-                    and grad_norm > self.grad_norm_warning
-                ):
-                    result.degraded = True
-                    result.degraded_reasons.append(
-                        f"Grad norm {grad_norm:.1f} > {self.grad_norm_warning} at step 50"
-                    )
-
-                if (
-                    step == 100
-                    and min_loss_so_far > 0
-                    and loss_val > min_loss_so_far * self.loss_spike_ratio
-                ):
-                    self._kill(
-                        result,
-                        step,
-                        "loss_spike_post_minimum",
-                        loss_val,
-                        min_loss_so_far * self.loss_spike_ratio,
-                        f"Loss spiked from {min_loss_so_far:.3f} to {loss_val:.3f} "
-                        f"at step {step} — entropy collapse suspected",
-                    )
-                    break
-
-                if step == self.max_steps and len(metrics["losses"]) >= self.max_steps:
-                    init_l = metrics["losses"][0]
-                    if init_l > 0:
-                        entropy_floor = (
-                            math.log(vocab_size) if vocab_size > 0 else 10.37
-                        )
-                        if init_l >= entropy_floor * 1.15:
-                            improvement_rate = 0.02 * min(1.0, init_l / 25.0)
-                            threshold = init_l * (1.0 - improvement_rate)
-                            if loss_val >= threshold:
-                                self._kill(
-                                    result,
-                                    step,
-                                    "no_learning_signal",
-                                    loss_val,
-                                    threshold,
-                                    f"No learning after {step} steps: "
-                                    f"init={init_l:.3f} final={loss_val:.3f} "
-                                    f"(threshold={threshold:.3f}, rate={improvement_rate:.3f})",
-                                )
-                                break
         finally:
             for hook in entropy_hooks:
                 hook.remove()
-
-        # Entropy gate trajectory
-        if entropy_gate_trajectory:
-            metrics["entropy_gate_trajectory_json"] = entropy_gate_trajectory
-
-        # Summary metrics
-        if metrics["losses"]:
-            metrics["initial_loss"] = metrics["losses"][0]
-            metrics["final_loss"] = metrics["losses"][-1]
-            if len(metrics["losses"]) >= 10:
-                metrics["loss_at_10"] = metrics["losses"][9]
-            if len(metrics["losses"]) >= 25:
-                metrics["loss_at_25"] = metrics["losses"][24]
-            if len(metrics["losses"]) >= 50:
-                metrics["loss_at_50"] = metrics["losses"][49]
-            if len(metrics["losses"]) >= 75:
-                metrics["loss_at_75"] = metrics["losses"][74]
-            if len(metrics["losses"]) >= 100:
-                metrics["loss_at_100"] = metrics["losses"][99]
-            if len(metrics["losses"]) >= 150:
-                metrics["loss_at_150"] = metrics["losses"][149]
-        if metrics["grad_norms"]:
-            finite_norms = [g for g in metrics["grad_norms"] if math.isfinite(g)]
-            if finite_norms:
-                metrics["max_grad_norm"] = max(finite_norms)
-                metrics["mean_grad_norm"] = sum(finite_norms) / len(finite_norms)
-
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        result.elapsed_ms = round(elapsed_ms, 1)
-        if not result.passed:
-            result.gpu_minutes_saved = round(_AVG_S1_GPU_MINUTES, 2)
-
-        if result.passed:
-            logger.info(
-                "Rapid screening PASSED (%.0fms, %d steps)",
-                elapsed_ms,
-                metrics.get("steps_completed", 0),
-            )
-        else:
-            logger.info(
-                "Rapid screening KILLED at step %d: %s (saved ~%.1f GPU-min, %.0fms)",
-                result.kill_step or 0,
-                result.kill_reason or "unknown",
-                result.gpu_minutes_saved,
-                elapsed_ms,
-            )
-
-        return result
+        return self._finalize_run(result, metrics, entropy_gate_trajectory, t0)
 
     @staticmethod
     def _kill(

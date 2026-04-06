@@ -121,6 +121,11 @@ def validate_graph_training_rows(rows: List[Dict[str, Any]]) -> None:
             raise CorpusIntegrityError(
                 f"graph corpus row {fp} marks stage1_any_passed with zero pass rate"
             )
+        induction_auc = row.get("induction_auc_500")
+        if induction_auc is not None and not math.isfinite(float(induction_auc)):
+            raise CorpusIntegrityError(
+                f"graph corpus row {fp} has invalid induction_auc_500={induction_auc}"
+            )
 
 
 def validate_predictor_training_rows(rows: List[Dict[str, Any]]) -> None:
@@ -203,15 +208,19 @@ def _load_cached_corpus_rows(
 def _build_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
     rust = _try_import_rust_scheduler()
     if rust is not None and hasattr(rust, "build_graph_training_corpus"):
-        return json.loads(rust.build_graph_training_corpus(db_path))
-    return _fallback_graph_training_rows(db_path)
+        rows = json.loads(rust.build_graph_training_corpus(db_path))
+    else:
+        rows = _fallback_graph_training_rows(db_path)
+    return _attach_induction_metrics(rows, db_path)
 
 
 def _build_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
     rust = _try_import_rust_scheduler()
     if rust is not None and hasattr(rust, "build_predictor_training_corpus"):
-        return json.loads(rust.build_predictor_training_corpus(db_path))
-    return _fallback_predictor_training_rows(db_path)
+        rows = json.loads(rust.build_predictor_training_corpus(db_path))
+    else:
+        rows = _fallback_predictor_training_rows(db_path)
+    return _attach_induction_metrics(rows, db_path)
 
 
 def _db_cache_signature(
@@ -220,6 +229,85 @@ def _db_cache_signature(
     db_file = Path(db_path)
     wal_file = db_file.with_name(db_file.name + "-wal")
     return (_path_signature(db_file), _path_signature(wal_file))
+
+
+def _attach_induction_metrics(
+    rows: List[Dict[str, Any]], db_path: str
+) -> List[Dict[str, Any]]:
+    if not rows:
+        return rows
+    conn = sqlite3.connect(db_path, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {
+            str(r["name"])
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "induction_metrics_v2" not in tables:
+            return rows
+        metric_rows = conn.execute(
+            """
+            SELECT graph_fingerprint, auc, gap_4, gap_8, gap_16, gap_32, gap_64,
+                   wall_ms, metric_version, speed_mode, train_steps, eval_examples,
+                   batch_size, pool_size, source_cohort
+            FROM induction_metrics_v2
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by_fp = {
+        str(row["graph_fingerprint"]): {
+            "induction_auc_500": (
+                float(row["auc"]) if row["auc"] is not None else None
+            ),
+            "induction_gap_4": (
+                float(row["gap_4"]) if row["gap_4"] is not None else None
+            ),
+            "induction_gap_8": (
+                float(row["gap_8"]) if row["gap_8"] is not None else None
+            ),
+            "induction_gap_16": (
+                float(row["gap_16"]) if row["gap_16"] is not None else None
+            ),
+            "induction_gap_32": (
+                float(row["gap_32"]) if row["gap_32"] is not None else None
+            ),
+            "induction_gap_64": (
+                float(row["gap_64"]) if row["gap_64"] is not None else None
+            ),
+            "induction_wall_ms_500": (
+                float(row["wall_ms"]) if row["wall_ms"] is not None else None
+            ),
+            "induction_metric_version": str(row["metric_version"] or ""),
+            "induction_speed_mode": str(row["speed_mode"] or ""),
+            "induction_train_steps": (
+                int(row["train_steps"]) if row["train_steps"] is not None else None
+            ),
+            "induction_eval_examples": (
+                int(row["eval_examples"]) if row["eval_examples"] is not None else None
+            ),
+            "induction_batch_size": (
+                int(row["batch_size"]) if row["batch_size"] is not None else None
+            ),
+            "induction_pool_size": (
+                int(row["pool_size"]) if row["pool_size"] is not None else None
+            ),
+            "induction_source_cohort": str(row["source_cohort"] or ""),
+        }
+        for row in metric_rows
+    }
+
+    for row in rows:
+        fp = str(row.get("canonical_fingerprint") or "").strip()
+        if not fp:
+            continue
+        induction = by_fp.get(fp)
+        if induction:
+            row.update(induction)
+    return rows
 
 
 def _path_signature(path: Path) -> Tuple[int, int, int]:

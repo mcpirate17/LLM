@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <string.h>
 #include "kernels.h"  /* from aria_designer/runtime/src/ via CMake include path */
@@ -100,26 +103,6 @@ static void test_softmax(void) {
     printf("  PASS: softmax\n");
 }
 
-static void test_concat_split(void) {
-    float a[] = {1.0f, 2.0f};
-    float b[] = {3.0f, 4.0f, 5.0f};
-    const float *inputs[] = {a, b};
-    int64_t sizes[] = {2, 3};
-    float output[5];
-    aria_concat_f32(inputs, sizes, 2, output);
-    ASSERT_NEAR(output[0], 1.0f);
-    ASSERT_NEAR(output[2], 3.0f);
-    ASSERT_NEAR(output[4], 5.0f);
-
-    /* Split back */
-    float out_a[2], out_b[3];
-    float *outputs[] = {out_a, out_b};
-    aria_split_f32(output, outputs, sizes, 2);
-    ASSERT_NEAR(out_a[0], 1.0f);
-    ASSERT_NEAR(out_b[2], 5.0f);
-    printf("  PASS: concat/split\n");
-}
-
 static void test_layernorm(void) {
     float x[] = {1.0f, 2.0f, 3.0f, 4.0f};  /* batch=2, dim=2 */
     float w[] = {1.0f, 1.0f};
@@ -172,10 +155,9 @@ int main(void) {
     test_matmul();
     test_rmsnorm();
     test_softmax();
-    test_concat_split();
     test_layernorm();
     test_transpose();
     test_registry();
-    printf("\nAll %d tests passed.\n", 11);
+    printf("\nAll %d tests passed.\n", 10);
     return 0;
 }

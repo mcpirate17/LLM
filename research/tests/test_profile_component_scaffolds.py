@@ -1,11 +1,14 @@
 from research.tools.profile_component_scaffolds import (
     _append_log,
+    canonical_missing_profile_ops,
     build_gpt2_attn_scaffold,
     build_gpt2_ffn_scaffold,
     build_gpt2_replace_scaffold,
     build_mamba_mixer_scaffold,
+    catalog_scaffold_ops,
     build_pair_residual_scaffold,
     generate_cases,
+    recommended_scaffold_family,
 )
 
 
@@ -101,6 +104,40 @@ def test_generate_cases_can_allow_arbitrary_ops():
     names = [case.name for case in cases]
     assert "gpt2_ffn:linear_attention" in names
     assert "gpt2_ffn:block_sparse_linear" in names
+
+
+def test_recommended_scaffold_family_covers_missing_catalog_ops():
+    assert recommended_scaffold_family("kronecker_linear") == "gpt2_ffn"
+    assert recommended_scaffold_family("arch_router") == "gpt2_replace"
+    assert recommended_scaffold_family("spectral_filter") == "gpt2_ffn"
+
+
+def test_catalog_scaffold_ops_includes_unprofiled_routes():
+    ops = catalog_scaffold_ops(["gpt2_ffn", "gpt2_replace"])
+    assert "kronecker_linear" in ops
+    assert "arch_router" in ops
+    assert "compute_budget_router" in ops
+
+
+def test_generate_cases_default_families_include_canonical_missing_ops():
+    ffn_names = [case.name for case in generate_cases(["gpt2_ffn"], None, max_pairs=3)]
+    replace_names = [
+        case.name for case in generate_cases(["gpt2_replace"], None, max_pairs=3)
+    ]
+    assert "gpt2_ffn:chebyshev_spectral_mix" in ffn_names
+    assert "gpt2_ffn:hetero_moe" in ffn_names
+    assert "gpt2_ffn:kronecker_linear" in ffn_names
+    assert "gpt2_ffn:sparse_bottleneck_moe" in ffn_names
+    assert "gpt2_ffn:spectral_filter" in ffn_names
+    assert "gpt2_replace:arch_router" in replace_names
+    assert "gpt2_replace:compute_budget_router" in replace_names
+
+
+def test_canonical_missing_profile_ops_collapses_aliases():
+    missing = canonical_missing_profile_ops(["cascade", "route_lanes", "entropy_score"])
+    assert "learned_token_gate" not in missing
+    assert "gated_lane_blend" not in missing
+    assert "token_entropy" not in missing
 
 
 def test_append_log_writes_lines(tmp_path):

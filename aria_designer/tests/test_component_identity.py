@@ -147,3 +147,8 @@ def test_empty_and_none():
     """Edge cases: empty and falsy inputs."""
     assert canonicalize_component_id("") == ""
     assert canonicalize_component_id("  ") == ""
+
+
+def test_identity_canonicalizes_to_backend_identity_leaf():
+    assert canonicalize_component_id("identity") == "identity"
+    assert canonicalize_component_id("identity_skip") == "identity"

@@ -91,6 +91,33 @@ def test_lane_router_threshold_assignments_and_weights():
     )
 
 
+def test_token_gate_trace_outputs_mask_and_confidence():
+    scores = torch.tensor([[0.0, 2.0, -2.0]], dtype=torch.float32)
+    keep_mask, confidence = aria_core.token_gate_trace_f32(scores, 0.5)
+    assert keep_mask.tolist() == [[1, 1, 0]]
+    assert confidence.shape == scores.shape
+    assert torch.all((confidence >= 0.0) & (confidence <= 1.0))
+
+
+def test_sparse_span_extract_builds_packed_pair_features():
+    x = torch.arange(1 * 5 * 2, dtype=torch.float32).reshape(1, 5, 2)
+    keep_mask = torch.tensor([[1, 1, 0, 1, 1]], dtype=torch.int64)
+    span_features, span_positions, span_counts, coverage = (
+        aria_core.sparse_span_extract_f32(x, keep_mask, 2)
+    )
+
+    assert span_counts.tolist() == [2]
+    assert span_positions[0, 0].tolist() == [0, 1]
+    assert span_positions[0, 1].tolist() == [3, 4]
+    torch.testing.assert_close(
+        span_features[0, 0], x[0, 0:2].mean(dim=0), atol=1e-6, rtol=0.0
+    )
+    torch.testing.assert_close(
+        span_features[0, 1], x[0, 3:5].mean(dim=0), atol=1e-6, rtol=0.0
+    )
+    assert coverage.tolist() == [[1, 1, 0, 1, 1]]
+
+
 def test_load_balance_loss_matches_expected_l2():
     assignments = torch.tensor([[0, 0, 1, 2]], dtype=torch.int64)
     target = torch.tensor([0.25, 0.25, 0.50], dtype=torch.float32)

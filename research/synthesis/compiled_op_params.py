@@ -49,6 +49,9 @@ class CompiledOpParamInitMixin:
             "learnable_bias": lambda: setattr(
                 self, "bias", nn.Parameter(torch.zeros(d_in))
             ),
+            "calibrated_branch_merge": lambda: self._init_calibrated_branch_merge(
+                config, d_in
+            ),
             "selective_scan": lambda: (
                 setattr(self, "A_log", self._make_param((d_in,), std=0.1)),
                 setattr(self, "dt_proj", self._make_param((d_in,), std=0.1)),
@@ -188,6 +191,15 @@ class CompiledOpParamInitMixin:
                 self, "cascade_proj", self._make_param((1, d_in), std=0.02)
             ),
             "cheap_verify_blend": lambda: self._init_cheap_verify_blend(d_in),
+            "hybrid_token_gate": lambda: setattr(
+                self, "hybrid_gate_proj", self._make_param((1, d_in), std=0.02)
+            ),
+            "sparse_span_builder": lambda: None,
+            "hybrid_sparse_router": lambda: self._init_hybrid_sparse_router(
+                config, d_in
+            ),
+            "lane_conditioned_block": lambda: self._init_lane_conditioned_block(d_in),
+            "default_path": lambda: None,
             "depth_weighted_proj": lambda: self._init_depth_weighted_proj(config, d_in),
             "token_class_proj": lambda: self._init_token_class_proj(config, d_in),
             "adaptive_rank_gate": lambda: self._init_adaptive_rank_gate(d_in, d_out),
@@ -438,6 +450,19 @@ class CompiledOpParamInitMixin:
         self.cheap_proj = self._make_param((d_in, d_in), std=0.02)
         self.verify_gate = self._make_param((1, d_in), std=0.02)
 
+    def _init_hybrid_sparse_router(self, config: Dict, d_in: int) -> None:
+        lane_count = max(2, min(int(config.get("lane_count", 3)), 8))
+        self.hybrid_gate_proj = self._make_param((1, d_in), std=0.02)
+        self.hybrid_lane_proj = self._make_param((lane_count, d_in), std=0.02)
+        lane_weights = []
+        for _ in range(lane_count):
+            lane_weights.append(self._make_param((d_in, d_in), std=0.02))
+        self.hybrid_lane_weights = nn.ParameterList(lane_weights)
+        self.hybrid_default_proj = self._make_param((d_in, d_in), std=0.02)
+
+    def _init_lane_conditioned_block(self, d_in: int) -> None:
+        self.lane_block_weight = self._make_param((d_in, d_in), std=0.02)
+
     def _init_depth_weighted_proj(self, config: Dict, d_in: int) -> None:
         max_depth = max(1, min(6, int(config.get("max_depth", 3))))
         self.depth_scorer = self._make_param((max_depth, d_in), std=0.02)
@@ -495,6 +520,12 @@ class CompiledOpParamInitMixin:
         rank = max(d_in // 8, 1)
         self.U_comp = self._make_param((rank, d_in), std=0.02)
         self.V_comp = self._make_param((d_in, rank), std=0.02)
+
+    def _init_calibrated_branch_merge(self, config: Dict, d_in: int) -> None:
+        n_branches = max(2, int(config.get("n_branches", 5)))
+        self.branch_score_proj = self._make_param((n_branches, d_in), std=0.02)
+        self.branch_bias = nn.Parameter(torch.zeros(n_branches))
+        self.branch_gain = nn.Parameter(torch.zeros(n_branches))
 
     def _init_chebyshev_spectral_mix(self, config: Dict, d_in: int) -> None:
         order = max(2, min(config.get("chebyshev_order", 6), 16))

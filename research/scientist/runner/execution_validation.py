@@ -156,6 +156,8 @@ class _ExecutionValidationMixin:
                     try:
                         from ...eval.fingerprint import (
                             BehavioralFingerprint,
+                        )
+                        from ...eval.fingerprint_runtime import (
                             complete_fingerprint_post_investigation,
                         )
 

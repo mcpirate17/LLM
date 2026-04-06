@@ -287,6 +287,136 @@ def _infer_vocab_size(model: nn.Module) -> Optional[int]:
     return None
 
 
+def _resolve_device(device: str) -> torch.device:
+    return torch.device(
+        device if torch.cuda.is_available() or device == "cpu" else "cpu"
+    )
+
+
+def _seed_diagnostic_run(dev: torch.device, seed: int) -> None:
+    torch.manual_seed(seed)
+    if dev.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+
+
+def _prepare_task_model(
+    model: nn.Module,
+    dev: torch.device,
+) -> tuple[nn.Module, Dict[str, torch.Tensor], Dict[str, torch.Tensor], int]:
+    task_model = model.to(dev)
+    params, buffers = clone_module_state(task_model)
+    task_model.train()
+    vocab_size = _infer_vocab_size(task_model)
+    if vocab_size is None:
+        raise ValueError("no_embedding_found")
+    return task_model, params, buffers, vocab_size
+
+
+def _train_task_model(
+    task_model: nn.Module,
+    params: Dict[str, torch.Tensor],
+    buffers: Dict[str, torch.Tensor],
+    task_fn,
+    dev: torch.device,
+    seed: int,
+    n_steps: int,
+    vocab_size: int,
+):
+    rng = torch.Generator(device=dev)
+    rng.manual_seed(seed)
+
+    def compute_loss(_step: int) -> torch.Tensor:
+        input_ids, _, _ = task_fn(
+            batch_size=DIAG_BATCH_SIZE,
+            seq_len=DIAG_SEQ_LEN,
+            device=str(dev),
+            rng=rng,
+        )
+        with torch.amp.autocast(
+            device_type=dev.type,
+            dtype=torch.bfloat16,
+            enabled=(dev.type == "cuda"),
+        ):
+            logits = functional_logits(task_model, params, buffers, input_ids)
+            return language_model_loss(logits, input_ids, vocab_size)
+
+    return run_training_loop(
+        params.values(),
+        compute_loss,
+        n_steps=n_steps,
+        optimizer_name="adamw",
+        lr=DIAG_LR,
+        weight_decay=0.01,
+        clip_grad=1.0,
+    )
+
+
+def _evaluate_task_model(
+    task_model: nn.Module,
+    params: Dict[str, torch.Tensor],
+    buffers: Dict[str, torch.Tensor],
+    task_fn,
+    dev: torch.device,
+    seed: int,
+    vocab_size: int,
+) -> tuple[float, float]:
+    task_model.eval()
+    eval_rng = torch.Generator(device=dev)
+    eval_rng.manual_seed(seed + 10000)
+    total_correct = 0
+    total_critical = 0
+    total_loss = 0.0
+
+    with torch.no_grad():
+        for _ in range(DIAG_EVAL_BATCHES):
+            input_ids, crit_mask, crit_targets = task_fn(
+                batch_size=DIAG_BATCH_SIZE,
+                seq_len=DIAG_SEQ_LEN,
+                device=str(dev),
+                rng=eval_rng,
+            )
+            with torch.amp.autocast(
+                device_type=dev.type,
+                dtype=torch.bfloat16,
+                enabled=(dev.type == "cuda"),
+            ):
+                logits = functional_logits(task_model, params, buffers, input_ids)
+
+            preds = logits[:, :-1].argmax(dim=-1)
+            n_crit = crit_mask.sum().item()
+            if n_crit <= 0:
+                continue
+            total_correct += ((preds == crit_targets) & crit_mask).sum().item()
+            total_critical += n_crit
+
+            flat_logits = logits[:, :-1].reshape(-1, vocab_size)
+            flat_targets = crit_targets.reshape(-1)
+            flat_mask = crit_mask.reshape(-1)
+            if flat_mask.any():
+                total_loss += F.cross_entropy(
+                    flat_logits[flat_mask],
+                    flat_targets[flat_mask],
+                ).item()
+
+    accuracy = (total_correct / total_critical) if total_critical > 0 else 0.0
+    loss = (total_loss / DIAG_EVAL_BATCHES) if DIAG_EVAL_BATCHES > 0 else 0.0
+    return accuracy, loss
+
+
+def _cleanup_task_run(
+    dev: torch.device,
+    task_model: Optional[nn.Module] = None,
+    params: Optional[Dict[str, torch.Tensor]] = None,
+    buffers: Optional[Dict[str, torch.Tensor]] = None,
+) -> None:
+    del task_model
+    del params
+    del buffers
+    if dev.type == "cuda":
+        torch.cuda.empty_cache()
+    gc.collect()
+
+
 # ---------------------------------------------------------------------------
 # Training + eval loop
 # ---------------------------------------------------------------------------
@@ -301,113 +431,48 @@ def _train_and_eval_task(
     seed: int = 42,
 ) -> DiagnosticTaskResult:
     """Train a fresh copy of model on one diagnostic task, then eval."""
-    dev = torch.device(
-        device if torch.cuda.is_available() or device == "cpu" else "cpu"
-    )
+    dev = _resolve_device(device)
     result = DiagnosticTaskResult(task_name=task_name)
+    task_model = None
+    params = None
+    buffers = None
 
     try:
-        torch.manual_seed(seed)
-        if dev.type == "cuda":
-            torch.cuda.manual_seed_all(seed)
-
-        task_model = model.to(dev)
-        params, buffers = clone_module_state(task_model)
-        task_model.train()
-
-        vocab_size = _infer_vocab_size(task_model)
-        if vocab_size is None:
-            result.error = "no_embedding_found"
-            return result
-
-        rng = torch.Generator(device=dev)
-        rng.manual_seed(seed)
-
-        def compute_loss(_step: int) -> torch.Tensor:
-            input_ids, _, _ = task_fn(
-                batch_size=DIAG_BATCH_SIZE,
-                seq_len=DIAG_SEQ_LEN,
-                device=str(dev),
-                rng=rng,
-            )
-            with torch.amp.autocast(
-                device_type=dev.type,
-                dtype=torch.bfloat16,
-                enabled=(dev.type == "cuda"),
-            ):
-                logits = functional_logits(task_model, params, buffers, input_ids)
-                return language_model_loss(logits, input_ids, vocab_size)
-
-        train_result = run_training_loop(
-            params.values(),
-            compute_loss,
-            n_steps=n_steps,
-            optimizer_name="adamw",
-            lr=DIAG_LR,
-            weight_decay=0.01,
-            clip_grad=1.0,
+        _seed_diagnostic_run(dev, seed)
+        task_model, params, buffers, vocab_size = _prepare_task_model(model, dev)
+        train_result = _train_task_model(
+            task_model,
+            params,
+            buffers,
+            task_fn,
+            dev,
+            seed,
+            n_steps,
+            vocab_size,
         )
         result.steps_trained = train_result.steps_completed
         if train_result.diverged:
             result.error = "nan_or_inf_loss"
             return result
 
-        task_model.eval()
-        eval_rng = torch.Generator(device=dev)
-        eval_rng.manual_seed(seed + 10000)
-        total_correct = 0
-        total_critical = 0
-        total_loss = 0.0
-
-        with torch.no_grad():
-            for _ in range(DIAG_EVAL_BATCHES):
-                input_ids, crit_mask, crit_targets = task_fn(
-                    batch_size=DIAG_BATCH_SIZE,
-                    seq_len=DIAG_SEQ_LEN,
-                    device=str(dev),
-                    rng=eval_rng,
-                )
-                with torch.amp.autocast(
-                    device_type=dev.type,
-                    dtype=torch.bfloat16,
-                    enabled=(dev.type == "cuda"),
-                ):
-                    logits = functional_logits(task_model, params, buffers, input_ids)
-
-                preds = logits[:, :-1].argmax(dim=-1)
-                n_crit = crit_mask.sum().item()
-                if n_crit > 0:
-                    correct = ((preds == crit_targets) & crit_mask).sum().item()
-                    total_correct += correct
-                    total_critical += n_crit
-
-                    flat_logits = logits[:, :-1].reshape(-1, vocab_size)
-                    flat_targets = crit_targets.reshape(-1)
-                    flat_mask = crit_mask.reshape(-1)
-                    if flat_mask.any():
-                        crit_loss = F.cross_entropy(
-                            flat_logits[flat_mask],
-                            flat_targets[flat_mask],
-                        )
-                        total_loss += crit_loss.item()
-
-        if total_critical > 0:
-            result.accuracy = total_correct / total_critical
-        if DIAG_EVAL_BATCHES > 0:
-            result.loss = total_loss / DIAG_EVAL_BATCHES
-
+        result.accuracy, result.loss = _evaluate_task_model(
+            task_model,
+            params,
+            buffers,
+            task_fn,
+            dev,
+            seed,
+            vocab_size,
+        )
+    except ValueError as e:
+        if str(e) == "no_embedding_found":
+            result.error = str(e)
+            return result
+        result.error = str(e)[:200]
     except Exception as e:
         result.error = str(e)[:200]
     finally:
-        if "task_model" in dir():
-            del task_model
-        if "params" in dir():
-            del params
-        if "buffers" in dir():
-            del buffers
-        if dev.type == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()
+        _cleanup_task_run(dev, task_model, params, buffers)
 
     return result
 

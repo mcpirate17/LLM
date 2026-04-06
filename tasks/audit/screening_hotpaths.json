@@ -1,0 +1,172 @@
+{
+  "fixture": "standard",
+  "stage1": {
+    "base": {
+      "elapsed_ms": 18735.996039991733,
+      "final_loss": 6.133143424987793,
+      "passed": false,
+      "n_train_steps": 2,
+      "discovery_loss": 6.27333664894104,
+      "validation_loss": null,
+      "compile_ms": 1.6472679999424145,
+      "elapsed_ms_median": 19203.014077997068,
+      "compile_ms_median": 4.0932004994829185,
+      "elapsed_ms_runs": [
+        19670.032116002403,
+        18735.996039991733
+      ],
+      "compile_ms_runs": [
+        6.539132999023423,
+        1.6472679999424145
+      ]
+    },
+    "lean": {
+      "elapsed_ms": 16.179641999769956,
+      "final_loss": 6.239628791809082,
+      "passed": false,
+      "n_train_steps": 2,
+      "discovery_loss": null,
+      "validation_loss": null,
+      "compile_ms": 2.442501994664781,
+      "elapsed_ms_median": 22.800060505687725,
+      "compile_ms_median": 2.2421459943871014,
+      "elapsed_ms_runs": [
+        29.420479011605494,
+        16.179641999769956
+      ],
+      "compile_ms_runs": [
+        2.041789994109422,
+        2.442501994664781
+      ]
+    },
+    "speedup": 842.2352244726134,
+    "config": {
+      "stage1_steps": 4,
+      "stage1_batch_size": 2,
+      "max_seq_len": 24,
+      "model_dim": 48,
+      "n_layers": 1,
+      "vocab_size": 256,
+      "repeats": 2
+    }
+  },
+  "orchestrator": {
+    "elapsed_ms": 59.755442998721264,
+    "n_jobs": 3,
+    "n_passed": 0,
+    "queue_telemetry": {
+      "submitted_jobs": 3,
+      "completed_jobs": 3,
+      "failed_jobs": 0,
+      "queue_depth_peak": 3,
+      "queue_depth_current": 0,
+      "result_queue_depth_current": 0,
+      "submit_wait_avg_ms": 0.004809999760861198,
+      "submit_wait_max_ms": 0.009410010534338653,
+      "job_execution_avg_ms": 17.950183673140902,
+      "job_execution_max_ms": 29.049116012174636,
+      "preprocessing_avg_ms": 4.7691709963449584,
+      "prep_queue_wait_avg_ms": 0.9013479963565866,
+      "prep_queue_wait_max_ms": 2.5674130010884255,
+      "scheduling_wait_avg_ms": 20.465000668385375,
+      "scheduling_wait_max_ms": 32.26530400570482,
+      "candidate_batches": {},
+      "training_program_queue": {
+        "submitted": 0,
+        "completed": 0,
+        "failed": 0
+      }
+    }
+  },
+  "metrics": {
+    "stage1_base_ms": 19203.0141,
+    "stage1_lean_ms": 22.8001,
+    "stage1_speedup": 842.2352,
+    "stage1_base_compile_ms": 4.0932,
+    "stage1_lean_compile_ms": 2.2421,
+    "stage1_base_final_loss": 6.133143424987793,
+    "stage1_lean_final_loss": 6.239628791809082,
+    "orchestrator_total_ms": 59.7554,
+    "orchestrator_jobs": 3,
+    "orchestrator_passed": 0,
+    "queue_submit_wait_ms": 0.0048,
+    "queue_prep_wait_ms": 0.9013,
+    "queue_scheduling_wait_ms": 20.465,
+    "queue_preprocessing_ms": 4.7692,
+    "queue_execution_ms": 17.9502,
+    "total_time_ms": 19285.5696
+  },
+  "stage1_base_median_ms": 19203.0141,
+  "stage09_gate_median_ms": 22.8001,
+  "stage09_speedup_x": 842.2352,
+  "orchestrator_total_ms": 59.7554,
+  "queue_telemetry": {
+    "submitted_jobs": 3,
+    "completed_jobs": 3,
+    "failed_jobs": 0,
+    "queue_depth_peak": 3,
+    "queue_depth_current": 0,
+    "result_queue_depth_current": 0,
+    "submit_wait_avg_ms": 0.004809999760861198,
+    "submit_wait_max_ms": 0.009410010534338653,
+    "job_execution_avg_ms": 17.950183673140902,
+    "job_execution_max_ms": 29.049116012174636,
+    "preprocessing_avg_ms": 4.7691709963449584,
+    "prep_queue_wait_avg_ms": 0.9013479963565866,
+    "prep_queue_wait_max_ms": 2.5674130010884255,
+    "scheduling_wait_avg_ms": 20.465000668385375,
+    "scheduling_wait_max_ms": 32.26530400570482,
+    "candidate_batches": {},
+    "training_program_queue": {
+      "submitted": 0,
+      "completed": 0,
+      "failed": 0
+    }
+  },
+  "perf_contract": {
+    "version": 1,
+    "generated_at": "2026-04-04T14:54:42Z",
+    "component": "research",
+    "workload": "experiment_screening_hotpaths",
+    "identity": {
+      "fixture": "standard",
+      "orchestrator_jobs": 3,
+      "stage1_repeats": 2
+    },
+    "runtime": {
+      "python": "3.12.3",
+      "platform": "linux",
+      "pid": 356044
+    },
+    "metrics": {
+      "stage1_base_ms": 19203.0141,
+      "stage1_lean_ms": 22.8001,
+      "stage1_speedup": 842.2352,
+      "stage1_base_compile_ms": 4.0932,
+      "stage1_lean_compile_ms": 2.2421,
+      "stage1_base_final_loss": 6.133143424987793,
+      "stage1_lean_final_loss": 6.239628791809082,
+      "orchestrator_total_ms": 59.7554,
+      "orchestrator_jobs": 3,
+      "orchestrator_passed": 0,
+      "queue_submit_wait_ms": 0.0048,
+      "queue_prep_wait_ms": 0.9013,
+      "queue_scheduling_wait_ms": 20.465,
+      "queue_preprocessing_ms": 4.7692,
+      "queue_execution_ms": 17.9502,
+      "total_time_ms": 19285.5696
+    },
+    "budget_profile": null,
+    "budget_verdict": null,
+    "duplicate_work": {
+      "detected_count": 0,
+      "repeated_keys": {},
+      "avoided_count": 0,
+      "avoided_keys": {},
+      "estimated_wasted_ms": 0.0,
+      "hints": []
+    },
+    "warnings": [],
+    "artifact_path": "/home/tim/Projects/LLM/research/perf_artifacts/research/2026-04-04/screening_hotpaths_standard.json"
+  }
+}

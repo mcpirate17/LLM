@@ -843,6 +843,8 @@ class _ContinuousInvestigationMixin:
                     _fingerprint_attempted = True
                     from ...eval.fingerprint import (
                         BehavioralFingerprint,
+                    )
+                    from ...eval.fingerprint_runtime import (
                         complete_fingerprint_post_investigation,
                     )
 

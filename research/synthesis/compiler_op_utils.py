@@ -109,6 +109,7 @@ def _record_routing_telemetry(
     n_experts: int,
     selected_experts: torch.Tensor,
     logits: Optional[torch.Tensor] = None,
+    **extras,
 ) -> None:
     """Record MoE routing statistics with lightweight sampling."""
     telemetry = getattr(
@@ -125,6 +126,24 @@ def _record_routing_telemetry(
             "count": 0,
             "heatmap": None,
             "_call_count": -1,
+            "keep_count": 0,
+            "drop_count": 0,
+            "default_path_count": 0,
+            "routed_token_count": 0,
+            "sparse_span_count": 0,
+            "sparse_span_width_sum": 0.0,
+            "sparse_span_width_count": 0,
+            "sparse_span_coverage_tokens": 0,
+            "lane_histogram": torch.zeros(n_experts, device=selected_experts.device),
+            "confidence_histogram": torch.zeros(10, device=selected_experts.device),
+            "route_strength_sum": 0.0,
+            "route_strength_count": 0,
+            "branch_weight_sum": torch.zeros(n_experts, device=selected_experts.device),
+            "branch_weight_count": 0,
+            "branch_dominance_sum": 0.0,
+            "routed_branch_share_sum": 0.0,
+            "medium_branch_share_sum": 0.0,
+            "hard_branch_share_sum": 0.0,
         },
     )
 
@@ -143,6 +162,7 @@ def _record_routing_telemetry(
         selected_experts.float(), bins=n_experts, min=0, max=n_experts - 1
     )
     telemetry["expert_counts"] += counts
+    telemetry["lane_histogram"] += counts
 
     if logits is not None:
         probs = F.softmax(logits, dim=-1)
@@ -154,9 +174,84 @@ def _record_routing_telemetry(
         telemetry["confidence_sq_sum"] += conf * conf
         telemetry["confidence_count"] += 1
         telemetry["count"] += 1
+        conf_hist = torch.histc(
+            probs.max(dim=-1).values.float(), bins=10, min=0.0, max=1.0
+        )
+        telemetry["confidence_histogram"] += conf_hist
 
     if getattr(module, "_capture_heatmap", False) and telemetry["heatmap"] is None:
         telemetry["heatmap"] = selected_experts[0].detach().cpu().numpy().tolist()
+
+    keep_mask = extras.get("keep_mask")
+    if isinstance(keep_mask, torch.Tensor):
+        keep_count = int(keep_mask.sum().item())
+        telemetry["keep_count"] += keep_count
+        telemetry["drop_count"] += int(keep_mask.numel()) - keep_count
+
+    lane_histogram = extras.get("lane_histogram")
+    if isinstance(lane_histogram, torch.Tensor):
+        flat = lane_histogram.to(
+            device=telemetry["lane_histogram"].device,
+            dtype=telemetry["lane_histogram"].dtype,
+        )
+        if flat.numel() == telemetry["lane_histogram"].numel():
+            telemetry["lane_histogram"] += flat.reshape_as(telemetry["lane_histogram"])
+
+    sparse_span_count = extras.get("sparse_span_count")
+    if sparse_span_count is not None:
+        telemetry["sparse_span_count"] += int(sparse_span_count)
+    sparse_span_width = extras.get("sparse_span_width")
+    if sparse_span_width is not None:
+        telemetry["sparse_span_width_sum"] += float(sparse_span_width)
+        telemetry["sparse_span_width_count"] += 1
+    sparse_span_coverage_tokens = extras.get("sparse_span_coverage_tokens")
+    if sparse_span_coverage_tokens is not None:
+        telemetry["sparse_span_coverage_tokens"] += int(sparse_span_coverage_tokens)
+    default_path_count = extras.get("default_path_count")
+    if default_path_count is not None:
+        telemetry["default_path_count"] += int(default_path_count)
+    routed_token_count = extras.get("routed_token_count")
+    if routed_token_count is not None:
+        telemetry["routed_token_count"] += int(routed_token_count)
+    route_strength = extras.get("route_strength")
+    if route_strength is not None:
+        telemetry["route_strength_sum"] += float(route_strength)
+        telemetry["route_strength_count"] += 1
+    branch_weights = extras.get("branch_weights")
+    if isinstance(branch_weights, torch.Tensor):
+        flat = branch_weights.to(
+            device=telemetry["branch_weight_sum"].device,
+            dtype=telemetry["branch_weight_sum"].dtype,
+        )
+        if flat.numel() == telemetry["branch_weight_sum"].numel():
+            telemetry["branch_weight_sum"] += flat.reshape_as(
+                telemetry["branch_weight_sum"]
+            )
+            telemetry["branch_weight_count"] += 1
+    dominance = extras.get("branch_dominance")
+    if dominance is not None:
+        telemetry["branch_dominance_sum"] += float(dominance)
+    routed_share = extras.get("routed_branch_share")
+    if routed_share is not None:
+        telemetry["routed_branch_share_sum"] += float(routed_share)
+    medium_share = extras.get("medium_branch_share")
+    if medium_share is not None:
+        telemetry["medium_branch_share_sum"] += float(medium_share)
+    hard_share = extras.get("hard_branch_share")
+    if hard_share is not None:
+        telemetry["hard_branch_share_sum"] += float(hard_share)
+    for key in (
+        "routing_mode",
+        "gate_type",
+        "span_type",
+        "fallback_mode",
+        "lane_count",
+    ):
+        if extras.get(key) is not None:
+            telemetry[key] = extras[key]
+    trace_payload = extras.get("trace_payload")
+    if trace_payload is not None:
+        telemetry["trace_payload"] = trace_payload
 
     setattr(module, "routing_telemetry", telemetry)
 

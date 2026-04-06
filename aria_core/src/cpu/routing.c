@@ -141,3 +141,77 @@ void aria_load_balance_loss_f32(const int64_t *assignments,
     *loss_out = loss_weight * loss;
     arena_free(counts);
 }
+
+void aria_token_gate_trace_f32(const float *scores,
+                               int64_t *keep_mask,
+                               float *confidence,
+                               int64_t batch, int64_t seq,
+                               float threshold) {
+    if (!scores || !keep_mask || !confidence || batch <= 0 || seq <= 0) {
+        return;
+    }
+    for (int64_t b = 0; b < batch; ++b) {
+        for (int64_t s = 0; s < seq; ++s) {
+            const int64_t idx = b * seq + s;
+            const float conf = _aria_sigmoidf(scores[idx]);
+            confidence[idx] = conf;
+            keep_mask[idx] = conf >= threshold ? 1 : 0;
+        }
+    }
+}
+
+void aria_sparse_span_extract_f32(const float *x,
+                                  const int64_t *keep_mask,
+                                  float *span_features,
+                                  int64_t *span_positions,
+                                  int64_t *span_counts,
+                                  int64_t *coverage,
+                                  int64_t batch, int64_t seq, int64_t dim,
+                                  int64_t span_width) {
+    if (!x || !keep_mask || !span_features || !span_positions || !span_counts ||
+        !coverage || batch <= 0 || seq <= 0 || dim <= 0) {
+        return;
+    }
+    if (span_width < 1) {
+        span_width = 1;
+    }
+    if (span_width > seq) {
+        span_width = seq;
+    }
+    memset(span_features, 0, (size_t)(batch * seq * dim) * sizeof(float));
+    memset(span_positions, 0xFF, (size_t)(batch * seq * span_width) * sizeof(int64_t));
+    memset(span_counts, 0, (size_t)batch * sizeof(int64_t));
+    memset(coverage, 0, (size_t)(batch * seq) * sizeof(int64_t));
+
+    const int64_t min_kept = span_width <= 1 ? 1 : 2;
+    for (int64_t b = 0; b < batch; ++b) {
+        int64_t packed = 0;
+        for (int64_t start = 0; start <= seq - span_width; ++start) {
+            int64_t kept = 0;
+            for (int64_t offset = 0; offset < span_width; ++offset) {
+                kept += keep_mask[b * seq + start + offset] > 0 ? 1 : 0;
+            }
+            if (kept < min_kept || packed >= seq) {
+                continue;
+            }
+
+            float *dst = span_features + ((b * seq + packed) * dim);
+            int64_t *pos_dst = span_positions + ((b * seq + packed) * span_width);
+            for (int64_t offset = 0; offset < span_width; ++offset) {
+                const int64_t token_pos = start + offset;
+                const float *src = x + ((b * seq + token_pos) * dim);
+                pos_dst[offset] = token_pos;
+                coverage[b * seq + token_pos] += 1;
+                for (int64_t d = 0; d < dim; ++d) {
+                    dst[d] += src[d];
+                }
+            }
+            const float inv = 1.0f / (float)span_width;
+            for (int64_t d = 0; d < dim; ++d) {
+                dst[d] *= inv;
+            }
+            packed += 1;
+        }
+        span_counts[b] = packed;
+    }
+}

@@ -137,6 +137,7 @@ class RunConfig:
     skip_binding_probes: bool = False
     skip_post_s1_fingerprint: bool = False
     skip_post_s1_triage: bool = False
+    screening_probe_seed: int | None = None
     # HYDRA data loader settings (data_mode="hydra")
     hydra_data_dir: str = "../HYDRA/data"
     hydra_dataset: str = "local_jsonl"  # any HYDRA dataset name
@@ -150,6 +151,10 @@ class RunConfig:
     skip_screening_wikitext: bool = False  # set True to disable screening WikiText eval
     # Escalation threshold: auto-escalate if ppl_200/ppl_500 exceeds this ratio
     improvement_ratio_escalation_threshold: float = 2.0
+    # Optional cheap micro-train gate inserted before full rich S1 screening.
+    # Disabled by default so backfills and full-data collection paths keep the
+    # original S1 semantics unless they opt in explicitly.
+    enable_stage09_cheap_train_gate: bool = False
     # Synthesis grammar
     max_depth: int = 16
     max_ops: int = 24
@@ -392,6 +397,7 @@ class RunConfig:
     persist_screening_failures: bool = (
         False  # keep early failed graphs for data collection
     )
+    disable_runtime_dedup: bool = False  # allow repeated fingerprints through screening when collecting template backfill evidence
     # Branching / width control (passed to GrammarConfig)
     min_splits: int = 0  # minimum forced split-merge blocks per graph
     three_way_split_prob: float = 0.0  # probability of 3-way split (vs 2-way)

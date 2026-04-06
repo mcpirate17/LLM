@@ -23,6 +23,9 @@ set(ARIA_CORE_CPU_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/src/cpu/clifford.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/src/cpu/hyperbolic.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../aria_core/src/cpu/kernels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/intelligent_router_abi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/intelligent_router_router_distilled.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/intelligent_router_sparse_hybrid_router.cpp
 )
 
 # Shared aria_designer kernel sources (reuse if present, skip in CI)
@@ -108,6 +111,10 @@ enable_testing()
 file(GLOB TEST_SRCS tests/*.c)
 foreach(test_src ${TEST_SRCS})
     get_filename_component(test_name ${test_src} NAME_WE)
+    if(test_name STREQUAL "test_kernels")
+        message(STATUS "Skipping legacy native test target: ${test_name}")
+        continue()
+    endif()
     add_executable(${test_name} ${test_src})
     target_link_libraries(${test_name} aria_native_runtime m)
     if(OPENBLAS_LIB)

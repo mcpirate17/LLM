@@ -25,12 +25,18 @@ from .corpus_pipeline import (
     prepare_text_split_batches,
 )
 from .training_core import run_training_loop
-from .utils import language_model_loss, make_adamw, micro_train_loop, compute_perplexity
+from .utils import (
+    language_model_loss,
+    make_adamw,
+    micro_train_and_measure_perplexity,
+    compute_perplexity,
+)
 from .stateless_training import (
     clone_module_state,
     functional_compute_perplexity,
     functional_micro_train_loop,
 )
+from ._probe_runtime import disable_native_probe_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +200,304 @@ def _finalize_ppl_result(
     }
 
 
+def _screening_meta(
+    n_train_steps: int,
+    n_train_batches: int,
+    n_eval_batches: int,
+    batch_size: int,
+    seq_len: int,
+) -> Dict[str, Any]:
+    return {
+        "screening_wikitext_metric_version": _SCREENING_METRIC_VERSION,
+        "screening_wikitext_status": "skipped",
+        "screening_wikitext_budget": {
+            "n_train_steps": n_train_steps,
+            "n_train_batches": n_train_batches,
+            "n_eval_batches": n_eval_batches,
+            "batch_size": batch_size,
+            "seq_len": seq_len,
+            "max_chars_train": _SCREENING_MAX_CHARS_TRAIN,
+            "max_chars_val": _SCREENING_MAX_CHARS_VAL,
+        },
+        "wikitext_perplexity": None,
+        "wikitext_score": None,
+    }
+
+
+def _screening_slope_metrics(
+    loss_trajectory: Dict[int, float],
+    n_train_steps: int,
+) -> Dict[str, Any]:
+    sl_10 = loss_trajectory.get(10)
+    sl_25 = loss_trajectory.get(25)
+    sl_50 = loss_trajectory.get(n_train_steps)
+    payload = {
+        "screening_loss_10": round(sl_10, 6) if sl_10 is not None else None,
+        "screening_loss_25": round(sl_25, 6) if sl_25 is not None else None,
+        "screening_loss_50": round(sl_50, 6) if sl_50 is not None else None,
+    }
+    if sl_10 is not None and sl_50 is not None:
+        payload["screening_slope"] = round((sl_10 - sl_50) / 40.0, 6)
+    else:
+        payload["screening_slope"] = None
+    if sl_10 is not None and sl_25 is not None and sl_50 is not None:
+        interval_1 = (sl_10 - sl_25) / 15.0
+        interval_2 = (sl_25 - sl_50) / 25.0
+        payload["screening_slope_consistent"] = bool(interval_1 > 0 and interval_2 > 0)
+    else:
+        payload["screening_slope_consistent"] = None
+    return payload
+
+
+def _screening_train_eval(
+    model: nn.Module,
+    params,
+    buffers,
+    val_batches: List[torch.Tensor],
+    train_batches: List[torch.Tensor],
+    vocab_size: int,
+    n_train_steps: int,
+    lr: float,
+):
+    model.eval()
+    pre_ppl = functional_compute_perplexity(
+        model, params, buffers, val_batches, vocab_size
+    )
+    loss_trajectory: Dict[int, float] = {}
+    model.train()
+    train_final_loss = functional_micro_train_loop(
+        model,
+        params,
+        buffers,
+        train_batches,
+        vocab_size=vocab_size,
+        n_steps=n_train_steps,
+        lr=lr,
+        loss_trajectory=loss_trajectory,
+    )
+    model.eval()
+    post_ppl = functional_compute_perplexity(
+        model, params, buffers, val_batches, vocab_size
+    )
+    return pre_ppl, post_ppl, train_final_loss, loss_trajectory
+
+
+def _trajectory_summary(
+    trajectory: Dict[int, Dict[str, Any]],
+    sorted_ckpts: List[int],
+    peak_ppl: Optional[float],
+    peak_step: Optional[int],
+    steps_to_divergence: Optional[int],
+    train_batches: List[torch.Tensor],
+    step: int,
+    variant: str,
+    elapsed_ms: float,
+) -> Dict[str, Any]:
+    improvement_ratio = None
+    if len(sorted_ckpts) >= 2:
+        ppl_first = trajectory.get(sorted_ckpts[0], {}).get("ppl")
+        ppl_second = trajectory.get(sorted_ckpts[1], {}).get("ppl")
+        if ppl_first and ppl_second and ppl_second > 0:
+            improvement_ratio = round(ppl_first / ppl_second, 3)
+    return {
+        "checkpoints": trajectory,
+        "improvement_ratio": improvement_ratio,
+        "peak_ppl": round(peak_ppl, 2) if peak_ppl is not None else None,
+        "peak_step": peak_step,
+        "steps_to_divergence": steps_to_divergence,
+        "n_train_batches": len(train_batches),
+        "checkpoint_steps": sorted_ckpts,
+        "total_steps": step,
+        "variant": variant,
+        "protocol": "trajectory_probe_v2",
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+
+
+def _update_trajectory_checkpoint(
+    trajectory: Dict[int, Dict[str, Any]],
+    ckpt_steps: int,
+    ppl: Optional[float],
+    score: Optional[float],
+    loss: torch.Tensor,
+) -> Optional[float]:
+    loss_val = loss.item() if torch.is_tensor(loss) and torch.isfinite(loss) else None
+    trajectory[ckpt_steps] = {
+        "ppl": round(ppl, 2) if ppl is not None else None,
+        "score": score,
+        "loss": round(loss_val, 4) if loss_val is not None else None,
+    }
+    return loss_val
+
+
+def _prepare_wikitext_or_error(
+    variant: str,
+    vocab_size: int,
+    seq_len: int,
+    train_batch_size: int,
+    eval_batch_size: int,
+    n_train_batches: int,
+    n_eval_batches: int,
+    max_chars_train: int,
+    max_chars_val: int,
+    device: str,
+):
+    return _prepare_batches(
+        variant,
+        vocab_size,
+        seq_len,
+        train_batch_size,
+        eval_batch_size,
+        n_train_batches,
+        n_eval_batches,
+        max_chars_train,
+        max_chars_val,
+        device,
+    )
+
+
+def _run_trajectory_checkpoint(
+    model: nn.Module,
+    train_batches: List[torch.Tensor],
+    val_batches: List[torch.Tensor],
+    vocab_size: int,
+    step: int,
+    ckpt_steps: int,
+    opt: torch.optim.Optimizer,
+    scheduler,
+    lr_warmup: float,
+):
+    steps_needed = ckpt_steps - step
+    compute_loss, get_last_loss = _make_scheduled_loss_fn(
+        model,
+        train_batches,
+        vocab_size,
+        step,
+        steps_needed,
+    )
+    train_result = run_training_loop(
+        model.parameters(),
+        compute_loss,
+        n_steps=steps_needed,
+        optimizer=opt,
+        optimizer_name="adamw",
+        lr=lr_warmup,
+        clip_grad=1.0,
+        scheduler_step=scheduler.step,
+    )
+    step += train_result.steps_completed
+    loss = get_last_loss()
+    ppl = compute_perplexity(model, val_batches, vocab_size)
+    score = wikitext_score_from_ppl(ppl, vocab_size)
+    return step, train_result, loss, ppl, score
+
+
+def _update_trajectory_tracking(
+    ppl: Optional[float],
+    ckpt_steps: int,
+    best_ppl: Optional[float],
+    peak_ppl: Optional[float],
+    peak_step: Optional[int],
+    early_stop_factor: float,
+):
+    steps_to_divergence = None
+    diverged = False
+    if ppl is None:
+        return best_ppl, peak_ppl, peak_step, steps_to_divergence, diverged
+    if peak_ppl is None or ppl < peak_ppl:
+        peak_ppl = ppl
+        peak_step = ckpt_steps
+    if best_ppl is None or ppl < best_ppl:
+        best_ppl = ppl
+    elif early_stop_factor > 0 and ppl > best_ppl * early_stop_factor:
+        logger.info(
+            "Early stopping: ppl %.1f > %.1f * %.1f (best=%.1f at earlier checkpoint)",
+            ppl,
+            best_ppl,
+            early_stop_factor,
+            best_ppl,
+        )
+        steps_to_divergence = ckpt_steps
+        diverged = True
+    return best_ppl, peak_ppl, peak_step, steps_to_divergence, diverged
+
+
+def _run_trajectory_loop(
+    model: nn.Module,
+    train_batches: List[torch.Tensor],
+    val_batches: List[torch.Tensor],
+    vocab_size: int,
+    sorted_ckpts: List[int],
+    opt: torch.optim.Optimizer,
+    scheduler,
+    lr_warmup: float,
+    early_stop_factor: float,
+):
+    trajectory: Dict[int, Dict[str, Any]] = {}
+    best_ppl: Optional[float] = None
+    steps_to_divergence: Optional[int] = None
+    peak_ppl: Optional[float] = None
+    peak_step: Optional[int] = None
+    diverged = False
+    step = 0
+
+    for ckpt_steps in sorted_ckpts:
+        if diverged:
+            trajectory[ckpt_steps] = {
+                "ppl": None,
+                "score": None,
+                "loss": None,
+                "early_stopped": True,
+            }
+            continue
+
+        step, train_result, loss, ppl, score = _run_trajectory_checkpoint(
+            model,
+            train_batches,
+            val_batches,
+            vocab_size,
+            step,
+            ckpt_steps,
+            opt,
+            scheduler,
+            lr_warmup,
+        )
+        if train_result.diverged:
+            logger.warning("Trajectory train loss not finite at step %d", step)
+            diverged = True
+            steps_to_divergence = step
+
+        _update_trajectory_checkpoint(trajectory, ckpt_steps, ppl, score, loss)
+        logger.info(
+            "Trajectory checkpoint %d: ppl=%.1f score=%.3f",
+            ckpt_steps,
+            ppl or 0.0,
+            score or 0.0,
+        )
+
+        (
+            best_ppl,
+            peak_ppl,
+            peak_step,
+            checkpoint_divergence,
+            checkpoint_diverged,
+        ) = _update_trajectory_tracking(
+            ppl,
+            ckpt_steps,
+            best_ppl,
+            peak_ppl,
+            peak_step,
+            early_stop_factor,
+        )
+        if checkpoint_divergence is not None:
+            steps_to_divergence = checkpoint_divergence
+        if checkpoint_diverged:
+            diverged = True
+        model.train()
+
+    return trajectory, peak_ppl, peak_step, steps_to_divergence, step
+
+
 # ── Score helper ─────────────────────────────────────────────────────────
 
 
@@ -260,21 +564,9 @@ def screening_wikitext_eval(
     top-level keys as ``evaluate_wikitext_perplexity`` plus version and
     status metadata.
     """
-    meta: Dict[str, Any] = {
-        "screening_wikitext_metric_version": _SCREENING_METRIC_VERSION,
-        "screening_wikitext_status": "skipped",
-        "screening_wikitext_budget": {
-            "n_train_steps": n_train_steps,
-            "n_train_batches": n_train_batches,
-            "n_eval_batches": n_eval_batches,
-            "batch_size": batch_size,
-            "seq_len": seq_len,
-            "max_chars_train": _SCREENING_MAX_CHARS_TRAIN,
-            "max_chars_val": _SCREENING_MAX_CHARS_VAL,
-        },
-        "wikitext_perplexity": None,
-        "wikitext_score": None,
-    }
+    meta: Dict[str, Any] = _screening_meta(
+        n_train_steps, n_train_batches, n_eval_batches, batch_size, seq_len
+    )
     t0 = time.perf_counter()
 
     # Prepare batches (cached across candidates within one process)
@@ -312,28 +604,19 @@ def screening_wikitext_eval(
         return meta
 
     try:
-        model.eval()
-        pre_ppl = functional_compute_perplexity(
-            model, params, buffers, val_batches, vocab_size
-        )
-
-        loss_trajectory: dict = {}
-        model.train()
-        train_final_loss = functional_micro_train_loop(
-            model,
-            params,
-            buffers,
-            train_batches,
-            vocab_size=vocab_size,
-            n_steps=n_train_steps,
-            lr=lr,
-            loss_trajectory=loss_trajectory,
-        )
-
-        model.eval()
-        post_ppl = functional_compute_perplexity(
-            model, params, buffers, val_batches, vocab_size
-        )
+        with disable_native_probe_dispatch(model, device=device):
+            pre_ppl, post_ppl, train_final_loss, loss_trajectory = (
+                _screening_train_eval(
+                    model,
+                    params,
+                    buffers,
+                    val_batches,
+                    train_batches,
+                    vocab_size,
+                    n_train_steps,
+                    lr,
+                )
+            )
 
         meta.update(
             _finalize_ppl_result(
@@ -348,27 +631,7 @@ def screening_wikitext_eval(
             )
         )
         meta["screening_wikitext_status"] = "ok"
-
-        # Slope trajectory: sample at steps 10, 25, and final (50)
-        sl_10 = loss_trajectory.get(10)
-        sl_25 = loss_trajectory.get(25)
-        sl_50 = loss_trajectory.get(n_train_steps)
-        meta["screening_loss_10"] = round(sl_10, 6) if sl_10 is not None else None
-        meta["screening_loss_25"] = round(sl_25, 6) if sl_25 is not None else None
-        meta["screening_loss_50"] = round(sl_50, 6) if sl_50 is not None else None
-
-        if sl_10 is not None and sl_50 is not None:
-            # positive = improving, negative = diverging
-            meta["screening_slope"] = round((sl_10 - sl_50) / 40.0, 6)
-        else:
-            meta["screening_slope"] = None
-
-        if sl_10 is not None and sl_25 is not None and sl_50 is not None:
-            interval_1 = (sl_10 - sl_25) / 15.0
-            interval_2 = (sl_25 - sl_50) / 25.0
-            meta["screening_slope_consistent"] = bool(interval_1 > 0 and interval_2 > 0)
-        else:
-            meta["screening_slope_consistent"] = None
+        meta.update(_screening_slope_metrics(loss_trajectory, n_train_steps))
     except Exception as exc:
         meta["screening_wikitext_status"] = "eval_failed"
         meta["error"] = str(exc)
@@ -431,17 +694,14 @@ def evaluate_wikitext_perplexity(
             "val_tokens": n_val_tok,
         }
 
-    pre_ppl = compute_perplexity(model, val_batches, vocab_size)
-
-    train_final_loss = micro_train_loop(
+    pre_ppl, train_final_loss, post_ppl = micro_train_and_measure_perplexity(
         model,
         train_batches,
+        val_batches,
         vocab_size,
-        n_steps=n_train_steps,
+        n_train_steps=n_train_steps,
         lr=lr,
     )
-
-    post_ppl = compute_perplexity(model, val_batches, vocab_size)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -497,7 +757,7 @@ def evaluate_wikitext_trajectory(
         n_train_batches = max(sorted_ckpts) if sorted_ckpts else 512
 
     try:
-        train_batches, val_batches, n_train_tok, n_val_tok = _prepare_batches(
+        train_batches, val_batches, n_train_tok, n_val_tok = _prepare_wikitext_or_error(
             variant,
             vocab_size,
             seq_len,
@@ -516,13 +776,6 @@ def evaluate_wikitext_trajectory(
     if not _has_usable_batches(train_batches, val_batches):
         return {"error": "insufficient_tokens", "checkpoints": {}}
 
-    trajectory: Dict[int, Dict[str, Any]] = {}
-    best_ppl: Optional[float] = None
-    steps_to_divergence: Optional[int] = None
-    peak_ppl: Optional[float] = None
-    peak_step: Optional[int] = None
-    diverged = False
-
     model.train()
     # Start at 10x LR for the first 100 steps to quickly calibrate the
     # lm_head (weight-tied embeddings init at std=1.0 → logits std≈16,
@@ -537,104 +790,27 @@ def evaluate_wikitext_trajectory(
         end_factor=lr / lr_warmup,
         total_iters=warmup_steps,
     )
-    step = 0
-    loss = torch.tensor(float("nan"))
-
-    for ckpt_steps in sorted_ckpts:
-        if diverged:
-            # Still record the checkpoint but skip training
-            trajectory[ckpt_steps] = {
-                "ppl": None,
-                "score": None,
-                "loss": None,
-                "early_stopped": True,
-            }
-            continue
-
-        steps_needed = ckpt_steps - step
-        compute_loss, get_last_loss = _make_scheduled_loss_fn(
-            model,
-            train_batches,
-            vocab_size,
-            step,
-            steps_needed,
-        )
-
-        train_result = run_training_loop(
-            model.parameters(),
-            compute_loss,
-            n_steps=steps_needed,
-            optimizer=opt,
-            optimizer_name="adamw",
-            lr=lr_warmup,
-            clip_grad=1.0,
-            scheduler_step=scheduler.step,
-        )
-        step += train_result.steps_completed
-        loss = get_last_loss()
-        if train_result.diverged:
-            logger.warning("Trajectory train loss not finite at step %d", step)
-            diverged = True
-            steps_to_divergence = step
-
-        # Measure PPL at this checkpoint
-        ppl = compute_perplexity(model, val_batches, vocab_size)
-        score = wikitext_score_from_ppl(ppl, vocab_size)
-        loss_val = (
-            loss.item() if torch.is_tensor(loss) and torch.isfinite(loss) else None
-        )
-        trajectory[ckpt_steps] = {
-            "ppl": round(ppl, 2) if ppl is not None else None,
-            "score": score,
-            "loss": round(loss_val, 4) if loss_val is not None else None,
-        }
-        logger.info(
-            "Trajectory checkpoint %d: ppl=%.1f score=%.3f",
-            ckpt_steps,
-            ppl or 0.0,
-            score or 0.0,
-        )
-
-        # Track best/peak PPL and check for divergence
-        if ppl is not None:
-            if peak_ppl is None or ppl < peak_ppl:
-                peak_ppl = ppl
-                peak_step = ckpt_steps
-            if best_ppl is None or ppl < best_ppl:
-                best_ppl = ppl
-            elif early_stop_factor > 0 and ppl > best_ppl * early_stop_factor:
-                logger.info(
-                    "Early stopping: ppl %.1f > %.1f * %.1f (best=%.1f at earlier checkpoint)",
-                    ppl,
-                    best_ppl,
-                    early_stop_factor,
-                    best_ppl,
-                )
-                steps_to_divergence = ckpt_steps
-                diverged = True
-
-        model.train()
-
-    # Compute improvement ratio between first two checkpoints
-    improvement_ratio = None
-    if len(sorted_ckpts) >= 2:
-        ppl_first = trajectory.get(sorted_ckpts[0], {}).get("ppl")
-        ppl_second = trajectory.get(sorted_ckpts[1], {}).get("ppl")
-        if ppl_first and ppl_second and ppl_second > 0:
-            improvement_ratio = round(ppl_first / ppl_second, 3)
+    trajectory, peak_ppl, peak_step, steps_to_divergence, step = _run_trajectory_loop(
+        model,
+        train_batches,
+        val_batches,
+        vocab_size,
+        sorted_ckpts,
+        opt,
+        scheduler,
+        lr_warmup,
+        early_stop_factor,
+    )
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-    return {
-        "checkpoints": trajectory,
-        "improvement_ratio": improvement_ratio,
-        "peak_ppl": round(peak_ppl, 2) if peak_ppl is not None else None,
-        "peak_step": peak_step,
-        "steps_to_divergence": steps_to_divergence,
-        "n_train_batches": len(train_batches),
-        "checkpoint_steps": sorted_ckpts,
-        "total_steps": step,
-        "variant": variant,
-        "protocol": "trajectory_probe_v2",
-        "elapsed_ms": round(elapsed_ms, 1),
-    }
+    return _trajectory_summary(
+        trajectory,
+        sorted_ckpts,
+        peak_ppl,
+        peak_step,
+        steps_to_divergence,
+        train_batches,
+        step,
+        variant,
+        elapsed_ms,
+    )

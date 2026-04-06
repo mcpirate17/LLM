@@ -26,6 +26,7 @@ from ._strategy_preflight import (
     normalize_start_mode,
     run_launch_preflight,
     apply_compact_synthesis_bias,
+    apply_live_screening_bias,
     apply_sparse_morph_bias,
     extract_hypothesis_missing_fields,
     build_start_mode_eligibility,
@@ -187,6 +188,9 @@ def register_experiments_routes(app, context: ApiRouteContext):
         mode = normalize_start_mode(body.pop("mode", "single"))
         sample_n = int(body.pop("preflight_sample_n", body.pop("sample_n", 4)) or 4)
         config = RunConfig.from_dict(body) if body else RunConfig()
+        if mode == "live_screening":
+            apply_live_screening_bias(config)
+            mode = "single"
         config, prescreen = runner.prescreen_run_config(
             config,
             mode=mode,
@@ -237,7 +241,11 @@ def register_experiments_routes(app, context: ApiRouteContext):
                 else json.dumps(refine_analysis_json)
             )
         compact_changes: Dict[str, Any] = {}
+        live_screening_changes: Dict[str, Any] = {}
         sparse_morph_changes: Dict[str, Any] = {}
+        if mode == "live_screening":
+            live_screening_changes = apply_live_screening_bias(config)
+            mode = "single"
         if mode == "compact_synthesis":
             compact_changes = apply_compact_synthesis_bias(config)
             mode = "single"
@@ -441,6 +449,7 @@ def register_experiments_routes(app, context: ApiRouteContext):
                     "config": config.to_dict(),
                     "prescreen": prescreen,
                     "compact_synthesis_bias": compact_changes,
+                    "live_screening_bias": live_screening_changes,
                     "sparse_morph_bias": sparse_morph_changes,
                     "scale_up_resolution": scale_up_resolution,
                     "refine_resolution": refine_resolution,

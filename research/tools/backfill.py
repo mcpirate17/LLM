@@ -217,7 +217,10 @@ def run_binding_probe(
 ) -> Dict[str, Any]:
     from research.eval.associative_recall import associative_recall_score
     from research.eval.binding_range import binding_range_profile
-    from research.eval.induction_probe import induction_score
+    from research.eval.native_induction import (
+        induction_result_metadata,
+        induction_score_gold,
+    )
     from research.scientist.thresholds import (
         BINDING_AR_SOFT_GATE,
         BINDING_BINDING_AUC_SOFT_GATE,
@@ -232,14 +235,7 @@ def run_binding_probe(
         batch_size=16,
         device=device,
     )
-    ind = induction_score(
-        model,
-        gaps=(4, 8, 16, 32, 64),
-        n_train_steps=1000,
-        n_eval=200,
-        batch_size=32,
-        device=device,
-    )
+    ind = induction_score_gold(model, device=device)
     br = binding_range_profile(
         model,
         distances=(2, 4, 8, 16, 32, 64),
@@ -252,16 +248,17 @@ def run_binding_probe(
         and ind.auc < BINDING_INDUCTION_SOFT_GATE
         and br.auc < BINDING_BINDING_AUC_SOFT_GATE
     )
-    return {
+    result = {
         "ar_auc": ar.auc,
         "ar_final_acc": ar.final_acc,
         "ar_timed_out": int(ar.timed_out),
         "ar_above_chance": int(ar.above_chance),
-        "induction_auc": ind.auc,
         "binding_auc": br.auc,
         "binding_composite": round(bc, 4),
         "local_only": is_local,
     }
+    result.update(induction_result_metadata(ind))
+    return result
 
 
 def run_hellaswag_probe(
@@ -439,6 +436,16 @@ def store_probe_results(
         nb.conn.execute(
             f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
             (*vals, result_id),
+        )
+        fp_row = nb.conn.execute(
+            "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
+            (result_id,),
+        ).fetchone()
+        nb.upsert_induction_metric_v2(
+            graph_fingerprint=str(fp_row["graph_fingerprint"] if fp_row else ""),
+            result_id=str(result_id),
+            row=updates,
+            source_cohort="runtime_backfill",
         )
     if write_leaderboard:
         lb_cols = _get_table_columns(nb, "leaderboard")

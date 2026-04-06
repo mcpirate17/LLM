@@ -21,6 +21,7 @@ from ...training.profiling import TrainingRunProfiler
 from ._helpers import (
     normalized_loss_ratio,
     stage1_learning_gate,
+    resolve_stage1_gate_metrics,
     get_reference_losses,
     _corpus_type_from_config,
 )
@@ -1138,11 +1139,13 @@ class _ExecutionTrainingMixin:
                 except (OSError, ValueError, KeyError) as e:
                     logger.debug("Reference loss lookup failed: %s", e)
                     ref_losses = {}
-                # Gate uses raw final/initial ratio for divergence checks,
-                # NOT normalized_loss_ratio which measures a different thing.
-                raw_ratio = final_loss / max(initial_loss, 1e-6)
-                gate_passed, gate_reason = stage1_learning_gate(
+                gate_loss, raw_ratio, gate_loss_source = resolve_stage1_gate_metrics(
+                    initial_loss=initial_loss,
                     final_loss=final_loss,
+                    validation_loss=validation_loss,
+                )
+                gate_passed, gate_reason = stage1_learning_gate(
+                    final_loss=gate_loss,
                     loss_ratio=raw_ratio,
                     initial_loss=initial_loss,
                     n_steps=step_count,
@@ -1152,6 +1155,7 @@ class _ExecutionTrainingMixin:
                 )
                 result["passed"] = gate_passed
                 result["gate_reason"] = gate_reason
+                result["gate_loss_source"] = gate_loss_source
 
                 # Validation loss gate: if val loss didn't improve, fail.
                 if (
@@ -1305,9 +1309,15 @@ class _ExecutionTrainingMixin:
                     except (RuntimeError, ValueError, TypeError) as e_fp:
                         logger.debug("Fingerprint failed in S1 worker: %s", e_fp)
 
+                # Failed candidates do not benefit from post-S1 screening probes.
+                # Keeping these on the failure path wastes seconds per reject.
+                should_run_post_s1_screening_probes = bool(result.get("passed")) and (
+                    not bool(getattr(config, "profile_disable_post_eval", False))
+                )
+
                 # Fast WikiText perplexity at screening time
-                if not getattr(config, "skip_screening_wikitext", False) and not bool(
-                    getattr(config, "profile_disable_post_eval", False)
+                if should_run_post_s1_screening_probes and not getattr(
+                    config, "skip_screening_wikitext", False
                 ):
                     try:
                         from ...eval.wikitext_eval import screening_wikitext_eval
@@ -1353,8 +1363,8 @@ class _ExecutionTrainingMixin:
                         logger.debug("Screening WikiText eval skipped: %s", e_wt)
 
                 # Fast HellaSwag commonsense reasoning probe at screening time
-                if not getattr(config, "skip_screening_hellaswag", False) and not bool(
-                    getattr(config, "profile_disable_post_eval", False)
+                if should_run_post_s1_screening_probes and not getattr(
+                    config, "skip_screening_hellaswag", False
                 ):
                     try:
                         from ...eval.hellaswag_eval import screening_hellaswag_eval
@@ -1384,34 +1394,29 @@ class _ExecutionTrainingMixin:
                         logger.debug("Screening HellaSwag eval skipped: %s", e_hs)
 
                 # Binding probes: induction head + binding range (post micro-train)
-                if not getattr(config, "skip_binding_probes", False) and not bool(
-                    getattr(config, "profile_disable_post_eval", False)
+                if should_run_post_s1_screening_probes and not getattr(
+                    config, "skip_binding_probes", False
                 ):
                     try:
-                        from ...eval.induction_probe import induction_score
+                        from ...eval.native_induction import (
+                            induction_result_metadata,
+                            induction_score_gold,
+                        )
                         from ...eval.binding_range import binding_range_profile
 
-                        ind = induction_score(
+                        ind = induction_score_gold(
                             model,
-                            gaps=(4, 8, 16, 32, 64),
-                            n_train_steps=1000,
-                            n_eval=100,
-                            batch_size=16,
                             device=str(dev),
+                            seed=getattr(config, "screening_probe_seed", None),
                         )
-                        result["induction_auc"] = ind.auc
-                        result["induction_gap_accuracies"] = ind.gap_accuracies
-                        result["induction_probe_train_steps"] = 1000
-                        result["induction_probe_eval_examples"] = 100
-                        result["induction_probe_batch_size"] = 16
-                        result["induction_probe_gaps"] = [4, 8, 16, 32, 64]
-                        result["induction_probe_elapsed_ms"] = ind.elapsed_ms
+                        result.update(induction_result_metadata(ind))
 
                         br = binding_range_profile(
                             model,
                             distances=(2, 4, 8, 16, 32, 64),
                             n_eval=100,
                             device=str(dev),
+                            seed=getattr(config, "screening_probe_seed", None),
                         )
                         result["binding_auc"] = br.auc
                         result["binding_distance_accuracies"] = br.distance_accuracies

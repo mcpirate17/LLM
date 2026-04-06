@@ -214,7 +214,19 @@ MATH_SPACE_RULES: Dict[str, Dict] = {
     # Clifford ops: input must be bounded (geometric product can amplify)
     "clifford_attention": {"must_precede": {"rmsnorm", "layernorm"}},
     "grade_mix": {
-        "must_follow": {"clifford_attention", "rotor_transform", "grade_select"}
+        "must_follow": {
+            "clifford_attention",
+            "rotor_transform",
+            "grade_select",
+            "geometric_product",
+        },
+        "must_follow_with": {
+            "linear_proj",
+            "linear_proj_down",
+            "add",
+            "rmsnorm",
+            "layernorm",
+        },
     },
     # P-adic ops: expansion doubles dim, must project back
     "padic_expand": {

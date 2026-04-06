@@ -13,6 +13,7 @@ import sqlite3
 import statistics
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from flask import Response, jsonify, request
 from ..json_utils import fast_dumps as _json_dumps
@@ -322,14 +323,18 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
     # Load profiling data for gradient health
     grad_health: Dict[str, Dict] = {}
     try:
-        from research.profiling.schema import ComponentDB
-
-        with ComponentDB() as cdb:
-            rows = cdb.query(
-                "SELECT op_name, grad_norm, grad_exploding, grad_vanishing, "
-                "output_has_nan, output_has_inf, forward_time_us, backward_time_us, "
-                "lipschitz_estimate, error FROM op_profiles"
-            )
+        profiling_db = Path("research/profiling/component_profiles.db")
+        if profiling_db.exists():
+            conn = sqlite3.connect(str(profiling_db), timeout=5)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    "SELECT op_name, grad_norm, grad_exploding, grad_vanishing, "
+                    "output_has_nan, output_has_inf, forward_time_us, backward_time_us, "
+                    "lipschitz_estimate, error FROM op_profiles"
+                ).fetchall()
+            finally:
+                conn.close()
             for r in rows:
                 grad_health[r["op_name"]] = {
                     "grad_norm": float(r["grad_norm"])
@@ -358,7 +363,7 @@ def _get_component_health(notebook_path: str, window: str = "all") -> Dict[str, 
                     else None,
                     "profile_error": r["error"],
                 }
-    except (ImportError, sqlite3.OperationalError, KeyError, TypeError) as exc:
+    except (sqlite3.OperationalError, KeyError, TypeError, OSError) as exc:
         logger.debug(
             "Failed to load component profiling health data: %s", exc, exc_info=True
         )

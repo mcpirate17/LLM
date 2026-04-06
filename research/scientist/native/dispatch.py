@@ -7,7 +7,12 @@ import os
 from typing import Any, Dict, List, Optional, Set
 
 from .core import _try_import_cython_bridge, _try_import_rust_scheduler
-from .tensor_bridge import to_device_tensor, to_native_array, to_native_flat_array
+from .tensor_bridge import (
+    supports_host_array_bridge,
+    to_device_tensor,
+    to_native_array,
+    to_native_flat_array,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +233,10 @@ def dispatch_op_native(op_name: str, *tensors, **kwargs) -> Any:
     if bridge is None:
         raise RuntimeError(
             "Cython bridge (aria_bridge) is not available. Cannot dispatch op natively."
+        )
+    if not supports_host_array_bridge(*tensors, *kwargs.values()):
+        raise RuntimeError(
+            "Host array bridge does not support non-CPU tensors for native op dispatch."
         )
 
     canonical_op = _NATIVE_OP_ALIASES.get(op_name, op_name)
@@ -965,6 +974,10 @@ def dispatch_graph_native_multi_input_cached(
     output_shape: tuple[int, ...] | None = None,
 ) -> Any:
     """Execute a graph using distinct input buffers bound to distinct input nodes."""
+    if not supports_host_array_bridge(*input_data):
+        raise RuntimeError(
+            "Host array bridge does not support non-CPU tensors for multi-input native graph dispatch."
+        )
     rust = _try_import_rust_scheduler()
     if rust is None:
         raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
@@ -1028,6 +1041,10 @@ def dispatch_graph_forward_saved_multi_input_cached(
     *,
     output_shape: tuple[int, ...] | None = None,
 ) -> Dict[str, Any]:
+    if not supports_host_array_bridge(*input_data):
+        raise RuntimeError(
+            "Host array bridge does not support non-CPU tensors for saved multi-input native graph dispatch."
+        )
     native_inputs = [to_native_array(value) for value in input_data]
     rust_result = _execute_rust_graph_forward_saved_multi_input(
         graph_json=ir_json,

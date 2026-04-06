@@ -266,9 +266,15 @@ function KnowledgeBase({ onSelectExperiment }) {
     return allClusters.filter((cluster) => cluster.entries.length <= 1).length;
   }, [allClusters, showSingletonClusters]);
 
+  const fallbackToSingletonClusters = useMemo(() => {
+    return !showSingletonClusters && clusters.length === 0 && allClusters.length > 0;
+  }, [showSingletonClusters, clusters.length, allClusters.length]);
+
+  const visibleClustersSource = fallbackToSingletonClusters ? allClusters : clusters;
+
   const compactDigest = useMemo(() => {
     const lines = [];
-    for (const cluster of clusters.slice(0, 12)) {
+    for (const cluster of visibleClustersSource.slice(0, 12)) {
       const rep = cluster.representative;
       lines.push(
         `[${CATEGORY_LABELS[cluster.category] || cluster.category}] ` +
@@ -277,7 +283,7 @@ function KnowledgeBase({ onSelectExperiment }) {
       );
     }
     return lines.join('\n');
-  }, [clusters]);
+  }, [visibleClustersSource]);
 
   const totalSuppressed = useMemo(() => {
     const base = isSearchResult
@@ -343,9 +349,9 @@ function KnowledgeBase({ onSelectExperiment }) {
     });
   };
 
-  const topClusterCount = clusters.length;
+  const topClusterCount = visibleClustersSource.length;
   const topInsightCount = entries.length;
-  const visibleClusters = clusters.slice(0, visibleClusterCount);
+  const visibleClusters = visibleClustersSource.slice(0, visibleClusterCount);
   const clustersByCategory = useMemo(() => {
     const grouped = new Map();
     for (const cluster of visibleClusters) {
@@ -499,7 +505,7 @@ function KnowledgeBase({ onSelectExperiment }) {
       )}
       {loading ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
-      ) : clusters.length === 0 && !error ? (
+      ) : visibleClustersSource.length === 0 && !error ? (
         <div style={{ color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
           <p style={{ margin: 0 }}>
             No knowledge entries found.
@@ -510,6 +516,19 @@ function KnowledgeBase({ onSelectExperiment }) {
         </div>
       ) : (
         <div className="knowledge-cluster-list">
+          {fallbackToSingletonClusters && (
+            <div
+              className="card"
+              style={{
+                marginBottom: 12,
+                padding: 12,
+                fontSize: 12,
+                color: 'var(--text-muted)',
+              }}
+            >
+              No multi-entry clusters matched this view, so singleton insights are shown automatically.
+            </div>
+          )}
           {clustersByCategory.map((group) => (
             <div key={group.category} className="knowledge-category-section">
               <button
@@ -663,14 +682,14 @@ function KnowledgeBase({ onSelectExperiment }) {
           })}
             </div>
           ))}
-          {clusters.length > visibleClusters.length && (
+          {visibleClustersSource.length > visibleClusters.length && (
             <div className="knowledge-load-more-wrap">
               <button
                 className="refresh-btn"
                 style={{ padding: '6px 12px', fontSize: 12 }}
-                onClick={() => setVisibleClusterCount((n) => Math.min(clusters.length, n + 8))}
+                onClick={() => setVisibleClusterCount((n) => Math.min(visibleClustersSource.length, n + 8))}
               >
-                Load More Clusters ({clusters.length - visibleClusters.length} remaining)
+                Load More Clusters ({visibleClustersSource.length - visibleClusters.length} remaining)
               </button>
             </div>
           )}

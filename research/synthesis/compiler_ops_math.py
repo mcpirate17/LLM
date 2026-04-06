@@ -356,11 +356,6 @@ def _op_linear_common(module, inputs, _):
     x = inputs[0]
     if x.shape[-1] != module.weight.shape[1]:
         return x
-    if _c(x):
-        xf, orig_shape = _flatten_for_kernel(x)
-        bias = getattr(module, "bias", None)
-        out = aria_core.linear_f32(xf, module.weight, bias)
-        return _unflatten_from_kernel(out, orig_shape)
     return _safe_linear(x, module.weight, getattr(module, "bias", None))
 
 

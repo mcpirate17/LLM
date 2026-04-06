@@ -35,6 +35,92 @@ _VALID_TARGET_METRICS = ("eval", "s0", "s1")
 _VALID_WEIGHT_MODES = ("uniform", "random", "default", "scaffold_guided")
 _VALID_PHASES = ("isolation", "stack")
 
+_NON_ROUTING_TEMPLATES = {
+    "gpt2_reference",
+    "mamba_reference",
+    "residual_block",
+    "sequential",
+    "transformer_block",
+    "spiking_stdp_block",
+    "spiking_residual_block",
+    "rwkv_block",
+    "rwkv_double_norm",
+    "rwkv_sparse_chain",
+    "token_merge_block",
+    "token_merge_conv",
+    "sparse_ffn",
+    "fused_gelu_ffn",
+    "bottleneck",
+    "normalized_matmul",
+    "gated_product",
+    "gated_residual",
+    "dense_cascade",
+    # Attention templates without routing ops
+    "attn_residual_block",
+    "attn_gated_residual",
+    "attn_cross_dim",
+    "attn_multi_head_mix",
+    "latent_attn_ffn_block",
+    "local_attn_ffn_block",
+    "diff_attn_ffn_block",
+    "linear_attn_ffn_block",
+    "latent_attn_sparse_ffn",
+    "local_attn_swiglu",
+    "diff_attn_gated_ffn",
+    "graph_attn_ffn_block",
+    "attn_ssm_hybrid",
+    "attn_conv_hybrid",
+    "attn_rwkv_hybrid",
+    "attn_bottleneck_hybrid",
+    "dual_attn_block",
+    "attn_state_space_hybrid",
+    "cascaded_attn_ffn",
+    "attn_exp_gated",
+    "attn_reciprocal_gated",
+    "attn_decay_sequence",
+    "attn_gated_product",
+    "attn_chebyshev_hybrid",
+    "attn_kronecker_hybrid",
+    "attn_log_gated",
+    "attn_gated_maximum",
+    "attn_hyperbolic",
+    "attn_spectral_filter",
+    "attn_normalized_matmul",
+    "attn_softmax_normalized_matmul",
+    "attn_linear_normalized_matmul_control",
+    "attn_linear_no_matmul_ffn",
+    "attn_linear_matmul_sparse_tail",
+    "latent_attn_conv_hybrid",
+    "diff_attn_conv_hybrid",
+    "attn_safe_division",
+    "latent_attn_ssm_hybrid",
+    "local_attn_ssm_hybrid",
+    "attn_spiking_hybrid",
+    "linear_attn_sparse_ffn",
+    "graph_attn_sparse_ffn",
+}
+
+_STACK_PHASE_OVERRIDES: dict[str, dict[str, Any]] = {
+    # This template already consumes nearly the full screening depth budget
+    # on its own; composing two copies in stack mode produces validator
+    # failures ("Too deep: 17/18 > 16") rather than useful backfill data.
+    "hybrid_sparse_triplet_router": {
+        "composition_depth": 1,
+    },
+    # This multiscale router has three medium branches plus a hard expert path.
+    # Stacking two copies in stack mode creates coupled routing graphs that
+    # fail screening even though a single instance validates cleanly.
+    "multiscale_difficulty_router": {
+        "composition_depth": 1,
+    },
+    "multiscale_rich_lane_router": {
+        "composition_depth": 1,
+    },
+    "intelligent_multilane_router": {
+        "composition_depth": 1,
+    },
+}
+
 
 def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
     """Return per-template eval/S0/S1 counts from live program_results rows."""
@@ -150,14 +236,17 @@ def _scaffold_guided_priors(
     return op_weights, category_weights
 
 
-def _phase_settings(phase: str) -> dict[str, Any]:
+def _phase_settings(phase: str, template_name: str | None = None) -> dict[str, Any]:
     """Backfill settings for isolation vs stack validation."""
     if phase == "stack":
-        return {
+        settings = {
             "composition_depth": 2,
             "n_layers": 3,
             "stage1_steps": 750,
         }
+        if template_name and template_name in _STACK_PHASE_OVERRIDES:
+            settings.update(_STACK_PHASE_OVERRIDES[template_name])
+        return settings
     return {
         "composition_depth": 1,
         "n_layers": 2,
@@ -187,69 +276,8 @@ def run_template_batch(
     if weight_mode == "scaffold_guided":
         op_weights, scaffold_cat_weights = _scaffold_guided_priors(db_path)
         cat_weights = scaffold_cat_weights or None
-    phase_cfg = _phase_settings(phase)
+    phase_cfg = _phase_settings(phase, template_name)
 
-    # Reference/non-routing templates need routing_mandatory=False
-    _NON_ROUTING_TEMPLATES = {
-        "gpt2_reference",
-        "mamba_reference",
-        "residual_block",
-        "sequential",
-        "transformer_block",
-        "spiking_stdp_block",
-        "spiking_residual_block",
-        "rwkv_block",
-        "rwkv_double_norm",
-        "rwkv_sparse_chain",
-        "token_merge_block",
-        "token_merge_conv",
-        "sparse_ffn",
-        "fused_gelu_ffn",
-        "bottleneck",
-        "normalized_matmul",
-        "gated_product",
-        "gated_residual",
-        "dense_cascade",
-        # Attention templates without routing ops
-        "attn_residual_block",
-        "attn_gated_residual",
-        "attn_cross_dim",
-        "attn_multi_head_mix",
-        "latent_attn_ffn_block",
-        "local_attn_ffn_block",
-        "diff_attn_ffn_block",
-        "linear_attn_ffn_block",
-        "latent_attn_sparse_ffn",
-        "local_attn_swiglu",
-        "diff_attn_gated_ffn",
-        "graph_attn_ffn_block",
-        "attn_ssm_hybrid",
-        "attn_conv_hybrid",
-        "attn_rwkv_hybrid",
-        "attn_bottleneck_hybrid",
-        "dual_attn_block",
-        "attn_state_space_hybrid",
-        "cascaded_attn_ffn",
-        "attn_exp_gated",
-        "attn_reciprocal_gated",
-        "attn_decay_sequence",
-        "attn_gated_product",
-        "attn_chebyshev_hybrid",
-        "attn_kronecker_hybrid",
-        "attn_log_gated",
-        "attn_gated_maximum",
-        "attn_hyperbolic",
-        "attn_spectral_filter",
-        "attn_normalized_matmul",
-        "latent_attn_conv_hybrid",
-        "diff_attn_conv_hybrid",
-        "attn_safe_division",
-        "latent_attn_ssm_hybrid",
-        "local_attn_ssm_hybrid",
-        "attn_spiking_hybrid",
-        "linear_attn_sparse_ffn",
-        "graph_attn_sparse_ffn",
-    }
     config = RunConfig(
         n_programs=n_programs,
         device=device,
@@ -264,6 +292,8 @@ def run_template_batch(
         use_screening_signal_weights=False,
         routing_mandatory=template_name not in _NON_ROUTING_TEMPLATES,
         persist_screening_failures=True,
+        disable_runtime_dedup=True,
+        enable_stage09_cheap_train_gate=False,
         gbm_prescreener_enabled=False,  # backfill needs ALL graphs for data collection
     )
 
@@ -327,9 +357,19 @@ def run_template_batch(
         nb.update_failure_signatures(exp_id)
 
         total = results.get("total", 0)
+        persisted_rows = int(
+            ((results.get("funnel_counts") or {}).get("persisted_rows", 0) or 0)
+        )
         s1 = results.get("stage1_passed", 0)
         logger.info(f"Experiment {exp_id} done: {s1}/{total} S1 passed")
-        return total
+        if persisted_rows <= 0 and total > 0:
+            logger.info(
+                "Experiment %s produced %d candidates but 0 persisted rows "
+                "(runtime-dedup/early screening consumed the batch)",
+                exp_id,
+                total,
+            )
+        return persisted_rows
 
     except KeyboardInterrupt:
         logger.info(f"Experiment {exp_id} interrupted — saving partial results")
@@ -492,6 +532,7 @@ def main():
         return
 
     completed = 0
+    max_retries_per_template = 5
     try:
         for name, data in sorted(
             needs_data.items(),
@@ -508,15 +549,27 @@ def main():
                 f"phase={args.phase}, stats: {_fmt_stats(data['current_stats'])}) ==="
             )
             t0 = time.time()
-            recorded = run_template_batch(
-                name, n_programs, args.device, args.db, args.weights, args.phase
-            )
+            recorded = 0
+            updated_stats = data["current_stats"]
+            new_count = current
+            attempts = 0
+            while attempts < max_retries_per_template and new_count <= current:
+                attempts += 1
+                recorded = run_template_batch(
+                    name, n_programs, args.device, args.db, args.weights, args.phase
+                )
+                updated_stats = get_template_stats(Path(args.db)).get(name, {})
+                new_count = int(updated_stats.get(args.target_metric, 0))
+                if new_count > current:
+                    break
+                if recorded == 0:
+                    print(
+                        f"  Attempt {attempts}/{max_retries_per_template}: "
+                        f"0 persisted rows after runtime dedup. Retrying..."
+                    )
             elapsed = time.time() - t0
-
-            updated_stats = get_template_stats(Path(args.db)).get(name, {})
-            new_count = int(updated_stats.get(args.target_metric, 0))
             print(
-                f"  Recorded {recorded} programs in {elapsed:.0f}s, "
+                f"  Recorded {recorded} persisted programs in {elapsed:.0f}s, "
                 f"{name} now has {new_count} {args.target_metric} samples "
                 f"({_fmt_stats(updated_stats)})"
             )
@@ -541,13 +594,16 @@ def main():
         try:
             from research.tools.train_predictors import (
                 train_bayesian,
+                train_ensemble_full,
                 train_graph_predictor,
             )
 
             train_bayesian(save=True)
             print("  Bayesian tracker refreshed")
-            train_graph_predictor()
+            train_graph_predictor(save=True)
             print("  Graph predictor refreshed")
+            train_ensemble_full(save=True)
+            print("  Ensemble predictor refreshed")
         except Exception as e:
             print(f"  ML model refresh failed: {e}")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from research.scientist.native.dispatch import (
@@ -146,3 +147,25 @@ def test_dispatch_graph_forward_saved_multi_input_cached_prefers_array_buffers(
     torch.testing.assert_close(result["output"], torch.tensor([3.0, 7.0]))
     assert set(result["saved_activations"]) == {0, 1, 2}
     assert calls == {"arrays": 1, "lists": 0}
+
+
+def test_dispatch_graph_native_multi_input_cached_rejects_non_cpu_host_bridge(
+    monkeypatch,
+):
+    import research.scientist.native.dispatch as native_dispatch
+
+    monkeypatch.setattr(
+        native_dispatch,
+        "supports_host_array_bridge",
+        lambda *values: False,
+    )
+    monkeypatch.setattr(
+        native_dispatch,
+        "_try_import_rust_scheduler",
+        lambda: (_ for _ in ()).throw(AssertionError("rust scheduler should not load")),
+    )
+
+    x = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    y = torch.tensor([3.0, 4.0], dtype=torch.float32)
+    with pytest.raises(RuntimeError, match="Host array bridge does not support"):
+        dispatch_graph_native_multi_input_cached("fake-ir", [x, y], output_shape=(2,))

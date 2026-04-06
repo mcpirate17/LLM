@@ -2,7 +2,7 @@ import React from 'react';
 import { useReportGallery } from '../hooks/useReportGallery';
 import ReportCard from './report/ReportCard';
 
-export default function ReportGallery({ onSelectScope }) {
+export default function ReportGallery({ onSelectScope, selectedScopeId = null }) {
   const { cards, loading } = useReportGallery();
 
   if (loading) {
@@ -37,6 +37,7 @@ export default function ReportGallery({ onSelectScope }) {
               label={card.label}
               stats={card.stats}
               highlight={card.highlight}
+              selected={selectedScopeId === card.scope?.id}
               onClick={() => onSelectScope(card.scope)}
             />
           ))}
@@ -58,6 +59,7 @@ export default function ReportGallery({ onSelectScope }) {
               key={card.id}
               label={card.label}
               stats={card.stats}
+              selected={selectedScopeId === card.scope?.id}
               onClick={() => onSelectScope(card.scope)}
             />
           ))}

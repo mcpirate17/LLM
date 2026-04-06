@@ -67,6 +67,7 @@ def _generate_induction_batch(
     batch_size: int,
     gap: int,
     device: str,
+    generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate [A][B][noise x gap][A] sequences.
 
@@ -75,11 +76,29 @@ def _generate_induction_batch(
     Actually: A B n1 n2 ... nG A = gap + 3 tokens, predict at position gap+2.
     """
     seq_len = gap + 3  # A B [noise x gap] A
-    batch = torch.randint(1, _RESTRICTED_VOCAB, (batch_size, seq_len), device=device)
+    batch = torch.randint(
+        1,
+        _RESTRICTED_VOCAB,
+        (batch_size, seq_len),
+        device=device,
+        generator=generator,
+    )
 
     # Token A and B are random, distinct from noise
-    A = torch.randint(1, _RESTRICTED_VOCAB, (batch_size,), device=device)
-    B = torch.randint(1, _RESTRICTED_VOCAB, (batch_size,), device=device)
+    A = torch.randint(
+        1,
+        _RESTRICTED_VOCAB,
+        (batch_size,),
+        device=device,
+        generator=generator,
+    )
+    B = torch.randint(
+        1,
+        _RESTRICTED_VOCAB,
+        (batch_size,),
+        device=device,
+        generator=generator,
+    )
 
     # Place pattern: position 0=A, position 1=B, positions 2..gap+1=noise, position gap+2=A
     batch[:, 0] = A
@@ -91,7 +110,11 @@ def _generate_induction_batch(
     if collisions.any():
         # Shift colliding tokens by a random offset (1 to vocab-2) to avoid A
         offsets = torch.randint(
-            1, _RESTRICTED_VOCAB - 1, collisions.shape, device=device
+            1,
+            _RESTRICTED_VOCAB - 1,
+            collisions.shape,
+            device=device,
+            generator=generator,
         )
         noise[collisions] = (A_expanded[collisions] + offsets[collisions]) % (
             _RESTRICTED_VOCAB - 1
@@ -111,6 +134,7 @@ def induction_score(
     batch_size: int = 32,
     device: str = "cuda",
     timeout_s: float = _TIMEOUT_S,
+    seed: int | None = None,
 ) -> InductionResult:
     """Train a deepcopy on the induction task, measure accuracy per gap distance.
 
@@ -122,6 +146,10 @@ def induction_score(
     t0 = time.perf_counter()
     result = InductionResult(gap_accuracies={})
     train_gap = 8  # fixed training gap
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(seed))
 
     try:
         probe_model = copy.deepcopy(model)
@@ -143,7 +171,7 @@ def induction_score(
                     break
 
                 input_ids, targets = _generate_induction_batch(
-                    batch_size, train_gap, device
+                    batch_size, train_gap, device, generator=generator
                 )
                 opt.zero_grad(set_to_none=True)
 
@@ -176,7 +204,12 @@ def induction_score(
                     remaining = n_eval
                     while remaining > 0:
                         bs = min(batch_size, remaining)
-                        inp, tgt = _generate_induction_batch(bs, gap, device)
+                        inp, tgt = _generate_induction_batch(
+                            bs,
+                            gap,
+                            device,
+                            generator=generator,
+                        )
                         out = probe_model(inp)
                         pred_pos = inp.shape[1] - 1
                         preds = out[:, pred_pos, :_RESTRICTED_VOCAB].argmax(dim=-1)

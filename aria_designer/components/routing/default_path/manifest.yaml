@@ -1,0 +1,41 @@
+id: default_path
+version: 1.0.0
+name: Default Path
+category: routing
+tags:
+- default_path
+- hybrid_router
+status: approved
+description: Cheap default/early-exit path required by routed blocks.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params: {}
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: "0"
+  preserves_gradient: true
+  numerically_risky: false
+slots:
+- name: upstream_signal
+  kind: path
+  required: true
+  description: Residual stream that remains on the cheap/default execution path.
+templates:
+- id: hybrid_sparse_triplet_router
+  label: Hybrid Sparse Triplet Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Default branch used by the promoted hybrid sparse router skeleton.
+  slot_bindings:
+    upstream_signal: default_path

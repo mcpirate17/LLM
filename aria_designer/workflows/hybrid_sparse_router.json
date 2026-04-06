@@ -1,0 +1,25 @@
+{
+  "schema_version": "workflow_graph.v1",
+  "workflow_id": "hybrid_sparse_router",
+  "name": "Hybrid Sparse Router",
+  "nodes": [
+    { "id": "in", "component_type": "graph_input", "params": {}, "ui_meta": {} },
+    { "id": "default", "component_type": "routing/default_path", "params": {}, "ui_meta": {} },
+    { "id": "gate", "component_type": "routing/hybrid_token_gate", "params": { "threshold": 0.45 }, "ui_meta": {} },
+    { "id": "span", "component_type": "routing/sparse_span_builder", "params": { "span_width": 3, "fallback_behavior": "default_path" }, "ui_meta": {} },
+    { "id": "router", "component_type": "routing/hybrid_sparse_router", "params": { "span_width": 3, "lane_count": 3, "confidence_threshold": 0.45 }, "ui_meta": {} },
+    { "id": "lane", "component_type": "routing/lane_conditioned_block", "params": { "lane_id": 1 }, "ui_meta": {} },
+    { "id": "merge", "component_type": "add", "params": {}, "ui_meta": {} },
+    { "id": "out", "component_type": "graph_output", "params": {}, "ui_meta": {} }
+  ],
+  "edges": [
+    { "id": "e0", "source": "in", "source_port": "out", "target": "default", "target_port": "x" },
+    { "id": "e1", "source": "in", "source_port": "out", "target": "gate", "target_port": "x" },
+    { "id": "e2", "source": "gate", "source_port": "y", "target": "span", "target_port": "x" },
+    { "id": "e3", "source": "span", "source_port": "y", "target": "router", "target_port": "x" },
+    { "id": "e4", "source": "router", "source_port": "y", "target": "lane", "target_port": "x" },
+    { "id": "e5", "source": "default", "source_port": "y", "target": "merge", "target_port": "a" },
+    { "id": "e6", "source": "lane", "source_port": "y", "target": "merge", "target_port": "b" },
+    { "id": "e7", "source": "merge", "source_port": "y", "target": "out", "target_port": "x" }
+  ]
+}

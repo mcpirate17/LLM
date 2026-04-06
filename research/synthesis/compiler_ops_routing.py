@@ -10,11 +10,17 @@ from .compiler_op_utils import (
     HAS_ARIA_CORE,
     aria_core,
     _c,
-    _flatten_for_kernel,
     _get_stacked_params,
     _record_routing_telemetry,
-    _unflatten_from_kernel,
+    _safe_linear,
     record_kernel_fallback,
+)
+from .routing_runtime import (
+    branch_rms,
+    get_routing_progress,
+    scheduled_int,
+    scheduled_scalar,
+    stage_name,
 )
 
 
@@ -271,19 +277,14 @@ def _op_swiglu_mlp(module, inputs, _):
     x = inputs[0]
     if not hasattr(module, "gate_proj"):
         return x
-    if _c(x) and x.dim() >= 2:
-        x2, orig = _flatten_for_kernel(x)
-        y = aria_core.swiglu_f32(
-            x2,
-            module.gate_proj.weight,
-            module.up_proj.weight,
-            module.down_proj.weight,
-            getattr(module.gate_proj, "bias", None),
-            getattr(module.up_proj, "bias", None),
-            getattr(module.down_proj, "bias", None),
-        )
-        return _unflatten_from_kernel(y, orig)
-    return module.down_proj(F.silu(module.gate_proj(x)) * module.up_proj(x))
+    # The CPU aria_core SwiGLU kernel is slower than the dense PyTorch path on
+    # the screening/eval shapes we actually execute. Keep the fast native
+    # kernel out of this hot path until the kernel itself is fixed.
+    gate = _safe_linear(x, module.gate_proj.weight, module.gate_proj.bias)
+    up = _safe_linear(x, module.up_proj.weight, module.up_proj.bias)
+    return _safe_linear(
+        F.silu(gate) * up, module.down_proj.weight, module.down_proj.bias
+    )
 
 
 def _op_feature_sparsity(module, inputs, config):
@@ -569,10 +570,366 @@ def _op_cheap_verify_blend(module, inputs, config):
     return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
 
 
+def _op_hybrid_token_gate(module, inputs, config):
+    """Cheap token-level gate that separates default traffic from informative tokens."""
+    x = inputs[0]
+    threshold = scheduled_scalar(module, config, key="threshold", default=0.5)
+    gate_temperature = max(
+        1e-4, scheduled_scalar(module, config, key="gate_temperature", default=1.0)
+    )
+    if hasattr(module, "hybrid_gate_proj"):
+        scores = F.linear(x, module.hybrid_gate_proj.to(x.dtype)).squeeze(-1)
+    else:
+        scores = _routing_scores_from_x(x)
+    gate = torch.sigmoid(scores / gate_temperature)
+    keep_mask = gate >= threshold
+    gate_ste = keep_mask.to(x.dtype).detach() - gate.detach() + gate
+    progress = get_routing_progress(module)
+    _record_routing_telemetry(
+        module,
+        2,
+        keep_mask.long(),
+        logits=torch.stack([1.0 - gate, gate], dim=-1),
+        keep_mask=keep_mask,
+        routing_mode="hybrid_token_gate",
+        gate_type="single_token",
+        span_type="single",
+        default_path_count=int((~keep_mask).sum().item()),
+        routed_token_count=int(keep_mask.sum().item()),
+        trace_payload={
+            "curriculum_stage": stage_name(
+                progress,
+                float(config.get("curriculum_warmup_frac", 0.25)),
+                float(config.get("curriculum_mid_frac", 0.65)),
+            ),
+            "keep_mask_sample": keep_mask[0].detach().cpu().to(torch.int64).tolist()
+            if keep_mask.numel() > 0
+            else [],
+        },
+    )
+    return x * gate_ste.unsqueeze(-1)
+
+
+def _minimum_keep_count(
+    token_present: torch.Tensor,
+    seq_len: int,
+    span_width: int,
+    min_keep_fraction: float,
+) -> torch.Tensor:
+    present_counts = token_present.sum(dim=-1)
+    requested = max(span_width, int(math.ceil(seq_len * max(0.0, min_keep_fraction))))
+    requested = max(1, requested)
+    requested_t = torch.full_like(present_counts, requested)
+    return torch.minimum(present_counts, requested_t)
+
+
+def _rescue_keep_mask(
+    gate: torch.Tensor,
+    token_present: torch.Tensor,
+    threshold: float,
+    min_keep_count: torch.Tensor,
+) -> torch.Tensor:
+    keep_mask = (gate >= threshold) & token_present
+    if not token_present.any():
+        return keep_mask
+    max_keep = int(min_keep_count.max().item())
+    if max_keep <= 0:
+        return keep_mask
+    gated_scores = gate.masked_fill(~token_present, -1.0)
+    topk_scores, topk_idx = gated_scores.topk(max_keep, dim=-1)
+    rescue_mask = torch.zeros_like(keep_mask)
+    rank_mask = torch.arange(max_keep, device=gate.device).unsqueeze(
+        0
+    ) < min_keep_count.unsqueeze(-1)
+    rescue_mask.scatter_(1, topk_idx, rank_mask & (topk_scores >= 0.0))
+    return keep_mask | rescue_mask
+
+
+def _build_sparse_spans(
+    x: torch.Tensor,
+    keep_mask: torch.Tensor,
+    span_width: int,
+    *,
+    gate_strength: torch.Tensor | None = None,
+):
+    B, S, D = x.shape
+    span_features = torch.zeros_like(x)
+    span_strength = torch.zeros((B, S), device=x.device, dtype=x.dtype)
+    coverage = torch.zeros((B, S), device=x.device, dtype=torch.int64)
+    span_positions = torch.full(
+        (B, S, span_width), -1, device=x.device, dtype=torch.int64
+    )
+    min_kept = 1 if span_width <= 1 else 2
+    if span_width > S:
+        span_counts = torch.zeros((B,), device=x.device, dtype=torch.int64)
+        return span_features, span_positions, span_counts, coverage, span_strength
+
+    x_prefix = torch.cat([x.new_zeros(B, 1, D), x.cumsum(dim=1)], dim=1)
+    span_sums = x_prefix[:, span_width:] - x_prefix[:, :-span_width]
+    keep_int = keep_mask.to(torch.int64)
+    keep_prefix = torch.cat(
+        [
+            torch.zeros((B, 1), device=x.device, dtype=torch.int64),
+            keep_int.cumsum(dim=1),
+        ],
+        dim=1,
+    )
+    kept_counts = keep_prefix[:, span_width:] - keep_prefix[:, :-span_width]
+    valid_windows = kept_counts >= min_kept
+
+    end_slice = slice(span_width - 1, S)
+    span_features[:, end_slice] = span_sums / float(span_width)
+    span_features[:, end_slice] *= valid_windows.unsqueeze(-1).to(x.dtype)
+    coverage[:, end_slice] = valid_windows.to(torch.int64)
+    span_counts = valid_windows.sum(dim=1).to(torch.int64)
+
+    if gate_strength is not None:
+        strength_prefix = torch.cat(
+            [gate_strength.new_zeros(B, 1), gate_strength.cumsum(dim=1)],
+            dim=1,
+        )
+        strength_sum = (
+            strength_prefix[:, span_width:] - strength_prefix[:, :-span_width]
+        )
+        span_strength[:, end_slice] = (
+            strength_sum / float(span_width)
+        ) * valid_windows.to(x.dtype)
+    else:
+        span_strength[:, end_slice] = valid_windows.to(x.dtype)
+
+    span_base = torch.arange(S, device=x.device, dtype=torch.int64).unfold(
+        0, span_width, 1
+    )
+    expanded_positions = span_base.unsqueeze(0).expand(B, -1, -1)
+    span_positions[:, end_slice] = torch.where(
+        valid_windows.unsqueeze(-1),
+        expanded_positions,
+        span_positions[:, end_slice],
+    )
+    return span_features, span_positions, span_counts, coverage, span_strength
+
+
+def _op_sparse_span_builder(module, inputs, config):
+    """Build sparse fused pair/triplet features over informative token windows."""
+    x = inputs[0]
+    span_width = max(1, min(int(config.get("span_width", 3)), x.shape[1]))
+    fallback_behavior = str(config.get("fallback_behavior", "default_path"))
+    keep_mask = x.abs().sum(dim=-1) > 1e-8
+    if _c(x) and hasattr(aria_core, "sparse_span_extract_f32"):
+        try:
+            span_features, span_positions, span_counts, coverage = (
+                aria_core.sparse_span_extract_f32(
+                    x, keep_mask.to(torch.int64).contiguous(), span_width
+                )
+            )
+            span_strength = coverage.to(x.dtype)
+        except (ImportError, RuntimeError, AttributeError) as e:
+            record_kernel_fallback("sparse_span_extract_f32", e)
+            span_features, span_positions, span_counts, coverage, span_strength = (
+                _build_sparse_spans(x, keep_mask, span_width)
+            )
+    else:
+        span_features, span_positions, span_counts, coverage, span_strength = (
+            _build_sparse_spans(x, keep_mask, span_width)
+        )
+    _record_routing_telemetry(
+        module,
+        1,
+        torch.zeros((x.shape[0], x.shape[1]), device=x.device, dtype=torch.int64),
+        keep_mask=keep_mask,
+        routing_mode="sparse_span_builder",
+        gate_type="single_token",
+        span_type=f"sparse_{'triplet' if span_width >= 3 else 'pair' if span_width == 2 else 'single'}",
+        sparse_span_count=int(span_counts.sum().item()),
+        sparse_span_width=span_width,
+        sparse_span_coverage_tokens=int((coverage > 0).sum().item()),
+        default_path_count=int((coverage == 0).sum().item()),
+        routed_token_count=int((coverage > 0).sum().item()),
+        route_strength=float(
+            span_strength.sum().item() / max(int((coverage > 0).sum().item()), 1)
+        ),
+        trace_payload={
+            "fallback_behavior": fallback_behavior,
+            "span_positions_sample": span_positions[0][span_positions[0, :, 0] >= 0]
+            .detach()
+            .cpu()
+            .tolist()
+            if span_counts.numel() > 0
+            else [],
+        },
+    )
+    return span_features
+
+
+def _op_hybrid_sparse_router(module, inputs, config):
+    """Two-stage routed execution: single-token gate then sparse fused-span lane routing."""
+    x = inputs[0]
+    span_width = max(1, min(int(config.get("span_width", 3)), x.shape[1]))
+    lane_count = max(2, min(int(config.get("lane_count", 3)), 8))
+    confidence_threshold = scheduled_scalar(
+        module,
+        config,
+        key="confidence_threshold",
+        default=0.45,
+    )
+    min_keep_fraction = scheduled_scalar(
+        module,
+        config,
+        key="min_keep_fraction",
+        default=0.125,
+    )
+    route_temperature = scheduled_scalar(
+        module,
+        config,
+        key="route_temperature",
+        default=1.0,
+    )
+    if hasattr(module, "hybrid_gate_proj"):
+        gate_scores = F.linear(x, module.hybrid_gate_proj.to(x.dtype)).squeeze(-1)
+    else:
+        gate_scores = _routing_scores_from_x(x)
+    token_present = x.abs().sum(dim=-1) > 1e-8
+    if _c(x) and hasattr(aria_core, "token_gate_trace_f32"):
+        try:
+            keep_mask_i64, gate_conf = aria_core.token_gate_trace_f32(
+                gate_scores.contiguous(), confidence_threshold
+            )
+            keep_mask = keep_mask_i64.bool() & token_present
+            min_keep_count = _minimum_keep_count(
+                token_present, x.shape[1], span_width, min_keep_fraction
+            )
+            keep_mask = keep_mask | _rescue_keep_mask(
+                gate_conf, token_present, confidence_threshold, min_keep_count
+            )
+        except (ImportError, RuntimeError, AttributeError) as e:
+            record_kernel_fallback("token_gate_trace_f32", e)
+            gate_conf = torch.sigmoid(gate_scores)
+            min_keep_count = _minimum_keep_count(
+                token_present, x.shape[1], span_width, min_keep_fraction
+            )
+            keep_mask = _rescue_keep_mask(
+                gate_conf, token_present, confidence_threshold, min_keep_count
+            )
+    else:
+        gate_conf = torch.sigmoid(gate_scores)
+        min_keep_count = _minimum_keep_count(
+            token_present, x.shape[1], span_width, min_keep_fraction
+        )
+        keep_mask = _rescue_keep_mask(
+            gate_conf, token_present, confidence_threshold, min_keep_count
+        )
+
+    span_features, span_positions, span_counts, coverage, span_strength = (
+        _build_sparse_spans(
+            x,
+            keep_mask,
+            span_width,
+            gate_strength=gate_conf * token_present.to(x.dtype),
+        )
+    )
+    default_out = (
+        F.linear(x, module.hybrid_default_proj.to(x.dtype))
+        if hasattr(module, "hybrid_default_proj")
+        else x
+    )
+    if hasattr(module, "hybrid_lane_proj"):
+        lane_logits = F.linear(span_features, module.hybrid_lane_proj.to(x.dtype))
+    else:
+        lane_logits = torch.stack(
+            [span_features.mean(dim=-1) + i * 0.1 for i in range(lane_count)], dim=-1
+        )
+    lane_logits = lane_logits / max(route_temperature, 1e-4)
+    lane_probs = F.softmax(lane_logits, dim=-1)
+    lane_assignments = lane_probs.argmax(dim=-1)
+    lane_conf = lane_probs.max(dim=-1).values
+    valid_span_mask = span_positions[..., 0] >= 0
+    active_route_mask = valid_span_mask & keep_mask
+    lane_hist = torch.bincount(
+        lane_assignments[valid_span_mask].reshape(-1), minlength=lane_count
+    ).to(torch.float32)
+    if (
+        hasattr(module, "hybrid_lane_weights")
+        and len(module.hybrid_lane_weights) >= lane_count
+    ):
+        lane_weights = torch.stack(
+            [module.hybrid_lane_weights[i].to(x.dtype) for i in range(lane_count)],
+            dim=0,
+        )
+        lane_outputs = torch.einsum("bsd,lod->bslo", span_features, lane_weights)
+    else:
+        lane_outputs = span_features.unsqueeze(2).expand(-1, -1, lane_count, -1)
+    confidence_scale = torch.clamp(
+        (lane_conf - confidence_threshold) / max(1.0 - confidence_threshold, 1e-4),
+        min=0.0,
+        max=1.0,
+    )
+    route_scale = span_strength * torch.where(
+        active_route_mask,
+        torch.maximum(confidence_scale, lane_conf),
+        torch.zeros_like(lane_conf),
+    )
+    routed_updates = (
+        lane_outputs
+        * lane_probs.unsqueeze(-1)
+        * route_scale.unsqueeze(-1).unsqueeze(-1)
+    ).sum(dim=2)
+    out = default_out + routed_updates
+
+    span_type = f"sparse_{'triplet' if span_width >= 3 else 'pair' if span_width == 2 else 'single'}"
+    _record_routing_telemetry(
+        module,
+        lane_count,
+        lane_assignments,
+        logits=lane_logits,
+        keep_mask=keep_mask,
+        lane_histogram=lane_hist,
+        routing_mode="hybrid_sparse_router",
+        gate_type="single_token",
+        span_type=span_type,
+        sparse_span_count=int(span_counts.sum().item()),
+        sparse_span_width=span_width,
+        sparse_span_coverage_tokens=int((coverage > 0).sum().item()),
+        default_path_count=int((~active_route_mask).sum().item()),
+        routed_token_count=int(active_route_mask.sum().item()),
+        route_strength=float(route_scale[active_route_mask].mean().item())
+        if active_route_mask.any()
+        else 0.0,
+        lane_count=lane_count,
+        trace_payload={
+            "keep_mask_sample": keep_mask[0].detach().cpu().to(torch.int64).tolist()
+            if keep_mask.numel() > 0
+            else [],
+            "lane_assignments_sample": lane_assignments[0].detach().cpu().tolist()
+            if lane_assignments.numel() > 0
+            else [],
+        },
+    )
+    return out
+
+
+def _op_lane_conditioned_block(module, inputs, config):
+    x = inputs[0]
+    if hasattr(module, "lane_block_weight"):
+        return F.gelu(F.linear(x, module.lane_block_weight.to(x.dtype)))
+    return F.gelu(x)
+
+
+def _op_default_path(module, inputs, config):
+    return inputs[0]
+
+
 def _op_depth_weighted_proj(module, inputs, config):
     """Learned adaptive recursion: per-token depth from learned scorer, per-step transforms."""
     x = inputs[0]
-    max_depth = int(config.get("max_depth", 3))
+    configured_depth = int(config.get("max_depth", 3))
+    max_depth = scheduled_int(
+        module,
+        config,
+        key="active_depth",
+        default=configured_depth,
+        minimum=1,
+        maximum=max(1, configured_depth),
+    )
     max_depth = max(1, min(6, max_depth))
 
     if hasattr(module, "depth_scorer"):
@@ -636,7 +993,15 @@ def _op_score_depth_blend(module, inputs, config):
     Depth is conditional on input difficulty score (inputs[1]).
     """
     x, scores = inputs[0], inputs[1]
-    max_depth = int(config.get("max_depth", 3))
+    configured_depth = int(config.get("max_depth", 3))
+    max_depth = scheduled_int(
+        module,
+        config,
+        key="active_depth",
+        default=configured_depth,
+        minimum=1,
+        maximum=max(1, configured_depth),
+    )
 
     if not hasattr(module, "step_projs"):
         return x
@@ -659,6 +1024,151 @@ def _op_score_depth_blend(module, inputs, config):
         out = out + all_masks[i] * (step_out - out) * 0.5
 
     _record_routing_telemetry(module, max_depth, depths, logits=scores)
+    return out
+
+
+def _op_calibrated_branch_merge(module, inputs, config):
+    branches = list(inputs)
+    if len(branches) != 5:
+        return branches[0]
+
+    dt = branches[0].dtype
+    normalize_inputs = bool(config.get("normalize_inputs", True))
+    merge_temperature = max(1e-4, float(config.get("merge_temperature", 1.0)))
+
+    branch_norms = [branch_rms(branch) for branch in branches]
+    if normalize_inputs:
+        normalized = [branch / norm for branch, norm in zip(branches, branch_norms)]
+    else:
+        normalized = branches
+
+    score_proj = getattr(module, "branch_score_proj", None)
+    branch_bias = getattr(module, "branch_bias", None)
+    scores = []
+    for idx, branch in enumerate(normalized):
+        if score_proj is not None and idx < score_proj.shape[0]:
+            score = F.linear(branch, score_proj[idx : idx + 1].to(dt)).squeeze(-1)
+        else:
+            score = branch.float().mean(dim=-1).to(dt)
+        if branch_bias is not None and idx < branch_bias.numel():
+            score = score + branch_bias[idx].to(dt)
+        scores.append(score)
+    logits = torch.stack(scores, dim=-1) / merge_temperature
+    weights = F.softmax(logits, dim=-1)
+
+    routed_floor = float(config.get("routed_floor", 0.3))
+    medium_floor = float(config.get("medium_floor", 0.16))
+    hard_floor = float(config.get("hard_floor", 0.08))
+    hard_cap = float(config.get("hard_cap", 0.2))
+    fallback_cap = float(config.get("fallback_cap", 0.72))
+    if bool(config.get("curriculum_enabled", False)):
+        routed_floor = scheduled_scalar(
+            module, config, key="routed_floor", default=routed_floor
+        )
+        medium_floor = scheduled_scalar(
+            module, config, key="medium_floor", default=medium_floor
+        )
+        hard_floor = scheduled_scalar(
+            module, config, key="hard_floor", default=hard_floor
+        )
+        hard_cap = scheduled_scalar(module, config, key="hard_cap", default=hard_cap)
+        fallback_cap = scheduled_scalar(
+            module, config, key="fallback_cap", default=fallback_cap
+        )
+
+    hard_weight = weights[..., 2]
+    hard_clamped = torch.clamp(hard_weight, min=hard_floor, max=hard_cap)
+    weights = torch.cat(
+        [
+            weights[..., :2],
+            hard_clamped.unsqueeze(-1),
+            weights[..., 3:],
+        ],
+        dim=-1,
+    )
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+
+    routed_share = weights[..., 1] + weights[..., 2]
+    routed_deficit = torch.clamp(routed_floor - routed_share, min=0.0)
+    fallback_mass = weights[..., 0] + weights[..., 3] + weights[..., 4]
+    routed_boost = torch.minimum(routed_deficit, fallback_mass)
+    if torch.any(routed_boost > 0):
+        routed_ratio = torch.stack([weights[..., 1], weights[..., 2]], dim=-1)
+        routed_ratio = routed_ratio / routed_ratio.sum(dim=-1, keepdim=True).clamp(
+            min=1e-6
+        )
+        weights[..., 1:3] = weights[..., 1:3] + routed_ratio * routed_boost.unsqueeze(
+            -1
+        )
+        fallback_scale = (fallback_mass - routed_boost) / fallback_mass.clamp(min=1e-6)
+        weights[..., 0] = weights[..., 0] * fallback_scale
+        weights[..., 3] = weights[..., 3] * fallback_scale
+        weights[..., 4] = weights[..., 4] * fallback_scale
+
+    medium_gap = torch.clamp(medium_floor - weights[..., 1], min=0.0)
+    if torch.any(medium_gap > 0):
+        donors = weights[..., 0] + weights[..., 2] + weights[..., 3] + weights[..., 4]
+        move = torch.minimum(medium_gap, donors)
+        weights[..., 1] = weights[..., 1] + move
+        donor_scale = (donors - move) / donors.clamp(min=1e-6)
+        weights[..., 0] = weights[..., 0] * donor_scale
+        weights[..., 2] = weights[..., 2] * donor_scale
+        weights[..., 3] = weights[..., 3] * donor_scale
+        weights[..., 4] = weights[..., 4] * donor_scale
+
+    fallback_share = weights[..., 0] + weights[..., 3] + weights[..., 4]
+    fallback_excess = torch.clamp(fallback_share - fallback_cap, min=0.0)
+    if torch.any(fallback_excess > 0):
+        routed_ratio = torch.stack([weights[..., 1], weights[..., 2]], dim=-1)
+        routed_ratio = routed_ratio / routed_ratio.sum(dim=-1, keepdim=True).clamp(
+            min=1e-6
+        )
+        weights[..., 1:3] = weights[
+            ..., 1:3
+        ] + routed_ratio * fallback_excess.unsqueeze(-1)
+        fallback_scale = (fallback_share - fallback_excess) / fallback_share.clamp(
+            min=1e-6
+        )
+        weights[..., 0] = weights[..., 0] * fallback_scale
+        weights[..., 3] = weights[..., 3] * fallback_scale
+        weights[..., 4] = weights[..., 4] * fallback_scale
+
+    weights = weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+
+    gains = getattr(module, "branch_gain", None)
+    if gains is not None:
+        gains_t = 0.5 + 1.0 * torch.sigmoid(gains.to(dt))
+    else:
+        gains_t = torch.ones(5, device=branches[0].device, dtype=dt)
+    anchor = branch_norms[4]
+    out = torch.zeros_like(branches[0])
+    for idx, branch in enumerate(normalized):
+        out = out + branch * weights[..., idx : idx + 1] * gains_t[idx]
+    out = out * anchor
+
+    weight_mean = weights.mean(dim=(0, 1))
+    dominance = weights.max(dim=-1).values.mean().item()
+    _record_routing_telemetry(
+        module,
+        5,
+        weights.argmax(dim=-1),
+        logits=logits,
+        routing_mode="calibrated_branch_merge",
+        gate_type="branch_merge",
+        branch_weights=weight_mean.detach(),
+        branch_dominance=dominance,
+        routed_branch_share=float((weights[..., 1] + weights[..., 2]).mean().item()),
+        medium_branch_share=float(weights[..., 1].mean().item()),
+        hard_branch_share=float(weights[..., 2].mean().item()),
+        trace_payload={
+            "branch_names": ["default", "medium", "hard", "skip", "input"],
+            "curriculum_stage": stage_name(
+                get_routing_progress(module),
+                float(config.get("curriculum_warmup_frac", 0.25)),
+                float(config.get("curriculum_mid_frac", 0.65)),
+            ),
+        },
+    )
     return out
 
 
@@ -718,6 +1228,12 @@ OP_IMPLS: Dict[str, Callable] = {
     "confidence_token_gate": _op_confidence_token_gate,
     "learned_token_gate": _op_learned_token_gate,
     "cheap_verify_blend": _op_cheap_verify_blend,
+    "calibrated_branch_merge": _op_calibrated_branch_merge,
+    "hybrid_token_gate": _op_hybrid_token_gate,
+    "sparse_span_builder": _op_sparse_span_builder,
+    "hybrid_sparse_router": _op_hybrid_sparse_router,
+    "lane_conditioned_block": _op_lane_conditioned_block,
+    "default_path": _op_default_path,
     "depth_weighted_proj": _op_depth_weighted_proj,
     "token_entropy": _op_token_entropy,
     "relu_gated_moe": _op_relu_gated_moe,

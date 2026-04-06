@@ -1,23 +1,14 @@
-"""Behavioral fingerprint compatibility surface."""
+"""Behavioral fingerprint public surface."""
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
-import torch
 import torch.nn as nn
 
 from research.defaults import VOCAB_SIZE
 
-from .fingerprint_cka import cka_from_tensor as _cka_from_tensor_impl
-from .fingerprint_cka import compute_reference_cka as _compute_reference_cka_impl
-from .fingerprint_probes import (
-    capture_probe_representations as _capture_probe_representations_impl,
-)
-from .fingerprint_runtime import (
-    compute_fingerprint,
-    compute_lightning_fingerprint,
-)
+from .fingerprint_runtime import compute_fingerprint, compute_lightning_fingerprint
 from .fingerprint_types import BehavioralFingerprint
 
 
@@ -74,21 +65,3 @@ def compute_gated_fingerprint(
         ),
         True,
     )
-
-
-def _capture_probe_representations(model: nn.Module, input_ids: torch.Tensor):
-    return _capture_probe_representations_impl(model, input_ids)
-
-
-def _compute_reference_cka(
-    reps: Optional[torch.Tensor],
-    ref_activations: Optional[Dict[str, torch.Tensor]] = None,
-) -> Dict[str, float]:
-    return _compute_reference_cka_impl(reps, ref_activations)
-
-
-def _cka_from_tensor(
-    reps: torch.Tensor,
-    ref_activations: Optional[Dict[str, torch.Tensor]] = None,
-) -> Dict[str, float]:
-    return _cka_from_tensor_impl(reps, ref_activations)

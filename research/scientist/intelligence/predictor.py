@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .metrics_utils import binary_classification_metrics, operating_point_profiles
 from .ml_corpus import (
     CorpusIntegrityError,
     load_deduped_graph_training_rows,
@@ -571,8 +572,10 @@ class GBMPredictor:
     rank_model: Any = None  # lgb.Booster
     feature_names: List[str] = field(default_factory=list)
     n_train: int = 0
+    gate_threshold: float = 0.5
     gate_importance: Optional[Dict[str, float]] = None
     rank_importance: Optional[Dict[str, float]] = None
+    train_metrics: Dict[str, Any] = field(default_factory=dict)
 
     def is_fitted(self) -> bool:
         return self.gate_model is not None and self.n_train > 0
@@ -615,9 +618,11 @@ class GBMPredictor:
                 {
                     "feature_names": self.feature_names,
                     "n_train": self.n_train,
+                    "gate_threshold": self.gate_threshold,
                     "gate_importance": self.gate_importance,
                     "rank_importance": self.rank_importance,
                     "has_rank_model": self.rank_model is not None,
+                    "train_metrics": self.train_metrics,
                 },
                 f,
                 indent=2,
@@ -649,8 +654,10 @@ class GBMPredictor:
             rank_model=rank_model,
             feature_names=list(meta.get("feature_names", [])),
             n_train=int(meta.get("n_train", 0)),
+            gate_threshold=float(meta.get("gate_threshold", 0.5)),
             gate_importance=meta.get("gate_importance"),
             rank_importance=meta.get("rank_importance"),
+            train_metrics=dict(meta.get("train_metrics", {})),
         )
 
 
@@ -803,14 +810,42 @@ def train_gbm(
             zip(feature_names, rank_model.feature_importance("gain").tolist())
         )
 
+    gate_scores = gate_model.predict(X_val)
+    operating_points = operating_point_profiles(y_gate_val, gate_scores)
+    gate_threshold = float(operating_points["f1"]["threshold"])
+    gate_metrics = binary_classification_metrics(
+        y_gate_val, gate_scores, gate_threshold
+    )
+
+    rank_spearman = 0.0
+    if rank_model is not None:
+        rank_mask_va = np.isfinite(y_rank_val_full)
+        if rank_mask_va.sum() >= 10:
+            rank_preds = rank_model.predict(X_val[rank_mask_va])
+            from scipy.stats import spearmanr
+
+            rho, _ = spearmanr(y_rank_val_full[rank_mask_va], rank_preds)
+            rank_spearman = float(rho) if np.isfinite(rho) else 0.0
+
     n_trained = len(X_train)
     predictor = GBMPredictor(
         gate_model=gate_model,
         rank_model=rank_model,
         feature_names=feature_names,
         n_train=n_trained,
+        gate_threshold=gate_threshold,
         gate_importance=gate_importance,
         rank_importance=rank_importance,
+        train_metrics={
+            "gate_threshold": gate_threshold,
+            "gate_metrics": gate_metrics,
+            "operating_points": operating_points,
+            "rank_spearman": rank_spearman,
+            "n_train": n_trained,
+            "n_val": len(X_val),
+            "n_positive": int(y_gate.sum()),
+            **split_stats,
+        },
     )
 
     logger.info(
@@ -911,6 +946,11 @@ def evaluate_gbm(
     from sklearn.metrics import roc_auc_score
 
     gate_preds = gate_model.predict(X_test)
+    operating_points = operating_point_profiles(y_gate_test, gate_preds)
+    gate_threshold = float(operating_points["f1"]["threshold"])
+    gate_metrics = binary_classification_metrics(
+        y_gate_test, gate_preds, gate_threshold
+    )
     try:
         gate_auc = float(roc_auc_score(y_gate_test, gate_preds))
     except ValueError:
@@ -978,6 +1018,9 @@ def evaluate_gbm(
 
     return {
         "gate_auc": gate_auc,
+        "gate_threshold": gate_threshold,
+        "gate_metrics": gate_metrics,
+        "operating_points": operating_points,
         "rank_spearman": rank_spearman,
         "skip_rate": skip_rate,
         "false_skip_rate": false_skip_rate,
@@ -985,6 +1028,181 @@ def evaluate_gbm(
         "n_test": n_test,
         "n_positive": int(y_gate.sum()),
         "n_total": n_total,
+        **split_stats,
+        "top_features": top_features,
+    }
+
+
+def evaluate_gbm_induction(
+    db_path: str = "research/lab_notebook.db",
+) -> Dict[str, Any]:
+    """Train + evaluate GBM models for canonical induction labels."""
+    try:
+        import lightgbm as lgb
+    except ImportError:
+        return {"error": "lightgbm_not_installed"}
+
+    feat_dicts, _, _, sample_weights, graph_signatures = _query_graph_training_data(
+        db_path
+    )
+    try:
+        rows = load_deduped_graph_training_rows(db_path, validate=True)
+    except CorpusIntegrityError:
+        raise
+    except Exception as e:
+        return {"error": f"induction_query_failed: {e}"}
+
+    if len(feat_dicts) != len(rows):
+        return {
+            "error": "feature_row_mismatch",
+            "n_features": len(feat_dicts),
+            "n_rows": len(rows),
+        }
+
+    y_auc = np.array(
+        [
+            float(row.get("induction_auc_500"))
+            if row.get("induction_auc_500") is not None
+            else float("nan")
+            for row in rows
+        ],
+        dtype=np.float64,
+    )
+    finite_mask = np.isfinite(y_auc)
+    if int(finite_mask.sum()) < _MIN_GBM_SAMPLES:
+        return {
+            "error": "insufficient_induction_data",
+            "n_total": int(finite_mask.sum()),
+        }
+
+    feat_dicts = [feat_dicts[i] for i in range(len(feat_dicts)) if finite_mask[i]]
+    sample_weights = sample_weights[finite_mask]
+    graph_signatures = [
+        graph_signatures[i] for i in range(len(graph_signatures)) if finite_mask[i]
+    ]
+    y_auc = y_auc[finite_mask]
+    y_learner = (y_auc >= 0.02).astype(np.int32)
+
+    n_pos = int(y_learner.sum())
+    n_neg = len(y_learner) - n_pos
+    if n_pos < 5 or n_neg < 5:
+        return {
+            "error": "insufficient_induction_balance",
+            "n_pos": n_pos,
+            "n_neg": n_neg,
+        }
+
+    X, feature_names = _dicts_to_matrix(feat_dicts)
+    train_idx, val_idx, split_stats = _grouped_stratified_split(
+        graph_signatures, y_learner, seed=42
+    )
+    if len(train_idx) == 0 or len(val_idx) == 0:
+        return {"error": "grouped_split_failed", "n_total": len(X)}
+
+    X_train, X_test = X[train_idx], X[val_idx]
+    y_auc_train, y_auc_test = y_auc[train_idx], y_auc[val_idx]
+    y_cls_train, y_cls_test = y_learner[train_idx], y_learner[val_idx]
+    w_train, w_test = sample_weights[train_idx], sample_weights[val_idx]
+
+    cls_spw = (len(y_cls_train) - int(y_cls_train.sum())) / max(
+        int(y_cls_train.sum()), 1
+    )
+    cls_params = {
+        "objective": "binary",
+        "metric": "auc",
+        "learning_rate": 0.03,
+        "num_leaves": 31,
+        "min_data_in_leaf": 20,
+        "scale_pos_weight": cls_spw,
+        "feature_fraction": 0.7,
+        "bagging_fraction": 0.7,
+        "bagging_freq": 5,
+        "lambda_l1": 0.1,
+        "lambda_l2": 1.0,
+        "verbose": -1,
+        "n_jobs": 1,
+        "seed": 42,
+    }
+    cls_train = lgb.Dataset(
+        X_train, label=y_cls_train, weight=w_train, feature_name=feature_names
+    )
+    cls_val = lgb.Dataset(
+        X_test,
+        label=y_cls_test,
+        weight=w_test,
+        feature_name=feature_names,
+        reference=cls_train,
+    )
+    cls_model = lgb.train(
+        cls_params,
+        cls_train,
+        num_boost_round=500,
+        valid_sets=[cls_val],
+        callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
+    )
+
+    reg_params = {
+        "objective": "regression",
+        "metric": "rmse",
+        "learning_rate": 0.03,
+        "num_leaves": 31,
+        "min_data_in_leaf": 20,
+        "feature_fraction": 0.7,
+        "bagging_fraction": 0.7,
+        "bagging_freq": 5,
+        "lambda_l1": 0.1,
+        "lambda_l2": 1.0,
+        "verbose": -1,
+        "n_jobs": 1,
+        "seed": 42,
+    }
+    reg_train = lgb.Dataset(
+        X_train, label=y_auc_train, weight=w_train, feature_name=feature_names
+    )
+    reg_val = lgb.Dataset(
+        X_test,
+        label=y_auc_test,
+        weight=w_test,
+        feature_name=feature_names,
+        reference=reg_train,
+    )
+    reg_model = lgb.train(
+        reg_params,
+        reg_train,
+        num_boost_round=500,
+        valid_sets=[reg_val],
+        callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
+    )
+
+    from sklearn.metrics import roc_auc_score
+
+    cls_preds = cls_model.predict(X_test)
+    reg_preds = np.clip(reg_model.predict(X_test), 0.0, 1.0)
+    try:
+        learner_auc = float(roc_auc_score(y_cls_test, cls_preds))
+    except ValueError:
+        learner_auc = 0.0
+    learner_acc = float(np.mean((reg_preds >= 0.02).astype(np.int32) == y_cls_test))
+    induction_mae = float(np.mean(np.abs(y_auc_test - reg_preds)))
+    try:
+        from scipy.stats import spearmanr
+
+        rho, _ = spearmanr(y_auc_test, reg_preds)
+        induction_spearman = float(rho) if np.isfinite(rho) else 0.0
+    except Exception:
+        induction_spearman = 0.0
+
+    importance = dict(zip(feature_names, reg_model.feature_importance("gain").tolist()))
+    top_features = sorted(importance.items(), key=lambda x: -x[1])[:10]
+    return {
+        "learner_auc": learner_auc,
+        "learner_acc_from_regression": learner_acc,
+        "induction_mae": induction_mae,
+        "induction_spearman": induction_spearman,
+        "n_train": len(X_train),
+        "n_test": len(X_test),
+        "n_total": len(X),
+        "n_learners": int(y_learner.sum()),
         **split_stats,
         "top_features": top_features,
     }
@@ -1020,6 +1238,8 @@ class EnsemblePredictor:
     _score_std: np.ndarray = field(default_factory=lambda: np.zeros(0))
     _n_components: int = 0
     _n_score_dims: int = 0  # number of score dimensions the weights were trained on
+    gate_threshold: float = 0.5
+    _calibration_metrics: Dict[str, Any] = field(default_factory=dict)
 
     def is_fitted(self) -> bool:
         # Fitted if at least one component is available
@@ -1115,6 +1335,67 @@ class EnsemblePredictor:
 
         return float(np.clip(final, 0.01, 0.99))
 
+    def predict_induction_auc(
+        self,
+        graph_json: Any = None,
+        graph_features: Optional[Dict[str, float]] = None,
+    ) -> float:
+        """Predict canonical induction AUC from available components."""
+        preds: List[float] = []
+
+        if (
+            self.graph_pred is not None
+            and self.graph_pred.is_fitted()
+            and graph_json is not None
+            and hasattr(self.graph_pred, "predict_induction_auc")
+        ):
+            preds.append(float(self.graph_pred.predict_induction_auc(graph_json)))
+
+        if self.gbm is not None and self.gbm.is_fitted() and graph_features is not None:
+            # No persisted GBM induction head yet; approximate from pass probability
+            # conservatively rather than returning zero.
+            preds.append(
+                float(np.clip(self.gbm.predict_gate(graph_features) * 0.06, 0.0, 1.0))
+            )
+
+        if not preds:
+            return 0.0
+        return float(np.clip(np.mean(preds), 0.0, 1.0))
+
+    def predict_induction_learner_prob(
+        self,
+        graph_json: Any = None,
+        graph_features: Optional[Dict[str, float]] = None,
+    ) -> float:
+        """Predict probability that a graph will be an induction learner."""
+        auc = self.predict_induction_auc(
+            graph_json=graph_json, graph_features=graph_features
+        )
+        # 0.02 is the current learner threshold; scale around that boundary.
+        return float(np.clip(auc / 0.02, 0.0, 1.0))
+
+    def predict_planning_score(
+        self,
+        graph_json: Any = None,
+        graph_features: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, float]:
+        """Return a blended planning score balancing survival and induction learning."""
+        p_pass = self.predict_gate(graph_json=graph_json, graph_features=graph_features)
+        induction_auc = self.predict_induction_auc(
+            graph_json=graph_json, graph_features=graph_features
+        )
+        p_induction = self.predict_induction_learner_prob(
+            graph_json=graph_json, graph_features=graph_features
+        )
+        # Favor induction enough to change ordering, but keep survival primary.
+        blended = float(np.clip(0.65 * p_pass + 0.35 * p_induction, 0.0, 1.0))
+        return {
+            "p_pass": float(p_pass),
+            "predicted_induction_auc": float(induction_auc),
+            "p_induction_learner": float(p_induction),
+            "planning_score": blended,
+        }
+
     def predict_rank(
         self,
         graph_json: Any = None,
@@ -1164,6 +1445,9 @@ class EnsemblePredictor:
             "gbm_fitted": self.gbm is not None and self.gbm.is_fitted(),
             "graph_pred_fitted": self.graph_pred is not None
             and self.graph_pred.is_fitted(),
+            "graph_pred_has_induction": self.graph_pred is not None
+            and self.graph_pred.is_fitted()
+            and hasattr(self.graph_pred, "predict_induction_auc"),
             "bayesian_loaded": self.bayesian is not None,
             "interaction_fitted": self.interaction is not None
             and self.interaction._trained,
@@ -1202,6 +1486,8 @@ class EnsemblePredictor:
                 {
                     "b_ensemble": self.b_ensemble,
                     "n_score_dims": self._n_score_dims,
+                    "gate_threshold": self.gate_threshold,
+                    "calibration_metrics": self._calibration_metrics,
                 },
                 f,
                 indent=2,
@@ -1262,6 +1548,10 @@ class EnsemblePredictor:
                 ensemble._score_std = data["score_std"]
                 ensemble.b_ensemble = float(meta.get("b_ensemble", 0.0))
                 ensemble._n_score_dims = int(meta.get("n_score_dims", 0))
+                ensemble.gate_threshold = float(meta.get("gate_threshold", 0.5))
+                ensemble._calibration_metrics = dict(
+                    meta.get("calibration_metrics", {})
+                )
             except Exception as exc:
                 logger.debug("Ensemble calibration load skipped: %s", exc)
 
@@ -1523,14 +1813,25 @@ def _calibrate_ensemble(
 
     # Validate
     val_preds = _sig(X_va @ w + b)
-    val_correct = int(np.sum((val_preds > 0.5) == y_va))
-    val_acc = val_correct / max(len(X_va), 1)
+    operating_points = operating_point_profiles(y_va, val_preds)
+    gate_threshold = float(operating_points["f1"]["threshold"])
+    selected_metrics = operating_points["f1"]
+    val_acc = float(selected_metrics["accuracy"])
 
     ensemble.w_ensemble = w.astype(np.float32)
     ensemble.b_ensemble = float(b)
     ensemble._score_mean = score_mean.astype(np.float32)
     ensemble._score_std = score_std.astype(np.float32)
     ensemble._n_score_dims = n_dims
+    ensemble.gate_threshold = gate_threshold
+    ensemble._calibration_metrics = {
+        "gate_threshold": gate_threshold,
+        "val_metrics": binary_classification_metrics(y_va, val_preds, gate_threshold),
+        "operating_points": operating_points,
+        "n_train": len(X_tr),
+        "n_val": len(X_va),
+        **split_stats,
+    }
 
     logger.info(
         "Ensemble calibrated: %d-dim logistic regression, val_acc=%.3f, "

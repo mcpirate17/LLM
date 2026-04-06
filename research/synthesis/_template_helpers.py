@@ -251,6 +251,8 @@ def _pick_compatible_motif(
     rng: random.Random,
     motif_class_or_classes,
     weights: MotifWeights = None,
+    *,
+    wildcard_prob: Optional[float] = None,
 ) -> Optional[Motif]:
     """Pick a compatible motif from one or more classes.
 
@@ -262,7 +264,8 @@ def _pick_compatible_motif(
     else:
         classes = tuple(motif_class_or_classes)
 
-    wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    if wildcard_prob is None:
+        wildcard_prob = graph.metadata.get("_wildcard_slot_prob", 0.0)
     is_wildcard = wildcard_prob > 0 and rng.random() < wildcard_prob
 
     # Slot adaptations: learned class expansions from DB (multi-class only)
@@ -332,6 +335,34 @@ def _record_slot_usage(
         "candidate_count": len(candidates),
         "input_node_id": int(node_id),
         "wildcard": wildcard,
+    }
+    graph.metadata.setdefault("template_slot_usage", []).append(entry)
+
+
+def record_template_slot_binding(
+    graph: ComputationGraph,
+    *,
+    template_name: str,
+    template_instance: int,
+    slot_index: int,
+    slot_key: str,
+    slot_classes: Tuple[str, ...] | list[str],
+    selected_name: str,
+    selected_class: str,
+    input_node_id: int,
+) -> None:
+    """Record a non-motif structural slot binding for observability."""
+    entry = {
+        "template_name": str(template_name),
+        "template_instance": int(template_instance),
+        "slot_index": int(slot_index),
+        "slot_key": str(slot_key),
+        "slot_classes": [str(cls) for cls in slot_classes],
+        "selected_motif": str(selected_name),
+        "selected_motif_class": str(selected_class),
+        "candidate_count": 1,
+        "input_node_id": int(input_node_id),
+        "wildcard": False,
     }
     graph.metadata.setdefault("template_slot_usage", []).append(entry)
 

@@ -56,8 +56,8 @@ _CANONICAL_MAP: Dict[str, str] = {
     "matmul": "linear_algebra/matmul",
     "topk_gate": "linear_algebra/topk_gate",
     "rope_rotate": "positional/rope_rotate",
-    "identity": "channel_mixing/identity_skip",
-    "identity_skip": "channel_mixing/identity_skip",
+    "identity": "identity",
+    "identity_skip": "identity",
     "spectral_filter": "frequency/spectral_filter",
 }
 

@@ -451,7 +451,8 @@ class _ExperimentsMixin:
 
         # Delete if it's total junk (no programs AND no LLM insights AND no results)
         row = self.conn.execute(
-            "SELECT llm_analysis FROM experiments WHERE experiment_id = ?",
+            "SELECT llm_analysis, experiment_type, hypothesis, research_question "
+            "FROM experiments WHERE experiment_id = ?",
             (experiment_id,),
         ).fetchone()
         has_results = self.conn.execute(
@@ -459,7 +460,24 @@ class _ExperimentsMixin:
             (experiment_id,),
         ).fetchone()
 
-        if n_prog == 0 and (not row or not row["llm_analysis"]) and not has_results:
+        # Preserve expensive or user-driven failed runs. Investigation/validation
+        # jobs may do substantial work without creating new program_results rows,
+        # and "unknown" experiment types are often externally-triggered live runs.
+        preserve_failed = bool(
+            row
+            and (
+                row["experiment_type"] == "unknown"
+                or row["hypothesis"]
+                or row["research_question"]
+            )
+        )
+
+        if (
+            not preserve_failed
+            and n_prog == 0
+            and (not row or not row["llm_analysis"])
+            and not has_results
+        ):
             self._delete_experiment_cascade(experiment_id)
             LOGGER.info("Deleted zero-value failed experiment %s", experiment_id)
 

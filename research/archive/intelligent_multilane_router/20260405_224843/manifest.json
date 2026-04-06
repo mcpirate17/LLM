@@ -1,0 +1,11 @@
+{
+  "archived_at": 1775443777.4583468,
+  "template_name": "intelligent_multilane_router",
+  "n_program_results": 18,
+  "experiment_ids": [
+    "06999118-9d0",
+    "5685d469-ffc",
+    "e6df0b04-394"
+  ],
+  "db_backup": "research/lab_notebook.db.bak_pre_intelligent_multilane_archive_20260405_224843"
+}

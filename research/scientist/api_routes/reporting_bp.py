@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any, Dict, List
 
 from flask import jsonify, request
 from .deps import ApiRouteContext
-from ._utils import with_notebook_context
+from ._utils import (
+    is_malformed_db_error,
+    malformed_db_response_payload,
+    with_notebook_context,
+)
 from ..persona import get_aria
 from ._helpers import (
     get_runner,
@@ -34,6 +39,36 @@ from ._strategy_report import (
 logger = logging.getLogger(__name__)
 
 
+def _degraded_dashboard_summary(exc: Exception) -> Dict[str, Any]:
+    payload = malformed_db_response_payload(exc)
+    return {
+        "total_experiments": 0,
+        "completed_experiments": 0,
+        "total_programs_evaluated": 0,
+        "stage1_survivors": 0,
+        "survival_rate": 0.0,
+        "avg_novelty_score": 0.0,
+        "top_novelty_score": 0.0,
+        "active_insights": 0,
+        "learning_events": 0,
+        "latest_learning": None,
+        "avg_step_time_ms": 0.0,
+        "avg_throughput_tok_s": 0.0,
+        "avg_routing_entropy": None,
+        "avg_depth_savings": None,
+        "avg_recursion_savings": None,
+        "avg_routing_token_retention": None,
+        "avg_sparsity_ratio": None,
+        "latest_perf_report": None,
+        "unique_fingerprints": 0,
+        "latest_dedup": None,
+        "template_observability": {},
+        "leaderboard_consistency": {},
+        "degraded": True,
+        "database_status": payload["database_status"],
+    }
+
+
 def register_reporting_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -44,9 +79,15 @@ def register_reporting_routes(app, context: ApiRouteContext):
         """Get Aria's current status and dashboard summary."""
         runner = get_runner(notebook_path)
         aria = get_aria()
-        summary = nb.get_dashboard_summary()
-        summary["leaderboard_consistency"] = nb.get_leaderboard_consistency_report()
         runner_state = resolve_runner_status(nb, runner)
+        try:
+            summary = nb.get_dashboard_summary()
+            summary["leaderboard_consistency"] = nb.get_leaderboard_consistency_report()
+        except sqlite3.DatabaseError as exc:
+            if not is_malformed_db_error(exc):
+                raise
+            logger.warning("Status endpoint degraded due to malformed DB: %s", exc)
+            summary = _degraded_dashboard_summary(exc)
         progress_payload = runner_state["progress"]
         trigger = get_run_trigger_snapshot(progress_payload.get("experiment_id"))
         progress_payload["run_trigger_source"] = trigger.get("source")
@@ -145,9 +186,42 @@ def register_reporting_routes(app, context: ApiRouteContext):
             str(request.args.get("compact", "0")).strip().lower()
             in {"1", "true", "yes"}
         )
-        summary = nb.get_dashboard_summary()
-        summary["leaderboard_consistency"] = nb.get_leaderboard_consistency_report()
         runner_state = resolve_runner_status(nb, runner)
+        try:
+            summary = nb.get_dashboard_summary()
+            summary["leaderboard_consistency"] = nb.get_leaderboard_consistency_report()
+        except sqlite3.DatabaseError as exc:
+            if not is_malformed_db_error(exc):
+                raise
+            logger.warning(
+                "Dashboard endpoint degraded due to malformed DB pages: %s",
+                exc,
+            )
+            summary = _degraded_dashboard_summary(exc)
+            return jsonify(
+                {
+                    "aria": aria.get_status(db_summary=summary),
+                    "summary": summary,
+                    "recent_experiments": [],
+                    "top_programs": [],
+                    "production_readiness": {
+                        "breakthrough_count": 0,
+                        "epic_switch_recommendation": {
+                            "action": "stay_current_epic",
+                            "reason": "Notebook database is currently degraded",
+                        },
+                        "scale_up_templates": [],
+                        "reproducibility_workflow": None,
+                        "top_candidates": [],
+                    },
+                    "insights": [],
+                    "recent_entries": [],
+                    "is_running": runner_state["is_running"],
+                    "progress": runner_state["progress"],
+                    "degraded": True,
+                    "database_status": summary["database_status"],
+                }
+            )
 
         # Add campaign/hypothesis/knowledge counts
         try:
@@ -346,9 +420,14 @@ def register_reporting_routes(app, context: ApiRouteContext):
         top_limit = 20 if not fast_mode else 12
         expanded_limit = 80 if include_heavy else 0
         recent_limit = 100 if include_heavy else 30
+        summary = nb.get_dashboard_summary()
+        if fast_mode and isinstance(summary, dict):
+            # Template observability is large and unused by the Reports view.
+            summary = dict(summary)
+            summary.pop("template_observability", None)
 
         data = {
-            "summary": nb.get_dashboard_summary(),
+            "summary": summary,
             "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(
                 top_limit, sort_by="loss_ratio"
             ),

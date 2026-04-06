@@ -1,0 +1,57 @@
+id: sparse_span_builder
+version: 1.0.0
+name: Sparse Span Builder
+category: routing
+tags:
+- sparse_routing
+- pair_triplet
+- hybrid_router
+status: approved
+description: Builds sparse fused pair/triplet span features from informative tokens.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  span_width:
+    type: integer
+    default: 3
+  fallback_behavior:
+    type: string
+    default: default_path
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: false
+  param_formula: "0"
+  preserves_gradient: true
+  numerically_risky: false
+slots:
+- name: sparse_route
+  kind: path
+  required: true
+  description: Informative token stream selected by the hybrid token gate.
+  compatible_components:
+  - routing/hybrid_token_gate
+- name: fallback_path
+  kind: fallback
+  required: true
+  description: Cheap bypass path when no informative triplet can be formed.
+  compatible_components:
+  - routing/default_path
+templates:
+- id: hybrid_sparse_triplet_router
+  label: Hybrid Sparse Triplet Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Sparse pair/triplet stage for the promoted hybrid sparse router.
+  slot_bindings:
+    sparse_route: hybrid_token_gate
+    fallback_path: default_path

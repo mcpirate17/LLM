@@ -91,6 +91,48 @@ static std::tuple<torch::Tensor, torch::Tensor> load_balance_loss_f32(
     return {loss, lane_fractions};
 }
 
+static std::tuple<torch::Tensor, torch::Tensor> token_gate_trace_f32(
+    torch::Tensor scores, double threshold) {
+    CHECK_INPUT(scores);
+    TORCH_CHECK(scores.dim() == 2 || scores.dim() == 3, "scores must be [B,S] or [B,S,1]");
+    auto flat_scores = scores.dim() == 3 ? scores.squeeze(-1).contiguous() : scores.contiguous();
+    int64_t B = flat_scores.size(0), S = flat_scores.size(1);
+    auto keep_mask = torch::empty({B, S}, torch::dtype(torch::kInt64));
+    auto confidence = torch::empty({B, S}, flat_scores.options());
+    aria_token_gate_trace_f32(
+        flat_scores.data_ptr<float>(),
+        keep_mask.data_ptr<int64_t>(),
+        confidence.data_ptr<float>(),
+        B, S, static_cast<float>(threshold)
+    );
+    return {keep_mask, confidence};
+}
+
+static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> sparse_span_extract_f32(
+    torch::Tensor x, torch::Tensor keep_mask, int64_t span_width) {
+    CHECK_INPUT(x);
+    CHECK_CPU(keep_mask); CHECK_CONTIGUOUS(keep_mask); CHECK_I64(keep_mask);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(keep_mask.dim() == 2, "keep_mask must be [B,S]");
+    TORCH_CHECK(x.size(0) == keep_mask.size(0) && x.size(1) == keep_mask.size(1),
+                "keep_mask must match x batch/seq");
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2);
+    auto span_features = torch::zeros({B, S, D}, x.options());
+    auto span_positions = torch::full({B, S, span_width}, -1, torch::dtype(torch::kInt64));
+    auto span_counts = torch::zeros({B}, torch::dtype(torch::kInt64));
+    auto coverage = torch::zeros({B, S}, torch::dtype(torch::kInt64));
+    aria_sparse_span_extract_f32(
+        x.data_ptr<float>(),
+        keep_mask.data_ptr<int64_t>(),
+        span_features.data_ptr<float>(),
+        span_positions.data_ptr<int64_t>(),
+        span_counts.data_ptr<int64_t>(),
+        coverage.data_ptr<int64_t>(),
+        B, S, D, span_width
+    );
+    return {span_features, span_positions, span_counts, coverage};
+}
+
 static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> conditional_dispatch_f32(
     torch::Tensor x, torch::Tensor assignments, int64_t lane_id) {
     CHECK_INPUT(x);
@@ -620,6 +662,8 @@ void bind_ops(py::module_ &m) {
     m.def("sparse_threshold_f32", &sparse_threshold_f32); m.def("token_pool_restore_f32", &token_pool_restore_f32);
     m.def("difficulty_scorer_f32", &difficulty_scorer_f32);
     m.def("lane_router_threshold_f32", &lane_router_threshold_f32);
+    m.def("token_gate_trace_f32", &token_gate_trace_f32);
+    m.def("sparse_span_extract_f32", &sparse_span_extract_f32);
     m.def("load_balance_loss_f32", &load_balance_loss_f32);
     m.def("conditional_dispatch_f32", &conditional_dispatch_f32);
     m.def("conditional_dispatch_backward_f32", &conditional_dispatch_backward_f32);

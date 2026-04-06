@@ -258,6 +258,23 @@ class _DashboardMixin:
             name: round(trace_totals[name] / max(1, trace_counts[name]), 4)
             for name in sorted(trace_totals.keys())
         }
+        compile_samples = [
+            float(v)
+            for v in (results.get("_compile_times_ms", []) or [])
+            if v is not None
+        ]
+        compile_avg_ms = (
+            sum(compile_samples) / len(compile_samples) if compile_samples else 0.0
+        )
+        queue_compile_ms = float(
+            (queue_telemetry or {}).get("preprocessing_avg_ms", 0.0) or 0.0
+        )
+        if compile_avg_ms > 0.0:
+            trace_avg_ms["compile"] = round(compile_avg_ms, 4)
+        elif queue_compile_ms > 0.0 and (
+            "compile" not in trace_avg_ms or trace_avg_ms.get("compile", 0.0) <= 0.0
+        ):
+            trace_avg_ms["compile"] = round(queue_compile_ms, 4)
 
         # Aggregate throughput
         throughput_vals = [
@@ -389,6 +406,9 @@ class _DashboardMixin:
                 "optimizer_step_ms": trace_avg_ms.get("optimizer_step", 0.0),
                 "queue_submit_wait_ms": float(
                     (queue_telemetry or {}).get("submit_wait_avg_ms", 0.0) or 0.0
+                ),
+                "queue_prep_wait_ms": float(
+                    (queue_telemetry or {}).get("prep_queue_wait_avg_ms", 0.0) or 0.0
                 ),
                 "queue_scheduling_wait_ms": float(
                     (queue_telemetry or {}).get("scheduling_wait_avg_ms", 0.0) or 0.0
@@ -894,55 +914,123 @@ class _DashboardMixin:
                 for jr in job_results[start : start + _PROGRAM_RESULT_FLUSH_BATCH]:
                     self._record_orchestrator_result(jr, nb, exp_id, results, config)
 
+    def _merge_train_result_metrics(self, program_metrics, train_result, config):
+        from ._helpers import screening_probe_fields, screening_wikitext_fields
+
+        program_metrics["initial_loss"] = train_result.get("initial_loss")
+        program_metrics["min_loss"] = train_result.get("min_loss")
+        program_metrics["loss_improvement_rate"] = train_result.get(
+            "loss_improvement_rate"
+        )
+        program_metrics["avg_step_time_ms"] = train_result.get("avg_step_time_ms")
+        program_metrics["total_train_time_ms"] = train_result.get("total_train_time_ms")
+        program_metrics["max_grad_norm"] = train_result.get("max_grad_norm")
+        program_metrics["mean_grad_norm"] = train_result.get("mean_grad_norm")
+        program_metrics["grad_norm_std"] = train_result.get("grad_norm_std")
+        program_metrics["n_train_steps"] = train_result.get("n_train_steps")
+        program_metrics["final_lr"] = train_result.get("final_lr")
+        program_metrics["validation_loss"] = train_result.get("validation_loss")
+        program_metrics["validation_loss_ratio"] = train_result.get(
+            "validation_loss_ratio"
+        )
+        program_metrics["generalization_gap"] = train_result.get("generalization_gap")
+        program_metrics["discovery_loss"] = train_result.get("discovery_loss")
+        program_metrics["discovery_loss_ratio"] = train_result.get(
+            "discovery_loss_ratio"
+        )
+        program_metrics["train_budget_steps"] = config.stage1_steps
+        program_metrics.update(screening_wikitext_fields(train_result))
+        program_metrics.update(screening_probe_fields(train_result))
+        program_metrics.update(screening_probe_fields(program_metrics))
+        program_metrics.update(
+            {k: train_result.get(k) for k in train_result if k.startswith("pruning_")}
+        )
+        if train_result.get("error_type"):
+            program_metrics["error_type"] = train_result["error_type"]
+        if train_result.get("error"):
+            program_metrics["error_message"] = train_result["error"]
+
+    def _run_full_stage1_after_stage09(self, graph, config, seed):
+        dev_str = config.device
+        if dev_str == "cuda" and not torch.cuda.is_available():
+            dev_str = "cpu"
+        compile_t0 = time.perf_counter()
+        rich_model = compile_model(
+            [graph] * config.n_layers,
+            vocab_size=config.vocab_size,
+            max_seq_len=config.max_seq_len,
+        )
+        compile_ms = (time.perf_counter() - compile_t0) * 1000.0
+        return compile_ms, self._micro_train(
+            model=rich_model,
+            config=config,
+            dev=torch.device(dev_str),
+            seed=int(seed),
+        )
+
     def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
         """Record a single result from the orchestrator into the notebook."""
         s1_result = jr.s1_result
         program_metrics = jr.payload["metrics"]
         graph = jr.payload["graph"]
         i = jr.index
+        screening_stage = str(jr.payload.get("screening_stage") or "stage1")
+        screening_seed = int(jr.payload.get("screening_seed") or 0)
 
         funnel = results.setdefault("funnel_counts", {})
-        funnel["stage1_completed"] = int(funnel.get("stage1_completed", 0)) + 1
+        promoted_to_stage1 = screening_stage != "stage09"
+        if screening_stage == "stage09":
+            funnel["stage09_completed"] = int(funnel.get("stage09_completed", 0)) + 1
+            stage09_passed = bool(s1_result.get("passed", False))
+            program_metrics["stage09_passed"] = int(stage09_passed)
+            program_metrics["stage09_loss_ratio"] = s1_result.get("loss_ratio")
+            program_metrics["stage09_final_loss"] = s1_result.get("final_loss")
+            program_metrics["stage09_total_train_time_ms"] = s1_result.get(
+                "total_train_time_ms"
+            )
+            program_metrics["stage09_avg_step_time_ms"] = s1_result.get(
+                "avg_step_time_ms"
+            )
+            if stage09_passed:
+                results["stage09_passed"] = int(results.get("stage09_passed", 0)) + 1
+                funnel["stage09_survived"] = int(funnel.get("stage09_survived", 0)) + 1
+                try:
+                    compile_ms, s1_result = self._run_full_stage1_after_stage09(
+                        graph=graph,
+                        config=config,
+                        seed=screening_seed or (1000 + i),
+                    )
+                    program_metrics["stage09_promoted_to_s1"] = 1
+                    program_metrics["compile_time_ms"] = (
+                        float(program_metrics.get("compile_time_ms", 0.0) or 0.0)
+                        + compile_ms
+                    )
+                    results.setdefault("_compile_times_ms", []).append(compile_ms)
+                    promoted_to_stage1 = True
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logger.debug("Stage09->S1 promotion failed: %s", e)
+                    s1_result = {
+                        "passed": False,
+                        "error_type": "stage1_promotion_failed",
+                        "error": str(e),
+                    }
+            else:
+                s1_result = {
+                    "passed": False,
+                    "error_type": s1_result.get("error_type") or "failed_stage09_gate",
+                    "error": s1_result.get("error") or "failed_stage09_gate",
+                }
+
+        if promoted_to_stage1:
+            funnel["stage1_completed"] = int(funnel.get("stage1_completed", 0)) + 1
 
         s1_passed = s1_result.get("passed", False)
         loss_ratio = s1_result.get("loss_ratio")
         final_loss = s1_result.get("final_loss")
         throughput = s1_result.get("throughput")
         training_curve = s1_result.get("training_curve")
-        from ._helpers import screening_probe_fields, screening_wikitext_fields
 
-        # Training metrics
-        program_metrics["initial_loss"] = s1_result.get("initial_loss")
-        program_metrics["min_loss"] = s1_result.get("min_loss")
-        program_metrics["loss_improvement_rate"] = s1_result.get(
-            "loss_improvement_rate"
-        )
-        program_metrics["avg_step_time_ms"] = s1_result.get("avg_step_time_ms")
-        program_metrics["total_train_time_ms"] = s1_result.get("total_train_time_ms")
-        program_metrics["max_grad_norm"] = s1_result.get("max_grad_norm")
-        program_metrics["mean_grad_norm"] = s1_result.get("mean_grad_norm")
-        program_metrics["grad_norm_std"] = s1_result.get("grad_norm_std")
-        program_metrics["n_train_steps"] = s1_result.get("n_train_steps")
-        program_metrics["final_lr"] = s1_result.get("final_lr")
-        program_metrics["validation_loss"] = s1_result.get("validation_loss")
-        program_metrics["validation_loss_ratio"] = s1_result.get(
-            "validation_loss_ratio"
-        )
-        program_metrics["generalization_gap"] = s1_result.get("generalization_gap")
-        program_metrics["discovery_loss"] = s1_result.get("discovery_loss")
-        program_metrics["discovery_loss_ratio"] = s1_result.get("discovery_loss_ratio")
-        program_metrics["train_budget_steps"] = config.stage1_steps
-        program_metrics.update(screening_wikitext_fields(s1_result))
-        program_metrics.update(screening_probe_fields(s1_result))
-        program_metrics.update(screening_probe_fields(program_metrics))
-        program_metrics.update(
-            {k: s1_result.get(k) for k in s1_result if k.startswith("pruning_")}
-        )
-        # Propagate error info from training result to DB record
-        if s1_result.get("error_type"):
-            program_metrics["error_type"] = s1_result["error_type"]
-        if s1_result.get("error"):
-            program_metrics["error_message"] = s1_result["error"]
+        self._merge_train_result_metrics(program_metrics, s1_result, config)
         self._merge_s1_telemetry(program_metrics, s1_result)
 
         # Compute efficiency_multiple at screening time.

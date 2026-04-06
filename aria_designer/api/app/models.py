@@ -15,6 +15,23 @@ class PortModel(BaseModel):
     dtype: str
 
 
+class SlotModel(BaseModel):
+    name: str
+    kind: str = "path"
+    required: bool = False
+    description: str = ""
+    compatible_components: List[str] = Field(default_factory=list)
+
+
+class TemplateModel(BaseModel):
+    id: str
+    label: str = ""
+    source: str = ""
+    description: str = ""
+    workflow: str = ""
+    slot_bindings: Dict[str, str] = Field(default_factory=dict)
+
+
 class ComponentModel(BaseModel):
     id: str
     name: str
@@ -24,6 +41,8 @@ class ComponentModel(BaseModel):
     inputs: List[PortModel] = Field(default_factory=list)
     outputs: List[PortModel] = Field(default_factory=list)
     params_schema: Dict[str, Any] = Field(default_factory=dict)
+    slots: List[SlotModel] = Field(default_factory=list)
+    templates: List[TemplateModel] = Field(default_factory=list)
     status: Literal["draft", "approved", "deprecated"] = "draft"
     created_at: str = Field(default_factory=utc_now_iso)
 

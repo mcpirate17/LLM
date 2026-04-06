@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
+from .metrics_utils import binary_classification_metrics, operating_point_profiles
 from .ml_corpus import (
     CorpusIntegrityError,
     load_deduped_graph_training_rows,
@@ -112,6 +113,10 @@ def _materialize_feature_dict(feats: Dict[str, float]) -> Dict[str, float]:
         for right in selected[i + 1 :]:
             augmented[f"{left}__x__{right}"] = left_value * float(feats.get(right, 0.0))
     return augmented
+
+
+def _graph_imodel_path(path: Path) -> Path:
+    return path.with_suffix(".imodel.npz")
 
 
 def _grouped_stratified_split(
@@ -527,6 +532,9 @@ class GraphPredictor:
     # Loss prediction head
     w_loss: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_loss: float = 0.7
+    # Induction prediction head
+    w_induction: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    b_induction: float = 0.0
     # Op data (cached for feature extraction)
     op_profiles: Dict[str, Dict[str, float]] = field(default_factory=dict)
     pair_stability: Dict[Tuple[str, str], float] = field(default_factory=dict)
@@ -583,6 +591,15 @@ class GraphPredictor:
             return 0.7
         return float(np.clip(x @ self.w_loss + self.b_loss, 0.0, 2.0))
 
+    def predict_induction_auc(self, graph_json: Any) -> float:
+        """Predict canonical induction AUC. Returns 0.0 if not fitted."""
+        if not self.is_fitted() or len(self.w_induction) == 0:
+            return 0.0
+        x = self._extract_and_normalize(graph_json)
+        if x is None:
+            return 0.0
+        return float(np.clip(x @ self.w_induction + self.b_induction, 0.0, 1.0))
+
     @classmethod
     def train(
         cls,
@@ -626,6 +643,8 @@ class GraphPredictor:
             b_rank=5.0,
             w_loss=np.zeros(0),
             b_loss=0.7,
+            w_induction=np.zeros(0),
+            b_induction=0.0,
             op_profiles=op_profiles,
             pair_stability=pair_stability,
             imodel=trained_imodel,
@@ -647,6 +666,7 @@ class GraphPredictor:
         gate_labels: List[int] = []
         rank_labels: List[float] = []
         loss_labels: List[float] = []
+        induction_labels: List[float] = []
         gate_sample_weights: List[float] = []
         graph_signatures: List[str] = []
 
@@ -655,6 +675,7 @@ class GraphPredictor:
             s1 = bool(row["stage1_any_passed"])
             ppl = row.get("wikitext_perplexity_best")
             lr = row.get("loss_ratio_best")
+            induction_auc = row.get("induction_auc_500")
             s0 = bool(row.get("stage0_any_passed"))
             s05 = bool(row.get("stage05_any_passed"))
             rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
@@ -686,6 +707,11 @@ class GraphPredictor:
                 if s1 and lr is not None and math.isfinite(float(lr))
                 else float("nan")
             )
+            induction_labels.append(
+                float(induction_auc)
+                if induction_auc is not None and math.isfinite(float(induction_auc))
+                else float("nan")
+            )
 
         n_total = len(feat_dicts)
         if n_total < _MIN_SAMPLES:
@@ -698,6 +724,8 @@ class GraphPredictor:
                 gate_threshold=0.5,
                 w_rank=np.zeros(0),
                 b_rank=5.0,
+                w_induction=np.zeros(0),
+                b_induction=0.0,
                 op_profiles=op_profiles,
                 pair_stability=pair_stability,
             )
@@ -712,6 +740,7 @@ class GraphPredictor:
 
         y_gate = np.array(gate_labels, dtype=np.float64)
         y_rank = np.array(rank_labels, dtype=np.float64)
+        y_induction = np.array(induction_labels, dtype=np.float64)
         sample_weights = np.array(gate_sample_weights, dtype=np.float64)
 
         # Train/val split grouped by exact graph to avoid duplicate leakage.
@@ -826,30 +855,26 @@ class GraphPredictor:
         )
         try:
             from sklearn.metrics import (
-                precision_score,
-                recall_score,
                 roc_auc_score,
-                roc_curve,
             )
 
-            fpr, tpr, thresholds = roc_curve(y_gate_va, val_preds)
-            best_i = int(np.argmax(tpr - fpr))
-            gate_threshold = float(thresholds[best_i])
-
-            val_pred_labels = (val_preds > gate_threshold).astype(np.int32)
-            val_acc = float(np.mean(val_pred_labels == y_gate_va))
             val_auc = float(roc_auc_score(y_gate_va, val_preds))
-            val_precision = float(
-                precision_score(y_gate_va, val_pred_labels, zero_division=0)
-            )
-            val_recall = float(
-                recall_score(y_gate_va, val_pred_labels, zero_division=0)
-            )
+            operating_points = operating_point_profiles(y_gate_va, val_preds)
+            gate_threshold = float(operating_points["f1"]["threshold"])
+            selected_metrics = operating_points["f1"]
+            val_acc = float(selected_metrics["accuracy"])
+            val_precision = float(selected_metrics["precision_ppv"])
+            val_recall = float(selected_metrics["recall_tpr_sensitivity"])
         except Exception:
+            operating_points = {}
             val_acc = float(np.mean((val_preds > gate_threshold) == y_gate_va))
             val_auc = 0.0
             val_precision = 0.0
             val_recall = 0.0
+        val_gate_metrics = binary_classification_metrics(
+            y_gate_va, val_preds, gate_threshold
+        )
+        val_gate_metrics["roc_auc"] = val_auc
 
         # ── Rank: Ridge regression on log-ppl ──
         rank_mask = np.isfinite(y_rank[train_idx])
@@ -882,6 +907,41 @@ class GraphPredictor:
             except np.linalg.LinAlgError:
                 pass
 
+        # ── Induction: Ridge regression on canonical induction AUC ──
+        induction_mask = np.isfinite(y_induction[train_idx])
+        induction_val_mask = np.isfinite(y_induction[val_idx])
+        w_induction = np.zeros(n_features, dtype=np.float64)
+        b_induction = 0.0
+        induction_mae = 0.0
+        induction_spearman = 0.0
+        induction_learner_acc = 0.0
+        if induction_mask.sum() >= 50:
+            X_induction = X_tr[induction_mask]
+            y_auc = y_induction[train_idx][induction_mask]
+            XtX_i = X_induction.T @ X_induction + alpha * np.eye(n_features)
+            Xty_i = X_induction.T @ y_auc
+            try:
+                w_induction = np.linalg.solve(XtX_i, Xty_i)
+                b_induction = float(np.mean(y_auc - X_induction @ w_induction))
+            except np.linalg.LinAlgError:
+                pass
+            if induction_val_mask.sum() >= 10:
+                y_auc_val = y_induction[val_idx][induction_val_mask]
+                pred_auc_val = np.clip(
+                    X_va[induction_val_mask] @ w_induction + b_induction, 0.0, 1.0
+                )
+                induction_mae = float(np.mean(np.abs(y_auc_val - pred_auc_val)))
+                try:
+                    from scipy.stats import spearmanr
+
+                    rho, _ = spearmanr(y_auc_val, pred_auc_val)
+                    induction_spearman = float(rho) if np.isfinite(rho) else 0.0
+                except Exception:
+                    induction_spearman = 0.0
+                y_bucket_val = (y_auc_val >= 0.02).astype(np.int32)
+                pred_bucket_val = (pred_auc_val >= 0.02).astype(np.int32)
+                induction_learner_acc = float(np.mean(y_bucket_val == pred_bucket_val))
+
         logger.info(
             "GraphPredictor trained: val_loss=%.4f val_acc=%.3f (%d train, %d val, %d features, imodel=%s)",
             val_loss,
@@ -902,6 +962,8 @@ class GraphPredictor:
             b_rank=float(b_rank),
             w_loss=w_loss.astype(np.float32),
             b_loss=float(b_loss),
+            w_induction=w_induction.astype(np.float32),
+            b_induction=float(b_induction),
             feature_names=feature_names,
             feature_mean=feat_mean.astype(np.float32),
             feature_std=feat_std.astype(np.float32),
@@ -917,11 +979,16 @@ class GraphPredictor:
                 "val_precision": val_precision,
                 "val_recall": val_recall,
                 "gate_threshold": float(gate_threshold),
+                "val_gate_metrics": val_gate_metrics,
+                "operating_points": operating_points,
                 "pos_weight": float(pos_weight),
                 "n_train": len(X_tr),
                 "n_val": len(X_va),
                 "n_features": n_features,
                 "n_positive": int(y_gate.sum()),
+                "induction_mae": induction_mae,
+                "induction_spearman": induction_spearman,
+                "induction_learner_acc": induction_learner_acc,
                 **split_stats,
             },
         )
@@ -935,9 +1002,14 @@ class GraphPredictor:
             w_gate=self.w_gate,
             w_rank=self.w_rank,
             w_loss=self.w_loss,
+            w_induction=self.w_induction,
             feature_mean=self.feature_mean,
             feature_std=self.feature_std,
         )
+        imodel_path = None
+        if self.imodel is not None and getattr(self.imodel, "_trained", False):
+            imodel_path = _graph_imodel_path(path)
+            self.imodel.save(imodel_path)
         with open(path.with_suffix(".json"), "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -947,9 +1019,11 @@ class GraphPredictor:
                     "gate_calibration_b": self.gate_calibration_b,
                     "b_rank": self.b_rank,
                     "b_loss": self.b_loss,
+                    "b_induction": self.b_induction,
                     "feature_names": self.feature_names,
                     "n_train": self.n_train,
                     "trained": self._trained,
+                    "interaction_model_path": imodel_path.name if imodel_path else None,
                     "train_metrics": self._train_metrics,
                 },
                 f,
@@ -967,6 +1041,17 @@ class GraphPredictor:
         data = np.load(str(path))
         with open(path.with_suffix(".json"), encoding="utf-8") as f:
             meta = json.load(f)
+        trained_imodel = None
+        imodel_relpath = meta.get("interaction_model_path")
+        if isinstance(imodel_relpath, str) and imodel_relpath:
+            try:
+                from .interaction_model import InteractionModel
+
+                imodel_path = path.parent / imodel_relpath
+                if imodel_path.exists():
+                    trained_imodel = InteractionModel.load(imodel_path)
+            except Exception as exc:
+                logger.debug("GraphPredictor interaction sidecar load skipped: %s", exc)
         return cls(
             w_gate=data["w_gate"],
             b_gate=float(meta.get("b_gate", 0.0)),
@@ -976,12 +1061,15 @@ class GraphPredictor:
             w_rank=data["w_rank"],
             b_rank=float(meta.get("b_rank", 5.0)),
             w_loss=data["w_loss"],
+            w_induction=data["w_induction"] if "w_induction" in data else np.zeros(0),
             b_loss=float(meta.get("b_loss", 0.7)),
+            b_induction=float(meta.get("b_induction", 0.0)),
             feature_names=list(meta.get("feature_names", [])),
             feature_mean=data["feature_mean"],
             feature_std=data["feature_std"],
             op_profiles=_load_op_profiles(profiling_db),
             pair_stability=_load_pair_stability(profiling_db),
+            imodel=trained_imodel,
             n_train=int(meta.get("n_train", 0)),
             _trained=bool(meta.get("trained", False)),
             _train_metrics=dict(meta.get("train_metrics", {})),

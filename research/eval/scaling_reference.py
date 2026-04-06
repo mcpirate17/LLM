@@ -12,17 +12,15 @@ Supports multi-scale evaluation at d=256 and d=512 for scaling slope analysis.
 
 from __future__ import annotations
 
-import gc
 import logging
 import math
-import sqlite3
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 
 from research.defaults import VOCAB_SIZE
+from ._reference_cache import average_finite_reference_runs, open_sqlite_cache
 from .reference_training import train_reference_transformer
 
 logger = logging.getLogger(__name__)
@@ -299,48 +297,46 @@ class ScalingReferenceManager:
     """
 
     def __init__(self, cache_path: str = "research/scaling_reference_cache.db"):
-        self.cache_path = Path(cache_path)
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.cache_path))
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._init_cache()
+        self.cache_path, self._conn = open_sqlite_cache(
+            cache_path,
+            schema_statements=(
+                """
+                CREATE TABLE IF NOT EXISTS reference_results (
+                    config_key TEXT PRIMARY KEY,
+                    family TEXT NOT NULL,
+                    d_model INTEGER NOT NULL,
+                    n_layers INTEGER NOT NULL,
+                    param_count INTEGER NOT NULL,
+                    final_loss REAL NOT NULL,
+                    initial_loss REAL NOT NULL,
+                    n_steps INTEGER NOT NULL,
+                    seq_len INTEGER NOT NULL,
+                    data_tag TEXT NOT NULL,
+                    trained_at REAL NOT NULL
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS fitted_curves (
+                    curve_key TEXT PRIMARY KEY,
+                    family TEXT NOT NULL,
+                    d_model INTEGER NOT NULL,
+                    data_tag TEXT NOT NULL,
+                    A REAL NOT NULL,
+                    alpha REAL NOT NULL,
+                    fit_r2 REAL NOT NULL,
+                    n_points INTEGER NOT NULL,
+                    fitted_at REAL NOT NULL
+                )
+                """,
+            ),
+            wal=True,
+        )
         self._published = PUBLISHED_CURVES
 
     def close(self):
         if self._conn:
             self._conn.close()
             self._conn = None
-
-    def _init_cache(self):
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS reference_results (
-                config_key TEXT PRIMARY KEY,
-                family TEXT NOT NULL,
-                d_model INTEGER NOT NULL,
-                n_layers INTEGER NOT NULL,
-                param_count INTEGER NOT NULL,
-                final_loss REAL NOT NULL,
-                initial_loss REAL NOT NULL,
-                n_steps INTEGER NOT NULL,
-                seq_len INTEGER NOT NULL,
-                data_tag TEXT NOT NULL,
-                trained_at REAL NOT NULL
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS fitted_curves (
-                curve_key TEXT PRIMARY KEY,
-                family TEXT NOT NULL,
-                d_model INTEGER NOT NULL,
-                data_tag TEXT NOT NULL,
-                A REAL NOT NULL,
-                alpha REAL NOT NULL,
-                fit_r2 REAL NOT NULL,
-                n_points INTEGER NOT NULL,
-                fitted_at REAL NOT NULL
-            )
-        """)
-        self._conn.commit()
 
     # ── Cache helpers ──
 
@@ -494,11 +490,9 @@ class ScalingReferenceManager:
                     (config_key,),
                 ).fetchone()
                 return cached, row[0] if row else 0
-        losses = []
-        param_count = 0
-
-        for seed in range(n_seeds):
-            final_loss, seed_param_count = train_reference_transformer(
+        avg_loss, losses, param_count = average_finite_reference_runs(
+            n_seeds,
+            lambda seed: train_reference_transformer(
                 d_model=d_model,
                 seq_len=seq_len,
                 n_steps=n_steps,
@@ -511,14 +505,9 @@ class ScalingReferenceManager:
                 weight_decay=0.01,
                 seed=seed,
                 data_fn=data_fn,
-            )
-            if seed == 0:
-                param_count = seed_param_count
-            gc.collect()
-            if math.isfinite(final_loss):
-                losses.append(final_loss)
-
-        avg_loss = sum(losses) / len(losses) if losses else float("inf")
+            ),
+        )
+        param_count = int(param_count or 0)
 
         if math.isfinite(avg_loss):
             self._save_result(

@@ -612,6 +612,17 @@ _register(
 )
 _register(
     PrimitiveOp(
+        "calibrated_branch_merge",
+        OpCategory.PARAMETERIZED,
+        5,
+        "identity",
+        has_params=True,
+        param_formula="D*5+D*5+10",
+        description="Calibrated five-branch merge with bounded routed-share protection",
+    )
+)
+_register(
+    PrimitiveOp(
         "selective_scan",
         OpCategory.PARAMETERIZED,
         1,
@@ -1066,6 +1077,61 @@ _register(
         param_formula="D*D+D",
         description="Speculative execution: cheap path + learned verification gate",
         config_keys=("threshold",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "hybrid_token_gate",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D",
+        description="Cheap single-token gate for default-path vs informative-token routing",
+        config_keys=("threshold",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "sparse_span_builder",
+        OpCategory.FUNCTIONAL,
+        1,
+        "identity",
+        description="Sparse fused pair/triplet span builder over informative tokens",
+        config_keys=("span_width", "fallback_behavior"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "hybrid_sparse_router",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Two-stage hybrid router: token gate then sparse fused-span lane routing with default fallback",
+        config_keys=("span_width", "lane_count", "confidence_threshold"),
+    )
+)
+_register(
+    PrimitiveOp(
+        "lane_conditioned_block",
+        OpCategory.PARAMETERIZED,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D",
+        description="Lane-conditioned downstream block for routed spans",
+        config_keys=("lane_id",),
+    )
+)
+_register(
+    PrimitiveOp(
+        "default_path",
+        OpCategory.FUNCTIONAL,
+        1,
+        "identity",
+        description="Cheap/default routed bypass path",
     )
 )
 
@@ -1592,6 +1658,7 @@ REQUIRES_RESIDUAL_BYPASS: frozenset = frozenset(
         "adjacent_token_merge",
         "depth_token_mask",
         "learned_token_gate",
+        "hybrid_token_gate",
     }
 )
 
@@ -1660,6 +1727,36 @@ OP_WIRING_RULES: Dict[str, dict] = {
             },
         },
     },
+    "sparse_span_builder": {
+        "input_signals": {
+            0: {
+                "from_ops": [
+                    "hybrid_token_gate",
+                    "confidence_token_gate",
+                    "learned_token_gate",
+                    "mul",
+                    "linear_proj",
+                ],
+                "shape_hint": "(B,S,D) informative-token activations",
+            },
+        },
+        "valid_consumers": ["hybrid_sparse_router", "lane_conditioned_block", "add"],
+    },
+    "hybrid_sparse_router": {
+        "input_signals": {
+            0: {
+                "from_ops": [
+                    "sparse_span_builder",
+                    "hybrid_token_gate",
+                    "linear_proj",
+                    "identity",
+                ],
+                "shape_hint": "(B,S,D) span features or informative-token activations",
+            },
+        },
+        "valid_consumers": ["lane_conditioned_block", "add", "default_path"],
+        "requires_residual": True,
+    },
     "difficulty_blend_3way": {  # was: adaptive_lane_mixer
         "input_signals": {
             1: {
@@ -1673,6 +1770,7 @@ OP_WIRING_RULES: Dict[str, dict] = {
     "depth_token_mask": {"requires_residual": True},
     "confidence_token_gate": {"requires_residual": True},
     "learned_token_gate": {"requires_residual": True},
+    "hybrid_token_gate": {"requires_residual": True},
     "gated_lane_blend": {"min_layer_depth": 2},
     "depth_gated_transform": {"min_layer_depth": 2},
 }

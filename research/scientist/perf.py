@@ -7,10 +7,13 @@ and bottleneck detection in the AI Scientist pipeline.
 
 from __future__ import annotations
 
+import logging
 import time
 import torch
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

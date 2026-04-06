@@ -16,14 +16,14 @@ def _allow_native_cuda_probe_bridge() -> bool:
 
 @contextmanager
 def disable_native_probe_dispatch(model, *, device: str) -> Iterator[None]:
-    """Temporarily bypass native subgraph/chain dispatch for CUDA probe runs.
+    """Temporarily bypass native subgraph/chain dispatch for probe workloads.
 
-    The Rust scheduler path currently bridges torch tensors through CPU numpy
-    buffers for inference dispatch. That is fine for some CPU-heavy workloads,
-    but it is counterproductive for small CUDA probe batches where the regular
-    PyTorch/Triton path can stay entirely on device.
+    The native scheduler path can pay for itself on larger steady-state model
+    workloads, but short probe/eval loops often hit expensive dispatch failures
+    and fallback churn instead. Keep probes on the regular model executor by
+    default unless explicitly overridden for benchmarking.
     """
-    if not str(device).startswith("cuda") or _allow_native_cuda_probe_bridge():
+    if _allow_native_cuda_probe_bridge():
         yield
         return
 
@@ -48,6 +48,16 @@ def disable_native_probe_dispatch(model, *, device: str) -> Iterator[None]:
                 module, "_cached_native_wrapper"
             )
             setattr(module, "_cached_native_wrapper", None)
+        if hasattr(module, "_native_forward_wrapper"):
+            updates["_native_forward_wrapper"] = getattr(
+                module, "_native_forward_wrapper"
+            )
+            setattr(module, "_native_forward_wrapper", None)
+        if hasattr(module, "_native_chain_segments"):
+            updates["_native_chain_segments"] = getattr(
+                module, "_native_chain_segments"
+            )
+            setattr(module, "_native_chain_segments", ())
         if updates:
             patched.append((module, updates))
 

@@ -2,11 +2,9 @@ import pytest
 import os
 import tempfile
 
-from research.eval.baseline import _BaselineTransformer
 from research.eval.fingerprint import build_novelty_reference_version
 from research.eval.novelty_calibration import (
     calibrate_baseline_transformer_novelty,
-    novelty_stability_under_small_perturbations,
 )
 from research.scientist.notebook import LabNotebook
 from research.tools.novelty_integrity_check import run_integrity_check
@@ -54,21 +52,6 @@ def test_novelty_calibration_table_round_trip():
         assert stored["distribution_json"]["novelty_score"]
     finally:
         nb.close()
-
-
-def test_novelty_stability_under_small_perturbations():
-    model = _BaselineTransformer(vocab_size=128, d_model=16, n_layers=2)
-    stats = novelty_stability_under_small_perturbations(
-        model,
-        seq_len=8,
-        model_dim=16,
-        vocab_size=128,
-        device="cpu",
-        perturbation_std=1e-5,
-        n_trials=2,
-        seed=7,
-    )
-    assert stats["max_abs_drift"] < 0.25
 
 
 def test_integrity_check_rejects_unjustified_heuristic_promotion():

@@ -11,6 +11,7 @@ from .deps import get_notebook
 _VALID_START_MODES = frozenset(
     {
         "single",
+        "live_screening",
         "continuous",
         "evolve",
         "novelty",
@@ -329,6 +330,21 @@ def apply_sparse_morph_bias(config) -> Dict[str, Any]:
     return changes
 
 
+def apply_live_screening_bias(config) -> Dict[str, Any]:
+    """Apply live-screening biases to RunConfig.
+
+    Enables the cheap pre-S1 gate for live screening experiments only.
+    """
+    changes: Dict[str, Any] = {}
+    if hasattr(config, "enable_stage09_cheap_train_gate"):
+        changes["enable_stage09_cheap_train_gate"] = {
+            "from": bool(getattr(config, "enable_stage09_cheap_train_gate", False)),
+            "to": True,
+        }
+        config.enable_stage09_cheap_train_gate = True
+    return changes
+
+
 def extract_hypothesis_missing_fields(critique: Optional[Dict[str, Any]]) -> List[str]:
     """Extract list of missing required fields from a hypothesis critique dict."""
     if not critique or not isinstance(critique, dict):
@@ -353,6 +369,7 @@ _BRIEFING_MODE_MAP = {
     "scale_up": "scale_up",
     "compact_synthesis": "compact_synthesis",
     "sparse_morph": "sparse_morph",
+    "live_screening": "live_screening",
 }
 
 
@@ -373,6 +390,7 @@ def briefing_action_from_mode(mode: Optional[str]) -> Optional[str]:
         "continuous": "continuous",
         "evolve": "novelty_search",
         "novelty": "novelty_search",
+        "live_screening": "continuous",
         "investigation": "investigate",
         "validation": "validate",
         "scale_up": "scale_up",
@@ -389,6 +407,7 @@ def briefing_action_label(mode: Optional[str], hypothesis: Optional[str] = None)
         "continuous": "Continue Research",
         "evolve": "Run Evolution Search",
         "novelty": "Run Novelty Search",
+        "live_screening": "Run Live Screening",
         "investigation": "Investigate Candidates",
         "validation": "Validate Candidates",
         "scale_up": "Scale Up",

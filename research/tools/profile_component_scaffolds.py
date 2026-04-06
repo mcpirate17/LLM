@@ -35,6 +35,7 @@ from research.scientist.runner import ExperimentRunner, RunConfig
 from research.scientist.shared_utils import resolve_device
 from research.synthesis.compiler import compile_model
 from research.synthesis.graph import ComputationGraph
+from research.synthesis.primitives import OP_NAME_ALIASES, PRIMITIVE_REGISTRY
 from research.synthesis.serializer import graph_to_json
 
 
@@ -55,13 +56,20 @@ _ATTN_OPS = (
 )
 _FFN_OPS = (
     "swiglu_mlp",
+    "chebyshev_spectral_mix",
     "conv1d_seq",
+    "hetero_moe",
+    "kronecker_linear",
     "rwkv_channel",
     "nm_sparse_linear",
     "low_rank_proj",
     "bottleneck_proj",
+    "sparse_bottleneck_moe",
+    "spectral_filter",
 )
 _REPLACEMENT_OPS = (
+    "arch_router",
+    "compute_budget_router",
     "linear_attention",
     "diff_attention",
     "local_window_attn",
@@ -85,6 +93,34 @@ _PAIR_OPS = (
     "low_rank_proj",
     "bottleneck_proj",
 )
+
+_CATALOG_SCAFFOLD_FAMILY_BY_OP: dict[str, str] = {
+    "adaptive_rank_gate": "gpt2_replace",
+    "adjacent_token_merge": "gpt2_replace",
+    "arch_router": "gpt2_replace",
+    "cheap_verify_blend": "gpt2_replace",
+    "chebyshev_spectral_mix": "gpt2_ffn",
+    "compute_budget_router": "gpt2_replace",
+    "confidence_token_gate": "gpt2_replace",
+    "depth_gated_transform": "mamba_mixer",
+    "depth_token_mask": "gpt2_replace",
+    "depth_weighted_proj": "mamba_mixer",
+    "difficulty_blend_3way": "gpt2_replace",
+    "dual_compression_blend": "gpt2_ffn",
+    "feature_sparsity": "gpt2_replace",
+    "gated_lane_blend": "mamba_mixer",
+    "hetero_moe": "gpt2_ffn",
+    "kronecker_linear": "gpt2_ffn",
+    "learned_token_gate": "gpt2_replace",
+    "n_way_sparse_router": "gpt2_ffn",
+    "relu_gated_moe": "gpt2_ffn",
+    "score_depth_blend": "gpt2_replace",
+    "signal_conditioned_compression": "gpt2_replace",
+    "sparse_bottleneck_moe": "gpt2_ffn",
+    "spectral_filter": "gpt2_ffn",
+    "token_class_proj": "gpt2_replace",
+    "token_entropy": "gpt2_replace",
+}
 
 _OP_CONFIGS: dict[str, dict[str, Any]] = {
     "linear_proj": {"out_dim": _DEFAULT_MODEL_DIM},
@@ -129,6 +165,36 @@ class ScaffoldCase:
     name: str
     op_a: str | None = None
     op_b: str | None = None
+
+
+def recommended_scaffold_family(op_name: str) -> str | None:
+    canonical = OP_NAME_ALIASES.get(op_name, op_name)
+    if canonical in _ATTN_OPS:
+        return "gpt2_attn"
+    if canonical in _FFN_OPS:
+        return "gpt2_ffn"
+    if canonical in _REPLACEMENT_OPS:
+        return "gpt2_replace"
+    if canonical in _MIXER_OPS:
+        return "mamba_mixer"
+    if canonical in _PAIR_OPS:
+        return "pair_residual"
+    return _CATALOG_SCAFFOLD_FAMILY_BY_OP.get(canonical)
+
+
+def catalog_scaffold_ops(families: Iterable[str]) -> list[str]:
+    selected = set(families)
+    return sorted(
+        op
+        for op, family in _CATALOG_SCAFFOLD_FAMILY_BY_OP.items()
+        if family in selected
+    )
+
+
+def canonical_missing_profile_ops(profiled_ops: Iterable[str]) -> list[str]:
+    profiled_canonical = {OP_NAME_ALIASES.get(op, op) for op in profiled_ops}
+    primitive_canonical = {OP_NAME_ALIASES.get(op, op) for op in PRIMITIVE_REGISTRY}
+    return sorted(primitive_canonical - profiled_canonical)
 
 
 def _config_for(op_name: str, *, model_dim: int) -> dict[str, Any]:
@@ -419,6 +485,7 @@ def _make_config(args: argparse.Namespace) -> RunConfig:
         stage1_compute_val_loss=False,
         stage1_compute_discovery_loss=False,
         profile_disable_post_eval=True,
+        enable_stage09_cheap_train_gate=False,
         progressive_screening=False,
         gbm_prescreener_enabled=False,
         persist_screening_failures=False,
@@ -607,6 +674,12 @@ def main() -> None:
     )
     parser.add_argument("--ops", nargs="*", default=None)
     parser.add_argument(
+        "--include-unprofiled-catalog",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Append catalog-mapped unprofiled ops for the selected families.",
+    )
+    parser.add_argument(
         "--allow-arbitrary-ops",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -647,9 +720,14 @@ def main() -> None:
 
     runner = ExperimentRunner(str(args.db))
     config = _make_config(args)
+    requested_ops = list(args.ops or [])
+    if args.include_unprofiled_catalog:
+        requested_ops.extend(catalog_scaffold_ops(args.family))
+        requested_ops = sorted(dict.fromkeys(requested_ops))
+
     cases = generate_cases(
         args.family,
-        args.ops,
+        requested_ops or None,
         max_pairs=args.max_pairs,
         allow_arbitrary_ops=bool(args.allow_arbitrary_ops),
     )
@@ -665,8 +743,9 @@ def main() -> None:
                 device=args.device,
                 metadata={
                     "families": list(args.family),
-                    "ops": list(args.ops or []),
+                    "ops": requested_ops,
                     "allow_arbitrary_ops": bool(args.allow_arbitrary_ops),
+                    "include_unprofiled_catalog": bool(args.include_unprofiled_catalog),
                     "max_pairs": int(args.max_pairs),
                     "top": int(args.top),
                 },
@@ -677,6 +756,7 @@ def main() -> None:
                 f"(families={','.join(args.family)} device={args.device} "
                 f"steps={args.stage1_steps} dim={args.model_dim} layers={args.n_layers}"
                 f" arbitrary_ops={'on' if args.allow_arbitrary_ops else 'off'}"
+                f" include_unprofiled={'on' if args.include_unprofiled_catalog else 'off'}"
                 f"{f' run_id={run_id}' if args.persist else ''})",
                 log_path=log_path,
             )

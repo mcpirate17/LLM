@@ -71,6 +71,30 @@ def validate_manifest(manifest: Dict[str, Any]) -> List[str]:
     if "outputs" in manifest and len(manifest["outputs"]) < 1:
         errors.append("Component must have at least one output port")
 
+    slots = manifest.get("slots")
+    if slots is not None:
+        if not isinstance(slots, list):
+            errors.append("slots must be a list when provided")
+        else:
+            for idx, slot in enumerate(slots):
+                if not isinstance(slot, dict):
+                    errors.append(f"slots[{idx}] must be an object")
+                    continue
+                if not slot.get("name"):
+                    errors.append(f"slots[{idx}] missing required name")
+
+    templates = manifest.get("templates")
+    if templates is not None:
+        if not isinstance(templates, list):
+            errors.append("templates must be a list when provided")
+        else:
+            for idx, template in enumerate(templates):
+                if not isinstance(template, dict):
+                    errors.append(f"templates[{idx}] must be an object")
+                    continue
+                if not template.get("id"):
+                    errors.append(f"templates[{idx}] missing required id")
+
     return errors
 
 

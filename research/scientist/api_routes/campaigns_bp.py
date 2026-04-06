@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from flask import jsonify, request
 from ..persona import get_aria
@@ -13,6 +14,78 @@ from .deps import ApiRouteContext
 logger = logging.getLogger(__name__)
 
 
+def _is_malformed_db_error(exc: Exception) -> bool:
+    return "malformed" in str(exc).lower()
+
+
+def _safe_campaigns_list(nb):
+    rows = nb.conn.execute(
+        """
+        SELECT *
+        FROM campaigns
+        ORDER BY timestamp DESC
+        """
+    ).fetchall()
+    campaigns = []
+    for row in rows:
+        campaign = dict(row)
+        campaign_id = campaign.get("campaign_id")
+        try:
+            campaign["n_experiments"] = int(
+                nb.conn.execute(
+                    "SELECT COUNT(DISTINCT experiment_id) FROM experiments WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()[0]
+                or 0
+            )
+        except sqlite3.OperationalError as exc:
+            if not _is_malformed_db_error(exc):
+                raise
+            campaign["n_experiments"] = 0
+        try:
+            campaign["n_hypotheses"] = int(
+                nb.conn.execute(
+                    "SELECT COUNT(DISTINCT hypothesis_id) FROM hypotheses WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()[0]
+                or 0
+            )
+        except sqlite3.OperationalError as exc:
+            if not _is_malformed_db_error(exc):
+                raise
+            campaign["n_hypotheses"] = 0
+        try:
+            campaign["n_decisions"] = int(
+                nb.conn.execute(
+                    "SELECT COUNT(DISTINCT decision_id) FROM decisions WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()[0]
+                or 0
+            )
+        except sqlite3.OperationalError as exc:
+            if not _is_malformed_db_error(exc):
+                raise
+            campaign["n_decisions"] = 0
+        campaigns.append(campaign)
+    return campaigns
+
+
+def _safe_campaign_detail_payload(nb, campaign_id: str):
+    campaign = nb.get_campaign(campaign_id)
+    if campaign is None:
+        return None
+
+    experiments = nb.get_campaign_experiments(campaign_id)
+    hypotheses = nb.get_campaign_hypotheses(campaign_id)
+    decisions = nb.get_campaign_decisions(campaign_id)
+    return {
+        "campaign": campaign,
+        "experiments": experiments,
+        "hypotheses": hypotheses,
+        "decisions": decisions,
+    }
+
+
 def register_campaigns_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -21,62 +94,53 @@ def register_campaigns_routes(app, context: ApiRouteContext):
     @wnb
     def api_campaigns(nb=None):
         """List all campaigns with summary stats."""
-        rows = nb.conn.execute(
-            "SELECT c.*, "
-            "  COUNT(DISTINCT e.experiment_id) AS n_experiments, "
-            "  COUNT(DISTINCT h.hypothesis_id) AS n_hypotheses, "
-            "  COUNT(DISTINCT d.decision_id) AS n_decisions "
-            "FROM campaigns c "
-            "LEFT JOIN experiments e ON e.campaign_id = c.campaign_id "
-            "LEFT JOIN hypotheses h ON h.campaign_id = c.campaign_id "
-            "LEFT JOIN decisions d ON d.campaign_id = c.campaign_id "
-            "GROUP BY c.campaign_id "
-            "ORDER BY c.timestamp DESC"
-        ).fetchall()
-        campaigns = [dict(r) for r in rows]
+        campaigns = _safe_campaigns_list(nb)
         return jsonify(campaigns)
 
     @app.route("/api/campaigns/<campaign_id>")
     @wnb
     def api_campaign_detail(campaign_id, nb=None):
         """Full campaign detail with experiments, hypotheses, decisions."""
-        campaign = nb.get_campaign(campaign_id)
-        if campaign is None:
+        payload = _safe_campaign_detail_payload(nb, campaign_id)
+        if payload is None:
             return jsonify({"error": "Not found"}), 404
-        experiments = nb.get_campaign_experiments(campaign_id)
-        hypotheses = nb.get_campaign_hypotheses(campaign_id)
-        decisions = nb.get_campaign_decisions(campaign_id)
-        from ..analytics import ExperimentAnalytics
 
-        analytics = ExperimentAnalytics(nb)
-        success_criteria_tracker = analytics.campaign_success_criteria_tracker(
-            campaign=campaign,
-            experiments=experiments,
-            hypotheses=hypotheses,
-            decisions=decisions,
-        )
-        return jsonify(
-            {
-                "campaign": campaign,
-                "experiments": experiments,
-                "hypotheses": hypotheses,
-                "decisions": decisions,
-                "success_criteria_tracker": success_criteria_tracker,
-            }
-        )
+        success_criteria_tracker = {"criteria": [], "summary": None}
+        try:
+            from ..analytics import ExperimentAnalytics
+
+            analytics = ExperimentAnalytics(nb)
+            success_criteria_tracker = analytics.campaign_success_criteria_tracker(
+                campaign=payload["campaign"],
+                experiments=payload["experiments"],
+                hypotheses=payload["hypotheses"],
+                decisions=payload["decisions"],
+            )
+        except sqlite3.OperationalError as exc:
+            if not _is_malformed_db_error(exc):
+                raise
+            logger.warning(
+                "Campaign analytics degraded for %s due to malformed DB pages: %s",
+                campaign_id,
+                exc,
+            )
+
+        payload["success_criteria_tracker"] = success_criteria_tracker
+        return jsonify(payload)
 
     @app.route("/api/campaigns/<campaign_id>/report")
     @wnb
     def api_campaign_report(campaign_id, nb=None):
         """Compiled campaign report (LLM-generated narrative)."""
         aria = get_aria()
-        campaign = nb.get_campaign(campaign_id)
-        if campaign is None:
+        payload = _safe_campaign_detail_payload(nb, campaign_id)
+        if payload is None:
             return jsonify({"error": "Not found"}), 404
 
-        experiments = nb.get_campaign_experiments(campaign_id)
-        hypotheses = nb.get_campaign_hypotheses(campaign_id)
-        decisions = nb.get_campaign_decisions(campaign_id)
+        campaign = payload["campaign"]
+        experiments = payload["experiments"]
+        hypotheses = payload["hypotheses"]
+        decisions = payload["decisions"]
         knowledge = nb.get_knowledge()
         from ..analytics import ExperimentAnalytics
 
@@ -120,14 +184,20 @@ def register_campaigns_routes(app, context: ApiRouteContext):
     @wnb
     def api_campaign_hypotheses(campaign_id, nb=None):
         """Hypothesis chain for a campaign."""
-        hypotheses = nb.get_campaign_hypotheses(campaign_id)
+        payload = _safe_campaign_detail_payload(nb, campaign_id)
+        if payload is None:
+            return jsonify({"error": "Not found"}), 404
+        hypotheses = payload["hypotheses"]
         return jsonify(hypotheses)
 
     @app.route("/api/campaigns/<campaign_id>/decisions")
     @wnb
     def api_campaign_decisions(campaign_id, nb=None):
         """Decision log for a campaign."""
-        decisions = nb.get_campaign_decisions(campaign_id)
+        payload = _safe_campaign_detail_payload(nb, campaign_id)
+        if payload is None:
+            return jsonify({"error": "Not found"}), 404
+        decisions = payload["decisions"]
         return jsonify(decisions)
 
     @app.route("/api/campaigns", methods=["POST"])

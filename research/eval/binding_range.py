@@ -61,6 +61,7 @@ def _generate_copy_batch(
     batch: torch.Tensor,
     prefix_buf: torch.Tensor,
     distance: int,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Generate sequences where token[i] == token[i - distance] for i >= distance.
 
@@ -83,7 +84,15 @@ def _generate_copy_batch(
         _COPY_INDEX_CACHE.move_to_end(cache_key)
 
     prefix = prefix_buf[:batch_size, :distance]
-    prefix.random_(1, _RESTRICTED_VOCAB)
+    prefix.copy_(
+        torch.randint(
+            1,
+            _RESTRICTED_VOCAB,
+            prefix.shape,
+            device=device,
+            generator=generator,
+        )
+    )
     batch.copy_(prefix[:, copy_idx])
     return batch
 
@@ -97,6 +106,7 @@ def binding_range_profile(
     batch_size: int = 32,
     device: str = "cuda",
     timeout_s: float = _TIMEOUT_S,
+    seed: int | None = None,
 ) -> BindingResult:
     """Measure copy-at-distance accuracy for each distance. Zero-shot.
 
@@ -109,6 +119,10 @@ def binding_range_profile(
     """
     t0 = time.perf_counter()
     result = BindingResult(distance_accuracies={})
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(seed))
 
     was_training = model.training
     model.eval()
@@ -148,6 +162,7 @@ def binding_range_profile(
                         batch_buf[:bs],
                         prefix_buf[:bs],
                         d,
+                        generator=generator,
                     )
                     logits = model(input_ids)  # (B, seq_len, V)
 

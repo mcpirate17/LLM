@@ -78,6 +78,76 @@ class _ProgramsMixin:
             (experiment_id, now, json.dumps({}), now),
         )
 
+    def upsert_induction_metric_v2(
+        self,
+        *,
+        graph_fingerprint: str,
+        result_id: str,
+        row: Dict[str, Any],
+        source_cohort: str = "runtime",
+    ) -> None:
+        """Persist canonical induction metrics keyed by graph fingerprint."""
+        auc = row.get("induction_auc")
+        if auc is None:
+            return
+        speed_mode = row.get("induction_probe_speed_mode")
+        metric_version = row.get("induction_probe_metric_version")
+        if not speed_mode or not metric_version:
+            return
+        gaps = row.get("induction_probe_gaps") or [4, 8, 16, 32, 64]
+        gap_acc = row.get("induction_gap_accuracies") or {}
+        try:
+            payload = (
+                graph_fingerprint,
+                result_id,
+                source_cohort,
+                metric_version,
+                speed_mode,
+                int(row.get("induction_probe_train_steps") or 0),
+                int(row.get("induction_probe_eval_examples") or 0),
+                int(row.get("induction_probe_batch_size") or 0),
+                int(row.get("induction_probe_pool_size") or 0),
+                json.dumps(list(gaps)),
+                float(auc),
+                float(gap_acc.get(4, 0.0)),
+                float(gap_acc.get(8, 0.0)),
+                float(gap_acc.get(16, 0.0)),
+                float(gap_acc.get(32, 0.0)),
+                float(gap_acc.get(64, 0.0)),
+                float(row.get("induction_probe_elapsed_ms") or 0.0),
+                time.time(),
+            )
+        except (TypeError, ValueError):
+            return
+        self._submit_write(
+            """
+            INSERT INTO induction_metrics_v2 (
+                graph_fingerprint, result_id, source_cohort, metric_version, speed_mode,
+                train_steps, eval_examples, batch_size, pool_size, gaps_json,
+                auc, gap_4, gap_8, gap_16, gap_32, gap_64, wall_ms, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(graph_fingerprint) DO UPDATE SET
+                result_id = excluded.result_id,
+                source_cohort = excluded.source_cohort,
+                metric_version = excluded.metric_version,
+                speed_mode = excluded.speed_mode,
+                train_steps = excluded.train_steps,
+                eval_examples = excluded.eval_examples,
+                batch_size = excluded.batch_size,
+                pool_size = excluded.pool_size,
+                gaps_json = excluded.gaps_json,
+                auc = excluded.auc,
+                gap_4 = excluded.gap_4,
+                gap_8 = excluded.gap_8,
+                gap_16 = excluded.gap_16,
+                gap_32 = excluded.gap_32,
+                gap_64 = excluded.gap_64,
+                wall_ms = excluded.wall_ms,
+                updated_at = excluded.updated_at
+            """,
+            payload,
+        )
+
     def purge_junk_programs(self, *, dry_run: bool = False) -> Dict[str, Any]:
         """Delete Stage 0 failure program results that carry no useful data.
 
@@ -472,6 +542,12 @@ class _ProgramsMixin:
         self._submit_write(
             f"INSERT INTO program_results ({col_str}) VALUES ({placeholders})",
             all_vals,
+        )
+        self.upsert_induction_metric_v2(
+            graph_fingerprint=graph_fingerprint,
+            result_id=result_id,
+            row=filtered_kwargs,
+            source_cohort="runtime",
         )
         return result_id
 

@@ -98,6 +98,11 @@ EFFICIENCY_TEMPLATES: FrozenSet[str] = frozenset(
 
 ROUTING_COMPRESSION_MOE_OPS: FrozenSet[str] = frozenset(
     {
+        "hybrid_token_gate",
+        "sparse_span_builder",
+        "hybrid_sparse_router",
+        "lane_conditioned_block",
+        "default_path",
         "token_entropy",
         "token_class_proj",
         "feature_sparsity",

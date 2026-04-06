@@ -161,7 +161,14 @@ class _ExecutionExperimentPhase3Mixin:
         if torch.cuda.is_available():
             num_gpus = torch.cuda.device_count()
             devices = [f"cuda:{i}" for i in range(num_gpus)]
-            num_workers = num_gpus * 2
+            # Default to one Stage 1 worker per GPU. The screening pipeline runs
+            # post-train CUDA probes and may attach native dispatchers to models;
+            # oversubscribing a single device with multiple Python threads has
+            # caused unrecoverable native/CUDA crashes in practice.
+            workers_per_gpu = max(
+                1, int(os.environ.get("ARIA_WORKERS_PER_GPU", "1") or "1")
+            )
+            num_workers = num_gpus * workers_per_gpu
         else:
             devices = ["cpu"]
             num_workers = 1

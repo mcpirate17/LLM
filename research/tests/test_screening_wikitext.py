@@ -142,6 +142,48 @@ class TestNonInvasiveEval:
         assert result["screening_wikitext_status"] == "clone_failed"
         assert "clone boom" in result.get("error", "")
 
+    def test_cuda_probe_bypasses_native_dispatch(self, tiny_model):
+        calls = {"enter": 0, "exit": 0, "device": None}
+
+        class _ProbeCtx:
+            def __enter__(self):
+                calls["enter"] += 1
+
+            def __exit__(self, exc_type, exc, tb):
+                calls["exit"] += 1
+                return False
+
+        def _fake_disable(model, *, device):
+            del model
+            calls["device"] = device
+            return _ProbeCtx()
+
+        with patch("research.eval.wikitext_eval._prepare_batches") as mock_pb:
+            mock_pb.return_value = (
+                [torch.zeros(2, 16, dtype=torch.long)],
+                [torch.zeros(2, 16, dtype=torch.long)],
+                100,
+                50,
+            )
+            with patch(
+                "research.eval.wikitext_eval.disable_native_probe_dispatch",
+                side_effect=_fake_disable,
+            ):
+                screening_wikitext_eval(
+                    tiny_model,
+                    vocab_size=256,
+                    device="cuda",
+                    seq_len=16,
+                    n_train_steps=1,
+                    n_train_batches=1,
+                    n_eval_batches=1,
+                    batch_size=2,
+                )
+
+        assert calls["device"] == "cuda"
+        assert calls["enter"] == 1
+        assert calls["exit"] == 1
+
 
 # ── Metadata and version fields ──────────────────────────────────────────
 

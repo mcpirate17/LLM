@@ -8,14 +8,12 @@ Persists cache in SQLite for reuse across runs.
 
 from __future__ import annotations
 
-import gc
 import math
-import sqlite3
 import time
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from research.defaults import VOCAB_SIZE
+from ._reference_cache import average_finite_reference_runs, open_sqlite_cache
 from .reference_training import (
     train_reference_transformer,
 )
@@ -29,18 +27,19 @@ class TransformerBaseline:
     """
 
     def __init__(self, cache_path: str = "research/baseline_cache.db"):
-        self.cache_path = Path(cache_path)
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.cache_path))
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS baseline_results (
-                config_key TEXT PRIMARY KEY,
-                final_loss REAL NOT NULL,
-                initial_loss REAL NOT NULL,
-                trained_at REAL NOT NULL
-            )
-        """)
-        self._conn.commit()
+        self.cache_path, self._conn = open_sqlite_cache(
+            cache_path,
+            schema_statements=(
+                """
+                CREATE TABLE IF NOT EXISTS baseline_results (
+                    config_key TEXT PRIMARY KEY,
+                    final_loss REAL NOT NULL,
+                    initial_loss REAL NOT NULL,
+                    trained_at REAL NOT NULL
+                )
+                """,
+            ),
+        )
 
     def close(self):
         """Close the underlying SQLite connection."""
@@ -138,70 +137,31 @@ class TransformerBaseline:
             if cached is not None:
                 return cached
 
-        # Train multiple seeds and average for stability (#47)
-        n_seeds = 3
-        losses = []
-        for seed in range(n_seeds):
-            loss = self._train_baseline(
-                d_model,
-                seq_len,
-                n_steps,
-                vocab_size,
-                batch_size,
-                lr,
-                device,
-                n_layers,
-                optimizer_name=optimizer_name,
-                weight_decay=weight_decay,
-                momentum=momentum,
-                betas=betas,
-                seed=seed,
-                data_fn=data_fn,
-            )
-            if math.isfinite(loss):
-                losses.append(loss)
-
-        final_loss = sum(losses) / len(losses) if losses else float("inf")
+        final_loss, losses, _ = average_finite_reference_runs(
+            3,
+            lambda seed: (
+                train_reference_transformer(
+                    d_model=d_model,
+                    seq_len=seq_len,
+                    n_steps=n_steps,
+                    vocab_size=vocab_size,
+                    batch_size=batch_size,
+                    lr=lr,
+                    device=device,
+                    n_layers=n_layers,
+                    optimizer_name=optimizer_name,
+                    weight_decay=weight_decay,
+                    momentum=momentum,
+                    betas=betas,
+                    seed=seed,
+                    data_fn=data_fn,
+                )[0],
+                None,
+            ),
+        )
         if math.isfinite(final_loss) and cache_data_fn:
             # NB: "initial_loss" column stores seed-0 final loss (historical misnomer)
             self._save_cache(config_key, final_loss, losses[0])
-        return final_loss
-
-    def _train_baseline(
-        self,
-        d_model: int,
-        seq_len: int,
-        n_steps: int,
-        vocab_size: int,
-        batch_size: int,
-        lr: float,
-        device: str,
-        n_layers: int = 2,
-        optimizer_name: str = "adamw",
-        weight_decay: float = 0.01,
-        momentum: float = 0.0,
-        betas: Optional[Tuple[float, float]] = None,
-        seed: int = 0,
-        data_fn=None,
-    ) -> float:
-        """Train a baseline transformer and return final loss."""
-        final_loss, _ = train_reference_transformer(
-            d_model=d_model,
-            seq_len=seq_len,
-            n_steps=n_steps,
-            vocab_size=vocab_size,
-            batch_size=batch_size,
-            lr=lr,
-            device=device,
-            n_layers=n_layers,
-            optimizer_name=optimizer_name,
-            weight_decay=weight_decay,
-            momentum=momentum,
-            betas=betas,
-            seed=seed,
-            data_fn=data_fn,
-        )
-        gc.collect()
         return final_loss
 
     def compare(

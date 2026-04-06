@@ -59,6 +59,20 @@ def test_get_component(client):
     assert len(data["outputs"]) >= 1
 
 
+def test_get_hybrid_sparse_router_component_exposes_slots_and_templates(client):
+    r = client.get("/api/v1/components/hybrid_sparse_router")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["id"] == "hybrid_sparse_router"
+    assert {slot["name"] for slot in data.get("slots", [])} == {
+        "default_path",
+        "routed_lane",
+        "sparse_spans",
+    }
+    template_ids = {template["id"] for template in data.get("templates", [])}
+    assert "hybrid_sparse_triplet_router" in template_ids
+
+
 def test_get_component_not_found(client):
     r = client.get("/api/v1/components/nonexistent_xyz")
     assert r.status_code == 404

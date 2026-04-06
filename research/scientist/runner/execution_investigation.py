@@ -282,10 +282,55 @@ class _ExecutionInvestigationMixin:
                             "training_program": tp.name,
                             "passed": tp_result.get("passed", False),
                             "loss_ratio": tp_result.get("loss_ratio"),
+                            "initial_loss": tp_result.get("initial_loss"),
                             "final_loss": tp_result.get("final_loss"),
+                            "min_loss": tp_result.get("min_loss"),
+                            "n_train_steps": tp_result.get("n_train_steps"),
+                            "training_curve": tp_result.get("training_curve") or [],
+                            "training_program_json": tp_result.get(
+                                "training_program_json"
+                            ),
                             "error": tp_result.get("error"),
+                            "artifact_path": None,
                         }
                     )
+
+                    # Persist each completed investigation program immediately:
+                    # loss curve, metrics, training program, and candidate identity.
+                    try:
+                        _artifact_payload = {
+                            "source_result_id": source_result_id,
+                            "graph_fingerprint": source.get("graph_fingerprint"),
+                            "template_name": source.get("template_name"),
+                            "training_program_name": tp.name,
+                            "training_program_json": tp_result.get(
+                                "training_program_json"
+                            ),
+                            "loss_ratio": tp_result.get("loss_ratio"),
+                            "initial_loss": tp_result.get("initial_loss"),
+                            "final_loss": tp_result.get("final_loss"),
+                            "min_loss": tp_result.get("min_loss"),
+                            "n_train_steps": tp_result.get("n_train_steps"),
+                            "passed": tp_result.get("passed", False),
+                            "error": tp_result.get("error"),
+                            "training_curve": tp_result.get("training_curve") or [],
+                        }
+                        _artifact_path = ckpt.save_investigation_artifact(
+                            experiment_id=exp_id,
+                            source_result_id=source_result_id,
+                            training_program_idx=tp_i + 1,
+                            payload=_artifact_payload,
+                            artifact_kind="program",
+                        )
+                        tp_results[-1]["artifact_path"] = str(_artifact_path)
+                    except Exception as e:
+                        logger.warning(
+                            "investigation artifact save failed for %s program %d/%d: %s",
+                            source_result_id[:8],
+                            tp_i + 1,
+                            len(training_programs),
+                            e,
+                        )
 
                     # CUDA fatal error recovery: after a device-side assert the
                     # entire CUDA context is poisoned. All subsequent operations
@@ -420,6 +465,45 @@ class _ExecutionInvestigationMixin:
                     )
                 )
 
+                # Persist the best reconstructed model before any downstream
+                # fingerprinting or benchmark step can fail.
+                if _best_inv_model is not None and best_tp is not None:
+                    try:
+                        _best_model_payload = {
+                            "source_result_id": source_result_id,
+                            "graph_fingerprint": source.get("graph_fingerprint"),
+                            "template_name": source.get("template_name"),
+                            "best_training_program": best_tp.get("training_program"),
+                            "best_training_program_json": best_tp.get(
+                                "training_program_json"
+                            ),
+                            "loss_ratio": best_tp.get("loss_ratio"),
+                            "final_loss": best_tp.get("final_loss"),
+                            "initial_loss": best_tp.get("initial_loss"),
+                            "min_loss": best_tp.get("min_loss"),
+                            "n_train_steps": best_tp.get("n_train_steps"),
+                            "training_curve": best_tp.get("training_curve") or [],
+                        }
+                        _best_model_path = ckpt.save_investigation_artifact(
+                            experiment_id=exp_id,
+                            source_result_id=source_result_id,
+                            training_program_idx=0,
+                            payload=_best_model_payload,
+                            model_state_dict=_best_inv_model.state_dict(),
+                            artifact_kind="best_model",
+                        )
+                        logger.info(
+                            "Saved investigation best-model artifact for %s to %s",
+                            source_result_id[:8],
+                            _best_model_path,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "best-model artifact save failed for %s: %s",
+                            source_result_id[:8],
+                            e,
+                        )
+
                 # Post-investigation fingerprint completion: run CKA +
                 # behavioral probes on the best converged model.
                 # Fingerprint must complete for escalation to validation
@@ -431,6 +515,8 @@ class _ExecutionInvestigationMixin:
                     _fingerprint_attempted = True
                     from ...eval.fingerprint import (
                         BehavioralFingerprint,
+                    )
+                    from ...eval.fingerprint_runtime import (
                         complete_fingerprint_post_investigation,
                     )
 

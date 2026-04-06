@@ -24,7 +24,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .choice_scoring import grouped_choice_scores
+from .choice_scoring import concat_choice_tokens, grouped_choice_scores
+from ._probe_runtime import disable_native_probe_dispatch
 from .utils import tokenize_string
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ _TOKENIZED_CACHE_MAX_ENTRIES = 4
 _tokenized_examples_cache: "OrderedDict[tuple[int, int], List[Dict[str, Any]]]" = (
     OrderedDict()
 )
+_TOKENIZED_SUBSET_CACHE_MAX_ENTRIES = 16
+_tokenized_subset_cache: "OrderedDict[tuple[int, int, int, int], List[Dict[str, Any]]]" = OrderedDict()
 
 
 # ── Data loading ────────────────────────────────────────────────────────
@@ -120,12 +123,22 @@ def _get_tokenized_subset(
     tokenized = _get_tokenized_examples(vocab_size)
     if n >= len(tokenized):
         return tokenized
+    cache_key = (*_tokenized_cache_key(vocab_size), int(n), int(seed))
+    cached = _tokenized_subset_cache.get(cache_key)
+    if cached is not None:
+        _tokenized_subset_cache.move_to_end(cache_key)
+        return cached
     import random
 
     rng = random.Random(seed)
     indices = list(range(len(tokenized)))
     rng.shuffle(indices)
-    return [tokenized[i] for i in indices[:n]]
+    subset = [tokenized[i] for i in indices[:n]]
+    _tokenized_subset_cache[cache_key] = subset
+    _tokenized_subset_cache.move_to_end(cache_key)
+    while len(_tokenized_subset_cache) > _TOKENIZED_SUBSET_CACHE_MAX_ENTRIES:
+        _tokenized_subset_cache.popitem(last=False)
+    return subset
 
 
 # ── Scoring ─────────────────────────────────────────────────────────────
@@ -149,10 +162,15 @@ def _recommended_batch_examples(
     vocab_size: int,
     max_seq_len: int,
     device: str,
+    *,
+    model_dim: int | None = None,
 ) -> int:
     batch_examples = max(1, int(requested))
     if not str(device).startswith("cuda"):
-        return batch_examples
+        # After removing the slow CPU SwiGLU/linear kernels, the best screening
+        # throughput comes from very small example batches. Larger batches widen
+        # the 4-choice fanout without paying back enough in kernel efficiency.
+        return min(batch_examples, 2)
     # Each example expands to 4 candidate sequences. The scorer materializes a
     # large logits/log-prob tensor over roughly:
     #   4 * batch_examples * (max_seq_len - 1) * vocab_size
@@ -171,10 +189,69 @@ def _score_example_batch(
     device: str,
     max_seq_len: int = 512,
 ) -> tuple[int, int]:
-    """Score a batch of HellaSwag examples using one forward pass.
+    """Score a batch of HellaSwag examples using the fastest correct path."""
+    try:
+        return _score_example_batch_native(
+            model,
+            examples,
+            vocab_size,
+            device,
+            max_seq_len=max_seq_len,
+        )
+    except Exception:
+        logger.warning(
+            "Native HellaSwag scorer failed; falling back to Python reference",
+            exc_info=True,
+        )
+        return _score_example_batch_python(
+            model,
+            examples,
+            vocab_size,
+            device,
+            max_seq_len=max_seq_len,
+        )
 
-    Returns ``(n_correct, n_scored)``.
-    """
+
+def _score_example_batch_native(
+    model: nn.Module,
+    examples: List[Dict[str, Any]],
+    vocab_size: int,
+    device: str,
+    max_seq_len: int = 512,
+) -> tuple[int, int]:
+    """Score a batch of HellaSwag examples using the native extension."""
+    from ._eval_native import load_eval_native
+
+    ext = load_eval_native()
+
+    ctx_tokens = []
+    ending_tokens = []
+    labels = []
+
+    for ex in examples:
+        ctx_tokens.append(ex["ctx_tokens"].tolist())
+        ending_tokens.append([t.tolist() for t in ex["ending_tokens"]])
+        labels.append(int(ex["label"]))
+
+    return ext.hellaswag_score_batch_native(
+        model,
+        ctx_tokens,
+        ending_tokens,
+        labels,
+        vocab_size,
+        str(device),
+        max_seq_len,
+    )
+
+
+def _score_example_batch_python(
+    model: nn.Module,
+    examples: List[Dict[str, Any]],
+    vocab_size: int,
+    device: str,
+    max_seq_len: int = 512,
+) -> tuple[int, int]:
+    """Reference Python scorer used for parity and native fallback."""
     grouped_sequences: List[List[np.ndarray]] = []
     grouped_starts: List[List[int]] = []
 
@@ -183,25 +260,11 @@ def _score_example_batch(
         ex_sequences: List[np.ndarray] = []
         ex_starts: List[int] = []
         for ending_tokens in ex["ending_tokens"]:
-            full_tokens = (
-                ctx_tokens
-                if ending_tokens.size == 0
-                else np.concatenate((ctx_tokens, ending_tokens))
+            full_tokens, start_pos = concat_choice_tokens(
+                ctx_tokens,
+                ending_tokens,
+                max_seq_len=max_seq_len,
             )
-
-            if len(full_tokens) > max_seq_len:
-                excess = len(full_tokens) - max_seq_len
-                full_tokens = full_tokens[excess:]
-                ctx_len = max(0, len(ctx_tokens) - excess)
-            else:
-                ctx_len = len(ctx_tokens)
-
-            if ending_tokens.size == 0 or ctx_len >= len(full_tokens):
-                full_tokens = full_tokens[:0]
-                start_pos = 0
-            else:
-                start_pos = max(0, ctx_len - 1)
-
             ex_sequences.append(full_tokens)
             ex_starts.append(start_pos)
         grouped_sequences.append(ex_sequences)
@@ -258,34 +321,36 @@ def _run_hellaswag(
         vocab_size=vocab_size,
         max_seq_len=max_seq_len,
         device=device,
+        model_dim=getattr(model, "model_dim", None),
     )
     oom_retries = 0
 
-    start = 0
-    while start < len(examples):
-        batch = examples[start : start + effective_batch_examples]
-        try:
-            batch_correct, batch_total = _score_example_batch(
-                model, batch, vocab_size, device, max_seq_len
-            )
-            correct += batch_correct
-            total += batch_total
-            start += effective_batch_examples
-        except Exception as exc:
-            if _is_cuda_oom(exc) and effective_batch_examples > 1:
-                oom_retries += 1
-                effective_batch_examples = max(1, effective_batch_examples // 2)
-                _clear_cuda_cache(device)
-                logger.warning(
-                    "HellaSwag CUDA OOM at batch_examples=%d; retrying with %d",
-                    len(batch),
-                    effective_batch_examples,
+    with disable_native_probe_dispatch(model, device=device):
+        start = 0
+        while start < len(examples):
+            batch = examples[start : start + effective_batch_examples]
+            try:
+                batch_correct, batch_total = _score_example_batch(
+                    model, batch, vocab_size, device, max_seq_len
                 )
-                continue
-            if first_error is None:
-                first_error = f"{type(exc).__name__}: {exc}"
-            logger.debug("HellaSwag batch failed, skipping", exc_info=True)
-            start += max(1, effective_batch_examples)
+                correct += batch_correct
+                total += batch_total
+                start += effective_batch_examples
+            except Exception as exc:
+                if _is_cuda_oom(exc) and effective_batch_examples > 1:
+                    oom_retries += 1
+                    effective_batch_examples = max(1, effective_batch_examples // 2)
+                    _clear_cuda_cache(device)
+                    logger.warning(
+                        "HellaSwag CUDA OOM at batch_examples=%d; retrying with %d",
+                        len(batch),
+                        effective_batch_examples,
+                    )
+                    continue
+                if first_error is None:
+                    first_error = f"{type(exc).__name__}: {exc}"
+                logger.debug("HellaSwag batch failed, skipping", exc_info=True)
+                start += max(1, effective_batch_examples)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 

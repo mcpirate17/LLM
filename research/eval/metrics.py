@@ -129,45 +129,9 @@ def novelty_score(
     return metrics
 
 
-def batch_novelty_scores(
-    graphs: List[ComputationGraph],
-    fingerprints: Optional[List[BehavioralFingerprint]] = None,
-) -> List[NoveltyMetrics]:
-    """Compute novelty scores for a batch of graphs using vectorized IR analysis.
+def _opcode_category_maps():
+    from ..synthesis.primitives import OPCODE_MAP, get_primitive
 
-    Also penalizes graphs that are similar to EACH OTHER
-    (we want diversity in the population).
-    """
-    if not graphs:
-        return []
-
-    from ..synthesis.primitives import (
-        OPCODE_MAP,
-        PRIMITIVE_REGISTRY,
-        get_primitive,
-        REVERSE_OPCODE_MAP,
-    )
-
-    n_opcodes = len(OPCODE_MAP)
-
-    # 1. Lower all graphs to IR once
-    irs = [g.lower_to_ir() for g in graphs]
-
-    # 2. Vectorized opcode counts
-    from ..synthesis.graph import ComputationGraphIR
-
-    batch_counts = ComputationGraphIR.batch_op_distribution(irs, n_opcodes)
-
-    # 3. Vectorized structural metrics
-    n_ops_per_graph = batch_counts.sum(axis=1)
-    unique_ops_per_graph = (batch_counts > 0).sum(axis=1)
-
-    # Op diversity
-    total_available = max(len(PRIMITIVE_REGISTRY), 1)
-    diversity = np.clip(unique_ops_per_graph / total_available, 0, 1.0)
-
-    # Category spread and exotic flags
-    # Pre-map opcodes to categories
     opcode_to_cat = {}
     for name, code in OPCODE_MAP.items():
         if name == "input":
@@ -177,19 +141,38 @@ def batch_novelty_scores(
         except (AttributeError, KeyError, ValueError) as exc:
             logger.debug("Novelty metric category lookup failed for %s: %s", name, exc)
 
-    all_categories = sorted(list(set(opcode_to_cat.values())))
+    all_categories = sorted(set(opcode_to_cat.values()))
     cat_to_idx = {cat: i for i, cat in enumerate(all_categories)}
-    n_cats = len(all_categories)
+    return opcode_to_cat, cat_to_idx
 
-    # Map batch_counts to category_counts: (batch, n_cats)
-    cat_counts = np.zeros((len(graphs), n_cats), dtype=np.int32)
+
+def _category_counts(
+    batch_counts: np.ndarray,
+    opcode_to_cat: Dict[int, str],
+    cat_to_idx: Dict[str, int],
+) -> np.ndarray:
+    cat_counts = np.zeros((batch_counts.shape[0], len(cat_to_idx)), dtype=np.int32)
     for code, cat in opcode_to_cat.items():
         cat_counts[:, cat_to_idx[cat]] += batch_counts[:, code]
+    return cat_counts
 
+
+def _structural_novelty_components(
+    graphs: List[ComputationGraph],
+    batch_counts: np.ndarray,
+):
+    from ..synthesis.primitives import PRIMITIVE_REGISTRY
+
+    opcode_to_cat, cat_to_idx = _opcode_category_maps()
+    n_ops_per_graph = batch_counts.sum(axis=1)
+    unique_ops_per_graph = (batch_counts > 0).sum(axis=1)
+    total_available = max(len(PRIMITIVE_REGISTRY), 1)
+    diversity = np.clip(unique_ops_per_graph / total_available, 0, 1.0)
+
+    cat_counts = _category_counts(batch_counts, opcode_to_cat, cat_to_idx)
     unique_cats_per_graph = (cat_counts > 0).sum(axis=1)
     category_spread = np.clip(unique_cats_per_graph / EXPECTED_CATEGORIES, 0, 1.0)
 
-    # Exotic flags
     math_space_idx = cat_to_idx.get("math_space")
     freq_idx = cat_to_idx.get("frequency")
     uses_math = (
@@ -203,13 +186,10 @@ def batch_novelty_scores(
         else np.zeros(len(graphs), dtype=bool)
     )
 
-    # Op distribution entropy
     probs = batch_counts.astype(np.float32) / np.maximum(
         n_ops_per_graph[:, None], 1e-10
     )
-    # Vectorized entropy calculation
     entropy = -np.sum(probs * np.log(np.clip(probs, 1e-10, 1.0)), axis=1)
-
     max_entropy = np.log(np.maximum(unique_ops_per_graph, 1))
     evenness = np.where(max_entropy > 0, entropy / max_entropy, 0)
 
@@ -218,103 +198,148 @@ def batch_novelty_scores(
         + WEIGHT_SPREAD * category_spread
         + WEIGHT_EVENNESS * evenness
     )
-
-    # Multiplicative bonus for exotic
     exotic_count = uses_math.astype(np.int32) + uses_freq.astype(np.int32)
     structural_novelty = np.clip(
         structural_novelty * (EXOTIC_BONUS_BASE + EXOTIC_BONUS_PER_FLAG * exotic_count),
         0,
         1.0,
     )
+    return unique_ops_per_graph, uses_math, uses_freq, structural_novelty
 
-    # 4. Assembly
+
+def _populate_histograms(metrics: NoveltyMetrics, batch_row: np.ndarray) -> None:
+    from ..synthesis.primitives import REVERSE_OPCODE_MAP, get_primitive
+
+    for code, count in enumerate(batch_row):
+        if count <= 0:
+            continue
+        name = REVERSE_OPCODE_MAP.get(code)
+        if not name:
+            continue
+        metrics.op_histogram[name] = int(count)
+        try:
+            cat = get_primitive(name).category.value
+            metrics.category_histogram[cat] = metrics.category_histogram.get(
+                cat, 0
+            ) + int(count)
+        except (AttributeError, KeyError, ValueError) as exc:
+            logger.debug(
+                "Novelty histogram category lookup failed for %s: %s",
+                name,
+                exc,
+            )
+
+
+def _apply_behavioral_novelty(
+    metrics: NoveltyMetrics,
+    fp_obj: Optional[BehavioralFingerprint],
+) -> None:
+    if fp_obj is None:
+        metrics.behavioral_novelty = 0.0
+        metrics.raw_novelty = metrics.structural_novelty * STRUCTURAL_ONLY_WEIGHT
+        metrics.novelty_confidence = CONFIDENCE_NO_FP
+        metrics.novelty_valid_for_promotion = False
+        metrics.novelty_validity_reason = "structural_only"
+        return
+
+    metrics.behavioral_novelty = fp_obj.novelty_score
+    similarities = {
+        "transformer": fp_obj.cka_vs_transformer or 0.0,
+        "ssm": fp_obj.cka_vs_ssm or 0.0,
+        "conv": fp_obj.cka_vs_conv or 0.0,
+    }
+    metrics.most_similar_to = max(similarities, key=similarities.get)
+    metrics.max_cka_similarity = max(similarities.values())
+    metrics.raw_novelty = (
+        STRUCTURAL_BLEND_WEIGHT * metrics.structural_novelty
+        + BEHAVIORAL_BLEND_WEIGHT * metrics.behavioral_novelty
+    )
+    metrics.novelty_reference_version = fp_obj.novelty_reference_version
+    metrics.novelty_valid_for_promotion = bool(
+        getattr(fp_obj, "novelty_valid_for_promotion", False)
+    )
+    metrics.novelty_validity_reason = getattr(
+        fp_obj, "novelty_validity_reason", "missing_reference"
+    )
+    if fp_obj.quality == "full":
+        metrics.novelty_confidence = CONFIDENCE_FULL
+    elif fp_obj.quality == "partial":
+        metrics.novelty_confidence = CONFIDENCE_PARTIAL_BASE + (
+            fp_obj.analyses_succeeded * CONFIDENCE_PARTIAL_STEP
+        )
+    else:
+        metrics.novelty_confidence = CONFIDENCE_NONE
+
+
+def _build_novelty_metric(
+    graph: ComputationGraph,
+    batch_row: np.ndarray,
+    unique_ops: int,
+    uses_math: bool,
+    uses_freq: bool,
+    structural_novelty: float,
+    fp_obj: Optional[BehavioralFingerprint],
+    seen_fps: set[str],
+) -> NoveltyMetrics:
+    metrics = NoveltyMetrics(
+        graph_fingerprint=graph.fingerprint(),
+        n_unique_ops=int(unique_ops),
+        uses_math_spaces=bool(uses_math),
+        uses_frequency_domain=bool(uses_freq),
+        structural_novelty=float(structural_novelty),
+    )
+    _populate_histograms(metrics, batch_row)
+    _apply_behavioral_novelty(metrics, fp_obj)
+
+    metrics.overall_novelty = metrics.raw_novelty
+    if fp_obj is not None:
+        metrics.overall_novelty *= _reference_similarity_penalty(
+            metrics.max_cka_similarity
+        )
+    if metrics.graph_fingerprint in seen_fps:
+        metrics.overall_novelty *= DUPLICATE_PENALTY_MULTIPLIER
+    seen_fps.add(metrics.graph_fingerprint)
+    return metrics
+
+
+def batch_novelty_scores(
+    graphs: List[ComputationGraph],
+    fingerprints: Optional[List[BehavioralFingerprint]] = None,
+) -> List[NoveltyMetrics]:
+    """Compute novelty scores for a batch of graphs using vectorized IR analysis.
+
+    Also penalizes graphs that are similar to EACH OTHER
+    (we want diversity in the population).
+    """
+    if not graphs:
+        return []
+
+    from ..synthesis.primitives import OPCODE_MAP
+
+    n_opcodes = len(OPCODE_MAP)
+    irs = [g.lower_to_ir() for g in graphs]
+    from ..synthesis.graph import ComputationGraphIR
+
+    batch_counts = ComputationGraphIR.batch_op_distribution(irs, n_opcodes)
+    unique_ops_per_graph, uses_math, uses_freq, structural_novelty = (
+        _structural_novelty_components(graphs, batch_counts)
+    )
+
     results = []
     seen_fps = set()
-
     for i, graph in enumerate(graphs):
-        metrics = NoveltyMetrics()
-        metrics.graph_fingerprint = graph.fingerprint()
-        metrics.n_unique_ops = int(unique_ops_per_graph[i])
-        metrics.uses_math_spaces = bool(uses_math[i])
-        metrics.uses_frequency_domain = bool(uses_freq[i])
-        metrics.structural_novelty = float(structural_novelty[i])
-
-        # Populate histograms for completeness
-        for code, count in enumerate(batch_counts[i]):
-            if count > 0:
-                name = REVERSE_OPCODE_MAP.get(code)
-                if name:
-                    metrics.op_histogram[name] = int(count)
-                    try:
-                        cat = get_primitive(name).category.value
-                        metrics.category_histogram[cat] = (
-                            metrics.category_histogram.get(cat, 0) + int(count)
-                        )
-                    except (AttributeError, KeyError, ValueError) as exc:
-                        logger.debug(
-                            "Novelty histogram category lookup failed for %s: %s",
-                            name,
-                            exc,
-                        )
-
-        # Behavioral
         fp_obj = fingerprints[i] if fingerprints and i < len(fingerprints) else None
-        if fp_obj is not None:
-            metrics.behavioral_novelty = fp_obj.novelty_score
-            cka_t = (
-                fp_obj.cka_vs_transformer
-                if fp_obj.cka_vs_transformer is not None
-                else 0.0
+        results.append(
+            _build_novelty_metric(
+                graph,
+                batch_counts[i],
+                int(unique_ops_per_graph[i]),
+                bool(uses_math[i]),
+                bool(uses_freq[i]),
+                float(structural_novelty[i]),
+                fp_obj,
+                seen_fps,
             )
-            cka_s = fp_obj.cka_vs_ssm if fp_obj.cka_vs_ssm is not None else 0.0
-            cka_c = fp_obj.cka_vs_conv if fp_obj.cka_vs_conv is not None else 0.0
-            similarities = {
-                "transformer": cka_t,
-                "ssm": cka_s,
-                "conv": cka_c,
-            }
-            metrics.most_similar_to = max(similarities, key=similarities.get)
-            metrics.max_cka_similarity = max(similarities.values())
-            metrics.raw_novelty = (
-                STRUCTURAL_BLEND_WEIGHT * metrics.structural_novelty
-                + BEHAVIORAL_BLEND_WEIGHT * metrics.behavioral_novelty
-            )
-
-            metrics.novelty_reference_version = fp_obj.novelty_reference_version
-            metrics.novelty_valid_for_promotion = bool(
-                getattr(fp_obj, "novelty_valid_for_promotion", False)
-            )
-            metrics.novelty_validity_reason = getattr(
-                fp_obj, "novelty_validity_reason", "missing_reference"
-            )
-            if fp_obj.quality == "full":
-                metrics.novelty_confidence = CONFIDENCE_FULL
-            elif fp_obj.quality == "partial":
-                metrics.novelty_confidence = CONFIDENCE_PARTIAL_BASE + (
-                    fp_obj.analyses_succeeded * CONFIDENCE_PARTIAL_STEP
-                )
-            else:
-                metrics.novelty_confidence = CONFIDENCE_NONE
-        else:
-            metrics.behavioral_novelty = 0.0
-            metrics.raw_novelty = metrics.structural_novelty * STRUCTURAL_ONLY_WEIGHT
-            metrics.novelty_confidence = CONFIDENCE_NO_FP
-            metrics.novelty_valid_for_promotion = False
-            metrics.novelty_validity_reason = "structural_only"
-
-        metrics.overall_novelty = metrics.raw_novelty
-
-        # Down-weight reference-like candidates (high CKA to known families)
-        if fp_obj is not None:
-            metrics.overall_novelty *= _reference_similarity_penalty(
-                metrics.max_cka_similarity
-            )
-
-        # Internal diversity penalty
-        if metrics.graph_fingerprint in seen_fps:
-            metrics.overall_novelty *= DUPLICATE_PENALTY_MULTIPLIER
-        seen_fps.add(metrics.graph_fingerprint)
-
-        results.append(metrics)
+        )
 
     return results

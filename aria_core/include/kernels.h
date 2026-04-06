@@ -472,6 +472,33 @@ void aria_load_balance_loss_f32(const int64_t *assignments,
                                 int64_t batch, int64_t seq, int64_t lanes,
                                 float loss_weight);
 
+/** Token-gate trace: scores[B,S] -> keep_mask[B,S], confidence[B,S]. */
+void aria_token_gate_trace_f32(const float *scores,
+                               int64_t *keep_mask,
+                               float *confidence,
+                               int64_t batch, int64_t seq,
+                               float threshold);
+
+/**
+ * Sparse fused span extraction over informative tokens.
+ * For each start t, emit a packed span when at least ceil(span_width/2) tokens
+ * in [t, t+span_width) are kept. span_features stores the mean-pooled span.
+ *
+ * Outputs:
+ * - span_features [B,S,D] packed per batch (unused tail zeroed)
+ * - span_positions [B,S,W] token positions per packed span, -1 if unused
+ * - span_counts [B]
+ * - coverage [B,S] counts how many packed spans cover each token
+ */
+void aria_sparse_span_extract_f32(const float *x,
+                                  const int64_t *keep_mask,
+                                  float *span_features,
+                                  int64_t *span_positions,
+                                  int64_t *span_counts,
+                                  int64_t *coverage,
+                                  int64_t batch, int64_t seq, int64_t dim,
+                                  int64_t span_width);
+
 /**
  * Conditional dispatch (single lane): packs tokens assigned to `lane_id`.
  * lane_out is written as [B,S,D] packed per batch; lane_counts[B] gives valid tokens.

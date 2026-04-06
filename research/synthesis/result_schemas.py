@@ -45,6 +45,7 @@ class SandboxResult:
     activation_sparsity: float = 0.0
     dead_neuron_count: int = 0
     sparsity_report: Optional[Dict[str, Any]] = None
+    routing_report: Optional[Dict[str, Any]] = None
 
     # Failure attribution
     failure_op: Optional[str] = (
@@ -150,6 +151,10 @@ class BridgeResult:
                 "stability_score": s_dict["stability_score"],
             }
         )
+        if s_dict.get("routing_report"):
+            d["routing_report"] = s_dict["routing_report"]
+            for key, value in s_dict["routing_report"].items():
+                d[f"routing_{key}"] = value
 
         # Flatten fingerprint
         f_dict = asdict(self.fingerprint)

@@ -12,6 +12,7 @@ import pytest
 import importlib
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -472,6 +473,21 @@ class TestAPI(unittest.TestCase):
         )
         self.assertIsInstance(recommendation.get("reason"), str)
 
+    def test_api_dashboard_summary_degrades_on_malformed_db(self):
+        with patch(
+            "research.scientist.notebook.LabNotebook.get_dashboard_summary",
+            side_effect=sqlite3.DatabaseError("database disk image is malformed"),
+        ):
+            r = self.client.get("/api/dashboard/summary")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data.get("degraded"))
+        self.assertEqual(data["summary"]["database_status"]["error_type"], "malformed")
+        self.assertEqual(data["recent_experiments"], [])
+        self.assertEqual(data["top_programs"], [])
+        self.assertEqual(data["insights"], [])
+
     def test_api_status(self):
         r = self.client.get("/api/status")
         self.assertEqual(r.status_code, 200)
@@ -479,6 +495,21 @@ class TestAPI(unittest.TestCase):
         self.assertIn("progress", data)
         self.assertIn("native_runner", data)
         self.assertIn("native_runner", data["progress"])
+
+    def test_api_status_degrades_on_malformed_db(self):
+        with patch(
+            "research.scientist.notebook.LabNotebook.get_dashboard_summary",
+            side_effect=sqlite3.DatabaseError("database disk image is malformed"),
+        ):
+            r = self.client.get("/api/status")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["summary"]["degraded"])
+        self.assertEqual(
+            data["summary"]["database_status"]["error_type"],
+            "malformed",
+        )
 
     def test_api_system_status(self):
         r = self.client.get("/api/system/status")
@@ -1451,6 +1482,19 @@ class TestAPI(unittest.TestCase):
             self.assertIn("mode", summary)
             self.assertIn("status", summary)
             self.assertIn("timestamp", summary)
+
+    def test_api_aria_cycle_status_survives_malformed_db(self):
+        with patch(
+            "research.scientist.api_routes._helpers."
+            "get_external_running_experiment_snapshot",
+            side_effect=sqlite3.DatabaseError("database disk image is malformed"),
+        ):
+            r = self.client.get("/api/aria/cycle-status")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("is_running", data)
+        self.assertFalse(data["is_running"])
 
     def test_dashboard_detects_external_running_experiment(self):
         from research.scientist.api_routes import _helpers as _helpers_mod

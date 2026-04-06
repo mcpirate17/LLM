@@ -36,6 +36,9 @@ class CheckpointManager:
     def _exp_dir(self, experiment_id: str) -> Path:
         return self.checkpoint_dir / experiment_id
 
+    def _artifact_dir(self, experiment_id: str) -> Path:
+        return self.checkpoint_dir / "_investigation_artifacts" / experiment_id
+
     def _atomic_save(self, state: Dict[str, Any], path: Path) -> None:
         """Save state dict atomically via tmp file + rename."""
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +46,16 @@ class CheckpointManager:
         torch.save(state, str(tmp_path))
         os.replace(str(tmp_path), str(path))
         logger.debug("Checkpoint saved: %s", path)
+
+    @staticmethod
+    def _cpu_state_dict(model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        cpu_state: Dict[str, Any] = {}
+        for key, value in model_state_dict.items():
+            if torch.is_tensor(value):
+                cpu_state[key] = value.detach().cpu()
+            else:
+                cpu_state[key] = value
+        return cpu_state
 
     # ── Continuous loop checkpoints ──
 
@@ -131,6 +144,34 @@ class CheckpointManager:
         except Exception as e:
             logger.error("Failed to load phase checkpoint %s: %s", path, e)
             raise e
+
+    def save_investigation_artifact(
+        self,
+        experiment_id: str,
+        source_result_id: str,
+        training_program_idx: int,
+        payload: Dict[str, Any],
+        model_state_dict: Optional[Dict[str, Any]] = None,
+        artifact_kind: str = "program",
+    ) -> Path:
+        """Persist investigation artifacts outside normal checkpoint cleanup.
+
+        Used to preserve expensive investigation work even if a later
+        post-processing step crashes.
+        """
+        state: Dict[str, Any] = {
+            "artifact_kind": artifact_kind,
+            "experiment_id": experiment_id,
+            "source_result_id": source_result_id,
+            "training_program_idx": training_program_idx,
+            "payload": payload,
+        }
+        if model_state_dict:
+            state["model_state_dict"] = self._cpu_state_dict(model_state_dict)
+        filename = f"{source_result_id}_tp{training_program_idx}_{artifact_kind}.pt"
+        path = self._artifact_dir(experiment_id) / filename
+        self._atomic_save(state, path)
+        return path
 
     # ── Cleanup ──
 

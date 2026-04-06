@@ -911,7 +911,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
             self.assertIsNone(store.get_references())
             self.assertFalse(store.is_artifact_backed)
             meta = store.get_metadata()
-            self.assertEqual(meta["cka_source"], "heuristic_fallback")
+            self.assertEqual(meta["cka_source"], "none")
 
     def test_store_with_valid_artifacts(self):
         """ReferenceCkaStore loads valid artifacts successfully."""
@@ -993,18 +993,16 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
             self.assertGreaterEqual(result[family], 0.0)
             self.assertLessEqual(result[family], 1.0)
 
-    def test_compute_reference_cka_heuristic_fallback(self):
-        """_compute_reference_cka falls back to heuristic when no artifacts."""
+    def test_compute_reference_cka_without_artifacts_fails_closed(self):
+        """_compute_reference_cka should not invent reference scores."""
         import torch
         from research.eval.fingerprint import _compute_reference_cka
 
         reps = torch.randn(1, 16, 32)
         result = _compute_reference_cka(reps, ref_activations=None)
-        self.assertTrue(result["_succeeded"])
-        # Heuristic should still produce valid CKA values
+        self.assertFalse(result["_succeeded"])
         for family in ("transformer", "ssm", "conv"):
-            self.assertGreaterEqual(result[family], 0.0)
-            self.assertLessEqual(result[family], 1.0)
+            self.assertEqual(result[family], 0.0)
 
     def test_compute_reference_cka_seq_len_mismatch(self):
         """Artifact CKA handles different seq lengths between candidate and reference."""
@@ -1027,11 +1025,10 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
         reset_default_store()  # ensure clean state
 
         fp = self._make_fingerprint()
-        # Should be one of the valid sources
-        self.assertIn(fp.cka_source, ("artifact", "heuristic_fallback", "none"))
+        self.assertIn(fp.cka_source, ("artifact", "none"))
 
-    def test_fingerprint_heuristic_fallback_when_no_artifacts(self):
-        """Fingerprint falls back to heuristic when artifact dir is missing."""
+    def test_fingerprint_reports_none_when_no_artifacts(self):
+        """Fingerprint should report missing references, not heuristic stand-ins."""
         from unittest.mock import patch
         from research.eval import cka_references
         from research.eval.cka_references import ReferenceCkaStore, reset_default_store
@@ -1049,7 +1046,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
                     return_value=fake_store,
                 ):
                     fp = self._make_fingerprint()
-        self.assertIn(fp.cka_source, ("heuristic_fallback",))
+        self.assertEqual(fp.cka_source, "none")
         reset_default_store()
 
     def _make_fingerprint(self):

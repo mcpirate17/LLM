@@ -49,139 +49,118 @@ def _cached_op_category(op_name: str) -> Optional[OpCategory]:
         return None
 
 
-# FLOP estimates per op category/type
-# Expressed as functions of (seq_len S, dim D, input_dim)
+def _estimate_linear_algebra_flops(op_name: str, seq_len: int, width: int) -> int:
+    if op_name == "matmul":
+        return 2 * seq_len * width * width
+    return seq_len * width * width
+
+
+def _estimate_parameterized_flops(
+    op_name: str, seq_len: int, width: int, config: Dict[str, object]
+) -> int:
+    out_dim = int(config.get("out_dim", width))
+    if op_name == "nm_sparse_linear":
+        n = max(1, int(config.get("n", 2)))
+        m = max(n, int(config.get("m", 4)))
+        density = min(1.0, float(n) / float(max(m, 1)))
+        return int(2 * seq_len * width * out_dim * density)
+    if op_name == "semi_structured_2_4_linear":
+        density = 0.5 if width % 4 == 0 and out_dim % 4 == 0 else 1.0
+        return int(2 * seq_len * width * out_dim * density)
+    if op_name == "block_sparse_linear":
+        density = float(max(0.05, min(1.0, config.get("block_density", 0.25))))
+        return int(2 * seq_len * width * out_dim * density)
+    if "linear" in op_name:
+        return 2 * seq_len * width * out_dim
+    if op_name == "conv1d_seq":
+        return seq_len * width * 3
+    if op_name == "selective_scan":
+        return 6 * seq_len * width
+    if op_name == "topk_gate":
+        return seq_len * (4 * width)
+    if "conv" in op_name:
+        return 2 * seq_len * width * 3
+    if "scale" in op_name or "bias" in op_name:
+        return seq_len * width
+    return seq_len * width
+
+
+def _estimate_sequence_flops(
+    op_name: str, seq_len: int, width: int, config: Dict[str, object]
+) -> int:
+    if op_name == "local_window_attn":
+        window = min(int(config.get("window_size", 32)), seq_len)
+        return 2 * seq_len * window * width
+    if op_name == "sliding_window_mask":
+        return 2 * seq_len * seq_len
+    if op_name == "token_pool_restore":
+        return seq_len * width
+    if "sort" in op_name:
+        return seq_len * width * int(math.log2(max(seq_len, 2)))
+    if "cumsum" in op_name or "cumprod" in op_name or "roll" in op_name:
+        return seq_len * width
+    return seq_len * width
+
+
+def _estimate_math_space_flops(op_name: str, seq_len: int, width: int) -> int:
+    bottleneck = max(1, width // 4)
+    if op_name in {"low_rank_proj", "bottleneck_proj", "tied_proj"}:
+        return 2 * seq_len * width * bottleneck
+    if op_name == "grouped_linear":
+        return seq_len * width * bottleneck
+    if op_name == "shared_basis_proj":
+        return seq_len * 16 * width
+    return 3 * seq_len * width
+
+
+def _estimate_category_flops(
+    category: OpCategory,
+    op_name: str,
+    seq_len: int,
+    width: int,
+    config: Dict[str, object],
+) -> int:
+    if category in {
+        OpCategory.ELEMENTWISE_UNARY,
+        OpCategory.ELEMENTWISE_BINARY,
+        OpCategory.REDUCTION,
+        OpCategory.STRUCTURAL,
+    }:
+        if category == OpCategory.STRUCTURAL and op_name == "multi_head_mix":
+            return 3 * seq_len * width
+        return seq_len * width
+    if category == OpCategory.LINEAR_ALGEBRA:
+        return _estimate_linear_algebra_flops(op_name, seq_len, width)
+    if category == OpCategory.PARAMETERIZED:
+        return _estimate_parameterized_flops(op_name, seq_len, width, config)
+    if category == OpCategory.SEQUENCE:
+        return _estimate_sequence_flops(op_name, seq_len, width, config)
+    if category == OpCategory.FREQUENCY:
+        if "rfft" in op_name or "irfft" in op_name:
+            return seq_len * int(math.log2(max(seq_len, 2))) * width
+        return seq_len * width
+    if category == OpCategory.MATH_SPACE:
+        return _estimate_math_space_flops(op_name, seq_len, width)
+    if category == OpCategory.FUNCTIONAL:
+        if op_name == "integral_kernel":
+            return seq_len * seq_len * width + seq_len * width * width
+        if op_name == "fixed_point_iter":
+            return 3 * seq_len * width * width
+        return 4 * seq_len * width
+    return seq_len * width
+
+
 def _estimate_op_flops(
     op_name: str, seq_len: int, d_model: int, input_dim: int, config: dict = None
 ) -> int:
     """Estimate FLOPs for a single op invocation on (B=1, S, D) tensor."""
-    S, D = seq_len, input_dim
-    if config is None:
-        config = {}
-
-    cat = _cached_op_category(op_name)
-    if cat is None:
-        return S * D  # fallback: elementwise
-
-    if cat == OpCategory.ELEMENTWISE_UNARY:
-        # One op per element: relu, sigmoid, tanh, sin, etc.
-        return S * D
-
-    elif cat == OpCategory.ELEMENTWISE_BINARY:
-        # One op per element: add, mul, etc.
-        return S * D
-
-    elif cat == OpCategory.REDUCTION:
-        # Sum/mean/max over one dimension
-        return S * D
-
-    elif cat == OpCategory.LINEAR_ALGEBRA:
-        if op_name == "matmul":
-            # (S, D) x (D, D) => 2*S*D*D
-            return 2 * S * D * D
-        elif op_name == "outer_product":
-            return S * D * D
-        return S * D * D
-
-    elif cat == OpCategory.PARAMETERIZED:
-        if op_name == "nm_sparse_linear":
-            out_dim = config.get("out_dim", D)
-            n = max(1, int(config.get("n", 2)))
-            m = max(n, int(config.get("m", 4)))
-            density = min(1.0, float(n) / float(max(m, 1)))
-            return int(2 * S * D * out_dim * density)
-        elif op_name == "semi_structured_2_4_linear":
-            out_dim = config.get("out_dim", D)
-            density = 0.5
-            if D % 4 != 0 or out_dim % 4 != 0:
-                density = 1.0
-            return int(2 * S * D * out_dim * density)
-        elif op_name == "block_sparse_linear":
-            out_dim = config.get("out_dim", D)
-            density = float(max(0.05, min(1.0, config.get("block_density", 0.25))))
-            return int(2 * S * D * out_dim * density)
-        elif "linear" in op_name:
-            # Linear projection: 2*S*D_in*D_out
-            # Use actual out_dim from config if available
-            out_dim = config.get("out_dim", D)
-            return 2 * S * D * out_dim
-        elif op_name == "conv1d_seq":
-            # Depthwise conv1d: S * D * kernel_size
-            return S * D * 3
-        elif op_name == "selective_scan":
-            # Sequential scan: ~6 ops per (S, D) element
-            return 6 * S * D
-        elif op_name == "topk_gate":
-            # Gate projection D->2 plus gated multiply
-            return S * (2 * D + 2 * D)
-        elif "conv" in op_name:
-            # Conv1d: 2 * S * channels * kernel_size
-            k = 3  # typical kernel size
-            return 2 * S * D * k
-        elif "scale" in op_name or "bias" in op_name:
-            return S * D
-        return S * D
-
-    elif cat == OpCategory.SEQUENCE:
-        if op_name == "local_window_attn":
-            # Windowed self-attention: S * W * D (W = window size)
-            W = min(config.get("window_size", 32), S)
-            return S * W * D + S * W * D  # scores + matmul
-        elif op_name == "sliding_window_mask":
-            # Build S*S mask + apply: S*S + S*S*D
-            return S * S + S * S
-        elif op_name == "token_pool_restore":
-            # Pool S/2 elements + repeat
-            return S * D
-        elif "sort" in op_name:
-            return S * D * int(math.log2(max(S, 2)))
-        elif "cumsum" in op_name or "cumprod" in op_name:
-            return S * D
-        elif "roll" in op_name:
-            return S * D  # just memory movement
-        return S * D
-
-    elif cat == OpCategory.FREQUENCY:
-        if "rfft" in op_name or "irfft" in op_name:
-            # FFT: S * log(S) * D
-            return S * int(math.log2(max(S, 2))) * D
-        return S * D
-
-    elif cat == OpCategory.MATH_SPACE:
-        # Weight compression primitives — actual compute cost
-        if op_name == "low_rank_proj":
-            return 2 * S * D * (D // 4)  # two matmuls through rank bottleneck
-        elif op_name == "grouped_linear":
-            return S * D * (D // 4)  # D²/4 multiply-adds
-        elif op_name == "bottleneck_proj":
-            return 2 * S * D * (D // 4)  # down + up projections
-        elif op_name == "shared_basis_proj":
-            return S * 16 * D  # mixing (D*8) + basis (8*D)
-        elif op_name == "tied_proj":
-            return 2 * S * D * (D // 4)  # same compute as bottleneck, shared weights
-        # Exotic ops tend to be more expensive
-        # Tropical/hyperbolic/clifford: ~2-5x elementwise
-        return 3 * S * D
-
-    elif cat == OpCategory.FUNCTIONAL:
-        if op_name == "integral_kernel":
-            # Kernel mixing: S*S + S*D*D
-            return S * S * D + S * D * D
-        if op_name == "fixed_point_iter":
-            # 3 iterations of D*D linear + tanh
-            return 3 * S * D * D
-        # basis_expansion: ~4 * S * D (sin/cos)
-        return 4 * S * D
-
-    elif cat == OpCategory.STRUCTURAL:
-        if op_name == "multi_head_mix":
-            # L2 normalize per head: ~3 ops per element
-            return 3 * S * D
-        # split, concat: mostly memory movement
-        return S * D
-
-    # Default fallback
-    return S * D
+    del d_model
+    config_dict = {} if config is None else config
+    width = input_dim
+    category = _cached_op_category(op_name)
+    if category is None:
+        return seq_len * width
+    return _estimate_category_flops(category, op_name, seq_len, width, config_dict)
 
 
 def estimate_flops(

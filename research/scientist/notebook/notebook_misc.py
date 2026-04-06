@@ -65,6 +65,16 @@ class _MiscMixin:
     @staticmethod
     def _infer_template_slot_counts() -> Dict[str, int]:
         counts: Dict[str, int] = {}
+        structural_overrides = {
+            # 1 motif slot (norm_wrap) + 3 semantic router slots tracked explicitly
+            "hybrid_sparse_triplet_router": 4,
+            # 1 motif slot (norm_wrap) + 8 structural routing slots
+            "multiscale_difficulty_router": 9,
+            # 1 motif slot (norm_wrap) + 6 structural routing slots
+            "multiscale_rich_lane_router": 7,
+            # 1 motif slot (norm_wrap) + 10 structural stem/lane/merge slots
+            "intelligent_multilane_router": 11,
+        }
         template_dir = Path(__file__).resolve().parents[2] / "synthesis"
         template_files = sorted(template_dir.glob("_templates*.py"))
         for template_file in template_files:
@@ -85,6 +95,7 @@ class _MiscMixin:
                 counts[name.removeprefix("tpl_")] = body.count(
                     "_pick_compatible_motif("
                 ) + body.count("_pick_compatible_motif_from_classes(")
+        counts.update(structural_overrides)
         return counts
 
     def get_template_slot_observability(self, limit: int = 8) -> Dict[str, Any]:
@@ -101,9 +112,17 @@ class _MiscMixin:
                 discovery_loss_ratio,
                 validation_loss_ratio,
                 novelty_score,
+                novelty_confidence,
                 error_type,
                 stage_at_death,
                 failure_details_json,
+                induction_auc,
+                binding_auc,
+                ar_auc,
+                hellaswag_acc,
+                screening_hellaswag_correct,
+                screening_hellaswag_total,
+                screening_wikitext_status,
                 routing_fast_lane_applied,
                 routing_fast_lane_status,
                 routing_fast_lane_score,
@@ -175,6 +194,14 @@ class _MiscMixin:
             validation_lr = row["validation_loss_ratio"]
             discovery_lr = row["discovery_loss_ratio"]
             novelty = row["novelty_score"]
+            novelty_confidence = row["novelty_confidence"]
+            induction_auc = row["induction_auc"]
+            binding_auc = row["binding_auc"]
+            ar_auc = row["ar_auc"]
+            hellaswag_acc = row["hellaswag_acc"]
+            screening_hs_correct = row["screening_hellaswag_correct"]
+            screening_hs_total = row["screening_hellaswag_total"]
+            screening_wikitext_status = row["screening_wikitext_status"]
             if loss_ratio is not None and math.isfinite(loss_ratio):
                 loss_values.append(float(loss_ratio))
                 exp_bucket["training_losses"].append(float(loss_ratio))
@@ -216,6 +243,14 @@ class _MiscMixin:
                         "validation_losses": [],
                         "discovery_losses": [],
                         "novelties": [],
+                        "novelty_confidences": [],
+                        "induction_aucs": [],
+                        "binding_aucs": [],
+                        "ar_aucs": [],
+                        "hellaswag_accs": [],
+                        "screening_hellaswag_accs": [],
+                        "screening_wikitext_runs": 0,
+                        "screening_wikitext_ok": 0,
                         "failure_reasons": {},
                         "slot_count": slot_counts.get(str(template), 0),
                         "routing_fast_lane_runs": 0,
@@ -238,6 +273,29 @@ class _MiscMixin:
                     stat["discovery_losses"].append(float(discovery_lr))
                 if novelty is not None and math.isfinite(novelty):
                     stat["novelties"].append(float(novelty))
+                if novelty_confidence is not None and math.isfinite(novelty_confidence):
+                    stat["novelty_confidences"].append(float(novelty_confidence))
+                if induction_auc is not None and math.isfinite(induction_auc):
+                    stat["induction_aucs"].append(float(induction_auc))
+                if binding_auc is not None and math.isfinite(binding_auc):
+                    stat["binding_aucs"].append(float(binding_auc))
+                if ar_auc is not None and math.isfinite(ar_auc):
+                    stat["ar_aucs"].append(float(ar_auc))
+                if hellaswag_acc is not None and math.isfinite(hellaswag_acc):
+                    stat["hellaswag_accs"].append(float(hellaswag_acc))
+                if (
+                    screening_hs_correct is not None
+                    and screening_hs_total is not None
+                    and screening_hs_total
+                ):
+                    stat["screening_hellaswag_accs"].append(
+                        float(screening_hs_correct)
+                        / max(float(screening_hs_total), 1.0)
+                    )
+                if screening_wikitext_status is not None:
+                    stat["screening_wikitext_runs"] += 1
+                    if str(screening_wikitext_status) == "ok":
+                        stat["screening_wikitext_ok"] += 1
                 if row["routing_fast_lane_applied"]:
                     stat["routing_fast_lane_runs"] += 1
                     if row["routing_fast_lane_status"] == "ok":
@@ -343,6 +401,12 @@ class _MiscMixin:
             validation_vals = stat["validation_losses"]
             discovery_vals = stat["discovery_losses"]
             novelties = stat["novelties"]
+            novelty_confidences = stat["novelty_confidences"]
+            induction_aucs = stat["induction_aucs"]
+            binding_aucs = stat["binding_aucs"]
+            ar_aucs = stat["ar_aucs"]
+            hellaswag_accs = stat["hellaswag_accs"]
+            screening_hellaswag_accs = stat["screening_hellaswag_accs"]
             reasons = stat["failure_reasons"]
             fast_lane_scores = stat["routing_fast_lane_scores"]
             fast_lane_improvements = stat["routing_fast_lane_improvements"]
@@ -350,25 +414,150 @@ class _MiscMixin:
             top_reason = None
             if reasons:
                 top_reason = max(reasons.items(), key=lambda item: item[1])[0]
+            n_used = int(stat["n_used"] or 0)
+            s0_rate = stat["n_stage0"] / max(n_used, 1)
+            s05_rate = stat["n_stage05"] / max(n_used, 1)
+            s1_rate = stat["n_stage1"] / max(n_used, 1)
+            avg_loss_ratio = sum(losses) / len(losses) if losses else None
+            avg_validation_loss_ratio = (
+                sum(validation_vals) / len(validation_vals) if validation_vals else None
+            )
+            avg_discovery_loss_ratio = (
+                sum(discovery_vals) / len(discovery_vals) if discovery_vals else None
+            )
+            avg_induction_auc = (
+                sum(induction_aucs) / len(induction_aucs) if induction_aucs else None
+            )
+            avg_binding_auc = (
+                sum(binding_aucs) / len(binding_aucs) if binding_aucs else None
+            )
+            avg_ar_auc = sum(ar_aucs) / len(ar_aucs) if ar_aucs else None
+            avg_hellaswag_acc = (
+                sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
+            )
+            avg_screening_hellaswag_acc = (
+                sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
+                if screening_hellaswag_accs
+                else None
+            )
+            screening_wikitext_ok_rate = (
+                int(stat.get("screening_wikitext_ok") or 0)
+                / max(int(stat.get("screening_wikitext_runs") or 0), 1)
+                if stat.get("screening_wikitext_runs")
+                else None
+            )
+            if n_used < 3:
+                evidence_level = "insufficient"
+            elif n_used < 10:
+                evidence_level = "sparse"
+            elif n_used < 30:
+                evidence_level = "building"
+            else:
+                evidence_level = "established"
+
+            diagnosis: List[str] = []
+            actions: List[str] = []
+            if evidence_level == "insufficient":
+                diagnosis.append("Too little evidence to rank confidently.")
+                actions.append("Backfill this template before changing weights.")
+            elif s0_rate < 0.5:
+                diagnosis.append("Most runs fail before stable screening begins.")
+                actions.append("Audit template wiring and unsafe op combinations.")
+            elif s05_rate + 0.15 < s0_rate:
+                diagnosis.append(
+                    "Candidates clear S0 but drop during the stability band before S1."
+                )
+                actions.append("Tighten motif compatibility and lane constraints.")
+            elif s1_rate < 0.15:
+                diagnosis.append("Template consumes budget but rarely reaches Stage 1.")
+                actions.append("Downweight until slot and motif evidence improves.")
+            elif s1_rate > 0.4:
+                diagnosis.append(
+                    "Template is producing Stage-1 survivors consistently."
+                )
+                actions.append("Use as a reference family for nearby sparse templates.")
+            if (
+                avg_validation_loss_ratio is not None
+                and avg_loss_ratio is not None
+                and avg_validation_loss_ratio > avg_loss_ratio * 1.15
+            ):
+                diagnosis.append(
+                    "Validation materially trails training, suggesting brittle generalization."
+                )
+                actions.append(
+                    "Reduce brittle motif mixes or extend slow-starter screening."
+                )
+            if (
+                avg_induction_auc is not None
+                and avg_induction_auc < 0.02
+                and s1_rate >= 0.2
+            ):
+                diagnosis.append(
+                    "Survivors train, but induction evidence remains weak."
+                )
+                actions.append(
+                    "Bias backfills toward longer-range token-interaction motifs."
+                )
+            if (
+                avg_binding_auc is not None
+                and avg_binding_auc < 0.05
+                and s1_rate >= 0.2
+            ):
+                diagnosis.append(
+                    "Binding/copy behavior is weak relative to survivor rate."
+                )
+                actions.append(
+                    "Probe slot choices that preserve non-local token access."
+                )
+            if avg_hellaswag_acc is not None and avg_hellaswag_acc <= 0.27:
+                diagnosis.append("Commonsense signal is near noise floor.")
+                actions.append("Do not trust perplexity-only wins from this family.")
+            if (
+                stat.get("routing_fast_lane_runs")
+                and (stat.get("routing_fast_lane_positive") or 0) >= 2
+                and s1_rate < 0.2
+            ):
+                diagnosis.append(
+                    "Fast-lane probes are positive despite poor short-run S1."
+                )
+                actions.append(
+                    "Treat it as a slow starter and extend targeted backfills."
+                )
+            if top_reason and len(diagnosis) < 3:
+                diagnosis.append(f"Most common failure mode is {top_reason}.")
+            if not actions:
+                actions.append(
+                    "Keep sampling while collecting more slot-level evidence."
+                )
             return {
                 "name": stat["name"],
-                "n_used": stat["n_used"],
-                "s0_rate": stat["n_stage0"] / max(stat["n_used"], 1),
-                "s05_rate": stat["n_stage05"] / max(stat["n_used"], 1),
-                "s1_rate": stat["n_stage1"] / max(stat["n_used"], 1),
-                "avg_loss_ratio": (sum(losses) / len(losses) if losses else None),
+                "n_used": n_used,
+                "s0_rate": s0_rate,
+                "s05_rate": s05_rate,
+                "s1_rate": s1_rate,
+                "avg_loss_ratio": avg_loss_ratio,
                 "best_loss_ratio": min(losses) if losses else None,
-                "avg_validation_loss_ratio": (
-                    sum(validation_vals) / len(validation_vals)
-                    if validation_vals
-                    else None
-                ),
-                "avg_discovery_loss_ratio": (
-                    sum(discovery_vals) / len(discovery_vals)
-                    if discovery_vals
-                    else None
-                ),
+                "avg_validation_loss_ratio": avg_validation_loss_ratio,
+                "avg_discovery_loss_ratio": avg_discovery_loss_ratio,
                 "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
+                "avg_novelty_confidence": (
+                    sum(novelty_confidences) / len(novelty_confidences)
+                    if novelty_confidences
+                    else None
+                ),
+                "avg_induction_auc": avg_induction_auc,
+                "avg_binding_auc": avg_binding_auc,
+                "avg_ar_auc": avg_ar_auc,
+                "avg_hellaswag_acc": avg_hellaswag_acc,
+                "avg_screening_hellaswag_acc": avg_screening_hellaswag_acc,
+                "screening_wikitext_ok_rate": screening_wikitext_ok_rate,
+                "screening_metric_coverage": {
+                    "induction": len(induction_aucs),
+                    "binding": len(binding_aucs),
+                    "associative_recall": len(ar_aucs),
+                    "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
+                    "wikitext": int(stat.get("screening_wikitext_runs") or 0),
+                },
                 "slot_count": int(stat.get("slot_count") or 0),
                 "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
                 "routing_fast_lane_ok_rate": (
@@ -402,6 +591,9 @@ class _MiscMixin:
                 "failure_reasons": dict(
                     sorted(reasons.items(), key=lambda item: -item[1])[:3]
                 ),
+                "evidence_level": evidence_level,
+                "diagnosis": diagnosis[:3],
+                "actions": actions[:3],
             }
 
         template_rows = [summarize_template(stat) for stat in template_stats.values()]
@@ -437,6 +629,24 @@ class _MiscMixin:
                 -(row["n_used"] or 0),
             ),
         )[:limit]
+        all_templates = sorted(
+            active_template_rows,
+            key=lambda row: (
+                {
+                    "insufficient": 0,
+                    "sparse": 1,
+                    "building": 2,
+                    "established": 3,
+                }.get(str(row.get("evidence_level") or ""), 0),
+                row["s1_rate"] if row["s1_rate"] is not None else -1.0,
+                -(row["n_used"] or 0),
+                row["name"],
+            ),
+        )
+        inactive_templates = sorted(
+            inactive_template_rows,
+            key=lambda row: (-(row["n_used"] or 0), row["name"]),
+        )
 
         motif_rows = []
         for stat in motif_stats.values():
@@ -486,15 +696,25 @@ class _MiscMixin:
                     "top_selected_motif": top_motif,
                 }
             )
-        slot_rows = sorted(
+        all_slot_rows = sorted(
             [
                 row
                 for row in slot_rows
-                if row["n_used"] >= 2
-                and row["template_name"] in active_template_names
-                and row["slot_index"]
-                < int(slot_counts.get(row["template_name"], 0) or 0)
+                if row["template_name"] in active_template_names
+                and (
+                    int(slot_counts.get(row["template_name"], 0) or 0) <= 0
+                    or row["slot_index"]
+                    < int(slot_counts.get(row["template_name"], 0) or 0)
+                )
             ],
+            key=lambda row: (
+                row["template_name"],
+                row["slot_index"],
+                row["slot_key"],
+            ),
+        )
+        slot_rows = sorted(
+            [row for row in all_slot_rows if row["n_used"] >= 2],
             key=lambda row: (
                 row["s1_rate"] if row["s1_rate"] is not None else 1.0,
                 row["avg_loss_ratio"] if row["avg_loss_ratio"] is not None else 999.0,
@@ -583,6 +803,33 @@ class _MiscMixin:
             recommendations.append(
                 f"{routing_reprieve['name']} looks under-credited by short S1: fast lane positive on {(routing_reprieve['routing_fast_lane_positive_rate'] * 100):.1f}% of routing probes across {routing_reprieve['routing_fast_lane_runs']} runs. Treat it as a slow starter, not a dead template."
             )
+        sparse_attention = next(
+            (
+                row
+                for row in all_templates
+                if row["name"].startswith("attn_")
+                and str(row.get("evidence_level")) in {"insufficient", "sparse"}
+            ),
+            None,
+        )
+        if sparse_attention:
+            recommendations.append(
+                f"{sparse_attention['name']} is still data-sparse. Continue randomized weighting/backfills before trusting its rank or slot guidance."
+            )
+        induction_gap = next(
+            (
+                row
+                for row in active_template_rows
+                if (row.get("avg_induction_auc") or 0.0) < 0.02
+                and (row.get("n_used") or 0) >= 5
+                and (row.get("s1_rate") or 0.0) >= 0.2
+            ),
+            None,
+        )
+        if induction_gap:
+            recommendations.append(
+                f"{induction_gap['name']} survives screening but still shows weak induction signal. Keep it in data-building mode, not champion mode."
+            )
 
         zero_slot_templates = sorted(
             [
@@ -662,13 +909,16 @@ class _MiscMixin:
         return {
             "top_templates": top_templates,
             "struggling_templates": struggling_templates,
+            "all_templates": all_templates,
+            "inactive_templates": inactive_templates,
+            "all_slots": all_slot_rows,
             "motif_slots": motif_rows,
             "slot_observability": slot_rows,
             "loss_distribution": loss_distribution,
             "template_trends": template_trends,
             "slot_trends": slot_trends,
             "loss_trends": loss_trends,
-            "recommendations": recommendations[:4],
+            "recommendations": recommendations[:6],
             "summary": {
                 "avg_templates_per_graph": (
                     sum(templates_per_graph) / len(templates_per_graph)
@@ -681,12 +931,28 @@ class _MiscMixin:
                     else 0.0
                 ),
                 "templates_tracked": len(active_template_rows),
+                "templates_observed_total": len(template_rows),
                 "motifs_tracked": len(motif_rows),
                 "zero_slot_templates": zero_slot_templates,
                 "inactive_templates_tracked": len(inactive_template_rows),
                 "inactive_template_names": sorted(
                     row["name"] for row in inactive_template_rows
                 )[:10],
+                "insufficient_templates": sum(
+                    1
+                    for row in active_template_rows
+                    if str(row.get("evidence_level")) == "insufficient"
+                ),
+                "sparse_templates": sum(
+                    1
+                    for row in active_template_rows
+                    if str(row.get("evidence_level")) == "sparse"
+                ),
+                "established_templates": sum(
+                    1
+                    for row in active_template_rows
+                    if str(row.get("evidence_level")) == "established"
+                ),
                 "routing_fast_lane_templates": sum(
                     1
                     for row in active_template_rows

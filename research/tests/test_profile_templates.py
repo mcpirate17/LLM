@@ -1,6 +1,8 @@
 import json
 import sqlite3
+from pathlib import Path
 
+from research.tools import profile_templates
 from research.tools.profile_templates import build_template_profiles
 
 
@@ -161,3 +163,77 @@ def test_build_template_profiles_classifies_and_aggregates(tmp_path):
     assert by_name["mamba_reference"]["status"] == "promote"
     assert by_name["mamba_reference"]["slot_count"] == 0
     assert by_name["topk_retrieval"]["status"] == "needs_data"
+
+
+def test_run_targeted_profiles_tops_up_to_min_evidence_without_overshoot(monkeypatch):
+    stats = {
+        "template_a": [{"eval": 0}, {"eval": 6}, {"eval": 10}],
+        "template_b": [{"eval": 9}, {"eval": 10}],
+    }
+    indices = {name: 0 for name in stats}
+    calls = []
+
+    def fake_get_template_stats(_db_path):
+        snapshot = {}
+        for name, versions in stats.items():
+            idx = min(indices[name], len(versions) - 1)
+            snapshot[name] = dict(versions[idx])
+        return snapshot
+
+    def fake_run_template_batch(
+        *, template_name, n_programs, device, db_path, weight_mode
+    ):
+        calls.append(
+            {
+                "template_name": template_name,
+                "n_programs": n_programs,
+                "device": device,
+                "db_path": db_path,
+                "weight_mode": weight_mode,
+            }
+        )
+        indices[template_name] = min(
+            indices[template_name] + 1,
+            len(stats[template_name]) - 1,
+        )
+        return n_programs
+
+    monkeypatch.setattr(
+        profile_templates, "get_template_stats", fake_get_template_stats
+    )
+    monkeypatch.setattr(
+        profile_templates, "run_template_batch", fake_run_template_batch
+    )
+
+    profile_templates._run_targeted_profiles(
+        db_path=Path("/tmp/fake.db"),
+        templates=["template_a", "template_b"],
+        device="cpu",
+        target_eval=profile_templates.MIN_TEMPLATE_EVIDENCE_RUNS,
+        batch_size=6,
+        weights="uniform",
+    )
+
+    assert calls == [
+        {
+            "template_name": "template_a",
+            "n_programs": 6,
+            "device": "cpu",
+            "db_path": "/tmp/fake.db",
+            "weight_mode": "uniform",
+        },
+        {
+            "template_name": "template_a",
+            "n_programs": 4,
+            "device": "cpu",
+            "db_path": "/tmp/fake.db",
+            "weight_mode": "uniform",
+        },
+        {
+            "template_name": "template_b",
+            "n_programs": 1,
+            "device": "cpu",
+            "db_path": "/tmp/fake.db",
+            "weight_mode": "uniform",
+        },
+    ]

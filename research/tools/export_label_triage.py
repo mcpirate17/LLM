@@ -123,6 +123,8 @@ def build_report(
         ensemble_score = None
         gbm_score = None
         graph_score = None
+        induction_score = None
+        induction_auc = None
         if feats:
             enrich_with_op_stats(feats, graph_meta["ops"], preloaded=op_stats_cache)
             if ensemble.gbm is not None and ensemble.gbm.is_fitted():
@@ -130,6 +132,14 @@ def build_report(
             if ensemble.is_fitted():
                 ensemble_score = float(
                     ensemble.predict_gate(sample_graph, graph_features=feats)
+                )
+                induction_score = float(
+                    ensemble.predict_induction_learner_prob(
+                        sample_graph, graph_features=feats
+                    )
+                )
+                induction_auc = float(
+                    ensemble.predict_induction_auc(sample_graph, graph_features=feats)
                 )
         if ensemble.graph_pred is not None and ensemble.graph_pred.is_fitted():
             graph_score = float(ensemble.graph_pred.predict_gate(sample_graph))
@@ -149,6 +159,8 @@ def build_report(
                     "ensemble_score": ensemble_score,
                     "gbm_score": gbm_score,
                     "graph_score": graph_score,
+                    "predicted_induction_learner": induction_score,
+                    "predicted_induction_auc": induction_auc,
                     "ops": graph_meta["ops"],
                     "templates_used": graph_meta["templates_used"],
                     "motifs_used": graph_meta["motifs_used"],
@@ -167,6 +179,8 @@ def build_report(
                     "ensemble_score": ensemble_score,
                     "gbm_score": gbm_score,
                     "graph_score": graph_score,
+                    "predicted_induction_learner": induction_score,
+                    "predicted_induction_auc": induction_auc,
                     "loss_ratio": it["loss_ratio"],
                     "wikitext_perplexity": it["wikitext_perplexity"],
                     "dup_group_size": len(items),

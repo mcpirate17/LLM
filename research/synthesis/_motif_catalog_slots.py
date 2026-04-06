@@ -16,7 +16,6 @@ from ._motif_types import (
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_MATH_SPACE,
-    MOTIF_CLASS_MOE,
     MOTIF_CLASS_REDUCE,
 )
 from .op_roles import OpRole
@@ -289,6 +288,37 @@ SLOT_MOTIFS: Tuple[Motif, ...] = (
         support=0,
         avg_loss_ratio=0.0,
         lift=2.5,
+    ),
+    Motif(
+        name="route_hybrid_token_gate",
+        motif_class=MOTIF_CLASS_GATE,
+        steps=(
+            MotifStep("hybrid_token_gate", OpRole.ROUTE, config={"threshold": 0.5}),
+        ),
+        description="Cheap single-token gate feeding default and sparse routed paths",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.0,
+    ),
+    Motif(
+        name="route_sparse_triplet",
+        motif_class=MOTIF_CLASS_GATE,
+        steps=(
+            MotifStep(
+                "sparse_span_builder",
+                OpRole.ROUTE,
+                config={"span_width": 3, "fallback_behavior": "default_path"},
+            ),
+            MotifStep(
+                "hybrid_sparse_router",
+                OpRole.ROUTE,
+                config={"span_width": 3, "lane_count": 3, "confidence_threshold": 0.45},
+            ),
+        ),
+        description="Sparse triplet span builder feeding hybrid lane router",
+        support=0,
+        avg_loss_ratio=0.0,
+        lift=3.5,
     ),
     # ── E. Position + Attention motifs ────────────────────────────
     Motif(

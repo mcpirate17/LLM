@@ -14,6 +14,13 @@ import numpy as np
 
 from ._eval_native import load_eval_native
 
+_SPIKING_OPS = {
+    "lif_neuron",
+    "spike_rate_code",
+    "stdp_attention",
+    "sparse_threshold",
+}
+
 
 @dataclass
 class SparsityResult:
@@ -51,6 +58,109 @@ class ModelSparsityReport:
         }
 
 
+def _make_activation_hook(
+    stats: Dict[str, Dict[str, Any]], name: str, module, threshold: float
+):
+    def hook(mod, inp, out):
+        if not isinstance(out, torch.Tensor):
+            return
+        flat = out.detach().reshape(-1, out.shape[-1])
+        if name not in stats:
+            stats[name] = {
+                "zero_counts": torch.zeros(flat.shape[-1], device=flat.device),
+                "total_counts": 0,
+                "type": mod.__class__.__name__,
+                "op_name": getattr(mod, "op_name", ""),
+            }
+
+        try:
+            zero_counts = load_eval_native().zero_count_last_dim(flat, float(threshold))
+            zero_counts = zero_counts.to(device=flat.device, dtype=torch.float32)
+        except Exception:
+            zero_counts = (flat.abs() < threshold).sum(dim=0, dtype=torch.float32)
+        stats[name]["zero_counts"] += zero_counts
+        stats[name]["total_counts"] += flat.shape[0]
+
+    return hook
+
+
+def _register_sparsity_hooks(
+    model: nn.Module,
+    stats: Dict[str, Dict[str, Any]],
+    threshold: float,
+):
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.RMSNorm)) or hasattr(
+            module, "op_name"
+        ):
+            hooks.append(
+                module.register_forward_hook(
+                    _make_activation_hook(stats, name, module, threshold)
+                )
+            )
+    return hooks
+
+
+def _run_sparsity_batches(
+    model: nn.Module,
+    dataloader: Any,
+    device: torch.device,
+    n_batches: int,
+) -> None:
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            if i >= n_batches:
+                break
+            input_ids = (
+                batch[0].to(device)
+                if isinstance(batch, (list, tuple))
+                else batch.to(device)
+            )
+            model(input_ids)
+
+
+def _layer_sparsity_result(name: str, data: Dict[str, Any]) -> SparsityResult:
+    zero_frac = (data["zero_counts"] / max(1, data["total_counts"])).cpu().numpy()
+    dead = int((zero_frac > 0.999).sum())
+    op_name = data.get("op_name", "")
+    collapse_threshold = 0.99 if op_name in _SPIKING_OPS else 0.95
+    return SparsityResult(
+        layer_id=name,
+        layer_type=data["type"],
+        n_neurons=len(zero_frac),
+        dead_neurons=dead,
+        mean_sparsity=float(zero_frac.mean()),
+        p90_sparsity=float(np.percentile(zero_frac, 90)),
+        max_sparsity=float(zero_frac.max()),
+        is_collapsed=dead > collapse_threshold * len(zero_frac),
+    )
+
+
+def _build_sparsity_report(stats: Dict[str, Dict[str, Any]]) -> ModelSparsityReport:
+    layer_results = [_layer_sparsity_result(name, data) for name, data in stats.items()]
+    total_neurons = sum(result.n_neurons for result in layer_results)
+    total_dead = sum(result.dead_neurons for result in layer_results)
+    overall_sparsity = (
+        sum(result.mean_sparsity for result in layer_results) / len(layer_results)
+        if layer_results
+        else 0.0
+    )
+    max_layer_collapse = (
+        max(result.dead_neurons / result.n_neurons for result in layer_results)
+        if layer_results
+        else 0.0
+    )
+    return ModelSparsityReport(
+        layers=layer_results,
+        total_neurons=total_neurons,
+        total_dead_neurons=total_dead,
+        overall_sparsity=overall_sparsity,
+        max_layer_collapse=max_layer_collapse,
+        dead_neuron_ratio=total_dead / max(1, total_neurons),
+    )
+
+
 def check_activation_sparsity(
     model: nn.Module, dataloader: Any, n_batches: int = 1, threshold: float = 1e-6
 ) -> ModelSparsityReport:
@@ -61,115 +171,17 @@ def check_activation_sparsity(
     model.eval()
     device = next(model.parameters()).device
 
-    stats = {}
+    stats: Dict[str, Dict[str, Any]] = {}
     hooks = []
 
-    def get_hook(name, module):
-        def hook(mod, inp, out):
-            if isinstance(out, torch.Tensor):
-                flat = out.detach().reshape(-1, out.shape[-1])
-
-                if name not in stats:
-                    stats[name] = {
-                        "zero_counts": torch.zeros(flat.shape[-1], device=flat.device),
-                        "total_counts": 0,
-                        "type": mod.__class__.__name__,
-                        "op_name": getattr(mod, "op_name", ""),
-                    }
-
-                try:
-                    zero_counts = load_eval_native().zero_count_last_dim(
-                        flat, float(threshold)
-                    )
-                    zero_counts = zero_counts.to(
-                        device=flat.device, dtype=torch.float32
-                    )
-                except Exception:
-                    zero_counts = (flat.abs() < threshold).sum(
-                        dim=0, dtype=torch.float32
-                    )
-                stats[name]["zero_counts"] += zero_counts
-                stats[name]["total_counts"] += flat.shape[0]
-
-        return hook
-
-    # Register hooks for all interesting layers
-    # We focus on linear layers, normalized outputs, and MoE experts
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.RMSNorm)):
-            hooks.append(module.register_forward_hook(get_hook(name, module)))
-        # Also catch custom CompiledOp if it has an execute_fn that returns a tensor
-        elif hasattr(module, "op_name"):
-            hooks.append(module.register_forward_hook(get_hook(name, module)))
-
     try:
-        # Run inference
-        with torch.no_grad():
-            for i, batch in enumerate(dataloader):
-                if i >= n_batches:
-                    break
-                if isinstance(batch, (list, tuple)):
-                    input_ids = batch[0].to(device)
-                else:
-                    input_ids = batch.to(device)
-
-                model(input_ids)
+        hooks = _register_sparsity_hooks(model, stats, threshold)
+        _run_sparsity_batches(model, dataloader, device, n_batches)
     finally:
-        # Always remove hooks
-        for h in hooks:
-            h.remove()
+        for hook in hooks:
+            hook.remove()
 
-    # Process results
-    layer_results = []
-    total_neurons = 0
-    total_dead = 0
-
-    # Spiking ops produce intentionally sparse binary outputs — use relaxed threshold
-    _SPIKING_OPS = {
-        "lif_neuron",
-        "spike_rate_code",
-        "stdp_attention",
-        "sparse_threshold",
-    }
-
-    for name, data in stats.items():
-        zero_frac = (data["zero_counts"] / max(1, data["total_counts"])).cpu().numpy()
-        dead = int((zero_frac > 0.999).sum())
-
-        # Relaxed collapse threshold for spiking ops (binary outputs are naturally sparse)
-        op_name = data.get("op_name", "")
-        collapse_threshold = 0.99 if op_name in _SPIKING_OPS else 0.95
-
-        res = SparsityResult(
-            layer_id=name,
-            layer_type=data["type"],
-            n_neurons=len(zero_frac),
-            dead_neurons=dead,
-            mean_sparsity=float(zero_frac.mean()),
-            p90_sparsity=float(np.percentile(zero_frac, 90)),
-            max_sparsity=float(zero_frac.max()),
-            is_collapsed=dead > collapse_threshold * len(zero_frac),
-        )
-        layer_results.append(res)
-        total_neurons += res.n_neurons
-        total_dead += res.dead_neurons
-
-    overall_sparsity = 0.0
-    if layer_results:
-        overall_sparsity = sum(r.mean_sparsity for r in layer_results) / len(
-            layer_results
-        )
-
-    return ModelSparsityReport(
-        layers=layer_results,
-        total_neurons=total_neurons,
-        total_dead_neurons=total_dead,
-        overall_sparsity=overall_sparsity,
-        max_layer_collapse=max([r.dead_neurons / r.n_neurons for r in layer_results])
-        if layer_results
-        else 0.0,
-        dead_neuron_ratio=total_dead / max(1, total_neurons),
-    )
+    return _build_sparsity_report(stats)
 
 
 def evaluate_activation_sparsity(

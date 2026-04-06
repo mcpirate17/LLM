@@ -1,0 +1,180 @@
+id: hybrid_sparse_router
+version: 1.0.0
+name: Lane Router
+category: routing
+tags:
+- hybrid_router
+- sparse_routing
+- lane_router
+status: approved
+description: Two-stage router with token gate, sparse fused spans, heterogeneous lanes, and default fallback.
+inputs:
+- name: x
+  dtype: tensor
+  shape: [B, S, D]
+outputs:
+- name: y
+  dtype: tensor
+  shape: [B, S, D]
+params:
+  span_width:
+    type: integer
+    default: 3
+  lane_count:
+    type: integer
+    default: 3
+  confidence_threshold:
+    type: number
+    default: 0.45
+implementation:
+  native: null
+  rust: null
+  cython: null
+  python: kernel_fallback.py
+performance:
+  has_params: true
+  param_formula: D*D*4
+  preserves_gradient: true
+  numerically_risky: false
+slots:
+- name: pre_router
+  kind: stem
+  required: false
+  description: Lightweight stem before routing to shape token features.
+  compatible_components:
+  - routing/cheap_verify_blend
+  - linear_algebra/linear_proj
+- name: default_path
+  kind: fallback
+  required: true
+  description: Cheap residual path merged when routed confidence is low.
+  compatible_components:
+  - routing/default_path
+- name: easy_router
+  kind: lane
+  required: false
+  description: Cheap real compute lane for easy tokens before medium and hard routing take over.
+  compatible_components:
+  - routing/cheap_verify_blend
+  - mixing/conv_only
+  - linear_algebra/conv1d_seq
+- name: medium_router
+  kind: route
+  required: false
+  description: Sparse pair, triplet, or quartet router used for medium-difficulty token groups.
+  compatible_components:
+  - routing/hybrid_sparse_router
+  - routing/route_lanes
+  - routing/adaptive_lane_mixer
+  - sparse/semi_structured_2_4_linear
+  - sparse/block_sparse_linear
+  - mixing/rwkv_time_mixing
+  - sparse/nm_sparse_linear
+  - routing/default_path
+  - routing/cheap_verify_blend
+  - linear_algebra/conv1d_seq
+  - mixing/conv_only
+- name: routed_lane
+  kind: lane
+  required: true
+  description: Lane-conditioned compute branch selected by sparse span routing.
+  compatible_components:
+  - routing/lane_conditioned_block
+- name: sparse_spans
+  kind: path
+  required: true
+  description: Packed sparse pair/triplet features produced by the span builder.
+  compatible_components:
+  - routing/sparse_span_builder
+- name: difficulty_signal
+  kind: signal
+  required: false
+  description: Difficulty features that separate medium and hard traffic.
+  compatible_components:
+  - routing/token_class_proj
+- name: compression_router
+  kind: route
+  required: false
+  description: Difficulty-conditioned compression before the hard expert branch.
+  compatible_components:
+  - routing/signal_conditioned_compression
+- name: hard_router
+  kind: expert
+  required: false
+  description: Heavy expert path for the hardest tokens.
+  compatible_components:
+  - routing/compression_mixture_experts
+  - routing/routing_conditioned_compression
+  - routing/dual_compression_blend
+  - routing/route_recursion
+  - routing/adaptive_recursion
+  - routing/mixed_recursion_gate
+  - channel_mixing/moe_topk
+  - channel_mixing/moe_2expert
+  - routing/n_way_sparse_router
+  - mixing/state_space
+- name: token_merge
+  kind: merge
+  required: false
+  description: Merge stage after easy, medium, and hard lanes recombine.
+  compatible_components:
+  - routing/adjacent_token_merge
+  - functional/token_merge
+- name: post_merge
+  kind: stem
+  required: false
+  description: Stabilizing post-merge compute before the output residual.
+  compatible_components:
+  - linear_algebra/rmsnorm
+  - linear_algebra/linear_proj
+  - linear_algebra/nm_sparse_linear
+  - linear_algebra/conv1d_seq
+templates:
+- id: hybrid_sparse_triplet_router
+  label: Hybrid Sparse Triplet Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Promoted two-stage router template with default path, sparse spans, and lane-conditioned compute.
+  slot_bindings:
+    default_path: default_path
+    routed_lane: lane_conditioned_block
+    sparse_spans: sparse_span_builder
+- id: multiscale_difficulty_router
+  label: Multiscale Difficulty Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Three-tier router with cheap default handling for easy tokens, pair/triplet/quartet sparse routing for medium difficulty, and a heavy expert path for hard tokens.
+  slot_bindings:
+    default_path: default_path
+    medium_router: hybrid_sparse_router
+    sparse_spans: sparse_span_builder
+    difficulty_signal: token_class_proj
+    compression_router: signal_conditioned_compression
+    hard_router: moe_topk
+- id: multiscale_rich_lane_router
+  label: Multiscale Rich Lane Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Richer three-tier router with multi-span medium routing and broad medium/hard lane component menus.
+  slot_bindings:
+    default_path: default_path
+    medium_router: hybrid_sparse_router
+    sparse_spans: sparse_span_builder
+    difficulty_signal: token_class_proj
+    compression_router: signal_conditioned_compression
+    hard_router: moe_topk
+- id: intelligent_multilane_router
+  label: Intelligent Multilane Router
+  source: research.synthesis.templates
+  workflow: hybrid_sparse_router
+  description: Structured easy, medium, and hard router with pre-router stem, mandatory lane compute, token merge, and post-merge stabilization.
+  slot_bindings:
+    pre_router: cheap_verify_blend
+    easy_router: cheap_verify_blend
+    medium_router: hybrid_sparse_router
+    sparse_spans: sparse_span_builder
+    difficulty_signal: token_class_proj
+    compression_router: signal_conditioned_compression
+    hard_router: moe_topk
+    token_merge: adjacent_token_merge
+    post_merge: rmsnorm

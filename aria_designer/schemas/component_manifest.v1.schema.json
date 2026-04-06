@@ -80,6 +80,16 @@
     "constraints": {
       "$ref": "#/$defs/constraints",
       "default": {}
+    },
+    "slots": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/slot" },
+      "default": []
+    },
+    "templates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/template" },
+      "default": []
     }
   },
   "$defs": {
@@ -200,6 +210,43 @@
           "type": "array",
           "items": { "type": "string" },
           "default": []
+        }
+      }
+    },
+    "slot": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "kind": {
+          "type": "string",
+          "enum": ["path", "lane", "fallback", "merge", "template"],
+          "default": "path"
+        },
+        "required": { "type": "boolean", "default": false },
+        "description": { "type": "string", "default": "" },
+        "compatible_components": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "label": { "type": "string", "default": "" },
+        "source": { "type": "string", "default": "" },
+        "description": { "type": "string", "default": "" },
+        "workflow": { "type": "string", "default": "" },
+        "slot_bindings": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {}
         }
       }
     }

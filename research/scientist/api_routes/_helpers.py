@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -21,6 +22,7 @@ from ..runner import ExperimentRunner
 from .deps import get_notebook
 from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
+from ._utils import is_malformed_db_error
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +169,26 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
             "external_snapshot": None,
         }
 
-    external = get_external_running_experiment_snapshot(nb)
+    try:
+        external = get_external_running_experiment_snapshot(nb)
+    except sqlite3.DatabaseError as exc:
+        if not is_malformed_db_error(exc):
+            raise
+        logger.warning(
+            "Runner status falling back to in-memory progress due to malformed DB: %s",
+            exc,
+        )
+        progress = with_native_runner_progress(runner.progress.to_dict())
+        progress["database_status"] = {
+            "healthy": False,
+            "error_type": "malformed",
+            "message": str(exc),
+        }
+        return {
+            "is_running": False,
+            "progress": progress,
+            "external_snapshot": None,
+        }
     if not external:
         return {
             "is_running": False,

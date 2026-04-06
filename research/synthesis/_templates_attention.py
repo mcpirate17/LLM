@@ -38,6 +38,23 @@ from ._template_helpers import (
 )
 
 
+def _pick_with_local_wildcard(
+    graph: ComputationGraph,
+    node_id: int,
+    rng: random.Random,
+    motif_classes,
+    weights: MotifWeights = None,
+    *,
+    wildcard_prob: float,
+):
+    previous = graph.metadata.get("_wildcard_slot_prob", 0.0)
+    graph.metadata["_wildcard_slot_prob"] = wildcard_prob
+    try:
+        return _pick_compatible_motif(graph, node_id, rng, motif_classes, weights)
+    finally:
+        graph.metadata["_wildcard_slot_prob"] = previous
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Group A: Forced-Attention Variants of Existing High-Performers
 # ═══════════════════════════════════════════════════════════════════════
@@ -633,46 +650,93 @@ def tpl_attn_routing_block(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → attention → classifier → difficulty_blend_3way(attended, scores) → FFN → residual.
+    """norm → softmax_attn → add → route/depth → swiglu → residual.
 
-    Attention + difficulty-aware routing for the FFN stage.
+    Grammar-stable routing redesign: fixed attention scaffold into routing,
+    then a dense FFN tail. This remains weak, but it is the strongest routing
+    variant so far that still survives targeted generation.
     """
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    D = graph.model_dim
+    norm = _pick_with_local_wildcard(
+        graph,
+        input_id,
+        rng,
+        MOTIF_CLASS_NORM,
+        weights,
+        wildcard_prob=0.0,
+    )
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
-    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
-    attended = _fix_dim(graph, attended)
-
-    # Produce difficulty scores for routing (2-input op)
-    class_logits = _add(
+    attended = _add(
         graph,
-        "token_class_proj",
-        [attended],
-        {"n_classes": 4},
-        context="attn_routing_block.class_logits",
+        "softmax_attention",
+        [normed],
+        context="attn_routing_block.attended",
     )
-    difficulty = _add(
+    attended = _add(
         graph,
-        "token_entropy",
-        [class_logits],
-        context="attn_routing_block.difficulty",
+        "rmsnorm",
+        [attended],
+        context="attn_routing_block.attn_norm",
+    )
+    attended = _add(
+        graph,
+        "linear_proj",
+        [attended],
+        {"out_dim": D},
+        context="attn_routing_block.project",
+    )
+    attended = _fix_dim(graph, attended)
+    mid = _residual(graph, input_id, attended, context="attn_routing_block.mid")
+
+    blended = _add(
+        graph,
+        "difficulty_blend_3way",
+        [mid, mid],
+        context="attn_routing_block.blended",
+    )
+    lane_merged = _residual(
+        graph,
+        mid,
+        blended,
+        context="attn_routing_block.lane_merged",
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph,
+        lane_merged,
+        rng,
+        MOTIF_CLASS_NORM,
+        weights,
+        wildcard_prob=0.0,
+    )
+    normed2 = (
+        _instantiate_motif(graph, lane_merged, norm2, rng) if norm2 else lane_merged
     )
     routed = _add(
         graph,
-        "difficulty_blend_3way",
-        [attended, difficulty],
+        "depth_weighted_proj",
+        [normed2],
         context="attn_routing_block.routed",
     )
+    routed = _add(graph, "rmsnorm", [routed], context="attn_routing_block.route_norm")
+    mid2 = _residual(graph, lane_merged, routed, context="attn_routing_block.mid2")
 
-    # Sparse FFN only — MoE ops are forbidden after difficulty_blend_3way
-    ffn = _pick_compatible_motif_from_classes(
-        graph, routed, rng, _SPARSE_FFN_CLASSES, weights
+    processed = _add(
+        graph,
+        "swiglu_mlp",
+        [mid2],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="attn_routing_block.ffn",
     )
-    processed = _instantiate_motif(graph, routed, ffn, rng) if ffn else routed
     processed = _fix_dim(graph, processed)
 
-    return _residual(graph, input_id, processed, context="attn_routing_block.output")
+    return _residual(
+        graph,
+        mid2,
+        processed,
+        context="attn_routing_block.output",
+    )
 
 
 def tpl_dual_attn_block(

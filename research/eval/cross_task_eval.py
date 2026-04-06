@@ -13,14 +13,16 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, Any
 
 import torch
 
-from .corpus_pipeline import TextSplitSpec, cache_hf_text_splits, split_token_array
+from .corpus_pipeline import (
+    TextSplitSpec,
+    cache_hf_text_splits,
+    prepare_text_corpus_split_batches,
+)
 from .utils import (
-    tokenize_file,
-    make_batches,
     micro_train_loop,
     compute_perplexity,
 )
@@ -40,51 +42,16 @@ def _download_code_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
         return path
 
     logger.info("Downloading Python code corpus ...")
-    # Use codeparrot/github-code-clean for Python snippets
-    try:
-        paths = cache_hf_text_splits(
-            cache_dir=_CACHE_DIR,
-            dataset_name="codeparrot/github-code-clean",
-            split_specs=(TextSplitSpec("train", "python_code.txt", max_chars),),
-            streaming=True,
-            trust_remote_code=True,
-            load_kwargs={"languages": ["Python"]},
-            sample_to_text=lambda sample: sample.get("code", ""),
-        )
-        return paths["train"]
-    except Exception:
-        # Fallback: generate synthetic Python-like code
-        logger.info("Falling back to synthetic Python corpus")
-        texts = _generate_synthetic_python(max_chars)
-
-    combined = "\n".join(texts)
-    if len(combined) > max_chars:
-        combined = combined[:max_chars]
-    path.write_text(combined, encoding="utf-8")
-    return path
-
-
-def _generate_synthetic_python(max_chars: int) -> List[str]:
-    """Generate synthetic Python code snippets as fallback."""
-    snippets = [
-        "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n",
-        "class Node:\n    def __init__(self, val):\n        self.val = val\n        self.next = None\n",
-        "for i in range(100):\n    if i % 3 == 0:\n        print('fizz')\n    elif i % 5 == 0:\n        print('buzz')\n",
-        "import numpy as np\ndata = np.random.randn(100, 10)\nmean = np.mean(data, axis=0)\nstd = np.std(data, axis=0)\n",
-        "def quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    right = [x for x in arr if x > pivot]\n    return quicksort(left) + [pivot] + quicksort(right)\n",
-        "with open('data.txt', 'r') as f:\n    lines = f.readlines()\n    for line in lines:\n        tokens = line.strip().split(',')\n        print(tokens)\n",
-        "class BinaryTree:\n    def __init__(self):\n        self.root = None\n    def insert(self, val):\n        if self.root is None:\n            self.root = Node(val)\n",
-        "def matrix_multiply(a, b):\n    rows_a, cols_a = len(a), len(a[0])\n    rows_b, cols_b = len(b), len(b[0])\n    result = [[0]*cols_b for _ in range(rows_a)]\n    for i in range(rows_a):\n        for j in range(cols_b):\n            for k in range(cols_a):\n                result[i][j] += a[i][k] * b[k][j]\n    return result\n",
-    ]
-    result = []
-    total = 0
-    while total < max_chars:
-        for s in snippets:
-            result.append(s)
-            total += len(s)
-            if total >= max_chars:
-                break
-    return result
+    paths = cache_hf_text_splits(
+        cache_dir=_CACHE_DIR,
+        dataset_name="codeparrot/github-code-clean",
+        split_specs=(TextSplitSpec("train", "python_code.txt", max_chars),),
+        streaming=True,
+        trust_remote_code=True,
+        load_kwargs={"languages": ["Python"]},
+        sample_to_text=lambda sample: sample.get("code", ""),
+    )
+    return paths["train"]
 
 
 def _download_nl_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
@@ -137,27 +104,37 @@ def evaluate_cross_task_robustness(
         logger.warning("Cross-task corpus download failed: %s", e)
         return {"cross_task_score": None, "error": f"download_failed: {e}"}
 
-    code_tokens = tokenize_file(code_path, vocab_size)
-    nl_tokens = tokenize_file(nl_path, vocab_size)
-
-    if len(code_tokens) < seq_len + 1 or len(nl_tokens) < seq_len + 1:
-        return {"cross_task_score": None, "error": "insufficient_tokens"}
-
-    # Split each corpus: 90% train, 10% val
-    code_train, code_val = split_token_array(code_tokens, train_fraction=0.9)
-    nl_train, nl_val = split_token_array(nl_tokens, train_fraction=0.9)
-
-    code_train_batches = make_batches(
-        code_train, batch_size, seq_len, n_train_batches, device, seed=42
+    code_train_batches, code_val_batches, code_token_count = (
+        prepare_text_corpus_split_batches(
+            path=code_path,
+            namespace="cross_task:code",
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            train_batch_size=batch_size,
+            eval_batch_size=batch_size,
+            n_train_batches=n_train_batches,
+            n_eval_batches=n_eval_batches,
+            device=device,
+            train_fraction=0.9,
+            train_seed=42,
+            val_seed=99,
+        )
     )
-    code_val_batches = make_batches(
-        code_val, batch_size, seq_len, n_eval_batches, device, seed=99
-    )
-    nl_train_batches = make_batches(
-        nl_train, batch_size, seq_len, n_train_batches, device, seed=42
-    )
-    nl_val_batches = make_batches(
-        nl_val, batch_size, seq_len, n_eval_batches, device, seed=99
+    nl_train_batches, nl_val_batches, nl_token_count = (
+        prepare_text_corpus_split_batches(
+            path=nl_path,
+            namespace="cross_task:nl",
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            train_batch_size=batch_size,
+            eval_batch_size=batch_size,
+            n_train_batches=n_train_batches,
+            n_eval_batches=n_eval_batches,
+            device=device,
+            train_fraction=0.9,
+            train_seed=42,
+            val_seed=99,
+        )
     )
 
     if not all(
@@ -199,7 +176,7 @@ def evaluate_cross_task_robustness(
         "code_train_loss": round(code_loss, 6),
         "nl_train_loss": round(nl_loss, 6),
         "n_train_steps": n_train_steps,
-        "code_tokens": len(code_tokens),
-        "nl_tokens": len(nl_tokens),
+        "code_tokens": code_token_count,
+        "nl_tokens": nl_token_count,
         "elapsed_ms": round(elapsed_ms, 1),
     }

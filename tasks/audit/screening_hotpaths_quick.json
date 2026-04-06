@@ -1,0 +1,168 @@
+{
+  "fixture": "quick",
+  "stage1": {
+    "base": {
+      "elapsed_ms": 2094.989634992089,
+      "final_loss": 5.727410316467285,
+      "passed": false,
+      "n_train_steps": 1,
+      "discovery_loss": 5.5053870677948,
+      "validation_loss": null,
+      "compile_ms": 6.938755002920516,
+      "elapsed_ms_median": 2094.989634992089,
+      "compile_ms_median": 6.938755002920516,
+      "elapsed_ms_runs": [
+        2094.989634992089
+      ],
+      "compile_ms_runs": [
+        6.938755002920516
+      ]
+    },
+    "lean": {
+      "elapsed_ms": 5.28092599415686,
+      "final_loss": 6.052224636077881,
+      "passed": false,
+      "n_train_steps": 1,
+      "discovery_loss": null,
+      "validation_loss": null,
+      "compile_ms": 1.7200689908349887,
+      "elapsed_ms_median": 5.28092599415686,
+      "compile_ms_median": 1.7200689908349887,
+      "elapsed_ms_runs": [
+        5.28092599415686
+      ],
+      "compile_ms_runs": [
+        1.7200689908349887
+      ]
+    },
+    "speedup": 396.7087660971038,
+    "config": {
+      "stage1_steps": 1,
+      "stage1_batch_size": 1,
+      "max_seq_len": 16,
+      "model_dim": 32,
+      "n_layers": 1,
+      "vocab_size": 128,
+      "repeats": 1
+    }
+  },
+  "orchestrator": {
+    "elapsed_ms": 21.01117599522695,
+    "n_jobs": 2,
+    "n_passed": 0,
+    "queue_telemetry": {
+      "submitted_jobs": 2,
+      "completed_jobs": 2,
+      "failed_jobs": 0,
+      "queue_depth_peak": 2,
+      "queue_depth_current": 0,
+      "result_queue_depth_current": 0,
+      "submit_wait_avg_ms": 0.007950002327561378,
+      "submit_wait_max_ms": 0.011850002920255065,
+      "job_execution_avg_ms": 5.626803496852517,
+      "job_execution_max_ms": 6.999735996942036,
+      "preprocessing_avg_ms": 2.63403349526925,
+      "prep_queue_wait_avg_ms": 0.07738500426057726,
+      "prep_queue_wait_max_ms": 0.122669996926561,
+      "scheduling_wait_avg_ms": 3.216516495740507,
+      "scheduling_wait_max_ms": 6.37397299578879,
+      "candidate_batches": {},
+      "training_program_queue": {
+        "submitted": 0,
+        "completed": 0,
+        "failed": 0
+      }
+    }
+  },
+  "metrics": {
+    "stage1_base_ms": 2094.9896,
+    "stage1_lean_ms": 5.2809,
+    "stage1_speedup": 396.7088,
+    "stage1_base_compile_ms": 6.9388,
+    "stage1_lean_compile_ms": 1.7201,
+    "stage1_base_final_loss": 5.727410316467285,
+    "stage1_lean_final_loss": 6.052224636077881,
+    "orchestrator_total_ms": 21.0112,
+    "orchestrator_jobs": 2,
+    "orchestrator_passed": 0,
+    "queue_submit_wait_ms": 0.008,
+    "queue_prep_wait_ms": 0.0774,
+    "queue_scheduling_wait_ms": 3.2165,
+    "queue_preprocessing_ms": 2.634,
+    "queue_execution_ms": 5.6268,
+    "total_time_ms": 2121.2817
+  },
+  "stage1_base_median_ms": 2094.9896,
+  "stage09_gate_median_ms": 5.2809,
+  "stage09_speedup_x": 396.7088,
+  "orchestrator_total_ms": 21.0112,
+  "queue_telemetry": {
+    "submitted_jobs": 2,
+    "completed_jobs": 2,
+    "failed_jobs": 0,
+    "queue_depth_peak": 2,
+    "queue_depth_current": 0,
+    "result_queue_depth_current": 0,
+    "submit_wait_avg_ms": 0.007950002327561378,
+    "submit_wait_max_ms": 0.011850002920255065,
+    "job_execution_avg_ms": 5.626803496852517,
+    "job_execution_max_ms": 6.999735996942036,
+    "preprocessing_avg_ms": 2.63403349526925,
+    "prep_queue_wait_avg_ms": 0.07738500426057726,
+    "prep_queue_wait_max_ms": 0.122669996926561,
+    "scheduling_wait_avg_ms": 3.216516495740507,
+    "scheduling_wait_max_ms": 6.37397299578879,
+    "candidate_batches": {},
+    "training_program_queue": {
+      "submitted": 0,
+      "completed": 0,
+      "failed": 0
+    }
+  },
+  "perf_contract": {
+    "version": 1,
+    "generated_at": "2026-04-04T14:54:06Z",
+    "component": "research",
+    "workload": "experiment_screening_hotpaths",
+    "identity": {
+      "fixture": "quick",
+      "orchestrator_jobs": 2,
+      "stage1_repeats": 1
+    },
+    "runtime": {
+      "python": "3.12.3",
+      "platform": "linux",
+      "pid": 356042
+    },
+    "metrics": {
+      "stage1_base_ms": 2094.9896,
+      "stage1_lean_ms": 5.2809,
+      "stage1_speedup": 396.7088,
+      "stage1_base_compile_ms": 6.9388,
+      "stage1_lean_compile_ms": 1.7201,
+      "stage1_base_final_loss": 5.727410316467285,
+      "stage1_lean_final_loss": 6.052224636077881,
+      "orchestrator_total_ms": 21.0112,
+      "orchestrator_jobs": 2,
+      "orchestrator_passed": 0,
+      "queue_submit_wait_ms": 0.008,
+      "queue_prep_wait_ms": 0.0774,
+      "queue_scheduling_wait_ms": 3.2165,
+      "queue_preprocessing_ms": 2.634,
+      "queue_execution_ms": 5.6268,
+      "total_time_ms": 2121.2817
+    },
+    "budget_profile": null,
+    "budget_verdict": null,
+    "duplicate_work": {
+      "detected_count": 0,
+      "repeated_keys": {},
+      "avoided_count": 0,
+      "avoided_keys": {},
+      "estimated_wasted_ms": 0.0,
+      "hints": []
+    },
+    "warnings": [],
+    "artifact_path": "/home/tim/Projects/LLM/research/perf_artifacts/research/2026-04-04/screening_hotpaths_quick.json"
+  }
+}

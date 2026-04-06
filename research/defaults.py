@@ -49,7 +49,7 @@ ROPE_THETA_BASE: float = 10000.0
 
 # ── Timeouts & retries ───────────────────────────────────────────────
 DESIGNER_PROXY_TIMEOUT: float = 10.0
-DESIGNER_BOOT_TIMEOUT: float = 30.0
+DESIGNER_BOOT_TIMEOUT: float = 90.0
 DESIGNER_IDLE_TIMEOUT: float = 900.0
 LINEAGE_SYNC_TIMEOUT: float = 3.0
 SQLITE_BUSY_TIMEOUT_MS: int = 30000

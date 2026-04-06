@@ -18,6 +18,7 @@ from research.synthesis.compiler_ops_routing import (
     _op_learned_token_gate,
     _op_cheap_verify_blend,
     _op_depth_weighted_proj,
+    _op_swiglu_mlp,
 )
 from research.synthesis.compiler_op_utils import _record_routing_telemetry
 
@@ -31,6 +32,14 @@ class DummyModule(nn.Module):
 
     def __init__(self):
         super().__init__()
+
+
+class SwiGLUModule(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int):
+        super().__init__()
+        self.gate_proj = nn.Linear(dim, hidden_dim)
+        self.up_proj = nn.Linear(dim, hidden_dim)
+        self.down_proj = nn.Linear(hidden_dim, dim)
 
 
 # ── route_topk ──────────────────────────────────────────────────────
@@ -132,6 +141,27 @@ class TestGatedLaneBlend:
         result = _op_gated_lane_blend(module, [x], {"n_lanes": L})
         result.sum().backward()
         assert x.grad is not None
+
+
+class TestSwiGLUMlp:
+    def test_cpu_path_matches_dense_pytorch(self, monkeypatch):
+        module = SwiGLUModule(dim=16, hidden_dim=32).eval()
+        x = torch.randn(2, 5, 16)
+
+        def _fail(*args, **kwargs):
+            raise AssertionError("aria_core.swiglu_f32 should not be used on CPU")
+
+        monkeypatch.setattr(
+            "research.synthesis.compiler_ops_routing.aria_core.swiglu_f32",
+            _fail,
+            raising=False,
+        )
+
+        expected = module.down_proj(
+            torch.nn.functional.silu(module.gate_proj(x)) * module.up_proj(x)
+        )
+        result = _op_swiglu_mlp(module, [x], {})
+        assert torch.allclose(result, expected, atol=1e-6, rtol=1e-5)
 
 
 # ── route_recursion ─────────────────────────────────────────────────

@@ -252,6 +252,82 @@ def prepare_text_split_batches(
     return train, val, len(train_tokens), len(val_tokens)
 
 
+def prepare_text_corpus_split_batches(
+    *,
+    path: Path,
+    namespace: str,
+    vocab_size: int,
+    seq_len: int,
+    train_batch_size: int,
+    eval_batch_size: int,
+    n_train_batches: int,
+    n_eval_batches: int,
+    device: str | torch.device,
+    train_fraction: float = 0.9,
+    train_seed: int = 42,
+    val_seed: int = 123,
+) -> Tuple[Optional[List[torch.Tensor]], Optional[List[torch.Tensor]], int]:
+    train_key = _cache_key(
+        namespace,
+        path,
+        vocab_size,
+        seq_len,
+        train_batch_size,
+        n_train_batches,
+        "train_fractional",
+        train_seed,
+    ) + (float(train_fraction),)
+    val_key = _cache_key(
+        namespace,
+        path,
+        vocab_size,
+        seq_len,
+        eval_batch_size,
+        n_eval_batches,
+        "validation_fractional",
+        val_seed,
+    ) + (float(train_fraction),)
+    train = _get_cached_batches(train_key, device)
+    val = _get_cached_batches(val_key, device)
+    if train is not None and val is not None:
+        return train, val, -1
+
+    tokens = _get_cached_tokens(path, vocab_size)
+    if len(tokens) < seq_len + 1:
+        return None, None, len(tokens)
+
+    train_tokens, val_tokens = split_token_array(tokens, train_fraction=train_fraction)
+    if len(train_tokens) < seq_len + 1 or len(val_tokens) < seq_len + 1:
+        return None, None, len(tokens)
+
+    if train is None:
+        train_cpu = make_batches(
+            train_tokens,
+            train_batch_size,
+            seq_len,
+            n_train_batches,
+            "cpu",
+            seed=train_seed,
+        )
+        if train_cpu:
+            _put_cached_batches(train_key, train_cpu)
+            train = move_batches_to_device(train_cpu, device)
+    if val is None:
+        val_cpu = make_batches(
+            val_tokens,
+            eval_batch_size,
+            seq_len,
+            n_eval_batches,
+            "cpu",
+            seed=val_seed,
+        )
+        if val_cpu:
+            _put_cached_batches(val_key, val_cpu)
+            val = move_batches_to_device(val_cpu, device)
+
+    return train, val, len(tokens)
+
+
 def split_token_array(
     tokens: np.ndarray,
     *,

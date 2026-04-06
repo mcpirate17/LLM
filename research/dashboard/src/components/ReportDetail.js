@@ -1,6 +1,5 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect } from 'react';
-import { useAriaData } from '../hooks/useAriaData';
+import React, { useEffect, useMemo, useState } from 'react';
 import { promotionEvidence } from '../utils/scoringEngine';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
@@ -37,7 +36,6 @@ function ReportDetail({
   onHypothesisHandoff,
   onOpenInDesigner,
 }) {
-  const { summary: liveSummary } = useAriaData() || {};
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -50,6 +48,7 @@ function ReportDetail({
   const [trend, setTrend] = useState(scope?.params?.trend || 'all');
   const [queryLimit, setQueryLimit] = useState(20);
   const [declutterMode, setDeclutterMode] = useState(false);
+  const [detailsReady, setDetailsReady] = useState(false);
   // stabilityTable hook is called below after stabilityCandidates is derived
 
   const isAllTime = !scope?.params;
@@ -133,6 +132,36 @@ function ReportDetail({
     }
   }, [isAllTime, scope?.params]); // fetchReport/fetchScopedReport are stable mount-only fetchers
 
+  useEffect(() => {
+    setDetailsReady(false);
+    if (!data) return undefined;
+
+    let cancelled = false;
+    let timeoutId = null;
+    let idleId = null;
+    const activate = () => {
+      if (!cancelled) {
+        setDetailsReady(true);
+      }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(activate, { timeout: 250 });
+    } else {
+      timeoutId = window.setTimeout(activate, 120);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId !== null && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null && typeof window !== 'undefined') {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [data]);
+
   const handleExport = () => {
     if (!data) return;
     const md = generateMarkdown(data);
@@ -171,14 +200,14 @@ function ReportDetail({
   );
   if (!data) return null;
 
-  const s = liveSummary || data.summary || {};
+  const s = data.summary || {};
   const top = data.top_programs || [];
   const topExpanded = data.top_programs_expanded || [];
   const reportActionEligibility = data.action_eligibility || {};
-  const mergedEligibilityByResultId = {
+  const mergedEligibilityByResultId = useMemo(() => ({
     ...(eligibilityByResultId || {}),
     ...reportActionEligibility,
-  };
+  }), [eligibilityByResultId, reportActionEligibility]);
   const experiments = data.recent_experiments || [];
   const ops = data.op_success_rates || [];
   const failures = data.failure_patterns || {};
@@ -208,57 +237,92 @@ function ReportDetail({
     initialSortDesc: true,
   });
 
-  const totalProg = s.total_programs_evaluated || 0;
-  const s1Survivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;
-  const s1Rate = totalProg > 0 ? (s1Survivors / totalProg * 100).toFixed(1) : '0.0';
-
-  const sortedOps = Array.isArray(ops)
-    ? [...ops].sort((a, b) => (b.s1_rate || 0) - (a.s1_rate || 0))
-    : [];
-  const bestOps = sortedOps.filter(op => (op.s1_rate || 0) > 0).slice(0, 10);
-  const worstOps = sortedOps.filter(op => (op.s1_rate || 0) === 0 && (op.total_count || 0) > 5).slice(0, 10);
-  const confidenceFactors = {
-    experiments: Math.min(1, (s.total_experiments || 0) / 5),
-    programs: Math.min(1, totalProg / 500),
-    rankings: Math.min(1, top.length / 10),
-    opCoverage: Math.min(1, sortedOps.length / 8),
-  };
-  const confidenceScore = Math.round((
-    confidenceFactors.experiments +
-    confidenceFactors.programs +
-    confidenceFactors.rankings +
-    confidenceFactors.opCoverage
-  ) / 4 * 100);
-  const confidenceBand = confidenceScore >= 75
-    ? { label: 'High confidence', color: 'var(--accent-green)' }
-    : confidenceScore >= 45
-      ? { label: 'Moderate confidence', color: 'var(--accent-yellow)' }
-      : { label: 'Low confidence', color: 'var(--accent-red)' };
-  const confidenceWarnings = [
-    (s.total_experiments || 0) < 3 ? 'Fewer than 3 experiments: trends can change quickly with one additional run.' : null,
-    totalProg < 200 ? `Only ${totalProg} programs evaluated: ranking order is still volatile.` : null,
-    top.length < 5 ? 'Discovery ranking depth is shallow (<5 candidates).' : null,
-    sortedOps.length < 4 ? 'Limited op-level coverage: "What Works" and "What Doesn\'t Work" are early signals only.' : null,
-  ].filter(Boolean);
-  const confidenceStrengths = [
-    (s.total_experiments || 0) >= 5 ? `${s.total_experiments || 0} experiments provide multi-run evidence.` : null,
-    totalProg >= 500 ? `${totalProg.toLocaleString()} programs reduce random ranking swings.` : null,
-    top.length >= 10 ? `${top.length} ranked discoveries improve selection confidence.` : null,
-    sortedOps.length >= 8 ? `${sortedOps.length} ops observed gives broader operation-level signal.` : null,
-  ].filter(Boolean);
-  const decisionReadyCount = top.filter(program => decisionGate(program).decisionReady).length;
-  const baselineEvidenceCount = top.filter(program => program.baseline_loss_ratio != null).length;
-  const baselineWinCount = top.filter(program => program.baseline_loss_ratio != null && program.baseline_loss_ratio < 1.0).length;
-  const baselineWinInterval = wilsonInterval(baselineWinCount, baselineEvidenceCount);
-  const promotionEvidenceRows = top.map(program => promotionEvidence(program));
-  const averagePromotionScore = promotionEvidenceRows.length > 0
-    ? Math.round(promotionEvidenceRows.reduce((sum, row) => sum + row.score, 0) / promotionEvidenceRows.length)
-    : 0;
-  const reproducibilityRows = top.map(program => reproducibilityPacketStatus(program));
-  const fullReproPacketCount = reproducibilityRows.filter(row => row.readyCount === row.totalChecks).length;
-  const avgReproCompleteness = reproducibilityRows.length > 0
-    ? Math.round((reproducibilityRows.reduce((sum, row) => sum + row.readyCount / row.totalChecks, 0) / reproducibilityRows.length) * 100)
-    : 0;
+  const {
+    totalProg,
+    s1Survivors,
+    s1Rate,
+    sortedOps,
+    bestOps,
+    worstOps,
+    confidenceFactors,
+    confidenceScore,
+    confidenceBand,
+    confidenceWarnings,
+    confidenceStrengths,
+    decisionReadyCount,
+    baselineEvidenceCount,
+    baselineWinCount,
+    baselineWinInterval,
+    averagePromotionScore,
+    fullReproPacketCount,
+    avgReproCompleteness,
+  } = useMemo(() => {
+    const totalPrograms = s.total_programs_evaluated || 0;
+    const totalSurvivors = s.stage1_survivors ?? s.total_s1_passed ?? 0;
+    const rate = totalPrograms > 0 ? (totalSurvivors / totalPrograms * 100).toFixed(1) : '0.0';
+    const opsSorted = Array.isArray(ops)
+      ? [...ops].sort((a, b) => (b.s1_rate || 0) - (a.s1_rate || 0))
+      : [];
+    const best = opsSorted.filter(op => (op.s1_rate || 0) > 0).slice(0, 10);
+    const worst = opsSorted.filter(op => (op.s1_rate || 0) === 0 && (op.total_count || 0) > 5).slice(0, 10);
+    const confidence = {
+      experiments: Math.min(1, (s.total_experiments || 0) / 5),
+      programs: Math.min(1, totalPrograms / 500),
+      rankings: Math.min(1, top.length / 10),
+      opCoverage: Math.min(1, opsSorted.length / 8),
+    };
+    const score = Math.round(((confidence.experiments + confidence.programs + confidence.rankings + confidence.opCoverage) / 4) * 100);
+    const band = score >= 75
+      ? { label: 'High confidence', color: 'var(--accent-green)' }
+      : score >= 45
+        ? { label: 'Moderate confidence', color: 'var(--accent-yellow)' }
+        : { label: 'Low confidence', color: 'var(--accent-red)' };
+    const warnings = [
+      (s.total_experiments || 0) < 3 ? 'Fewer than 3 experiments: trends can change quickly with one additional run.' : null,
+      totalPrograms < 200 ? `Only ${totalPrograms} programs evaluated: ranking order is still volatile.` : null,
+      top.length < 5 ? 'Discovery ranking depth is shallow (<5 candidates).' : null,
+      opsSorted.length < 4 ? 'Limited op-level coverage: "What Works" and "What Doesn\'t Work" are early signals only.' : null,
+    ].filter(Boolean);
+    const strengths = [
+      (s.total_experiments || 0) >= 5 ? `${s.total_experiments || 0} experiments provide multi-run evidence.` : null,
+      totalPrograms >= 500 ? `${totalPrograms.toLocaleString()} programs reduce random ranking swings.` : null,
+      top.length >= 10 ? `${top.length} ranked discoveries improve selection confidence.` : null,
+      opsSorted.length >= 8 ? `${opsSorted.length} ops observed gives broader operation-level signal.` : null,
+    ].filter(Boolean);
+    const readyCount = top.filter(program => decisionGate(program).decisionReady).length;
+    const evidenceCount = top.filter(program => program.baseline_loss_ratio != null).length;
+    const winCount = top.filter(program => program.baseline_loss_ratio != null && program.baseline_loss_ratio < 1.0).length;
+    const winInterval = wilsonInterval(winCount, evidenceCount);
+    const promotionRows = top.map(program => promotionEvidence(program));
+    const promotionScore = promotionRows.length > 0
+      ? Math.round(promotionRows.reduce((sum, row) => sum + row.score, 0) / promotionRows.length)
+      : 0;
+    const reproducibilityRows = top.map(program => reproducibilityPacketStatus(program));
+    const fullPackets = reproducibilityRows.filter(row => row.readyCount === row.totalChecks).length;
+    const avgCompleteness = reproducibilityRows.length > 0
+      ? Math.round((reproducibilityRows.reduce((sum, row) => sum + row.readyCount / row.totalChecks, 0) / reproducibilityRows.length) * 100)
+      : 0;
+    return {
+      totalProg: totalPrograms,
+      s1Survivors: totalSurvivors,
+      s1Rate: rate,
+      sortedOps: opsSorted,
+      bestOps: best,
+      worstOps: worst,
+      confidenceFactors: confidence,
+      confidenceScore: score,
+      confidenceBand: band,
+      confidenceWarnings: warnings,
+      confidenceStrengths: strengths,
+      decisionReadyCount: readyCount,
+      baselineEvidenceCount: evidenceCount,
+      baselineWinCount: winCount,
+      baselineWinInterval: winInterval,
+      averagePromotionScore: promotionScore,
+      fullReproPacketCount: fullPackets,
+      avgReproCompleteness: avgCompleteness,
+    };
+  }, [ops, s, top]);
   const uniqueFingerprintCount = Number(architectureRerunTelemetry.unique_fingerprint_count || 0);
   const totalResultRows = Number(architectureRerunTelemetry.total_result_rows || 0);
   const repeatResultRows = Number(architectureRerunTelemetry.repeat_result_rows || 0);
@@ -444,6 +508,7 @@ function ReportDetail({
       </div>
 
       {!declutterMode && (
+        detailsReady ? (
         <>
       <div className="card">
         <div className="card-title">How to Read This Report</div>
@@ -942,6 +1007,14 @@ function ReportDetail({
         </div>
       )}
         </>
+        ) : (
+        <div className="card" style={{ borderLeft: '3px solid var(--accent-blue)' }}>
+          <div className="card-title" style={{ marginBottom: 8 }}>Preparing Interactive Diagnostics</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.6 }}>
+            Executive summary is ready. The heavier report tables and charts are mounting after first paint so the rest of the dashboard remains responsive.
+          </p>
+        </div>
+        )
       )}
 
       {/* Insights / Recommendations */}

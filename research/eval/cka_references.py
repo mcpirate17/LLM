@@ -181,16 +181,12 @@ class ReferenceCkaStore:
         self,
         artifact_dir: Optional[str] = None,
         artifact_version: Optional[str] = None,
-        allow_heuristic_fallback: bool = True,
     ):
         # Resolve from env or explicit args
         self._artifact_dir = artifact_dir or os.environ.get("CKA_REFERENCE_DIR")
         self._artifact_version = artifact_version or os.environ.get(
             "CKA_REFERENCE_VERSION", "v1"
         )
-        self._allow_fallback = allow_heuristic_fallback or os.environ.get(
-            "CKA_ALLOW_HEURISTIC_FALLBACK", "true"
-        ).lower() in ("true", "1", "yes")
 
         self._lock = threading.Lock()
         self._loaded = False
@@ -225,9 +221,7 @@ class ReferenceCkaStore:
         artifact_dir = self._resolve_dir()
         if artifact_dir is None:
             self._load_error = "Artifact directory not found"
-            logger.info(
-                "CKA reference artifacts not found, will use heuristic fallback"
-            )
+            logger.info("CKA reference artifacts not found")
             return
 
         try:
@@ -276,21 +270,21 @@ class ReferenceCkaStore:
                 "cka_reference_quality": self._manifest.quality_flags.get(
                     "overall", "unknown"
                 ),
-                "cka_similarity_path": "_compute_reference_cka",
+                "cka_similarity_path": "compute_reference_cka",
             }
         else:
             if not self._fallback_warned:
                 self._fallback_warned = True
                 logger.warning(
-                    "Using heuristic CKA fallback: %s",
+                    "CKA reference artifacts unavailable: %s",
                     self._load_error or "unknown reason",
                 )
             return {
-                "cka_source": "heuristic_fallback",
+                "cka_source": "none",
                 "cka_artifact_version": None,
                 "cka_probe_protocol_hash": None,
-                "cka_reference_quality": "heuristic",
-                "cka_similarity_path": "_compute_reference_cka",
+                "cka_reference_quality": "none",
+                "cka_similarity_path": "compute_reference_cka",
             }
 
     @property
@@ -299,10 +293,6 @@ class ReferenceCkaStore:
         with self._lock:
             self._load()
         return self._references is not None
-
-    @property
-    def allow_heuristic_fallback(self) -> bool:
-        return self._allow_fallback
 
     def reset(self) -> None:
         """Reset cached state (for testing)."""

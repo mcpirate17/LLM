@@ -220,6 +220,155 @@ class TestNotebook(unittest.TestCase):
         exp = self.nb.get_experiment(exp_id)
         self.assertEqual(exp["status"], "completed")
 
+    def test_template_slot_observability_exposes_diagnosis_and_actions(self):
+        """Template observability should expose richer evidence for template tuning."""
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 3},
+            hypothesis="template observability",
+        )
+        weak_graph = {
+            "metadata": {
+                "templates_used": ["attn_sparse_test"],
+                "motifs_used": ["motif_a"],
+                "template_slot_usage": [
+                    {
+                        "template_name": "attn_sparse_test",
+                        "slot_index": 0,
+                        "slot_key": "attn_sparse_test.slot0",
+                        "slot_classes": ["attention"],
+                        "selected_motif": "motif_a",
+                    }
+                ],
+            }
+        }
+        strong_graph = {
+            "metadata": {
+                "templates_used": ["attn_strong_test"],
+                "motifs_used": ["motif_b"],
+                "template_slot_usage": [],
+            }
+        }
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="weak_template_fp_1",
+            graph_json=json.dumps(weak_graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            loss_ratio=0.92,
+            validation_loss_ratio=0.97,
+            novelty_confidence=0.4,
+            induction_auc=0.0,
+            binding_auc=0.0,
+            ar_auc=0.0,
+            hellaswag_acc=0.25,
+            screening_hellaswag_correct=2,
+            screening_hellaswag_total=8,
+            screening_wikitext_status="ok",
+            error_type="insufficient_learning",
+        )
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="strong_template_fp_1",
+            graph_json=json.dumps(strong_graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.32,
+            validation_loss_ratio=0.35,
+            novelty_confidence=0.8,
+            induction_auc=0.08,
+            binding_auc=0.09,
+            ar_auc=0.07,
+            hellaswag_acc=0.31,
+            screening_hellaswag_correct=3,
+            screening_hellaswag_total=8,
+            screening_wikitext_status="ok",
+        )
+        self.nb.flush_writes()
+
+        with patch(
+            "research.scientist.notebook.notebook_misc.TEMPLATES",
+            {"attn_sparse_test": object(), "attn_strong_test": object()},
+        ):
+            summary = self.nb.get_template_slot_observability(limit=8)
+
+        self.assertIn("all_templates", summary)
+        by_name = {row["name"]: row for row in summary["all_templates"]}
+        self.assertIn("attn_sparse_test", by_name)
+        self.assertIn("attn_strong_test", by_name)
+        weak = by_name["attn_sparse_test"]
+        strong = by_name["attn_strong_test"]
+        self.assertEqual(weak["evidence_level"], "insufficient")
+        self.assertGreaterEqual(len(weak["diagnosis"]), 1)
+        self.assertGreaterEqual(len(weak["actions"]), 1)
+        self.assertEqual(weak["screening_metric_coverage"]["induction"], 1)
+        self.assertEqual(weak["screening_metric_coverage"]["hellaswag"], 2)
+        self.assertAlmostEqual(strong["avg_induction_auc"], 0.08)
+        self.assertAlmostEqual(strong["avg_binding_auc"], 0.09)
+        self.assertEqual(summary["summary"]["templates_tracked"], 2)
+        self.assertIn("all_slots", summary)
+        self.assertEqual(summary["all_slots"][0]["slot_key"], "attn_sparse_test.slot0")
+
+    def test_template_slot_observability_filters_legacy_templates_from_all_templates(
+        self,
+    ):
+        """Legacy template names from historical rows should not appear as active templates."""
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 2},
+            hypothesis="template observability legacy filtering",
+        )
+        active_graph = {
+            "metadata": {
+                "templates_used": ["attn_active_test"],
+                "motifs_used": ["motif_a"],
+                "template_slot_usage": [],
+            }
+        }
+        legacy_graph = {
+            "metadata": {
+                "templates_used": ["0_legacy_template"],
+                "motifs_used": ["motif_b"],
+                "template_slot_usage": [],
+            }
+        }
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="active_template_fp",
+            graph_json=json.dumps(active_graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.31,
+            validation_loss_ratio=0.34,
+        )
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="legacy_template_fp",
+            graph_json=json.dumps(legacy_graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            loss_ratio=0.91,
+            validation_loss_ratio=0.95,
+            error_type="insufficient_learning",
+        )
+        self.nb.flush_writes()
+
+        with patch(
+            "research.scientist.notebook.notebook_misc.TEMPLATES",
+            {"attn_active_test": object()},
+        ):
+            summary = self.nb.get_template_slot_observability(limit=8)
+
+        active_names = {row["name"] for row in summary["all_templates"]}
+        inactive_names = {row["name"] for row in summary["inactive_templates"]}
+        self.assertIn("attn_active_test", active_names)
+        self.assertNotIn("0_legacy_template", active_names)
+        self.assertIn("0_legacy_template", inactive_names)
+
     def test_experiment_trends_stabilize_tiny_runs_with_confidence_fields(self):
         """Tiny-run S1 rates should be damped and expose confidence metadata."""
         tiny_exp = self.nb.start_experiment("synthesis", {}, "tiny")

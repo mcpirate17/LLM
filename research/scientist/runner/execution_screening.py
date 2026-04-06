@@ -102,6 +102,11 @@ _EFFICIENCY_OPS = frozenset(
         "tropical_gate",
         "tropical_moe",
         "tropical_router",
+        "hybrid_token_gate",
+        "sparse_span_builder",
+        "hybrid_sparse_router",
+        "lane_conditioned_block",
+        "default_path",
     }
 )
 
@@ -953,7 +958,12 @@ class _ExecutionScreeningMixin:
     ) -> Dict:
         """Core experiment logic shared by single and continuous modes."""
         self._live_training_context = {"exp_id": exp_id, "phase": "synthesis"}
-        stage1_config = _make_stage1_screening_config(config)
+        stage09_enabled = bool(
+            getattr(config, "enable_stage09_cheap_train_gate", False)
+        )
+        stage1_config = (
+            _make_stage1_screening_config(config) if stage09_enabled else config
+        )
         with self._lock:
             # Z17: Explicitly reset progress object at start of execution
             self._progress = LiveProgress(
@@ -969,6 +979,7 @@ class _ExecutionScreeningMixin:
             "stage05_passed": 0,
             "rapid_screening_killed": 0,
             "rapid_screening_kill_reasons": {},
+            "stage09_passed": 0,
             "stage1_passed": 0,
             "novel_count": 0,
             "best_loss_ratio": None,
@@ -996,6 +1007,8 @@ class _ExecutionScreeningMixin:
                 "rapid_screen_attempted": 0,
                 "dropped_rapid_screening": 0,
                 "stage1_queued": 0,
+                "stage09_completed": 0,
+                "stage09_survived": 0,
                 "stage1_completed": 0,
                 "stage1_survived": 0,
                 "persisted_rows": 0,
@@ -1479,20 +1492,24 @@ class _ExecutionScreeningMixin:
                                 if n.get("op_name", "") != "input"
                             ]
                             enrich_with_op_stats(feats, ops, preloaded=_op_stats_cache)
-                        p_pass = _ensemble.predict_gate(
+                        planning = _ensemble.predict_planning_score(
                             graph_json=gd,
                             graph_features=feats if feats else None,
                         )
-                        scored.append((p_pass, g, gd))
+                        scored.append((planning, g, gd))
 
                     # Sort by predicted quality (best first for evaluation priority)
-                    scored.sort(key=lambda x: -x[0])
+                    scored.sort(key=lambda x: -x[0]["planning_score"])
 
                     # Hard floor: only skip graphs scoring below threshold
                     kept: List = []
                     skipped = 0
-                    for p_pass, g, gd in scored:
-                        if p_pass < config.gbm_gate_threshold:
+                    for planning, g, gd in scored:
+                        planning_score = float(planning.get("planning_score", 0.0))
+                        p_pass = float(planning.get("p_pass", 0.0))
+                        p_ind = float(planning.get("p_induction_learner", 0.0))
+                        pred_auc = float(planning.get("predicted_induction_auc", 0.0))
+                        if planning_score < config.gbm_gate_threshold:
                             skipped += 1
                             try:
                                 nb.record_program_result(
@@ -1500,7 +1517,12 @@ class _ExecutionScreeningMixin:
                                     graph=g,
                                     graph_json=json.dumps(gd, separators=(",", ":")),
                                     status="predictor_skip",
-                                    metrics={"predicted_p_s1": float(p_pass)},
+                                    metrics={
+                                        "predicted_p_s1": p_pass,
+                                        "predicted_induction_auc": pred_auc,
+                                        "predicted_p_induction_learner": p_ind,
+                                        "predictor_planning_score": planning_score,
+                                    },
                                 )
                             except (TypeError, ValueError) as e:
                                 logger.debug(
@@ -1512,18 +1534,25 @@ class _ExecutionScreeningMixin:
                     graphs = kept
                     results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
                     results["funnel_counts"]["post_gbm_prescreener"] = len(graphs)
-                    scores_arr = [s[0] for s in scored]
+                    scores_arr = [float(s[0]["planning_score"]) for s in scored]
+                    pass_arr = [float(s[0]["p_pass"]) for s in scored]
+                    induction_arr = [float(s[0]["p_induction_learner"]) for s in scored]
                     _diag = (
                         _ensemble.diagnostics()
                         if hasattr(_ensemble, "diagnostics")
                         else {}
                     )
                     logger.info(
-                        "Ensemble ranker: %d graphs scored [%.3f–%.3f], "
+                        "Ensemble ranker: %d graphs scored plan=[%.3f–%.3f] "
+                        "pass=[%.3f–%.3f] induction=[%.3f–%.3f], "
                         "%d below floor (%.2f), %d kept, components=%d",
                         len(scored),
                         min(scores_arr) if scores_arr else 0,
                         max(scores_arr) if scores_arr else 0,
+                        min(pass_arr) if pass_arr else 0,
+                        max(pass_arr) if pass_arr else 0,
+                        min(induction_arr) if induction_arr else 0,
+                        max(induction_arr) if induction_arr else 0,
                         skipped,
                         config.gbm_gate_threshold,
                         len(kept),
@@ -1560,7 +1589,9 @@ class _ExecutionScreeningMixin:
             )
 
             # Real-time dedup: skip if evaluated by another process since experiment start
-            if nb.has_fingerprint(fp):
+            if not getattr(
+                config, "disable_runtime_dedup", False
+            ) and nb.has_fingerprint(fp):
                 results.setdefault("skipped_dedup_runtime", 0)
                 results["skipped_dedup_runtime"] += 1
                 results["funnel_counts"]["dropped_runtime_dedup"] += 1
@@ -1778,11 +1809,18 @@ class _ExecutionScreeningMixin:
                     time.sleep(0.1)
 
                 layer_graphs = [graph] * config.n_layers
+                _compile_t0 = time.perf_counter()
                 model = compile_model(
                     layer_graphs,
                     vocab_size=_phase1_vocab,
                     max_seq_len=config.max_seq_len,
                 )
+                _compile_ms = (time.perf_counter() - _compile_t0) * 1000.0
+                program_metrics["compile_time_ms"] = (
+                    float(program_metrics.get("compile_time_ms", 0.0) or 0.0)
+                    + _compile_ms
+                )
+                results.setdefault("_compile_times_ms", []).append(_compile_ms)
                 _eval_timeout = 60 if getattr(config, "_exotic_mode", False) else 30
                 sandbox_result = self._safe_eval_for_stage(
                     model,
@@ -2040,11 +2078,18 @@ class _ExecutionScreeningMixin:
                 if _use_progressive:
                     del model
                     clear_gpu_memory()
+                    _compile_t0 = time.perf_counter()
                     model = compile_model(
                         layer_graphs,
                         vocab_size=config.vocab_size,
                         max_seq_len=config.max_seq_len,
                     )
+                    _compile_ms = (time.perf_counter() - _compile_t0) * 1000.0
+                    program_metrics["compile_time_ms"] = (
+                        float(program_metrics.get("compile_time_ms", 0.0) or 0.0)
+                        + _compile_ms
+                    )
+                    results.setdefault("_compile_times_ms", []).append(_compile_ms)
                     program_metrics["progressive_phase2_compiled"] = True
 
                 routing_ops = graph_routing_ops(graph)
@@ -2053,11 +2098,18 @@ class _ExecutionScreeningMixin:
                     try:
                         from ...eval.wikitext_eval import screening_wikitext_eval
 
+                        _compile_t0 = time.perf_counter()
                         fast_lane_model = compile_model(
                             layer_graphs,
                             vocab_size=config.vocab_size,
                             max_seq_len=config.max_seq_len,
                         )
+                        _compile_ms = (time.perf_counter() - _compile_t0) * 1000.0
+                        program_metrics["compile_time_ms"] = (
+                            float(program_metrics.get("compile_time_ms", 0.0) or 0.0)
+                            + _compile_ms
+                        )
+                        results.setdefault("_compile_times_ms", []).append(_compile_ms)
                         fast_lane = screening_wikitext_eval(
                             fast_lane_model,
                             config.vocab_size,
@@ -2145,16 +2197,19 @@ class _ExecutionScreeningMixin:
                 # Stage 1: Asynchronous Execution (Z6)
                 self._update_progress(current_stage="queuing_s1")
 
+                screening_seed = self._stable_seed(exp_id, i, "screening")
                 orchestrator.submit(
                     index=i,
                     graph=graph,
                     config=stage1_config,
-                    seed=self._stable_seed(exp_id, i, "screening"),
+                    seed=screening_seed,
                     payload={
                         "metrics": program_metrics,
                         "graph": graph,
                         "batch_id": i // candidate_batch_size,
                         "queue_kind": "candidate_screening",
+                        "screening_stage": "stage09" if stage09_enabled else "stage1",
+                        "screening_seed": screening_seed,
                     },
                     model=model,  # Reuse compiled model (at real vocab)
                 )
@@ -2233,9 +2288,11 @@ class _ExecutionScreeningMixin:
             dedup_str = f", dedup={results['skipped_dedup']} ({results.get('dedup_rate', 0) * 100:.0f}%)"
         rapid_killed = results.get("rapid_screening_killed", 0)
         rapid_str = f", rapid_killed={rapid_killed}" if rapid_killed else ""
+        stage09 = results.get("stage09_passed", 0)
+        stage09_str = f", S0.9={stage09}" if stage09 else ""
         logger.info(
             "Experiment %s complete: %d programs → S0=%d → S0.5=%d → S1=%d "
-            "(%.1fs)%s%s%s%s",
+            "(%.1fs)%s%s%s%s%s",
             exp_id[:8],
             results["total"],
             results["stage0_passed"],
@@ -2245,6 +2302,7 @@ class _ExecutionScreeningMixin:
             best_str,
             dedup_str,
             rapid_str,
+            stage09_str,
             f", native_gating={results.get('skipped_proactive_gating', 0)}"
             if results.get("skipped_proactive_gating")
             else "",

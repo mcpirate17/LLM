@@ -19,8 +19,7 @@ from .corpus_pipeline import (
     prepare_text_split_batches,
 )
 from .utils import (
-    micro_train_loop,
-    compute_perplexity,
+    micro_train_and_measure_perplexity,
 )
 from .wikitext_eval import wikitext_score_from_ppl
 
@@ -97,11 +96,14 @@ def evaluate_tinystories(
     if not train_batches or not val_batches:
         return {"tinystories_perplexity": None, "error": "batch_generation_failed"}
 
-    pre_ppl = compute_perplexity(model, val_batches, vocab_size)
-    train_final_loss = micro_train_loop(
-        model, train_batches, vocab_size, n_train_steps, lr
+    pre_ppl, train_final_loss, post_ppl = micro_train_and_measure_perplexity(
+        model,
+        train_batches,
+        val_batches,
+        vocab_size,
+        n_train_steps=n_train_steps,
+        lr=lr,
     )
-    post_ppl = compute_perplexity(model, val_batches, vocab_size)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 

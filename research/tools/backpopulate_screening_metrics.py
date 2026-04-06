@@ -10,6 +10,7 @@ are inserted.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -19,7 +20,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 import torch
 
@@ -39,7 +40,8 @@ DB_PATH = Path("research/lab_notebook.db")
 REPORT_PATH = Path("research/reports/backpopulate_screening_metrics.tsv")
 DEFAULT_BATCH_COMMIT = 10
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
-DEFAULT_WORKER_TIMEOUT_SECONDS = 180
+DEFAULT_WORKER_TIMEOUT_SECONDS = None
+DEFAULT_POST_TRAIN_STABILITY_RUNS = 1
 RAPID_REQUIRED_FIELDS = (
     "rapid_screening_passed",
     "rapid_screening_elapsed_ms",
@@ -48,10 +50,49 @@ RAPID_REQUIRED_FIELDS = (
 )
 POST_REQUIRED_FIELDS = (
     "wikitext_perplexity",
+    "hellaswag_acc",
     "induction_auc",
     "binding_auc",
     "binding_composite",
 )
+
+POST_TARGET_ALIASES = {
+    "full": "full",
+    "one": "hellaswag",
+    "hellaswag": "hellaswag",
+    "two": "binding",
+    "binding": "binding",
+    "all": "all",
+}
+
+
+def _parse_optional_int(value: str) -> int | None:
+    text = str(value).strip().lower()
+    if text in {"", "none", "null"}:
+        return None
+    parsed = int(text)
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _normalize_post_target(raw: str) -> str:
+    key = str(raw).strip().lower()
+    if key not in POST_TARGET_ALIASES:
+        raise argparse.ArgumentTypeError(
+            f"Unsupported --post-train-target={raw!r}; use one, two, all, full, hellaswag, or binding."
+        )
+    return POST_TARGET_ALIASES[key]
+
+
+def _target_post_fields(target: str) -> tuple[str, ...]:
+    if target == "hellaswag":
+        return ("hellaswag_acc",)
+    if target == "binding":
+        return ("induction_auc", "binding_auc", "binding_composite")
+    if target == "all":
+        return ("hellaswag_acc", "induction_auc", "binding_auc", "binding_composite")
+    return POST_REQUIRED_FIELDS
 
 
 def _parse_args() -> argparse.Namespace:
@@ -68,6 +109,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--skip-rapid", action="store_true")
     parser.add_argument("--skip-post-train", action="store_true")
+    parser.add_argument(
+        "--post-train-target",
+        type=_normalize_post_target,
+        default="full",
+        help=(
+            "Which post-train metric family to backfill: "
+            "'one'/'hellaswag', 'two'/'binding' (induction+binding AUCs), "
+            "'all' (hellaswag+binding probes), or 'full' (legacy full post-train, including wikitext)."
+        ),
+    )
+    parser.add_argument(
+        "--allow-insufficient-learning-metrics",
+        action="store_true",
+        help=(
+            "For backpopulate only, keep post-train screening/probe metrics even "
+            "when CUDA replay fails only due to the validation-loss generalization gate."
+        ),
+    )
     parser.add_argument("--batch-commit", type=int, default=DEFAULT_BATCH_COMMIT)
     parser.add_argument(
         "--max-consecutive-failures",
@@ -80,11 +139,38 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--worker-timeout-seconds",
-        type=int,
+        type=_parse_optional_int,
         default=DEFAULT_WORKER_TIMEOUT_SECONDS,
-        help="Hard timeout for a single isolated replay worker.",
+        help="Hard timeout for a single isolated replay worker. Use 'none' or 'null' for no timeout.",
     )
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
+    parser.add_argument(
+        "--post-train-stability-runs",
+        type=int,
+        default=DEFAULT_POST_TRAIN_STABILITY_RUNS,
+        help=(
+            "Repeat post-train CUDA replay this many times and fail closed when "
+            "key metrics drift beyond tolerance."
+        ),
+    )
+    parser.add_argument(
+        "--stability-wikitext-rel-tol",
+        type=float,
+        default=0.10,
+        help="Maximum allowed relative drift for wikitext_perplexity.",
+    )
+    parser.add_argument(
+        "--stability-hellaswag-abs-tol",
+        type=float,
+        default=0.05,
+        help="Maximum allowed absolute drift for hellaswag_acc.",
+    )
+    parser.add_argument(
+        "--stability-probe-abs-tol",
+        type=float,
+        default=0.01,
+        help=("Maximum allowed absolute drift for induction/binding probe metrics."),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--isolate-subprocess",
@@ -101,7 +187,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _truthy(row: sqlite3.Row, key: str) -> bool:
+def _truthy(row: Mapping[str, Any], key: str) -> bool:
     return bool(int(row[key] or 0))
 
 
@@ -109,7 +195,7 @@ def _json_dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _needs_rapid(row: sqlite3.Row, force: bool) -> bool:
+def _needs_rapid(row: Mapping[str, Any], force: bool) -> bool:
     if not _truthy(row, "stage0_passed") or not _truthy(row, "stage05_passed"):
         return False
     if force:
@@ -125,23 +211,16 @@ def _needs_rapid(row: sqlite3.Row, force: bool) -> bool:
     )
 
 
-def _needs_post_train(row: sqlite3.Row, force: bool) -> bool:
+def _needs_post_train(
+    row: Mapping[str, Any], force: bool, target_fields: Sequence[str]
+) -> bool:
     if not _truthy(row, "stage0_passed") or not _truthy(row, "stage05_passed"):
         return False
     if row["n_train_steps"] is None:
         return False
     if force:
         return True
-    return any(
-        row[key] is None
-        for key in (
-            "wikitext_perplexity",
-            "hellaswag_acc",
-            "induction_auc",
-            "binding_auc",
-            "binding_composite",
-        )
-    )
+    return any(row[key] is None for key in target_fields)
 
 
 def _candidate_result_ids(args: argparse.Namespace) -> List[str]:
@@ -197,8 +276,7 @@ def _fetch_rows(
             e.timestamp
         FROM program_results pr
         JOIN experiments e ON e.experiment_id = pr.experiment_id
-        WHERE e.experiment_type = 'backfill'
-          AND TRIM(COALESCE(pr.graph_json, '')) <> ''
+        WHERE TRIM(COALESCE(pr.graph_json, '')) <> ''
           AND pr.graph_json <> '{}'
           AND pr.stage0_passed = 1
           AND pr.stage05_passed = 1
@@ -208,7 +286,9 @@ def _fetch_rows(
         placeholders = ",".join("?" for _ in result_ids)
         base += f" AND pr.result_id IN ({placeholders})"
         params.extend(result_ids)
-    elif not force:
+    else:
+        base += " AND e.experiment_type = 'backfill'"
+    if not result_ids and not force:
         base += """
           AND (
             pr.rapid_screening_passed IS NULL OR
@@ -249,8 +329,14 @@ def _build_run_config(row: sqlite3.Row, device: str) -> RunConfig:
     config.stage1_steps = int(budget_steps)
     config.collect_training_curve = False
     config.enable_perf_tracing = False
+    config.enable_stage09_cheap_train_gate = False
     config.skip_post_s1_fingerprint = True
     config.skip_post_s1_triage = True
+    config.screening_probe_seed = ExperimentRunner._stable_seed(
+        row["result_id"],
+        row["graph_fingerprint"],
+        "backpopulate_screening_probe",
+    )
     return config
 
 
@@ -258,7 +344,26 @@ def _row_to_payload(row: sqlite3.Row) -> Dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 
 
-def _run_rapid(graph_json: str, config: RunConfig, device: str) -> Dict[str, Any]:
+@contextlib.contextmanager
+def _deterministic_compile_seed(device: str, seed: int):
+    dev = resolve_device(device)
+    cuda_devices: list[int] = []
+    if dev.type == "cuda" and torch.cuda.is_available():
+        cuda_idx = dev.index if dev.index is not None else torch.cuda.current_device()
+        cuda_devices = [int(cuda_idx)]
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(int(seed))
+        if cuda_devices:
+            torch.cuda.manual_seed_all(int(seed))
+        yield
+
+
+def _run_rapid(
+    graph_json: str,
+    config: RunConfig,
+    device: str,
+    result_id: str,
+) -> Dict[str, Any]:
     graph = graph_from_json(graph_json)
     phase1_vocab = (
         config.qualifying_vocab_size
@@ -266,11 +371,15 @@ def _run_rapid(graph_json: str, config: RunConfig, device: str) -> Dict[str, Any
         and config.vocab_size > config.qualifying_vocab_size
         else config.vocab_size
     )
-    model = compile_model(
-        [graph] * int(config.n_layers),
-        vocab_size=phase1_vocab,
-        max_seq_len=config.max_seq_len,
+    compile_seed = ExperimentRunner._stable_seed(
+        result_id, graph.fingerprint(), "backpopulate_rapid_compile"
     )
+    with _deterministic_compile_seed(device, compile_seed):
+        model = compile_model(
+            [graph] * int(config.n_layers),
+            vocab_size=phase1_vocab,
+            max_seq_len=config.max_seq_len,
+        )
     dev_str = str(resolve_device(device))
     rapid = RapidScreeningCheck()
     try:
@@ -325,13 +434,18 @@ def _run_post_train(
     config: RunConfig,
     device: str,
     result_id: str,
+    allow_insufficient_learning_metrics: bool = False,
 ) -> Dict[str, Any]:
     graph = graph_from_json(graph_json)
-    model = compile_model(
-        [graph] * int(config.n_layers),
-        vocab_size=int(config.vocab_size),
-        max_seq_len=config.max_seq_len,
+    compile_seed = ExperimentRunner._stable_seed(
+        result_id, graph.fingerprint(), "backpopulate_post_compile"
     )
+    with _deterministic_compile_seed(device, compile_seed):
+        model = compile_model(
+            [graph] * int(config.n_layers),
+            vocab_size=int(config.vocab_size),
+            max_seq_len=config.max_seq_len,
+        )
     dev = resolve_device(device)
     try:
         s1_result = runner._micro_train(
@@ -345,7 +459,12 @@ def _run_post_train(
             raise RuntimeError(
                 f"smoke_test_failure: {s1_result.get('smoke_test_failure')}"
             )
-        if s1_result.get("error"):
+        tolerate_gate_failure = (
+            allow_insufficient_learning_metrics
+            and s1_result.get("error")
+            and s1_result.get("error_type") == "insufficient_learning"
+        )
+        if s1_result.get("error") and not tolerate_gate_failure:
             detail_parts = [str(s1_result.get("error"))]
             if s1_result.get("error_type"):
                 detail_parts.append(f"type={s1_result.get('error_type')}")
@@ -361,6 +480,14 @@ def _run_post_train(
             updates["hellaswag_status"] = s1_result.get("hellaswag_status")
         if s1_result.get("hellaswag_n_examples") is not None:
             updates["hellaswag_n_examples"] = s1_result.get("hellaswag_n_examples")
+        if tolerate_gate_failure:
+            updates.update(
+                _recover_hellaswag_after_gate_failure(
+                    model=model,
+                    config=config,
+                    device=str(dev),
+                )
+            )
         updates["train_budget_steps"] = int(config.stage1_steps)
         return updates
     finally:
@@ -370,6 +497,35 @@ def _run_post_train(
                 torch.cuda.empty_cache()
             except Exception:
                 pass
+
+
+def _recover_hellaswag_after_gate_failure(
+    *,
+    model: torch.nn.Module,
+    config: RunConfig,
+    device: str,
+) -> Dict[str, Any]:
+    """Recover HellaSwag for tolerated insufficient-learning gate failures.
+
+    ``_micro_train`` only runs post-S1 probes when ``result["passed"]`` is true.
+    Backpopulate explicitly opts into keeping HellaSwag metrics for certain
+    replay-only generalization gate failures, so rerun the requested HellaSwag
+    probe on the trained model before returning an empty update set.
+    """
+    if getattr(config, "skip_screening_hellaswag", False):
+        return {}
+
+    from research.eval.hellaswag_eval import screening_hellaswag_eval
+
+    hs = screening_hellaswag_eval(model, config.vocab_size, device)
+    updates: Dict[str, Any] = {}
+    if hs.get("hellaswag_acc") is not None:
+        updates["hellaswag_acc"] = hs.get("hellaswag_acc")
+    if hs.get("hellaswag_status") is not None:
+        updates["hellaswag_status"] = hs.get("hellaswag_status")
+    if hs.get("hellaswag_total") is not None:
+        updates["hellaswag_n_examples"] = hs.get("hellaswag_total")
+    return updates
 
 
 def _select_updates(
@@ -392,6 +548,7 @@ def _missing_required_fields(
     force: bool,
     rapid_needed: bool,
     post_needed: bool,
+    target_post_fields: Sequence[str],
 ) -> List[str]:
     missing: List[str] = []
     if rapid_needed:
@@ -400,11 +557,61 @@ def _missing_required_fields(
                 if updates.get(key) is None:
                     missing.append(key)
     if post_needed:
-        for key in POST_REQUIRED_FIELDS:
+        for key in target_post_fields:
             if force or row.get(key) is None:
                 if updates.get(key) is None:
                     missing.append(key)
     return missing
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _check_post_train_stability(
+    runs: Sequence[Dict[str, Any]],
+    compare_keys: Sequence[str],
+    *,
+    wikitext_rel_tol: float,
+    hellaswag_abs_tol: float,
+    probe_abs_tol: float,
+) -> None:
+    if len(runs) <= 1:
+        return
+    for key in compare_keys:
+        values = [_float_or_none(run.get(key)) for run in runs]
+        values = [v for v in values if v is not None]
+        if len(values) <= 1:
+            continue
+        lo = min(values)
+        hi = max(values)
+        if key == "wikitext_perplexity":
+            baseline = max(abs(sum(values) / len(values)), 1.0)
+            drift = (hi - lo) / baseline
+            if drift > wikitext_rel_tol:
+                raise RuntimeError(
+                    f"unstable_post_train_replay: {key} drift={drift:.4f} "
+                    f"range=[{lo:.6g},{hi:.6g}]"
+                )
+        elif key == "hellaswag_acc":
+            drift = hi - lo
+            if drift > hellaswag_abs_tol:
+                raise RuntimeError(
+                    f"unstable_post_train_replay: {key} drift={drift:.4f} "
+                    f"range=[{lo:.6g},{hi:.6g}]"
+                )
+        else:
+            drift = hi - lo
+            if drift > probe_abs_tol:
+                raise RuntimeError(
+                    f"unstable_post_train_replay: {key} drift={drift:.4f} "
+                    f"range=[{lo:.6g},{hi:.6g}]"
+                )
 
 
 def _evaluate_row_payload(
@@ -413,33 +620,74 @@ def _evaluate_row_payload(
     force: bool,
     skip_rapid: bool,
     skip_post_train: bool,
+    post_train_stability_runs: int,
+    stability_wikitext_rel_tol: float,
+    stability_hellaswag_abs_tol: float,
+    stability_probe_abs_tol: float,
+    allow_insufficient_learning_metrics: bool,
+    post_train_target: str,
 ) -> Dict[str, Any]:
-    row = sqlite3.Row  # type: ignore[assignment]
-    row = payload  # type: ignore[assignment]
+    row = payload
+    target_post_fields = _target_post_fields(post_train_target)
     rapid_needed = (not skip_rapid) and _needs_rapid(row, force)
-    post_needed = (not skip_post_train) and _needs_post_train(row, force)
+    post_needed = (not skip_post_train) and _needs_post_train(
+        row, force, target_post_fields
+    )
     updates: Dict[str, Any] = {}
     config = _build_run_config(row, device)
     # Replay only the missing post-train metrics for this row.
-    config.skip_screening_wikitext = row.get("wikitext_perplexity") is not None
-    config.skip_screening_hellaswag = row.get("hellaswag_acc") is not None
-    config.skip_binding_probes = all(
-        row.get(key) is not None
-        for key in ("induction_auc", "binding_auc", "binding_composite")
+    target_post_field_set = set(target_post_fields)
+    config.skip_screening_wikitext = (
+        "wikitext_perplexity" not in target_post_field_set
+        or row.get("wikitext_perplexity") is not None
     )
+    config.skip_screening_hellaswag = (
+        "hellaswag_acc" not in target_post_field_set
+        or row.get("hellaswag_acc") is not None
+    )
+    target_probe_fields = {"induction_auc", "binding_auc", "binding_composite"}
+    config.skip_binding_probes = not bool(
+        target_probe_fields & target_post_field_set
+    ) or all(row.get(key) is not None for key in target_probe_fields)
     if rapid_needed:
-        updates.update(_run_rapid(str(row["graph_json"]), config, device))
-    if post_needed:
-        runner = ExperimentRunner(notebook_path=str(DB_PATH))
         updates.update(
-            _run_post_train(
-                runner,
+            _run_rapid(
                 str(row["graph_json"]),
                 config,
                 device,
                 str(row["result_id"]),
             )
         )
+    if post_needed:
+        post_runs: List[Dict[str, Any]] = []
+        for _ in range(max(1, int(post_train_stability_runs))):
+            runner = ExperimentRunner(notebook_path=str(DB_PATH))
+            try:
+                post_runs.append(
+                    _run_post_train(
+                        runner,
+                        str(row["graph_json"]),
+                        config,
+                        device,
+                        str(row["result_id"]),
+                        allow_insufficient_learning_metrics=allow_insufficient_learning_metrics,
+                    )
+                )
+            finally:
+                close_runner = getattr(runner, "close", None)
+                if callable(close_runner):
+                    close_runner()
+        compare_keys = [
+            key for key in target_post_fields if force or row.get(key) is None
+        ]
+        _check_post_train_stability(
+            post_runs,
+            compare_keys,
+            wikitext_rel_tol=stability_wikitext_rel_tol,
+            hellaswag_abs_tol=stability_hellaswag_abs_tol,
+            probe_abs_tol=stability_probe_abs_tol,
+        )
+        updates.update(post_runs[-1])
     updates = _select_updates(row, updates, force)
     missing_required = _missing_required_fields(
         row=row,
@@ -447,6 +695,7 @@ def _evaluate_row_payload(
         force=force,
         rapid_needed=rapid_needed,
         post_needed=post_needed,
+        target_post_fields=target_post_fields,
     )
     if missing_required:
         raise RuntimeError(
@@ -480,6 +729,16 @@ def _run_worker_subprocess(
             str(payload_path),
             "--worker-output",
             str(output_path),
+            "--post-train-stability-runs",
+            str(args.post_train_stability_runs),
+            "--stability-wikitext-rel-tol",
+            str(args.stability_wikitext_rel_tol),
+            "--stability-hellaswag-abs-tol",
+            str(args.stability_hellaswag_abs_tol),
+            "--stability-probe-abs-tol",
+            str(args.stability_probe_abs_tol),
+            "--post-train-target",
+            str(args.post_train_target),
         ]
         if args.force:
             cmd.append("--force")
@@ -487,6 +746,8 @@ def _run_worker_subprocess(
             cmd.append("--skip-rapid")
         if args.skip_post_train:
             cmd.append("--skip-post-train")
+        if args.allow_insufficient_learning_metrics:
+            cmd.append("--allow-insufficient-learning-metrics")
         try:
             proc = subprocess.run(
                 cmd,
@@ -494,7 +755,11 @@ def _run_worker_subprocess(
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=max(1, int(args.worker_timeout_seconds)),
+                timeout=(
+                    None
+                    if args.worker_timeout_seconds is None
+                    else max(1, int(args.worker_timeout_seconds))
+                ),
             )
             worker_output = {}
             if output_path.exists():
@@ -552,6 +817,12 @@ def main() -> None:
                 force=args.force,
                 skip_rapid=args.skip_rapid,
                 skip_post_train=args.skip_post_train,
+                post_train_stability_runs=args.post_train_stability_runs,
+                stability_wikitext_rel_tol=args.stability_wikitext_rel_tol,
+                stability_hellaswag_abs_tol=args.stability_hellaswag_abs_tol,
+                stability_probe_abs_tol=args.stability_probe_abs_tol,
+                allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
+                post_train_target=args.post_train_target,
             )
             result["ok"] = 1
         except Exception as exc:  # noqa: BLE001
@@ -576,15 +847,18 @@ def main() -> None:
     consecutive_failures = 0
     report_rows: List[Dict[str, Any]] = []
     t0 = time.time()
+    target_post_fields = _target_post_fields(args.post_train_target)
 
     for start in range(0, len(rows), max(1, int(args.batch_commit))):
         chunk = rows[start : start + max(1, int(args.batch_commit))]
+        chunk_report_rows: List[Dict[str, Any]] = []
+        stop_error: str | None = None
         with nb.batch():
             for row in chunk:
                 processed += 1
                 rapid_needed = (not args.skip_rapid) and _needs_rapid(row, args.force)
                 post_needed = (not args.skip_post_train) and _needs_post_train(
-                    row, args.force
+                    row, args.force, target_post_fields
                 )
                 status = "skipped"
                 err = ""
@@ -603,6 +877,12 @@ def main() -> None:
                             force=args.force,
                             skip_rapid=args.skip_rapid,
                             skip_post_train=args.skip_post_train,
+                            post_train_stability_runs=args.post_train_stability_runs,
+                            stability_wikitext_rel_tol=args.stability_wikitext_rel_tol,
+                            stability_hellaswag_abs_tol=args.stability_hellaswag_abs_tol,
+                            stability_probe_abs_tol=args.stability_probe_abs_tol,
+                            allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
+                            post_train_target=args.post_train_target,
                         )
                         rapid_needed = int(worker.get("rapid_needed") or 0)
                         post_needed = int(worker.get("post_needed") or 0)
@@ -628,7 +908,7 @@ def main() -> None:
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
-                report_rows.append(
+                chunk_report_rows.append(
                     {
                         "result_id": row["result_id"],
                         "graph_fingerprint": row["graph_fingerprint"],
@@ -649,14 +929,17 @@ def main() -> None:
                 if int(
                     args.max_consecutive_failures
                 ) > 0 and consecutive_failures >= int(args.max_consecutive_failures):
-                    _write_report(args.report, report_rows)
-                    raise RuntimeError(
+                    stop_error = (
                         "Stopping backpopulate run after "
                         f"{consecutive_failures} consecutive row failures. "
                         "This likely indicates a catastrophic tool/runtime issue; "
                         f"see report {args.report} for the exact failing rows."
                     )
+                    break
+        report_rows.extend(chunk_report_rows)
         _write_report(args.report, report_rows)
+        if stop_error:
+            raise RuntimeError(stop_error)
 
     _write_report(args.report, report_rows)
     elapsed = time.time() - t0

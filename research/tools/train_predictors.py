@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 _NOTEBOOK_DB = Path("research/lab_notebook.db")
 _PROFILING_DB = Path("research/profiling/component_profiles.db")
 _STATE_DIR = Path("research/runtime/learning")
+_METRICS_REPORT_PATH = _STATE_DIR / "predictor_metrics_report.json"
 
 
 def train_bayesian(save: bool = False) -> dict:
@@ -141,11 +143,29 @@ def train_ensemble_full(save: bool = False) -> dict:
     return {"component": "ensemble", "elapsed_s": elapsed, **diag}
 
 
+def write_metrics_report(fresh_ensemble: bool = False) -> dict:
+    """Write predictor metrics report to the runtime state directory."""
+    from research.tools.report_predictor_metrics import build_report
+
+    report = build_report(
+        db_path=str(_NOTEBOOK_DB),
+        profiling_db=str(_PROFILING_DB),
+        state_dir=_STATE_DIR,
+        fresh_ensemble=fresh_ensemble,
+    )
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(_METRICS_REPORT_PATH, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, sort_keys=True)
+    logger.info("Predictor metrics report written to %s", _METRICS_REPORT_PATH)
+    return {"report_path": str(_METRICS_REPORT_PATH)}
+
+
 def evaluate_all() -> dict:
     """Evaluate all predictors and report metrics."""
     from research.scientist.intelligence.predictor import (
         analyze_graph_label_quality,
         evaluate_gbm,
+        evaluate_gbm_induction,
     )
 
     results = {}
@@ -161,6 +181,18 @@ def evaluate_all() -> dict:
         )
     except Exception as e:
         results["gbm"] = {"error": str(e)}
+
+    # Induction-specific GBM evaluation
+    try:
+        gbm_induction_eval = evaluate_gbm_induction(str(_NOTEBOOK_DB))
+        results["gbm_induction"] = gbm_induction_eval
+        logger.info(
+            "GBM induction eval: learner_auc=%.3f, induction_spearman=%.3f",
+            gbm_induction_eval.get("learner_auc", 0),
+            gbm_induction_eval.get("induction_spearman", 0),
+        )
+    except Exception as e:
+        results["gbm_induction"] = {"error": str(e)}
 
     # Label-quality summary
     try:
@@ -285,6 +317,13 @@ def main() -> None:
 
     if args.evaluate:
         results["evaluation"] = evaluate_all()
+    if args.save_state:
+        try:
+            results["metrics_report"] = write_metrics_report(
+                fresh_ensemble=args.component in ("all", "ensemble")
+            )
+        except Exception as e:
+            logger.warning("Failed to write predictor metrics report: %s", e)
 
     total = time.time() - t0
     logger.info("Total training time: %.1fs", total)

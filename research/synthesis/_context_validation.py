@@ -160,6 +160,40 @@ def _check_op_structural_rules(
             violations.append(
                 f"{op_name} must rejoin through concat or add before output"
             )
+    elif op_name == "confidence_token_gate":
+        if not _has_descendant_op(graph, nid, {"add"}, children):
+            violations.append(
+                "confidence_token_gate must sit inside a residual/routing block"
+            )
+    elif op_name == "depth_token_mask":
+        if not _has_immediate_successor_op(
+            children,
+            graph,
+            nid,
+            {"linear_proj", "linear_proj_down", "rmsnorm", "layernorm"},
+        ):
+            violations.append(
+                "depth_token_mask requires immediate projection/norm successor"
+            )
+        if not _has_descendant_op(graph, nid, {"add"}, children):
+            violations.append(
+                "depth_token_mask must remain inside a residual routing block"
+            )
+    elif op_name == "grade_mix":
+        if not parent_ops & {
+            "clifford_attention",
+            "rotor_transform",
+            "grade_select",
+            "geometric_product",
+        }:
+            violations.append("grade_mix requires Clifford predecessor context")
+        if not _has_descendant_op(
+            graph,
+            nid,
+            {"linear_proj", "linear_proj_down", "add", "rmsnorm", "layernorm"},
+            children,
+        ):
+            violations.append("grade_mix must feed projection/norm/residual context")
     elif op_name == "lif_neuron":
         if not _has_descendant_op(
             graph,

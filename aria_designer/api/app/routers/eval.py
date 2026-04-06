@@ -254,6 +254,7 @@ async def _stage_sandbox(
         "grad_norm": float(getattr(sandbox, "grad_norm", 0)),
         "stability_score": float(getattr(sandbox, "stability_score", 0)),
         "native_abi_probe": getattr(sandbox, "native_abi_probe", None),
+        "routing_report": getattr(sandbox, "routing_report", None),
     }
     return {"metrics": metrics, "sandbox": sandbox}
 

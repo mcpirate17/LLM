@@ -192,6 +192,16 @@ TEMPLATE_TEST_CASES = [
 ]
 
 BACKFILL_TEMPLATE_CASES = [
+    ("attn_normalized_matmul", "matmul"),
+    ("attn_softmax_normalized_matmul", "softmax_attention"),
+    ("attn_linear_normalized_matmul_control", "linear_attention"),
+    ("attn_linear_no_matmul_ffn", "linear_attention"),
+    ("attn_linear_matmul_sparse_tail", "nm_sparse_linear"),
+    ("attn_linear_matmul_router_sidecar", "difficulty_blend_3way"),
+    ("attn_decay_sequence", "cumprod_safe"),
+    ("attn_safe_division", "div_safe"),
+    ("attn_routing_block", "difficulty_blend_3way"),
+    ("graph_attn_sparse_ffn", "graph_attention"),
     ("latent_attn_ffn_block", "latent_attention_compressor"),
     ("local_attn_ffn_block", "local_window_attn"),
     ("latent_attn_sparse_ffn", "latent_attention_compressor"),
@@ -199,6 +209,8 @@ BACKFILL_TEMPLATE_CASES = [
     ("attn_spectral_filter", "spectral_filter"),
     ("attn_rwkv_hybrid", "rwkv_channel"),
     ("attn_three_way_split", "split3"),
+    ("linear_attn_ffn_block", "linear_attention"),
+    ("linear_attn_sparse_ffn", "linear_attention"),
     ("latent_attn_moe", "latent_attention_compressor"),
     ("latent_attn_conv_hybrid", "latent_attention_compressor"),
     ("latent_attn_ssm_hybrid", "latent_attention_compressor"),
@@ -327,6 +339,46 @@ def test_reference_templates_use_fixed_high_signal_paths(template_name, required
 @pytest.mark.parametrize(
     "template_name,required_ops",
     (
+        ("attn_normalized_matmul", {"matmul", "rmsnorm", "linear_proj"}),
+        (
+            "attn_softmax_normalized_matmul",
+            {"softmax_attention", "matmul", "swiglu_mlp"},
+        ),
+        (
+            "attn_linear_normalized_matmul_control",
+            {"linear_attention", "matmul", "swiglu_mlp"},
+        ),
+        (
+            "attn_linear_no_matmul_ffn",
+            {"linear_attention", "swiglu_mlp"},
+        ),
+        (
+            "attn_linear_matmul_sparse_tail",
+            {"linear_attention", "matmul", "nm_sparse_linear"},
+        ),
+        (
+            "attn_linear_matmul_router_sidecar",
+            {
+                "linear_attention",
+                "matmul",
+                "difficulty_blend_3way",
+                "depth_weighted_proj",
+                "swiglu_mlp",
+            },
+        ),
+        (
+            "attn_routing_block",
+            {
+                "softmax_attention",
+                "difficulty_blend_3way",
+                "depth_weighted_proj",
+                "swiglu_mlp",
+            },
+        ),
+        (
+            "graph_attn_sparse_ffn",
+            {"graph_attention", "matmul", "block_sparse_linear"},
+        ),
         ("attn_spectral_filter", {"spectral_filter", "linear_proj"}),
         ("attn_rwkv_hybrid", {"layernorm", "rwkv_channel"}),
         (
@@ -339,6 +391,14 @@ def test_reference_templates_use_fixed_high_signal_paths(template_name, required
                 "linear_proj",
             },
         ),
+        (
+            "linear_attn_ffn_block",
+            {"linear_attention", "matmul", "swiglu_mlp"},
+        ),
+        (
+            "linear_attn_sparse_ffn",
+            {"linear_attention", "matmul", "nm_sparse_linear"},
+        ),
     ),
 )
 def test_rehab_templates_keep_stabilizing_scaffolds(template_name, required_ops):
@@ -346,3 +406,116 @@ def test_rehab_templates_keep_stabilizing_scaffolds(template_name, required_ops)
 
     op_names = {n.op_name for n in g.nodes.values() if not n.is_input}
     assert required_ops.issubset(op_names)
+
+
+@pytest.mark.parametrize(
+    "template_name,expected_present,expected_absent",
+    (
+        (
+            "attn_softmax_normalized_matmul",
+            {"softmax_attention", "matmul", "swiglu_mlp"},
+            {"linear_attention", "nm_sparse_linear", "difficulty_blend_3way"},
+        ),
+        (
+            "attn_linear_normalized_matmul_control",
+            {"linear_attention", "matmul", "swiglu_mlp"},
+            {"softmax_attention", "nm_sparse_linear", "difficulty_blend_3way"},
+        ),
+        (
+            "attn_linear_no_matmul_ffn",
+            {"linear_attention", "swiglu_mlp"},
+            {"matmul", "nm_sparse_linear", "difficulty_blend_3way"},
+        ),
+        (
+            "attn_linear_matmul_sparse_tail",
+            {"linear_attention", "matmul", "nm_sparse_linear"},
+            {"difficulty_blend_3way"},
+        ),
+        (
+            "attn_linear_matmul_router_sidecar",
+            {
+                "linear_attention",
+                "matmul",
+                "difficulty_blend_3way",
+                "depth_weighted_proj",
+                "swiglu_mlp",
+            },
+            {"nm_sparse_linear"},
+        ),
+    ),
+)
+def test_controlled_attention_ablations_change_one_major_component(
+    template_name, expected_present, expected_absent
+):
+    g = _build_template_graph(template_name)
+
+    op_names = {n.op_name for n in g.nodes.values() if not n.is_input}
+    assert expected_present.issubset(op_names)
+    assert expected_absent.isdisjoint(op_names)
+
+
+@pytest.mark.parametrize(
+    "template_name,slot_expectations",
+    (
+        (
+            "attn_routing_block",
+            {
+                0: ("norm_wrap", False),
+                1: ("norm_wrap", False),
+            },
+        ),
+        (
+            "attn_normalized_matmul",
+            {
+                0: ("norm_wrap", False),
+                1: ("attention_core", False),
+            },
+        ),
+        (
+            "attn_linear_normalized_matmul_control",
+            {
+                0: ("norm_wrap", False),
+                1: ("norm_wrap", False),
+            },
+        ),
+        (
+            "attn_linear_matmul_router_sidecar",
+            {
+                0: ("norm_wrap", False),
+                1: ("norm_wrap", False),
+            },
+        ),
+        (
+            "linear_attn_ffn_block",
+            {
+                0: ("norm_wrap", False),
+                1: ("norm_wrap", False),
+                2: ("norm_wrap", False),
+            },
+        ),
+        (
+            "linear_attn_sparse_ffn",
+            {
+                0: ("norm_wrap", False),
+                1: ("norm_wrap", False),
+            },
+        ),
+        (
+            "graph_attn_sparse_ffn",
+            {
+                0: ("norm_wrap", False),
+            },
+        ),
+    ),
+)
+def test_rehab_templates_keep_mandatory_slots_constrained(
+    template_name, slot_expectations
+):
+    g = _build_template_graph(template_name)
+    slot_usage = g.metadata.get("template_slot_usage") or []
+    by_idx = {entry["slot_index"]: entry for entry in slot_usage}
+
+    for slot_index, (expected_class, expected_wildcard) in slot_expectations.items():
+        entry = by_idx[slot_index]
+        assert entry["wildcard"] is expected_wildcard
+        assert entry["selected_motif_class"] == expected_class

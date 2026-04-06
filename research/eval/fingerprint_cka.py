@@ -59,38 +59,34 @@ def cka_from_tensor(
         return result
 
     sim, seq_len = similarity
-    if ref_similarities is not None or ref_activations is not None:
-        for family in ("transformer", "ssm", "conv"):
-            ref_sim = None
-            if ref_similarities is not None:
-                ref_sim = ref_similarities.get(family)
-            if ref_sim is None and ref_activations is not None:
-                ref_tensor = ref_activations.get(family)
-                if ref_tensor is None:
-                    continue
-                ref_flat = ref_tensor.float()
-                ref_seq = ref_flat.shape[-2]
-                use_seq = min(seq_len, ref_seq)
-                ref_sim = sequence_self_similarity(ref_flat[..., :use_seq, :])
-            if ref_sim is None:
-                continue
-            ref_seq = ref_sim.shape[-1]
-            use_seq = min(seq_len, ref_seq)
-            if ref_sim.device != sim.device:
-                ref_sim = ref_sim.to(sim.device)
-            result[family] = linear_cka(
-                sim[:use_seq, :use_seq], ref_sim[:use_seq, :use_seq]
-            )
-    else:
-        positions = torch.arange(seq_len, device=sim.device).float()
-        dist = (positions.unsqueeze(0) - positions.unsqueeze(1)).abs()
-        result["transformer"] = linear_cka(sim, torch.exp(-dist / (seq_len * 0.3)))
-        result["ssm"] = linear_cka(
-            sim, (torch.exp(-dist / (seq_len * 0.15)) * (dist >= 0).float()).tril()
-        )
-        result["conv"] = linear_cka(sim, (dist <= 5).float())
+    if ref_similarities is None and ref_activations is None:
+        return result
 
-    result["_succeeded"] = True
+    matched_reference = False
+    for family in ("transformer", "ssm", "conv"):
+        ref_sim = None
+        if ref_similarities is not None:
+            ref_sim = ref_similarities.get(family)
+        if ref_sim is None and ref_activations is not None:
+            ref_tensor = ref_activations.get(family)
+            if ref_tensor is None:
+                continue
+            ref_flat = ref_tensor.float()
+            ref_seq = ref_flat.shape[-2]
+            use_seq = min(seq_len, ref_seq)
+            ref_sim = sequence_self_similarity(ref_flat[..., :use_seq, :])
+        if ref_sim is None:
+            continue
+        ref_seq = ref_sim.shape[-1]
+        use_seq = min(seq_len, ref_seq)
+        if ref_sim.device != sim.device:
+            ref_sim = ref_sim.to(sim.device)
+        matched_reference = True
+        result[family] = linear_cka(
+            sim[:use_seq, :use_seq], ref_sim[:use_seq, :use_seq]
+        )
+
+    result["_succeeded"] = matched_reference
     return result
 
 

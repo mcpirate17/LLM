@@ -46,6 +46,40 @@ from ...defaults import VOCAB_SIZE
 logger = logging.getLogger(__name__)
 
 
+def _finalize_native_abi_model(
+    *,
+    abi_session: Any,
+    capability: Dict[str, Any],
+    vocab_size: int,
+    kwargs: Dict[str, Any],
+):
+    model = _build_native_abi_only_model(
+        abi_session=abi_session,
+        vocab_size=int(vocab_size),
+        model_dim=int(kwargs.get("model_dim", 0) or 0),
+    )
+    setattr(model, "_native_runner_abi_session", abi_session)
+    capability["runner_abi"]["session_attached"] = True
+    capability["execution_path"] = "native_abi_model_only"
+    capability["legacy_compile_used"] = False
+    _maybe_fail_on_fallback_rate()
+    _maybe_fail_on_legacy_compile_usage()
+    capability["fallback_metrics"] = native_runner_capability_report().get(
+        "fallback_metrics", {}
+    )
+    try:
+        setattr(model, "_native_runner_report", capability)
+    except (AttributeError, TypeError):
+        pass
+    logger.info(
+        "Native runner ABI-only model active: execution_path=%s enabled=%s strict=%s",
+        capability.get("execution_path"),
+        capability.get("enabled"),
+        capability.get("strict"),
+    )
+    return model
+
+
 def _native_coverage_ready(
     *,
     state: Any,
@@ -351,8 +385,48 @@ def compile_model_native_first(
     native_lib = None
     full_native_coverage = False
     partial_native_coverage = False
+    abi_report: Dict[str, Any] = {
+        "requested": False,
+        "attempted": False,
+        "succeeded": False,
+        "reason": "disabled",
+        "model_handle": None,
+        "session": None,
+    }
     if state.enabled:
         native_lib = _try_load_native_lib()
+        _FALLBACK_METRICS["total_compiles"] += 1
+        abi_report = _maybe_prepare_runner_abi_session(
+            layer_graphs=layer_graphs,
+            native_lib=native_lib,
+            state=state,
+            vocab_size=vocab_size,
+            max_seq_len=max_seq_len,
+        )
+        capability["runner_abi"] = {
+            "requested": bool(abi_report.get("requested")),
+            "attempted": bool(abi_report.get("attempted")),
+            "succeeded": bool(abi_report.get("succeeded")),
+            "reason": abi_report.get("reason"),
+            "model_handle": abi_report.get("model_handle"),
+        }
+        if (
+            state.strict
+            and bool(abi_report.get("requested"))
+            and not bool(abi_report.get("succeeded"))
+        ):
+            raise RuntimeError(
+                f"NATIVE_RUNNER_STRICT=1 and runner ABI prepare failed: {abi_report.get('reason')}"
+            )
+        capability["runner_abi"]["model_only_requested"] = True
+        capability["execution_mode_classification"] = "native_abi_model_only"
+        if bool(abi_report.get("succeeded")) and abi_report.get("session") is not None:
+            return _finalize_native_abi_model(
+                abi_session=abi_report["session"],
+                capability=capability,
+                vocab_size=vocab_size,
+                kwargs=kwargs,
+            )
         if layer_graphs:
             op_support = _check_native_op_support(layer_graphs, native_lib)
             capability["native_op_support"] = op_support
@@ -537,7 +611,8 @@ def compile_model_native_first(
         capability["execution_path"] = "legacy_fallback"
 
     # --- Compile via legacy path (actual native execution dispatch is a future phase) ---
-    _FALLBACK_METRICS["total_compiles"] += 1
+    if not state.enabled:
+        _FALLBACK_METRICS["total_compiles"] += 1
     if state.enabled and (
         op_support is None
         or op_support["native_coverage"] < PARTIAL_NATIVE_COVERAGE_THRESHOLD
@@ -546,37 +621,15 @@ def compile_model_native_first(
     if state.enabled and partial_native_coverage:
         _FALLBACK_METRICS["hybrid_compiles"] += 1
 
-    abi_report = _maybe_prepare_runner_abi_session(
-        layer_graphs=layer_graphs,
-        native_lib=native_lib,
-        state=state,
-        vocab_size=vocab_size,
-        max_seq_len=max_seq_len,
-    )
-    capability["runner_abi"] = {
-        "requested": bool(abi_report.get("requested")),
-        "attempted": bool(abi_report.get("attempted")),
-        "succeeded": bool(abi_report.get("succeeded")),
-        "reason": abi_report.get("reason"),
-        "model_handle": abi_report.get("model_handle"),
-    }
-    if (
-        state.strict
-        and bool(abi_report.get("requested"))
-        and not bool(abi_report.get("succeeded"))
-    ):
-        raise RuntimeError(
-            f"NATIVE_RUNNER_STRICT=1 and runner ABI prepare failed: {abi_report.get('reason')}"
-        )
-    # Phase D transition: native mode prefers ABI-backed execution but still
-    # permits legacy compile until the disable gate is turned on.
-    abi_model_only = state.enabled  # always True when native is enabled
-    capability["runner_abi"]["model_only_requested"] = bool(abi_model_only)
-
-    # Classify the execution mode for observability
-    if state.enabled:
-        capability["execution_mode_classification"] = "native_abi_model_only"
-    else:
+    if not state.enabled:
+        capability["runner_abi"] = {
+            "requested": False,
+            "attempted": False,
+            "succeeded": False,
+            "reason": "disabled",
+            "model_handle": None,
+            "model_only_requested": False,
+        }
         capability["execution_mode_classification"] = "legacy_only"
 
     if state.enabled:
@@ -595,31 +648,12 @@ def compile_model_native_first(
                     f"reason={abi_report.get('reason')}"
                 )
         else:
-            model = _build_native_abi_only_model(
+            return _finalize_native_abi_model(
                 abi_session=abi_session,
-                vocab_size=int(vocab_size),
-                model_dim=int(kwargs.get("model_dim", 0) or 0),
+                capability=capability,
+                vocab_size=vocab_size,
+                kwargs=kwargs,
             )
-            setattr(model, "_native_runner_abi_session", abi_session)
-            capability["runner_abi"]["session_attached"] = True
-            capability["execution_path"] = "native_abi_model_only"
-            capability["legacy_compile_used"] = False
-            _maybe_fail_on_fallback_rate()
-            _maybe_fail_on_legacy_compile_usage()
-            capability["fallback_metrics"] = native_runner_capability_report().get(
-                "fallback_metrics", {}
-            )
-            try:
-                setattr(model, "_native_runner_report", capability)
-            except (AttributeError, TypeError):
-                pass
-            logger.info(
-                "Native runner ABI-only model active: execution_path=%s enabled=%s strict=%s",
-                capability.get("execution_path"),
-                capability.get("enabled"),
-                capability.get("strict"),
-            )
-            return model
 
     if disable_legacy_compile:
         raise RuntimeError(

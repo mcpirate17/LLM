@@ -123,6 +123,7 @@ def _op_rmsnorm(module, inputs, _):
     if not hasattr(module, "weight"):
         return inputs[0]
     x = inputs[0]
+    orig_dtype = x.dtype
     if _c(x):
         return aria_core.rmsnorm_f32(x, module.weight, 1e-6)
     if HAS_KERNELS and x.is_cuda:
@@ -131,17 +132,43 @@ def _op_rmsnorm(module, inputs, _):
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("triton_rmsnorm", e)
     eps = 1e-6
-    rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + eps)
-    return (x / rms) * module.weight
+    compute_dtype = (
+        torch.float32 if orig_dtype in (torch.float16, torch.bfloat16) else orig_dtype
+    )
+    x_work = x.to(compute_dtype) if x.dtype != compute_dtype else x
+    weight = (
+        module.weight.to(compute_dtype)
+        if module.weight.dtype != compute_dtype
+        else module.weight
+    )
+    rms = torch.sqrt(torch.mean(x_work**2, dim=-1, keepdim=True) + eps)
+    return ((x_work / rms) * weight).to(orig_dtype)
 
 
 def _op_layernorm(module, inputs, _):
     if not hasattr(module, "weight"):
         return inputs[0]
     x = inputs[0]
+    orig_dtype = x.dtype
     if _c(x):
         return aria_core.layernorm_f32(x, module.weight, module.bias, 1e-5)
-    return F.layer_norm(x, [x.shape[-1]], module.weight, module.bias)
+    compute_dtype = (
+        torch.float32 if orig_dtype in (torch.float16, torch.bfloat16) else orig_dtype
+    )
+    x_work = x.to(compute_dtype) if x.dtype != compute_dtype else x
+    weight = (
+        module.weight.to(compute_dtype)
+        if module.weight.dtype != compute_dtype
+        else module.weight
+    )
+    bias = None
+    if module.bias is not None:
+        bias = (
+            module.bias.to(compute_dtype)
+            if module.bias.dtype != compute_dtype
+            else module.bias
+        )
+    return F.layer_norm(x_work, [x.shape[-1]], weight, bias).to(orig_dtype)
 
 
 def _op_gated_linear(module, inputs, _):

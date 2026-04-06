@@ -40,6 +40,7 @@ _ROUTING_FAST_LANE_OPS: frozenset[str] = frozenset(
 
 _DEFAULT_VOCAB_SIZE: int = 32_000
 _REFERENCE_INITIAL_LOSS: float = math.log(_DEFAULT_VOCAB_SIZE)  # ~10.37
+_INFIGHT_RANDOM_BASELINE: float = 11.52
 
 
 def _build_source_map(nb: Any, result_ids: List[str]) -> Dict[str, Dict]:
@@ -164,10 +165,11 @@ def stage1_learning_gate(
     # At init=12  (headroom=1.6): need 0.16 nats drop → threshold=0.987
     if n_steps >= 200:
         _init = initial_loss if initial_loss and initial_loss > 0 else 100.0
+        _ratio_threshold = _headroom_ratio_threshold(
+            _init,
+            random_baseline=random_baseline,
+        )
         _headroom = max(_init - random_baseline, 0.5)
-        _min_improvement = _headroom * 0.10
-        _raw_thr = 1.0 - _min_improvement / max(_init, 1.0)
-        _ratio_threshold = max(0.90, min(0.99, _raw_thr))
         if loss_ratio > _ratio_threshold:
             return False, (
                 f"loss_ratio={loss_ratio:.3f} after {n_steps} steps — "
@@ -214,6 +216,23 @@ def stage1_learning_gate(
     return True, "passed"
 
 
+def _headroom_ratio_threshold(
+    initial_loss: float,
+    *,
+    random_baseline: float,
+    headroom_fraction: float = 0.10,
+    min_headroom: float = 0.5,
+    min_ratio: float = 0.90,
+    max_ratio: float = 0.99,
+) -> float:
+    """Compute a loss-ratio threshold scaled by improvable entropy headroom."""
+    init = initial_loss if initial_loss > 0 else 100.0
+    headroom = max(init - random_baseline, min_headroom)
+    min_improvement = headroom * headroom_fraction
+    raw = 1.0 - min_improvement / max(init, 1.0)
+    return max(min_ratio, min(max_ratio, raw))
+
+
 def normalized_loss_ratio(
     final_loss: float,
     vocab_size: int = _DEFAULT_VOCAB_SIZE,
@@ -231,6 +250,27 @@ def normalized_loss_ratio(
     """
     ref = math.log(vocab_size) if vocab_size > 0 else _REFERENCE_INITIAL_LOSS
     return final_loss / max(ref, 1e-6)
+
+
+def resolve_stage1_gate_metrics(
+    *,
+    initial_loss: Optional[float],
+    final_loss: Optional[float],
+    validation_loss: Optional[float] = None,
+) -> Tuple[float, float, str]:
+    """Choose the most trustworthy loss signal for the final Stage-1 gate.
+
+    Prefer held-out validation loss when available; otherwise fall back to the
+    last training loss. This avoids rejecting good learners based on a noisy
+    final minibatch after a strong validation result has already been recorded.
+    """
+    gate_loss = validation_loss if validation_loss is not None else final_loss
+    if gate_loss is None:
+        gate_loss = float("inf")
+    init = initial_loss if initial_loss and initial_loss > 0 else 1e-6
+    gate_ratio = gate_loss / max(init, 1e-6)
+    gate_source = "validation_loss" if validation_loss is not None else "final_loss"
+    return gate_loss, gate_ratio, gate_source
 
 
 # ── Inflight training health checks ──
@@ -262,7 +302,7 @@ def check_inflight_health(
     spike_ratio: float = 2.0,
     spike_window: int = 10,
     cv_threshold: float = 0.5,
-    progress_threshold: float = 0.95,
+    progress_threshold: Optional[float] = None,
     grad_norm_limit: float = 100.0,
     grad_norm_strikes: int = 3,
 ) -> Optional[Dict[str, Any]]:
@@ -315,16 +355,21 @@ def check_inflight_health(
 
     # Check 3b: no progress at 25% mark
     quarter = total_steps // 4
-    if (
-        step == quarter
-        and initial_loss
-        and loss_val >= initial_loss * progress_threshold
-    ):
+    ratio_threshold = progress_threshold
+    if ratio_threshold is None and initial_loss and initial_loss > 0:
+        ratio_threshold = _headroom_ratio_threshold(
+            initial_loss,
+            random_baseline=_INFIGHT_RANDOM_BASELINE,
+        )
+    if ratio_threshold is None:
+        ratio_threshold = 0.95
+    if step == quarter and initial_loss and loss_val >= initial_loss * ratio_threshold:
         return {
             "error": (
                 f"inflight_no_progress: at step {step}/{total_steps}, "
                 f"loss={loss_val:.4f} vs initial={initial_loss:.4f} "
-                f"(ratio={loss_val / initial_loss:.3f})"
+                f"(ratio={loss_val / initial_loss:.3f}, "
+                f"threshold={ratio_threshold:.3f})"
             ),
             "error_type": "inflight_no_progress",
         }
@@ -529,6 +574,9 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         "induction_probe_eval_examples",
         "induction_probe_batch_size",
         "induction_probe_elapsed_ms",
+        "induction_probe_metric_version",
+        "induction_probe_speed_mode",
+        "induction_probe_pool_size",
         "binding_auc",
         "binding_probe_eval_examples",
         "binding_probe_elapsed_ms",
@@ -1115,7 +1163,10 @@ def _evaluate_investigation_benchmarks(
     # Binding probes: AR + induction + binding range (full suite at investigation)
     try:
         from ...eval.associative_recall import associative_recall_score
-        from ...eval.induction_probe import induction_score
+        from ...eval.native_induction import (
+            induction_result_metadata,
+            induction_score_gold,
+        )
         from ...eval.binding_range import binding_range_profile
 
         ar = associative_recall_score(
@@ -1126,16 +1177,8 @@ def _evaluate_investigation_benchmarks(
         result["ar_timed_out"] = ar.timed_out
         result["ar_above_chance"] = ar.above_chance
 
-        ind = induction_score(
-            model,
-            gaps=(4, 8, 16, 32, 64),
-            n_train_steps=1000,
-            n_eval=200,
-            batch_size=32,
-            device=dev,
-        )
-        result["induction_auc"] = ind.auc
-        result["induction_gap_accuracies"] = ind.gap_accuracies
+        ind = induction_score_gold(model, device=dev)
+        result.update(induction_result_metadata(ind))
 
         br = binding_range_profile(
             model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=dev
@@ -1442,6 +1485,12 @@ def _record_investigation_result(
         nb.conn.execute(
             f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
             set_params,
+        )
+        nb.upsert_induction_metric_v2(
+            graph_fingerprint=str(benchmark_result.get("graph_fingerprint") or ""),
+            result_id=str(source_result_id),
+            row=benchmark_result,
+            source_cohort="runtime",
         )
         nb._maybe_commit()
     try:
@@ -1777,9 +1826,13 @@ def run_trajectory_probe(
         _val_ind_auc = None
         _val_binding_auc = None
         _val_local_only = None
+        _val_ind_meta = None
         try:
             from ...eval.associative_recall import associative_recall_score
-            from ...eval.induction_probe import induction_score as _ind_score
+            from ...eval.native_induction import (
+                induction_result_metadata as _ind_metadata,
+                induction_score_gold as _ind_score,
+            )
             from ...eval.binding_range import binding_range_profile
 
             _v_ar = associative_recall_score(
@@ -1794,13 +1847,10 @@ def run_trajectory_probe(
 
             _v_ind = _ind_score(
                 traj_model,
-                gaps=(4, 8, 16, 32, 64),
-                n_train_steps=1000,
-                n_eval=200,
-                batch_size=32,
                 device=dev_str,
             )
             _val_ind_auc = _v_ind.auc
+            _val_ind_meta = _ind_metadata(_v_ind)
 
             _v_br = binding_range_profile(
                 traj_model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=dev_str
@@ -1865,7 +1915,7 @@ def run_trajectory_probe(
                 update["ar_timed_out"] = int(_v_ar.timed_out)
                 update["ar_above_chance"] = int(_v_ar.above_chance)
             if _val_ind_auc is not None:
-                update["induction_auc"] = _val_ind_auc
+                update.update(_val_ind_meta or {"induction_auc": _val_ind_auc})
             if _val_binding_auc is not None:
                 update["binding_auc"] = _val_binding_auc
             if _val_local_only is not None:

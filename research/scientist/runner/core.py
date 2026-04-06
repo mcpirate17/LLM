@@ -155,22 +155,24 @@ class _CoreMixin:
         self._live_loss_curve: List[Dict] = []  # rolling buffer for dashboard chart
         self._grammar_weight_overrides: Dict[str, float] = {}
         try:
-            _nb = LabNotebook(self.notebook_path, skip_migrate=True)
-            row = _nb.conn.execute(
-                "SELECT evidence FROM learning_log "
-                "WHERE event_type='chat_grammar_overrides_applied' "
-                "ORDER BY timestamp DESC LIMIT 1"
-            ).fetchone()
-            if row and row[0]:
-                import json as _json
+            with LabNotebook(self.notebook_path, skip_migrate=True) as _nb:
+                row = _nb.conn.execute(
+                    "SELECT evidence FROM learning_log "
+                    "WHERE event_type='chat_grammar_overrides_applied' "
+                    "ORDER BY timestamp DESC LIMIT 1"
+                ).fetchone()
+                if row and row[0]:
+                    import json as _json
 
-                meta = _json.loads(row[0])
-                overrides = meta.get("overrides") if isinstance(meta, dict) else None
-                if isinstance(overrides, dict) and overrides:
-                    self._grammar_weight_overrides = overrides
-                    logger.info(
-                        "Restored grammar weight overrides from DB: %s", overrides
+                    meta = _json.loads(row[0])
+                    overrides = (
+                        meta.get("overrides") if isinstance(meta, dict) else None
                     )
+                    if isinstance(overrides, dict) and overrides:
+                        self._grammar_weight_overrides = overrides
+                        logger.info(
+                            "Restored grammar weight overrides from DB: %s", overrides
+                        )
         except (
             sqlite3.OperationalError,
             json.JSONDecodeError,
@@ -188,6 +190,22 @@ class _CoreMixin:
         except (ImportError, RuntimeError, OSError) as e:
             logger.debug("CodeHealer init failed: %s", e)
             self._healer = None
+
+    def close(self) -> None:
+        self._stop_event.set()
+        for attr in ("_corpus_batcher", "_hf_batcher", "_healer"):
+            resource = getattr(self, attr, None)
+            close_fn = getattr(resource, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Runner resource close failed for %s", attr, exc_info=True
+                    )
+        sse_handler = getattr(self, "_sse_log_handler", None)
+        if sse_handler is not None:
+            logging.getLogger("research").removeHandler(sse_handler)
         self._last_healer_integrity_check = 0.0
         self._recent_healer_signatures: Dict[str, float] = {}
         self._pending_heal_retry: Optional[Dict] = None

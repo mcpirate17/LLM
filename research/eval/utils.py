@@ -204,6 +204,28 @@ def micro_train_loop(
     return result
 
 
+def micro_train_and_measure_perplexity(
+    model: nn.Module,
+    train_batches: List[torch.Tensor],
+    val_batches: List[torch.Tensor],
+    vocab_size: int,
+    *,
+    n_train_steps: int,
+    lr: float,
+) -> tuple[Optional[float], float, Optional[float]]:
+    """Shared in-place micro-train + pre/post perplexity measurement flow."""
+    pre_ppl = compute_perplexity(model, val_batches, vocab_size)
+    train_final_loss = micro_train_loop(
+        model,
+        train_batches,
+        vocab_size,
+        n_steps=n_train_steps,
+        lr=lr,
+    )
+    post_ppl = compute_perplexity(model, val_batches, vocab_size)
+    return pre_ppl, train_final_loss, post_ppl
+
+
 def measure_loss(
     model: nn.Module,
     input_batches: List[torch.Tensor],
@@ -280,19 +302,26 @@ def batched_span_mean_log_probs(
     if not bool(valid.any()):
         return torch.full((n_seq,), float("-inf"), dtype=torch.float32)
 
-    valid_idx = valid.nonzero(as_tuple=False).squeeze(1)
-    valid_sequences = [sequences[int(i)] for i in valid_idx.tolist()]
-    valid_lengths = lengths[valid_idx]
-    valid_starts = starts[valid_idx]
-
     dev = torch.device(device)
-    valid_lengths = valid_lengths.to(dev)
-    valid_starts = valid_starts.to(dev)
-    max_len = int(valid_lengths.max().item())
-    padded = torch.zeros((len(valid_sequences), max_len), dtype=torch.long, device=dev)
-    for row, seq in enumerate(valid_sequences):
-        seq_tensor = torch.as_tensor(seq, dtype=torch.long, device=dev)
-        padded[row, : seq_tensor.numel()] = seq_tensor
+    valid_idx = valid.nonzero(as_tuple=False).squeeze(1)
+    valid_idx_list = valid_idx.tolist()
+    valid_lengths_cpu = lengths[valid_idx]
+    valid_starts_cpu = starts[valid_idx]
+    max_len = int(valid_lengths_cpu.max().item())
+    valid_count = len(valid_idx_list)
+
+    padded_np = np.zeros((valid_count, max_len), dtype=np.int64)
+    for row, seq_idx in enumerate(valid_idx_list):
+        seq_np = np.asarray(sequences[seq_idx], dtype=np.int64)
+        padded_np[row, : seq_np.size] = seq_np
+
+    padded = torch.from_numpy(padded_np)
+    if dev.type == "cuda":
+        padded = padded.pin_memory().to(dev, non_blocking=True)
+    else:
+        padded = padded.to(dev)
+    valid_lengths = valid_lengths_cpu.to(dev, non_blocking=(dev.type == "cuda"))
+    valid_starts = valid_starts_cpu.to(dev, non_blocking=(dev.type == "cuda"))
 
     logits = model(padded)
     if logits.shape[-1] > vocab_size:
@@ -307,7 +336,7 @@ def batched_span_mean_log_probs(
     )
     token_counts = span_mask.sum(dim=1)
     mean_lps = torch.full(
-        (len(valid_sequences),), float("-inf"), dtype=torch.float32, device=dev
+        (valid_count,), float("-inf"), dtype=torch.float32, device=dev
     )
     valid_spans = token_counts > 0
     if bool(valid_spans.any()):
@@ -316,40 +345,9 @@ def batched_span_mean_log_probs(
 
     out = torch.full((n_seq,), float("-inf"), dtype=torch.float32, device=dev)
     out[valid_idx] = mean_lps
+    if dev.type == "cpu":
+        return out
     return out.cpu()
-
-
-@torch.no_grad()
-def mean_token_log_prob(
-    model: nn.Module,
-    token_ids: Sequence[int] | np.ndarray,
-    vocab_size: int,
-    device: str,
-    start_pos: int = 0,
-    max_seq_len: int = 512,
-) -> float:
-    """Mean log-probability of tokens ``[start_pos+1:]`` under the model.
-
-    Shared scoring primitive for HellaSwag (continuation scoring) and
-    BLiMP (sentence probability comparison).
-
-    Args:
-        start_pos: First position whose *next-token prediction* is scored.
-                   For whole-sequence scoring (BLiMP), use 0.
-                   For continuation scoring (HellaSwag), use ``ctx_len - 1``.
-    """
-    if len(token_ids) < 2:
-        return float("-inf")
-    if len(token_ids) > max_seq_len:
-        token_ids = token_ids[:max_seq_len]
-    score = batched_span_mean_log_probs(
-        model,
-        [token_ids],
-        [start_pos],
-        vocab_size=vocab_size,
-        device=device,
-    )
-    return float(score[0].item())
 
 
 def iter_eligible_params(
@@ -367,15 +365,6 @@ def iter_eligible_params(
         if "embed" in name.lower():
             continue
         yield name, param
-
-
-def cleanup_model(device: torch.device) -> None:
-    """Standard cleanup after model training/eval — clear CUDA cache + gc."""
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    import gc
-
-    gc.collect()
 
 
 def compute_perplexity(

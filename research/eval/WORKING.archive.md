@@ -712,6 +712,172 @@ Status:
   - note:
     - these edits do not touch the reference runner hot path; this benchmark remains a parity/non-regression surface and was extremely noisy in this run
 
+### Codex-10
+
+Claimed follow-up items by this Codex:
+
+1. `research/scientist/native_runner.py`
+   - objective: delete pointless module-mutation glue from the facade and leave one direct import path into the native compiler/runtime
+2. `research/eval/cross_task_eval.py`
+   - objective: stop duplicating corpus tokenization/batching logic and route cross-task prep through shared cached corpus helpers
+3. `research/eval/sandbox.py`
+   - objective: prune duplicated control-path setup and helper drift without changing eval behavior
+
+Unique findings added from audit:
+
+- `research/scientist/native_runner.py`
+  - the facade was mutating imported module globals before every compile call even though the native submodules already import their own dependencies directly
+- `research/eval/cross_task_eval.py`
+  - cross-task eval still duplicated corpus tokenization, split, and batch generation logic that already existed in the shared corpus helper path
+- `research/eval/sandbox.py`
+  - helper extraction had already happened, but `safe_eval()` still duplicated runtime setup, timeout setup, input creation, and ABI probe wiring inline instead of using its own helpers
+
+Status:
+
+- completed
+- benchmarked before/after where a real perf claim exists
+
+- `research/scientist/native_runner.py`
+  - removed unnecessary module-global mutation and runtime patching from the facade; `compile_model_native_first()` now delegates directly to `scientist.native.compiler.compile_model_native_first()` after the byte-safety gate
+  - validation:
+    - `cd /home/tim/Projects/LLM && python - <<'PY' ... import compile_model_native_first, native_runner_capability_report, reset_native_runner_telemetry, _try_load_native_lib ... PY`
+  - note:
+    - code-hygiene cleanup only; no direct performance claim made
+
+- `research/eval/corpus_pipeline.py` / `research/eval/cross_task_eval.py`
+  - added `prepare_text_corpus_split_batches()` so single-corpus train/val splits can reuse shared token caching and batch caching instead of open-coding tokenization and `make_batches()` calls
+  - `evaluate_cross_task_robustness()` now routes both domains through the shared helper and stops duplicating token split/batch construction logic
+  - validation:
+    - `python -m pytest /home/tim/Projects/LLM/research/tests/test_eval_shared_native.py -q`
+    - `python -m pytest /home/tim/Projects/LLM/research/tests/test_interpretability_evals.py -q -k 'TestCrossTaskEval and test_full_eval'`
+    - `cd /home/tim/Projects/LLM && python - <<'PY' ... old prep path vs prepare_text_corpus_split_batches(...) ... PY`
+  - measured targeted microbench:
+    - old duplicated prep path: `cross_task_old_prep_ms_median = 0.267 ms`
+    - new shared prep cold: `cross_task_new_prep_cold_ms_median = 0.287 ms`
+    - new shared prep warm: `cross_task_new_prep_warm_ms_median = 0.043 ms`
+  - note:
+    - cold path is roughly flat; the real payoff is repeated reuse, which is the actual workload shape for cached corpus eval
+
+- `research/eval/sandbox.py`
+  - `safe_eval()` now reuses `_resolve_safe_eval_runtime()`, `_install_timeout()`, `_prepare_input_ids()`, `_run_native_abi_probe()`, `_resolve_native_primary_flags()`, `_maybe_use_native_primary_logits()`, `_run_forward_pass()`, and `_validate_logits_shape()` instead of duplicating those control paths inline
+  - validation:
+    - `python -m pytest /home/tim/Projects/LLM/research/tests/test_native_runner_abi_inference_probe.py -q`
+  - note:
+    - code-hygiene cleanup only; no direct performance claim made
+
+- shared non-regression benchmark rerun for Codex-10 changes
+  - perf commands run before and after:
+    - `cd /home/tim/Projects/LLM && make profile-hotpaths`
+    - `python /home/tim/Projects/LLM/research/training/profiling.py`
+    - `cd /home/tim/Projects/LLM && python -m research.eval.benchmark_reference_runner`
+  - benchmark before:
+    - legacy `25.438 ms`
+    - native shared runner `21.307 ms`
+    - speedup `1.194x`
+    - final loss parity held: `5.510972` vs `5.510972`
+  - benchmark after:
+    - legacy `24.278 ms`
+    - native shared runner `14.465 ms`
+    - speedup `1.678x`
+    - final loss parity held: `5.510972` vs `5.510972`
+  - note:
+    - these edits still do not touch the shared reference runner hot path; benchmark rerun is a parity/non-regression check only
+
+### Codex-11
+
+Claimed follow-up items by this Codex:
+
+1. `research/scientist/native/abi.py`
+   - objective: remove Python row/tuple conversion from the ABI-only model forward path and execute batched token rows from contiguous tensors directly
+2. `research/scientist/native/compiler.py`
+   - objective: keep scope to ABI/runtime follow-through only if needed for the tensor row path; no speculative refactor
+
+Unique findings added from audit:
+
+- `research/scientist/native/abi.py`
+  - the ABI-only model still converted every input row to Python tuples before batched execution, which undercut the native row-execution path with avoidable host-side object churn
+
+Status:
+
+- completed
+- benchmarked before/after
+
+- `research/scientist/native/abi.py`
+  - added `NativeRunnerAbiSession.execute_token_rows_tensor()` so rank-2 token tensors can be executed through `nr_execute_batch` from a contiguous `int32` CPU buffer without Python row conversion
+  - `_build_native_abi_only_model()` now prefers `execute_token_rows_tensor()` when available and only falls back to tuple-row conversion for older session implementations
+  - validation:
+    - `python -m pytest /home/tim/Projects/LLM/research/tests/test_native_runner_abi_inference_probe.py -q`
+    - `cd /home/tim/Projects/LLM && python - <<'PY' ... _build_native_abi_only_model(OldSession/NewSession) ... PY`
+  - measured targeted microbench:
+    - before: `abi_only_forward_old_ms_median = 0.992 ms`
+    - after: `abi_only_forward_new_ms_median = 0.432 ms`
+    - output shape parity held: `(128, 128, 64)`
+
+- shared non-regression benchmark rerun for Codex-11 changes
+  - perf commands run before and after:
+    - `cd /home/tim/Projects/LLM && make profile-hotpaths`
+    - `python /home/tim/Projects/LLM/research/training/profiling.py`
+    - `cd /home/tim/Projects/LLM && python -m research.eval.benchmark_reference_runner`
+  - benchmark before:
+    - legacy `24.278 ms`
+    - native shared runner `14.465 ms`
+    - speedup `1.678x`
+    - final loss parity held: `5.510972` vs `5.510972`
+  - benchmark after:
+    - legacy `23.854 ms`
+    - native shared runner `17.320 ms`
+    - speedup `1.377x`
+    - final loss parity held: `5.510972` vs `5.510972`
+  - note:
+    - this change targets the ABI-only inference model path, not the shared reference runner benchmark; shared benchmark rerun is parity/non-regression only
+
+### Codex-12
+
+Claimed follow-up items by this Codex:
+
+1. `research/scientist/native/compiler.py`
+   - objective: short-circuit compile-time scans/probes/guardrails when the ABI-only model path succeeds instead of paying those costs before returning
+
+Unique findings added from audit:
+
+- `research/scientist/native/compiler.py`
+  - `compile_model_native_first()` was doing native op-support scanning, IR validation, designer probe work, and selective guardrail bookkeeping before it knew whether ABI-only session prep had already succeeded
+
+Status:
+
+- completed
+- benchmarked before/after
+
+- `research/scientist/native/compiler.py`
+  - ABI session preparation now happens immediately after native-lib load in the native-enabled path
+  - when ABI-only session prep succeeds, the compiler returns the ABI-backed model immediately and skips op-support scans, designer probe work, and selective guardrail/control-path overhead that cannot affect the returned model
+  - shared ABI-only model finalization moved into `_finalize_native_abi_model()` so the early-return path and the fallback later path use one implementation
+  - validation:
+    - `python -m pytest /home/tim/Projects/LLM/research/tests/test_synthesis_native_hotpaths.py -q -k short_circuits_on_abi_model`
+    - `python -m pytest /home/tim/Projects/LLM/research/tests/test_native_runner_abi_inference_probe.py -q`
+    - `cd /home/tim/Projects/LLM && python - <<'PY' ... emulated old compiler ordering vs compile_model_native_first(...) ... PY`
+  - measured targeted microbench:
+    - emulated old ABI-success ordering: `compiler_old_order_ms_median = 4.110 ms`
+    - new early-return ordering: `compiler_new_order_ms_median = 0.008 ms`
+
+- shared non-regression benchmark rerun for Codex-12 changes
+  - perf commands run before and after:
+    - `cd /home/tim/Projects/LLM && make profile-hotpaths`
+    - `python /home/tim/Projects/LLM/research/training/profiling.py`
+    - `cd /home/tim/Projects/LLM && python -m research.eval.benchmark_reference_runner`
+  - benchmark before:
+    - legacy `23.854 ms`
+    - native shared runner `17.320 ms`
+    - speedup `1.377x`
+    - final loss parity held: `5.510972` vs `5.510972`
+  - benchmark after:
+    - legacy `21.403 ms`
+    - native shared runner `15.799 ms`
+    - speedup `1.355x`
+    - final loss parity held: `5.510972` vs `5.510972`
+  - note:
+    - this change is compile-path optimization for ABI-only success, not a direct change to the shared reference runner benchmarked here
+
 ### Codex-9
 
 Claimed follow-up items by this Codex:
@@ -843,3 +1009,233 @@ Status:
     - `speedup = 515.747x`
   - note:
     - this is a tiny CPU fixture intended to isolate Stage 1 control-plane waste, not a full end-to-end experiment-screening benchmark
+
+### Codex-11
+
+Claimed follow-up items by this Codex:
+
+1. `research/scientist/runner/execution_screening.py`
+   - objective: turn the cheap train path into an explicit pre-`S1.0` gate instead of silently redefining `S1`
+2. `research/scientist/runner/dashboard.py`
+   - objective: promote `S0.9` survivors into full rich `S1.0` while keeping DB-facing `stage1_passed` semantics attached to real `S1`
+3. `research/scientist/runner/_types.py`
+   - objective: make the new gate opt-in so backfill scripts keep full `S1` data by default
+
+Unique findings added from audit:
+
+- the earlier lean-screening cut was correct for performance but semantically wrong if treated as `S1`
+- backfill scripts such as `research/tools/backfill_templates.py` rely on the full screening pipeline and should not be starved of `S1` metrics implicitly
+
+Status:
+
+- completed
+- backfill-safe by default
+
+- `research/scientist/runner/_types.py`
+  - added `enable_stage09_cheap_train_gate: bool = False`
+  - default validation:
+    - `python - <<'PY' ... print(RunConfig().enable_stage09_cheap_train_gate) ... PY`
+    - observed default: `False`
+
+- `research/scientist/runner/execution_screening.py`
+  - screening now uses the cheap train config only when `enable_stage09_cheap_train_gate` is explicitly enabled
+  - payload now records:
+    - `screening_stage`
+    - `screening_seed`
+  - results now track:
+    - `stage09_passed`
+    - `funnel_counts.stage09_completed`
+    - `funnel_counts.stage09_survived`
+  - experiment summary log now prints `S0.9=` when that gate is active
+
+- `research/scientist/runner/dashboard.py`
+  - `_record_orchestrator_result()` now distinguishes `stage09` vs real `stage1`
+  - `S0.9` survivors are promoted into a fresh full rich `S1.0` run via `_run_full_stage1_after_stage09()`
+  - `stage1_completed` now counts only actual `S1.0` attempts, not cheap-gate failures
+  - `stage09_*` metrics are stored separately on program metrics so pre-`S1.0` data is not mislabeled as full `S1`
+
+- validation:
+  - `python -m py_compile research/scientist/runner/_types.py research/scientist/runner/execution_screening.py research/scientist/runner/dashboard.py research/tools/profile_screening_hotpaths.py`
+  - `python -m pytest research/tests/test_profile_screening_hotpaths.py -q`
+  - `make profile-screening-hotpaths-quick`
+
+  - note:
+  - a synthetic notebook-write sanity script hit `sqlite3.OperationalError: database is locked` in a temporary DB harness; this was during an ad hoc test script, not from the config default or compile path
+  - the important safety condition held: backfill callers remain on the original full-screening path unless they explicitly set `enable_stage09_cheap_train_gate=True`
+
+### Codex-12
+
+Claimed follow-up items by this Codex:
+
+1. `research/scientist/api_routes/_strategy_preflight.py`
+   - objective: add an explicit live-screening preset that turns on `S0.9` intentionally instead of piggybacking on default `single`
+2. `research/scientist/api_routes/experiments_bp.py` / `research/scientist/api_routes/system_bp.py`
+   - objective: wire that preset through start/preflight/validate routes
+3. named backfill/profile audit
+   - objective: confirm the cheap gate is explicitly off for the scripts the user called out
+
+Status:
+
+- completed
+- audited and pinned
+
+- API/start-mode work
+  - added `live_screening` as a valid start mode in `_strategy_preflight.py`
+  - added `apply_live_screening_bias(config)` which sets `enable_stage09_cheap_train_gate=True`
+  - wired `live_screening` handling into:
+    - `research/scientist/api_routes/experiments_bp.py`
+    - `research/scientist/api_routes/system_bp.py`
+  - updated action/label mappings so the mode is visible as `Run Live Screening`
+  - validation:
+    - `python - <<'PY' ... normalize_start_mode('live_screening') ... apply_live_screening_bias(...) ... PY`
+    - observed:
+      - normalized mode = `live_screening`
+      - bias sets `enable_stage09_cheap_train_gate` from `False` to `True`
+
+- audited named scripts for backfill safety
+  - `research/tools/profile_component_scaffolds.py`
+    - explicitly pinned `enable_stage09_cheap_train_gate=False`
+  - `research/tools/backpopulate_screening_metrics.py`
+    - explicitly pinned `config.enable_stage09_cheap_train_gate = False`
+  - `research/tools/backfill_templates.py`
+    - explicitly pinned `enable_stage09_cheap_train_gate=False`
+  - `research/tools/attention_template_backfill.py`
+    - audited: no local `RunConfig`; it shells into `backfill_templates.py`, which is now explicitly pinned off
+  - `research/tools/explore_under_observed.py`
+    - audited: does not construct `RunConfig` or call the screening runner path that uses the new gate
+
+  - validation:
+  - `python -m py_compile research/scientist/api_routes/_strategy_preflight.py research/scientist/api_routes/experiments_bp.py research/scientist/api_routes/system_bp.py research/tools/profile_component_scaffolds.py research/tools/backpopulate_screening_metrics.py research/tools/backfill_templates.py`
+  - `rg -n "enable_stage09_cheap_train_gate" research/tools/profile_component_scaffolds.py research/tools/backpopulate_screening_metrics.py research/tools/backfill_templates.py research/tools/attention_template_backfill.py research/tools/explore_under_observed.py`
+
+### Codex-13
+
+Claimed cleanup set by this Codex:
+
+1. `research/eval/cross_task_eval.py`
+   - objective: remove the synthetic Python corpus fallback so cross-task robustness fails closed instead of benchmarking dummy text
+2. `research/eval/fingerprint_cka.py` / `research/eval/cka_references.py` / `research/eval/fingerprint_runtime.py`
+   - objective: remove heuristic CKA stand-ins and report missing references honestly
+3. `research/eval/op_rehab.py`
+   - objective: stop auto-inserting `linear_proj` to “rehabilitate” incompatible ops
+4. `research/eval/utils.py` / `research/eval/novelty_calibration.py`
+   - objective: delete uncalled helper leftovers
+
+Status:
+
+- completed
+- deleted or fail-closed
+
+- `research/eval/cross_task_eval.py`
+  - removed `_generate_synthetic_python()`
+  - removed the synthetic-code fallback in `_download_code_corpus()`
+  - cross-task eval now returns `download_failed` when the real code corpus is unavailable
+
+- `research/eval/fingerprint_cka.py`
+  - removed the no-artifact heuristic family-score path
+  - `compute_reference_cka(..., ref_activations=None, ref_similarities=None)` now returns zero scores with `_succeeded=False`
+
+- `research/eval/cka_references.py` / `research/eval/fingerprint_runtime.py`
+  - missing artifacts now report `cka_source="none"` and `cka_reference_quality="none"`
+  - fingerprint runtime no longer treats a fabricated heuristic source as a valid reference provenance path
+  - `similarity_path` metadata now points at `compute_reference_cka`
+
+- `research/eval/op_rehab.py`
+  - removed the implicit `linear_proj` insertion path
+  - incompatible op shapes now fail directly instead of being silently “fixed”
+
+- `research/eval/utils.py`
+  - deleted dead `mean_token_log_prob()`
+
+- `research/eval/novelty_calibration.py`
+  - deleted test-only `novelty_stability_under_small_perturbations()`
+
+- tests updated
+  - `research/tests/test_interpretability_evals.py`
+    - now asserts cross-task eval fails closed when the code corpus cannot be downloaded
+  - `research/tests/test_novelty.py`
+  - `research/tests/test_reference_architectures.py`
+    - now assert no-artifact CKA returns `cka_source="none"` and no invented scores
+  - `research/tests/test_novelty_integrity.py`
+    - removed the deleted novelty-stability test
+
+- targeted microbench before:
+  - cross-task shared-path eval fixture: `2.116 ms`
+  - no-ref CKA call: `0.0545 ms`, result was fake non-zero family scores with `_succeeded=True`
+  - `test_op_in_isolation("linear_proj")`: `1.059 ms`
+
+- targeted microbench after:
+  - cross-task shared-path eval fixture: `2.155 ms`
+  - no-ref CKA call: `0.0077 ms`, result is all-zero with `_succeeded=False`
+  - `test_op_in_isolation("linear_proj")`: `1.119 ms`
+
+- validation:
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_interpretability_evals.py -q -k 'TestCrossTaskEval'`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_novelty.py -q -k 'store_no_artifacts_returns_none or compute_reference_cka_with_artifacts or compute_reference_cka_without_artifacts_fails_closed or fingerprint_records_cka_source or fingerprint_reports_none_when_no_artifacts'`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_reference_architectures.py -q -k 'store_no_artifacts_returns_none or compute_reference_cka_with_artifacts or compute_reference_cka_without_artifacts_fails_closed or fingerprint_records_cka_source or fingerprint_reports_none_when_no_artifacts'`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_novelty_integrity.py -q`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_toxic_op_fix.py -q -k 'op_rehabilitation_basic or rehabilitation_prevents_exclusion'`
+
+- required perf surfaces before:
+  - `python -m research.eval.benchmark_reference_runner`
+    - legacy `99.366 ms`, native shared runner `144.497 ms`, loss parity `5.510972`
+  - `benchmark_reference_runner(n_steps=128, repeats=3)`
+    - legacy `630.469 ms`, native shared runner `249.096 ms`, loss parity `1.368035`
+
+- required perf surfaces after:
+  - `python -m research.eval.benchmark_reference_runner`
+    - legacy `25.968 ms`, native shared runner `17.422 ms`, loss parity `5.510972`
+  - `benchmark_reference_runner(n_steps=128, repeats=3)`
+    - legacy `315.385 ms`, native shared runner `224.581 ms`, loss parity `1.368035`
+
+- note:
+  - these shared runner benchmarks are noisy and were used as parity/non-regression surfaces only; the measured behavior change in this round was the elimination of fake no-reference CKA scoring, not a shared-runner hot-path rewrite
+
+### Codex-14
+
+Claimed cleanup set by this Codex:
+
+1. `research/eval/fingerprint.py`
+   - objective: collapse wrapper-based compatibility logic into a direct-export facade
+2. `research/eval/cka_references.py`
+   - objective: remove dead heuristic-fallback configuration surface left behind after fail-closed CKA
+3. `research/scientist/api_routes/diagnostics_bp.py`
+   - objective: stop routing diagnostics through the fingerprint compatibility module
+
+Status:
+
+- completed
+- reduced import-surface indirection
+
+- `research/eval/fingerprint.py`
+  - replaced wrapper functions with direct re-exports from the real implementation modules
+  - facade now exposes:
+    - `compute_fingerprint`
+    - `compute_lightning_fingerprint`
+    - `BehavioralFingerprint`
+    - `build_novelty_reference_version`
+    - `get_sensitivity_skip_stats`
+    - the test-facing private helpers from their actual implementation modules
+  - kept `compute_gated_fingerprint()` as the only file-local logic because it is the only function adding behavior
+
+- `research/eval/cka_references.py`
+  - removed dead `allow_heuristic_fallback` constructor arg
+  - removed dead `allow_heuristic_fallback` property
+  - this config no longer pretends there is a supported heuristic path to toggle
+
+- `research/scientist/api_routes/diagnostics_bp.py`
+  - now imports `get_sensitivity_skip_stats` directly from `fingerprint_sensitivity`
+
+- `research/tests/test_evidence_pack.py`
+  - updated stale `similarity_path` fixture from `_compute_reference_cka` to `compute_reference_cka`
+
+- validation:
+  - `python -m py_compile /home/tim/Projects/LLM/research/eval/fingerprint.py /home/tim/Projects/LLM/research/eval/cka_references.py /home/tim/Projects/LLM/research/scientist/api_routes/diagnostics_bp.py`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_fingerprint_gating.py -q`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_fingerprint_geometry.py -q`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_fingerprint_sensitivity.py -q`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_fingerprint_interactions.py -q`
+  - `python -m pytest /home/tim/Projects/LLM/research/tests/test_evidence_pack.py -q`
+
+- note:
+  - this was code-hygiene/import-surface cleanup, not a hot-path rewrite; no separate performance benchmark was justified for this round

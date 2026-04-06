@@ -137,7 +137,7 @@ def populate_cka(
     fp.cka_source = cka_meta.get("cka_source", "none")
     fp.cka_artifact_version = cka_meta.get("cka_artifact_version")
     fp.cka_probe_protocol_hash = cka_meta.get("cka_probe_protocol_hash")
-    fp.similarity_path = cka_meta.get("cka_similarity_path", "_compute_reference_cka")
+    fp.similarity_path = cka_meta.get("cka_similarity_path", "compute_reference_cka")
 
     all_near_zero = (
         fp.cka_vs_transformer < 0.01 and fp.cka_vs_ssm < 0.01 and fp.cka_vs_conv < 0.01
@@ -159,9 +159,6 @@ def populate_cka(
     if fp.cka_source == "artifact":
         fp.novelty_valid_for_promotion = True
         fp.novelty_validity_reason = "artifact_reference"
-    elif fp.cka_source == "heuristic_fallback":
-        fp.novelty_valid_for_promotion = False
-        fp.novelty_validity_reason = "heuristic_fallback_reference"
     else:
         fp.novelty_valid_for_promotion = False
         fp.novelty_validity_reason = "no_reference_available"

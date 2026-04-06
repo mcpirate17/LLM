@@ -5,12 +5,39 @@ from __future__ import annotations
 import functools
 import logging
 import sqlite3
+from typing import Any, Dict
 
 from flask import jsonify, request
 
 from .deps import get_notebook
 
 logger = logging.getLogger(__name__)
+
+
+def is_malformed_db_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "database disk image is malformed",
+            "malformed",
+            "not a database",
+            "database corrupt",
+        )
+    )
+
+
+def malformed_db_response_payload(exc: Exception) -> Dict[str, Any]:
+    return {
+        "error": "Notebook database is corrupted; returning degraded response",
+        "details": str(exc),
+        "degraded": True,
+        "database_status": {
+            "healthy": False,
+            "error_type": "malformed",
+            "message": str(exc),
+        },
+    }
 
 
 def with_notebook_context(notebook_path: str):
@@ -42,6 +69,23 @@ def with_notebook_context(notebook_path: str):
                 return jsonify(
                     {"error": "Database temporarily busy, retry shortly"}
                 ), 503
+            except sqlite3.DatabaseError as e:
+                if is_malformed_db_error(e):
+                    logger.warning(
+                        "%s %s -> 503 (db malformed during init): %s",
+                        request.method,
+                        request.path,
+                        e,
+                    )
+                    return jsonify(malformed_db_response_payload(e)), 503
+                logger.error(
+                    "Unhandled db init error on %s %s: %s",
+                    request.method,
+                    request.path,
+                    e,
+                    exc_info=True,
+                )
+                return jsonify({"error": str(e)}), 500
             try:
                 return fn(*args, nb=nb, **kwargs)
             except sqlite3.OperationalError as e:
@@ -55,6 +99,23 @@ def with_notebook_context(notebook_path: str):
                     return jsonify(
                         {"error": "Database temporarily busy, retry shortly"}
                     ), 503
+                logger.error(
+                    "Unhandled db error on %s %s: %s",
+                    request.method,
+                    request.path,
+                    e,
+                    exc_info=True,
+                )
+                return jsonify({"error": str(e)}), 500
+            except sqlite3.DatabaseError as e:
+                if is_malformed_db_error(e):
+                    logger.warning(
+                        "%s %s -> 503 (db malformed): %s",
+                        request.method,
+                        request.path,
+                        e,
+                    )
+                    return jsonify(malformed_db_response_payload(e)), 503
                 logger.error(
                     "Unhandled db error on %s %s: %s",
                     request.method,

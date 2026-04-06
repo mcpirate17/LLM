@@ -213,6 +213,7 @@ function RunResultsPanel({
   for (const s of stages) stageMap[s.stage] = s
 
   const sandboxMetrics = stageMap.sandbox?.metrics
+  const routingMetrics = stageMap.routing?.metrics
   const profilingMetrics = stageMap.profiling?.metrics
   const compressionMetrics = stageMap.compression?.metrics
   const fingerprintMetrics = stageMap.fingerprint?.metrics
@@ -553,6 +554,49 @@ function RunResultsPanel({
                   <div>Reason: <strong style={{ color: '#d8e6f5' }}>{String(abiProbe.parity_reason)}</strong></div>
                 ) : null}
               </div>
+            </div>
+          )}
+        </CollapsibleSection>
+      )}
+
+      {(routingMetrics?.op_routing?.length > 0 || sandboxMetrics?.routing_report) && (
+        <CollapsibleSection title="Routing">
+          {sandboxMetrics?.routing_report && (
+            <div className="metrics-grid">
+              <div className="stat">
+                <div className="stat-val">{formatNum(sandboxMetrics.routing_report?.routing_keep_drop_ratio?.keep)}</div>
+                <div className="stat-label">Keep Ratio</div>
+              </div>
+              <div className="stat">
+                <div className="stat-val">{formatNum(sandboxMetrics.routing_report?.sparse_span_coverage)}</div>
+                <div className="stat-label">Span Coverage</div>
+              </div>
+              <div className="stat">
+                <div className="stat-val">{formatNum(sandboxMetrics.routing_report?.route_confidence_mean)}</div>
+                <div className="stat-label">Confidence</div>
+              </div>
+              <div className="stat">
+                <div className="stat-val">{sandboxMetrics.routing_report?.lane_count ?? '-'}</div>
+                <div className="stat-label">Lane Count</div>
+              </div>
+            </div>
+          )}
+          {Array.isArray(routingMetrics?.op_routing) && routingMetrics.op_routing.length > 0 && (
+            <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+              {routingMetrics.op_routing.slice(0, 4).map((entry, idx) => (
+                <div key={`${entry.aria_node_id || idx}-${entry.op_name || 'routing'}`} style={{ padding: '8px 10px', border: '1px solid #1f3147', borderRadius: 8, background: '#0f1928' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <strong style={{ fontSize: 12 }}>{entry.op_name || 'routing'}</strong>
+                    <span style={{ fontSize: 11, color: '#8fa8c2' }}>{entry.span_type || entry.gate_type || 'route'}</span>
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 11, color: '#8fa8c2' }}>
+                    Lane histogram: {Array.isArray(entry.lane_histogram) ? entry.lane_histogram.join(', ') : '-'}
+                  </div>
+                  <div style={{ marginTop: 2, fontSize: 11, color: '#8fa8c2' }}>
+                    Confidence: {entry.route_confidence_mean != null ? Number(entry.route_confidence_mean).toFixed(3) : '-'}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CollapsibleSection>
