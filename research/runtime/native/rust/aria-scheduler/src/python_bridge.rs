@@ -27,7 +27,7 @@ use crate::intelligence::{
     extract_topology_features_json, train_interaction_model_native,
     train_op_embeddings_epoch_native,
 };
-use crate::notebook_graph::extract_graph_ops_json;
+use crate::notebook_graph::{extract_graph_feature_payload_json, extract_graph_ops_json};
 
 #[pyclass]
 struct SavedActivationStore {
@@ -143,6 +143,22 @@ fn extract_graph_ops_batch(graphs: Vec<String>) -> PyResult<Vec<Vec<String>>> {
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
         })
         .collect()
+}
+
+#[pyfunction]
+fn extract_graph_feature_payload(
+    json: &str,
+) -> PyResult<(String, Vec<String>, Vec<String>, String, String, String)> {
+    let payload = extract_graph_feature_payload_json(json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok((
+        payload.template_name,
+        payload.op_names,
+        payload.pair_signatures,
+        payload.templates_json,
+        payload.motifs_json,
+        payload.slot_usage_json,
+    ))
 }
 
 #[derive(Serialize)]
@@ -1284,6 +1300,7 @@ fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fingerprint_notebook_graph, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_ops, m)?)?;
     m.add_function(wrap_pyfunction!(extract_graph_ops_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_graph_feature_payload, m)?)?;
     m.add_function(wrap_pyfunction!(build_op_index_from_rows, m)?)?;
     m.add_function(wrap_pyfunction!(build_graph_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(build_predictor_training_corpus, m)?)?;

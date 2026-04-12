@@ -440,10 +440,13 @@ class TestBucketCategoryDistribution:
 
     @staticmethod
     def _make_notebook(conn):
+        from research.scientist.notebook.notebook_advanced_analytics import (
+            _AdvancedAnalyticsMixin,
+        )
         from research.scientist.notebook.notebook_analytics import _AnalyticsMixin
         from research.scientist.notebook.notebook_misc import _MiscMixin
 
-        class _TestNotebook(_AnalyticsMixin, _MiscMixin):
+        class _TestNotebook(_AnalyticsMixin, _AdvancedAnalyticsMixin, _MiscMixin):
             pass
 
         nb = _TestNotebook()

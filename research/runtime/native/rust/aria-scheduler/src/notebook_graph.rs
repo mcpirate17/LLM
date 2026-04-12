@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,6 +26,15 @@ pub struct NotebookNode {
     pub input_ids: Vec<i64>,
     #[serde(default)]
     pub config: Value,
+}
+
+pub struct GraphFeaturePayload {
+    pub template_name: String,
+    pub op_names: Vec<String>,
+    pub pair_signatures: Vec<String>,
+    pub templates_json: String,
+    pub motifs_json: String,
+    pub slot_usage_json: String,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -229,6 +238,178 @@ pub fn extract_graph_ops_json(json: &str) -> Result<Vec<String>, AriaError> {
     ops.sort();
     ops.dedup();
     Ok(ops)
+}
+
+pub fn extract_graph_feature_payload_json(json: &str) -> Result<GraphFeaturePayload, AriaError> {
+    if json.trim().is_empty() {
+        return Ok(empty_graph_feature_payload());
+    }
+    let value: Value =
+        serde_json::from_str(json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let Some(graph) = value.as_object() else {
+        return Ok(empty_graph_feature_payload());
+    };
+
+    let metadata = graph
+        .get("metadata")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let nodes = graph.get("nodes");
+
+    let mut op_names: BTreeSet<String> = BTreeSet::new();
+    let mut pair_signatures: BTreeSet<String> = BTreeSet::new();
+
+    match nodes {
+        Some(Value::Object(node_map)) => {
+            for node in node_map.values() {
+                let Some(node_obj) = node.as_object() else {
+                    continue;
+                };
+                let op_name = cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
+                if op_name.is_empty() || op_name == "input" {
+                    continue;
+                }
+                op_names.insert(op_name.clone());
+                let Some(input_ids) = node_obj.get("input_ids").and_then(Value::as_array) else {
+                    continue;
+                };
+                for raw_parent in input_ids {
+                    let parent_key = value_to_lookup_key(raw_parent);
+                    let Some(parent_obj) = node_map.get(&parent_key).and_then(Value::as_object) else {
+                        continue;
+                    };
+                    let parent_op = cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
+                    if !parent_op.is_empty() && parent_op != "input" {
+                        pair_signatures.insert(format!("{}->{}", parent_op, op_name));
+                    }
+                }
+            }
+        }
+        Some(Value::Array(node_list)) => {
+            let mut node_map: HashMap<String, &serde_json::Map<String, Value>> =
+                HashMap::with_capacity(node_list.len());
+            for (idx, node) in node_list.iter().enumerate() {
+                let Some(node_obj) = node.as_object() else {
+                    continue;
+                };
+                let id_key = node_obj
+                    .get("id")
+                    .map(value_to_lookup_key)
+                    .unwrap_or_else(|| idx.to_string());
+                node_map.insert(id_key, node_obj);
+            }
+            for node_obj in node_map.values() {
+                let op_name = cleaned_op_name(node_obj.get("op_name").or_else(|| node_obj.get("op")));
+                if op_name.is_empty() || op_name == "input" {
+                    continue;
+                }
+                op_names.insert(op_name.clone());
+                let Some(input_ids) = node_obj.get("input_ids").and_then(Value::as_array) else {
+                    continue;
+                };
+                for raw_parent in input_ids {
+                    let parent_key = value_to_lookup_key(raw_parent);
+                    let Some(parent_obj) = node_map.get(&parent_key) else {
+                        continue;
+                    };
+                    let parent_op = cleaned_op_name(parent_obj.get("op_name").or_else(|| parent_obj.get("op")));
+                    if !parent_op.is_empty() && parent_op != "input" {
+                        pair_signatures.insert(format!("{}->{}", parent_op, op_name));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let template_name = metadata
+        .get("template")
+        .or_else(|| metadata.get("template_name"))
+        .map(value_to_string)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    Ok(GraphFeaturePayload {
+        template_name,
+        op_names: op_names.into_iter().collect(),
+        pair_signatures: pair_signatures.into_iter().collect(),
+        templates_json: clean_string_list_json(metadata.get("templates_used")),
+        motifs_json: clean_string_list_json(metadata.get("motifs_used")),
+        slot_usage_json: clean_dict_list_json(metadata.get("template_slot_usage")),
+    })
+}
+
+fn empty_graph_feature_payload() -> GraphFeaturePayload {
+    GraphFeaturePayload {
+        template_name: String::new(),
+        op_names: Vec::new(),
+        pair_signatures: Vec::new(),
+        templates_json: "[]".to_string(),
+        motifs_json: "[]".to_string(),
+        slot_usage_json: "[]".to_string(),
+    }
+}
+
+fn cleaned_op_name(value: Option<&Value>) -> String {
+    value
+        .map(value_to_string)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn value_to_lookup_key(value: &Value) -> String {
+    match value {
+        Value::String(raw) => raw.clone(),
+        Value::Number(raw) => raw.to_string(),
+        Value::Bool(raw) => raw.to_string(),
+        Value::Null => String::new(),
+        _ => value_to_string(value),
+    }
+}
+
+fn value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(raw) => raw.clone(),
+        Value::Number(raw) => raw.to_string(),
+        Value::Bool(raw) => raw.to_string(),
+        Value::Null => String::new(),
+        _ => value.to_string(),
+    }
+}
+
+fn clean_string_list_json(value: Option<&Value>) -> String {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return "[]".to_string();
+    };
+    let cleaned: Vec<String> = items
+        .iter()
+        .filter(|item| !item.is_null())
+        .map(value_to_string)
+        .collect();
+    if cleaned.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(&cleaned).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+fn clean_dict_list_json(value: Option<&Value>) -> String {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return "[]".to_string();
+    };
+    let cleaned: Vec<Value> = items
+        .iter()
+        .filter(|item| item.is_object())
+        .cloned()
+        .collect();
+    if cleaned.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(&cleaned).unwrap_or_else(|_| "[]".to_string())
+    }
 }
 
 fn routing_compression_string(metadata: &Value) -> String {

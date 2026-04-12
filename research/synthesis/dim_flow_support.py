@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from .dim_flow_opcode_tables import (
-    FULL_DIM_OPS,
     build_dim_flow_opcode_tables,
 )
 from .graph import ComputationGraph
