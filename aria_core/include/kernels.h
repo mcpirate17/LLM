@@ -499,6 +499,38 @@ void aria_sparse_span_extract_f32(const float *x,
                                   int64_t batch, int64_t seq, int64_t dim,
                                   int64_t span_width);
 
+/** transpose_sd: interleave even/odd channels. D must be even. */
+void aria_transpose_sd_f32(const float *x, float *y,
+                           int64_t batch, int64_t seq, int64_t dim);
+
+/** gated_lane_blend: soft-routed multi-lane token transform.
+ *  scorer[n_lanes, D], projs[n_lanes, D, D] */
+void aria_gated_lane_blend_f32(const float *x,
+                               const float *scorer, const float *projs,
+                               float *y,
+                               int64_t batch, int64_t seq,
+                               int64_t dim, int64_t n_lanes);
+
+/** depth_gated_transform: variable-depth per-token transform.
+ *  scorer[max_depth, D], projs[max_depth, D, D] */
+void aria_depth_gated_transform_f32(const float *x,
+                                    const float *scorer, const float *projs,
+                                    float *y,
+                                    int64_t batch, int64_t seq,
+                                    int64_t dim, int64_t max_depth);
+
+/** calibrated_branch_merge: two-branch merge with RMS calibration.
+ *  a[B,S,D], b[B,S,D], score_proj[2,D], branch_bias[2], branch_gain[2] */
+void aria_calibrated_branch_merge_f32(const float *a, const float *b,
+                                      const float *score_proj,
+                                      const float *branch_bias,
+                                      const float *branch_gain,
+                                      float *y,
+                                      int64_t batch, int64_t seq, int64_t dim,
+                                      float temperature,
+                                      float min_secondary,
+                                      float max_secondary);
+
 /**
  * Conditional dispatch (single lane): packs tokens assigned to `lane_id`.
  * lane_out is written as [B,S,D] packed per batch; lane_counts[B] gives valid tokens.

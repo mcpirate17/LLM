@@ -75,6 +75,7 @@ def functional_micro_train_loop(
     clip_grad: float = 1.0,
     warmup_steps: int = 10,
     loss_trajectory: Optional[dict] = None,
+    train_telemetry: Optional[dict] = None,
     step_callback=None,
 ) -> float:
     """Train cloned parameters only; leave the live module untouched."""
@@ -102,6 +103,8 @@ def functional_micro_train_loop(
             clip_grad=clip_grad,
             warmup_steps=warmup_steps,
             loss_trajectory=loss_trajectory,
+            train_telemetry=train_telemetry,
+            parameter_names=list(params.keys()),
         )
         return result.final_loss
 

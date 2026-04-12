@@ -812,6 +812,30 @@ class _ExecutionTrainingMixin:
             except (RuntimeError, ValueError, OSError, ImportError) as e_hs:
                 logger.debug("Screening HellaSwag eval skipped: %s", e_hs)
 
+        # BLiMP linguistic minimal pairs (forward-only, ~2s)
+        if should_run_post_s1_screening_probes and not getattr(
+            config, "skip_screening_blimp", False
+        ):
+            try:
+                from ...eval.blimp_eval import evaluate_blimp
+
+                blimp = evaluate_blimp(
+                    model, int(config.vocab_size), str(dev), n_per_subtask=50
+                )
+                result["blimp_overall_accuracy"] = blimp.overall_accuracy
+                result["blimp_subtask_accuracies_json"] = blimp.subtask_accuracies
+                result["blimp_n_subtasks"] = blimp.n_subtasks
+                result["blimp_status"] = blimp.status
+                if blimp.overall_accuracy is not None:
+                    logger.info(
+                        "    Screening BLiMP acc=%.1f%% (%d subtasks, %s)",
+                        blimp.overall_accuracy * 100,
+                        blimp.n_subtasks,
+                        blimp.status,
+                    )
+            except (RuntimeError, ValueError, OSError, ImportError) as e_bl:
+                logger.debug("Screening BLiMP eval skipped: %s", e_bl)
+
         # Screening probes: induction and binding are independently skippable.
         want_induction_probe = should_run_post_s1_screening_probes and not (
             getattr(config, "skip_binding_probes", False)
@@ -890,12 +914,46 @@ class _ExecutionTrainingMixin:
                     )
                     result["binding_probe_elapsed_ms"] = br.elapsed_ms
 
-                result["ar_auc"] = None
-                if ind is not None and br is not None:
-                    result["binding_composite"] = round(0.3 * ind.auc + 0.3 * br.auc, 4)
+                # AR probe (~60s, deepcopy + 500 train steps)
+                ar = None
+                if not getattr(config, "skip_ar_probe", False):
+                    try:
+                        from ...eval.associative_recall import associative_recall_score
+
+                        ar = associative_recall_score(
+                            model,
+                            n_pairs=20,
+                            n_eval=200,
+                            n_train_steps=500,
+                            batch_size=16,
+                            device=str(dev),
+                        )
+                        result["ar_auc"] = ar.auc
+                        result["ar_final_acc"] = ar.final_acc
+                        result["ar_timed_out"] = int(ar.timed_out)
+                        result["ar_above_chance"] = int(ar.above_chance)
+                    except (RuntimeError, ValueError, TypeError, ImportError) as e_ar:
+                        logger.debug("AR probe skipped: %s", e_ar)
+
+                if result.get("ar_auc") is None:
+                    result["ar_auc"] = None
+
+                # Binding composite: 0.4*AR + 0.3*induction + 0.3*binding
+                ar_val = result.get("ar_auc")
+                ind_val = ind.auc if ind is not None else None
+                br_val = br.auc if br is not None else None
+                if ind_val is not None and br_val is not None:
+                    if ar_val is not None:
+                        result["binding_composite"] = round(
+                            0.4 * ar_val + 0.3 * ind_val + 0.3 * br_val, 4
+                        )
+                    else:
+                        result["binding_composite"] = round(
+                            0.3 * ind_val + 0.3 * br_val, 4
+                        )
 
                 logger.info(
-                    "    Screening probes: induction=%s binding=%s bc=%s",
+                    "    Screening probes: induction=%s binding=%s ar=%s bc=%s",
                     (
                         f"{ind.auc:.3f} ({ind.elapsed_ms:.0f}ms)"
                         if ind is not None
@@ -904,6 +962,11 @@ class _ExecutionTrainingMixin:
                     (
                         f"{br.auc:.3f} ({br.elapsed_ms:.0f}ms)"
                         if br is not None
+                        else "skip"
+                    ),
+                    (
+                        f"{ar.auc:.3f} ({ar.elapsed_ms:.0f}ms)"
+                        if ar is not None
                         else "skip"
                     ),
                     (
@@ -2004,6 +2067,285 @@ class _ExecutionTrainingMixin:
                 "passed": False,
             }
 
+    def _train_init_model_and_optimizer(
+        self,
+        model: nn.Module,
+        program,
+        config: RunConfig,
+        dev: torch.device,
+        result: Dict[str, Any],
+        tracer,
+    ) -> Tuple[nn.Module, Any, Tuple, int, int, float]:
+        """Set up model, apply init scheme, create optimizer, extract hyperparams.
+
+        Returns (model, optimizer, model_params, n_steps, batch_size,
+        max_grad_norm_val).
+        """
+        with tracer.trace("model_setup"):
+            model = model.to(dev)
+            model.train()
+            model_params = tuple(model.parameters())
+
+        # Apply init scheme
+        if program.init_scheme == "small":
+            for p in model_params:
+                if p.dim() >= 2:
+                    nn.init.normal_(p, std=program.init_scale)
+        elif program.init_scheme == "orthogonal":
+            for m in model.modules():
+                if isinstance(m, (nn.Linear, nn.Conv1d)):
+                    nn.init.orthogonal_(m.weight, gain=program.init_scale)
+        elif program.init_scheme == "spectral":
+            for m in model.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_normal_(m.weight)
+
+        # Create optimizer from program
+        opt_fallback = False
+        try:
+            optimizer = program.optimizer.create(model_params)
+        except (RuntimeError, ValueError, TypeError) as exc:
+            logger.warning(
+                "program.optimizer.create() failed (%s); "
+                "falling back to AdamW via build_optimizer",
+                exc,
+            )
+            from ...training.optimizer_synthesis import build_optimizer
+
+            optimizer = build_optimizer(
+                model_params,
+                optimizer_type="adamw",
+                lr=3e-4,
+                weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
+                betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
+            )
+            opt_fallback = True
+
+        result["optimizer_class"] = optimizer.__class__.__name__.lower()
+        result["optimizer_fallback"] = opt_fallback
+        if optimizer.param_groups:
+            pg0 = optimizer.param_groups[0]
+            result["optimizer_lr"] = float(pg0.get("lr", 3e-4))
+            result["optimizer_weight_decay"] = float(pg0.get("weight_decay", 0.01))
+            result["optimizer_momentum"] = float(pg0.get("momentum", 0.0))
+            betas = pg0.get("betas")
+            if isinstance(betas, tuple) and len(betas) == 2:
+                result["optimizer_beta1"] = float(betas[0])
+                result["optimizer_beta2"] = float(betas[1])
+
+        n_steps = program.n_steps
+        batch_size = program.batch_size
+        max_grad_norm_val = program.max_grad_norm
+        # Adaptive clip for math-space architectures
+        from ._helpers import apply_adaptive_grad_clip
+
+        max_grad_norm_val = apply_adaptive_grad_clip(model, max_grad_norm_val)
+
+        return model, optimizer, model_params, n_steps, batch_size, max_grad_norm_val
+
+    def _train_compute_safe_seq_len(
+        self,
+        config: RunConfig,
+        dev: torch.device,
+        program,
+        n_steps: int,
+    ) -> Tuple[int, int]:
+        """Compute VRAM-safe seq_len with curriculum schedule.
+
+        Returns (seq_len, safe_max_seq).
+        """
+        _static_cap = 512
+        if dev.type == "cuda":
+            try:
+                free_mb = (
+                    torch.cuda.get_device_properties(dev).total_memory
+                    - torch.cuda.memory_allocated(dev)
+                ) / (1024 * 1024)
+                _batch = int(getattr(config, "stage1_batch_size", 4) or 4)
+                _nlayers = int(getattr(config, "n_layers", 4) or 4)
+                _dim = int(getattr(config, "model_dim", 256) or 256)
+                import math as _math
+
+                _budget = free_mb * 0.5 * 1024 * 1024  # bytes
+                _max_s = int(
+                    _math.sqrt(
+                        _budget
+                        / (max(_batch, 1) * max(_dim, 1) * max(_nlayers, 1) * 12)
+                    )
+                )
+                _static_cap = min(_static_cap, max(64, _max_s))
+                if _static_cap < config.max_seq_len:
+                    logger.info(
+                        "VRAM-capped seq_len: %d (free=%.0fMB, B=%d, L=%d)",
+                        _static_cap,
+                        free_mb,
+                        _batch,
+                        _nlayers,
+                    )
+            except RuntimeError as e:
+                logger.debug("VRAM cap estimation failed: %s", e)
+        safe_max_seq = min(config.max_seq_len, _static_cap)
+        seq_len = min(128, safe_max_seq)
+        # Apply curriculum seq_len schedule
+        try:
+            base_seq = program.curriculum.get_seq_len(0, n_steps)
+            if base_seq and base_seq > 0:
+                seq_len = min(base_seq, safe_max_seq)
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("Curriculum seq_len lookup failed: %s", e)
+
+        return seq_len, safe_max_seq
+
+    def _train_finalize_metrics(
+        self,
+        result: Dict[str, Any],
+        model: nn.Module,
+        optimizer,
+        program,
+        config: RunConfig,
+        step_times: List[float],
+        grad_norms: List[float],
+        training_curve: List[Dict],
+        initial_loss: Optional[float],
+        final_loss: Optional[float],
+        min_loss: float,
+        total_tokens: int,
+        total_time_ms: float,
+    ) -> None:
+        """Compute post-training metrics and update result dict in-place."""
+        if initial_loss is None or final_loss is None:
+            return
+
+        _raw = final_loss / max(initial_loss, 1e-6)
+        _norm = normalized_loss_ratio(final_loss, config.vocab_size)
+        result["loss_ratio"] = _raw
+        result["loss_ratio_raw"] = _raw
+        result["loss_ratio_norm"] = _norm
+        result["final_loss"] = final_loss
+        result["initial_loss"] = initial_loss
+        result["min_loss"] = min_loss
+        result["throughput"] = total_tokens / (total_time_ms / 1000)
+        # Adaptive S1 gate: use loss_ratio threshold but scale for
+        # graphs with low initial_loss (complex architectures start
+        # closer to the entropy floor, so loss_ratio is harder).
+        raw_ratio = _raw
+        _base_thr = config.stage1_loss_ratio_threshold
+        _init = initial_loss if initial_loss and initial_loss > 0 else 100.0
+        _scale = max(0.0, 1.0 - _init / 50.0)
+        _adaptive_thr = _base_thr + (1.0 - _base_thr) * _scale
+        result["passed"] = raw_ratio < _adaptive_thr
+        # Validation loss gate
+        _vlr = result.get("validation_loss_ratio")
+        if result["passed"] and _vlr is not None and _vlr > 0.6:
+            result["passed"] = False
+            result["error_type"] = "insufficient_learning"
+            result["error"] = (
+                f"Validation loss ratio {_vlr:.4f} > 0.60 — "
+                f"model memorized training but failed to generalize"
+            )
+        # Inflight checks already flagged this run ��� override pass
+        if result.get("error_type", "").startswith("inflight_"):
+            result["passed"] = False
+        if not result["passed"] and result.get("error_type") is None:
+            result["error_type"] = "failed_convergence"
+            result["error"] = (
+                f"Insufficient loss reduction during investigation: {result['loss_ratio']:.4f}"
+            )
+            result["loss_improvement_rate"] = (initial_loss - final_loss) / initial_loss
+
+        result["avg_step_time_ms"] = (
+            sum(step_times) / len(step_times) if step_times else 0
+        )
+        result["total_train_time_ms"] = total_time_ms
+
+        if grad_norms:
+            result["max_grad_norm"] = max(grad_norms)
+            result["mean_grad_norm"] = sum(grad_norms) / len(grad_norms)
+            mean_gn = result["mean_grad_norm"]
+            result["grad_norm_std"] = (
+                sum((g - mean_gn) ** 2 for g in grad_norms) / len(grad_norms)
+            ) ** 0.5
+
+        result["n_train_steps"] = len(step_times)
+        result["final_lr"] = getattr(optimizer, "defaults", {}).get("lr", 3e-4)
+        result["training_curve"] = training_curve
+        result["training_program_json"] = json.dumps(json_safe(program.to_dict()))
+
+        # Extract architecture-specific telemetry (MoE, MoD, MoR, etc.)
+        arch_telemetry = self._extract_architecture_telemetry(model)
+        result.update(arch_telemetry)
+
+    def _train_restore_checkpoint(
+        self,
+        model: nn.Module,
+        optimizer,
+        dev: torch.device,
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Restore training state from checkpoint if available.
+
+        Returns a dict with keys: step_start, initial_loss, final_loss, min_loss,
+        total_tokens, step_times, grad_norms, training_curve, t_start,
+        inflight_state, es_best_loss, es_steps_since_improve.
+        """
+        t_start = time.perf_counter()
+        state = {
+            "step_start": 0,
+            "initial_loss": None,
+            "final_loss": None,
+            "min_loss": float("inf"),
+            "total_tokens": 0,
+            "step_times": [],
+            "grad_norms": [],
+            "training_curve": [],
+            "t_start": t_start,
+            "inflight_state": None,
+            "es_best_loss": None,
+            "es_steps_since_improve": None,
+        }
+
+        resume_state = _restore_phase_training_state(
+            self,
+            model=model,
+            optimizer=optimizer,
+            device=dev,
+        )
+        if resume_state is None:
+            return state
+
+        progress = resume_state["progress"]
+        state["initial_loss"] = progress.initial_loss
+        state["final_loss"] = progress.final_loss
+        state["min_loss"] = progress.min_loss
+        state["total_tokens"] = progress.total_tokens
+        state["step_times"] = [
+            float(point.get("step_time_ms", 0.0))
+            for point in progress.training_curve
+            if point.get("step_time_ms") is not None
+        ]
+        state["grad_norms"] = [
+            float(point.get("grad_norm", 0.0))
+            for point in progress.training_curve
+            if point.get("grad_norm") is not None
+        ]
+        state["training_curve"] = list(progress.training_curve)
+        state["step_start"] = int(resume_state["step"])
+        state["t_start"] = time.perf_counter() - (
+            float(resume_state.get("elapsed_ms", 0.0) or 0.0) / 1000.0
+        )
+        state["inflight_state"] = resume_state["inflight_state"]
+        state["es_best_loss"] = float(
+            resume_state.get("early_stop_best_loss")
+            or progress.min_loss
+            or float("inf")
+        )
+        state["es_steps_since_improve"] = int(
+            resume_state.get("early_stop_steps_since_improve", 0) or 0
+        )
+        result["checkpoint_resumed"] = True
+        result["checkpoint_resume_step"] = state["step_start"]
+        return state
+
     def _train_with_program(
         self,
         model: nn.Module,
@@ -2031,160 +2373,29 @@ class _ExecutionTrainingMixin:
         result: Dict[str, Any] = {"passed": False}
 
         try:
-            with tracer.trace("model_setup"):
-                model = model.to(dev)
-                model.train()
-                model_params = tuple(model.parameters())
-
-            # Apply init scheme
-            if program.init_scheme == "small":
-                for p in model_params:
-                    if p.dim() >= 2:
-                        nn.init.normal_(p, std=program.init_scale)
-            elif program.init_scheme == "orthogonal":
-                for m in model.modules():
-                    if isinstance(m, (nn.Linear, nn.Conv1d)):
-                        nn.init.orthogonal_(m.weight, gain=program.init_scale)
-            elif program.init_scheme == "spectral":
-                for m in model.modules():
-                    if isinstance(m, nn.Linear):
-                        nn.init.xavier_normal_(m.weight)
-
-            # Create optimizer from program
-            opt_fallback = False
-            try:
-                optimizer = program.optimizer.create(model_params)
-            except (RuntimeError, ValueError, TypeError) as exc:
-                logger.warning(
-                    "program.optimizer.create() failed (%s); "
-                    "falling back to AdamW via build_optimizer",
-                    exc,
+            model, optimizer, model_params, n_steps, batch_size, max_grad_norm_val = (
+                self._train_init_model_and_optimizer(
+                    model, program, config, dev, result, tracer
                 )
-                from ...training.optimizer_synthesis import build_optimizer
-
-                optimizer = build_optimizer(
-                    model_params,
-                    optimizer_type="adamw",
-                    lr=3e-4,
-                    weight_decay=getattr(config, "optimizer_weight_decay", 0.01),
-                    betas=getattr(config, "optimizer_betas", (0.9, 0.95)),
-                )
-                opt_fallback = True
-
-            result["optimizer_class"] = optimizer.__class__.__name__.lower()
-            result["optimizer_fallback"] = opt_fallback
-            if optimizer.param_groups:
-                pg0 = optimizer.param_groups[0]
-                result["optimizer_lr"] = float(pg0.get("lr", 3e-4))
-                result["optimizer_weight_decay"] = float(pg0.get("weight_decay", 0.01))
-                result["optimizer_momentum"] = float(pg0.get("momentum", 0.0))
-                betas = pg0.get("betas")
-                if isinstance(betas, tuple) and len(betas) == 2:
-                    result["optimizer_beta1"] = float(betas[0])
-                    result["optimizer_beta2"] = float(betas[1])
-
-            n_steps = program.n_steps
-            batch_size = program.batch_size
-            max_grad_norm_val = program.max_grad_norm
-            # Adaptive clip for math-space architectures
-            from ._helpers import apply_adaptive_grad_clip
-
-            max_grad_norm_val = apply_adaptive_grad_clip(model, max_grad_norm_val)
-
-            initial_loss = None
-            final_loss = None
-            min_loss = float("inf")
-            total_tokens = 0
-            t_start = time.perf_counter()
-
-            step_times: List[float] = []
-            grad_norms: List[float] = []
-            training_curve: List[Dict] = []
-
-            # VRAM-aware seq_len cap: probe free memory and scale down
-            # to avoid OOM with quadratic-attention ops like ultrametric_attention
-            _static_cap = 512
-            if dev.type == "cuda":
-                try:
-                    free_mb = (
-                        torch.cuda.get_device_properties(dev).total_memory
-                        - torch.cuda.memory_allocated(dev)
-                    ) / (1024 * 1024)
-                    # Rough heuristic: quadratic ops need ~B*S*S*D*4 bytes per layer
-                    # At dim=256, batch=B, n_layers=L: budget ≈ free * 0.5 (leave headroom)
-                    _batch = int(getattr(config, "stage1_batch_size", 4) or 4)
-                    _nlayers = int(getattr(config, "n_layers", 4) or 4)
-                    _dim = int(getattr(config, "model_dim", 256) or 256)
-                    # max_seq where B*S^2*D*L*12 (fwd+bwd+optim) < free*0.5
-                    import math as _math
-
-                    _budget = free_mb * 0.5 * 1024 * 1024  # bytes
-                    _max_s = int(
-                        _math.sqrt(
-                            _budget
-                            / (max(_batch, 1) * max(_dim, 1) * max(_nlayers, 1) * 12)
-                        )
-                    )
-                    _static_cap = min(_static_cap, max(64, _max_s))
-                    if _static_cap < config.max_seq_len:
-                        logger.info(
-                            "VRAM-capped seq_len: %d (free=%.0fMB, B=%d, L=%d)",
-                            _static_cap,
-                            free_mb,
-                            _batch,
-                            _nlayers,
-                        )
-                except RuntimeError as e:
-                    logger.debug("VRAM cap estimation failed: %s", e)
-            safe_max_seq = min(config.max_seq_len, _static_cap)
-            seq_len = min(128, safe_max_seq)
-            # Apply curriculum seq_len schedule
-            try:
-                base_seq = program.curriculum.get_seq_len(0, n_steps)
-                if base_seq and base_seq > 0:
-                    seq_len = min(base_seq, safe_max_seq)
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug("Curriculum seq_len lookup failed: %s", e)
-
-            resume_state = _restore_phase_training_state(
-                self,
-                model=model,
-                optimizer=optimizer,
-                device=dev,
             )
-            step_start = 0
-            if resume_state is not None:
-                progress = resume_state["progress"]
-                initial_loss = progress.initial_loss
-                final_loss = progress.final_loss
-                min_loss = progress.min_loss
-                total_tokens = progress.total_tokens
-                step_times = [
-                    float(point.get("step_time_ms", 0.0))
-                    for point in progress.training_curve
-                    if point.get("step_time_ms") is not None
-                ]
-                grad_norms = [
-                    float(point.get("grad_norm", 0.0))
-                    for point in progress.training_curve
-                    if point.get("grad_norm") is not None
-                ]
-                training_curve = list(progress.training_curve)
-                step_start = int(resume_state["step"])
-                t_start = time.perf_counter() - (
-                    float(resume_state.get("elapsed_ms", 0.0) or 0.0) / 1000.0
-                )
-                _inflight_state_inv = resume_state["inflight_state"]
-                _es_best_loss = float(
-                    resume_state.get("early_stop_best_loss")
-                    or progress.min_loss
-                    or float("inf")
-                )
-                _es_steps_since_improve = int(
-                    resume_state.get("early_stop_steps_since_improve", 0) or 0
-                )
-                result["checkpoint_resumed"] = True
-                result["checkpoint_resume_step"] = step_start
+
+            seq_len, safe_max_seq = self._train_compute_safe_seq_len(
+                config, dev, program, n_steps
+            )
+
+            ckpt = self._train_restore_checkpoint(model, optimizer, dev, result)
+            initial_loss = ckpt["initial_loss"]
+            final_loss = ckpt["final_loss"]
+            min_loss = ckpt["min_loss"]
+            total_tokens = ckpt["total_tokens"]
+            step_times: List[float] = ckpt["step_times"]
+            grad_norms: List[float] = ckpt["grad_norms"]
+            training_curve: List[Dict] = ckpt["training_curve"]
+            t_start = ckpt["t_start"]
+            step_start = ckpt["step_start"]
+            _inflight_state_inv = ckpt["inflight_state"]
+            _es_best_loss = ckpt["es_best_loss"]
+            _es_steps_since_improve = ckpt["es_steps_since_improve"]
 
             for step in range(step_start, n_steps):
                 if self._stop_event.is_set():
@@ -2356,74 +2567,21 @@ class _ExecutionTrainingMixin:
             t_end = time.perf_counter()
             total_time_ms = (t_end - t_start) * 1000
 
-            if initial_loss is not None and final_loss is not None:
-                _raw = final_loss / max(initial_loss, 1e-6)
-                _norm = normalized_loss_ratio(final_loss, config.vocab_size)
-                result["loss_ratio"] = _raw
-                result["loss_ratio_raw"] = _raw
-                result["loss_ratio_norm"] = _norm
-                result["final_loss"] = final_loss
-                result["initial_loss"] = initial_loss
-                result["min_loss"] = min_loss
-                result["throughput"] = total_tokens / (total_time_ms / 1000)
-                # Adaptive S1 gate: use loss_ratio threshold but scale for
-                # graphs with low initial_loss (complex architectures start
-                # closer to the entropy floor, so loss_ratio is harder).
-                # Formula: threshold = base + (1 - base) * max(0, 1 - init_loss / 50)
-                # At init_loss=190: threshold = 0.4 (unchanged)
-                # At init_loss=50:  threshold = 0.4 (unchanged)
-                # At init_loss=20:  threshold = 0.76
-                # At init_loss=12:  threshold = 0.86
-                raw_ratio = _raw
-                _base_thr = config.stage1_loss_ratio_threshold
-                _init = initial_loss if initial_loss and initial_loss > 0 else 100.0
-                _scale = max(0.0, 1.0 - _init / 50.0)
-                _adaptive_thr = _base_thr + (1.0 - _base_thr) * _scale
-                result["passed"] = raw_ratio < _adaptive_thr
-                # Validation loss gate
-                _vlr = result.get("validation_loss_ratio")
-                if result["passed"] and _vlr is not None and _vlr > 0.6:
-                    result["passed"] = False
-                    result["error_type"] = "insufficient_learning"
-                    result["error"] = (
-                        f"Validation loss ratio {_vlr:.4f} > 0.60 — "
-                        f"model memorized training but failed to generalize"
-                    )
-                # Inflight checks already flagged this run — override pass
-                if result.get("error_type", "").startswith("inflight_"):
-                    result["passed"] = False
-                if not result["passed"] and result.get("error_type") is None:
-                    result["error_type"] = "failed_convergence"
-                    result["error"] = (
-                        f"Insufficient loss reduction during investigation: {result['loss_ratio']:.4f}"
-                    )
-                    result["loss_improvement_rate"] = (
-                        initial_loss - final_loss
-                    ) / initial_loss
-
-                result["avg_step_time_ms"] = (
-                    sum(step_times) / len(step_times) if step_times else 0
-                )
-                result["total_train_time_ms"] = total_time_ms
-
-                if grad_norms:
-                    result["max_grad_norm"] = max(grad_norms)
-                    result["mean_grad_norm"] = sum(grad_norms) / len(grad_norms)
-                    mean_gn = result["mean_grad_norm"]
-                    result["grad_norm_std"] = (
-                        sum((g - mean_gn) ** 2 for g in grad_norms) / len(grad_norms)
-                    ) ** 0.5
-
-                result["n_train_steps"] = len(step_times)
-                result["final_lr"] = getattr(optimizer, "defaults", {}).get("lr", 3e-4)
-                result["training_curve"] = training_curve
-                result["training_program_json"] = json.dumps(
-                    json_safe(program.to_dict())
-                )
-
-                # Extract architecture-specific telemetry (MoE, MoD, MoR, etc.)
-                arch_telemetry = self._extract_architecture_telemetry(model)
-                result.update(arch_telemetry)
+            self._train_finalize_metrics(
+                result=result,
+                model=model,
+                optimizer=optimizer,
+                program=program,
+                config=config,
+                step_times=step_times,
+                grad_norms=grad_norms,
+                training_curve=training_curve,
+                initial_loss=initial_loss,
+                final_loss=final_loss,
+                min_loss=min_loss,
+                total_tokens=total_tokens,
+                total_time_ms=total_time_ms,
+            )
 
         except Exception as e:
             logger.debug("Program training failed (%s): %s", type(e).__name__, e)

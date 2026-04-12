@@ -148,7 +148,8 @@ def _pr_dict_to_score_kwargs(
         "robustness_noise": d.get("robustness_noise_score"),
         "robustness_score": pr_dict.get("validation_robustness_score"),
         "quant_retention": d.get("quant_int8_retention"),
-        "long_ctx_score": d.get("robustness_long_ctx_combined_score"),
+        "long_ctx_score": d.get("robustness_long_ctx_combined_score")
+        or d.get("robustness_long_ctx_score"),
         "is_reference": is_reference,
         # Binding probes
         "ar_auc": pr_dict.get("ar_auc") or d.get("ar_auc"),
@@ -442,6 +443,379 @@ _V7_FRONTIER_CONVERGENCE = 1.30  # avg ppl@100 / ppl@500 across 4 refs
 _V7_FRONTIER_BINDING = 0.35  # composite binding score across 4 refs
 
 
+def _score_performance_curves(
+    cfg: Dict[str, float],
+    *,
+    inv_failed: bool,
+    ppl_screening: Optional[float],
+    ppl_investigation: Optional[float],
+    ppl_validation: Optional[float],
+    param_count: Optional[float],
+    ppl_at_500: Optional[float],
+    ppl_at_1000: Optional[float],
+    screening_lr: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """S-curved performance components: perf short/med/long, param_eff, learn_eff."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    perf_short = 0.0
+    if not inv_failed:
+        if ppl_screening is not None and ppl_screening > 0:
+            perf_short = cfg["w_perf_short"] * _scurve(cfg["ppl_1000"] / ppl_screening)
+        elif screening_lr is not None:
+            perf_short = cfg["w_perf_short"] * _scurve(max(0.01, 1.0 - screening_lr))
+    total += perf_short
+    bd["perf_short"] = perf_short
+
+    perf_med = 0.0
+    if not inv_failed and ppl_investigation is not None and ppl_investigation > 0:
+        perf_med = cfg["w_perf_medium"] * _scurve(cfg["ppl_2500"] / ppl_investigation)
+    total += perf_med
+    bd["perf_medium"] = perf_med
+
+    perf_long = 0.0
+    if not inv_failed and ppl_validation is not None and ppl_validation > 0:
+        perf_long = cfg["w_perf_long"] * _scurve(cfg["ppl_10000"] / ppl_validation)
+    total += perf_long
+    bd["perf_long"] = perf_long
+
+    param_eff_pts = 0.0
+    if (
+        not inv_failed
+        and param_count is not None
+        and param_count > 0
+        and ppl_screening is not None
+        and ppl_screening > 0
+    ):
+        model_eff = (cfg["ppl_1000"] / ppl_screening) * (
+            cfg["avg_params"] / param_count
+        )
+        param_eff_pts = cfg["w_param_eff"] * _scurve(model_eff / cfg["param_eff"])
+    total += param_eff_pts
+    bd["param_efficiency"] = param_eff_pts
+
+    learn_eff_pts = 0.0
+    if (
+        not inv_failed
+        and ppl_at_500 is not None
+        and ppl_at_1000 is not None
+        and ppl_at_1000 > 0
+    ):
+        learn_eff_pts = cfg["w_learn_eff"] * _scurve(
+            (ppl_at_500 / ppl_at_1000) / cfg["learn_eff"]
+        )
+    total += learn_eff_pts
+    bd["learning_efficiency"] = learn_eff_pts
+
+    return total, bd
+
+
+def _score_efficiency(
+    *,
+    routing_savings: Optional[float],
+    compression_ratio: Optional[float],
+    quant_quality_per_byte: Optional[float],
+    n_sparse_ops: Optional[int],
+    activation_sparsity: Optional[float],
+    recursion_savings: Optional[float],
+    depth_savings: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """Additive efficiency components: routing, compression, sparsity, adaptive."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    routing_pts = 50.0 * routing_savings if routing_savings is not None else 0.0
+    bd["routing_savings"] = routing_pts
+    total += routing_pts
+
+    comp_pts = 0.0
+    if compression_ratio is not None:
+        comp_pts = 20.0 * max(0, 1.0 - compression_ratio)
+        if quant_quality_per_byte is not None:
+            comp_pts += 10.0 * max(0, quant_quality_per_byte)
+    comp_pts = min(30.0, comp_pts)
+    bd["compression"] = comp_pts
+    total += comp_pts
+
+    sparsity_pts = 0.0
+    if n_sparse_ops is not None and n_sparse_ops > 0:
+        sparsity_pts += min(20.0, n_sparse_ops * 6.0)
+    if activation_sparsity is not None and activation_sparsity > 0.3:
+        sparsity_pts += 10.0 * min(1.0, (activation_sparsity - 0.3) / 0.5)
+    bd["sparsity"] = sparsity_pts
+    total += sparsity_pts
+
+    adaptive_pts = 0.0
+    if recursion_savings is not None and recursion_savings > 0:
+        adaptive_pts += 15.0 * min(1.0, recursion_savings / 0.5)
+    if depth_savings is not None and depth_savings > 0:
+        adaptive_pts += 10.0 * min(1.0, depth_savings / 0.5)
+    bd["adaptive_computation"] = adaptive_pts
+    total += adaptive_pts
+
+    return total, bd
+
+
+def _score_novelty_ncd(
+    *,
+    screening_nov: Optional[float],
+    novelty_confidence: Optional[float],
+    is_reference: bool,
+    ncd_score: Optional[float],
+    novelty_valid: bool,
+    analyses_succeeded: int,
+) -> tuple[float, Dict[str, float]]:
+    """Novelty (max 40pts) and NCD (max 15pts)."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    eff_nov = (
+        0.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
+    )
+    conf = (
+        0.0
+        if is_reference
+        else (novelty_confidence if novelty_confidence is not None else 1.0)
+    )
+    raw = 40.0 * eff_nov * conf
+    if not is_reference and not novelty_valid:
+        novelty_pts = min(40.0, raw * (0.4 + 0.6 * (analyses_succeeded / 4)))
+    else:
+        novelty_pts = raw
+    bd["novelty"] = novelty_pts
+    total += novelty_pts
+
+    ncd_pts = (
+        15.0 * max(0, 1.0 - ncd_score)
+        if ncd_score is not None and ncd_score > 0
+        else 0.0
+    )
+    bd["ncd"] = ncd_pts
+    total += ncd_pts
+
+    return total, bd
+
+
+def _score_robustness_linguistics(
+    cfg: Dict[str, float],
+    *,
+    inv_failed: bool,
+    is_investigated: bool,
+    is_validation: bool,
+    spectral_norm: Optional[float],
+    robustness_noise: Optional[float],
+    robustness_score_val: Optional[float],
+    quant_retention: Optional[float],
+    long_ctx_score: Optional[float],
+    blimp_accuracy: Optional[float],
+    effective_ar_auc: Optional[float],
+    induction_auc: Optional[float],
+    binding_auc_val: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """Robustness (40pts), long context (25pts), binding probes, BLiMP (40pts)."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    robust_pts = 0.0
+    if is_investigated:
+        if spectral_norm is not None:
+            robust_pts += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
+        if robustness_noise is not None:
+            robust_pts += 15.0 * max(0, 1.0 - robustness_noise)
+        if robustness_score_val is not None:
+            robust_pts += 15.0 * robustness_score_val
+        if quant_retention is not None:
+            robust_pts += 15.0 * max(0, quant_retention - 0.5) / 0.5
+    robust_pts = min(40.0, robust_pts)
+    bd["robustness"] = robust_pts
+    total += robust_pts
+
+    long_ctx_pts = 0.0
+    if (
+        is_validation
+        and long_ctx_score is not None
+        and long_ctx_score > 0
+        and cfg["long_ctx"] > 0
+    ):
+        long_ctx_pts = 25.0 * _scurve(long_ctx_score / cfg["long_ctx"])
+    bd["long_context"] = long_ctx_pts
+    total += long_ctx_pts
+
+    binding_pts = 0.0
+    if not inv_failed:
+        _bc, _bc_n = 0.0, 0
+        if effective_ar_auc is not None:
+            _bc += 0.4 * effective_ar_auc
+            _bc_n += 1
+        if induction_auc is not None:
+            _bc += 0.3 * induction_auc
+            _bc_n += 1
+        if binding_auc_val is not None:
+            _bc += 0.3 * binding_auc_val
+            _bc_n += 1
+        if _bc > 0 and _bc_n > 0:
+            binding_pts = cfg["w_binding"] * _scurve(_bc / cfg["binding"], k=6)
+    binding_pts = min(cfg["w_binding"], binding_pts)
+    bd["binding"] = binding_pts
+    total += binding_pts
+
+    blimp_pts = 0.0
+    if not inv_failed and blimp_accuracy is not None and blimp_accuracy > 0.50:
+        blimp_pts = min(40.0, 40.0 * _scurve(blimp_accuracy / cfg["blimp"], k=6))
+    bd["blimp"] = blimp_pts
+    total += blimp_pts
+
+    return total, bd
+
+
+def _score_understanding_v8(
+    cfg: Dict[str, float],
+    *,
+    is_investigated: bool,
+    is_validation: bool,
+    inv_failed: bool,
+    tinystories_score: Optional[float],
+    cross_task_score: Optional[float],
+    diagnostic_score: Optional[float],
+    hellaswag_acc_investigation: Optional[float],
+    hellaswag_acc_validation: Optional[float],
+    hierarchy_fitness: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """v8 understanding components (weights are 0 in v7 config)."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    w_ts = cfg["w_tinystories"]
+    if w_ts > 0:
+        pts = 0.0
+        if is_validation and tinystories_score is not None and tinystories_score > 0:
+            pts = min(w_ts, w_ts * _scurve(tinystories_score / cfg["tinystories"]))
+        bd["tinystories"] = pts
+        total += pts
+
+    w_ct = cfg["w_cross_task"]
+    if w_ct > 0:
+        pts = 0.0
+        if is_investigated and cross_task_score is not None and cross_task_score > 0:
+            pts = min(w_ct, w_ct * _scurve(cross_task_score / cfg["cross_task"]))
+        bd["cross_task"] = pts
+        total += pts
+
+    w_diag = cfg["w_diagnostic"]
+    if w_diag > 0:
+        pts = 0.0
+        if is_validation and diagnostic_score is not None and diagnostic_score > 0:
+            pts = min(w_diag, w_diag * _scurve(diagnostic_score / cfg["diagnostic"]))
+        bd["diagnostic"] = pts
+        total += pts
+
+    w_hs = cfg["w_hellaswag"]
+    if w_hs > 0:
+        pts = 0.0
+        _acc = hellaswag_acc_investigation or hellaswag_acc_validation
+        if is_investigated and _acc is not None and _acc > 0.26:
+            pts = min(w_hs, w_hs * _scurve(_acc / cfg["hellaswag"], k=6))
+        bd["hellaswag"] = pts
+        total += pts
+
+    w_hier = cfg["w_hierarchy"]
+    if w_hier > 0:
+        pts = 0.0
+        if is_investigated and hierarchy_fitness is not None and hierarchy_fitness > 0:
+            pts = min(w_hier, w_hier * _scurve(hierarchy_fitness / cfg["hierarchy"]))
+        bd["hierarchy"] = pts
+        total += pts
+
+    return total, bd
+
+
+def _score_speed_convergence(
+    cfg: Dict[str, float],
+    *,
+    inv_failed: bool,
+    throughput_tok_s: Optional[float],
+    forward_time_ms: Optional[float],
+    ppl_at_100: Optional[float],
+    ppl_at_500: Optional[float],
+) -> tuple[float, Dict[str, float]]:
+    """Speed/latency (max 25pts) and early convergence (max 10pts)."""
+    bd: Dict[str, float] = {}
+    total = 0.0
+
+    speed_pts = 0.0
+    if not inv_failed:
+        if throughput_tok_s is not None and throughput_tok_s > 0:
+            speed_pts = 25.0 * _scurve(throughput_tok_s / GPT2_REF["throughput_tok_s"])
+        elif forward_time_ms is not None and forward_time_ms > 0:
+            speed_pts = 25.0 * _scurve(GPT2_REF["forward_time_ms"] / forward_time_ms)
+    bd["speed"] = speed_pts
+    total += speed_pts
+
+    convergence_pts = 0.0
+    if (
+        not inv_failed
+        and ppl_at_100 is not None
+        and ppl_at_500 is not None
+        and ppl_at_500 > 0
+    ):
+        convergence_pts = 10.0 * _scurve((ppl_at_100 / ppl_at_500) / cfg["convergence"])
+    bd["early_convergence"] = convergence_pts
+    total += convergence_pts
+
+    return total, bd
+
+
+def _apply_scoring_penalties(
+    score: float,
+    *,
+    inv_failed: bool,
+    param_count: Optional[float],
+    induction_auc: Optional[float],
+    binding_auc_val: Optional[float],
+    effective_ar_auc: Optional[float],
+    ar_above_chance: Optional[bool],
+) -> tuple[float, float, float]:
+    """Apply binding soft gate and param-size penalties. Returns (score, binding_pen, param_pen)."""
+    _induction_below = (
+        induction_auc is not None and induction_auc < BINDING_INDUCTION_SOFT_GATE
+    )
+    _binding_below = (
+        binding_auc_val is not None and binding_auc_val < BINDING_BINDING_AUC_SOFT_GATE
+    )
+    _ar_below = (
+        effective_ar_auc is not None
+        and effective_ar_auc < BINDING_AR_SOFT_GATE
+        and not ar_above_chance
+    )
+    _signals = sum(
+        [
+            induction_auc is not None,
+            binding_auc_val is not None,
+            effective_ar_auc is not None,
+        ]
+    )
+    _all_below = _signals >= 2 and all(
+        [
+            _induction_below or induction_auc is None,
+            _binding_below or binding_auc_val is None,
+            _ar_below or effective_ar_auc is None,
+        ]
+    )
+    binding_penalty = 1.0
+    if not inv_failed and _signals >= 2 and _all_below:
+        binding_penalty = BINDING_LOCAL_ONLY_PENALTY
+        score *= binding_penalty
+
+    _TARGET_PARAMS = 5_000_000
+    param_penalty = 1.0
+    if param_count is not None and param_count > _TARGET_PARAMS:
+        param_penalty = 1.0 / ((param_count / _TARGET_PARAMS) ** 0.13)
+        score *= param_penalty
+
+    return max(0.0, score), binding_penalty, param_penalty
+
+
 def _compute_composite_generic(
     cfg: Dict[str, float],
     *,
@@ -507,16 +881,8 @@ def _compute_composite_generic(
     Both v7 and v8 delegate to this. The config dict controls component
     weights and frontier reference values.
     """
-    score = 0.0
-    _bd: Optional[Dict[str, Any]] = {} if decompose else None
-
-    def _track(key: str, pts: float) -> None:
-        if _bd is not None:
-            _bd[key] = pts
-
     # Hard gate: model that didn't learn at screening
-    _best_lr = screening_lr
-    if _best_lr is not None and _best_lr > INSUFFICIENT_LEARNING_LR:
+    if screening_lr is not None and screening_lr > INSUFFICIENT_LEARNING_LR:
         result = max(0.0, 10.0)
         if decompose:
             return {
@@ -525,10 +891,7 @@ def _compute_composite_generic(
             }
         return result
 
-    # Hard gate: screened_out or investigation_failed
     _inv_failed = tier in ("investigation_failed", "screened_out")
-
-    # Tier helpers
     _is_investigated = (
         tier in ("investigation", "validation", "breakthrough")
         if tier
@@ -537,327 +900,95 @@ def _compute_composite_generic(
     _is_validation = (
         tier in ("validation", "breakthrough") if tier else (ppl_validation is not None)
     )
-
-    # -- S-CURVED COMPONENTS --
-
-    # 1. Performance (short)
-    perf_short = 0.0
-    if not _inv_failed:
-        if ppl_screening is not None and ppl_screening > 0:
-            ratio = cfg["ppl_1000"] / ppl_screening
-            perf_short = cfg["w_perf_short"] * _scurve(ratio)
-        elif screening_lr is not None:
-            perf_short = cfg["w_perf_short"] * _scurve(max(0.01, 1.0 - screening_lr))
-    score += perf_short
-    _track("perf_short", perf_short)
-
-    # 2. Performance (medium)
-    perf_med = 0.0
-    if not _inv_failed and ppl_investigation is not None and ppl_investigation > 0:
-        ratio = cfg["ppl_2500"] / ppl_investigation
-        perf_med = cfg["w_perf_medium"] * _scurve(ratio)
-    score += perf_med
-    _track("perf_medium", perf_med)
-
-    # 3. Performance (long)
-    perf_long = 0.0
-    if not _inv_failed and ppl_validation is not None and ppl_validation > 0:
-        ratio = cfg["ppl_10000"] / ppl_validation
-        perf_long = cfg["w_perf_long"] * _scurve(ratio)
-    score += perf_long
-    _track("perf_long", perf_long)
-
-    # 4. Parameter efficiency
-    param_eff_pts = 0.0
-    if (
-        not _inv_failed
-        and param_count is not None
-        and param_count > 0
-        and ppl_screening is not None
-        and ppl_screening > 0
-    ):
-        model_eff = (cfg["ppl_1000"] / ppl_screening) * (
-            cfg["avg_params"] / param_count
-        )
-        ratio = model_eff / cfg["param_eff"]
-        param_eff_pts = cfg["w_param_eff"] * _scurve(ratio)
-    score += param_eff_pts
-    _track("param_efficiency", param_eff_pts)
-
-    # 5. Learning efficiency
-    learn_eff_pts = 0.0
-    if (
-        not _inv_failed
-        and ppl_at_500 is not None
-        and ppl_at_1000 is not None
-        and ppl_at_1000 > 0
-    ):
-        model_conv = ppl_at_500 / ppl_at_1000
-        ratio = model_conv / cfg["learn_eff"]
-        learn_eff_pts = cfg["w_learn_eff"] * _scurve(ratio)
-    score += learn_eff_pts
-    _track("learning_efficiency", learn_eff_pts)
-
-    # -- ADDITIVE COMPONENTS --
-
-    # 6. Routing savings -- max 50pts
-    routing_pts = 0.0
-    if routing_savings is not None:
-        routing_pts = 50.0 * routing_savings
-    _track("routing_savings", routing_pts)
-    score += routing_pts
-
-    # 7. Compression -- max 30pts
-    comp_pts = 0.0
-    if compression_ratio is not None:
-        comp_pts = 20.0 * max(0, 1.0 - compression_ratio)
-        if quant_quality_per_byte is not None:
-            comp_pts += 10.0 * max(0, quant_quality_per_byte)
-    comp_pts = min(30.0, comp_pts)
-    _track("compression", comp_pts)
-    score += comp_pts
-
-    # 8. Activation sparsity -- max 30pts (20 structural + 10 activation)
-    sparsity_pts = 0.0
-    if n_sparse_ops is not None and n_sparse_ops > 0:
-        sparsity_pts += min(20.0, n_sparse_ops * 6.0)
-    if activation_sparsity is not None and activation_sparsity > 0.3:
-        sparsity_pts += 10.0 * min(1.0, (activation_sparsity - 0.3) / 0.5)
-    _track("sparsity", sparsity_pts)
-    score += sparsity_pts
-
-    # 9. Adaptive computation -- max 25pts
-    adaptive_pts = 0.0
-    if recursion_savings is not None and recursion_savings > 0:
-        adaptive_pts += 15.0 * min(1.0, recursion_savings / 0.5)
-    if depth_savings is not None and depth_savings > 0:
-        adaptive_pts += 10.0 * min(1.0, depth_savings / 0.5)
-    _track("adaptive_computation", adaptive_pts)
-    score += adaptive_pts
-
-    # 10. Novelty -- max 40pts
-    novelty_pts = 0.0
-    eff_nov = (
-        0.0 if is_reference else (screening_nov if screening_nov is not None else 0.0)
-    )
-    conf = (
-        0.0
-        if is_reference
-        else (novelty_confidence if novelty_confidence is not None else 1.0)
-    )
-    raw_novelty_pts = 40.0 * eff_nov * conf
-    _novelty_valid = bool(kwargs.get("novelty_valid_for_promotion"))
-    if not is_reference and not _novelty_valid:
-        _analyses_succeeded = int(kwargs.get("analyses_succeeded", 0))
-        novelty_pts = raw_novelty_pts * (0.4 + 0.6 * (_analyses_succeeded / 4))
-        novelty_pts = min(novelty_pts, 40.0)
-    else:
-        novelty_pts = raw_novelty_pts
-    _track("novelty", novelty_pts)
-    score += novelty_pts
-
-    # 11. NCD -- max 15pts
-    ncd_pts = 0.0
-    if ncd_score is not None and ncd_score > 0:
-        ncd_pts = 15.0 * max(0, 1.0 - ncd_score)
-    _track("ncd", ncd_pts)
-    score += ncd_pts
-
-    # 12. Robustness -- max 40pts, investigation+ only
-    robust_pts = 0.0
-    if _is_investigated:
-        if spectral_norm is not None:
-            robust_pts += 10.0 * max(0, 1.0 - (spectral_norm / 20.0))
-        if robustness_noise is not None:
-            robust_pts += 15.0 * max(0, 1.0 - robustness_noise)
-        if robustness_score is not None:
-            robust_pts += 15.0 * robustness_score
-        if quant_retention is not None:
-            robust_pts += 15.0 * max(0, quant_retention - 0.5) / 0.5
-    robust_pts = min(40.0, robust_pts)
-    _track("robustness", robust_pts)
-    score += robust_pts
-
-    # 13. Long context -- S-curved, max 25pts, validation tier only
-    long_ctx_pts = 0.0
-    if (
-        _is_validation
-        and long_ctx_score is not None
-        and long_ctx_score > 0
-        and cfg["long_ctx"] > 0
-    ):
-        ratio = long_ctx_score / cfg["long_ctx"]
-        long_ctx_pts = 25.0 * _scurve(ratio)
-    _track("long_context", long_ctx_pts)
-    score += long_ctx_pts
-
-    # 14. Early convergence -- max 10pts
-    convergence_pts = 0.0
-    if (
-        not _inv_failed
-        and ppl_at_100 is not None
-        and ppl_at_500 is not None
-        and ppl_at_500 > 0
-    ):
-        conv_ratio = ppl_at_100 / ppl_at_500
-        convergence_pts = 10.0 * _scurve(conv_ratio / cfg["convergence"])
-    _track("early_convergence", convergence_pts)
-    score += convergence_pts
-
-    # 15. Speed/Latency -- max 25pts
-    speed_pts = 0.0
-    if not _inv_failed:
-        if throughput_tok_s is not None and throughput_tok_s > 0:
-            ratio = throughput_tok_s / GPT2_REF["throughput_tok_s"]
-            speed_pts = 25.0 * _scurve(ratio)
-        elif forward_time_ms is not None and forward_time_ms > 0:
-            ratio = GPT2_REF["forward_time_ms"] / forward_time_ms
-            speed_pts = 25.0 * _scurve(ratio)
-    _track("speed", speed_pts)
-    score += speed_pts
-
-    # 16. Binding probes
     _effective_ar_auc = None if ar_timed_out else ar_auc
-    binding_pts = 0.0
-    if not _inv_failed:
-        _bc = 0.0
-        _bc_n = 0
-        if _effective_ar_auc is not None:
-            _bc += 0.4 * _effective_ar_auc
-            _bc_n += 1
-        if induction_auc is not None:
-            _bc += 0.3 * induction_auc
-            _bc_n += 1
-        if binding_auc is not None:
-            _bc += 0.3 * binding_auc
-            _bc_n += 1
-        if _bc > 0 and _bc_n > 0:
-            ratio = _bc / cfg["binding"]
-            binding_pts = cfg["w_binding"] * _scurve(ratio, k=6)
-    binding_pts = min(cfg["w_binding"], binding_pts)
-    _track("binding", binding_pts)
-    score += binding_pts
 
-    # 17. BLiMP linguistic competence -- max 40pts
-    blimp_pts = 0.0
-    if not _inv_failed and blimp_accuracy is not None and blimp_accuracy > 0.50:
-        ratio = blimp_accuracy / cfg["blimp"]
-        blimp_pts = 40.0 * _scurve(ratio, k=6)
-    blimp_pts = min(40.0, blimp_pts)
-    _track("blimp", blimp_pts)
-    score += blimp_pts
-
-    # -- v8 UNDERSTANDING COMPONENTS (weights are 0 in v7 config) --
-
-    # 18. TinyStories -- validation+ only
-    w_ts = cfg["w_tinystories"]
-    if w_ts > 0:
-        tinystories_pts = 0.0
-        if _is_validation and tinystories_score is not None and tinystories_score > 0:
-            ratio = tinystories_score / cfg["tinystories"]
-            tinystories_pts = w_ts * _scurve(ratio)
-        tinystories_pts = min(w_ts, tinystories_pts)
-        _track("tinystories", tinystories_pts)
-        score += tinystories_pts
-
-    # 19. Cross-task robustness -- investigation+ only
-    w_ct = cfg["w_cross_task"]
-    if w_ct > 0:
-        cross_task_pts = 0.0
-        if _is_investigated and cross_task_score is not None and cross_task_score > 0:
-            ratio = cross_task_score / cfg["cross_task"]
-            cross_task_pts = w_ct * _scurve(ratio)
-        cross_task_pts = min(w_ct, cross_task_pts)
-        _track("cross_task", cross_task_pts)
-        score += cross_task_pts
-
-    # 20. Diagnostic tasks -- validation+ only
-    w_diag = cfg["w_diagnostic"]
-    if w_diag > 0:
-        diag_pts = 0.0
-        if _is_validation and diagnostic_score is not None and diagnostic_score > 0:
-            ratio = diagnostic_score / cfg["diagnostic"]
-            diag_pts = w_diag * _scurve(ratio)
-        diag_pts = min(w_diag, diag_pts)
-        _track("diagnostic", diag_pts)
-        score += diag_pts
-
-    # 21. HellaSwag reasoning -- investigation+ only
-    w_hs = cfg["w_hellaswag"]
-    if w_hs > 0:
-        hellaswag_pts = 0.0
-        _hellaswag_acc = hellaswag_acc_investigation or hellaswag_acc_validation
-        if _is_investigated and _hellaswag_acc is not None and _hellaswag_acc > 0.26:
-            ratio = _hellaswag_acc / cfg["hellaswag"]
-            hellaswag_pts = w_hs * _scurve(ratio, k=6)
-        hellaswag_pts = min(w_hs, hellaswag_pts)
-        _track("hellaswag", hellaswag_pts)
-        score += hellaswag_pts
-
-    # 22. Hierarchy probe -- investigation+ only
-    w_hier = cfg["w_hierarchy"]
-    if w_hier > 0:
-        hierarchy_pts = 0.0
-        if _is_investigated and hierarchy_fitness is not None and hierarchy_fitness > 0:
-            ratio = hierarchy_fitness / cfg["hierarchy"]
-            hierarchy_pts = w_hier * _scurve(ratio)
-        hierarchy_pts = min(w_hier, hierarchy_pts)
-        _track("hierarchy", hierarchy_pts)
-        score += hierarchy_pts
-
-    # -- PENALTIES --
-
-    # Binding soft gate -- 3-signal AND
-    _binding_penalty = 1.0
-    _induction_below = (
-        induction_auc is not None and induction_auc < BINDING_INDUCTION_SOFT_GATE
+    # Score each component family
+    perf_pts, perf_bd = _score_performance_curves(
+        cfg,
+        inv_failed=_inv_failed,
+        ppl_screening=ppl_screening,
+        ppl_investigation=ppl_investigation,
+        ppl_validation=ppl_validation,
+        param_count=param_count,
+        ppl_at_500=ppl_at_500,
+        ppl_at_1000=ppl_at_1000,
+        screening_lr=screening_lr,
     )
-    _binding_below = (
-        binding_auc is not None and binding_auc < BINDING_BINDING_AUC_SOFT_GATE
+    eff_pts, eff_bd = _score_efficiency(
+        routing_savings=routing_savings,
+        compression_ratio=compression_ratio,
+        quant_quality_per_byte=quant_quality_per_byte,
+        n_sparse_ops=n_sparse_ops,
+        activation_sparsity=activation_sparsity,
+        recursion_savings=recursion_savings,
+        depth_savings=depth_savings,
     )
-    _ar_below = (
-        _effective_ar_auc is not None
-        and _effective_ar_auc < BINDING_AR_SOFT_GATE
-        and not ar_above_chance
+    nov_pts, nov_bd = _score_novelty_ncd(
+        screening_nov=screening_nov,
+        novelty_confidence=novelty_confidence,
+        is_reference=is_reference,
+        ncd_score=ncd_score,
+        novelty_valid=bool(kwargs.get("novelty_valid_for_promotion")),
+        analyses_succeeded=int(kwargs.get("analyses_succeeded", 0)),
     )
-    _binding_signals_measured = sum(
-        [
-            induction_auc is not None,
-            binding_auc is not None,
-            _effective_ar_auc is not None,
-        ]
+    robust_pts, robust_bd = _score_robustness_linguistics(
+        cfg,
+        inv_failed=_inv_failed,
+        is_investigated=_is_investigated,
+        is_validation=_is_validation,
+        spectral_norm=spectral_norm,
+        robustness_noise=robustness_noise,
+        robustness_score_val=robustness_score,
+        quant_retention=quant_retention,
+        long_ctx_score=long_ctx_score,
+        blimp_accuracy=blimp_accuracy,
+        effective_ar_auc=_effective_ar_auc,
+        induction_auc=induction_auc,
+        binding_auc_val=binding_auc,
     )
-    _all_below = _binding_signals_measured >= 2 and all(
-        [
-            _induction_below or induction_auc is None,
-            _binding_below or binding_auc is None,
-            _ar_below or _effective_ar_auc is None,
-        ]
+    understand_pts, understand_bd = _score_understanding_v8(
+        cfg,
+        is_investigated=_is_investigated,
+        is_validation=_is_validation,
+        inv_failed=_inv_failed,
+        tinystories_score=tinystories_score,
+        cross_task_score=cross_task_score,
+        diagnostic_score=diagnostic_score,
+        hellaswag_acc_investigation=hellaswag_acc_investigation,
+        hellaswag_acc_validation=hellaswag_acc_validation,
+        hierarchy_fitness=hierarchy_fitness,
     )
-    if not _inv_failed and _binding_signals_measured >= 2 and _all_below:
-        _binding_penalty = BINDING_LOCAL_ONLY_PENALTY
-        score *= _binding_penalty
-    _track(
-        "binding_local_only_penalty",
-        _binding_penalty if _binding_penalty < 1.0 else 0.0,
+    speed_pts, speed_bd = _score_speed_convergence(
+        cfg,
+        inv_failed=_inv_failed,
+        throughput_tok_s=throughput_tok_s,
+        forward_time_ms=forward_time_ms,
+        ppl_at_100=ppl_at_100,
+        ppl_at_500=ppl_at_500,
     )
 
-    # Param-size penalty
-    _TARGET_PARAMS = 5_000_000  # ~5M = GPT-2 small block budget
-    param_penalty = 1.0
-    if param_count is not None and param_count > _TARGET_PARAMS:
-        param_ratio = param_count / _TARGET_PARAMS
-        param_penalty = 1.0 / (param_ratio**0.13)
-        score *= param_penalty
-    _track("param_size_penalty", param_penalty if param_penalty < 1.0 else 0.0)
+    score = perf_pts + eff_pts + nov_pts + robust_pts + understand_pts + speed_pts
 
-    final = max(0.0, score)
+    final, binding_pen, param_pen = _apply_scoring_penalties(
+        score,
+        inv_failed=_inv_failed,
+        param_count=param_count,
+        induction_auc=induction_auc,
+        binding_auc_val=binding_auc,
+        effective_ar_auc=_effective_ar_auc,
+        ar_above_chance=ar_above_chance,
+    )
 
     if decompose:
+        _bd: Dict[str, Any] = {}
+        for d in (perf_bd, eff_bd, nov_bd, robust_bd, understand_bd, speed_bd):
+            _bd.update(d)
+        _bd["binding_local_only_penalty"] = binding_pen if binding_pen < 1.0 else 0.0
+        _bd["param_size_penalty"] = param_pen if param_pen < 1.0 else 0.0
         if _inv_failed:
-            _bd["_investigation_failed_penalty"] = True  # type: ignore[assignment]
-        if param_penalty < 1.0:
-            _bd["param_size_penalty_multiplier"] = param_penalty  # type: ignore[assignment]
+            _bd["_investigation_failed_penalty"] = True
+        if param_pen < 1.0:
+            _bd["param_size_penalty_multiplier"] = param_pen
         return {"composite_score": final, "breakdown": _bd}
     return final
 

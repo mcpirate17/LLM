@@ -21,8 +21,12 @@ from research.scientist.leaderboard_scoring import (
     compute_composite_v8,
     prefetch_program_results,
 )
-from research.scientist.notebook import LabNotebook
 from research.tools._backfill_shared import DB_PATH
+from research.tools._script_audit import (
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
 
 
 def _fetch_leaderboard(nb, top: int = 0):
@@ -47,10 +51,29 @@ def main():
     )
     args = parser.parse_args()
 
-    nb = LabNotebook(DB_PATH)
+    nb, exp_id = start_script_experiment(
+        db_path=DB_PATH,
+        experiment_type="score_backfill",
+        config={
+            "top": args.top,
+            "report": bool(args.report),
+            "dry_run": bool(args.dry_run),
+            "calibrate": bool(args.calibrate),
+            "score_version": "v8",
+        },
+        source_script="backfill_v8_scores",
+        hypothesis="Recompute leaderboard scores with v8 composite",
+    )
     rows = _fetch_leaderboard(nb, args.top)
     if not rows:
         print("No leaderboard entries found.")
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={"total": 0, "changed": 0, "score_version": "v8"},
+            summary="V8 score backfill found no leaderboard entries",
+        )
+        nb.close()
         return
 
     print(f"Processing {len(rows)} leaderboard entries...")
@@ -60,6 +83,7 @@ def main():
     pr_data = prefetch_program_results(nb.conn, result_ids)
 
     results = []
+    changed = 0
     for row in rows:
         d = dict(row)
         rid = d.get("result_id", "")
@@ -90,6 +114,8 @@ def main():
 
         # Update DB with v8 score
         if not args.dry_run and rid:
+            if abs(v8_score - float(d.get("composite_score") or 0)) > 1e-9:
+                changed += 1
             nb.conn.execute(
                 "UPDATE leaderboard SET composite_score = ? WHERE result_id = ?",
                 (v8_score, rid),
@@ -98,6 +124,23 @@ def main():
     if not args.dry_run:
         nb.conn.commit()
         print(f"Updated {len(results)} entries with v8 scores.")
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={
+                "total": len(results),
+                "changed": changed,
+                "score_version": "v8",
+            },
+            summary=f"V8 score backfill updated {changed}/{len(results)} entries",
+        )
+    else:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="Dry-run invocation does not write results",
+            results={"total": len(results), "changed": 0, "dry_run": True},
+        )
 
     # Sort by v8 score desc for report
     results.sort(key=lambda x: x["v8_score"], reverse=True)
@@ -206,6 +249,7 @@ def main():
             print(
                 f"  {metric}: {has_data}/{total} entries have data ({100 * has_data / total:.0f}%)"
             )
+    nb.close()
 
 
 if __name__ == "__main__":

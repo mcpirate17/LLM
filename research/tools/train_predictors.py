@@ -22,6 +22,12 @@ import logging
 import time
 from pathlib import Path
 
+from research.tools._script_audit import (
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
+
 logger = logging.getLogger(__name__)
 
 _NOTEBOOK_DB = Path("research/lab_notebook.db")
@@ -301,34 +307,84 @@ def main() -> None:
 
     results = {}
     t0 = time.time()
+    nb, exp_id = start_script_experiment(
+        db_path=_NOTEBOOK_DB,
+        experiment_type="predictor_training",
+        config={
+            "component": args.component,
+            "evaluate": bool(args.evaluate),
+            "save_state": bool(args.save_state),
+            "heatmaps": bool(args.heatmaps),
+        },
+        source_script="train_predictors",
+        hypothesis=f"Train predictor components ({args.component})",
+    )
 
-    if args.component in ("all", "bayesian"):
-        results["bayesian"] = train_bayesian(save=args.save_state)
-    if args.component in ("all", "embeddings"):
-        results["embeddings"] = train_embeddings(save=args.save_state)
-    if args.component in ("all", "interaction"):
-        results["interaction"] = train_interaction(save=args.save_state)
-    if args.component in ("all", "graph"):
-        results["graph"] = train_graph_predictor(save=args.save_state)
-    if args.component in ("all", "ensemble"):
-        results["ensemble"] = train_ensemble_full(save=args.save_state)
-    if args.component == "heatmaps" or args.heatmaps:
-        generate_heatmaps()
+    try:
+        if args.component in ("all", "bayesian"):
+            results["bayesian"] = train_bayesian(save=args.save_state)
+        if args.component in ("all", "embeddings"):
+            results["embeddings"] = train_embeddings(save=args.save_state)
+        if args.component in ("all", "interaction"):
+            results["interaction"] = train_interaction(save=args.save_state)
+        if args.component in ("all", "graph"):
+            results["graph"] = train_graph_predictor(save=args.save_state)
+        if args.component in ("all", "ensemble"):
+            results["ensemble"] = train_ensemble_full(save=args.save_state)
+        if args.component == "heatmaps" or args.heatmaps:
+            generate_heatmaps()
+            results["heatmaps"] = {"generated": True}
 
-    if args.evaluate:
-        results["evaluation"] = evaluate_all()
-    if args.save_state:
-        try:
-            results["metrics_report"] = write_metrics_report(
-                fresh_ensemble=args.component in ("all", "ensemble")
-            )
-        except Exception as e:
-            logger.warning("Failed to write predictor metrics report: %s", e)
+        if args.evaluate:
+            results["evaluation"] = evaluate_all()
+        if args.save_state:
+            try:
+                results["metrics_report"] = write_metrics_report(
+                    fresh_ensemble=args.component in ("all", "ensemble")
+                )
+            except Exception as e:
+                logger.warning("Failed to write predictor metrics report: %s", e)
+                results["metrics_report"] = {"error": str(e)}
 
-    total = time.time() - t0
-    logger.info("Total training time: %.1fs", total)
-    for name, res in results.items():
-        logger.info("  %s: %s", name, res)
+        total = time.time() - t0
+        logger.info("Total training time: %.1fs", total)
+        for name, res in results.items():
+            logger.info("  %s: %s", name, res)
+
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={
+                "components_trained": len(results),
+                "component_names": sorted(results.keys()),
+                "elapsed_s": round(total, 3),
+                "save_state": bool(args.save_state),
+                "evaluate": bool(args.evaluate),
+            },
+            summary=(
+                f"Predictor training complete: components={len(results)} "
+                f"component={args.component}"
+            ),
+        )
+    except KeyboardInterrupt:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="KeyboardInterrupt",
+            results={"components_trained": len(results)},
+        )
+        nb.close()
+        raise
+    except Exception as exc:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error=str(exc),
+            results={"components_trained": len(results)},
+        )
+        nb.close()
+        raise
+    nb.close()
 
 
 if __name__ == "__main__":

@@ -543,6 +543,44 @@ class TestCrossTaskEval:
             assert result["code_perplexity"] is not None
             assert result["nl_perplexity"] is not None
 
+    def test_reuses_single_model_build_when_stateless_path_succeeds(self, monkeypatch):
+        import tempfile
+        from pathlib import Path
+        from research.eval import cross_task_eval
+
+        cache_dir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(cross_task_eval, "_CACHE_DIR", cache_dir)
+        (cache_dir / "python_code.txt").write_text(
+            "def add(x, y):\n    return x + y\n" * 200,
+            encoding="utf-8",
+        )
+        (cache_dir / "natural_language.txt").write_text(
+            "the quick brown fox jumps over the lazy dog\n" * 200,
+            encoding="utf-8",
+        )
+
+        calls = {"count": 0}
+        base_factory = self._make_model_fn(dim=16, vocab=64)
+
+        def counted_factory():
+            calls["count"] += 1
+            return base_factory()
+
+        result = cross_task_eval.evaluate_cross_task_robustness(
+            counted_factory,
+            vocab_size=64,
+            device=torch.device("cpu"),
+            n_train_steps=2,
+            seq_len=16,
+            n_train_batches=2,
+            n_eval_batches=1,
+            batch_size=1,
+            max_chars=2000,
+        )
+
+        assert result.get("error") is None
+        assert calls["count"] == 1
+
 
 # ── Efficiency Wall Eval ─────────────────────────────────────────────
 

@@ -651,6 +651,77 @@ static float gromov_delta_f32(torch::Tensor distance_matrix, torch::Tensor indic
                                  indices_int.data_ptr<int32_t>(), n, n_idx);
 }
 
+// ═══ Routing Ops (routing_ops.c) ═══
+
+static torch::Tensor transpose_sd_f32_wrap(torch::Tensor x) {
+    CHECK_INPUT(x);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(x.size(2) % 2 == 0, "D must be even for transpose_sd");
+    auto y = torch::empty_like(x);
+    aria_transpose_sd_f32(x.data_ptr<float>(), y.data_ptr<float>(),
+                          x.size(0), x.size(1), x.size(2));
+    return y;
+}
+
+static torch::Tensor gated_lane_blend_f32_wrap(torch::Tensor x,
+                                                torch::Tensor scorer,
+                                                torch::Tensor projs) {
+    CHECK_INPUT(x); CHECK_INPUT(scorer); CHECK_INPUT(projs);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(scorer.dim() == 2, "scorer must be [n_lanes, D]");
+    TORCH_CHECK(projs.dim() == 3, "projs must be [n_lanes, D_out, D]");
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2);
+    int64_t L = scorer.size(0);
+    TORCH_CHECK(scorer.size(1) == D, "scorer dim must match D");
+    TORCH_CHECK(projs.size(0) == L, "projs first dim must match n_lanes");
+    auto y = torch::empty({B, S, projs.size(1)}, x.options());
+    aria_gated_lane_blend_f32(x.data_ptr<float>(),
+                              scorer.data_ptr<float>(),
+                              projs.data_ptr<float>(),
+                              y.data_ptr<float>(),
+                              B, S, D, L);
+    return y;
+}
+
+static torch::Tensor depth_gated_transform_f32_wrap(torch::Tensor x,
+                                                     torch::Tensor scorer,
+                                                     torch::Tensor projs) {
+    CHECK_INPUT(x); CHECK_INPUT(scorer); CHECK_INPUT(projs);
+    TORCH_CHECK(x.dim() == 3, "x must be [B,S,D]");
+    TORCH_CHECK(scorer.dim() == 2, "scorer must be [max_depth, D]");
+    TORCH_CHECK(projs.dim() == 3, "projs must be [max_depth, D_out, D]");
+    int64_t B = x.size(0), S = x.size(1), D = x.size(2);
+    int64_t K = scorer.size(0);
+    auto y = torch::empty({B, S, projs.size(1)}, x.options());
+    aria_depth_gated_transform_f32(x.data_ptr<float>(),
+                                   scorer.data_ptr<float>(),
+                                   projs.data_ptr<float>(),
+                                   y.data_ptr<float>(),
+                                   B, S, D, K);
+    return y;
+}
+
+static torch::Tensor calibrated_branch_merge_f32_wrap(
+        torch::Tensor a, torch::Tensor b,
+        c10::optional<torch::Tensor> score_proj,
+        c10::optional<torch::Tensor> branch_bias,
+        c10::optional<torch::Tensor> branch_gain,
+        float temperature, float min_secondary, float max_secondary) {
+    CHECK_INPUT(a); CHECK_INPUT(b);
+    TORCH_CHECK(a.dim() == 3 && b.dim() == 3, "a and b must be [B,S,D]");
+    TORCH_CHECK(a.sizes() == b.sizes(), "a and b must have same shape");
+    int64_t B = a.size(0), S = a.size(1), D = a.size(2);
+    const float *sp = nullptr, *bb = nullptr, *bg = nullptr;
+    if (score_proj.has_value()) { CHECK_INPUT(score_proj.value()); sp = score_proj.value().data_ptr<float>(); }
+    if (branch_bias.has_value()) { CHECK_INPUT(branch_bias.value()); bb = branch_bias.value().data_ptr<float>(); }
+    if (branch_gain.has_value()) { CHECK_INPUT(branch_gain.value()); bg = branch_gain.value().data_ptr<float>(); }
+    auto y = torch::empty_like(a);
+    aria_calibrated_branch_merge_f32(a.data_ptr<float>(), b.data_ptr<float>(),
+                                     sp, bb, bg, y.data_ptr<float>(),
+                                     B, S, D, temperature, min_secondary, max_secondary);
+    return y;
+}
+
 // ═══ Registration ═══
 
 void bind_ops(py::module_ &m) {
@@ -729,4 +800,9 @@ void bind_ops(py::module_ &m) {
     m.def("embedding_lookup_backward_f32", &embedding_lookup_backward_f32);
     m.def("gated_linear_backward_f32", &gated_linear_backward_f32);
     m.def("gromov_delta_f32", &gromov_delta_f32);
+    // Routing ops (routing_ops.c)
+    m.def("transpose_sd_f32", &transpose_sd_f32_wrap);
+    m.def("gated_lane_blend_f32", &gated_lane_blend_f32_wrap);
+    m.def("depth_gated_transform_f32", &depth_gated_transform_f32_wrap);
+    m.def("calibrated_branch_merge_f32", &calibrated_branch_merge_f32_wrap);
 }

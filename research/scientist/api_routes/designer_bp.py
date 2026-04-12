@@ -43,12 +43,8 @@ def _load_designer_importer(*names: str) -> tuple[Callable, ...]:
     raise ImportError("Could not import aria_designer runtime importer") from last_error
 
 
-def register_designer_routes(app, context: ApiRouteContext):
-    notebook_path = context.notebook_path
-    wnb = with_notebook_context(notebook_path)
-    _dashboard_index_path = context.dashboard_index_path
-    _dashboard_missing_response = context.dashboard_missing_response
-    _is_asset_path = context.is_asset_path
+def _register_lifecycle_routes(app) -> None:
+    """Lifecycle: status, ensure-running, stop, touch."""
 
     @app.route("/api/designer/lifecycle")
     def api_designer_lifecycle():
@@ -85,6 +81,10 @@ def register_designer_routes(app, context: ApiRouteContext):
         payload.update(_des.designer_idle_state())
         return jsonify(payload), 200
 
+
+def _register_workflow_routes(app) -> None:
+    """Workflow: compile, validate, run, components, save, commit."""
+
     @app.route("/api/designer/compile", methods=["POST"])
     def api_designer_compile():
         """Accept graph JSON from designer and return compiled module info."""
@@ -92,7 +92,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if not workflow_json:
             return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
 
-        # Proxy: POST /api/v1/workflows/compile
         proxy_body = {"workflow": workflow_json, "target": "auto"}
         proxied = _des.proxy_or_error(
             _des.designer_proxy(
@@ -102,7 +101,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if proxied is not None:
             return proxied
 
-        # Fallback: local compilation
         result = compile_designer_graph(workflow_json)
         return jsonify(result)
 
@@ -113,7 +111,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if not workflow_json:
             return jsonify({"success": False, "error": "Missing workflow JSON"}), 400
 
-        # Proxy: POST /api/v1/workflows/validate
         proxy_body = {"workflow": workflow_json}
         proxied = _des.proxy_or_error(
             _des.designer_proxy(
@@ -123,7 +120,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if proxied is not None:
             return proxied
 
-        # Fallback: local validation
         result = validate_designer_graph(workflow_json)
         return jsonify(result)
 
@@ -136,7 +132,6 @@ def register_designer_routes(app, context: ApiRouteContext):
 
         device = request.args.get("device", "cpu")
 
-        # Proxy: POST /api/v1/workflows/run
         proxy_body = {"workflow": workflow_json, "budget": {"device": device}}
         proxied = _des.proxy_or_error(
             _des.designer_proxy("POST", "/api/v1/workflows/run", json_body=proxy_body)
@@ -144,19 +139,16 @@ def register_designer_routes(app, context: ApiRouteContext):
         if proxied is not None:
             return proxied
 
-        # Fallback: local execution
         result = run_designer_graph(workflow_json, device=device)
         return jsonify(result)
 
     @app.route("/api/designer/components", methods=["GET"])
     def api_designer_components():
         """Return all available primitives formatted for the designer."""
-        # Proxy: GET /api/v1/components
         proxied = _des.proxy_or_error(_des.designer_proxy("GET", "/api/v1/components"))
         if proxied is not None:
             return proxied
 
-        # Fallback: local component list
         return jsonify(get_designer_components())
 
     @app.route("/api/designer/save", methods=["POST"])
@@ -168,7 +160,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if not workflow_id:
             return jsonify({"success": False, "error": "Missing workflow_id"}), 400
 
-        # Proxy: PUT /api/v1/workflows/{workflow_id}
         proxy_body = {
             "schema_version": "workflow_graph.v1",
             "workflow_id": workflow_id,
@@ -195,9 +186,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if not workflow:
             return jsonify({"success": False, "error": "Missing workflow data"}), 400
 
-        # Proxy: POST /api/v1/workflows/evaluate
-        # Note: evaluate is effectively a commit to the evaluation database in the designer
-        # which our dashboard syncs from.
         proxied = _des.proxy_or_error(
             _des.designer_proxy(
                 "POST", "/api/v1/workflows/evaluate", json_body={"workflow": workflow}
@@ -208,45 +196,13 @@ def register_designer_routes(app, context: ApiRouteContext):
 
         return jsonify({"success": False, "error": "Designer service unavailable"}), 503
 
-    @app.route(
-        "/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    )
-    def designer_v1_proxy(path):
-        """Catch-all proxy for designer API v1 routes when embedded.
 
-        This route is registered earlier than the later catch-all below, so it
-        must preserve SSE semantics for streaming endpoints like
-        ``/api/v1/workflows/evaluate/stream`` instead of routing them through
-        the JSON proxy adapter.
-        """
-        json_body = (
-            request.get_json(silent=True)
-            if request.method in ("POST", "PUT", "OPTIONS")
-            else None
-        )
-        params = request.args
-
-        if "stream" in path:
-            return _des.proxy_stream(
-                request.method, f"/api/v1/{path}", json_body=json_body, params=params
-            )
-
-        result = _des.proxy_or_error(
-            _des.designer_proxy(
-                request.method,
-                f"/api/v1/{path}",
-                json_body=json_body,
-                params=params,
-            )
-        )
-        if result is not None:
-            return result
-        return jsonify({"error": "Designer API proxy failed"}), 502
+def _register_crud_routes(app) -> None:
+    """CRUD: load, list, templates, export."""
 
     @app.route("/api/designer/load/<workflow_id>")
     def api_designer_load(workflow_id):
         """Load a specific workflow definition."""
-        # Proxy: GET /api/v1/workflows/{workflow_id}
         proxied = _des.proxy_or_error(
             _des.designer_proxy("GET", f"/api/v1/workflows/{workflow_id}")
         )
@@ -258,7 +214,6 @@ def register_designer_routes(app, context: ApiRouteContext):
     @app.route("/api/designer/list")
     def api_designer_list_workflows():
         """List all saved workflows."""
-        # Proxy: GET /api/v1/workflows
         proxied = _des.proxy_or_error(_des.designer_proxy("GET", "/api/v1/workflows"))
         if proxied is not None:
             return proxied
@@ -366,12 +321,15 @@ def register_designer_routes(app, context: ApiRouteContext):
         code = _designer_utils.generate_python_module(workflow_json)
         return jsonify({"success": True, "code": code})
 
+
+def _register_import_routes(app) -> None:
+    """Import: import/survivors, import."""
+
     @app.route("/api/designer/import/survivors")
     def api_designer_survivors():
         """List top survivors from the research pipeline for importing."""
         n = request.args.get("n", 20, type=int)
 
-        # Proxy: GET /api/v1/import/survivors
         proxied = _des.proxy_or_error(
             _des.designer_proxy("GET", "/api/v1/import/survivors", params={"n": n})
         )
@@ -388,7 +346,6 @@ def register_designer_routes(app, context: ApiRouteContext):
         if not result_id:
             return jsonify({"success": False, "error": "Missing result_id"}), 400
 
-        # Proxy: POST /api/v1/import/survivors/{result_id}
         proxied = _des.proxy_or_error(
             _des.designer_proxy("POST", f"/api/v1/import/survivors/{result_id}")
         )
@@ -396,6 +353,10 @@ def register_designer_routes(app, context: ApiRouteContext):
             return proxied
 
         return jsonify({"success": False, "error": "Designer service unavailable"}), 503
+
+
+def _register_lineage_routes(app, notebook_path: str, wnb) -> None:
+    """Lineage: sync, get, list (uses @wnb)."""
 
     @app.route("/api/designer/lineage/sync", methods=["POST"])
     @wnb
@@ -476,6 +437,45 @@ def register_designer_routes(app, context: ApiRouteContext):
         limit = max(1, min(int(limit or 100), 500))
         rows = nb.list_designer_run_lineage(workflow_id=workflow_id, limit=limit)
         return jsonify(rows)
+
+
+def _register_v1_proxy_routes(app, notebook_path: str, wnb) -> None:
+    """/api/v1/* proxy routes."""
+
+    @app.route(
+        "/api/v1/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    )
+    def designer_v1_proxy(path):
+        """Catch-all proxy for designer API v1 routes when embedded.
+
+        This route is registered earlier than the later catch-all below, so it
+        must preserve SSE semantics for streaming endpoints like
+        ``/api/v1/workflows/evaluate/stream`` instead of routing them through
+        the JSON proxy adapter.
+        """
+        json_body = (
+            request.get_json(silent=True)
+            if request.method in ("POST", "PUT", "OPTIONS")
+            else None
+        )
+        params = request.args
+
+        if "stream" in path:
+            return _des.proxy_stream(
+                request.method, f"/api/v1/{path}", json_body=json_body, params=params
+            )
+
+        result = _des.proxy_or_error(
+            _des.designer_proxy(
+                request.method,
+                f"/api/v1/{path}",
+                json_body=json_body,
+                params=params,
+            )
+        )
+        if result is not None:
+            return result
+        return jsonify({"error": "Designer API proxy failed"}), 502
 
     @app.route("/api/v1/components", methods=["GET"])
     def api_v1_components():
@@ -579,3 +579,14 @@ def register_designer_routes(app, context: ApiRouteContext):
         return jsonify(
             {"error": f"Designer backend unavailable for /api/v1/{subpath}"}
         ), 502
+
+
+def register_designer_routes(app, context: ApiRouteContext):
+    notebook_path = context.notebook_path
+    wnb = with_notebook_context(notebook_path)
+    _register_lifecycle_routes(app)
+    _register_workflow_routes(app)
+    _register_crud_routes(app)
+    _register_import_routes(app)
+    _register_lineage_routes(app, notebook_path, wnb)
+    _register_v1_proxy_routes(app, notebook_path, wnb)

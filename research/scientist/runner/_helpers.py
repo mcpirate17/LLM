@@ -29,6 +29,24 @@ _ROUTING_FAST_LANE_OPS: frozenset[str] = frozenset(
         "signal_conditioned_compression",
     }
 )
+_ROUTING_OBSERVED_OPS: frozenset[str] = frozenset(
+    set(_ROUTING_FAST_LANE_OPS)
+    | {
+        "hybrid_token_gate",
+        "hybrid_sparse_router",
+        "sparse_span_builder",
+        "adjacent_token_merge",
+        "cheap_verify_blend",
+        "adaptive_lane_mixer",
+        "route_lanes",
+        "block_sparse_linear",
+        "semi_structured_2_4_linear",
+        "adaptive_recursion",
+        "route_recursion",
+        "moe_2expert",
+        "token_class_proj",
+    }
+)
 
 # ── Normalized loss_ratio ──
 # loss_ratio = final_loss / initial_loss is init-dependent: Kaiming init
@@ -685,12 +703,22 @@ def routing_fast_lane_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def graph_routing_ops(graph: Any) -> List[str]:
     """Return sorted routing-related ops present in a graph-like object."""
+    return _graph_matching_ops(graph, _ROUTING_FAST_LANE_OPS)
+
+
+def graph_observed_routing_ops(graph: Any) -> List[str]:
+    """Return sorted routing/specialization ops for human-facing observability."""
+    return _graph_matching_ops(graph, _ROUTING_OBSERVED_OPS)
+
+
+def _graph_matching_ops(graph: Any, allowed_ops: frozenset[str]) -> List[str]:
+    """Return sorted ops from *allowed_ops* present in a graph-like object."""
     nodes = getattr(graph, "nodes", None)
     ops: Set[str] = set()
     if isinstance(nodes, dict):
         for node in nodes.values():
             op_name = getattr(node, "op_name", None)
-            if op_name in _ROUTING_FAST_LANE_OPS:
+            if op_name in allowed_ops:
                 ops.add(str(op_name))
     elif isinstance(graph, dict):
         raw_nodes = graph.get("nodes")
@@ -704,7 +732,7 @@ def graph_routing_ops(graph: Any) -> List[str]:
             if not isinstance(node, dict):
                 continue
             op_name = node.get("op_name")
-            if op_name in _ROUTING_FAST_LANE_OPS:
+            if op_name in allowed_ops:
                 ops.add(str(op_name))
     return sorted(ops)
 
@@ -819,7 +847,31 @@ def _native_proactive_gating(graph) -> Dict[str, Any]:
         # 4. Call native engine
         return aria_core.proactive_gating(n_nodes, edges, op_codes)
     except (ImportError, RuntimeError, KeyError, TypeError) as e:
+        strict = False
+        try:
+            metadata = getattr(graph, "metadata", None) or {}
+            strict = bool(
+                metadata.get("strict_candidate_gating")
+                or metadata.get("candidate_grade_strict")
+            )
+        except Exception:
+            strict = False
+        if not strict:
+            import os
+
+            strict = os.getenv("ARIA_STRICT_CANDIDATE_GATING", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
         logger.debug("Native proactive gating failed: %s", e)
+        if strict:
+            return {
+                "passed": False,
+                "reason": "native_gating_unavailable",
+                "error": str(e),
+            }
         return {"passed": True, "reason": "native_gating_error", "error": str(e)}
 
 
@@ -1162,58 +1214,33 @@ def _evaluate_investigation_benchmarks(
 
     # Binding probes: AR + induction + binding range (full suite at investigation)
     try:
-        from ...eval.associative_recall import associative_recall_score
-        from ...eval.native_induction import (
-            induction_result_metadata,
-            induction_score_gold,
-        )
-        from ...eval.binding_range import binding_range_profile
-
-        ar = associative_recall_score(
-            model, n_pairs=20, n_eval=200, n_train_steps=500, batch_size=16, device=dev
-        )
-        result["ar_auc"] = ar.auc
-        result["ar_final_acc"] = ar.final_acc
-        result["ar_timed_out"] = ar.timed_out
-        result["ar_above_chance"] = ar.above_chance
-
-        ind = induction_score_gold(model, device=dev)
-        result.update(induction_result_metadata(ind))
-
-        br = binding_range_profile(
-            model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=dev
-        )
-        result["binding_auc"] = br.auc
-        result["binding_distance_accuracies"] = br.distance_accuracies
-
-        bc = 0.4 * ar.auc + 0.3 * ind.auc + 0.3 * br.auc
-        result["binding_composite"] = round(bc, 4)
-
-        # 3-signal AND: penalty only when ALL signals near zero (conv-3 case).
-        # Mamba/RWKV fail induction+AR but may score on binding_auc — no penalty.
-        from ...scientist.thresholds import (
-            BINDING_AR_SOFT_GATE,
-            BINDING_INDUCTION_SOFT_GATE,
-            BINDING_BINDING_AUC_SOFT_GATE,
+        from ...eval.binding_pipeline import (
+            compute_binding_composite,
+            compute_local_only,
+            run_full_binding_probes,
         )
 
-        result["local_only"] = int(
-            ar.auc < BINDING_AR_SOFT_GATE
-            and ind.auc < BINDING_INDUCTION_SOFT_GATE
-            and br.auc < BINDING_BINDING_AUC_SOFT_GATE
+        probe = run_full_binding_probes(model, device=dev)
+        result.update(probe.to_result_dict())
+        bc = compute_binding_composite(
+            probe.ar_auc, probe.induction_auc, probe.binding_auc
+        )
+        result["binding_composite"] = bc
+        result["local_only"] = compute_local_only(
+            probe.ar_auc, probe.induction_auc, probe.binding_auc
         )
 
         logger.info(
             "Investigation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local_only=%s "
             "(%.0f+%.0f+%.0fms)",
-            ar.auc,
-            ind.auc,
-            br.auc,
+            probe.ar_auc,
+            probe.induction_auc,
+            probe.binding_auc,
             bc,
             bool(result["local_only"]),
-            ar.elapsed_ms,
-            ind.elapsed_ms,
-            br.elapsed_ms,
+            probe.ar_elapsed_ms,
+            probe.induction_elapsed_ms,
+            probe.binding_elapsed_ms,
         )
 
         # Discovery: high AR without standard attention is a priority find
@@ -1226,11 +1253,11 @@ def _evaluate_investigation_benchmarks(
         }
         _graph_str = graph_json_str or ""
         _has_attn = any(op in _graph_str for op in _attn_ops)
-        if ar.auc > 0.15 and not _has_attn:
+        if probe.ar_auc > 0.15 and not _has_attn:
             logger.warning(
                 "DISCOVERY: High AR score without full attention — "
                 "ar_auc=%.3f, model_source=%s, graph=%s",
-                ar.auc,
+                probe.ar_auc,
                 model_source,
                 _graph_str[:200],
             )
@@ -1725,6 +1752,12 @@ def promote_validation_candidate(
         quant_int8_retention=ev_res.quant_int8_retention,
         quant_quality_per_byte=ev_res.quant_quality_per_byte,
         robustness_long_ctx_score=ev_res.long_context_score,
+        robustness_long_ctx_scaling_score=ev_res.long_ctx_scaling_score,
+        robustness_long_ctx_assoc_score=ev_res.long_ctx_assoc_score,
+        robustness_long_ctx_passkey_score=ev_res.long_ctx_passkey_score,
+        robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
+        robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
+        robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
         robustness_noise_score=ev_res.noise_score,
         init_sensitivity_std=metrics.init_sensitivity_std,
         fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
@@ -1828,47 +1861,23 @@ def run_trajectory_probe(
         _val_local_only = None
         _val_ind_meta = None
         try:
-            from ...eval.associative_recall import associative_recall_score
-            from ...eval.native_induction import (
-                induction_result_metadata as _ind_metadata,
-                induction_score_gold as _ind_score,
-            )
-            from ...eval.binding_range import binding_range_profile
-
-            _v_ar = associative_recall_score(
-                traj_model,
-                n_pairs=20,
-                n_eval=200,
-                n_train_steps=500,
-                batch_size=16,
-                device=dev_str,
-            )
-            _val_ar_auc = _v_ar.auc
-
-            _v_ind = _ind_score(
-                traj_model,
-                device=dev_str,
-            )
-            _val_ind_auc = _v_ind.auc
-            _val_ind_meta = _ind_metadata(_v_ind)
-
-            _v_br = binding_range_profile(
-                traj_model, distances=(2, 4, 8, 16, 32, 64), n_eval=200, device=dev_str
-            )
-            _val_binding_auc = _v_br.auc
-
-            from ...scientist.thresholds import (
-                BINDING_AR_SOFT_GATE,
-                BINDING_INDUCTION_SOFT_GATE,
-                BINDING_BINDING_AUC_SOFT_GATE,
+            from ...eval.binding_pipeline import (
+                compute_binding_composite,
+                compute_local_only,
+                run_full_binding_probes,
             )
 
-            _val_local_only = int(
-                _val_ar_auc < BINDING_AR_SOFT_GATE
-                and _val_ind_auc < BINDING_INDUCTION_SOFT_GATE
-                and _val_binding_auc < BINDING_BINDING_AUC_SOFT_GATE
+            _probe = run_full_binding_probes(traj_model, device=dev_str)
+            _val_ar_auc = _probe.ar_auc
+            _val_ind_auc = _probe.induction_auc
+            _val_binding_auc = _probe.binding_auc
+            _val_ind_meta = _probe.induction_metadata
+            _val_local_only = compute_local_only(
+                _val_ar_auc, _val_ind_auc, _val_binding_auc
             )
-            _val_bc = 0.4 * _val_ar_auc + 0.3 * _val_ind_auc + 0.3 * _val_binding_auc
+            _val_bc = compute_binding_composite(
+                _val_ar_auc, _val_ind_auc, _val_binding_auc
+            )
             logger.info(
                 "Validation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local=%s (%.0f+%.0f+%.0fms)",
                 _val_ar_auc,
@@ -1876,9 +1885,9 @@ def run_trajectory_probe(
                 _val_binding_auc,
                 _val_bc,
                 bool(_val_local_only),
-                _v_ar.elapsed_ms,
-                _v_ind.elapsed_ms,
-                _v_br.elapsed_ms,
+                _probe.ar_elapsed_ms,
+                _probe.induction_elapsed_ms,
+                _probe.binding_elapsed_ms,
             )
         except (ImportError, RuntimeError, ValueError) as exc_bp:
             logger.debug("Validation binding probes skipped: %s", exc_bp)
@@ -1911,13 +1920,19 @@ def run_trajectory_probe(
             # Binding probe data
             if _val_ar_auc is not None:
                 update["ar_auc"] = _val_ar_auc
-                update["ar_final_acc"] = _v_ar.final_acc
-                update["ar_timed_out"] = int(_v_ar.timed_out)
-                update["ar_above_chance"] = int(_v_ar.above_chance)
+                update["ar_final_acc"] = _probe.ar_final_acc
+                update["ar_timed_out"] = int(_probe.ar_timed_out)
+                update["ar_above_chance"] = int(_probe.ar_above_chance)
             if _val_ind_auc is not None:
                 update.update(_val_ind_meta or {"induction_auc": _val_ind_auc})
             if _val_binding_auc is not None:
                 update["binding_auc"] = _val_binding_auc
+                update["binding_distance_accuracies"] = (
+                    _probe.binding_distance_accuracies
+                )
+                update["binding_probe_distances"] = [4, 8, 16, 32]
+                update["binding_probe_eval_examples"] = 200
+                update["binding_probe_elapsed_ms"] = _probe.binding_elapsed_ms
             if _val_local_only is not None:
                 update["local_only"] = _val_local_only
                 update["binding_composite"] = round(

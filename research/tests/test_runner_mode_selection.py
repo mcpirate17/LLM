@@ -58,6 +58,22 @@ class _FakeNotebook:
 
 
 class TestRunnerModeSelection(unittest.TestCase):
+    def test_runner_initializes_heal_retry_state_for_continuous_loop(self):
+        runner = ExperimentRunner(
+            os.path.join(tempfile.mkdtemp(), "heal_retry_state.db")
+        )
+
+        self.assertTrue(hasattr(runner, "_pending_heal_retry"))
+        self.assertIsNone(runner._pending_heal_retry)
+        self.assertTrue(hasattr(runner, "_recent_healer_signatures"))
+        self.assertEqual(runner._recent_healer_signatures, {})
+        self.assertTrue(hasattr(runner, "_knowledge_distiller"))
+        self.assertIsNone(runner._knowledge_distiller)
+        self.assertTrue(hasattr(runner, "_pending_scale_up"))
+        self.assertIsNone(runner._pending_scale_up)
+        self.assertTrue(hasattr(runner, "_next_follow_up_parent"))
+        self.assertIsNone(runner._next_follow_up_parent)
+
     def test_config_overrides_apply_to_cycle_execution(self):
         tmpdir = tempfile.mkdtemp()
         db_path = os.path.join(tmpdir, "mode_override_cycle.db")

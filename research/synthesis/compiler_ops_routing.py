@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Callable, Dict
+
+logger = logging.getLogger(__name__)
 
 import torch
 import torch.nn.functional as F
@@ -38,8 +41,17 @@ def _apply_moe_load_balance(
     outside of backprop based on observed expert load — overloaded experts get
     negative bias, underloaded get positive. No gradient contamination.
     """
-    # Initialize bias buffer if needed (not a Parameter — no gradients)
-    if not hasattr(module, "_moe_balance_bias"):
+    # Initialize bias buffer if needed (not a Parameter — no gradients).
+    # Some routing ops reuse the same helper with different expert counts across
+    # model rebuilds or replay paths. A stale bias vector is what produced the
+    # historical 3-vs-2 / 3-vs-8 crashes in stage1.
+    bias_buf = getattr(module, "_moe_balance_bias", None)
+    if (
+        bias_buf is None
+        or not isinstance(bias_buf, torch.Tensor)
+        or bias_buf.ndim != 1
+        or bias_buf.numel() != n_experts
+    ):
         module._moe_balance_bias = torch.zeros(
             n_experts, device=logits.device, dtype=logits.dtype
         )
@@ -84,7 +96,7 @@ def _op_topk_gate(module, inputs, _):
                 return native_out
         except (ImportError, RuntimeError, AttributeError) as e:
             record_kernel_fallback("topk_gate_f32", e)
-    logits = F.linear(x, module.gate_proj)
+    logits = _safe_linear(x, module.gate_proj)
     gate_weights = F.softmax(logits, dim=-1)
 
     # Record routing telemetry
@@ -222,7 +234,7 @@ def _op_moe_topk(module, inputs, config):
     if not hasattr(module, "gate_weight"):
         return x
 
-    logits = F.linear(x, module.gate_weight)
+    logits = _safe_linear(x, module.gate_weight)
     logits = _apply_moe_load_balance(module, logits, n_experts)
     weights, indices = logits.topk(top_k, dim=-1)
     weights = F.softmax(weights, dim=-1)
@@ -231,7 +243,7 @@ def _op_moe_topk(module, inputs, config):
     _record_routing_telemetry(module, n_experts, indices, logits=logits)
 
     if not hasattr(module, "experts"):
-        return F.linear(x, module.weight) if hasattr(module, "weight") else x
+        return _safe_linear(x, module.weight) if hasattr(module, "weight") else x
 
     n_actual = len(module.experts)
 
@@ -256,7 +268,7 @@ def _op_moe_2expert(module, inputs, config):
 
     # Compute gate scores with load balancing
     dt = x.dtype
-    logits = F.linear(x, module.gate_proj)  # (B, S, 2)
+    logits = _safe_linear(x, module.gate_proj)  # (B, S, 2)
     logits = _apply_moe_load_balance(module, logits, 2)
     weights = F.softmax(logits, dim=-1)  # (B, S, 2)
 
@@ -264,8 +276,8 @@ def _op_moe_2expert(module, inputs, config):
     _record_routing_telemetry(module, 2, weights.argmax(dim=-1), logits=logits)
 
     # Each expert is a simple linear projection
-    e0 = F.linear(x, module.expert_0_weight.to(dt))  # (B, S, D)
-    e1 = F.linear(x, module.expert_1_weight.to(dt))  # (B, S, D)
+    e0 = _safe_linear(x, module.expert_0_weight.to(dt))  # (B, S, D)
+    e1 = _safe_linear(x, module.expert_1_weight.to(dt))  # (B, S, D)
 
     # Weighted combination
     output = weights[..., 0:1] * e0 + weights[..., 1:2] * e1
@@ -310,12 +322,7 @@ def _op_feature_sparsity(module, inputs, config):
 
 
 def _op_gated_lane_blend(module, inputs, config):
-    """Learned difficulty-based lane blend: score tokens, soft-weight N internal linear projections.
-
-    Each token gets routed to one of n_lanes compute paths based on learned
-    difficulty scoring. Easy tokens get cheap transforms, hard tokens get expensive.
-    Soft routing via softmax weights for gradient flow, hard assignment for telemetry.
-    """
+    """Learned difficulty-based lane blend: score tokens, soft-weight N internal linear projections."""
     x = inputs[0]
     B, S, D = x.shape
     n_lanes = int(config.get("n_lanes", 3))
@@ -324,49 +331,47 @@ def _op_gated_lane_blend(module, inputs, config):
         return x
     dt = x.dtype
 
-    # 1. Score token difficulty → lane logits (B, S, n_lanes)
-    lane_logits = F.linear(x, module.lane_scorer.to(dt))
-    lane_weights = F.softmax(lane_logits, dim=-1)  # soft assignment
-    lane_indices = lane_logits.argmax(dim=-1)  # hard assignment for telemetry
+    lane_logits = _safe_linear(x, module.lane_scorer.to(dt))
+    lane_indices = lane_logits.argmax(dim=-1)
     _record_routing_telemetry(module, n_lanes, lane_indices, logits=lane_logits)
 
-    # 2. Per-lane transforms: batched via einsum over stacked projections
     if hasattr(module, "lane_projs") and len(module.lane_projs) >= n_lanes:
         W_all = _get_stacked_params(module, "lane_projs", n_lanes, dt)
-        all_outs = torch.einsum("bsd,lod->bslo", x, W_all)  # (B, S, L, D_out)
+        if _c(x):
+            y = aria_core.gated_lane_blend_f32(
+                x.float(), module.lane_scorer.float(), W_all.float()
+            )
+            return y.to(dt)
+        lane_weights = F.softmax(lane_logits, dim=-1)
+        all_outs = torch.einsum("bsd,lod->bslo", x, W_all)
         return (lane_weights.unsqueeze(-1) * all_outs).sum(dim=2)
-    # Fallback: identity for all lanes
     return x
 
 
 def _op_depth_gated_transform(module, inputs, config):
-    """Learned difficulty-based depth gate: score tokens, apply variable-depth linear transforms.
-
-    Each token gets a learned depth score determining how many transform steps
-    it receives. Easy tokens get 1 pass, hard tokens get up to max_depth passes.
-    Uses soft depth weighting for gradient flow.
-    """
+    """Learned difficulty-based depth gate: variable-depth linear transforms per token."""
     x = inputs[0]
     B, S, D = x.shape
-    max_depth = int(config.get("max_depth", 3))
-    max_depth = max(1, min(6, max_depth))
+    max_depth = max(1, min(6, int(config.get("max_depth", 3))))
 
     if not hasattr(module, "depth_scorer"):
         return x
     dt = x.dtype
 
-    # 1. Score token difficulty → depth logits (B, S, max_depth)
-    depth_logits = F.linear(x, module.depth_scorer.to(dt))
-    depth_weights = F.softmax(depth_logits, dim=-1)
+    depth_logits = _safe_linear(x, module.depth_scorer.to(dt))
     depth_indices = depth_logits.argmax(dim=-1)
     _record_routing_telemetry(module, max_depth, depth_indices, logits=depth_logits)
 
-    # 2. Per-depth transforms: batched via einsum over stacked projections
     if hasattr(module, "depth_projs") and len(module.depth_projs) >= max_depth:
         W_all = _get_stacked_params(module, "depth_projs", max_depth, dt)
-        all_outs = torch.einsum("bsd,kod->bsko", x, W_all)  # (B, S, K, D_out)
+        if _c(x):
+            y = aria_core.depth_gated_transform_f32(
+                x.float(), module.depth_scorer.float(), W_all.float()
+            )
+            return y.to(dt)
+        depth_weights = F.softmax(depth_logits, dim=-1)
+        all_outs = torch.einsum("bsd,kod->bsko", x, W_all)
         return (depth_weights.unsqueeze(-1) * all_outs).sum(dim=2)
-    # Fallback: identity for all depths
     return x
 
 
@@ -521,7 +526,9 @@ def _op_confidence_token_gate(module, inputs, config):
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
     if hasattr(module, "confidence_proj"):
-        scores = F.linear(x, module.confidence_proj.to(x.dtype)).squeeze(-1)  # (B, S)
+        scores = _safe_linear(x, module.confidence_proj.to(x.dtype)).squeeze(
+            -1
+        )  # (B, S)
     else:
         scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
@@ -547,7 +554,7 @@ def _op_learned_token_gate(module, inputs, config):
     x = inputs[0]
     threshold = float(config.get("threshold", 0.5))
     if hasattr(module, "cascade_proj"):
-        scores = F.linear(x, module.cascade_proj.to(x.dtype)).squeeze(-1)  # (B, S)
+        scores = _safe_linear(x, module.cascade_proj.to(x.dtype)).squeeze(-1)  # (B, S)
     else:
         scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores)
@@ -562,9 +569,9 @@ def _op_cheap_verify_blend(module, inputs, config):
         return x
     dt = x.dtype
     # Cheap path: lightweight linear projection (always runs)
-    cheap_out = F.linear(x, module.cheap_proj.to(dt))
+    cheap_out = _safe_linear(x, module.cheap_proj.to(dt))
     # Learned verification gate: decides how much of the full input to blend
-    gate = torch.sigmoid(F.linear(x, module.verify_gate.to(dt)).squeeze(-1))
+    gate = torch.sigmoid(_safe_linear(x, module.verify_gate.to(dt)).squeeze(-1))
     _record_routing_telemetry(module, 2, (gate > 0.5).long(), logits=gate)
     # Blend: cheap_out + gate * (x - cheap_out) = lerp(cheap_out, x, gate)
     return cheap_out + gate.unsqueeze(-1) * (x - cheap_out)
@@ -578,7 +585,7 @@ def _op_hybrid_token_gate(module, inputs, config):
         1e-4, scheduled_scalar(module, config, key="gate_temperature", default=1.0)
     )
     if hasattr(module, "hybrid_gate_proj"):
-        scores = F.linear(x, module.hybrid_gate_proj.to(x.dtype)).squeeze(-1)
+        scores = _safe_linear(x, module.hybrid_gate_proj.to(x.dtype)).squeeze(-1)
     else:
         scores = _routing_scores_from_x(x)
     gate = torch.sigmoid(scores / gate_temperature)
@@ -785,7 +792,7 @@ def _op_hybrid_sparse_router(module, inputs, config):
         default=1.0,
     )
     if hasattr(module, "hybrid_gate_proj"):
-        gate_scores = F.linear(x, module.hybrid_gate_proj.to(x.dtype)).squeeze(-1)
+        gate_scores = _safe_linear(x, module.hybrid_gate_proj.to(x.dtype)).squeeze(-1)
     else:
         gate_scores = _routing_scores_from_x(x)
     token_present = x.abs().sum(dim=-1) > 1e-8
@@ -828,12 +835,12 @@ def _op_hybrid_sparse_router(module, inputs, config):
         )
     )
     default_out = (
-        F.linear(x, module.hybrid_default_proj.to(x.dtype))
+        _safe_linear(x, module.hybrid_default_proj.to(x.dtype))
         if hasattr(module, "hybrid_default_proj")
         else x
     )
     if hasattr(module, "hybrid_lane_proj"):
-        lane_logits = F.linear(span_features, module.hybrid_lane_proj.to(x.dtype))
+        lane_logits = _safe_linear(span_features, module.hybrid_lane_proj.to(x.dtype))
     else:
         lane_logits = torch.stack(
             [span_features.mean(dim=-1) + i * 0.1 for i in range(lane_count)], dim=-1
@@ -910,7 +917,7 @@ def _op_hybrid_sparse_router(module, inputs, config):
 def _op_lane_conditioned_block(module, inputs, config):
     x = inputs[0]
     if hasattr(module, "lane_block_weight"):
-        return F.gelu(F.linear(x, module.lane_block_weight.to(x.dtype)))
+        return F.gelu(_safe_linear(x, module.lane_block_weight.to(x.dtype)))
     return F.gelu(x)
 
 
@@ -935,7 +942,7 @@ def _op_depth_weighted_proj(module, inputs, config):
     if hasattr(module, "depth_scorer"):
         # Learned depth scoring: (B, S, D) → (B, S, max_depth)
         dt = x.dtype
-        depth_logits = F.linear(x, module.depth_scorer.to(dt))
+        depth_logits = _safe_linear(x, module.depth_scorer.to(dt))
         depth_weights = F.softmax(depth_logits, dim=-1)  # (B, S, max_depth)
         _record_routing_telemetry(
             module, max_depth, depth_weights.argmax(dim=-1), logits=depth_logits
@@ -967,7 +974,7 @@ def _op_difficulty_blend_3way(module, inputs, config):
 
     # Compute 3-way gate: [Fast, Medium, Hard]
     dt = x.dtype
-    logits = F.linear(x, module.gate_proj.to(dt))
+    logits = _safe_linear(x, module.gate_proj.to(dt))
     weights = F.softmax(logits, dim=-1)
 
     _record_routing_telemetry(module, 3, weights.argmax(dim=-1), logits=logits)
@@ -977,7 +984,7 @@ def _op_difficulty_blend_3way(module, inputs, config):
 
     # Medium lane: Low-rank
     if hasattr(module, "U_mid"):
-        mid = F.linear(F.linear(x, module.U_mid.to(dt)), module.V_mid.to(dt))
+        mid = _safe_linear(_safe_linear(x, module.U_mid.to(dt)), module.V_mid.to(dt))
         out = out + mid * weights[..., 1:2]
 
     # Hard lane: MLP
@@ -1020,7 +1027,7 @@ def _op_score_depth_blend(module, inputs, config):
     )  # (K, B, S, 1)
     # Sequential application (each step depends on previous out)
     for i in range(max_depth):
-        step_out = F.linear(out, step_weights[i])
+        step_out = _safe_linear(out, step_weights[i])
         out = out + all_masks[i] * (step_out - out) * 0.5
 
     _record_routing_telemetry(module, max_depth, depths, logits=scores)
@@ -1028,10 +1035,13 @@ def _op_score_depth_blend(module, inputs, config):
 
 
 def _op_calibrated_branch_merge(module, inputs, config):
-    branches = list(inputs)
-    if len(branches) != 5:
-        return branches[0]
-
+    if len(inputs) != 2:
+        logger.warning(
+            "calibrated_branch_merge got %d inputs, expected 2 — falling back to identity",
+            len(inputs),
+        )
+        return inputs[0]
+    branches = [inputs[0], inputs[1]]
     dt = branches[0].dtype
     normalize_inputs = bool(config.get("normalize_inputs", True))
     merge_temperature = max(1e-4, float(config.get("merge_temperature", 1.0)))
@@ -1047,7 +1057,7 @@ def _op_calibrated_branch_merge(module, inputs, config):
     scores = []
     for idx, branch in enumerate(normalized):
         if score_proj is not None and idx < score_proj.shape[0]:
-            score = F.linear(branch, score_proj[idx : idx + 1].to(dt)).squeeze(-1)
+            score = _safe_linear(branch, score_proj[idx : idx + 1].to(dt)).squeeze(-1)
         else:
             score = branch.float().mean(dim=-1).to(dt)
         if branch_bias is not None and idx < branch_bias.numel():
@@ -1056,91 +1066,35 @@ def _op_calibrated_branch_merge(module, inputs, config):
     logits = torch.stack(scores, dim=-1) / merge_temperature
     weights = F.softmax(logits, dim=-1)
 
-    routed_floor = float(config.get("routed_floor", 0.3))
-    medium_floor = float(config.get("medium_floor", 0.16))
-    hard_floor = float(config.get("hard_floor", 0.08))
-    hard_cap = float(config.get("hard_cap", 0.2))
-    fallback_cap = float(config.get("fallback_cap", 0.72))
+    min_secondary_share = float(config.get("min_secondary_share", 0.15))
+    max_secondary_share = float(config.get("max_secondary_share", 0.5))
     if bool(config.get("curriculum_enabled", False)):
-        routed_floor = scheduled_scalar(
-            module, config, key="routed_floor", default=routed_floor
+        min_secondary_share = scheduled_scalar(
+            module,
+            config,
+            key="min_secondary_share",
+            default=min_secondary_share,
         )
-        medium_floor = scheduled_scalar(
-            module, config, key="medium_floor", default=medium_floor
+        max_secondary_share = scheduled_scalar(
+            module,
+            config,
+            key="max_secondary_share",
+            default=max_secondary_share,
         )
-        hard_floor = scheduled_scalar(
-            module, config, key="hard_floor", default=hard_floor
-        )
-        hard_cap = scheduled_scalar(module, config, key="hard_cap", default=hard_cap)
-        fallback_cap = scheduled_scalar(
-            module, config, key="fallback_cap", default=fallback_cap
-        )
-
-    hard_weight = weights[..., 2]
-    hard_clamped = torch.clamp(hard_weight, min=hard_floor, max=hard_cap)
-    weights = torch.cat(
-        [
-            weights[..., :2],
-            hard_clamped.unsqueeze(-1),
-            weights[..., 3:],
-        ],
-        dim=-1,
+    secondary_weight = torch.clamp(
+        weights[..., 1],
+        min=min_secondary_share,
+        max=max_secondary_share,
     )
-    weights = weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-6)
-
-    routed_share = weights[..., 1] + weights[..., 2]
-    routed_deficit = torch.clamp(routed_floor - routed_share, min=0.0)
-    fallback_mass = weights[..., 0] + weights[..., 3] + weights[..., 4]
-    routed_boost = torch.minimum(routed_deficit, fallback_mass)
-    if torch.any(routed_boost > 0):
-        routed_ratio = torch.stack([weights[..., 1], weights[..., 2]], dim=-1)
-        routed_ratio = routed_ratio / routed_ratio.sum(dim=-1, keepdim=True).clamp(
-            min=1e-6
-        )
-        weights[..., 1:3] = weights[..., 1:3] + routed_ratio * routed_boost.unsqueeze(
-            -1
-        )
-        fallback_scale = (fallback_mass - routed_boost) / fallback_mass.clamp(min=1e-6)
-        weights[..., 0] = weights[..., 0] * fallback_scale
-        weights[..., 3] = weights[..., 3] * fallback_scale
-        weights[..., 4] = weights[..., 4] * fallback_scale
-
-    medium_gap = torch.clamp(medium_floor - weights[..., 1], min=0.0)
-    if torch.any(medium_gap > 0):
-        donors = weights[..., 0] + weights[..., 2] + weights[..., 3] + weights[..., 4]
-        move = torch.minimum(medium_gap, donors)
-        weights[..., 1] = weights[..., 1] + move
-        donor_scale = (donors - move) / donors.clamp(min=1e-6)
-        weights[..., 0] = weights[..., 0] * donor_scale
-        weights[..., 2] = weights[..., 2] * donor_scale
-        weights[..., 3] = weights[..., 3] * donor_scale
-        weights[..., 4] = weights[..., 4] * donor_scale
-
-    fallback_share = weights[..., 0] + weights[..., 3] + weights[..., 4]
-    fallback_excess = torch.clamp(fallback_share - fallback_cap, min=0.0)
-    if torch.any(fallback_excess > 0):
-        routed_ratio = torch.stack([weights[..., 1], weights[..., 2]], dim=-1)
-        routed_ratio = routed_ratio / routed_ratio.sum(dim=-1, keepdim=True).clamp(
-            min=1e-6
-        )
-        weights[..., 1:3] = weights[
-            ..., 1:3
-        ] + routed_ratio * fallback_excess.unsqueeze(-1)
-        fallback_scale = (fallback_share - fallback_excess) / fallback_share.clamp(
-            min=1e-6
-        )
-        weights[..., 0] = weights[..., 0] * fallback_scale
-        weights[..., 3] = weights[..., 3] * fallback_scale
-        weights[..., 4] = weights[..., 4] * fallback_scale
-
-    weights = weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+    primary_weight = 1.0 - secondary_weight
+    weights = torch.stack([primary_weight, secondary_weight], dim=-1)
 
     gains = getattr(module, "branch_gain", None)
     if gains is not None:
         gains_t = 0.5 + 1.0 * torch.sigmoid(gains.to(dt))
     else:
-        gains_t = torch.ones(5, device=branches[0].device, dtype=dt)
-    anchor = branch_norms[4]
+        gains_t = torch.ones(2, device=branches[0].device, dtype=dt)
+    anchor = branch_norms[0]
     out = torch.zeros_like(branches[0])
     for idx, branch in enumerate(normalized):
         out = out + branch * weights[..., idx : idx + 1] * gains_t[idx]
@@ -1148,20 +1102,24 @@ def _op_calibrated_branch_merge(module, inputs, config):
 
     weight_mean = weights.mean(dim=(0, 1))
     dominance = weights.max(dim=-1).values.mean().item()
+    primary_role = str(config.get("primary_role", "primary"))
+    secondary_role = str(config.get("secondary_role", "secondary"))
     _record_routing_telemetry(
         module,
-        5,
+        2,
         weights.argmax(dim=-1),
         logits=logits,
         routing_mode="calibrated_branch_merge",
         gate_type="branch_merge",
         branch_weights=weight_mean.detach(),
         branch_dominance=dominance,
-        routed_branch_share=float((weights[..., 1] + weights[..., 2]).mean().item()),
-        medium_branch_share=float(weights[..., 1].mean().item()),
-        hard_branch_share=float(weights[..., 2].mean().item()),
+        routed_branch_share=float(weights[..., 0].mean().item()),
+        medium_branch_share=float(weights[..., 0].mean().item()),
+        hard_branch_share=float(weights[..., 1].mean().item()),
         trace_payload={
-            "branch_names": ["default", "medium", "hard", "skip", "input"],
+            "branch_names": [primary_role, secondary_role],
+            "primary_role": primary_role,
+            "secondary_role": secondary_role,
             "curriculum_stage": stage_name(
                 get_routing_progress(module),
                 float(config.get("curriculum_warmup_frac", 0.25)),
@@ -1195,7 +1153,7 @@ def _op_relu_gated_moe(module, inputs, config):
     n_experts = module.gate_proj.shape[0]
 
     # Learned ReLU gate with load balancing: sparse activation
-    raw_logits = F.linear(x, module.gate_proj.to(dt))
+    raw_logits = _safe_linear(x, module.gate_proj.to(dt))
     raw_logits = _apply_moe_load_balance(module, raw_logits, n_experts)
     gate_scores = F.relu(raw_logits)  # (B, S, n_experts)
     # Normalize non-zero gates to sum to 1

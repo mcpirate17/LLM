@@ -21,10 +21,19 @@ function MetricChipBadge({ chip }) {
   );
 }
 
-export function MetricChipList({ chips, maxWidth = 220 }) {
+export function MetricChipList({ chips, maxWidth = 220, wrap = true }) {
   if (!chips?.length) return null;
   return (
-    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth }}>
+    <div
+      style={{
+        display: 'flex',
+        gap: 4,
+        flexWrap: wrap ? 'wrap' : 'nowrap',
+        maxWidth,
+        overflow: 'hidden',
+        whiteSpace: wrap ? 'normal' : 'nowrap',
+      }}
+    >
       {chips.map((chip, i) => (
         <MetricChipBadge key={chip.label || i} chip={chip} />
       ))}

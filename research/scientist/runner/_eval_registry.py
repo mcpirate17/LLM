@@ -209,6 +209,47 @@ def _run_cross_task(ctx: EvalContext) -> dict[str, Any]:
     return {"cross_task_score": ct.get("cross_task_score")}
 
 
+def _run_long_range_ar(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.long_range_ar import long_range_ar_score
+
+    seq_len = min(128, ctx.config.validation_seq_len)
+    ar = long_range_ar_score(
+        ctx.model,
+        seq_lens=(128, 256, 512, 1024),
+        n_train_steps=min(300, max(100, int(ctx.config.validation_steps) // 50)),
+        batch_size=max(1, min(16, ctx.config.validation_batch_size)),
+        device=ctx.dev_str,
+    )
+    return {"long_ctx_assoc_score": ar.score}
+
+
+def _run_passkey(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.passkey_retrieval import passkey_retrieval_score
+
+    pk = passkey_retrieval_score(
+        ctx.model,
+        seq_lens=(256, 512, 1024, 2048),
+        n_train_steps=min(300, max(100, int(ctx.config.validation_steps) // 50)),
+        batch_size=max(1, min(16, ctx.config.validation_batch_size)),
+        device=ctx.dev_str,
+    )
+    return {"long_ctx_passkey_score": pk.score}
+
+
+def _run_multi_hop(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.multi_hop_retrieval import multi_hop_retrieval_score
+
+    mh = multi_hop_retrieval_score(
+        ctx.model,
+        seq_lens=(256, 512, 1024),
+        hop_depths=(2, 3),
+        n_train_steps=min(300, max(100, int(ctx.config.validation_steps) // 50)),
+        batch_size=max(1, min(16, ctx.config.validation_batch_size)),
+        device=ctx.dev_str,
+    )
+    return {"long_ctx_multi_hop_score": mh.score}
+
+
 def _run_hierarchy(ctx: EvalContext) -> dict[str, Any]:
     import torch
     from ...eval.hierarchy_probe import hierarchy_fitness
@@ -347,6 +388,24 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
         ),
         requires_model=True,
         run=_run_long_context,
+    ),
+    EvalSpec(
+        name="long-range associative recall",
+        result_keys=("long_ctx_assoc_score",),
+        requires_model=True,
+        run=_run_long_range_ar,
+    ),
+    EvalSpec(
+        name="passkey retrieval",
+        result_keys=("long_ctx_passkey_score",),
+        requires_model=True,
+        run=_run_passkey,
+    ),
+    EvalSpec(
+        name="multi-hop retrieval",
+        result_keys=("long_ctx_multi_hop_score",),
+        requires_model=True,
+        run=_run_multi_hop,
     ),
     EvalSpec(
         name="noise sensitivity",
@@ -528,6 +587,40 @@ def apply_breakthrough_logic(
         )
 
 
+def _aggregate_long_ctx_scores(result: ExternalEvalResult) -> None:
+    """Compute long-context aggregate and combined scores from sub-scores."""
+    # Copy scaling sweep score
+    result.long_ctx_scaling_score = result.long_context_score
+
+    # Retrieval aggregate = mean of available retrieval sub-scores
+    retrieval_scores = [
+        s
+        for s in (
+            result.long_ctx_assoc_score,
+            result.long_ctx_passkey_score,
+            result.long_ctx_multi_hop_score,
+        )
+        if s is not None
+    ]
+    if retrieval_scores:
+        result.long_ctx_retrieval_aggregate = round(
+            sum(retrieval_scores) / len(retrieval_scores), 4
+        )
+
+    # Combined = 0.4 * scaling + 0.6 * retrieval_aggregate
+    scaling = result.long_ctx_scaling_score or 0.0
+    retrieval = result.long_ctx_retrieval_aggregate or 0.0
+    has_scaling = result.long_ctx_scaling_score is not None
+    has_retrieval = result.long_ctx_retrieval_aggregate is not None
+
+    if has_scaling and has_retrieval:
+        result.long_ctx_combined_score = round(0.4 * scaling + 0.6 * retrieval, 4)
+    elif has_scaling:
+        result.long_ctx_combined_score = round(scaling, 4)
+    elif has_retrieval:
+        result.long_ctx_combined_score = round(retrieval, 4)
+
+
 def run_eval_suite(
     *,
     ctx: EvalContext,
@@ -593,3 +686,6 @@ def run_eval_suite(
             del model
             ctx.model = None
         clear_gpu_memory()
+
+    # Aggregate long-context sub-scores
+    _aggregate_long_ctx_scores(result)

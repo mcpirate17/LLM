@@ -97,9 +97,6 @@ def _rank_label(delta: Optional[int], seen_runs: int) -> str:
 
 def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
     """Compute rank movement for top candidates across recent experiments."""
-    experiments = [
-        exp for exp in nb.get_recent_experiments(40) if exp.get("status") == "completed"
-    ]
     normalized_programs: list[dict[str, Any]]
     if isinstance(top_programs, str):
         normalized_programs = [{"graph_fingerprint": top_programs}]
@@ -110,33 +107,96 @@ def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
     else:
         normalized_programs = []
 
-    if not normalized_programs or not experiments:
+    fingerprints = [
+        fp
+        for fp in (
+            str(program.get("graph_fingerprint") or "").strip()
+            for program in normalized_programs[:20]
+        )
+        if fp
+    ]
+    if not fingerprints:
         return {
             "summary": {"stable": 0, "up": 0, "down": 0, "new": 0},
             "candidates": [],
-            "window_size": len(experiments),
+            "window_size": 0,
         }
 
-    fingerprint_ranks_by_experiment: dict[str, dict[str, int]] = {}
-    for exp in experiments:
-        experiment_id = exp.get("experiment_id")
-        if not experiment_id:
-            continue
-        programs = nb.get_program_results(experiment_id)
-        ranked = sorted(
-            [
-                p
-                for p in programs
-                if p.get("stage1_passed") and p.get("loss_ratio") is not None
-            ],
-            key=lambda p: p.get("loss_ratio", float("inf")),
+    experiments = [
+        exp
+        for exp in nb.get_recent_experiments(40)
+        if exp.get("status") == "completed" and exp.get("experiment_id")
+    ]
+    if not experiments:
+        return {
+            "summary": {"stable": 0, "up": 0, "down": 0, "new": 0},
+            "candidates": [],
+            "window_size": 0,
+        }
+
+    experiment_ids = [str(exp["experiment_id"]) for exp in experiments]
+    experiment_order = {
+        experiment_id: index for index, experiment_id in enumerate(experiment_ids)
+    }
+    placeholders = ",".join("?" for _ in experiment_ids)
+    fp_placeholders = ",".join("?" for _ in fingerprints)
+    rows = nb.conn.execute(
+        f"""
+        WITH deduped_programs AS (
+            SELECT
+                experiment_id,
+                graph_fingerprint,
+                loss_ratio,
+                timestamp,
+                ROW_NUMBER() OVER (
+                    PARTITION BY experiment_id, graph_fingerprint
+                    ORDER BY loss_ratio ASC, timestamp DESC
+                ) AS fingerprint_rank
+            FROM program_results
+            WHERE stage1_passed = 1
+              AND loss_ratio IS NOT NULL
+              AND experiment_id IN ({placeholders})
+              AND graph_fingerprint IN ({fp_placeholders})
+        ),
+        ranked_programs AS (
+            SELECT
+                experiment_id,
+                graph_fingerprint,
+                ROW_NUMBER() OVER (
+                    PARTITION BY experiment_id
+                    ORDER BY loss_ratio ASC, timestamp DESC
+                ) AS rank
+            FROM deduped_programs
+            WHERE fingerprint_rank = 1
         )
-        ranks = {}
-        for idx, program in enumerate(ranked, start=1):
-            fp = program.get("graph_fingerprint")
-            if fp and fp not in ranks:
-                ranks[fp] = idx
-        fingerprint_ranks_by_experiment[experiment_id] = ranks
+        SELECT experiment_id, graph_fingerprint, rank
+        FROM ranked_programs
+        ORDER BY experiment_id, rank
+        """,
+        (*experiment_ids, *fingerprints),
+    ).fetchall()
+
+    history_by_fingerprint: dict[str, list[dict[str, Any]]] = {
+        fp: [] for fp in fingerprints
+    }
+    experiment_ts = {
+        str(exp["experiment_id"]): exp.get("timestamp") for exp in experiments
+    }
+    for row in rows:
+        fp = str(row["graph_fingerprint"] or "")
+        if not fp:
+            continue
+        history_by_fingerprint.setdefault(fp, []).append(
+            {
+                "experiment_id": row["experiment_id"],
+                "timestamp": experiment_ts.get(str(row["experiment_id"])),
+                "rank": row["rank"],
+            }
+        )
+    for history in history_by_fingerprint.values():
+        history.sort(
+            key=lambda item: experiment_order.get(str(item["experiment_id"]), 10**9)
+        )
 
     candidates = []
     summary = {"stable": 0, "up": 0, "down": 0, "new": 0}
@@ -144,22 +204,7 @@ def compute_cross_run_stability(nb: LabNotebook, top_programs: Any) -> dict:
         fp = program.get("graph_fingerprint")
         if not fp:
             continue
-
-        history = []
-        for exp in experiments:
-            experiment_id = exp.get("experiment_id")
-            if not experiment_id:
-                continue
-            rank = fingerprint_ranks_by_experiment.get(experiment_id, {}).get(fp)
-            if rank is None:
-                continue
-            history.append(
-                {
-                    "experiment_id": experiment_id,
-                    "timestamp": exp.get("timestamp"),
-                    "rank": rank,
-                }
-            )
+        history = history_by_fingerprint.get(str(fp), [])
 
         seen_runs = len(history)
         latest_rank = history[0]["rank"] if history else None
@@ -624,6 +669,7 @@ def compute_breakthrough_production_readiness(
         limit=20,
         sort_by="composite_score",
         include_references=False,
+        trusted_only=True,
     )
     if not breakthroughs:
         return _empty_breakthrough_readiness()
@@ -709,6 +755,7 @@ def _append_breakthrough_actions(
         limit=5,
         sort_by="composite_score",
         include_references=False,
+        trusted_only=True,
     )
     for entry in breakthroughs:
         if _is_reference_like(entry):
@@ -805,7 +852,7 @@ def _append_healer_actions(actions: List[Dict[str, Any]], nb: LabNotebook) -> No
 
 
 def _append_first_run_strategy(actions: List[Dict[str, Any]], nb: LabNotebook) -> None:
-    summary = nb.get_dashboard_summary()
+    summary = nb.get_dashboard_headline_summary()
     if summary.get("total_experiments", 0) != 0:
         return
     actions.append(

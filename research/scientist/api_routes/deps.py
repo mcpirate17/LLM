@@ -62,12 +62,3 @@ def get_notebook(notebook_path: str) -> LabNotebook:
             nb = LabNotebook(notebook_path, check_same_thread=False)
         _shared_notebooks[notebook_path] = nb
         return nb
-
-
-def register_notebook_teardown(app) -> None:
-    """No-op kept for API compatibility.
-
-    With the shared notebook approach, teardown is not needed — the
-    notebook lives for the process lifetime.
-    """
-    pass

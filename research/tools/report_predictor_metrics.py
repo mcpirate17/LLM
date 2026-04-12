@@ -17,8 +17,8 @@ from typing import Any, Dict
 
 import numpy as np
 
-from research.scientist.intelligence.gnn_predictor import (
-    load_deduped_graph_training_rows,
+from research.scientist.intelligence.ml_corpus import (
+    load_deduped_screening_predictor_rows,
 )
 from research.scientist.intelligence.metrics_utils import binary_classification_metrics
 from research.scientist.intelligence.predictor import (
@@ -27,6 +27,7 @@ from research.scientist.intelligence.predictor import (
     _dicts_to_matrix,
     _grouped_stratified_split,
     _query_graph_training_data,
+    evaluate as evaluate_investigation_predictor,
     train_ensemble,
 )
 from research.synthesis.graph_features import (
@@ -38,6 +39,13 @@ from research.synthesis.graph_features import (
 DEFAULT_DB = "research/lab_notebook.db"
 DEFAULT_PROFILING_DB = "research/profiling/component_profiles.db"
 DEFAULT_STATE_DIR = Path("research/runtime/learning")
+
+
+def _safe_report_section(name: str, fn, *args, **kwargs) -> Dict[str, Any]:
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        return {"error": str(exc), "section": name}
 
 
 def _derive_confusion_from_summary(
@@ -75,6 +83,8 @@ def _derive_confusion_from_summary(
 
 def _graph_predictor_report(state_dir: Path) -> Dict[str, Any]:
     graph_meta_path = state_dir / "graph_predictor.json"
+    if not graph_meta_path.exists():
+        return {"error": "graph_predictor_not_fitted"}
     with open(graph_meta_path, encoding="utf-8") as f:
         meta = json.load(f)
     train_metrics = dict(meta.get("train_metrics", {}))
@@ -102,18 +112,22 @@ def _gbm_report(db_path: str, state_dir: Path) -> Dict[str, Any]:
     feat_dicts, y_gate, y_rank, _sample_weights, graph_signatures = (
         _query_graph_training_data(db_path)
     )
-    X, _feature_names = _dicts_to_matrix(feat_dicts)
+    X, feature_names = _dicts_to_matrix(feat_dicts)
     _train_idx, val_idx, split_stats = _grouped_stratified_split(
         graph_signatures, y_gate, seed=42
     )
     gbm = GBMPredictor.load(state_dir)
     if not gbm.is_fitted():
         return {"error": "gbm_not_fitted"}
+    # Build gate-only feature matrix (gate model has fewer features than rank)
+    gate_names = gbm.gate_feature_names or gbm.feature_names
+    gate_col_idx = [feature_names.index(fn) for fn in gate_names if fn in feature_names]
+    X_gate = X[:, gate_col_idx] if gate_col_idx else X
     if gbm.train_metrics:
         operating_points = dict(gbm.train_metrics.get("operating_points", {}))
         selected = dict(gbm.train_metrics.get("gate_metrics", {}))
         skip_metrics = binary_classification_metrics(
-            y_gate[val_idx], gbm.gate_model.predict(X[val_idx]), threshold=0.1
+            y_gate[val_idx], gbm.gate_model.predict(X_gate[val_idx]), threshold=0.1
         )
         skipped = skip_metrics["tn"] + skip_metrics["fn"]
         false_skip_rate = float(skip_metrics["fn"] / skipped) if skipped else 0.0
@@ -122,7 +136,7 @@ def _gbm_report(db_path: str, state_dir: Path) -> Dict[str, Any]:
             "train_metrics": gbm.train_metrics,
             "val_metrics_selected_threshold": selected,
             "val_metrics_threshold_0_5": binary_classification_metrics(
-                y_gate[val_idx], gbm.gate_model.predict(X[val_idx]), threshold=0.5
+                y_gate[val_idx], gbm.gate_model.predict(X_gate[val_idx]), threshold=0.5
             ),
             "val_metrics_threshold_0_1_skip_rule": skip_metrics,
             "operating_points": operating_points,
@@ -131,7 +145,7 @@ def _gbm_report(db_path: str, state_dir: Path) -> Dict[str, Any]:
             "rank_spearman_val": gbm.train_metrics.get("rank_spearman"),
         }
 
-    gate_scores = gbm.gate_model.predict(X[val_idx])
+    gate_scores = gbm.gate_model.predict(X_gate[val_idx])
     rank_spearman = None
     if gbm.rank_model is not None:
         rank_mask = np.isfinite(y_rank[val_idx])
@@ -169,7 +183,7 @@ def _component_scores(
 ) -> tuple[np.ndarray, np.ndarray, Dict[str, int]]:
     rows = [
         row
-        for row in load_deduped_graph_training_rows(db_path)
+        for row in load_deduped_screening_predictor_rows(db_path)
         if bool(row.get("stage0_any_passed"))
     ]
     if len(rows) > sample_limit:
@@ -215,43 +229,8 @@ def _component_scores(
         else:
             component_scores.append(0.5)
 
-        if ensemble.bayesian is not None:
-            nodes = graph.get("nodes") or {}
-            ops = [
-                node.get("op_name", "")
-                for node in nodes.values()
-                if node.get("op_name", "") and node.get("op_name") != "input"
-            ]
-            if ops:
-                op_weights = ensemble.bayesian.op_weights(mode="mean")
-                worst = min(op_weights.get(op, 0.5) for op in ops)
-                component_scores.append(float(np.clip(worst / 3.0, 0.0, 1.0)))
-            else:
-                component_scores.append(0.5)
-        else:
-            component_scores.append(0.5)
-
-        if ensemble.interaction is not None and ensemble.interaction._trained:
-            nodes = graph.get("nodes") or {}
-            ops = [
-                node.get("op_name", "")
-                for node in nodes.values()
-                if node.get("op_name", "") and node.get("op_name") != "input"
-            ]
-            if len(ops) >= 2:
-                stabilities = [
-                    ensemble.interaction.predict_stability(a, b)
-                    for a in ops
-                    for b in ops
-                    if a != b
-                ]
-                component_scores.append(
-                    float(np.mean(stabilities)) if stabilities else 0.5
-                )
-            else:
-                component_scores.append(0.5)
-        else:
-            component_scores.append(0.5)
+        # Bayesian worst-op excluded from scoring — weight was -0.006 (noise).
+        # InteractionModel excluded — calibration weight was ≈ -0.06.
 
         score_rows.append(component_scores)
         labels.append(label)
@@ -348,20 +327,52 @@ def build_report(
             "profiling_db": profiling_db,
             "state_dir": str(state_dir),
         },
-        "graph_predictor": _graph_predictor_report(state_dir),
-        "gbm_gate": _gbm_report(db_path, state_dir),
-        "ensemble_calibrated": _ensemble_report(
-            db_path, profiling_db, state_dir, fresh_ensemble
+        "graph_predictor": _safe_report_section(
+            "graph_predictor",
+            _graph_predictor_report,
+            state_dir,
         ),
-        "interaction_model": _interaction_report(state_dir),
+        "gbm_gate": _safe_report_section(
+            "gbm_gate",
+            _gbm_report,
+            db_path,
+            state_dir,
+        ),
+        "ensemble_calibrated": _safe_report_section(
+            "ensemble_calibrated",
+            _ensemble_report,
+            db_path,
+            profiling_db,
+            state_dir,
+            fresh_ensemble,
+        ),
+        "interaction_model": _safe_report_section(
+            "interaction_model",
+            _interaction_report,
+            state_dir,
+        ),
         "bayesian_tracker": {
             "note": (
                 "Temporal Bayesian tracker is used as a posterior/ranking component. "
                 "The current saved runtime state does not emit ROC/PPV/NPV metrics."
             )
         },
+        "investigation_predictor": _safe_report_section(
+            "investigation_predictor",
+            lambda: _investigation_predictor_report(db_path),
+        ),
     }
     return report
+
+
+def _investigation_predictor_report(db_path: str) -> Dict[str, Any]:
+    from research.scientist.notebook import LabNotebook
+
+    nb = LabNotebook(db_path)
+    try:
+        return evaluate_investigation_predictor(nb)
+    finally:
+        nb.close()
 
 
 def _print_summary(report: Dict[str, Any]) -> None:

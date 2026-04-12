@@ -861,9 +861,28 @@ def _build_summary(coverage: Dict[str, OpCoverage]) -> dict:
 class _DBRecorder:
     """Real-time DB recorder. Records each result immediately after evaluation."""
 
-    __slots__ = ("nb", "exp_id", "n_recorded", "n_s0_passed", "n_s1_passed", "best_lr")
+    __slots__ = (
+        "nb",
+        "exp_id",
+        "n_recorded",
+        "n_s0_passed",
+        "n_s1_passed",
+        "best_lr",
+        "s1_steps",
+    )
 
-    def __init__(self, db_path: str, threshold: int, mode: str):
+    def __init__(
+        self,
+        db_path: str,
+        threshold: int,
+        mode: str,
+        *,
+        device: str,
+        s1_steps: int,
+        rapid_steps: int,
+        model_dim: int,
+        n_layers: int,
+    ):
         from research.scientist.notebook import LabNotebook
 
         self.nb = LabNotebook(db_path)
@@ -872,7 +891,14 @@ class _DBRecorder:
             config={
                 "mode": mode,
                 "threshold": threshold,
+                "data_mode": "random",
+                "tokenizer_mode": "byte",
                 "vocab_size": VOCAB_SIZE,
+                "device": device,
+                "s1_steps": s1_steps,
+                "rapid_steps": rapid_steps,
+                "model_dim": model_dim,
+                "n_layers": n_layers,
                 "model_source": "forced_exploration",
             },
             hypothesis=f"Under-observed component coverage (threshold={threshold})",
@@ -881,6 +907,7 @@ class _DBRecorder:
         self.n_s0_passed = 0
         self.n_s1_passed = 0
         self.best_lr: Optional[float] = None
+        self.s1_steps = int(s1_steps)
         logger.info("Created experiment %s for real-time DB recording", self.exp_id)
 
     def record(self, r: ExplorationResult) -> None:
@@ -914,6 +941,7 @@ class _DBRecorder:
             loss_ratio=r.s1_loss_ratio,
             initial_loss=r.s1_initial_loss,
             final_loss=r.s1_final_loss,
+            train_budget_steps=self.s1_steps if r.s1_initial_loss is not None else 0,
             param_count=r.param_count,
             graph_n_ops=r.n_ops,
             graph_n_unique_ops=len(set(r.ops_present)),
@@ -1053,7 +1081,16 @@ def run_exploration(
     # 3. Set up real-time DB recorder if requested
     recorder = None
     if record and not dry_run:
-        recorder = _DBRecorder(db_path, threshold, mode)
+        recorder = _DBRecorder(
+            db_path,
+            threshold,
+            mode,
+            device=device,
+            s1_steps=s1_steps,
+            rapid_steps=rapid_steps,
+            model_dim=model_dim,
+            n_layers=n_layers,
+        )
 
     eval_kwargs = dict(
         run_s1=run_s1,

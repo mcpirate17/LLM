@@ -219,8 +219,8 @@ def _op_latent_attention_compressor(module, inputs, config):
     x = inputs[0]
     if not hasattr(module, "kv_compress"):
         return x
-    latent = F.linear(x, module.kv_compress.to(x.dtype))
-    kv = F.linear(latent, module.kv_up.to(x.dtype))
+    latent = _safe_linear(x, module.kv_compress)
+    kv = _safe_linear(latent, module.kv_up)
     D = x.shape[-1]
     k, v = kv[..., :D], kv[..., D:]
     return x + torch.sigmoid(k) * v
@@ -258,12 +258,15 @@ def _op_adaptive_rank_gate(module, inputs, config):
         return x
     dt = x.dtype
     if hasattr(module, "token_gate"):
-        s = torch.sigmoid(F.linear(x, module.token_gate.to(dt)))
+        s = torch.sigmoid(_safe_linear(x, module.token_gate.to(dt)))
     else:
         s = torch.sigmoid(module.compress_param)
-    full = F.linear(x, module.weight_full.to(dt))
+    full = _safe_linear(x, module.weight_full.to(dt))
     if hasattr(module, "U_comp"):
-        comp = F.linear(F.linear(x, module.U_comp.to(dt)), module.V_comp.to(dt))
+        comp = _safe_linear(
+            _safe_linear(x, module.U_comp.to(dt)),
+            module.V_comp.to(dt),
+        )
         return s * full + (1 - s) * comp
     return full
 
@@ -289,7 +292,7 @@ def _op_ternary_projection(module, inputs, config):
     w_quant = torch.round(torch.clamp(w / gamma, -1, 1))
     w_sim = w + (w_quant * gamma - w).detach()
     bias = getattr(module, "bias", None)
-    return F.linear(
+    return _safe_linear(
         x, w_sim.to(x.dtype), bias.to(x.dtype) if bias is not None else None
     )
 

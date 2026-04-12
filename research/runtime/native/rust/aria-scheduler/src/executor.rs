@@ -225,6 +225,901 @@ impl NativeKernelDispatch {
         output_len
     }
 
+    // ── Config helpers ─────────────────────────────────────────────────
+
+    fn cfg_i64(config: &serde_json::Value, key: &str, default: i64) -> i64 {
+        config.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
+    }
+
+    fn cfg_i64_req(config: &serde_json::Value, key: &str, op: &str) -> Result<i64, AriaError> {
+        config.get(key).and_then(|v| v.as_i64()).ok_or_else(|| {
+            AriaError::ExecutionFailed(format!("{} missing {}", op, key))
+        })
+    }
+
+    fn cfg_f32(config: &serde_json::Value, key: &str, default: f32) -> f32 {
+        config
+            .get(key)
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(default)
+    }
+
+    // ── Tier-3 dispatchers ──────────────────────────────────────────────
+
+    fn dispatch_tier3_hyperbolic(
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+    ) -> Option<Result<(), AriaError>> {
+        match op_name {
+            "exp_map" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                let c = Self::cfg_f32(config, "c", 1.0);
+                unsafe {
+                    ffi::aria_exp_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c);
+                }
+                Some(Ok(()))
+            }
+            "log_map" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                let c = Self::cfg_f32(config, "c", 1.0);
+                unsafe {
+                    ffi::aria_log_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c);
+                }
+                Some(Ok(()))
+            }
+            "poincare_add" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                let c = Self::cfg_f32(config, "c", 1.0);
+                unsafe {
+                    ffi::aria_poincare_add_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), batch, dim, c,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "hyp_linear" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim_in = Self::cfg_i64(config, "dim_in", 0);
+                let dim_out = Self::cfg_i64(config, "dim_out", 0);
+                let c = Self::cfg_f32(config, "c", 1.0);
+                unsafe {
+                    ffi::aria_hyp_linear_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), batch, dim_in, dim_out, c,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "hyp_tangent_nonlinear" => {
+                let c = Self::cfg_f32(config, "c", 1.0);
+                unsafe {
+                    ffi::aria_hyp_tangent_nonlinear_f32(
+                        inputs[0].as_ptr(), output.as_mut_ptr(), output.len() as i64, c,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "hyperbolic_norm" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                let c = Self::cfg_f32(config, "c", 1.0);
+                let eps = Self::cfg_f32(config, "eps", 1e-5);
+                unsafe {
+                    ffi::aria_hyperbolic_norm_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        output.as_mut_ptr(), batch, dim, c, eps,
+                    );
+                }
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
+    fn dispatch_tier3_tropical(
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+    ) -> Option<Result<(), AriaError>> {
+        match op_name {
+            "tropical_attention" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", 0);
+                let seq = Self::cfg_i64(
+                    config, "seq",
+                    output.len() as i64 / (batch.max(1) * dim.max(1)),
+                );
+                let temperature = Self::cfg_f32(config, "temperature", 1.0);
+                unsafe {
+                    ffi::aria_tropical_attention_f32(
+                        inputs[0].as_ptr(), output.as_mut_ptr(),
+                        batch, seq, dim, temperature,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "tropical_gate" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", 0);
+                let seq = Self::cfg_i64(
+                    config, "seq",
+                    output.len() as i64 / (batch.max(1) * dim.max(1)),
+                );
+                let temperature = Self::cfg_f32(config, "temperature", 1.0);
+                unsafe {
+                    ffi::aria_tropical_gate_f32(
+                        inputs[0].as_ptr(), output.as_mut_ptr(),
+                        batch, seq, dim, temperature,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "tropical_add" => {
+                unsafe {
+                    ffi::aria_tropical_add_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), output.len() as i64,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "tropical_matmul" => {
+                let result = (|| {
+                    let m = Self::cfg_i64_req(config, "m", "tropical_matmul")?;
+                    let k = Self::cfg_i64_req(config, "k", "tropical_matmul")?;
+                    let n = Self::cfg_i64_req(config, "n", "tropical_matmul")?;
+                    unsafe {
+                        ffi::aria_tropical_matmul_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(),
+                            output.as_mut_ptr(), m, k, n,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
+    fn dispatch_tier3_geometric(
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+    ) -> Option<Result<(), AriaError>> {
+        match op_name {
+            "rotor_transform" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                unsafe {
+                    ffi::aria_rotor_transform_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), batch, dim,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "grade_select" => {
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                let grade = Self::cfg_i64(config, "grade", 0) as i32;
+                unsafe {
+                    ffi::aria_grade_select_f32(
+                        inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, grade,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "grade_mix" => {
+                if inputs.len() < 2 {
+                    return Some(Err(AriaError::ExecutionFailed(
+                        "grade_mix dispatch requires x and alpha".to_string(),
+                    )));
+                }
+                let batch = Self::cfg_i64(config, "batch", 1);
+                let dim = Self::cfg_i64(config, "dim", output.len() as i64 / batch.max(1));
+                unsafe {
+                    ffi::aria_grade_mix_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), batch, dim,
+                    );
+                }
+                Some(Ok(()))
+            }
+            "geometric_product" => {
+                let n_multivectors = Self::cfg_i64(
+                    config, "n_multivectors", output.len() as i64 / 8,
+                );
+                unsafe {
+                    ffi::aria_clifford_geometric_product_cl30_f32(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), n_multivectors,
+                    );
+                }
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
+    fn dispatch_tier3_clifford_attention(
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+    ) -> Option<Result<(), AriaError>> {
+        if op_name != "clifford_attention" {
+            return None;
+        }
+        let batch = Self::cfg_i64(config, "batch", 1);
+        let dim = Self::cfg_i64(config, "dim", 0);
+        let seq = Self::cfg_i64(
+            config, "seq",
+            output.len() as i64 / (batch.max(1) * dim.max(1)),
+        );
+        unsafe {
+            ffi::aria_clifford_attention_f32(
+                inputs[0].as_ptr(), output.as_mut_ptr(), batch, seq, dim,
+            );
+        }
+        Some(Ok(()))
+    }
+
+    fn dispatch_tier3_compiled(
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+    ) -> Option<Result<(), AriaError>> {
+        match op_name {
+            "softmax_attention" => {
+                let result = (|| {
+                    if inputs.len() < 5 {
+                        return Err(AriaError::ExecutionFailed(
+                            "softmax_attention dispatch requires x, Wq, Wk, Wv, Wo".to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "softmax_attention")?;
+                    let seq = Self::cfg_i64_req(config, "seq", "softmax_attention")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "softmax_attention")?;
+                    let n_heads = Self::cfg_i64_req(config, "n_heads", "softmax_attention")?;
+                    unsafe {
+                        ffi::aria_softmax_attention_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            inputs[3].as_ptr(), inputs[4].as_ptr(), output.as_mut_ptr(),
+                            batch, seq, dim, n_heads,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            "linear_attention" => {
+                let result = (|| {
+                    if inputs.len() < 5 {
+                        return Err(AriaError::ExecutionFailed(
+                            "linear_attention dispatch requires x, Wq, Wk, Wv, Wo".to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "linear_attention")?;
+                    let seq = Self::cfg_i64_req(config, "seq", "linear_attention")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "linear_attention")?;
+                    unsafe {
+                        ffi::aria_linear_attention_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            inputs[3].as_ptr(), inputs[4].as_ptr(), output.as_mut_ptr(),
+                            batch, seq, dim,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            "depth_weighted_proj" => {
+                let result = (|| {
+                    if inputs.len() < 3 {
+                        return Err(AriaError::ExecutionFailed(
+                            "depth_weighted_proj dispatch requires x, depth_scorer, step_projs"
+                                .to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "depth_weighted_proj")?;
+                    let seq = Self::cfg_i64_req(config, "seq", "depth_weighted_proj")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "depth_weighted_proj")?;
+                    let max_depth = Self::cfg_i64_req(config, "max_depth", "depth_weighted_proj")?;
+                    unsafe {
+                        ffi::aria_depth_weighted_proj_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            output.as_mut_ptr(), batch, seq, dim, max_depth,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            "layernorm" => {
+                let result = (|| {
+                    if inputs.len() < 3 {
+                        return Err(AriaError::ExecutionFailed(
+                            "layernorm dispatch requires x, weight, bias".to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "layernorm")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "layernorm")?;
+                    let eps = Self::cfg_f32(config, "eps", 1e-5);
+                    unsafe {
+                        ffi::aria_layernorm_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            output.as_mut_ptr(), batch, dim, eps,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            "selective_scan" | "state_space" | "gated_delta" => {
+                Self::dispatch_tier3_compiled_ssm(op_name, inputs, config, output)
+            }
+            _ => None,
+        }
+    }
+
+    fn dispatch_tier3_compiled_ssm(
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+    ) -> Option<Result<(), AriaError>> {
+        match op_name {
+            "selective_scan" => {
+                let result = (|| {
+                    if inputs.len() < 5 {
+                        return Err(AriaError::ExecutionFailed(
+                            "selective_scan dispatch requires x, A_log, dt_proj, B_weight, C_weight"
+                                .to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "selective_scan")?;
+                    let seq = Self::cfg_i64_req(config, "seq", "selective_scan")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "selective_scan")?;
+                    unsafe {
+                        ffi::aria_selective_scan_compiled_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            inputs[3].as_ptr(), inputs[4].as_ptr(), output.as_mut_ptr(),
+                            batch, seq, dim,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            "state_space" => {
+                let result = (|| {
+                    if inputs.len() < 7 {
+                        return Err(AriaError::ExecutionFailed(
+                            "state_space dispatch requires x, ssm_A, ssm_B_weight, ssm_C_weight, ssm_D, ssm_dt_weight, ssm_dt_bias".to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "state_space")?;
+                    let seq = Self::cfg_i64_req(config, "seq", "state_space")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "state_space")?;
+                    let state_dim = config
+                        .get("state_dim")
+                        .and_then(|v| v.as_i64())
+                        .or_else(|| {
+                            if dim > 0 {
+                                let len = inputs[1].len() as i64;
+                                if len % dim == 0 { Some(len / dim) } else { None }
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or_else(|| {
+                            AriaError::ExecutionFailed("state_space missing state_dim".to_string())
+                        })?;
+                    unsafe {
+                        ffi::aria_state_space_compiled_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
+                            inputs[6].as_ptr(), output.as_mut_ptr(),
+                            batch, seq, dim, state_dim,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            "gated_delta" => {
+                let result = (|| {
+                    if inputs.len() < 7 {
+                        return Err(AriaError::ExecutionFailed(
+                            "gated_delta dispatch requires x, q_weight, k_weight, v_weight, alpha_weight, beta_weight, o_weight".to_string(),
+                        ));
+                    }
+                    let batch = Self::cfg_i64_req(config, "batch", "gated_delta")?;
+                    let seq = Self::cfg_i64_req(config, "seq", "gated_delta")?;
+                    let dim = Self::cfg_i64_req(config, "dim", "gated_delta")?;
+                    let n_heads = Self::cfg_i64_req(config, "n_heads", "gated_delta")?;
+                    unsafe {
+                        ffi::aria_gated_delta_compiled_f32(
+                            inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                            inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
+                            inputs[6].as_ptr(), output.as_mut_ptr(),
+                            batch, seq, dim, n_heads,
+                        );
+                    }
+                    Ok(())
+                })();
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
+    // ── Registry dispatchers ────────────────────────────────────────────
+
+    fn dispatch_reg_simple(
+        reg: &ffi::NkRegistration,
+        _op_name: &str,
+        inputs: &[&[f32]],
+        _config: &serde_json::Value,
+        output: &mut [f32],
+        output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(unary) = reg.unary_fn {
+            let status = unsafe {
+                unary(inputs[0].as_ptr(), output.as_mut_ptr(), output_len as i64)
+            };
+            return Some(Ok(status));
+        }
+        if let Some(binary) = reg.binary_fn {
+            let status = unsafe {
+                binary(
+                    inputs[0].as_ptr(), inputs[1].as_ptr(),
+                    output.as_mut_ptr(), output_len as i64,
+                )
+            };
+            return Some(Ok(status));
+        }
+        None
+    }
+
+    fn dispatch_reg_matmul(
+        reg: &ffi::NkRegistration,
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+        _output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(matmul) = reg.matmul_fn {
+            let result = (|| {
+                let m = Self::cfg_i64_req(config, "m", "matmul")?;
+                let k = Self::cfg_i64_req(config, "k", "matmul")?;
+                let n = Self::cfg_i64_req(config, "n", "matmul")?;
+                let status = unsafe {
+                    matmul(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), m, k, n,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(matmul_relu) = reg.matmul_relu_fn {
+            let result = (|| {
+                let m = Self::cfg_i64_req(config, "m", "matmul_relu")?;
+                let k = Self::cfg_i64_req(config, "k", "matmul_relu")?;
+                let n = Self::cfg_i64_req(config, "n", "matmul_relu")?;
+                let status = unsafe {
+                    matmul_relu(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), m, k, n,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(matmul_bias_relu) = reg.matmul_bias_relu_fn {
+            let result = (|| {
+                if inputs.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "matmul_bias_relu dispatch requires A, B, bias".to_string(),
+                    ));
+                }
+                let m = Self::cfg_i64_req(config, "m", op_name)?;
+                let k = Self::cfg_i64_req(config, "k", op_name)?;
+                let n = Self::cfg_i64_req(config, "n", op_name)?;
+                let status = unsafe {
+                    matmul_bias_relu(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        output.as_mut_ptr(), m, k, n,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(matmul_gelu) = reg.matmul_gelu_fn {
+            let result = (|| {
+                let m = Self::cfg_i64_req(config, "m", "matmul_gelu")?;
+                let k = Self::cfg_i64_req(config, "k", "matmul_gelu")?;
+                let n = Self::cfg_i64_req(config, "n", "matmul_gelu")?;
+                let status = unsafe {
+                    matmul_gelu(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), m, k, n,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        None
+    }
+
+    fn dispatch_reg_linear_norm(
+        reg: &ffi::NkRegistration,
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+        output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(linear) = reg.linear_fn {
+            let batch = Self::cfg_i64(config, "batch", 1);
+            let dim_in = Self::cfg_i64(config, "dim_in", 0);
+            let dim_out = Self::cfg_i64(config, "dim_out", 0);
+            let bias_ptr = inputs.get(2).map(|input| input.as_ptr()).unwrap_or(std::ptr::null());
+            let status = unsafe {
+                linear(
+                    inputs[0].as_ptr(), inputs[1].as_ptr(), bias_ptr,
+                    output.as_mut_ptr(), batch, dim_in, dim_out,
+                )
+            };
+            return Some(Ok(status));
+        }
+        if let Some(softmax) = reg.softmax_fn {
+            let batch = Self::cfg_i64(config, "batch", 1);
+            let dim = Self::cfg_i64(config, "dim", output_len as i64 / batch);
+            let status = unsafe {
+                softmax(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim)
+            };
+            return Some(Ok(status));
+        }
+        if let Some(rmsnorm) = reg.rmsnorm_fn {
+            if inputs.len() < 2 {
+                return Some(Err(AriaError::ExecutionFailed(
+                    "rmsnorm dispatch requires x and weight inputs".to_string(),
+                )));
+            }
+            let batch = Self::cfg_i64(config, "batch", 1);
+            let dim = Self::cfg_i64(config, "dim", output_len as i64 / batch.max(1));
+            let eps = Self::cfg_f32(config, "eps", 1e-5);
+            let status = unsafe {
+                rmsnorm(
+                    inputs[0].as_ptr(), inputs[1].as_ptr(),
+                    output.as_mut_ptr(), batch, dim, eps,
+                )
+            };
+            return Some(Ok(status));
+        }
+        if let Some(layernorm_residual) = reg.layernorm_residual_fn {
+            let result = (|| {
+                if inputs.len() < 4 {
+                    return Err(AriaError::ExecutionFailed(
+                        "layernorm_residual dispatch requires x, residual, gamma, beta".to_string(),
+                    ));
+                }
+                let rows = Self::cfg_i64_req(config, "rows", op_name)?;
+                let cols = Self::cfg_i64_req(config, "cols", op_name)?;
+                let eps = Self::cfg_f32(config, "eps", 1e-5);
+                let status = unsafe {
+                    layernorm_residual(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        inputs[2].as_ptr(), inputs[3].as_ptr(),
+                        output.as_mut_ptr(), rows, cols, eps,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        None
+    }
+
+    fn dispatch_reg_activation(
+        reg: &ffi::NkRegistration,
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+        _output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(swiglu) = reg.swiglu_fn {
+            let result = (|| {
+                if inputs.len() < 7 {
+                    return Err(AriaError::ExecutionFailed(
+                        "swiglu dispatch requires x, W_gate, W_up, W_down, b_gate, b_up, b_down"
+                            .to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let hidden_dim = Self::cfg_i64_req(config, "hidden_dim", op_name)?;
+                let mut tmp_gate = vec![0.0f32; (batch * hidden_dim) as usize];
+                let mut tmp_up = vec![0.0f32; (batch * hidden_dim) as usize];
+                let status = unsafe {
+                    swiglu(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
+                        inputs[6].as_ptr(), output.as_mut_ptr(),
+                        tmp_gate.as_mut_ptr(), tmp_up.as_mut_ptr(),
+                        batch, dim, hidden_dim,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(gated_linear) = reg.gated_linear_fn {
+            let result = (|| {
+                if inputs.len() < 4 {
+                    return Err(AriaError::ExecutionFailed(
+                        "gated_linear dispatch requires x, W, b, W_gate (+ optional b_gate)"
+                            .to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let dim_in = Self::cfg_i64_req(config, "dim_in", op_name)?;
+                let dim_out = Self::cfg_i64_req(config, "dim_out", op_name)?;
+                let b_gate_ptr = if inputs.len() > 4 {
+                    inputs[4].as_ptr()
+                } else {
+                    std::ptr::null()
+                };
+                let mut tmp_gate = vec![0.0f32; (batch * dim_out) as usize];
+                let status = unsafe {
+                    gated_linear(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        inputs[3].as_ptr(), b_gate_ptr, output.as_mut_ptr(),
+                        tmp_gate.as_mut_ptr(), batch, dim_in, dim_out,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        None
+    }
+
+    fn dispatch_reg_sequence(
+        reg: &ffi::NkRegistration,
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+        output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(conv1d_seq) = reg.conv1d_seq_fn {
+            let result = (|| {
+                if inputs.len() < 3 {
+                    return Err(AriaError::ExecutionFailed(
+                        "conv1d_seq dispatch requires x, weight, bias".to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let seq = Self::cfg_i64_req(config, "seq", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let status = unsafe {
+                    conv1d_seq(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        output.as_mut_ptr(), batch, seq, dim,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(embedding_lookup) = reg.embedding_lookup_fn {
+            let result = (|| {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "embedding_lookup dispatch requires table and indices inputs".to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let vocab_size = Self::cfg_i64_req(config, "vocab_size", op_name)?;
+                // inputs[1] is indices as f32-reinterpreted i32
+                let indices_ptr = inputs[1].as_ptr() as *const i32;
+                let pos_embed_ptr = if inputs.len() > 2 {
+                    inputs[2].as_ptr()
+                } else {
+                    std::ptr::null()
+                };
+                let status = unsafe {
+                    embedding_lookup(
+                        inputs[0].as_ptr(), indices_ptr, pos_embed_ptr,
+                        output.as_mut_ptr(), batch, dim, vocab_size,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(rope_rotate) = reg.rope_rotate_fn {
+            let result = (|| {
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let seq = Self::cfg_i64_req(config, "seq", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let theta_base = Self::cfg_f32(config, "theta_base", 10000.0);
+                let status = unsafe {
+                    rope_rotate(
+                        inputs[0].as_ptr(), output.as_mut_ptr(),
+                        batch, seq, dim, theta_base,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        // Delegate to RWKV-specific handler for the remaining sequence ops.
+        Self::dispatch_reg_sequence_rwkv(reg, op_name, inputs, config, output, output_len)
+    }
+
+    fn dispatch_reg_sequence_rwkv(
+        reg: &ffi::NkRegistration,
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+        _output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(rwkv_time_mixing) = reg.rwkv_time_mixing_fn {
+            let result = (|| {
+                if inputs.len() < 6 {
+                    return Err(AriaError::ExecutionFailed(
+                        "rwkv_time_mixing dispatch requires x, w_decay, u_bonus, W_k, W_v, W_r"
+                            .to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let seq = Self::cfg_i64_req(config, "seq", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let status = unsafe {
+                    rwkv_time_mixing(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
+                        output.as_mut_ptr(), batch, seq, dim,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(rwkv_channel) = reg.rwkv_channel_fn {
+            let result = (|| {
+                if inputs.len() < 6 {
+                    return Err(AriaError::ExecutionFailed(
+                        "rwkv_channel dispatch requires x, mix_k, mix_r, W_k, W_r, W_v".to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let seq = Self::cfg_i64_req(config, "seq", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let hidden_dim = Self::cfg_i64_req(config, "hidden_dim", op_name)?;
+                let mut tmp_xk = vec![0.0f32; (batch * seq * dim) as usize];
+                let mut tmp_xr = vec![0.0f32; (batch * seq * dim) as usize];
+                let mut tmp_k = vec![0.0f32; (batch * seq * hidden_dim) as usize];
+                let status = unsafe {
+                    rwkv_channel(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(), inputs[2].as_ptr(),
+                        inputs[3].as_ptr(), inputs[4].as_ptr(), inputs[5].as_ptr(),
+                        output.as_mut_ptr(), tmp_xk.as_mut_ptr(), tmp_xr.as_mut_ptr(),
+                        tmp_k.as_mut_ptr(), batch, seq, dim, hidden_dim,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        None
+    }
+
+    fn dispatch_reg_special(
+        reg: &ffi::NkRegistration,
+        op_name: &str,
+        inputs: &[&[f32]],
+        config: &serde_json::Value,
+        output: &mut [f32],
+        _output_len: usize,
+    ) -> Option<Result<NkStatus, AriaError>> {
+        if let Some(cosine_similarity) = reg.cosine_similarity_fn {
+            let result = (|| {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "cosine_similarity dispatch requires a and b inputs".to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let seq = Self::cfg_i64_req(config, "seq", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let status = unsafe {
+                    cosine_similarity(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), batch, seq, dim,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(gather_topk) = reg.gather_topk_fn {
+            let result = (|| {
+                if inputs.len() < 2 {
+                    return Err(AriaError::ExecutionFailed(
+                        "gather_topk dispatch requires scores and values inputs".to_string(),
+                    ));
+                }
+                let batch = Self::cfg_i64_req(config, "batch", op_name)?;
+                let n_items = Self::cfg_i64_req(config, "n_items", op_name)?;
+                let dim = Self::cfg_i64_req(config, "dim", op_name)?;
+                let k = Self::cfg_i64_req(config, "k", op_name)?;
+                let mut out_indices = vec![0i32; (batch * k) as usize];
+                let status = unsafe {
+                    gather_topk(
+                        inputs[0].as_ptr(), inputs[1].as_ptr(),
+                        output.as_mut_ptr(), out_indices.as_mut_ptr(),
+                        batch, n_items, dim, k,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if let Some(concat) = reg.concat_fn {
+            let result = (|| {
+                if inputs.is_empty() {
+                    return Err(AriaError::ExecutionFailed(
+                        "concat dispatch requires at least one input".to_string(),
+                    ));
+                }
+                let input_ptrs: Vec<*const f32> = inputs.iter().map(|inp| inp.as_ptr()).collect();
+                let sizes: Vec<i64> = inputs.iter().map(|inp| inp.len() as i64).collect();
+                let dim = Self::cfg_i64(config, "dim", -1);
+                let status = unsafe {
+                    concat(
+                        input_ptrs.as_ptr(), sizes.as_ptr(),
+                        input_ptrs.len() as i32, output.as_mut_ptr(), dim,
+                    )
+                };
+                Ok(status)
+            })();
+            return Some(result);
+        }
+        if reg.split_fn.is_some() {
+            return Some(Err(AriaError::ExecutionFailed(
+                "split op is multi-output and is not supported by single-output executor path"
+                    .to_string(),
+            )));
+        }
+        None
+    }
+
+    // ── Main dispatch entry point ───────────────────────────────────────
+
     /// Execute the kernel into a pre-allocated output buffer. The buffer must
     /// be at least `output_len(...)` elements long.
     fn execute_kernel(
@@ -237,1078 +1132,53 @@ impl NativeKernelDispatch {
         let c_op_name = CString::new(op_name)
             .map_err(|_| AriaError::ExecutionFailed(format!("invalid op name: {}", op_name)))?;
 
-        // Intercept tier 3 / math space research ops that are not in NkRegistration
-        match op_name {
-            "exp_map" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_exp_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c);
-                }
-                return Ok(());
+        // Tier-3 intercepts (not in registry)
+        let tier3_dispatchers = [
+            Self::dispatch_tier3_hyperbolic,
+            Self::dispatch_tier3_tropical,
+            Self::dispatch_tier3_geometric,
+            Self::dispatch_tier3_clifford_attention,
+            Self::dispatch_tier3_compiled,
+        ];
+        for dispatch_fn in &tier3_dispatchers {
+            if let Some(result) = dispatch_fn(op_name, inputs, config, output) {
+                return result;
             }
-            "log_map" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_log_map_f32(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim, c);
-                }
-                return Ok(());
-            }
-            "poincare_add" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_poincare_add_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim,
-                        c,
-                    );
-                }
-                return Ok(());
-            }
-            "hyp_linear" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim_in = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or(0);
-                let dim_out = config.get("dim_out").and_then(|v| v.as_i64()).unwrap_or(0);
-                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_hyp_linear_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim_in,
-                        dim_out,
-                        c,
-                    );
-                }
-                return Ok(());
-            }
-            "hyp_tangent_nonlinear" => {
-                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_hyp_tangent_nonlinear_f32(
-                        inputs[0].as_ptr(),
-                        output.as_mut_ptr(),
-                        output.len() as i64,
-                        c,
-                    );
-                }
-                return Ok(());
-            }
-            "hyperbolic_norm" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                let c = config.get("c").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                let eps = config.get("eps").and_then(|v| v.as_f64()).unwrap_or(1e-5) as f32;
-                unsafe {
-                    ffi::aria_hyperbolic_norm_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim,
-                        c,
-                        eps,
-                    );
-                }
-                return Ok(());
-            }
-            "tropical_attention" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
-                let temperature = config
-                    .get("temperature")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_tropical_attention_f32(
-                        inputs[0].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                        temperature,
-                    );
-                }
-                return Ok(());
-            }
-            "tropical_gate" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
-                let temperature = config
-                    .get("temperature")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0) as f32;
-                unsafe {
-                    ffi::aria_tropical_gate_f32(
-                        inputs[0].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                        temperature,
-                    );
-                }
-                return Ok(());
-            }
-            "tropical_add" => {
-                unsafe {
-                    ffi::aria_tropical_add_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        output.len() as i64,
-                    );
-                }
-                return Ok(());
-            }
-            "tropical_matmul" => {
-                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("tropical_matmul missing m".to_string())
-                })?;
-                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("tropical_matmul missing k".to_string())
-                })?;
-                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("tropical_matmul missing n".to_string())
-                })?;
-                unsafe {
-                    ffi::aria_tropical_matmul_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        m,
-                        k,
-                        n,
-                    );
-                }
-                return Ok(());
-            }
-            "rotor_transform" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                unsafe {
-                    ffi::aria_rotor_transform_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim,
-                    );
-                }
-                return Ok(());
-            }
-            "grade_select" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                let grade = config.get("grade").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                unsafe {
-                    ffi::aria_grade_select_f32(
-                        inputs[0].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim,
-                        grade,
-                    );
-                }
-                return Ok(());
-            }
-            "grade_mix" => {
-                if inputs.len() < 2 {
-                    return Err(AriaError::ExecutionFailed(
-                        "grade_mix dispatch requires x and alpha".to_string(),
-                    ));
-                }
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / batch.max(1));
-                unsafe {
-                    ffi::aria_grade_mix_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim,
-                    );
-                }
-                return Ok(());
-            }
-            "clifford_attention" => {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(0);
-                let seq = config
-                    .get("seq")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / (batch.max(1) * dim.max(1)));
-                unsafe {
-                    ffi::aria_clifford_attention_f32(
-                        inputs[0].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                    );
-                }
-                return Ok(());
-            }
-            "softmax_attention" => {
-                if inputs.len() < 5 {
-                    return Err(AriaError::ExecutionFailed(
-                        "softmax_attention dispatch requires x, Wq, Wk, Wv, Wo".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("softmax_attention missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("softmax_attention missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("softmax_attention missing dim".to_string())
-                })?;
-                let n_heads = config
-                    .get("n_heads")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("softmax_attention missing n_heads".to_string())
-                    })?;
-                unsafe {
-                    ffi::aria_softmax_attention_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        inputs[3].as_ptr(),
-                        inputs[4].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                        n_heads,
-                    );
-                }
-                return Ok(());
-            }
-            "linear_attention" => {
-                if inputs.len() < 5 {
-                    return Err(AriaError::ExecutionFailed(
-                        "linear_attention dispatch requires x, Wq, Wk, Wv, Wo".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("linear_attention missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("linear_attention missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("linear_attention missing dim".to_string())
-                })?;
-                let x_ptr = inputs[0].as_ptr();
-                let wq_ptr = inputs[1].as_ptr();
-                let wk_ptr = inputs[2].as_ptr();
-                let wv_ptr = inputs[3].as_ptr();
-                let wo_ptr = inputs[4].as_ptr();
-                let y_ptr = output.as_mut_ptr();
-                unsafe {
-                    ffi::aria_linear_attention_f32(
-                        x_ptr, wq_ptr, wk_ptr, wv_ptr, wo_ptr, y_ptr, batch, seq, dim,
-                    );
-                }
-                return Ok(());
-            }
-            "depth_weighted_proj" => {
-                if inputs.len() < 3 {
-                    return Err(AriaError::ExecutionFailed(
-                        "depth_weighted_proj dispatch requires x, depth_scorer, step_projs"
-                            .to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed(
-                            "depth_weighted_proj missing batch".to_string(),
-                        )
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("depth_weighted_proj missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("depth_weighted_proj missing dim".to_string())
-                })?;
-                let max_depth = config
-                    .get("max_depth")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed(
-                            "depth_weighted_proj missing max_depth".to_string(),
-                        )
-                    })?;
-                unsafe {
-                    ffi::aria_depth_weighted_proj_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                        max_depth,
-                    );
-                }
-                return Ok(());
-            }
-            "layernorm" => {
-                if inputs.len() < 3 {
-                    return Err(AriaError::ExecutionFailed(
-                        "layernorm dispatch requires x, weight, bias".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("layernorm missing batch".to_string())
-                    })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("layernorm missing dim".to_string())
-                })?;
-                let eps = config
-                    .get("eps")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32)
-                    .unwrap_or(1e-5f32);
-                unsafe {
-                    ffi::aria_layernorm_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        dim,
-                        eps,
-                    );
-                }
-                return Ok(());
-            }
-            "selective_scan" => {
-                if inputs.len() < 5 {
-                    return Err(AriaError::ExecutionFailed(
-                        "selective_scan dispatch requires x, A_log, dt_proj, B_weight, C_weight"
-                            .to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("selective_scan missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("selective_scan missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("selective_scan missing dim".to_string())
-                })?;
-                unsafe {
-                    ffi::aria_selective_scan_compiled_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        inputs[3].as_ptr(),
-                        inputs[4].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                    );
-                }
-                return Ok(());
-            }
-            "state_space" => {
-                if inputs.len() < 7 {
-                    return Err(AriaError::ExecutionFailed(
-                        "state_space dispatch requires x, ssm_A, ssm_B_weight, ssm_C_weight, ssm_D, ssm_dt_weight, ssm_dt_bias".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("state_space missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("state_space missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("state_space missing dim".to_string())
-                })?;
-                let state_dim = config
-                    .get("state_dim")
-                    .and_then(|v| v.as_i64())
-                    .or_else(|| {
-                        if dim > 0 {
-                            let len = inputs[1].len() as i64;
-                            if len % dim == 0 {
-                                Some(len / dim)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("state_space missing state_dim".to_string())
-                    })?;
-                unsafe {
-                    ffi::aria_state_space_compiled_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        inputs[3].as_ptr(),
-                        inputs[4].as_ptr(),
-                        inputs[5].as_ptr(),
-                        inputs[6].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                        state_dim,
-                    );
-                }
-                return Ok(());
-            }
-            "gated_delta" => {
-                if inputs.len() < 7 {
-                    return Err(AriaError::ExecutionFailed(
-                        "gated_delta dispatch requires x, q_weight, k_weight, v_weight, alpha_weight, beta_weight, o_weight".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gated_delta missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("gated_delta missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("gated_delta missing dim".to_string())
-                })?;
-                let n_heads = config
-                    .get("n_heads")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gated_delta missing n_heads".to_string())
-                    })?;
-                unsafe {
-                    ffi::aria_gated_delta_compiled_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        inputs[2].as_ptr(),
-                        inputs[3].as_ptr(),
-                        inputs[4].as_ptr(),
-                        inputs[5].as_ptr(),
-                        inputs[6].as_ptr(),
-                        output.as_mut_ptr(),
-                        batch,
-                        seq,
-                        dim,
-                        n_heads,
-                    );
-                }
-                return Ok(());
-            }
-            "geometric_product" => {
-                let n_multivectors = config
-                    .get("n_multivectors")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output.len() as i64 / 8);
-                unsafe {
-                    ffi::aria_clifford_geometric_product_cl30_f32(
-                        inputs[0].as_ptr(),
-                        inputs[1].as_ptr(),
-                        output.as_mut_ptr(),
-                        n_multivectors,
-                    );
-                }
-                return Ok(());
-            }
-            _ => {} // Fall through to standard registry
         }
 
+        // Registry path
         let reg_ptr = unsafe { ffi::nk_dispatch(c_op_name.as_ptr()) };
         if reg_ptr.is_null() {
             return Err(AriaError::ExecutionFailed(format!(
-                "op {} not registered in native runtime",
-                op_name
+                "op {} not registered in native runtime", op_name
             )));
         }
-
         let reg = unsafe { &*reg_ptr };
         let output_len = output.len();
 
-        let status = unsafe {
-            if let Some(unary) = reg.unary_fn {
-                unary(inputs[0].as_ptr(), output.as_mut_ptr(), output_len as i64)
-            } else if let Some(binary) = reg.binary_fn {
-                binary(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    output_len as i64,
-                )
-            } else if let Some(matmul) = reg.matmul_fn {
-                let m = config
-                    .get("m")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul missing m".to_string()))?;
-                let k = config
-                    .get("k")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul missing k".to_string()))?;
-                let n = config
-                    .get("n")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("matmul missing n".to_string()))?;
-                matmul(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    m,
-                    k,
-                    n,
-                )
-            } else if let Some(linear) = reg.linear_fn {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim_in = config.get("dim_in").and_then(|v| v.as_i64()).unwrap_or(0);
-                let dim_out = config.get("dim_out").and_then(|v| v.as_i64()).unwrap_or(0);
-                let bias_ptr = inputs
-                    .get(2)
-                    .map(|input| input.as_ptr())
-                    .unwrap_or(std::ptr::null());
-                linear(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    bias_ptr,
-                    output.as_mut_ptr(),
-                    batch,
-                    dim_in,
-                    dim_out,
-                )
-            } else if let Some(softmax) = reg.softmax_fn {
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output_len as i64 / batch);
-                softmax(inputs[0].as_ptr(), output.as_mut_ptr(), batch, dim)
-            } else if let Some(rmsnorm) = reg.rmsnorm_fn {
-                if inputs.len() < 2 {
-                    return Err(AriaError::ExecutionFailed(
-                        "rmsnorm dispatch requires x and weight inputs".to_string(),
-                    ));
+        let reg_dispatchers: &[fn(&ffi::NkRegistration, &str, &[&[f32]], &serde_json::Value, &mut [f32], usize) -> Option<Result<NkStatus, AriaError>>] = &[
+            Self::dispatch_reg_simple,
+            Self::dispatch_reg_matmul,
+            Self::dispatch_reg_linear_norm,
+            Self::dispatch_reg_activation,
+            Self::dispatch_reg_sequence,
+            Self::dispatch_reg_special,
+        ];
+        for dispatch_fn in reg_dispatchers {
+            if let Some(result) = dispatch_fn(reg, op_name, inputs, config, output, output_len) {
+                let status = result?;
+                if status != NkStatus::Ok {
+                    return Err(AriaError::ExecutionFailed(format!(
+                        "native kernel {} failed with status {:?}", op_name, status
+                    )));
                 }
-                let batch = config.get("batch").and_then(|v| v.as_i64()).unwrap_or(1);
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(output_len as i64 / batch.max(1));
-                let eps = config
-                    .get("eps")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32)
-                    .unwrap_or(1e-5f32);
-                rmsnorm(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    batch,
-                    dim,
-                    eps,
-                )
-            } else if let Some(matmul_relu) = reg.matmul_relu_fn {
-                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_relu missing m".to_string())
-                })?;
-                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_relu missing k".to_string())
-                })?;
-                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_relu missing n".to_string())
-                })?;
-                matmul_relu(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    m,
-                    k,
-                    n,
-                )
-            } else if let Some(matmul_bias_relu) = reg.matmul_bias_relu_fn {
-                if inputs.len() < 3 {
-                    return Err(AriaError::ExecutionFailed(
-                        "matmul_bias_relu dispatch requires A, B, bias".to_string(),
-                    ));
-                }
-                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_bias_relu missing m".to_string())
-                })?;
-                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_bias_relu missing k".to_string())
-                })?;
-                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_bias_relu missing n".to_string())
-                })?;
-                matmul_bias_relu(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    output.as_mut_ptr(),
-                    m,
-                    k,
-                    n,
-                )
-            } else if let Some(layernorm_residual) = reg.layernorm_residual_fn {
-                if inputs.len() < 4 {
-                    return Err(AriaError::ExecutionFailed(
-                        "layernorm_residual dispatch requires x, residual, gamma, beta".to_string(),
-                    ));
-                }
-                let rows = config.get("rows").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("layernorm_residual missing rows".to_string())
-                })?;
-                let cols = config.get("cols").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("layernorm_residual missing cols".to_string())
-                })?;
-                let eps = config
-                    .get("eps")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32)
-                    .unwrap_or(1e-5f32);
-                layernorm_residual(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    inputs[3].as_ptr(),
-                    output.as_mut_ptr(),
-                    rows,
-                    cols,
-                    eps,
-                )
-            } else if let Some(matmul_gelu) = reg.matmul_gelu_fn {
-                let m = config.get("m").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_gelu missing m".to_string())
-                })?;
-                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_gelu missing k".to_string())
-                })?;
-                let n = config.get("n").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("matmul_gelu missing n".to_string())
-                })?;
-                matmul_gelu(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    m,
-                    k,
-                    n,
-                )
-            } else if let Some(swiglu) = reg.swiglu_fn {
-                if inputs.len() < 7 {
-                    return Err(AriaError::ExecutionFailed(
-                        "swiglu dispatch requires x, W_gate, W_up, W_down, b_gate, b_up, b_down"
-                            .to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("swiglu missing batch".to_string())
-                    })?;
-                let dim = config
-                    .get("dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| AriaError::ExecutionFailed("swiglu missing dim".to_string()))?;
-                let hidden_dim = config
-                    .get("hidden_dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("swiglu missing hidden_dim".to_string())
-                    })?;
-
-                let mut tmp_gate = vec![0.0f32; (batch * hidden_dim) as usize];
-                let mut tmp_up = vec![0.0f32; (batch * hidden_dim) as usize];
-                swiglu(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    inputs[3].as_ptr(),
-                    inputs[4].as_ptr(),
-                    inputs[5].as_ptr(),
-                    inputs[6].as_ptr(),
-                    output.as_mut_ptr(),
-                    tmp_gate.as_mut_ptr(),
-                    tmp_up.as_mut_ptr(),
-                    batch,
-                    dim,
-                    hidden_dim,
-                )
-            } else if let Some(rwkv_channel) = reg.rwkv_channel_fn {
-                if inputs.len() < 6 {
-                    return Err(AriaError::ExecutionFailed(
-                        "rwkv_channel dispatch requires x, mix_k, mix_r, W_k, W_r, W_v".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("rwkv_channel missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("rwkv_channel missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("rwkv_channel missing dim".to_string())
-                })?;
-                let hidden_dim = config
-                    .get("hidden_dim")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("rwkv_channel missing hidden_dim".to_string())
-                    })?;
-
-                let mut tmp_xk = vec![0.0f32; (batch * seq * dim) as usize];
-                let mut tmp_xr = vec![0.0f32; (batch * seq * dim) as usize];
-                let mut tmp_k = vec![0.0f32; (batch * seq * hidden_dim) as usize];
-                rwkv_channel(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    inputs[3].as_ptr(),
-                    inputs[4].as_ptr(),
-                    inputs[5].as_ptr(),
-                    output.as_mut_ptr(),
-                    tmp_xk.as_mut_ptr(),
-                    tmp_xr.as_mut_ptr(),
-                    tmp_k.as_mut_ptr(),
-                    batch,
-                    seq,
-                    dim,
-                    hidden_dim,
-                )
-            } else if let Some(conv1d_seq) = reg.conv1d_seq_fn {
-                if inputs.len() < 3 {
-                    return Err(AriaError::ExecutionFailed(
-                        "conv1d_seq dispatch requires x, weight, bias".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("conv1d_seq missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("conv1d_seq missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("conv1d_seq missing dim".to_string())
-                })?;
-                conv1d_seq(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    output.as_mut_ptr(),
-                    batch,
-                    seq,
-                    dim,
-                )
-            } else if let Some(embedding_lookup) = reg.embedding_lookup_fn {
-                if inputs.len() < 2 {
-                    return Err(AriaError::ExecutionFailed(
-                        "embedding_lookup dispatch requires table and indices inputs".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("embedding_lookup missing batch".to_string())
-                    })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("embedding_lookup missing dim".to_string())
-                })?;
-                let vocab_size = config
-                    .get("vocab_size")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed(
-                            "embedding_lookup missing vocab_size".to_string(),
-                        )
-                    })?;
-                // inputs[1] is indices as f32-reinterpreted i32
-                let indices_ptr = inputs[1].as_ptr() as *const i32;
-                let pos_embed_ptr = if inputs.len() > 2 {
-                    inputs[2].as_ptr()
-                } else {
-                    std::ptr::null()
-                };
-                embedding_lookup(
-                    inputs[0].as_ptr(),
-                    indices_ptr,
-                    pos_embed_ptr,
-                    output.as_mut_ptr(),
-                    batch,
-                    dim,
-                    vocab_size,
-                )
-            } else if let Some(rope_rotate) = reg.rope_rotate_fn {
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("rope_rotate missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("rope_rotate missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("rope_rotate missing dim".to_string())
-                })?;
-                let theta_base = config
-                    .get("theta_base")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32)
-                    .unwrap_or(10000.0f32);
-                rope_rotate(
-                    inputs[0].as_ptr(),
-                    output.as_mut_ptr(),
-                    batch,
-                    seq,
-                    dim,
-                    theta_base,
-                )
-            } else if let Some(gated_linear) = reg.gated_linear_fn {
-                if inputs.len() < 4 {
-                    return Err(AriaError::ExecutionFailed(
-                        "gated_linear dispatch requires x, W, b, W_gate (+ optional b_gate)"
-                            .to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gated_linear missing batch".to_string())
-                    })?;
-                let dim_in = config
-                    .get("dim_in")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gated_linear missing dim_in".to_string())
-                    })?;
-                let dim_out = config
-                    .get("dim_out")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gated_linear missing dim_out".to_string())
-                    })?;
-                let b_gate_ptr = if inputs.len() > 4 {
-                    inputs[4].as_ptr()
-                } else {
-                    std::ptr::null()
-                };
-                let mut tmp_gate = vec![0.0f32; (batch * dim_out) as usize];
-                gated_linear(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    inputs[3].as_ptr(),
-                    b_gate_ptr,
-                    output.as_mut_ptr(),
-                    tmp_gate.as_mut_ptr(),
-                    batch,
-                    dim_in,
-                    dim_out,
-                )
-            } else if let Some(cosine_similarity) = reg.cosine_similarity_fn {
-                if inputs.len() < 2 {
-                    return Err(AriaError::ExecutionFailed(
-                        "cosine_similarity dispatch requires a and b inputs".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("cosine_similarity missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("cosine_similarity missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("cosine_similarity missing dim".to_string())
-                })?;
-                cosine_similarity(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    batch,
-                    seq,
-                    dim,
-                )
-            } else if let Some(gather_topk) = reg.gather_topk_fn {
-                if inputs.len() < 2 {
-                    return Err(AriaError::ExecutionFailed(
-                        "gather_topk dispatch requires scores and values inputs".to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gather_topk missing batch".to_string())
-                    })?;
-                let n_items = config
-                    .get("n_items")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("gather_topk missing n_items".to_string())
-                    })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("gather_topk missing dim".to_string())
-                })?;
-                let k = config.get("k").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("gather_topk missing k".to_string())
-                })?;
-                let mut out_indices = vec![0i32; (batch * k) as usize];
-                gather_topk(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    output.as_mut_ptr(),
-                    out_indices.as_mut_ptr(),
-                    batch,
-                    n_items,
-                    dim,
-                    k,
-                )
-            } else if let Some(rwkv_time_mixing) = reg.rwkv_time_mixing_fn {
-                if inputs.len() < 6 {
-                    return Err(AriaError::ExecutionFailed(
-                        "rwkv_time_mixing dispatch requires x, w_decay, u_bonus, W_k, W_v, W_r"
-                            .to_string(),
-                    ));
-                }
-                let batch = config
-                    .get("batch")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        AriaError::ExecutionFailed("rwkv_time_mixing missing batch".to_string())
-                    })?;
-                let seq = config.get("seq").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("rwkv_time_mixing missing seq".to_string())
-                })?;
-                let dim = config.get("dim").and_then(|v| v.as_i64()).ok_or_else(|| {
-                    AriaError::ExecutionFailed("rwkv_time_mixing missing dim".to_string())
-                })?;
-                rwkv_time_mixing(
-                    inputs[0].as_ptr(),
-                    inputs[1].as_ptr(),
-                    inputs[2].as_ptr(),
-                    inputs[3].as_ptr(),
-                    inputs[4].as_ptr(),
-                    inputs[5].as_ptr(),
-                    output.as_mut_ptr(),
-                    batch,
-                    seq,
-                    dim,
-                )
-            } else if let Some(concat) = reg.concat_fn {
-                if inputs.is_empty() {
-                    return Err(AriaError::ExecutionFailed(
-                        "concat dispatch requires at least one input".to_string(),
-                    ));
-                }
-                let input_ptrs: Vec<*const f32> = inputs.iter().map(|inp| inp.as_ptr()).collect();
-                let sizes: Vec<i64> = inputs.iter().map(|inp| inp.len() as i64).collect();
-                let dim = config.get("dim").and_then(|v| v.as_i64()).unwrap_or(-1);
-                concat(
-                    input_ptrs.as_ptr(),
-                    sizes.as_ptr(),
-                    input_ptrs.len() as i32,
-                    output.as_mut_ptr(),
-                    dim,
-                )
-            } else if reg.split_fn.is_some() {
-                return Err(AriaError::ExecutionFailed(
-                    "split op is multi-output and is not supported by single-output executor path"
-                        .to_string(),
-                ));
-            } else {
-                return Err(AriaError::ExecutionFailed(format!(
-                    "op {} has no dispatch handler",
-                    op_name
-                )));
+                return Ok(());
             }
-        };
-
-        if status != NkStatus::Ok {
-            return Err(AriaError::ExecutionFailed(format!(
-                "native kernel {} failed with status {:?}",
-                op_name, status
-            )));
         }
 
-        Ok(())
+        Err(AriaError::ExecutionFailed(format!(
+            "op {} has no dispatch handler", op_name
+        )))
     }
 }
 
@@ -3015,6 +2885,18 @@ pub fn execute_backward_with_arena(
     grad_output: &[f32],
     saved_activations: &HashMap<u32, Vec<f32>>,
 ) -> Result<BackwardResult, AriaError> {
+    let saved_activation_slices: HashMap<u32, &[f32]> = saved_activations
+        .iter()
+        .map(|(node_id, values)| (*node_id, values.as_slice()))
+        .collect();
+    execute_backward_with_arena_slices(graph, grad_output, &saved_activation_slices)
+}
+
+pub fn execute_backward_with_arena_slices(
+    graph: &GraphIR,
+    grad_output: &[f32],
+    saved_activations: &HashMap<u32, &[f32]>,
+) -> Result<BackwardResult, AriaError> {
     let order = graph.topological_order()?;
     let node_map: HashMap<NodeId, &crate::graph::Node> =
         graph.nodes.iter().map(|n| (n.id, n)).collect();
@@ -3055,7 +2937,7 @@ pub fn execute_backward_with_arena(
         let saved_tensors: Vec<&[f32]> = node
             .input_ids
             .iter()
-            .filter_map(|id| saved_activations.get(&id.0).map(|v| v.as_slice()))
+            .filter_map(|id| saved_activations.get(&id.0).copied())
             .collect();
 
         // For sigmoid and tanh, the backward kernel needs the *output* of the
@@ -3065,7 +2947,7 @@ pub fn execute_backward_with_arena(
             "sigmoid" | "tanh" => {
                 // Need the output of this node (saved under node_id).
                 match saved_activations.get(&node_id.0) {
-                    Some(out) => vec![out.as_slice()],
+                    Some(out) => vec![*out],
                     None => saved_tensors.clone(),
                 }
             }

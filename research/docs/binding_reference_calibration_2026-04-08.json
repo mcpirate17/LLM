@@ -1,0 +1,94 @@
+[
+  {
+    "curriculum_binding_auc": 0.0043,
+    "curriculum_binding_status": "ok",
+    "curriculum_distance_accuracies": {
+      "4": 0.0025,
+      "8": 0.005,
+      "16": 0.005,
+      "32": 0.0047
+    },
+    "curriculum_protocol_version": "copy_curriculum_v1",
+    "curriculum_steps": 800,
+    "name": "local_conv",
+    "zero_shot_binding_auc": 0.0028,
+    "zero_shot_binding_status": "ok",
+    "zero_shot_distance_accuracies": {
+      "2": 0.0,
+      "4": 0.0025,
+      "8": 0.0038,
+      "16": 0.0032,
+      "32": 0.0038,
+      "64": 0.0033
+    }
+  },
+  {
+    "curriculum_binding_auc": 0.0946,
+    "curriculum_binding_status": "ok",
+    "curriculum_distance_accuracies": {
+      "4": 0.2695,
+      "8": 0.0705,
+      "16": 0.0245,
+      "32": 0.0139
+    },
+    "curriculum_protocol_version": "copy_curriculum_v1",
+    "curriculum_steps": 800,
+    "name": "gpt2",
+    "zero_shot_binding_auc": 0.0029,
+    "zero_shot_binding_status": "ok",
+    "zero_shot_distance_accuracies": {
+      "2": 0.0,
+      "4": 0.0025,
+      "8": 0.0038,
+      "16": 0.0038,
+      "32": 0.0038,
+      "64": 0.0033
+    }
+  },
+  {
+    "curriculum_binding_auc": 0.0047,
+    "curriculum_binding_status": "ok",
+    "curriculum_distance_accuracies": {
+      "4": 0.0099,
+      "8": 0.0013,
+      "16": 0.0025,
+      "32": 0.005
+    },
+    "curriculum_protocol_version": "copy_curriculum_v1",
+    "curriculum_steps": 800,
+    "name": "mamba",
+    "zero_shot_binding_auc": 0.0029,
+    "zero_shot_binding_status": "ok",
+    "zero_shot_distance_accuracies": {
+      "2": 0.0,
+      "4": 0.0025,
+      "8": 0.0038,
+      "16": 0.0038,
+      "32": 0.0038,
+      "64": 0.0033
+    }
+  },
+  {
+    "curriculum_binding_auc": 0.0061,
+    "curriculum_binding_status": "ok",
+    "curriculum_distance_accuracies": {
+      "4": 0.01,
+      "8": 0.005,
+      "16": 0.0044,
+      "32": 0.005
+    },
+    "curriculum_protocol_version": "copy_curriculum_v1",
+    "curriculum_steps": 800,
+    "name": "rwkv",
+    "zero_shot_binding_auc": 0.0029,
+    "zero_shot_binding_status": "ok",
+    "zero_shot_distance_accuracies": {
+      "2": 0.0,
+      "4": 0.0025,
+      "8": 0.0038,
+      "16": 0.0038,
+      "32": 0.0038,
+      "64": 0.0033
+    }
+  }
+]

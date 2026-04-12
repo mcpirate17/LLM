@@ -3,7 +3,9 @@ from __future__ import annotations
 import ctypes
 import json
 import logging
+from collections.abc import Mapping
 import os
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set
 
 from .core import _try_import_cython_bridge, _try_import_rust_scheduler
@@ -98,6 +100,18 @@ _CYTHON_BINARY_OPS: Set[str] = {"add", "mul", "sub"}
 _CYTHON_UNARY_BACKWARD_OPS: Set[str] = {"relu", "gelu", "silu", "sigmoid", "tanh"}
 _CYTHON_BINARY_BACKWARD_OPS: Set[str] = {"add", "mul", "sub"}
 _RUST_SCHEDULER_UNSUPPORTED_OPS: Set[str] = {"grade_mix", "layernorm"}
+
+
+@lru_cache(maxsize=256)
+def _compile_rust_graph_handle(graph_json: str) -> Any:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "compile_graph_ir_handle"):
+        return None
+    try:
+        return rust.compile_graph_ir_handle(graph_json)
+    except Exception as exc:
+        logger.debug("Rust graph-handle compilation failed: %s", exc)
+        return None
 
 
 def _check_native_op_support(
@@ -593,12 +607,44 @@ def _execute_rust_graph_forward_saved(
     graph: Any,
 ) -> Optional[Dict[str, Any]]:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "execute_graph_forward_saved"):
+    if rust is None or not (
+        hasattr(rust, "execute_graph_forward_saved_arrays_handle")
+        or hasattr(rust, "execute_graph_forward_saved_arrays")
+        or hasattr(rust, "execute_graph_forward_saved")
+    ):
         return None
 
     import numpy as np
 
-    result = rust.execute_graph_forward_saved(graph_json, x_np.ravel().tolist())
+    graph_handle = _compile_rust_graph_handle(graph_json)
+
+    if graph_handle is not None and hasattr(
+        rust, "execute_graph_forward_saved_compiled_arrays_handle"
+    ):
+        result = rust.execute_graph_forward_saved_compiled_arrays_handle(
+            graph_handle,
+            x_np,
+        )
+        return {
+            "output": _reshape_graph_output(graph, x_np, result["output"]),
+            "saved_activations": result["saved_state"],
+            "ir_json": graph_json,
+            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+            "arena_capacity": int(result.get("arena_capacity", 0)),
+        }
+    if hasattr(rust, "execute_graph_forward_saved_arrays_handle"):
+        result = rust.execute_graph_forward_saved_arrays_handle(graph_json, x_np)
+        return {
+            "output": _reshape_graph_output(graph, x_np, result["output"]),
+            "saved_activations": result["saved_state"],
+            "ir_json": graph_json,
+            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+            "arena_capacity": int(result.get("arena_capacity", 0)),
+        }
+    if hasattr(rust, "execute_graph_forward_saved_arrays"):
+        result = rust.execute_graph_forward_saved_arrays(graph_json, x_np)
+    else:
+        result = rust.execute_graph_forward_saved(graph_json, x_np.ravel().tolist())
     saved_activations = {
         int(node_id): np.asarray(values, dtype=np.float32)
         for node_id, values in dict(result.get("saved_activations", {})).items()
@@ -619,11 +665,49 @@ def _execute_rust_graph_forward_saved_multi_input(
     output_shape: tuple[int, ...] | None,
 ) -> Optional[Dict[str, Any]]:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "execute_graph_forward_saved_multi_input"):
+    if rust is None or not (
+        hasattr(rust, "execute_graph_forward_saved_multi_input_arrays_handle")
+        or hasattr(rust, "execute_graph_forward_saved_multi_input_arrays")
+        or hasattr(rust, "execute_graph_forward_saved_multi_input")
+    ):
         return None
 
     import numpy as np
 
+    graph_handle = _compile_rust_graph_handle(graph_json)
+
+    if graph_handle is not None and hasattr(
+        rust, "execute_graph_forward_saved_multi_input_compiled_arrays_handle"
+    ):
+        result = rust.execute_graph_forward_saved_multi_input_compiled_arrays_handle(
+            graph_handle,
+            native_inputs,
+        )
+        output = np.asarray(result["output"], dtype=np.float32)
+        if output_shape is not None:
+            output = output.reshape(output_shape)
+        return {
+            "output": output,
+            "saved_activations": result["saved_state"],
+            "ir_json": graph_json,
+            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+            "arena_capacity": int(result.get("arena_capacity", 0)),
+        }
+    if hasattr(rust, "execute_graph_forward_saved_multi_input_arrays_handle"):
+        result = rust.execute_graph_forward_saved_multi_input_arrays_handle(
+            graph_json,
+            native_inputs,
+        )
+        output = np.asarray(result["output"], dtype=np.float32)
+        if output_shape is not None:
+            output = output.reshape(output_shape)
+        return {
+            "output": output,
+            "saved_activations": result["saved_state"],
+            "ir_json": graph_json,
+            "arena_bytes_used": int(result.get("arena_bytes_used", 0)),
+            "arena_capacity": int(result.get("arena_capacity", 0)),
+        }
     if hasattr(rust, "execute_graph_forward_saved_multi_input_arrays"):
         result = rust.execute_graph_forward_saved_multi_input_arrays(
             graph_json,
@@ -654,23 +738,75 @@ def _execute_rust_graph_backward(
     *,
     graph_json: str,
     grad_np: Any,
-    saved_activations: Dict[int, Any],
+    saved_activations: Any,
 ) -> Optional[Dict[int, Any]]:
     rust = _try_import_rust_scheduler()
-    if rust is None or not hasattr(rust, "execute_graph_backward"):
+    if rust is None or not (
+        hasattr(rust, "execute_graph_backward_arrays_handle")
+        or hasattr(rust, "execute_graph_backward_handle")
+        or hasattr(rust, "execute_graph_backward_arrays")
+        or hasattr(rust, "execute_graph_backward")
+    ):
         return None
 
     import numpy as np
 
+    graph_handle = _compile_rust_graph_handle(graph_json)
+
+    if not isinstance(saved_activations, Mapping):
+        if graph_handle is not None and hasattr(
+            rust, "execute_graph_backward_compiled_arrays_handle"
+        ):
+            result = rust.execute_graph_backward_compiled_arrays_handle(
+                graph_handle,
+                grad_np,
+                saved_activations,
+            )
+            return {
+                int(node_id): np.asarray(values, dtype=np.float32)
+                for node_id, values in dict(result.get("grads", {})).items()
+            }
+        if hasattr(rust, "execute_graph_backward_arrays_handle"):
+            result = rust.execute_graph_backward_arrays_handle(
+                graph_json,
+                grad_np,
+                saved_activations,
+            )
+            return {
+                int(node_id): np.asarray(values, dtype=np.float32)
+                for node_id, values in dict(result.get("grads", {})).items()
+            }
+        if hasattr(rust, "execute_graph_backward_handle"):
+            result = rust.execute_graph_backward_handle(
+                graph_json,
+                grad_np.ravel().tolist(),
+                saved_activations,
+            )
+            return {
+                int(node_id): np.asarray(values, dtype=np.float32)
+                for node_id, values in dict(result.get("grads", {})).items()
+            }
+        return None
+
     rust_saved = {
-        int(node_id): np.asarray(values, dtype=np.float32).ravel().tolist()
+        int(node_id): np.asarray(values, dtype=np.float32)
         for node_id, values in saved_activations.items()
     }
-    result = rust.execute_graph_backward(
-        graph_json,
-        grad_np.ravel().tolist(),
-        rust_saved,
-    )
+    if hasattr(rust, "execute_graph_backward_arrays"):
+        result = rust.execute_graph_backward_arrays(
+            graph_json,
+            grad_np,
+            rust_saved,
+        )
+    else:
+        result = rust.execute_graph_backward(
+            graph_json,
+            grad_np.ravel().tolist(),
+            {
+                int(node_id): np.asarray(values, dtype=np.float32).ravel().tolist()
+                for node_id, values in rust_saved.items()
+            },
+        )
     return {
         int(node_id): np.asarray(values, dtype=np.float32)
         for node_id, values in dict(result.get("grads", {})).items()
@@ -680,7 +816,7 @@ def _execute_rust_graph_backward(
 def dispatch_graph_backward_native_cached(
     ir_json: str,
     grad_output: Any,
-    saved_activations: Dict[int, Any],
+    saved_activations: Any,
 ) -> Dict[int, Any]:
     import numpy as np
 
@@ -688,10 +824,14 @@ def dispatch_graph_backward_native_cached(
     rust_grads = _execute_rust_graph_backward(
         graph_json=ir_json,
         grad_np=grad_np,
-        saved_activations={
-            int(node_id): np.asarray(values, dtype=np.float32)
-            for node_id, values in saved_activations.items()
-        },
+        saved_activations=(
+            {
+                int(node_id): np.asarray(values, dtype=np.float32)
+                for node_id, values in saved_activations.items()
+            }
+            if isinstance(saved_activations, Mapping)
+            else saved_activations
+        ),
     )
     if rust_grads is None:
         raise RuntimeError("Rust scheduler does not expose graph backward execution.")
@@ -715,12 +855,28 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
     x_np, graph_json = _prepare_graph_input(graph, input_data)
 
     # Flatten input for the scheduler (expects Vec<f32>)
-    x_flat = x_np.ravel().tolist()
-
     try:
+        x_flat = x_np.ravel().tolist()
         global _last_profile_data
         # Prefer execute_graph_with_stats for arena usage observability.
-        if hasattr(rust, "execute_graph_with_stats"):
+        if hasattr(rust, "execute_graph_with_stats_arrays"):
+            result = rust.execute_graph_with_stats_arrays(graph_json, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _last_profile_data = {
+                    "node_profiles": list(result["node_profiles"]),
+                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                }
+            else:
+                _last_profile_data = None
+        elif hasattr(rust, "execute_graph_with_stats"):
             result = rust.execute_graph_with_stats(graph_json, x_flat)
             y_flat = result["output"]
             logger.debug(
@@ -743,7 +899,11 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
                 )
             else:
                 _last_profile_data = None
+        elif hasattr(rust, "execute_graph_arrays"):
+            y_flat = rust.execute_graph_arrays(graph_json, x_np)
+            _last_profile_data = None
         else:
+            x_flat = x_np.ravel().tolist()
             y_flat = rust.execute_graph(graph_json, x_flat)
             _last_profile_data = None
         return _reshape_graph_output(graph, x_np, y_flat)
@@ -819,7 +979,7 @@ def dispatch_graph_forward_native_saved(graph: Any, input_data: Any) -> Dict[str
 def dispatch_graph_backward_native(
     graph: Any,
     grad_output: Any,
-    saved_activations: Dict[int, Any],
+    saved_activations: Any,
     ir_json: Optional[str] = None,
 ) -> Dict[int, Any]:
     """Execute a full backward pass through a graph using native per-op backward.
@@ -860,6 +1020,11 @@ def dispatch_graph_backward_native(
 
     topo = graph.topological_order()
     output_node_id = graph._output_node_id
+
+    if not isinstance(saved_activations, Mapping):
+        raise RuntimeError(
+            "Opaque native saved activations require Rust handle-backed backward execution."
+        )
 
     # Ensure saved_activations values are numpy arrays.
     saved: Dict[int, Any] = {}
@@ -937,11 +1102,48 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
         raise RuntimeError("Rust scheduler (aria_scheduler) is not available.")
 
     x_np = to_native_array(input_data)
-    x_flat = x_np.ravel().tolist()
-
     try:
+        x_flat = x_np.ravel().tolist()
         global _last_profile_data
-        if hasattr(rust, "execute_graph_with_stats"):
+        graph_handle = _compile_rust_graph_handle(ir_json)
+        if graph_handle is not None and hasattr(
+            rust, "execute_graph_with_stats_compiled_arrays"
+        ):
+            result = rust.execute_graph_with_stats_compiled_arrays(graph_handle, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _last_profile_data = {
+                    "node_profiles": list(result["node_profiles"]),
+                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                }
+            else:
+                _last_profile_data = None
+        elif hasattr(rust, "execute_graph_with_stats_arrays"):
+            result = rust.execute_graph_with_stats_arrays(ir_json, x_np)
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            if "node_profiles" in result:
+                _last_profile_data = {
+                    "node_profiles": list(result["node_profiles"]),
+                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                }
+            else:
+                _last_profile_data = None
+        elif hasattr(rust, "execute_graph_with_stats"):
+            x_flat = x_np.ravel().tolist()
             result = rust.execute_graph_with_stats(ir_json, x_flat)
             y_flat = result["output"]
             logger.debug(
@@ -958,7 +1160,11 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 }
             else:
                 _last_profile_data = None
+        elif hasattr(rust, "execute_graph_arrays"):
+            y_flat = rust.execute_graph_arrays(ir_json, x_np)
+            _last_profile_data = None
         else:
+            x_flat = x_np.ravel().tolist()
             y_flat = rust.execute_graph(ir_json, x_flat)
             _last_profile_data = None
         return _reshape_graph_output(graph, x_np, y_flat)

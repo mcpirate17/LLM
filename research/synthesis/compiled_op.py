@@ -104,21 +104,26 @@ class CompiledOp(CompiledOpParamInitMixin, CompiledOpRuntimeMixin, nn.Module):
         self._cached_native_wrapper = None
         self._last_cast_dtype = None
         self._cached_dispatch_fn = OP_DISPATCH.get(op_name)
+        self._uses_module_native_dispatch = op_name in _MODULE_NATIVE_DISPATCH_OPS
+        self._collect_telemetry = False
         op = get_primitive(op_name)
         self._is_math_op = op_name in MATHSPACE_OPS or op.category.value == "math_space"
         if op.has_params:
             self._init_params(op, config, input_shape)
+        self._param_values = tuple(self.parameters())
 
     def __setattr__(self, name, value):
         super().__setattr__(name, value)
         if name == "_native_wrapper":
             super().__setattr__("_cached_native_wrapper", value)
+        elif name == "collect_telemetry":
+            super().__setattr__("_collect_telemetry", bool(value))
 
     def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
         if inputs and inputs[0].is_floating_point():
             self._cast_params_to(inputs[0].dtype)
 
-        profile = getattr(self, "collect_telemetry", False)
+        profile = self._collect_telemetry
         if profile:
             import time as _time
 
@@ -126,7 +131,7 @@ class CompiledOp(CompiledOpParamInitMixin, CompiledOpRuntimeMixin, nn.Module):
 
         wrapper = self._cached_native_wrapper
         if wrapper is not None:
-            if self.op_name in _MODULE_NATIVE_DISPATCH_OPS:
+            if self._uses_module_native_dispatch:
                 result = wrapper.dispatch(self.op_name, *inputs, module=self)
             else:
                 result = wrapper.dispatch(self.op_name, *inputs)

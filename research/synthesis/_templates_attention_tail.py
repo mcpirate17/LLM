@@ -121,12 +121,8 @@ def tpl_attn_decay_sequence(
         context="attn_decay_sequence.post_proj",
     )
 
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
-    )
-    processed = _instantiate_motif(graph, projected, ffn, rng) if ffn else projected
-    processed = _fix_dim(graph, processed)
-    return _residual(graph, input_id, processed, context="attn_decay_sequence.output")
+    projected = _fix_dim(graph, projected)
+    return _residual(graph, input_id, projected, context="attn_decay_sequence.output")
 
 
 def _pick_with_local_wildcard(
@@ -350,7 +346,13 @@ def tpl_attn_hyperbolic(
     scored = _add(
         graph, "hyp_distance", [proj_a, proj_b], context="attn_hyperbolic.scored"
     )
-    scored = _fix_dim(graph, scored)
+    scored = _add(
+        graph,
+        "linear_proj_up",
+        [scored],
+        {"out_dim": D},
+        context="attn_hyperbolic.scored_proj",
+    )
     return _residual(graph, input_id, scored, context="attn_hyperbolic.output")
 
 
@@ -661,6 +663,309 @@ def tpl_attn_softmax_normalized_matmul(
     )
 
 
+def tpl_attn_softmax_normalized_matmul_v2(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Winner-derived softmax+matmul block with an extra dense recovery bridge."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "softmax_attention",
+        [normed1],
+        context="attn_softmax_normalized_matmul_v2.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "rmsnorm",
+        [attended1],
+        context="attn_softmax_normalized_matmul_v2.attn1_norm",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_v2.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph, input_id, attended1, context="attn_softmax_normalized_matmul_v2.mid1"
+    )
+
+    refine_in = _add(
+        graph,
+        "rmsnorm",
+        [mid1],
+        context="attn_softmax_normalized_matmul_v2.refine_norm",
+    )
+    proj_a = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_v2.proj_a",
+    )
+    proj_b = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_v2.proj_b",
+    )
+    refined = _add(
+        graph,
+        "matmul",
+        [proj_a, proj_b],
+        context="attn_softmax_normalized_matmul_v2.refined",
+    )
+    refined = _add(
+        graph,
+        "linear_proj",
+        [refined],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_v2.refined_proj",
+    )
+    refined = _fix_dim(graph, refined)
+    mid2 = _residual(
+        graph, mid1, refined, context="attn_softmax_normalized_matmul_v2.mid2"
+    )
+
+    bridge = _add(
+        graph,
+        "swiglu_mlp",
+        [mid2],
+        {"mlp_ratio": 2.0},
+        context="attn_softmax_normalized_matmul_v2.bridge",
+    )
+    bridge = _fix_dim(graph, bridge)
+    mid3 = _residual(
+        graph, mid2, bridge, context="attn_softmax_normalized_matmul_v2.mid3"
+    )
+
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [mid3],
+        {"mlp_ratio": 3.0},
+        context="attn_softmax_normalized_matmul_v2.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph, mid3, ffned, context="attn_softmax_normalized_matmul_v2.output"
+    )
+
+
+def tpl_attn_softmax_normalized_matmul_compact_ffn(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Winner-derived variant that changes only the final FFN width."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "softmax_attention",
+        [normed1],
+        context="attn_softmax_normalized_matmul_compact_ffn.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "rmsnorm",
+        [attended1],
+        context="attn_softmax_normalized_matmul_compact_ffn.attn1_norm",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_compact_ffn.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph,
+        input_id,
+        attended1,
+        context="attn_softmax_normalized_matmul_compact_ffn.mid1",
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    refine_in = _add(
+        graph,
+        "rmsnorm",
+        [normed2],
+        context="attn_softmax_normalized_matmul_compact_ffn.refine_norm",
+    )
+    proj_a = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_compact_ffn.proj_a",
+    )
+    proj_b = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_compact_ffn.proj_b",
+    )
+    refined = _add(
+        graph,
+        "matmul",
+        [proj_a, proj_b],
+        context="attn_softmax_normalized_matmul_compact_ffn.refined",
+    )
+    refined = _add(
+        graph,
+        "linear_proj",
+        [refined],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_compact_ffn.refined_proj",
+    )
+    refined = _fix_dim(graph, refined)
+    mid2 = _residual(
+        graph, mid1, refined, context="attn_softmax_normalized_matmul_compact_ffn.mid2"
+    )
+
+    norm3 = _pick_with_local_wildcard(
+        graph, mid2, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed3 = _instantiate_motif(graph, mid2, norm3, rng) if norm3 else mid2
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed3],
+        {"mlp_ratio": 2.0},
+        context="attn_softmax_normalized_matmul_compact_ffn.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph, mid2, ffned, context="attn_softmax_normalized_matmul_compact_ffn.output"
+    )
+
+
+def tpl_attn_softmax_normalized_matmul_fixed_tail_norm(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Winner-derived variant that fixes the tail norm placement."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "softmax_attention",
+        [normed1],
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "rmsnorm",
+        [attended1],
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.attn1_norm",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph,
+        input_id,
+        attended1,
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.mid1",
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    refine_in = _add(
+        graph,
+        "rmsnorm",
+        [normed2],
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.refine_norm",
+    )
+    proj_a = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.proj_a",
+    )
+    proj_b = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.proj_b",
+    )
+    refined = _add(
+        graph,
+        "matmul",
+        [proj_a, proj_b],
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.refined",
+    )
+    refined = _add(
+        graph,
+        "linear_proj",
+        [refined],
+        {"out_dim": D},
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.refined_proj",
+    )
+    refined = _fix_dim(graph, refined)
+    mid2 = _residual(
+        graph,
+        mid1,
+        refined,
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.mid2",
+    )
+
+    tail_in = _add(
+        graph,
+        "rmsnorm",
+        [mid2],
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.tail_norm",
+    )
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [tail_in],
+        {"mlp_ratio": 3.0},
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph,
+        mid2,
+        ffned,
+        context="attn_softmax_normalized_matmul_fixed_tail_norm.output",
+    )
+
+
 def tpl_attn_linear_normalized_matmul_control(
     graph: ComputationGraph,
     input_id: int,
@@ -750,6 +1055,81 @@ def tpl_attn_linear_normalized_matmul_control(
     )
 
 
+def tpl_attn_linear_softmax_recovery_control(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Linear attention front-end with a softmax recovery stage and dense head."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "linear_attention",
+        [normed1],
+        context="attn_linear_softmax_recovery_control.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_linear_softmax_recovery_control.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph, input_id, attended1, context="attn_linear_softmax_recovery_control.mid1"
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    recover = _add(
+        graph,
+        "softmax_attention",
+        [normed2],
+        context="attn_linear_softmax_recovery_control.attn2",
+    )
+    recover = _add(
+        graph,
+        "rmsnorm",
+        [recover],
+        context="attn_linear_softmax_recovery_control.attn2_norm",
+    )
+    recover = _add(
+        graph,
+        "linear_proj",
+        [recover],
+        {"out_dim": D},
+        context="attn_linear_softmax_recovery_control.attn2_proj",
+    )
+    recover = _fix_dim(graph, recover)
+    mid2 = _residual(
+        graph, mid1, recover, context="attn_linear_softmax_recovery_control.mid2"
+    )
+
+    norm3 = _pick_with_local_wildcard(
+        graph, mid2, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed3 = _instantiate_motif(graph, mid2, norm3, rng) if norm3 else mid2
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed3],
+        {"mlp_ratio": 3.0},
+        context="attn_linear_softmax_recovery_control.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph, mid2, ffned, context="attn_linear_softmax_recovery_control.output"
+    )
+
+
 def tpl_attn_linear_no_matmul_ffn(
     graph: ComputationGraph,
     input_id: int,
@@ -825,6 +1205,354 @@ def tpl_attn_linear_no_matmul_ffn(
     )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid2, ffned, context="attn_linear_no_matmul_ffn.output")
+
+
+def tpl_attn_linear_no_matmul_ffn_v2(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Winner-derived linear block with softmax recovery plus dense bridge."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "linear_attention",
+        [normed1],
+        context="attn_linear_no_matmul_ffn_v2.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_v2.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph, input_id, attended1, context="attn_linear_no_matmul_ffn_v2.mid1"
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    refine_in = _add(
+        graph,
+        "rmsnorm",
+        [normed2],
+        context="attn_linear_no_matmul_ffn_v2.refine_norm",
+    )
+    attended2 = _add(
+        graph,
+        "softmax_attention",
+        [refine_in],
+        context="attn_linear_no_matmul_ffn_v2.attn2",
+    )
+    attended2 = _add(
+        graph,
+        "rmsnorm",
+        [attended2],
+        context="attn_linear_no_matmul_ffn_v2.attn2_norm",
+    )
+    attended2 = _add(
+        graph,
+        "linear_proj",
+        [attended2],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_v2.attn2_proj",
+    )
+    attended2 = _fix_dim(graph, attended2)
+    mid2 = _residual(
+        graph, mid1, attended2, context="attn_linear_no_matmul_ffn_v2.mid2"
+    )
+
+    bridge = _add(
+        graph,
+        "swiglu_mlp",
+        [mid2],
+        {"mlp_ratio": 2.0},
+        context="attn_linear_no_matmul_ffn_v2.bridge",
+    )
+    bridge = _fix_dim(graph, bridge)
+    mid3 = _residual(graph, mid2, bridge, context="attn_linear_no_matmul_ffn_v2.mid3")
+
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [mid3],
+        {"mlp_ratio": 3.0},
+        context="attn_linear_no_matmul_ffn_v2.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(graph, mid3, ffned, context="attn_linear_no_matmul_ffn_v2.output")
+
+
+def tpl_attn_linear_no_matmul_ffn_dense_tail(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Winner-derived variant that swaps only the tail MLP family."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "linear_attention",
+        [normed1],
+        context="attn_linear_no_matmul_ffn_dense_tail.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_dense_tail.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph, input_id, attended1, context="attn_linear_no_matmul_ffn_dense_tail.mid1"
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    refine_in = _add(
+        graph,
+        "rmsnorm",
+        [normed2],
+        context="attn_linear_no_matmul_ffn_dense_tail.refine_norm",
+    )
+    attended2 = _add(
+        graph,
+        "softmax_attention",
+        [refine_in],
+        context="attn_linear_no_matmul_ffn_dense_tail.attn2",
+    )
+    attended2 = _add(
+        graph,
+        "rmsnorm",
+        [attended2],
+        context="attn_linear_no_matmul_ffn_dense_tail.attn2_norm",
+    )
+    attended2 = _add(
+        graph,
+        "linear_proj",
+        [attended2],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_dense_tail.attn2_proj",
+    )
+    attended2 = _fix_dim(graph, attended2)
+    mid2 = _residual(
+        graph, mid1, attended2, context="attn_linear_no_matmul_ffn_dense_tail.mid2"
+    )
+
+    norm3 = _pick_with_local_wildcard(
+        graph, mid2, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed3 = _instantiate_motif(graph, mid2, norm3, rng) if norm3 else mid2
+    ffned = _add(
+        graph,
+        "fused_linear_gelu",
+        [normed3],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_dense_tail.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph,
+        mid2,
+        ffned,
+        context="attn_linear_no_matmul_ffn_dense_tail.output",
+    )
+
+
+def tpl_attn_linear_no_matmul_ffn_direct_recovery(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Winner-derived variant that removes only the explicit recovery norm."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "linear_attention",
+        [normed1],
+        context="attn_linear_no_matmul_ffn_direct_recovery.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_direct_recovery.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph,
+        input_id,
+        attended1,
+        context="attn_linear_no_matmul_ffn_direct_recovery.mid1",
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    attended2 = _add(
+        graph,
+        "softmax_attention",
+        [normed2],
+        context="attn_linear_no_matmul_ffn_direct_recovery.attn2",
+    )
+    attended2 = _add(
+        graph,
+        "rmsnorm",
+        [attended2],
+        context="attn_linear_no_matmul_ffn_direct_recovery.attn2_norm",
+    )
+    attended2 = _add(
+        graph,
+        "linear_proj",
+        [attended2],
+        {"out_dim": D},
+        context="attn_linear_no_matmul_ffn_direct_recovery.attn2_proj",
+    )
+    attended2 = _fix_dim(graph, attended2)
+    mid2 = _residual(
+        graph,
+        mid1,
+        attended2,
+        context="attn_linear_no_matmul_ffn_direct_recovery.mid2",
+    )
+
+    norm3 = _pick_with_local_wildcard(
+        graph, mid2, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed3 = _instantiate_motif(graph, mid2, norm3, rng) if norm3 else mid2
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed3],
+        {"mlp_ratio": 3.0},
+        context="attn_linear_no_matmul_ffn_direct_recovery.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph,
+        mid2,
+        ffned,
+        context="attn_linear_no_matmul_ffn_direct_recovery.output",
+    )
+
+
+def tpl_attn_softmax_matmul_sparse_tail(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Softmax attention with bilinear refinement and a sparse tail."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended1 = _add(
+        graph,
+        "softmax_attention",
+        [normed1],
+        context="attn_softmax_matmul_sparse_tail.attn1",
+    )
+    attended1 = _add(
+        graph,
+        "rmsnorm",
+        [attended1],
+        context="attn_softmax_matmul_sparse_tail.attn1_norm",
+    )
+    attended1 = _add(
+        graph,
+        "linear_proj",
+        [attended1],
+        {"out_dim": D},
+        context="attn_softmax_matmul_sparse_tail.attn1_proj",
+    )
+    attended1 = _fix_dim(graph, attended1)
+    mid1 = _residual(
+        graph, input_id, attended1, context="attn_softmax_matmul_sparse_tail.mid1"
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, mid1, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
+    refine_in = _add(
+        graph,
+        "rmsnorm",
+        [normed2],
+        context="attn_softmax_matmul_sparse_tail.refine_norm",
+    )
+    proj_a = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_matmul_sparse_tail.proj_a",
+    )
+    proj_b = _add(
+        graph,
+        "linear_proj",
+        [refine_in],
+        {"out_dim": D},
+        context="attn_softmax_matmul_sparse_tail.proj_b",
+    )
+    refined = _add(
+        graph,
+        "matmul",
+        [proj_a, proj_b],
+        context="attn_softmax_matmul_sparse_tail.refined",
+    )
+    refined = _add(
+        graph,
+        "linear_proj",
+        [refined],
+        {"out_dim": D},
+        context="attn_softmax_matmul_sparse_tail.refined_proj",
+    )
+    refined = _fix_dim(graph, refined)
+    mid2 = _residual(
+        graph, mid1, refined, context="attn_softmax_matmul_sparse_tail.mid2"
+    )
+
+    norm3 = _pick_with_local_wildcard(
+        graph, mid2, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed3 = _instantiate_motif(graph, mid2, norm3, rng) if norm3 else mid2
+    sparse = _add(
+        graph,
+        "block_sparse_linear",
+        [normed3],
+        {"block_size": 16, "block_density": 0.25},
+        context="attn_softmax_matmul_sparse_tail.sparse_tail",
+    )
+    sparse = _fix_dim(graph, sparse)
+    return _residual(
+        graph, mid2, sparse, context="attn_softmax_matmul_sparse_tail.output"
+    )
 
 
 def tpl_attn_linear_matmul_sparse_tail(
@@ -914,6 +1642,89 @@ def tpl_attn_linear_matmul_sparse_tail(
     return _residual(
         graph, mid2, sparse, context="attn_linear_matmul_sparse_tail.output"
     )
+
+
+def tpl_attn_softmax_router_sidecar(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """Softmax attention scaffold with a lightweight routing side branch."""
+    D = graph.model_dim
+    norm1 = _pick_with_local_wildcard(
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
+    attended = _add(
+        graph,
+        "softmax_attention",
+        [normed1],
+        context="attn_softmax_router_sidecar.attn1",
+    )
+    attended = _add(
+        graph,
+        "rmsnorm",
+        [attended],
+        context="attn_softmax_router_sidecar.attn1_norm",
+    )
+    attended = _add(
+        graph,
+        "linear_proj",
+        [attended],
+        {"out_dim": D},
+        context="attn_softmax_router_sidecar.attn1_proj",
+    )
+    attended = _fix_dim(graph, attended)
+    mid1 = _residual(
+        graph, input_id, attended, context="attn_softmax_router_sidecar.mid1"
+    )
+
+    blended = _add(
+        graph,
+        "difficulty_blend_3way",
+        [mid1, mid1],
+        context="attn_softmax_router_sidecar.route_mix",
+    )
+    lane_merged = _residual(
+        graph,
+        mid1,
+        blended,
+        context="attn_softmax_router_sidecar.route_mid",
+    )
+
+    norm2 = _pick_with_local_wildcard(
+        graph, lane_merged, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
+    )
+    normed2 = (
+        _instantiate_motif(graph, lane_merged, norm2, rng) if norm2 else lane_merged
+    )
+    routed = _add(
+        graph,
+        "depth_weighted_proj",
+        [normed2],
+        context="attn_softmax_router_sidecar.route_proj",
+    )
+    routed = _add(
+        graph,
+        "rmsnorm",
+        [routed],
+        context="attn_softmax_router_sidecar.route_norm",
+    )
+    routed = _fix_dim(graph, routed)
+    mid2 = _residual(
+        graph, lane_merged, routed, context="attn_softmax_router_sidecar.mid2"
+    )
+
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [mid2],
+        {"mlp_ratio": 3.0},
+        context="attn_softmax_router_sidecar.ffn",
+    )
+    ffned = _fix_dim(graph, ffned)
+    return _residual(graph, mid2, ffned, context="attn_softmax_router_sidecar.output")
 
 
 def tpl_attn_linear_matmul_router_sidecar(
@@ -1379,12 +2190,24 @@ def tpl_attn_safe_division(
     attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
     attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
     attended = _fix_dim(graph, attended)
+    attended = _add(
+        graph,
+        "rmsnorm",
+        [attended],
+        context="attn_safe_division.norm",
+    )
     pa = _add(
         graph,
         "linear_proj",
         [attended],
         {"out_dim": D},
         context="attn_safe_division.pa",
+    )
+    numerator = _add(
+        graph,
+        "rmsnorm",
+        [pa],
+        context="attn_safe_division.numerator_norm",
     )
     pb = _add(
         graph,
@@ -1399,7 +2222,12 @@ def tpl_attn_safe_division(
         [pb],
         context="attn_safe_division.denom",
     )
-    out = _add(graph, "div_safe", [pa, denom], context="attn_safe_division.out")
+    out = _add(
+        graph,
+        "div_safe",
+        [numerator, denom],
+        context="attn_safe_division.out",
+    )
     out = _add(
         graph,
         "linear_proj",

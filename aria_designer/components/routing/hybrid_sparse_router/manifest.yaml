@@ -167,7 +167,7 @@ templates:
   label: Intelligent Multilane Router
   source: research.synthesis.templates
   workflow: hybrid_sparse_router
-  description: Structured easy, medium, and hard router with pre-router stem, mandatory lane compute, token merge, and post-merge stabilization.
+  description: Structured easy, medium, and hard router with pre-router stem, mandatory lane compute, causal post-merge projection, and post-merge stabilization.
   slot_bindings:
     pre_router: cheap_verify_blend
     easy_router: cheap_verify_blend
@@ -176,5 +176,5 @@ templates:
     difficulty_signal: token_class_proj
     compression_router: signal_conditioned_compression
     hard_router: moe_topk
-    token_merge: adjacent_token_merge
+    token_merge: linear_proj
     post_merge: rmsnorm

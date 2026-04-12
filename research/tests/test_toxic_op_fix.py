@@ -184,6 +184,58 @@ def test_recompute_failure_signatures(nb):
     assert after[1] == 0, f"Expected 0 successes after recompute, got {after[1]}"
 
 
+def test_failure_signatures_skip_malformed_graph_json(nb):
+    """Malformed graph_json rows must not crash failure signature refresh."""
+    exp_id = nb.start_experiment(
+        experiment_type="test",
+        config={"dim": 64},
+        hypothesis="test",
+    )
+
+    valid_graph_json = _make_graph_json(["gelu", "linear_proj"])
+    nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint="valid_s1_fail",
+        graph_json=valid_graph_json,
+        stage0_passed=True,
+        stage05_passed=True,
+        stage1_passed=False,
+        error_type="loss_diverged",
+        loss_ratio=0.99,
+    )
+    nb.flush_writes()
+
+    nb.conn.execute(
+        """INSERT INTO program_results
+           (result_id, experiment_id, graph_fingerprint, graph_json,
+            stage0_passed, stage05_passed, stage1_passed, error_type, loss_ratio, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "bad_json_row",
+            exp_id,
+            "bad_json_fp",
+            '{"nodes": {"0": {"op_name": "input"},',
+            1,
+            1,
+            0,
+            "RuntimeError",
+            0.99,
+            time.time(),
+        ),
+    )
+    nb.conn.commit()
+
+    nb.update_failure_signatures(exp_id)
+
+    row = nb.conn.execute(
+        "SELECT n_failures, n_successes FROM failure_signatures "
+        "WHERE signature = 'gelu->linear_proj'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == 0
+
+
 def test_op_rehabilitation_basic(nb):
     """test_op_in_isolation should compile and forward for a known-good op."""
     from research.eval.op_rehab import test_op_in_isolation

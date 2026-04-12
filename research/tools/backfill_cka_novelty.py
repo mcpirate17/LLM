@@ -21,8 +21,15 @@ import argparse
 import logging
 import multiprocessing as mp
 import os
-import sqlite3
 import time
+
+from research.tools._script_audit import (
+    build_metric_backfill_context,
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
+from research.tools.backfill import store_probe_results
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s"
@@ -133,8 +140,28 @@ def main():
     else:
         device = args.device
 
-    conn = sqlite3.connect("research/lab_notebook.db")
-    conn.row_factory = sqlite3.Row
+    nb, exp_id = start_script_experiment(
+        db_path="research/lab_notebook.db",
+        experiment_type="cka_novelty_backfill",
+        config={
+            "limit": args.limit,
+            "force": bool(args.force),
+            "device": device,
+            "timeout": args.timeout,
+        },
+        source_script="backfill_cka_novelty",
+        hypothesis="Backfill CKA and novelty fingerprints",
+    )
+    conn = nb.conn
+    provenance_context = build_metric_backfill_context(
+        kind="cka_novelty_backfill",
+        source_script="backfill_cka_novelty",
+        experiment_id=exp_id,
+        device=device,
+        limit=args.limit,
+        force=bool(args.force),
+        timeout=args.timeout,
+    )
 
     where = "WHERE stage1_passed = 1 AND graph_json IS NOT NULL"
     if not args.force:
@@ -166,110 +193,141 @@ def main():
 
     ctx = mp.get_context("spawn")
 
-    for i, row in enumerate(rows):
-        result_id = row["result_id"]
-        graph_json_str = row["graph_json"]
+    if not rows:
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={"total": 0, "updated": 0, "failed": 0, "crashed": 0},
+            summary="CKA backfill found no candidates",
+        )
+        nb.close()
+        return
 
-        if not graph_json_str:
-            continue
+    if args.dry_run:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="Dry-run invocation does not write results",
+            results={"total": len(rows), "updated": 0, "dry_run": True},
+        )
+        nb.close()
+        return
 
-        # Run in subprocess to isolate segfaults
-        pool = ctx.Pool(1)
-        try:
-            async_result = pool.apply_async(
-                _worker, ((result_id, graph_json_str, device),)
-            )
-            result_id_out, updates, error = async_result.get(timeout=args.timeout)
+    try:
+        for i, row in enumerate(rows):
+            result_id = row["result_id"]
+            graph_json_str = row["graph_json"]
 
-            if error:
-                failed += 1
-                logger.warning(
-                    "  [%d/%d] %s FAILED: %s",
-                    i + 1,
-                    len(rows),
-                    result_id[:12],
-                    error,
-                )
+            if not graph_json_str:
                 continue
 
-            is_degen = updates.get(
-                "novelty_validity_reason", ""
-            ) and "degenerate" in updates.get("novelty_validity_reason", "")
-            if is_degen:
-                degenerate += 1
+            # Run in subprocess to isolate segfaults
+            pool = ctx.Pool(1)
+            try:
+                async_result = pool.apply_async(
+                    _worker, ((result_id, graph_json_str, device),)
+                )
+                result_id_out, updates, error = async_result.get(timeout=args.timeout)
 
-            if args.dry_run:
-                cka_t = updates.get("fp_cka_vs_transformer", 0) or 0
-                cka_s = updates.get("fp_cka_vs_ssm", 0) or 0
-                cka_c = updates.get("fp_cka_vs_conv", 0) or 0
-                status = "DEGEN" if is_degen else "OK"
-                logger.info(
-                    "  [%d/%d] %s %s: cka=[%.4f,%.4f,%.4f] novelty=%.4f",
-                    i + 1,
-                    len(rows),
-                    result_id[:12],
-                    status,
-                    cka_t,
-                    cka_s,
-                    cka_c,
-                    updates.get("novelty_score", 0) or 0,
+                if error:
+                    failed += 1
+                    logger.warning(
+                        "  [%d/%d] %s FAILED: %s",
+                        i + 1,
+                        len(rows),
+                        result_id[:12],
+                        error,
+                    )
+                    continue
+
+                is_degen = updates.get(
+                    "novelty_validity_reason", ""
+                ) and "degenerate" in updates.get("novelty_validity_reason", "")
+                if is_degen:
+                    degenerate += 1
+
+                store_probe_results(
+                    nb,
+                    result_id_out,
+                    updates,
+                    write_leaderboard=False,
+                    provenance_context=provenance_context,
                 )
                 updated += 1
-                continue
 
-            # Write to program_results
-            set_clause = ", ".join(f"{k} = ?" for k in updates)
-            vals = list(updates.values()) + [result_id]
-            conn.execute(
-                f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
-                vals,
-            )
-            updated += 1
+                if (i + 1) % 10 == 0:
+                    conn.commit()
 
-            if (i + 1) % 10 == 0:
+            except mp.TimeoutError:
+                failed += 1
+                logger.warning(
+                    "  [%d/%d] %s TIMEOUT (%ds)",
+                    i + 1,
+                    len(rows),
+                    result_id[:12],
+                    args.timeout,
+                )
+            except Exception as e:
+                crashed += 1
+                logger.warning(
+                    "  [%d/%d] %s CRASHED: %s",
+                    i + 1,
+                    len(rows),
+                    result_id[:12],
+                    e,
+                )
+            finally:
+                pool.terminate()
+                pool.join()
+
+            if (i + 1) % 50 == 0:
                 conn.commit()
+                elapsed = time.time() - t0
+                rate = (i + 1) / elapsed
+                logger.info(
+                    "  Progress: %d/%d (ok=%d, fail=%d, crash=%d, degen=%d) "
+                    "%.1f/s, ETA %.0fs",
+                    i + 1,
+                    len(rows),
+                    updated,
+                    failed,
+                    crashed,
+                    degenerate,
+                    rate,
+                    (len(rows) - i - 1) / max(rate, 0.01),
+                )
+    except KeyboardInterrupt:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="KeyboardInterrupt",
+            results={
+                "total": len(rows),
+                "updated": updated,
+                "failed": failed,
+                "crashed": crashed,
+                "degenerate": degenerate,
+            },
+        )
+        nb.close()
+        raise
+    except Exception as exc:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error=str(exc),
+            results={
+                "total": len(rows),
+                "updated": updated,
+                "failed": failed,
+                "crashed": crashed,
+                "degenerate": degenerate,
+            },
+        )
+        nb.close()
+        raise
 
-        except mp.TimeoutError:
-            failed += 1
-            logger.warning(
-                "  [%d/%d] %s TIMEOUT (%ds)",
-                i + 1,
-                len(rows),
-                result_id[:12],
-                args.timeout,
-            )
-        except Exception as e:
-            crashed += 1
-            logger.warning(
-                "  [%d/%d] %s CRASHED: %s",
-                i + 1,
-                len(rows),
-                result_id[:12],
-                e,
-            )
-        finally:
-            pool.terminate()
-            pool.join()
-
-        if (i + 1) % 50 == 0:
-            conn.commit()
-            elapsed = time.time() - t0
-            rate = (i + 1) / elapsed
-            logger.info(
-                "  Progress: %d/%d (ok=%d, fail=%d, crash=%d, degen=%d) "
-                "%.1f/s, ETA %.0fs",
-                i + 1,
-                len(rows),
-                updated,
-                failed,
-                crashed,
-                degenerate,
-                rate,
-                (len(rows) - i - 1) / max(rate, 0.01),
-            )
-
-    if not args.dry_run:
-        conn.commit()
+    conn.commit()
 
     elapsed = time.time() - t0
     logger.info(
@@ -280,6 +338,23 @@ def main():
         degenerate,
         elapsed,
     )
+    complete_script_experiment(
+        nb,
+        exp_id,
+        results={
+            "total": len(rows),
+            "updated": updated,
+            "failed": failed,
+            "crashed": crashed,
+            "degenerate": degenerate,
+            "elapsed_s": round(elapsed, 3),
+        },
+        summary=(
+            f"CKA/novelty backfill: updated={updated} failed={failed} "
+            f"crashed={crashed} degenerate={degenerate}"
+        ),
+    )
+    nb.close()
 
 
 if __name__ == "__main__":

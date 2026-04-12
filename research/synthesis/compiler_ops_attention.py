@@ -12,6 +12,7 @@ from .compiler_op_utils import (
     aria_core,
     kernels,
     _c,
+    _safe_linear,
     record_kernel_fallback,
 )
 
@@ -23,9 +24,21 @@ def _op_softmax_attention(module, inputs, _):
         return x
     B, S, _ = x.shape
     nh, hd = module.n_heads, module.head_dim
-    q = module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    k = module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
-    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    q = (
+        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    k = (
+        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    v = (
+        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
     out = F.scaled_dot_product_attention(
         q,
         k,
@@ -35,7 +48,7 @@ def _op_softmax_attention(module, inputs, _):
         scale=module.attn_scale,
     )
     out = out.transpose(1, 2).reshape(B, S, -1)
-    return module.o_proj(out)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
 def _op_linear_attention(module, inputs, _):
@@ -52,10 +65,26 @@ def _op_linear_attention(module, inputs, _):
     B, S, _ = x.shape
     nh, hd = module.n_heads, module.head_dim
     q = (
-        F.elu(module.q_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
+        F.elu(
+            _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+            .reshape(B, S, nh, hd)
+            .transpose(1, 2)
+        )
+        + 1
     )  # (B, H, S, hd)
-    k = F.elu(module.k_proj(x).reshape(B, S, nh, hd).transpose(1, 2)) + 1
-    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    k = (
+        F.elu(
+            _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+            .reshape(B, S, nh, hd)
+            .transpose(1, 2)
+        )
+        + 1
+    )
+    v = (
+        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
 
     # Chunked causal linear attention: accumulate kv state across chunks
     # to avoid the (B, H, S, hd, hd) intermediate tensor.
@@ -93,7 +122,11 @@ def _op_linear_attention(module, inputs, _):
         z_state = z_state + k_c.sum(dim=2)
 
     out = torch.cat(out_chunks, dim=2)  # (B, H, S, hd)
-    return module.o_proj(out.transpose(1, 2).reshape(B, S, -1))
+    return _safe_linear(
+        out.transpose(1, 2).reshape(B, S, -1),
+        module.o_proj.weight,
+        module.o_proj.bias,
+    )
 
 
 def _op_graph_attention(module, inputs, _):
@@ -103,10 +136,22 @@ def _op_graph_attention(module, inputs, _):
         return x
     B, S, _ = x.shape
     nh, hd = module.n_heads, module.head_dim
-    x_e = x + module.edge_proj(x)
-    q = module.q_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
-    k = module.k_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
-    v = module.v_proj(x_e).reshape(B, S, nh, hd).transpose(1, 2)
+    x_e = x + _safe_linear(x, module.edge_proj.weight, module.edge_proj.bias)
+    q = (
+        _safe_linear(x_e, module.q_proj.weight, module.q_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    k = (
+        _safe_linear(x_e, module.k_proj.weight, module.k_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
+    v = (
+        _safe_linear(x_e, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
     out = F.scaled_dot_product_attention(
         q,
         k,
@@ -116,7 +161,7 @@ def _op_graph_attention(module, inputs, _):
         scale=module.attn_scale,
     )
     out = out.transpose(1, 2).reshape(B, S, -1)
-    return module.o_proj(out)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
 def _op_rmsnorm(module, inputs, _):
@@ -185,8 +230,8 @@ def _op_gated_linear(module, inputs, _):
         )
         if out.ndim == x.ndim:
             return out
-    linear = F.linear(x, module.linear_weight, module.linear_bias)
-    gate = torch.sigmoid(F.linear(x, module.gate_weight, module.gate_bias))
+    linear = _safe_linear(x, module.linear_weight, module.linear_bias)
+    gate = torch.sigmoid(_safe_linear(x, module.gate_weight, module.gate_bias))
     return linear * gate
 
 
@@ -337,7 +382,10 @@ def _op_local_window_attn(_, inputs, config):
         W = 16
     # Triton local attention: internal accumulation is fp32, so bf16/fp16 input
     # is safe via conservative cast. Cast input to fp32, run kernel, cast back.
-    if HAS_KERNELS and x.is_cuda:
+    # Triton's tl.dot requires K >= 16 after internal block padding. For
+    # D <= 8, the local-attention kernel compiles with BLOCK_D=8 and fails;
+    # use the dense fallback directly instead of logging noisy compile errors.
+    if HAS_KERNELS and x.is_cuda and D > 8:
         try:
             x_f32 = x.float() if x.dtype != torch.float32 else x
             out = kernels.triton_local_attn(x_f32, W)

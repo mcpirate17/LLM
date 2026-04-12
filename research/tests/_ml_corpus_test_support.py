@@ -20,7 +20,9 @@ def create_test_db(path: Path) -> None:
             stage0_passed INTEGER,
             stage05_passed INTEGER,
             stage1_passed INTEGER,
-            timestamp REAL
+            timestamp REAL,
+            trust_label TEXT,
+            comparability_label TEXT
         );
 
         CREATE TABLE leaderboard (

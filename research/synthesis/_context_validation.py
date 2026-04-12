@@ -110,6 +110,95 @@ def _has_immediate_successor_op(
     return False
 
 
+def _nearest_split2_ancestors(graph: ComputationGraph, start_id: int) -> list[int]:
+    """Return nearest split2 ancestors on the path(s) above start_id.
+
+    Traversal stops at the first split2 encountered on each upstream branch so
+    downstream branch-local transforms don't hide the original split contract.
+    """
+    q = deque([start_id])
+    seen: set[int] = set()
+    found: list[int] = []
+    while q:
+        nid = q.popleft()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        node = graph.nodes.get(nid)
+        if node is None or node.is_input:
+            continue
+        if node.op_name == "split2":
+            found.append(nid)
+            continue
+        q.extend(node.input_ids)
+    return found
+
+
+def _check_split_branch_restore_contracts(
+    graph: ComputationGraph,
+    violations: List[str],
+) -> None:
+    """Reject split2 sibling branches that rejoin through concat asymmetrically.
+
+    The only current split2→concat templates are `parallel_split` and
+    `dual_axis_block`. Both expect each branch to remain at half-width until the
+    concat join. Historical runtime failures frequently restored only one branch
+    to full width, producing 256+128 or 256+256 concat scaffolds that later
+    fail far downstream and falsely blame generic ops.
+    """
+    for nid, node in graph.nodes.items():
+        if node.op_name != "concat" or len(node.input_ids) != 2:
+            continue
+        branch_split_ids = [
+            sorted(set(_nearest_split2_ancestors(graph, input_id)))
+            for input_id in node.input_ids
+        ]
+        if any(len(split_ids) != 1 for split_ids in branch_split_ids):
+            continue
+        left_split_id = branch_split_ids[0][0]
+        right_split_id = branch_split_ids[1][0]
+        if left_split_id == right_split_id:
+            continue
+        left_split = graph.nodes.get(left_split_id)
+        right_split = graph.nodes.get(right_split_id)
+        if left_split is None or right_split is None:
+            continue
+        if (
+            left_split.op_name != "split2"
+            or right_split.op_name != "split2"
+            or len(left_split.input_ids) != 1
+            or len(right_split.input_ids) != 1
+            or left_split.input_ids[0] != right_split.input_ids[0]
+        ):
+            continue
+        parts = {
+            int(left_split.config.get("part", 0)),
+            int(right_split.config.get("part", 0)),
+        }
+        if parts != {0, 1}:
+            continue
+
+        expected_dim = left_split.output_shape.dim
+        input_dims = [
+            graph.nodes[input_id].output_shape.dim for input_id in node.input_ids
+        ]
+        if input_dims[0] != expected_dim or input_dims[1] != expected_dim:
+            violations.append(
+                "split2 branch restore mismatch: sibling split2 branches must "
+                f"rejoin concat at half-width {expected_dim}, got {input_dims[0]} and {input_dims[1]}"
+            )
+            continue
+
+        source_parent = graph.nodes.get(left_split.input_ids[0])
+        if source_parent is None:
+            continue
+        if node.output_shape.dim != source_parent.output_shape.dim:
+            violations.append(
+                "split2 concat restore mismatch: sibling split2 concat must "
+                f"restore source width {source_parent.output_shape.dim}, got {node.output_shape.dim}"
+            )
+
+
 # ── Per-op structural checks ────────────────────────────────────
 # Extracted from find_graph_context_violations to keep functions <100 lines.
 
@@ -178,6 +267,81 @@ def _check_op_structural_rules(
         if not _has_descendant_op(graph, nid, {"add"}, children):
             violations.append(
                 "depth_token_mask must remain inside a residual routing block"
+            )
+    elif op_name == "selective_scan":
+        if not _has_immediate_predecessor_op(
+            graph,
+            nid,
+            {"rmsnorm", "layernorm", "conv1d_seq", "silu"},
+        ):
+            violations.append(
+                "selective_scan requires immediate norm/conv/silu predecessor context"
+            )
+        if not _has_descendant_op(graph, nid, {"add"}, children):
+            violations.append(
+                "selective_scan must remain inside a residual refinement block"
+            )
+    elif op_name == "hybrid_token_gate":
+        if not _has_descendant_op(
+            graph, nid, {"sparse_span_builder", "hybrid_sparse_router"}, children
+        ):
+            violations.append(
+                "hybrid_token_gate must feed sparse_span_builder or hybrid_sparse_router"
+            )
+        if not _has_descendant_op(
+            graph, nid, {"add", "calibrated_branch_merge"}, children
+        ):
+            violations.append(
+                "hybrid_token_gate must remain inside a residual routing block"
+            )
+    elif op_name == "sparse_span_builder":
+        if not _has_immediate_predecessor_op(graph, nid, {"hybrid_token_gate"}):
+            violations.append(
+                "sparse_span_builder requires immediate hybrid_token_gate predecessor"
+            )
+    elif op_name == "hybrid_sparse_router":
+        if not _has_immediate_predecessor_op(
+            graph, nid, {"sparse_span_builder", "hybrid_token_gate"}
+        ):
+            violations.append(
+                "hybrid_sparse_router requires immediate sparse_span_builder or hybrid_token_gate predecessor"
+            )
+        if not _has_descendant_op(
+            graph,
+            nid,
+            {"lane_conditioned_block", "add", "calibrated_branch_merge"},
+            children,
+        ):
+            violations.append(
+                "hybrid_sparse_router must remain inside a residual routing block"
+            )
+    elif op_name == "lane_conditioned_block":
+        if not _has_immediate_predecessor_op(graph, nid, {"hybrid_sparse_router"}):
+            violations.append(
+                "lane_conditioned_block requires immediate hybrid_sparse_router predecessor"
+            )
+        if not _has_descendant_op(
+            graph, nid, {"add", "calibrated_branch_merge"}, children
+        ):
+            violations.append(
+                "lane_conditioned_block must rejoin through a residual merge"
+            )
+    elif op_name == "default_path":
+        if not _has_immediate_successor_op(
+            children, graph, nid, {"add", "calibrated_branch_merge"}
+        ):
+            violations.append(
+                "default_path must feed a residual/calibrated branch merge"
+            )
+    elif op_name == "calibrated_branch_merge":
+        if not parent_ops & {
+            "default_path",
+            "lane_conditioned_block",
+            "hybrid_sparse_router",
+            "calibrated_branch_merge",
+        }:
+            violations.append(
+                "calibrated_branch_merge requires routed/default-path branch inputs"
             )
     elif op_name == "grade_mix":
         if not parent_ops & {
@@ -468,6 +632,8 @@ def find_graph_context_violations(graph: ComputationGraph) -> List[str]:
             non_input_count,
             violations,
         )
+
+    _check_split_branch_restore_contracts(graph, violations)
 
     return violations
 

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -233,96 +234,108 @@ def query_file_index(
     workspace_root: Path,
     max_results: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Query the file index for files matching the query terms.
+    """Search the workspace using ripgrep instead of Python file scans."""
+    terms = [term for term in re.findall(r"[A-Za-z0-9_./-]+", query.lower()) if term]
+    if not terms:
+        return []
 
-    Simple keyword-based file matching against the workspace.
-    """
-    from ._helpers import (
-        _WORKSPACE_FILE_INDEX,
-        _WORKSPACE_FILE_INDEX_LOCK,
-        _WORKSPACE_FILE_INDEX_BUILT_AT,
+    include_globs = ("*.py", "*.js", "*.ts", "*.tsx", "*.md", "*.json")
+    exclude_globs = (
+        "!**/.git/**",
+        "!**/node_modules/**",
+        "!**/__pycache__/**",
+        "!**/build/**",
+        "!**/dist/**",
+        "!**/.venv/**",
+        "!**/venv/**",
+        "!**/.mypy_cache/**",
+        "!**/.pytest_cache/**",
     )
 
-    # Build index if stale (older than 5 minutes)
-    now = time.time()
-    with _WORKSPACE_FILE_INDEX_LOCK:
-        if now - _WORKSPACE_FILE_INDEX_BUILT_AT > 300:
-            _rebuild_file_index(workspace_root)
-
-    terms = set(query.lower().split())
-    scored: List[tuple] = []
-
-    with _WORKSPACE_FILE_INDEX_LOCK:
-        items = list(_WORKSPACE_FILE_INDEX.items())
-
-    for rel_path, info in items:
-        path_lower = rel_path.lower()
-        score = sum(1 for t in terms if t in path_lower) * 10
+    def _run_rg(args: List[str]) -> str:
         try:
-            full_path = workspace_root / rel_path
-            if full_path.is_file() and full_path.stat().st_size < 350_000:
-                content = full_path.read_text(errors="ignore").lower()
-                score += sum(content.count(t) for t in terms)
-        except Exception as exc:
-            logger.debug("Suppressed error: %s", exc)
-        if score > 0:
-            scored.append((score, rel_path, info))
+            proc = subprocess.run(
+                args,
+                cwd=str(workspace_root),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            logger.debug("ripgrep invocation failed: %s", exc)
+            return ""
+        if proc.returncode not in {0, 1}:
+            logger.debug(
+                "ripgrep exited with code %s: %s", proc.returncode, proc.stderr
+            )
+        return proc.stdout
 
-    scored.sort(key=lambda x: -x[0])
+    rg_files_cmd = ["rg", "--files"]
+    for glob in include_globs:
+        rg_files_cmd.extend(["-g", glob])
+    for glob in exclude_globs:
+        rg_files_cmd.extend(["-g", glob])
+    file_listing = _run_rg(rg_files_cmd)
+
+    scores: Dict[str, Dict[str, Any]] = {}
+
+    for rel_path in file_listing.splitlines():
+        if not rel_path:
+            continue
+        path_lower = rel_path.lower()
+        path_score = sum(12 for term in terms if term in path_lower)
+        if path_score:
+            scores[rel_path] = {"score": path_score, "line": 0}
+
+    search_terms = [re.escape(term) for term in terms if len(term) >= 2]
+    if search_terms:
+        rg_content_cmd = [
+            "rg",
+            "--no-heading",
+            "--line-number",
+            "--color",
+            "never",
+            "--smart-case",
+            "--max-count",
+            "3",
+            "--regexp",
+            "|".join(search_terms),
+        ]
+        for glob in include_globs:
+            rg_content_cmd.extend(["-g", glob])
+        for glob in exclude_globs:
+            rg_content_cmd.extend(["-g", glob])
+
+        for line in _run_rg(rg_content_cmd).splitlines():
+            try:
+                rel_path, line_no, content = line.split(":", 2)
+            except ValueError:
+                continue
+            bucket = scores.setdefault(
+                rel_path, {"score": 0, "line": int(line_no or 0)}
+            )
+            bucket["score"] += sum(content.lower().count(term) for term in terms)
+            if not bucket["line"]:
+                bucket["line"] = int(line_no or 0)
+
+    ranked = sorted(
+        (
+            (meta["score"], rel_path, meta["line"])
+            for rel_path, meta in scores.items()
+            if meta["score"] > 0
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
     return [
         {
-            "rel_path": item[1],
-            "path": item[1],
-            "abs_path": str(workspace_root / item[1]),
-            "score": item[0],
-            "line": 0,
+            "rel_path": rel_path,
+            "path": rel_path,
+            "abs_path": str(workspace_root / rel_path),
+            "score": score,
+            "line": line_no,
         }
-        for item in scored[:max_results]
+        for score, rel_path, line_no in ranked[:max_results]
     ]
-
-
-def _rebuild_file_index(workspace_root: Path) -> None:
-    """Rebuild the workspace file index.
-
-    Must be called while *not* holding _WORKSPACE_FILE_INDEX_LOCK, or by a
-    caller that already holds it (the current call-site in query_file_index
-    holds the lock).
-    """
-    import research.scientist.api_routes._helpers as _h
-
-    include_ext = {".py", ".js", ".ts", ".tsx", ".md", ".json"}
-    skip_dirs = {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        "build",
-        "dist",
-        ".venv",
-        "venv",
-        ".mypy_cache",
-        ".pytest_cache",
-    }
-
-    index: Dict[str, Dict[str, Any]] = {}
-    try:
-        for path in workspace_root.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in include_ext:
-                continue
-            if any(part in skip_dirs for part in path.parts):
-                continue
-            try:
-                rel = str(path.relative_to(workspace_root))
-                index[rel] = {"size": path.stat().st_size}
-            except Exception as exc:
-                logger.debug("Skipping due to error: %s", exc)
-                continue
-    except Exception as exc:
-        logger.debug("Suppressed error: %s", exc)
-
-    # Update the shared index (caller already holds the lock)
-    _h._WORKSPACE_FILE_INDEX.clear()
-    _h._WORKSPACE_FILE_INDEX.update(index)
-    _h._WORKSPACE_FILE_INDEX_BUILT_AT = time.time()
 
 
 # ── Action response parsing ────────────────────────────────────────────

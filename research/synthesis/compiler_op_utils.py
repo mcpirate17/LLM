@@ -147,6 +147,19 @@ def _record_routing_telemetry(
         },
     )
 
+    def _resize_counter(name: str, size: int) -> None:
+        current = telemetry.get(name)
+        if not isinstance(current, torch.Tensor) or current.numel() != size:
+            telemetry[name] = torch.zeros(
+                size,
+                device=selected_experts.device,
+                dtype=torch.float32,
+            )
+
+    _resize_counter("expert_counts", n_experts)
+    _resize_counter("lane_histogram", n_experts)
+    _resize_counter("branch_weight_sum", n_experts)
+
     telemetry["_call_count"] += 1
     B, S = selected_experts.shape[:2]
     total_tokens = B * S

@@ -3,7 +3,7 @@
 import pytest
 
 from research.synthesis.grammar import GrammarConfig, batch_generate
-from research.synthesis.templates import DEFAULT_TEMPLATE_WEIGHTS
+from research.synthesis.templates import TEMPLATES
 from research.synthesis.validator import validate_graph
 from research.tools.backfill_templates import _phase_settings
 from research.scientist.notebook.notebook_misc import _MiscMixin
@@ -26,10 +26,13 @@ _UNIFORM_CATEGORY_WEIGHTS = {
 _NON_ROUTING_TEMPLATES = {
     "attn_normalized_matmul",
     "attn_softmax_normalized_matmul",
-    "attn_linear_normalized_matmul_control",
+    "attn_softmax_normalized_matmul_v2",
+    "attn_softmax_normalized_matmul_compact_ffn",
+    "attn_softmax_normalized_matmul_fixed_tail_norm",
     "attn_linear_no_matmul_ffn",
-    "attn_linear_matmul_sparse_tail",
-    "attn_linear_matmul_router_sidecar",
+    "attn_linear_no_matmul_ffn_v2",
+    "attn_linear_no_matmul_ffn_dense_tail",
+    "attn_linear_no_matmul_ffn_direct_recovery",
     "diff_attn_ffn_block",
     "diff_attn_conv_hybrid",
     "local_attn_ssm_hybrid",
@@ -42,8 +45,8 @@ _NON_ROUTING_TEMPLATES = {
 
 
 def _template_weights(template_name: str) -> dict[str, float]:
-    weights = {name: 0.01 for name in DEFAULT_TEMPLATE_WEIGHTS}
-    weights[template_name] = 100.0
+    weights = {name: 0.0 for name in TEMPLATES}
+    weights[template_name] = 1.0
     return weights
 
 
@@ -76,10 +79,13 @@ def test_targeted_backfill_generates_requested_templates():
         "attn_routing_block",
         "attn_normalized_matmul",
         "attn_softmax_normalized_matmul",
-        "attn_linear_normalized_matmul_control",
+        "attn_softmax_normalized_matmul_v2",
+        "attn_softmax_normalized_matmul_compact_ffn",
+        "attn_softmax_normalized_matmul_fixed_tail_norm",
         "attn_linear_no_matmul_ffn",
-        "attn_linear_matmul_sparse_tail",
-        "attn_linear_matmul_router_sidecar",
+        "attn_linear_no_matmul_ffn_v2",
+        "attn_linear_no_matmul_ffn_dense_tail",
+        "attn_linear_no_matmul_ffn_direct_recovery",
         "diff_attn_ffn_block",
         "diff_attn_conv_hybrid",
         "diff_attn_routing",
@@ -108,10 +114,13 @@ def test_targeted_backfill_generates_requested_templates():
         ("attn_routing_block", 2027348667),
         ("attn_normalized_matmul", 2135553863),
         ("attn_softmax_normalized_matmul", 2135553863),
-        ("attn_linear_normalized_matmul_control", 99796358),
+        ("attn_softmax_normalized_matmul_v2", 2135553863),
+        ("attn_softmax_normalized_matmul_compact_ffn", 2135553863),
+        ("attn_softmax_normalized_matmul_fixed_tail_norm", 2135553863),
         ("attn_linear_no_matmul_ffn", 99796358),
-        ("attn_linear_matmul_sparse_tail", 670116838),
-        ("attn_linear_matmul_router_sidecar", 7),
+        ("attn_linear_no_matmul_ffn_v2", 99796358),
+        ("attn_linear_no_matmul_ffn_dense_tail", 99796358),
+        ("attn_linear_no_matmul_ffn_direct_recovery", 99796358),
         ("linear_attn_ffn_block", 99796358),
         ("linear_attn_sparse_ffn", 1973232567),
         ("graph_attn_sparse_ffn", 2118196712),
@@ -287,7 +296,6 @@ def test_intelligent_multilane_router_tracks_staged_lane_slots():
         "adaptive_lane_mixer",
         "semi_structured_2_4_linear",
         "block_sparse_linear",
-        "rwkv_time_mixing",
         "linear_proj",
         "nm_sparse_linear",
     }
@@ -299,6 +307,29 @@ def test_intelligent_multilane_router_tracks_staged_lane_slots():
         "state_space",
         "linear_proj",
     }
+    assert selected["intelligent_multilane_router[0].token_merge"] == "linear_proj"
     assert (
         _MiscMixin._infer_template_slot_counts()["intelligent_multilane_router"] == 11
     )
+
+
+def test_targeted_backfill_generation_reduces_intelligent_multilane_grammar_failures():
+    result = batch_generate(
+        100,
+        _backfill_like_config("intelligent_multilane_router"),
+        base_seed=559240519,
+    )
+    assert len(result.graphs) == 100
+    assert result.n_rejected_grammar == 0
+    assert result.n_attempted <= 140
+
+
+def test_targeted_backfill_generation_widens_hybrid_triplet_search_space():
+    result = batch_generate(
+        100,
+        _backfill_like_config("hybrid_sparse_triplet_router"),
+        base_seed=559240519,
+    )
+    assert len(result.graphs) == 100
+    assert result.n_rejected_dedup <= 80
+    assert result.n_attempted <= 180

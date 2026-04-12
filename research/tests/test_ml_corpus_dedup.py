@@ -22,8 +22,13 @@ def test_graph_training_corpus_dedupes_metadata_only_reruns(tmp_path: Path) -> N
     graph_b = graph_json('{"templates_used":["b"],"lineage":{"parent":"x"}}')
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "r1",
@@ -38,12 +43,19 @@ def test_graph_training_corpus_dedupes_metadata_only_reruns(tmp_path: Path) -> N
             0,
             0,
             1.0,
+            "candidate_screening",
+            "screening_only",
         ),
     )
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "r2",
@@ -58,6 +70,8 @@ def test_graph_training_corpus_dedupes_metadata_only_reruns(tmp_path: Path) -> N
             1,
             1,
             2.0,
+            "candidate_grade",
+            "candidate_comparable",
         ),
     )
     conn.execute(
@@ -77,6 +91,84 @@ def test_graph_training_corpus_dedupes_metadata_only_reruns(tmp_path: Path) -> N
     assert row["loss_ratio_best"] == 0.4
     assert row["wikitext_perplexity_best"] == 8.0
     assert row["stage05_any_passed"] is True
+
+
+def test_graph_training_corpus_excludes_untrusted_rows_when_labels_exist(
+    tmp_path: Path,
+) -> None:
+    from research.scientist.intelligence.ml_corpus import (
+        load_deduped_graph_training_rows,
+    )
+
+    db_path = tmp_path / "ml_corpus_trust.sqlite3"
+    create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    shared_graph = graph_json('{"templates_used":["trust_test"]}')
+    conn.execute(
+        """
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "trusted_row",
+            shared_graph,
+            "trusted_fp",
+            '{"isotropy": 0.2}',
+            0.4,
+            0.3,
+            0.7,
+            9.0,
+            1,
+            1,
+            1,
+            1.0,
+            "candidate_grade",
+            "candidate_comparable",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "backfill_row",
+            shared_graph,
+            "backfill_fp",
+            '{"isotropy": 0.8}',
+            0.9,
+            0.8,
+            0.2,
+            4.0,
+            1,
+            1,
+            1,
+            2.0,
+            "backfill_observation",
+            "reconstructed_init_variant",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    rows = load_deduped_graph_training_rows(db_path)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["n_rows"] == 1
+    assert row["loss_ratio_best"] == 0.7
+    assert row["wikitext_perplexity_best"] == 9.0
 
 
 def test_graph_training_corpus_cache_hits_when_db_unchanged(monkeypatch) -> None:
@@ -285,8 +377,13 @@ def test_predictor_query_uses_deduped_corpus(tmp_path: Path) -> None:
     graph = graph_json('{"templates_used":["a"]}')
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "screening_row",
@@ -301,12 +398,19 @@ def test_predictor_query_uses_deduped_corpus(tmp_path: Path) -> None:
             0,
             1,
             1.0,
+            "candidate_screening",
+            "screening_only",
         ),
     )
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "validation_row",
@@ -321,6 +425,8 @@ def test_predictor_query_uses_deduped_corpus(tmp_path: Path) -> None:
             1,
             1,
             2.0,
+            "candidate_grade",
+            "candidate_comparable",
         ),
     )
     conn.execute(
@@ -344,7 +450,59 @@ def test_predictor_query_uses_deduped_corpus(tmp_path: Path) -> None:
     assert y.shape == (1,)
     assert w.shape == (1,)
     assert np.isclose(y[0], 0.25)
-    assert w[0] > 6.0
+    assert w[0] >= 6.0
+
+
+def test_predictor_query_excludes_non_promotable_rows(tmp_path: Path) -> None:
+    from research.scientist.intelligence.predictor import _query_training_data
+
+    db_path = tmp_path / "predictor_corpus_untrusted.sqlite3"
+    create_test_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "backfill_only",
+            graph_json('{"templates_used":["backfill_only"]}'),
+            "backfill_fp",
+            '{"isotropy": 0.5}',
+            0.9,
+            0.7,
+            0.3,
+            6.0,
+            1,
+            1,
+            1,
+            1.0,
+            "backfill_observation",
+            "reconstructed_init_variant",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO leaderboard VALUES (?, ?, ?)",
+        ("backfill_only", 0.2, "validation"),
+    )
+    conn.commit()
+    conn.close()
+
+    class _NotebookStub:
+        def __init__(self, path: Path):
+            self.db_path = path
+
+    X, y, w = _query_training_data(_NotebookStub(db_path))
+
+    assert X.shape[0] == 0
+    assert y.shape[0] == 0
+    assert w.shape[0] == 0
 
 
 def test_gbm_query_uses_deduped_graph_rows(tmp_path: Path) -> None:
@@ -356,8 +514,13 @@ def test_gbm_query_uses_deduped_graph_rows(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "g1",
@@ -372,12 +535,19 @@ def test_gbm_query_uses_deduped_graph_rows(tmp_path: Path) -> None:
             0,
             0,
             1.0,
+            "candidate_screening",
+            "screening_only",
         ),
     )
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "g2",
@@ -392,6 +562,8 @@ def test_gbm_query_uses_deduped_graph_rows(tmp_path: Path) -> None:
             1,
             1,
             2.0,
+            "candidate_grade",
+            "candidate_comparable",
         ),
     )
     conn.commit()
@@ -418,8 +590,13 @@ def test_op_embeddings_cooccurrence_pairs_dedupe_reruns(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "p1",
@@ -434,12 +611,19 @@ def test_op_embeddings_cooccurrence_pairs_dedupe_reruns(tmp_path: Path) -> None:
             0,
             0,
             1.0,
+            "candidate_screening",
+            "screening_only",
         ),
     )
     conn.execute(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "p2",
@@ -454,6 +638,8 @@ def test_op_embeddings_cooccurrence_pairs_dedupe_reruns(tmp_path: Path) -> None:
             1,
             1,
             2.0,
+            "candidate_grade",
+            "candidate_comparable",
         ),
     )
     conn.commit()

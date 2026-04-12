@@ -170,7 +170,6 @@ function StageFunnel({ generated, s0, s05, s1 }) {
               height: '100%', 
               background: s.color,
               opacity: 0.8,
-              transition: 'width 0.3s ease'
             }} 
           />
         ))}
@@ -223,6 +222,17 @@ function ExperimentList({
     } catch { return {}; }
   });
   const resizingRef = useRef(null);
+  const rowStyle = {
+    height: 64,
+    maxHeight: 64,
+    overflow: 'hidden',
+  };
+  const compactCellStyle = {
+    height: 64,
+    maxHeight: 64,
+    overflow: 'hidden',
+    verticalAlign: 'middle',
+  };
 
   // Persist column widths
   useEffect(() => {
@@ -391,12 +401,21 @@ function ExperimentList({
     setOutcomeFilter('all');
   };
 
-  const { containerProps: virtualContainerProps, visibleRows: virtualSorted, topPadding, bottomPadding, startIndex: virtualStartIndex } = useVirtualRows({
+  const shouldVirtualize = sorted.length > 500;
+  const {
+    containerProps: virtualContainerProps,
+    visibleRows: virtualSorted,
+    topPadding,
+    bottomPadding,
+  } = useVirtualRows({
     rows: sorted,
-    rowHeight: 40,
+    rowHeight: 64,
     overscan: 10,
     containerHeight: 700,
   });
+  const renderedRows = shouldVirtualize ? virtualSorted : sorted;
+  const effectiveTopPadding = shouldVirtualize ? topPadding : 0;
+  const effectiveBottomPadding = shouldVirtualize ? bottomPadding : 0;
 
   const toggleSelected = useCallback((id, e) => {
     if (e) e.stopPropagation();
@@ -615,17 +634,17 @@ function ExperimentList({
           </tr>
         </thead>
         <tbody>
-          {topPadding > 0 && <tr style={{ height: topPadding }} />}
-          {virtualSorted.map(exp => {
+          {effectiveTopPadding > 0 && <tr style={{ height: effectiveTopPadding }} />}
+          {renderedRows.map(exp => {
             const nUsed = exp.n_programs_generated || 0;
             const s1Count = exp.n_stage1_passed || 0;
             const chips = experimentMetricChips(exp);
 
             return (
               <tr key={exp.experiment_id}
-                style={{ cursor: onSelectExperiment ? 'pointer' : 'default' }}
+                style={{ ...rowStyle, cursor: onSelectExperiment ? 'pointer' : 'default' }}
                 onClick={() => onSelectExperiment && onSelectExperiment(exp.experiment_id)}>
-                <td style={{ width: 30, textAlign: 'center', padding: '4px 2px' }} onClick={(e) => e.stopPropagation()}>
+                <td style={{ ...compactCellStyle, width: 30, textAlign: 'center', padding: '4px 2px' }} onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     checked={selectedIds.has(exp.experiment_id)}
@@ -636,7 +655,7 @@ function ExperimentList({
                 {visibleColumns.map(col => {
                   if (col.key === 'experiment_id') {
                     return (
-                      <td key="id" style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
+                      <td key="id" style={{ ...compactCellStyle, fontFamily: 'monospace', fontSize: 12, color: 'var(--accent-blue)' }}>
                         <span title={exp.experiment_id}>{exp.experiment_id?.slice(0, 8)}...</span>
                         {exp.experiment_id && (
                           <button
@@ -656,8 +675,8 @@ function ExperimentList({
                   }
                   if (col.key === 'top_discoveries') {
                     return (
-                      <td key="top_discoveries">
-                        <div style={{ display: 'flex', gap: 4 }}>
+                      <td key="top_discoveries" style={compactCellStyle}>
+                        <div style={{ display: 'flex', gap: 4, overflow: 'hidden', whiteSpace: 'nowrap' }}>
                           {exp.best_loss_ratio != null && (
                             <span 
                               title={`Best Loss: ${exp.best_loss_ratio.toFixed(4)}`}
@@ -685,11 +704,11 @@ function ExperimentList({
                     );
                   }
                   if (col.key === 'experiment_type') {
-                    return <td key="type">{exp.experiment_type}</td>;
+                    return <td key="type" style={compactCellStyle}>{exp.experiment_type}</td>;
                   }
                   if (col.key === 'hypothesis') {
                     return (
-                      <td key="hypothesis" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}
+                      <td key="hypothesis" style={{ ...compactCellStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}
                           title={exp.hypothesis || 'No hypothesis'}>
                         {exp.hypothesis
                           ? (exp.hypothesis.length > 60 ? exp.hypothesis.slice(0, 60) + '...' : exp.hypothesis)
@@ -700,7 +719,7 @@ function ExperimentList({
                   }
                   if (col.key === 'status') {
                     return (
-                      <td key="status">
+                      <td key="status" style={compactCellStyle}>
                         <span className={`badge ${exp.status === 'completed' ? 'pass' :
                           exp.status === 'running' ? 'running' : 'fail'}`}>
                           {exp.status}
@@ -777,7 +796,7 @@ function ExperimentList({
                   }
                   if (col.key === 'stage_funnel') {
                     return (
-                      <td key="funnel" title={`${exp.n_programs_generated || 0} generated \u2192 ${exp.n_stage0_passed ?? '?'} compiled \u2192 ${exp.n_stage05_passed ?? '?'} stage0.5 \u2192 ${exp.n_stage1_passed || 0} S1`}>
+                      <td key="funnel" style={compactCellStyle} title={`${exp.n_programs_generated || 0} generated \u2192 ${exp.n_stage0_passed ?? '?'} compiled \u2192 ${exp.n_stage05_passed ?? '?'} stage0.5 \u2192 ${exp.n_stage1_passed || 0} S1`}>
                         <StageFunnel
                           generated={exp.n_programs_generated || 0}
                           s0={exp.n_stage0_passed}
@@ -789,7 +808,7 @@ function ExperimentList({
                   }
                   if (col.key === 'n_stage1_passed') {
                     return (
-                      <td key="s1" style={{ color: s1Count > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                      <td key="s1" style={{ ...compactCellStyle, color: s1Count > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>
                         {s1Count}
                         <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)' }}>
                           / {nUsed}
@@ -801,6 +820,7 @@ function ExperimentList({
                   if (col.key === 'best_loss_ratio') {
                     return (
                       <td key="loss" style={{
+                        ...compactCellStyle,
                         color: exp.best_loss_ratio != null
                           ? (exp.best_loss_ratio < 0.5 ? 'var(--accent-green)' : exp.best_loss_ratio < 0.8 ? 'var(--accent-yellow)' : 'var(--text-muted)')
                           : 'var(--text-muted)'
@@ -815,21 +835,21 @@ function ExperimentList({
                   }
                   if (col.key === 'best_novelty_score') {
                     return (
-                      <td key="novelty" style={{ color: noveltyColor(exp.best_novelty_score) }}>
+                      <td key="novelty" style={{ ...compactCellStyle, color: noveltyColor(exp.best_novelty_score) }}>
                         {metricText(
                           exp.best_novelty_score,
                           (exp.n_stage1_passed || 0) > 0 ? 'not computed' : 'insufficient data',
                           (v) => v.toFixed(3),
                         )}
                         <div style={{ marginTop: 4 }}>
-                          <MetricChipList chips={chips} />
+                          <MetricChipList chips={chips} wrap={false} />
                         </div>
                       </td>
                     );
                   }
                   if (col.key === 'aria_summary') {
                     return (
-                      <td key="outcome" style={{ maxWidth: 240, fontSize: 12, color: 'var(--text-secondary)' }}
+                      <td key="outcome" style={{ ...compactCellStyle, maxWidth: 240, fontSize: 12, color: 'var(--text-secondary)' }}
                           title={exp.aria_summary || exp.research_question || ''}>
                         {exp.aria_summary
                           ? (exp.aria_summary.length > 80
@@ -847,21 +867,21 @@ function ExperimentList({
                     );
                   }
                   if (col.key === 'duration_seconds') {
-                    return <td key="duration">{formatDuration(exp.duration_seconds)}</td>;
+                    return <td key="duration" style={compactCellStyle}>{formatDuration(exp.duration_seconds)}</td>;
                   }
                   if (col.key === 'timestamp') {
                     return (
-                      <td key="time" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      <td key="time" style={{ ...compactCellStyle, fontSize: 12, color: 'var(--text-muted)' }}>
                         {formatTime(exp.timestamp)}
                       </td>
                     );
                   }
-                  return <td key={col.key}>--</td>;
+                  return <td key={col.key} style={compactCellStyle}>--</td>;
                 })}
               </tr>
             );
           })}
-          {bottomPadding > 0 && <tr style={{ height: bottomPadding }} />}
+          {effectiveBottomPadding > 0 && <tr style={{ height: effectiveBottomPadding }} />}
         </tbody>
       </table>
       </div>

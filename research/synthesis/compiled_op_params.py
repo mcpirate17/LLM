@@ -522,7 +522,7 @@ class CompiledOpParamInitMixin:
         self.V_comp = self._make_param((d_in, rank), std=0.02)
 
     def _init_calibrated_branch_merge(self, config: Dict, d_in: int) -> None:
-        n_branches = max(2, int(config.get("n_branches", 5)))
+        n_branches = max(2, int(config.get("n_branches", 2)))
         self.branch_score_proj = self._make_param((n_branches, d_in), std=0.02)
         self.branch_bias = nn.Parameter(torch.zeros(n_branches))
         self.branch_gain = nn.Parameter(torch.zeros(n_branches))

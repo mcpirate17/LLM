@@ -185,11 +185,20 @@ class _CoreMixin:
         self._last_chat_config_overrides: Dict[str, Any] = {}
         self._op_weights_overrides: Dict[str, float] = {}
         self._structured_sparsity_bias_override: float = 0.0
+        self._last_healer_integrity_check = 0.0
+        self._recent_healer_signatures: Dict[str, float] = {}
+        self._pending_heal_retry: Optional[Dict] = None
+        self._knowledge_distiller = None
+        self._pending_scale_up: Optional[Dict[str, Any]] = None
+        self._next_follow_up_parent: Optional[str] = None
         try:
             self._healer = CodeHealer(self.notebook_path)
         except (ImportError, RuntimeError, OSError) as e:
             logger.debug("CodeHealer init failed: %s", e)
             self._healer = None
+        self._shutdown_handler_registered = False
+        self._recover_stale_experiments_on_startup()
+        self._register_shutdown_handler()
 
     def close(self) -> None:
         self._stop_event.set()
@@ -206,12 +215,6 @@ class _CoreMixin:
         sse_handler = getattr(self, "_sse_log_handler", None)
         if sse_handler is not None:
             logging.getLogger("research").removeHandler(sse_handler)
-        self._last_healer_integrity_check = 0.0
-        self._recent_healer_signatures: Dict[str, float] = {}
-        self._pending_heal_retry: Optional[Dict] = None
-
-        self._recover_stale_experiments_on_startup()
-        self._register_shutdown_handler()
 
     # ── Progress helpers ─────────────────────────────────────────────
 
@@ -225,24 +228,30 @@ class _CoreMixin:
 
     def _register_shutdown_handler(self) -> None:
         """Register atexit + SIGTERM to mark running experiments as interrupted."""
+        if self._shutdown_handler_registered:
+            return
 
         def _mark_interrupted():
             try:
-                nb = LabNotebook(self.notebook_path)
-                rows = nb.conn.execute(
-                    "SELECT experiment_id FROM experiments WHERE status = 'running'"
-                ).fetchall()
-                for r in rows:
+                owned_exp_id = str(getattr(self.progress, "experiment_id", "") or "")
+                if not owned_exp_id:
+                    return
+
+                nb = LabNotebook(self.notebook_path, skip_migrate=True)
+                row = nb.conn.execute(
+                    "SELECT status FROM experiments WHERE experiment_id = ?",
+                    (owned_exp_id,),
+                ).fetchone()
+                if row and str(row["status"] or "") == "running":
                     nb.conn.execute(
                         "UPDATE experiments SET status = 'interrupted' "
                         "WHERE experiment_id = ?",
-                        (r["experiment_id"],),
+                        (owned_exp_id,),
                     )
-                if rows:
                     nb.conn.commit()
                     logger.info(
-                        "Shutdown: marked %d running experiment(s) as interrupted",
-                        len(rows),
+                        "Shutdown: marked owned running experiment %s as interrupted",
+                        owned_exp_id,
                     )
                 nb.close()
             except (sqlite3.OperationalError, RuntimeError, OSError) as e:
@@ -264,6 +273,7 @@ class _CoreMixin:
             signal.signal(signal.SIGTERM, _sigterm_handler)
         except (OSError, ValueError):
             pass  # Not main thread — atexit still covers us
+        self._shutdown_handler_registered = True
 
     def _make_notebook(self) -> LabNotebook:
         """Create a new notebook connection (thread-safe).
@@ -272,7 +282,11 @@ class _CoreMixin:
         This avoids DDL write-lock contention that caused
         ``OperationalError: database is locked`` on every call.
         """
-        return LabNotebook(self.notebook_path, skip_migrate=True)
+        return LabNotebook(
+            self.notebook_path,
+            skip_migrate=True,
+            check_same_thread=False,
+        )
 
     def _ensure_math_spaces(self):
         if not self._math_spaces_registered:

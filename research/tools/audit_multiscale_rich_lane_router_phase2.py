@@ -175,40 +175,65 @@ def _clear_routing_telemetry(model) -> None:
 
 def _probe_routing_telemetry(model, batch: torch.Tensor) -> dict[str, Any]:
     _clear_routing_telemetry(model)
-    x = model.embed(batch)
+    captured_inputs: dict[int, tuple[torch.Tensor, ...]] = {}
+    handles = []
+    for module in model.modules():
+        if getattr(module, "op_name", None) == "calibrated_branch_merge":
+
+            def _capture(mod, args):
+                captured_inputs[id(mod)] = tuple(arg.detach() for arg in args)
+
+            handles.append(module.register_forward_pre_hook(_capture))
     with torch.no_grad():
-        for layer_idx, layer in enumerate(model.layers):
-            layer_in = x
-            node_outputs: dict[int, torch.Tensor] = {}
-            counts = list(layer._counts_original)
-            output_id = layer.graph._output_node_id
-            if output_id is None:
-                raise RuntimeError("Graph has no output node")
-            for nid, is_input, op, input_ids, is_boundary in layer._fwd_plan:
-                if is_input:
-                    node_outputs[nid] = x
-                else:
-                    inputs = tuple(node_outputs[iid] for iid in input_ids)
-                    out = op(*inputs)
-                    if is_boundary:
-                        out_f = out if out.dtype == torch.float32 else out.float()
-                        rms = (
-                            out_f.pow(2).mean(dim=-1, keepdim=True).add_(1e-6).rsqrt_()
-                        )
-                        out = (
-                            out * rms
-                            if out.dtype == torch.float32
-                            else out * rms.to(out.dtype)
-                        )
-                    node_outputs[nid] = out
-                for iid in input_ids:
-                    counts[iid] -= 1
-                    if counts[iid] <= 0 and iid != output_id and iid in node_outputs:
-                        node_outputs.pop(iid)
-            x = node_outputs.pop(output_id)
-            if model.layer_needs_residual[layer_idx] and x.shape == layer_in.shape:
-                x = layer_in + x
-    return _augment_routing_metrics(_collect_routing_telemetry(model, False) or {})
+        _ = model(batch)
+    for handle in handles:
+        handle.remove()
+    for module in model.modules():
+        if (
+            getattr(module, "op_name", None) == "calibrated_branch_merge"
+            and id(module) in captured_inputs
+        ):
+            with torch.no_grad():
+                _ = module(*captured_inputs[id(module)])
+    routing = _augment_routing_metrics(_collect_routing_telemetry(model, False) or {})
+    merge_metrics: dict[str, Any] = {}
+    dominance_values: list[float] = []
+    for module in model.modules():
+        rt = getattr(module, "routing_telemetry", None)
+        if not rt or rt.get("routing_mode") != "calibrated_branch_merge":
+            continue
+        payload = rt.get("trace_payload") or {}
+        label = f"{payload.get('primary_role', 'primary')}->{payload.get('secondary_role', 'secondary')}"
+        weights = rt.get("branch_weight_sum")
+        count = int(rt.get("branch_weight_count", 0) or 0)
+        if weights is None or count <= 0:
+            continue
+        secondary_share = float(weights[1].item()) / count
+        primary_share = float(weights[0].item()) / count
+        dominance = float(rt.get("branch_dominance_sum", 0.0) or 0.0) / count
+        dominance_values.append(dominance)
+        merge_metrics[label] = {
+            "primary_share": round(primary_share, 4),
+            "secondary_share": round(secondary_share, 4),
+            "dominance": round(dominance, 4),
+        }
+    if merge_metrics:
+        routing["merge_stage_metrics"] = merge_metrics
+        routing["branch_weight_named"] = merge_metrics
+        routing["routed_branch_share"] = merge_metrics.get("routed->input", {}).get(
+            "primary_share"
+        )
+        if routing["routed_branch_share"] is None:
+            routing["routed_branch_share"] = merge_metrics.get("routed->skip", {}).get(
+                "primary_share"
+            )
+        routing["dominant_branch"] = max(
+            merge_metrics.items(), key=lambda item: item[1]["dominance"]
+        )[0]
+        routing["branch_dominance_mean"] = round(
+            sum(dominance_values) / len(dominance_values), 4
+        )
+    return routing
 
 
 def run_experiment(

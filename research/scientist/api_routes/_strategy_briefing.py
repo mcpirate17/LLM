@@ -52,7 +52,7 @@ def gather_briefing_data(
     if _briefing_cache and (now - _briefing_cache_ts) < _BRIEFING_CACHE_TTL:
         return _briefing_cache
 
-    summary = nb.get_dashboard_summary()
+    summary = nb.get_dashboard_headline_summary()
     trajectory = analytics.learning_trajectory() or {}
     compression_coverage = analytics.compression_coverage() or {}
     compression_opportunities = compute_compression_opportunities(compression_coverage)

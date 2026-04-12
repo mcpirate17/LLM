@@ -1,0 +1,726 @@
+"""Shared observability computations used by the Flask blueprint."""
+
+from __future__ import annotations
+
+import logging
+import math as _math
+import sqlite3
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..json_utils import fast_dumps, fast_loads
+from ..native.core import _try_import_rust_scheduler
+from .deps import get_notebook
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_THRESHOLDS: Dict[str, Any] = {
+    "s0_pass_rate_min": 0.30,
+    "s1_pass_rate_min": 0.05,
+    "grad_norm_max": 50000.0,
+    "routing_collapse_score_min": 0.3,
+    "op_failure_rate_max": 0.90,
+    "stale_experiment_hours": 6,
+}
+
+_WINDOW_SECONDS: Dict[str, Optional[int]] = {
+    "1h": 3600,
+    "6h": 21600,
+    "24h": 86400,
+    "7d": 604800,
+    "all": None,
+}
+
+_health_cache: Dict[str, Any] = {}
+_health_cache_ts: float = 0.0
+_HEALTH_CACHE_TTL = 120.0
+_op_index_caches: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+_OP_INDEX_TTL = 300.0
+_throughput_cache: Optional[Dict[str, Any]] = None
+_throughput_cache_ts: float = 0.0
+_THROUGHPUT_TTL = 60.0
+_alerts_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+_ALERTS_TTL = 5.0
+_alerts_lock = threading.Lock()
+
+
+def refresh_observability_caches() -> None:
+    global _health_cache_ts, _throughput_cache_ts, _throughput_cache
+    _health_cache_ts = 0.0
+    _throughput_cache_ts = 0.0
+    _throughput_cache = None
+    _op_index_caches.clear()
+    with _alerts_lock:
+        _alerts_cache.clear()
+
+
+def _build_op_index_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "pair_counts": {
+            (entry["op_a"], entry["op_b"]): {
+                "n": int(entry["n"]),
+                "s0": int(entry["s0"]),
+                "s1": int(entry["s1"]),
+            }
+            for entry in payload.get("pair_counts", [])
+        },
+        "loss_by_op": {
+            entry["op"]: [float(value) for value in entry.get("values", [])]
+            for entry in payload.get("loss_by_op", [])
+        },
+        "failure_groups": {
+            entry["name"]: {
+                "ops": {
+                    op_entry["op"]: int(op_entry["count"])
+                    for op_entry in entry.get("ops", [])
+                },
+                "count": int(entry["count"]),
+            }
+            for entry in payload.get("failure_groups", [])
+        },
+        "stored_rates": {
+            entry["op"]: {
+                "n": int(entry["n"]),
+                "s0": int(entry["s0"]),
+                "s1": int(entry["s1"]),
+            }
+            for entry in payload.get("stored_rates", [])
+        },
+        "corrected_rates": {
+            entry["op"]: {
+                "n": int(entry["n"]),
+                "s0": int(entry["s0"]),
+                "s1": int(entry["s1"]),
+                "excluded": int(entry["excluded"]),
+            }
+            for entry in payload.get("corrected_rates", [])
+        },
+    }
+
+
+def _load_program_rows(nb, window: str) -> list[dict[str, Any]]:
+    cutoff = None
+    window_seconds = _WINDOW_SECONDS.get(window)
+    if window_seconds is not None:
+        cutoff = time.time() - window_seconds
+
+    query = (
+        "SELECT graph_json, stage0_passed, stage1_passed, loss_ratio, "
+        "error_type, failure_op, failure_details_json "
+        "FROM program_results "
+        "WHERE graph_json IS NOT NULL AND length(graph_json) > 0"
+    )
+    params: tuple[Any, ...] = ()
+    if cutoff is not None:
+        query += " AND timestamp > ?"
+        params = (cutoff,)
+    try:
+        rows = nb.conn.execute(query, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        logger.error("Failed to load observability program rows: %s", exc)
+        return []
+    return [dict(row) for row in rows]
+
+
+def build_op_index(notebook_path: str, window: str = "all") -> Dict[str, Any]:
+    now = time.monotonic()
+    cache_key = (notebook_path, window)
+    cached = _op_index_caches.get(cache_key)
+    if cached and (now - cached[0]) < _OP_INDEX_TTL:
+        return cached[1]
+
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "build_op_index_from_rows"):
+        raise RuntimeError("aria_scheduler.build_op_index_from_rows is required")
+
+    nb = get_notebook(notebook_path)
+    rows = _load_program_rows(nb, window)
+    payload_rows = [
+        {
+            "graph_json": row["graph_json"],
+            "stage0_passed": bool(row.get("stage0_passed")),
+            "stage1_passed": bool(row.get("stage1_passed")),
+            "loss_ratio": float(row["loss_ratio"])
+            if row.get("loss_ratio") is not None
+            else None,
+            "error_type": row.get("error_type"),
+            "failure_op": row.get("failure_op"),
+            "failure_details_json": row.get("failure_details_json"),
+        }
+        for row in rows
+        if isinstance(row.get("graph_json"), str) and row["graph_json"]
+    ]
+    payload = fast_loads(rust.build_op_index_from_rows(fast_dumps(payload_rows)))
+    result = _build_op_index_result(payload)
+    _op_index_caches[cache_key] = (now, result)
+    return result
+
+
+def get_throughput(notebook_path: str) -> Dict[str, Any]:
+    global _throughput_cache, _throughput_cache_ts
+    now_mono = time.monotonic()
+    if _throughput_cache and (now_mono - _throughput_cache_ts) < _THROUGHPUT_TTL:
+        return _throughput_cache
+
+    now = time.time()
+    windows = {"1h": 3600, "6h": 21600, "24h": 86400}
+    result: Dict[str, Any] = {}
+    nb = get_notebook(notebook_path)
+    try:
+        for label, seconds in windows.items():
+            cutoff = now - seconds
+            row = nb.conn.execute(
+                "SELECT COUNT(*) as total, "
+                "SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) as s0, "
+                "SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as s1 "
+                "FROM program_results WHERE timestamp > ?",
+                (cutoff,),
+            ).fetchone()
+            result[label] = {
+                "total": row["total"] or 0,
+                "s0_passed": row["s0"] or 0,
+                "s1_passed": row["s1"] or 0,
+                "s0_rate": round((row["s0"] or 0) / max(row["total"] or 1, 1), 3),
+                "s1_rate": round((row["s1"] or 0) / max(row["s0"] or 1, 1), 3)
+                if (row["s0"] or 0) > 0
+                else 0.0,
+            }
+    except sqlite3.OperationalError as exc:
+        logger.error("Throughput query error: %s", exc)
+
+    result["computed_at"] = now
+    _throughput_cache = result
+    _throughput_cache_ts = now_mono
+    return result
+
+
+def _load_op_rates(nb, window: str) -> list[dict[str, Any]]:
+    try:
+        window_seconds = _WINDOW_SECONDS.get(window)
+        if window_seconds is not None:
+            return nb.get_op_success_rates_windowed(time.time() - window_seconds)
+        return nb.get_op_success_rates()
+    except sqlite3.OperationalError as exc:
+        logger.debug("op_success_rates query failed: %s", exc)
+        return []
+
+
+def _load_grad_health() -> Dict[str, Dict[str, Any]]:
+    grad_health: Dict[str, Dict[str, Any]] = {}
+    try:
+        profiling_db = Path("research/profiling/component_profiles.db")
+        if not profiling_db.exists():
+            return grad_health
+        conn = sqlite3.connect(str(profiling_db), timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT op_name, grad_norm, grad_exploding, grad_vanishing, "
+                "output_has_nan, output_has_inf, forward_time_us, backward_time_us, "
+                "lipschitz_estimate, error FROM op_profiles"
+            ).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            grad_health[row["op_name"]] = {
+                "grad_norm": float(row["grad_norm"])
+                if row["grad_norm"] is not None
+                else None,
+                "grad_exploding": bool(row["grad_exploding"])
+                if row["grad_exploding"] is not None
+                else False,
+                "grad_vanishing": bool(row["grad_vanishing"])
+                if row["grad_vanishing"] is not None
+                else False,
+                "has_nan": bool(row["output_has_nan"])
+                if row["output_has_nan"] is not None
+                else False,
+                "has_inf": bool(row["output_has_inf"])
+                if row["output_has_inf"] is not None
+                else False,
+                "fwd_us": float(row["forward_time_us"])
+                if row["forward_time_us"] is not None
+                else None,
+                "bwd_us": float(row["backward_time_us"])
+                if row["backward_time_us"] is not None
+                else None,
+                "lipschitz": float(row["lipschitz_estimate"])
+                if row["lipschitz_estimate"] is not None
+                else None,
+                "profile_error": row["error"],
+            }
+    except (sqlite3.OperationalError, KeyError, TypeError, OSError) as exc:
+        logger.debug(
+            "Failed to load component profiling health data: %s", exc, exc_info=True
+        )
+    return grad_health
+
+
+def _compute_blame(
+    max_n_used: int, n_used: int, n_s0: int
+) -> Tuple[float, float, float]:
+    if n_used == 0 or max_n_used == 0:
+        return 0.0, 0.0, 0.0
+    tf = 1.0 - (n_s0 / n_used)
+    idf = _math.log(max(max_n_used, 1) / n_used) if n_used < max_n_used else 0.0
+    return tf * idf, tf, idf
+
+
+def _build_structural_component(
+    op: str,
+    reasons: list[str],
+    n_used: int,
+    n_s0: int,
+    n_s05: int,
+    n_s1: int,
+    s0_rate: float,
+    s1_rate: float,
+    blame: float,
+    raw_blame: float,
+    n_excluded: int,
+    grad_norm: Any,
+    lipschitz: float,
+    prof: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "op": op,
+        "status": "structural",
+        "reasons": reasons,
+        "n_used": n_used,
+        "n_s0": n_s0,
+        "n_s05": n_s05,
+        "n_s1": n_s1,
+        "s0_rate": round(s0_rate, 4),
+        "s1_rate": round(s1_rate, 4),
+        "blame": round(blame, 3),
+        "raw_blame": round(raw_blame, 3),
+        "n_excluded": n_excluded,
+        "grad_norm": grad_norm,
+        "lipschitz": lipschitz,
+        "data_source": "search+profiling" if prof else "search",
+    }
+
+
+def _classify_component_status(
+    s1_rate: float,
+    n_s0: int,
+    raw_n: int,
+    blame: float,
+    tf: float,
+    idf: float,
+    prof: dict[str, Any],
+) -> tuple[str, list[str], Any]:
+    grad_norm = prof.get("grad_norm")
+    has_nan = prof.get("has_nan", False)
+    lipschitz = prof.get("lipschitz") or 0.0
+    profile_clean = (
+        bool(prof)
+        and not has_nan
+        and not prof.get("has_inf", False)
+        and not prof.get("profile_error")
+        and (grad_norm is None or grad_norm < 5000)
+        and lipschitz <= 1.01
+    )
+    redeemed = s1_rate > 0.5 or profile_clean
+    confidence = min(raw_n / 50.0, 1.0)
+    broken_threshold = 2.0 + 2.0 * (1.0 - confidence)
+    degraded_threshold = broken_threshold / 2.0
+    status = "healthy"
+    reasons: list[str] = []
+
+    if has_nan or prof.get("has_inf", False):
+        return "broken", ["NaN/Inf in output"], grad_norm
+    if prof.get("profile_error"):
+        return "broken", [f"profile error: {prof['profile_error'][:60]}"], grad_norm
+    if blame > broken_threshold and raw_n >= 20 and not redeemed:
+        return (
+            "broken",
+            [
+                f"TF-IDF blame={blame:.2f} (fail_rate={tf:.0%}, rarity={idf:.1f}, n={raw_n})"
+            ],
+            grad_norm,
+        )
+    if grad_norm is not None and grad_norm > 50000:
+        status = "degraded"
+        reasons.append(f"grad_norm={grad_norm:.0f}")
+    elif blame > degraded_threshold and raw_n >= 10 and not redeemed:
+        status = "degraded"
+        reasons.append(
+            f"TF-IDF blame={blame:.2f} (fail_rate={tf:.0%}, rarity={idf:.1f}, n={raw_n})"
+        )
+    elif lipschitz > 2.0:
+        status = "degraded"
+        reasons.append(f"gradient amplifier (lipschitz={lipschitz:.1f})")
+    elif s1_rate < 0.05 and n_s0 >= 10:
+        status = "degraded"
+        reasons.append(f"S1 pass rate {s1_rate:.0%}")
+    return status, reasons, grad_norm
+
+
+def _build_component_entry(
+    row: dict[str, Any],
+    stored_rates: Dict[str, Dict[str, int]],
+    corrected_rates: Dict[str, Dict[str, int]],
+    grad_health: Dict[str, Dict[str, Any]],
+    max_n_used: int,
+) -> dict[str, Any]:
+    from research.synthesis.context_rules import S1_EXEMPT_OPS
+
+    op = row["op_name"]
+    prof = grad_health.get(op, {})
+    raw_n = row.get("n_used") or 0
+    raw_s0 = row.get("n_stage0_passed") or 0
+    raw_blame, raw_tf, _ = _compute_blame(max_n_used, raw_n, raw_s0)
+    corrected = corrected_rates.get(op)
+    if corrected and corrected["n"] > 0:
+        blame, tf, idf = _compute_blame(max_n_used, corrected["n"], corrected["s0"])
+    else:
+        blame, tf, idf = _compute_blame(max_n_used, raw_n, raw_s0)
+    stored = stored_rates.get(op)
+    if stored and stored["n"] > 0:
+        n_used = stored["n"]
+        n_s0 = stored["s0"]
+        n_s1 = stored["s1"]
+    else:
+        n_used = raw_n
+        n_s0 = raw_s0
+        n_s1 = row.get("n_stage1_passed") or 0
+    n_s05 = row.get("n_stage05_passed") or 0
+    s0_rate = n_s0 / max(n_used, 1)
+    s1_rate = n_s1 / max(n_s0, 1) if n_s0 > 0 else 0.0
+    n_excluded = corrected["excluded"] if corrected else 0
+    lipschitz = prof.get("lipschitz") or 0.0
+
+    if op in S1_EXEMPT_OPS:
+        return _build_structural_component(
+            op,
+            ["scaffolding op — not a standalone learner"],
+            n_used,
+            n_s0,
+            n_s05,
+            n_s1,
+            s0_rate,
+            s1_rate,
+            blame,
+            raw_blame,
+            n_excluded,
+            prof.get("grad_norm"),
+            lipschitz,
+            prof,
+        )
+
+    status, reasons, grad_norm = _classify_component_status(
+        s1_rate,
+        n_s0,
+        raw_n,
+        blame,
+        tf,
+        idf,
+        prof,
+    )
+    return {
+        "op": op,
+        "status": status,
+        "reasons": reasons,
+        "n_used": n_used,
+        "s0_rate": round(s0_rate, 3),
+        "s1_rate": round(s1_rate, 3),
+        "blame": round(blame, 3),
+        "fail_rate": round(tf, 3),
+        "rarity": round(idf, 3),
+        "raw_blame": round(raw_blame, 3),
+        "raw_fail_rate": round(raw_tf, 3),
+        "n_excluded": n_excluded,
+        "lipschitz": round(lipschitz, 2) if lipschitz else None,
+        "grad_norm": round(grad_norm, 1) if grad_norm is not None else None,
+        "has_nan": prof.get("has_nan", False),
+        "fwd_us": prof.get("fwd_us"),
+        "bwd_us": prof.get("bwd_us"),
+        "data_source": "search+profiling" if prof else "search",
+    }
+
+
+def _build_profile_only_component(op_name: str, prof: dict[str, Any]) -> dict[str, Any]:
+    status = "healthy"
+    reasons: list[str] = []
+    if prof.get("has_nan") or prof.get("has_inf"):
+        status = "broken"
+        reasons.append("NaN/Inf in profiling")
+    elif prof.get("profile_error"):
+        status = "broken"
+        reasons.append("profile error")
+    elif prof.get("grad_norm") and prof["grad_norm"] > 50000:
+        status = "degraded"
+        reasons.append(f"grad_norm={prof['grad_norm']:.0f}")
+    return {
+        "op": op_name,
+        "status": status,
+        "reasons": reasons,
+        "n_used": 0,
+        "s0_rate": None,
+        "s1_rate": None,
+        "grad_norm": round(prof["grad_norm"], 1)
+        if prof.get("grad_norm") is not None
+        else None,
+        "grad_exploding": prof.get("grad_exploding", False),
+        "has_nan": prof.get("has_nan", False),
+        "fwd_us": prof.get("fwd_us"),
+        "bwd_us": prof.get("bwd_us"),
+        "data_source": "profiling_only",
+    }
+
+
+def get_component_health(notebook_path: str, window: str = "all") -> Dict[str, Any]:
+    global _health_cache, _health_cache_ts
+    now = time.monotonic()
+    if (
+        _health_cache
+        and (now - _health_cache_ts) < _HEALTH_CACHE_TTL
+        and _health_cache.get("_window") == window
+    ):
+        return _health_cache
+
+    nb = get_notebook(notebook_path)
+    op_rates = _load_op_rates(nb, window)
+    grad_health = _load_grad_health()
+    idx = build_op_index(notebook_path, window=window)
+    stored_rates = idx.get("stored_rates", {})
+    corrected_rates = idx.get("corrected_rates", {})
+    max_n_used = max((row.get("n_used") or 0 for row in op_rates), default=0)
+
+    components = [
+        _build_component_entry(
+            row, stored_rates, corrected_rates, grad_health, max_n_used
+        )
+        for row in op_rates
+    ]
+    rated_ops = {row["op_name"] for row in op_rates}
+    components.extend(
+        _build_profile_only_component(op_name, prof)
+        for op_name, prof in grad_health.items()
+        if op_name not in rated_ops
+    )
+    components.sort(
+        key=lambda component: (
+            {"broken": 0, "degraded": 1, "structural": 2, "healthy": 3}.get(
+                component["status"],
+                2,
+            ),
+            -(component["n_used"] or 0),
+        )
+    )
+    result = {
+        "components": components,
+        "total": len(components),
+        "healthy": sum(
+            component["status"] in {"healthy", "structural"} for component in components
+        ),
+        "degraded": sum(component["status"] == "degraded" for component in components),
+        "broken": sum(component["status"] == "broken" for component in components),
+        "cached_at": time.time(),
+        "window": window,
+        "_window": window,
+    }
+    _health_cache = result
+    _health_cache_ts = now
+    return result
+
+
+def _append_rate_alert(
+    alerts: List[Dict[str, Any]],
+    *,
+    notebook_path: str,
+    now: float,
+    query: str,
+    params: tuple[Any, ...],
+    min_total: int,
+    threshold_key: str,
+    alert_id: str,
+    severity: str,
+    title: str,
+    message_window: str,
+) -> None:
+    nb = get_notebook(notebook_path)
+    try:
+        row = nb.conn.execute(query, params).fetchone()
+    except sqlite3.OperationalError:
+        logger.debug("%s alert evaluation failed", alert_id, exc_info=True)
+        return
+    if not row or row["total"] < min_total:
+        return
+    rate = row["passed"] / row["total"]
+    threshold = _DEFAULT_THRESHOLDS[threshold_key]
+    if rate >= threshold:
+        return
+    alerts.append(
+        {
+            "id": alert_id,
+            "severity": severity,
+            "title": title,
+            "message": f"{title} is {rate:.0%} in the last {message_window} ({row['passed']}/{row['total']})",
+            "value": round(rate, 3),
+            "threshold": threshold,
+            "timestamp": now,
+        }
+    )
+
+
+def _append_routing_collapse_alert(
+    alerts: List[Dict[str, Any]],
+    notebook_path: str,
+    thresholds: Dict[str, Any],
+    now: float,
+) -> None:
+    nb = get_notebook(notebook_path)
+    try:
+        row = nb.conn.execute(
+            "SELECT AVG(CAST(json_extract(starvation_report_json, '$.collapse_score') AS REAL)) as avg_collapse "
+            "FROM program_results "
+            "WHERE starvation_report_json IS NOT NULL AND timestamp > ?",
+            (now - 7200,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        logger.debug("Routing collapse alert evaluation failed", exc_info=True)
+        return
+    if not row or row["avg_collapse"] is None:
+        return
+    score = float(row["avg_collapse"])
+    threshold = thresholds.get("routing_collapse_score_min", 0.3)
+    if score >= threshold:
+        return
+    alerts.append(
+        {
+            "id": "routing_collapse",
+            "severity": "warning",
+            "title": "Routing collapse detected",
+            "message": f"Average routing health score is {score:.2f} (threshold: {threshold})",
+            "value": round(score, 3),
+            "threshold": threshold,
+            "timestamp": now,
+        }
+    )
+
+
+def _append_broken_component_alert(
+    alerts: List[Dict[str, Any]],
+    notebook_path: str,
+    now: float,
+) -> None:
+    health = get_component_health(notebook_path)
+    if health["broken"] <= 0:
+        return
+    broken_ops = [
+        component["op"]
+        for component in health["components"]
+        if component["status"] == "broken"
+    ][:5]
+    alerts.append(
+        {
+            "id": "broken_components",
+            "severity": "warning" if health["broken"] <= 3 else "critical",
+            "title": f"{health['broken']} broken component(s)",
+            "message": f"Broken ops: {', '.join(broken_ops)}"
+            + (" ..." if health["broken"] > 5 else ""),
+            "value": health["broken"],
+            "threshold": 0,
+            "timestamp": now,
+        }
+    )
+
+
+def _append_stale_pipeline_alert(
+    alerts: List[Dict[str, Any]],
+    notebook_path: str,
+    thresholds: Dict[str, Any],
+    now: float,
+) -> None:
+    nb = get_notebook(notebook_path)
+    try:
+        row = nb.conn.execute(
+            "SELECT MAX(timestamp) as last_ts FROM program_results"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        logger.debug("Stale pipeline alert evaluation failed", exc_info=True)
+        return
+    if not row or not row["last_ts"]:
+        return
+    hours_since = (now - row["last_ts"]) / 3600
+    threshold_hours = thresholds.get("stale_experiment_hours", 6)
+    if hours_since <= threshold_hours:
+        return
+    alerts.append(
+        {
+            "id": "stale_pipeline",
+            "severity": "info",
+            "title": "Pipeline idle",
+            "message": f"No new results in {hours_since:.1f} hours",
+            "value": round(hours_since, 1),
+            "threshold": threshold_hours,
+            "timestamp": now,
+        }
+    )
+
+
+def evaluate_alerts(
+    notebook_path: str, thresholds: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    alerts: List[Dict[str, Any]] = []
+    now = time.time()
+
+    _append_rate_alert(
+        alerts,
+        notebook_path=notebook_path,
+        now=now,
+        query=(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN stage0_passed = 1 THEN 1 ELSE 0 END) as passed "
+            "FROM program_results WHERE timestamp > ?"
+        ),
+        params=(now - 3600,),
+        min_total=10,
+        threshold_key="s0_pass_rate_min",
+        alert_id="low_s0_rate",
+        severity="critical",
+        title="Low S0 pass rate",
+        message_window="hour",
+    )
+    _append_rate_alert(
+        alerts,
+        notebook_path=notebook_path,
+        now=now,
+        query=(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN stage1_passed = 1 THEN 1 ELSE 0 END) as passed "
+            "FROM program_results WHERE stage0_passed = 1 AND timestamp > ?"
+        ),
+        params=(now - 7200,),
+        min_total=20,
+        threshold_key="s1_pass_rate_min",
+        alert_id="low_s1_rate",
+        severity="critical",
+        title="Low S1 pass rate",
+        message_window="2 hours",
+    )
+    _append_routing_collapse_alert(alerts, notebook_path, thresholds, now)
+    _append_broken_component_alert(alerts, notebook_path, now)
+    _append_stale_pipeline_alert(alerts, notebook_path, thresholds, now)
+    alerts.sort(
+        key=lambda alert: {"critical": 0, "warning": 1, "info": 2}[alert["severity"]]
+    )
+    return alerts
+
+
+def get_cached_alerts(
+    notebook_path: str, thresholds: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    now = time.monotonic()
+    with _alerts_lock:
+        cached = _alerts_cache.get(notebook_path)
+        if cached and (now - cached[0]) < _ALERTS_TTL:
+            return cached[1]
+    alerts = evaluate_alerts(notebook_path, thresholds)
+    with _alerts_lock:
+        _alerts_cache[notebook_path] = (now, alerts)
+    return alerts

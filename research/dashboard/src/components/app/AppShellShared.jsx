@@ -100,7 +100,7 @@ function ReferenceBaselinesPanel() {
 
     async function fetchRefs() {
       try {
-        const res = await apiCall('/api/discoveries?sort=composite_score&limit=200&view=ranked');
+        const res = await apiCall('/api/discoveries?sort=composite_score&limit=200&view=ranked&trusted_only=1');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         const entries = (json.entries || []).filter((entry) => entry.is_reference);

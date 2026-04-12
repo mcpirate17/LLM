@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
+    _BOTTLENECK_CLASSES,
     MOTIF_CLASS_CONV,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_GUARDED_ACT,
@@ -630,17 +631,17 @@ def tpl_attn_bottleneck_hybrid(
     )
 
     sparse = _pick_compatible_motif_from_classes(
-        graph, down, rng, _SPARSE_FFN_CLASSES, weights
+        graph, down, rng, _BOTTLENECK_CLASSES, weights
     )
     processed = _instantiate_motif(graph, down, sparse, rng) if sparse else down
-
-    up = _add(
-        graph,
-        "linear_proj_up",
-        [processed],
-        {"out_dim": D},
-        context="attn_bottleneck_hybrid.up",
-    )
+    if graph.nodes[processed].op_name == "linear_proj_up":
+        processed = _add(
+            graph,
+            "rmsnorm",
+            [processed],
+            context="attn_bottleneck_hybrid.up_bridge",
+        )
+    up = _fix_dim(graph, processed)
     return _residual(graph, mid, up, context="attn_bottleneck_hybrid.output")
 
 

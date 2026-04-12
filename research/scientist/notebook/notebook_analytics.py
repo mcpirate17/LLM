@@ -132,10 +132,20 @@ class _AnalyticsMixin:
 
     _GRAPH_NODES_JSON_EXPR = (
         "CASE "
+        "WHEN pr.graph_json IS NULL OR json_valid(pr.graph_json) = 0 "
+        "THEN '{}' "
         "WHEN json_type(pr.graph_json, '$.nodes') IN ('object', 'array') "
         "THEN json_extract(pr.graph_json, '$.nodes') "
         "ELSE '{}' END"
     )
+
+    @staticmethod
+    def _valid_graph_json_where(column: str = "pr.graph_json") -> str:
+        return (
+            f"{column} IS NOT NULL "
+            f"AND TRIM(CAST({column} AS TEXT)) <> '' "
+            f"AND json_valid({column}) = 1"
+        )
 
     def _json1_available(self) -> bool:
         try:
@@ -148,6 +158,42 @@ class _AnalyticsMixin:
     def _query_op_stats_sql(
         self, where_sql: str, params: tuple[Any, ...]
     ) -> Optional[List[Dict[str, Any]]]:
+        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
+            self.flush_writes()
+            self._ensure_graph_features()
+            rows = self.conn.execute(
+                f"""
+                WITH op_rows AS (
+                    SELECT DISTINCT
+                        pr.result_id AS result_id,
+                        gpo.op_name AS op_name,
+                        pr.stage0_passed AS stage0_passed,
+                        pr.stage05_passed AS stage05_passed,
+                        pr.stage1_passed AS stage1_passed,
+                        pr.loss_ratio AS loss_ratio,
+                        pr.novelty_score AS novelty_score,
+                        pr.novelty_confidence AS novelty_confidence
+                    FROM program_results pr
+                    JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
+                    WHERE {where_sql}
+                )
+                SELECT
+                    op_name,
+                    COUNT(*) AS n_used,
+                    SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END) AS n_stage0_passed,
+                    SUM(CASE WHEN stage05_passed THEN 1 ELSE 0 END) AS n_stage05_passed,
+                    SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
+                    AVG(loss_ratio) AS avg_loss_ratio,
+                    AVG(novelty_score) AS avg_novelty,
+                    AVG(novelty_confidence) AS avg_novelty_confidence
+                FROM op_rows
+                WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
+                GROUP BY op_name
+                ORDER BY n_stage1_passed DESC, n_used DESC
+                """,
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
         if not self._json1_available():
             return None
         rows = self.conn.execute(
@@ -165,6 +211,7 @@ class _AnalyticsMixin:
                 FROM program_results pr
                 JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
                 WHERE {where_sql}
+                  AND {self._valid_graph_json_where()}
             )
             SELECT
                 op_name,
@@ -191,8 +238,6 @@ class _AnalyticsMixin:
         *,
         include_error_types: bool = False,
     ) -> Optional[List[Dict[str, Any]]]:
-        if not self._json1_available():
-            return None
         error_select = (
             ", substr(group_concat(DISTINCT CASE "
             "WHEN stage1_passed = 0 AND error_type IS NOT NULL AND error_type <> '' "
@@ -200,6 +245,40 @@ class _AnalyticsMixin:
             if include_error_types
             else ""
         )
+        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
+            self.flush_writes()
+            self._ensure_graph_features()
+            rows = self.conn.execute(
+                f"""
+                WITH signatures AS (
+                    SELECT DISTINCT
+                        pr.result_id AS result_id,
+                        gpp.signature AS signature,
+                        pr.stage1_passed AS stage1_passed,
+                        pr.loss_ratio AS loss_ratio,
+                        pr.novelty_score AS novelty_score,
+                        pr.error_type AS error_type
+                    FROM program_results pr
+                    JOIN program_graph_pairs gpp ON gpp.result_id = pr.result_id
+                    WHERE {where_sql}
+                )
+                SELECT
+                    signature,
+                    COUNT(*) AS support,
+                    SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
+                    SUM(CASE WHEN stage1_passed THEN 0 ELSE 1 END) AS n_failures,
+                    SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_successes,
+                    AVG(loss_ratio) AS avg_loss_ratio,
+                    AVG(novelty_score) AS avg_novelty
+                    {error_select}
+                FROM signatures
+                GROUP BY signature
+                """,
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+        if not self._json1_available():
+            return None
         rows = self.conn.execute(
             f"""
             WITH nodes AS (
@@ -215,6 +294,7 @@ class _AnalyticsMixin:
                 FROM program_results pr
                 JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
                 WHERE {where_sql}
+                  AND {self._valid_graph_json_where()}
             ),
             signatures AS (
                 SELECT DISTINCT
@@ -253,6 +333,44 @@ class _AnalyticsMixin:
         return [dict(row) for row in rows]
 
     def _query_graph_feature_rows_sql(self) -> Optional[List[Dict[str, Any]]]:
+        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
+            self.flush_writes()
+            self._ensure_graph_features()
+            rows = self.conn.execute(
+                """
+                SELECT
+                    pr.result_id,
+                    pr.stage1_passed,
+                    pr.novelty_score,
+                    pr.graph_category_histogram,
+                    pr.fp_interaction_sparsity,
+                    pr.fp_cka_vs_transformer,
+                    pr.fp_cka_vs_ssm,
+                    pr.fp_cka_vs_conv,
+                    COALESCE(gf.template_name, '') AS template_name,
+                    COALESCE(
+                        (SELECT group_concat(op_name, char(31)) FROM (
+                            SELECT op_name
+                            FROM program_graph_ops
+                            WHERE result_id = pr.result_id
+                            ORDER BY op_name
+                        )),
+                        ''
+                    ) AS ops_blob,
+                    COALESCE(
+                        (SELECT group_concat(signature, char(31)) FROM (
+                            SELECT signature
+                            FROM program_graph_pairs
+                            WHERE result_id = pr.result_id
+                            ORDER BY signature
+                        )),
+                        ''
+                    ) AS pairs_blob
+                FROM program_results pr
+                JOIN program_graph_features gf ON gf.result_id = pr.result_id
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
         if not self._json1_available():
             return None
         rows = self.conn.execute(
@@ -275,12 +393,10 @@ class _AnalyticsMixin:
                     json_extract(pr.graph_json, '$.metadata.template_name') AS template_b
                 FROM program_results pr
                 JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
-                WHERE pr.graph_json IS NOT NULL
+                WHERE {self._valid_graph_json_where()}
             ),
             op_rows AS (
-                SELECT DISTINCT
-                    result_id,
-                    op_name
+                SELECT DISTINCT result_id, op_name
                 FROM nodes
                 WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
             ),
@@ -341,6 +457,92 @@ class _AnalyticsMixin:
     def _query_nearest_peers_sql(
         self, graph_fingerprint: str, limit: int = 500
     ) -> Optional[List[Dict[str, Any]]]:
+        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
+            self.flush_writes()
+            self._ensure_graph_features()
+            rows = self.conn.execute(
+                """
+                WITH fingerprint_rows AS (
+                    SELECT
+                        pr.result_id,
+                        pr.graph_fingerprint,
+                        pr.loss_ratio,
+                        pr.novelty_score,
+                        pr.stage1_passed,
+                        pr.timestamp,
+                        l.tier,
+                        l.composite_score
+                    FROM program_results pr
+                    LEFT JOIN leaderboard l ON l.result_id = pr.result_id
+                    WHERE pr.graph_fingerprint IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM program_graph_features gf WHERE gf.result_id = pr.result_id
+                      )
+                ),
+                latest_rows AS (
+                    SELECT fr.*
+                    FROM fingerprint_rows fr
+                    WHERE fr.result_id = (
+                        SELECT fr2.result_id
+                        FROM fingerprint_rows fr2
+                        WHERE fr2.graph_fingerprint = fr.graph_fingerprint
+                        ORDER BY fr2.timestamp DESC, fr2.result_id DESC
+                        LIMIT 1
+                    )
+                ),
+                node_ops AS (
+                    SELECT DISTINCT graph_fingerprint, op_name
+                    FROM program_graph_ops
+                    WHERE graph_fingerprint IS NOT NULL
+                ),
+                target_ops AS (
+                    SELECT op_name
+                    FROM node_ops
+                    WHERE graph_fingerprint = ?
+                ),
+                target_count AS (
+                    SELECT COUNT(*) AS n FROM target_ops
+                ),
+                peer_counts AS (
+                    SELECT graph_fingerprint, COUNT(*) AS peer_op_count
+                    FROM node_ops
+                    WHERE graph_fingerprint <> ?
+                    GROUP BY graph_fingerprint
+                ),
+                intersections AS (
+                    SELECT
+                        n.graph_fingerprint AS graph_fingerprint,
+                        COUNT(*) AS overlap
+                    FROM node_ops n
+                    JOIN target_ops t ON t.op_name = n.op_name
+                    WHERE n.graph_fingerprint <> ?
+                    GROUP BY n.graph_fingerprint
+                )
+                SELECT
+                    lr.graph_fingerprint AS fingerprint,
+                    ROUND(
+                        CAST(i.overlap AS FLOAT) /
+                        CAST((pc.peer_op_count + tc.n - i.overlap) AS FLOAT),
+                        4
+                    ) AS jaccard_similarity,
+                    lr.loss_ratio,
+                    lr.novelty_score,
+                    lr.stage1_passed,
+                    COALESCE(lr.tier, '') AS tier,
+                    lr.composite_score
+                FROM intersections i
+                JOIN peer_counts pc ON pc.graph_fingerprint = i.graph_fingerprint
+                JOIN target_count tc
+                JOIN latest_rows lr ON lr.graph_fingerprint = i.graph_fingerprint
+                WHERE tc.n > 0
+                  AND (pc.peer_op_count + tc.n - i.overlap) > 0
+                  AND CAST(i.overlap AS FLOAT) / CAST((pc.peer_op_count + tc.n - i.overlap) AS FLOAT) >= 0.1
+                ORDER BY jaccard_similarity DESC, lr.timestamp DESC
+                LIMIT ?
+                """,
+                (graph_fingerprint, graph_fingerprint, graph_fingerprint, int(limit)),
+            ).fetchall()
+            return [dict(row) for row in rows]
         if not self._json1_available():
             return None
         rows = self.conn.execute(
@@ -358,7 +560,7 @@ class _AnalyticsMixin:
                 FROM program_results pr
                 LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                 WHERE pr.graph_fingerprint IS NOT NULL
-                  AND pr.graph_json IS NOT NULL
+                  AND {self._valid_graph_json_where()}
             ),
             latest_rows AS (
                 SELECT fr.*
@@ -378,7 +580,7 @@ class _AnalyticsMixin:
                 FROM program_results pr
                 JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
                 WHERE pr.graph_fingerprint IS NOT NULL
-                  AND pr.graph_json IS NOT NULL
+                  AND {self._valid_graph_json_where()}
                   AND json_extract(node.value, '$.op_name') IS NOT NULL
                   AND json_extract(node.value, '$.op_name') <> ''
                   AND json_extract(node.value, '$.op_name') <> 'input'
@@ -673,57 +875,43 @@ class _AnalyticsMixin:
         self, min_support: int = 5, limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Aggregate op bigram priors from program results."""
-        sql_rows = self._query_bigram_stats_sql(
-            "pr.graph_json IS NOT NULL",
-            (),
-        )
-        if sql_rows is not None:
-            priors = [
-                {
-                    "signature": row["signature"],
-                    "success_rate": round(
-                        float(row["n_stage1_passed"]) / int(row["support"]), 4
-                    ),
-                    "support": int(row["support"]),
-                    "avg_loss_ratio": (
-                        round(float(row["avg_loss_ratio"]), 4)
-                        if row["avg_loss_ratio"] is not None
-                        else None
-                    ),
-                    "avg_novelty": (
-                        round(float(row["avg_novelty"]), 4)
-                        if row["avg_novelty"] is not None
-                        else None
-                    ),
-                }
-                for row in sql_rows
-                if int(row["support"]) >= min_support
-            ]
-        else:
-            rows = self.conn.execute(
-                """SELECT graph_json, stage1_passed, loss_ratio, novelty_score
-                   FROM program_results
-                   WHERE graph_json IS NOT NULL"""
-            ).fetchall()
-            aggregates: Dict[str, Dict[str, Any]] = {}
-            for row in rows:
-                for signature in self._extract_op_bigrams(row["graph_json"]):
-                    bucket = aggregates.setdefault(
-                        signature, self._new_pair_bucket(signature)
-                    )
-                    bucket["support"] += 1
-                    bucket["n_stage1_passed"] += int(bool(row["stage1_passed"]))
-                    if row["loss_ratio"] is not None:
-                        bucket["loss_sum"] += float(row["loss_ratio"])
-                        bucket["loss_n"] += 1
-                    if row["novelty_score"] is not None:
-                        bucket["novelty_sum"] += float(row["novelty_score"])
-                        bucket["novelty_n"] += 1
-            priors = [
-                self._finalize_pair_bucket(signature, bucket)
-                for signature, bucket in aggregates.items()
-                if bucket["support"] >= min_support
-            ]
+        self.flush_writes()
+        self._ensure_graph_features()
+        rows = self.conn.execute(
+            """
+            SELECT
+                gp.signature,
+                COUNT(*) AS support,
+                SUM(CASE WHEN pr.stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
+                AVG(pr.loss_ratio) AS avg_loss_ratio,
+                AVG(pr.novelty_score) AS avg_novelty
+            FROM program_graph_pairs gp
+            JOIN program_results pr ON pr.result_id = gp.result_id
+            GROUP BY gp.signature
+            HAVING COUNT(*) >= ?
+            """,
+            (int(min_support),),
+        ).fetchall()
+        priors = [
+            {
+                "signature": row["signature"],
+                "success_rate": round(
+                    float(row["n_stage1_passed"]) / int(row["support"]), 4
+                ),
+                "support": int(row["support"]),
+                "avg_loss_ratio": (
+                    round(float(row["avg_loss_ratio"]), 4)
+                    if row["avg_loss_ratio"] is not None
+                    else None
+                ),
+                "avg_novelty": (
+                    round(float(row["avg_novelty"]), 4)
+                    if row["avg_novelty"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        ]
         return heapq.nlargest(
             limit, priors, key=lambda item: (item["success_rate"], item["support"])
         )
@@ -737,19 +925,7 @@ class _AnalyticsMixin:
         - top_routing_ops: top-3 routing/compression/MoE ops by frequency
         - template_signature: most common template name in the bucket
         """
-        sql_rows = self._query_graph_feature_rows_sql()
-        if sql_rows is not None:
-            rows = sql_rows
-        else:
-            rows = [
-                dict(row)
-                for row in self.conn.execute(
-                    """SELECT graph_json, stage1_passed, novelty_score, graph_category_histogram,
-                              fp_interaction_sparsity, fp_cka_vs_transformer, fp_cka_vs_ssm, fp_cka_vs_conv
-                       FROM program_results
-                       WHERE graph_json IS NOT NULL"""
-                ).fetchall()
-            ]
+        rows = self._query_graph_feature_rows_sql() or []
         buckets: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             record = dict(row)
@@ -842,54 +1018,7 @@ class _AnalyticsMixin:
                 for row in sql_rows[:n]
             ]
 
-        target_row = self.conn.execute(
-            """SELECT graph_json FROM program_results
-               WHERE graph_fingerprint = ? AND graph_json IS NOT NULL
-               LIMIT 1""",
-            (graph_fingerprint,),
-        ).fetchone()
-        if not target_row:
-            return []
-        target_ops = frozenset(self._extract_op_names(target_row[0]))
-        if not target_ops:
-            return []
-        rows = self.conn.execute(
-            """SELECT pr.graph_fingerprint, pr.graph_json, pr.loss_ratio,
-                      pr.novelty_score, pr.stage1_passed,
-                      l.tier, l.composite_score
-               FROM program_results pr
-               LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-               WHERE pr.graph_fingerprint IS NOT NULL
-                 AND pr.graph_fingerprint != ?
-                 AND pr.graph_json IS NOT NULL
-               GROUP BY pr.graph_fingerprint
-               ORDER BY pr.timestamp DESC
-               LIMIT 500""",
-            (graph_fingerprint,),
-        ).fetchall()
-        peers: List[Dict[str, Any]] = []
-        for row in rows:
-            peer_ops = frozenset(self._extract_op_names(row[1]))
-            if not peer_ops:
-                continue
-            intersection = len(target_ops & peer_ops)
-            union = len(target_ops | peer_ops)
-            jaccard = intersection / union if union > 0 else 0.0
-            if jaccard < 0.1:
-                continue
-            peers.append(
-                {
-                    "fingerprint": str(row[0]),
-                    "jaccard_similarity": round(jaccard, 4),
-                    "loss_ratio": float(row[2]) if row[2] is not None else None,
-                    "novelty_score": float(row[3]) if row[3] is not None else None,
-                    "stage1_passed": bool(row[4]),
-                    "tier": str(row[5] or ""),
-                    "composite_score": float(row[6]) if row[6] is not None else None,
-                }
-            )
-        peers.sort(key=lambda p: p["jaccard_similarity"], reverse=True)
-        return peers[:n]
+        return []
 
     def get_lineage_successor_stats(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Aggregate parent→child fingerprint transitions from designer lineage."""
@@ -1115,7 +1244,10 @@ class _AnalyticsMixin:
         }
 
     def _assign_fingerprint_bucket(self, row: Dict[str, Any]) -> str:
-        ops = set(self._extract_op_names(row.get("graph_json") or ""))
+        if row.get("ops_blob") is not None:
+            ops = {op for op in str(row.get("ops_blob") or "").split("\x1f") if op}
+        else:
+            ops = set(self._extract_op_names(row.get("graph_json") or ""))
         hist = self._json_dict(row.get("graph_category_histogram"))
         sparse = (
             float(row.get("fp_interaction_sparsity") or 0.0) >= 0.55
@@ -1214,27 +1346,37 @@ class _AnalyticsMixin:
         return scores
 
     def _top_performer_bigram_support(self) -> Dict[str, int]:
-        # Compute 25th-percentile threshold in SQL instead of sorting all losses in Python
-        threshold_row = self.conn.execute(
-            """SELECT loss_ratio FROM program_results
-               WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
-               ORDER BY loss_ratio ASC
-               LIMIT 1 OFFSET (
-                   SELECT MAX(0, COUNT(*) / 4 - 1) FROM program_results
-                   WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
-               )"""
+        self.flush_writes()
+        self._ensure_graph_features()
+        survivor_row = self.conn.execute(
+            """SELECT COUNT(*) AS n
+               FROM program_results
+               WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL"""
         ).fetchone()
-        threshold = float(threshold_row["loss_ratio"]) if threshold_row else None
+        survivor_count = int(survivor_row["n"] or 0) if survivor_row else 0
+        threshold = None
+        if survivor_count >= 20:
+            threshold_row = self.conn.execute(
+                """SELECT loss_ratio FROM program_results
+                   WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
+                   ORDER BY loss_ratio ASC
+                   LIMIT 1 OFFSET (
+                       SELECT MAX(0, COUNT(*) / 4 - 1) FROM program_results
+                       WHERE stage1_passed = 1 AND loss_ratio IS NOT NULL
+                   )"""
+            ).fetchone()
+            threshold = float(threshold_row["loss_ratio"]) if threshold_row else None
         rows = self.conn.execute(
-            """SELECT pr.graph_json, pr.loss_ratio, l.tier
-               FROM program_results pr
+            """SELECT gp.signature, pr.loss_ratio, l.tier
+               FROM program_graph_pairs gp
+               JOIN program_results pr ON pr.result_id = gp.result_id
                LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-               WHERE pr.stage1_passed = 1 AND pr.graph_json IS NOT NULL"""
+               WHERE pr.stage1_passed = 1"""
         ).fetchall()
         support: Dict[str, int] = defaultdict(int)
         for row in rows:
             tier = str(row["tier"] or "").lower()
-            in_top_loss = (
+            in_top_loss = survivor_count < 20 or (
                 threshold is not None
                 and row["loss_ratio"] is not None
                 and float(row["loss_ratio"]) <= threshold
@@ -1242,8 +1384,7 @@ class _AnalyticsMixin:
             in_top_tier = tier in {"investigation", "validation", "breakthrough"}
             if not in_top_loss and not in_top_tier:
                 continue
-            for signature in self._extract_op_bigrams(row["graph_json"]):
-                support[signature] += 1
+            support[str(row["signature"])] += 1
         return dict(support)
 
     @staticmethod
@@ -1303,71 +1444,50 @@ class _AnalyticsMixin:
         each bigram appears in failed vs successful programs.  This gives
         Aria a compact memory of which structural patterns to avoid.
         """
-        sql_rows = self._query_bigram_stats_sql(
-            "pr.experiment_id = ? AND pr.graph_json IS NOT NULL "
-            "AND pr.stage0_passed = 1 AND pr.stage05_passed = 1",
-            (experiment_id,),
-            include_error_types=True,
-        )
-        if sql_rows is not None:
-            now = time.time()
-            self.conn.executemany(
-                """INSERT INTO failure_signatures
-                   (signature, n_failures, n_successes, error_types, last_updated)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(signature) DO UPDATE SET
-                    n_failures = n_failures + excluded.n_failures,
-                    n_successes = n_successes + excluded.n_successes,
-                    error_types = COALESCE(excluded.error_types, error_types),
-                    last_updated = excluded.last_updated""",
-                [
-                    (
-                        row["signature"],
-                        int(row["n_failures"]),
-                        int(row["n_successes"]),
-                        row.get("error_types"),
-                        now,
-                    )
-                    for row in sql_rows
-                ],
-            )
-            self._maybe_commit()
-            return
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
-            """SELECT graph_json, stage1_passed, error_type
-               FROM program_results
-               WHERE experiment_id = ? AND graph_json IS NOT NULL
-                 AND stage0_passed = 1 AND stage05_passed = 1""",
+            """
+            SELECT
+                gp.signature,
+                SUM(CASE WHEN pr.stage1_passed THEN 0 ELSE 1 END) AS n_failures,
+                SUM(CASE WHEN pr.stage1_passed THEN 1 ELSE 0 END) AS n_successes,
+                substr(group_concat(DISTINCT CASE
+                    WHEN pr.stage1_passed = 0 AND pr.error_type IS NOT NULL AND pr.error_type <> ''
+                    THEN pr.error_type
+                END), 1, 255) AS error_types
+            FROM program_graph_pairs gp
+            JOIN program_results pr ON pr.result_id = gp.result_id
+            WHERE pr.experiment_id = ?
+              AND pr.stage0_passed = 1
+              AND pr.stage05_passed = 1
+            GROUP BY gp.signature
+            """,
             (experiment_id,),
         ).fetchall()
-        sig_stats: Dict[str, Dict] = {}
-        for r in rows:
-            bigrams = self._extract_op_bigrams(r[0])
-            s1 = r[1]
-            err = r[2] or ""
-            for bg in bigrams:
-                if bg not in sig_stats:
-                    sig_stats[bg] = {"n_f": 0, "n_s": 0, "errs": set()}
-                if s1:
-                    sig_stats[bg]["n_s"] += 1
-                else:
-                    sig_stats[bg]["n_f"] += 1
-                    if err:
-                        sig_stats[bg]["errs"].add(err)
+        if not rows:
+            return
         now = time.time()
-        for sig, st in sig_stats.items():
-            errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
-            self.conn.execute(
-                """INSERT INTO failure_signatures
-                   (signature, n_failures, n_successes, error_types, last_updated)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(signature) DO UPDATE SET
-                    n_failures = n_failures + excluded.n_failures,
-                    n_successes = n_successes + excluded.n_successes,
-                    error_types = COALESCE(excluded.error_types, error_types),
-                    last_updated = excluded.last_updated""",
-                (sig, st["n_f"], st["n_s"], errs_str, now),
-            )
+        self.conn.executemany(
+            """INSERT INTO failure_signatures
+               (signature, n_failures, n_successes, error_types, last_updated)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(signature) DO UPDATE SET
+                n_failures = n_failures + excluded.n_failures,
+                n_successes = n_successes + excluded.n_successes,
+                error_types = COALESCE(excluded.error_types, error_types),
+                last_updated = excluded.last_updated""",
+            [
+                (
+                    row["signature"],
+                    int(row["n_failures"] or 0),
+                    int(row["n_successes"] or 0),
+                    row["error_types"],
+                    now,
+                )
+                for row in rows
+            ],
+        )
         self._maybe_commit()
 
     def backfill_failure_signatures(self) -> int:
@@ -1380,68 +1500,44 @@ class _AnalyticsMixin:
         ).fetchone()[0]
         if existing > 0:
             return 0
-        sql_rows = self._query_bigram_stats_sql(
-            "pr.graph_json IS NOT NULL AND pr.stage0_passed = 1 AND pr.stage05_passed = 1",
-            (),
-            include_error_types=True,
-        )
-        if sql_rows is not None:
-            now = time.time()
-            self.conn.executemany(
-                """INSERT INTO failure_signatures
-                   (signature, n_failures, n_successes, error_types, last_updated)
-                   VALUES (?, ?, ?, ?, ?)""",
-                [
-                    (
-                        row["signature"],
-                        int(row["n_failures"]),
-                        int(row["n_successes"]),
-                        row.get("error_types"),
-                        now,
-                    )
-                    for row in sql_rows
-                ],
-            )
-            self._maybe_commit()
-            LOGGER.info(
-                "Backfilled %d failure signatures from existing results",
-                len(sql_rows),
-            )
-            return len(sql_rows)
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
-            """SELECT graph_json, stage1_passed, error_type
-               FROM program_results
-               WHERE graph_json IS NOT NULL
-                 AND stage0_passed = 1 AND stage05_passed = 1"""
+            """
+            SELECT
+                gp.signature,
+                SUM(CASE WHEN pr.stage1_passed THEN 0 ELSE 1 END) AS n_failures,
+                SUM(CASE WHEN pr.stage1_passed THEN 1 ELSE 0 END) AS n_successes,
+                substr(group_concat(DISTINCT CASE
+                    WHEN pr.stage1_passed = 0 AND pr.error_type IS NOT NULL AND pr.error_type <> ''
+                    THEN pr.error_type
+                END), 1, 255) AS error_types
+            FROM program_graph_pairs gp
+            JOIN program_results pr ON pr.result_id = gp.result_id
+            WHERE pr.stage0_passed = 1
+              AND pr.stage05_passed = 1
+            GROUP BY gp.signature
+            """
         ).fetchall()
-        sig_stats: Dict[str, Dict] = {}
-        for r in rows:
-            bigrams = self._extract_op_bigrams(r[0])
-            s1 = r[1]
-            err = r[2] or ""
-            for bg in bigrams:
-                if bg not in sig_stats:
-                    sig_stats[bg] = {"n_f": 0, "n_s": 0, "errs": set()}
-                if s1:
-                    sig_stats[bg]["n_s"] += 1
-                else:
-                    sig_stats[bg]["n_f"] += 1
-                    if err:
-                        sig_stats[bg]["errs"].add(err)
         now = time.time()
-        for sig, st in sig_stats.items():
-            errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
-            self.conn.execute(
-                """INSERT INTO failure_signatures
-                   (signature, n_failures, n_successes, error_types, last_updated)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (sig, st["n_f"], st["n_s"], errs_str, now),
-            )
-        self._maybe_commit()
-        LOGGER.info(
-            "Backfilled %d failure signatures from existing results", len(sig_stats)
+        self.conn.executemany(
+            """INSERT INTO failure_signatures
+               (signature, n_failures, n_successes, error_types, last_updated)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (
+                    row["signature"],
+                    int(row["n_failures"] or 0),
+                    int(row["n_successes"] or 0),
+                    row["error_types"],
+                    now,
+                )
+                for row in rows
+            ],
         )
-        return len(sig_stats)
+        self._maybe_commit()
+        LOGGER.info("Backfilled %d failure signatures from existing results", len(rows))
+        return len(rows)
 
     def recompute_failure_signatures(self) -> int:
         """Delete and rebuild failure_signatures from scratch using S1-only failures.
@@ -1451,67 +1547,44 @@ class _AnalyticsMixin:
         This cleans up historically contaminated data from S0.5 causality failures.
         """
         self.conn.execute("DELETE FROM failure_signatures")
-        sql_rows = self._query_bigram_stats_sql(
-            "pr.graph_json IS NOT NULL AND pr.stage0_passed = 1 AND pr.stage05_passed = 1",
-            (),
-            include_error_types=True,
-        )
-        if sql_rows is not None:
-            now = time.time()
-            self.conn.executemany(
-                """INSERT INTO failure_signatures
-                   (signature, n_failures, n_successes, error_types, last_updated)
-                   VALUES (?, ?, ?, ?, ?)""",
-                [
-                    (
-                        row["signature"],
-                        int(row["n_failures"]),
-                        int(row["n_successes"]),
-                        row.get("error_types"),
-                        now,
-                    )
-                    for row in sql_rows
-                ],
-            )
-            self._maybe_commit()
-            LOGGER.info(
-                "Recomputed %d failure signatures (S1-only failures)", len(sql_rows)
-            )
-            return len(sql_rows)
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
-            """SELECT graph_json, stage1_passed, error_type
-               FROM program_results
-               WHERE graph_json IS NOT NULL
-                 AND stage0_passed = 1 AND stage05_passed = 1"""
+            """
+            SELECT
+                gp.signature,
+                SUM(CASE WHEN pr.stage1_passed THEN 0 ELSE 1 END) AS n_failures,
+                SUM(CASE WHEN pr.stage1_passed THEN 1 ELSE 0 END) AS n_successes,
+                substr(group_concat(DISTINCT CASE
+                    WHEN pr.stage1_passed = 0 AND pr.error_type IS NOT NULL AND pr.error_type <> ''
+                    THEN pr.error_type
+                END), 1, 255) AS error_types
+            FROM program_graph_pairs gp
+            JOIN program_results pr ON pr.result_id = gp.result_id
+            WHERE pr.stage0_passed = 1
+              AND pr.stage05_passed = 1
+            GROUP BY gp.signature
+            """
         ).fetchall()
-        sig_stats: Dict[str, Dict] = {}
-        for r in rows:
-            bigrams = self._extract_op_bigrams(r[0])
-            s1 = r[1]
-            err = r[2] or ""
-            for bg in bigrams:
-                if bg not in sig_stats:
-                    sig_stats[bg] = {"n_f": 0, "n_s": 0, "errs": set()}
-                if s1:
-                    sig_stats[bg]["n_s"] += 1
-                else:
-                    sig_stats[bg]["n_f"] += 1
-                    if err:
-                        sig_stats[bg]["errs"].add(err)
         now = time.time()
-        for sig, st in sig_stats.items():
-            errs_str = ",".join(sorted(st["errs"])[:3]) if st["errs"] else None
-            self.conn.execute(
-                """INSERT INTO failure_signatures
-                   (signature, n_failures, n_successes, error_types, last_updated)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (sig, st["n_f"], st["n_s"], errs_str, now),
-            )
-        self._maybe_commit()
-        LOGGER.info(
-            "Recomputed %d failure signatures (S1-only failures)", len(sig_stats)
+        self.conn.executemany(
+            """INSERT INTO failure_signatures
+               (signature, n_failures, n_successes, error_types, last_updated)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (
+                    row["signature"],
+                    int(row["n_failures"] or 0),
+                    int(row["n_successes"] or 0),
+                    row["error_types"],
+                    now,
+                )
+                for row in rows
+            ],
         )
-        return len(sig_stats)
+        self._maybe_commit()
+        LOGGER.info("Recomputed %d failure signatures (S1-only failures)", len(rows))
+        return len(rows)
 
     def get_failure_signature_blocklist(
         self, min_seen: int = 20, max_fail_rate: float = 0.95
@@ -1661,59 +1734,6 @@ class _AnalyticsMixin:
             return (weights, meta.get("s1_rate", 0.0))
         except (json.JSONDecodeError, TypeError):
             return None
-
-    # ── Workflow Definitions ──
-
-    def save_workflow_definition(
-        self,
-        workflow_id: str,
-        name: str,
-        graph_json: str,
-        metadata: Optional[Dict] = None,
-        author: str = "user",
-    ) -> None:
-        """Save a visual designer workflow definition."""
-        now = time.time()
-        self.conn.execute(
-            """INSERT INTO workflow_definitions
-               (workflow_id, name, timestamp, graph_json, metadata_json, author)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(workflow_id) DO UPDATE SET
-                 name = excluded.name,
-                 timestamp = excluded.timestamp,
-                 graph_json = excluded.graph_json,
-                 metadata_json = excluded.metadata_json,
-                 author = excluded.author""",
-            (workflow_id, name, now, graph_json, json.dumps(metadata or {}), author),
-        )
-        self._maybe_commit()
-
-    def get_workflow_definition(self, workflow_id: str) -> Optional[Dict]:
-        """Get a specific workflow definition."""
-        row = self.conn.execute(
-            "SELECT * FROM workflow_definitions WHERE workflow_id = ?",
-            (workflow_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        d = dict(row)
-        if d.get("metadata_json"):
-            try:
-                d["metadata"] = json.loads(d["metadata_json"])
-            except (json.JSONDecodeError, TypeError):
-                d["metadata"] = {}
-        return d
-
-    def list_workflow_definitions(self, limit: int = 50) -> List[Dict]:
-        """List recent workflow definitions."""
-        rows = self.conn.execute(
-            """SELECT workflow_id, name, timestamp, author
-               FROM workflow_definitions
-               ORDER BY timestamp DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        return [dict(r) for r in rows]
 
     # ── Designer Run Lineage ──
 

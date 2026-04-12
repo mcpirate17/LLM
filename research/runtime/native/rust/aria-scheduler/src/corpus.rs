@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -171,16 +172,26 @@ pub fn fingerprint_notebook_graph_json(graph_json: &str) -> Result<String, AriaE
 
 pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaError> {
     let conn = open_notebook_db(db_path)?;
-    let mut stmt = conn
-        .prepare(
-            "
+    let program_results_columns = table_columns(&conn, "program_results")?;
+    let mut query = String::from(
+        "
             SELECT graph_json, stage1_passed, wikitext_perplexity, loss_ratio,
                    stage0_passed, stage05_passed, timestamp
             FROM program_results
             WHERE TRIM(COALESCE(graph_json, '')) <> ''
               AND graph_json <> '{}'
+        ",
+    );
+    if has_trust_columns(&program_results_columns) {
+        query.push_str(
+            "
+              AND COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+              AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')
             ",
-        )
+        );
+    }
+    let mut stmt = conn
+        .prepare(&query)
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
 
     let rows = stmt
@@ -217,9 +228,9 @@ pub fn build_graph_training_corpus_json(db_path: &Path) -> Result<String, AriaEr
 
 pub fn build_predictor_training_corpus_json(db_path: &Path) -> Result<String, AriaError> {
     let conn = open_notebook_db(db_path)?;
-    let mut stmt = conn
-        .prepare(
-            "
+    let program_results_columns = table_columns(&conn, "program_results")?;
+    let mut query = String::from(
+        "
             SELECT pr.graph_json,
                    pr.fingerprint_json,
                    pr.novelty_score,
@@ -233,8 +244,18 @@ pub fn build_predictor_training_corpus_json(db_path: &Path) -> Result<String, Ar
               AND pr.graph_json <> '{}'
               AND pr.fingerprint_json IS NOT NULL
               AND COALESCE(l.investigation_loss_ratio, pr.loss_ratio) IS NOT NULL
+        ",
+    );
+    if has_trust_columns(&program_results_columns) {
+        query.push_str(
+            "
+              AND COALESCE(pr.trust_label, '') IN ('candidate_grade', 'reference')
+              AND COALESCE(pr.comparability_label, '') IN ('candidate_comparable', 'reference_comparable')
             ",
-        )
+        );
+    }
+    let mut stmt = conn
+        .prepare(&query)
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
 
     let rows = stmt
@@ -284,6 +305,24 @@ fn open_notebook_db(db_path: &Path) -> Result<Connection, AriaError> {
         .optional()
         .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
     Ok(conn)
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>, AriaError> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({})", table))
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| AriaError::ExecutionFailed(e.to_string()))?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row.map_err(|e| AriaError::ExecutionFailed(e.to_string()))?);
+    }
+    Ok(columns)
+}
+
+fn has_trust_columns(columns: &HashSet<String>) -> bool {
+    columns.contains("trust_label") && columns.contains("comparability_label")
 }
 
 fn min_option(current: Option<f64>, candidate: Option<f64>) -> Option<f64> {

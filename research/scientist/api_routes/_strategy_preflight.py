@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from ..notebook import LabNotebook
+from ..trust_policy import TRUSTED_COMPARABILITY_LABELS, TRUSTED_TRUST_LABELS
 from .deps import get_notebook
 
 
@@ -118,6 +120,67 @@ def _ineligible_from_missing_rows(
     }
 
 
+def _program_is_screening_admissible(program: Optional[Dict[str, Any]]) -> bool:
+    if not program or not bool(program.get("stage1_passed")):
+        return False
+
+    trust_label = str(program.get("trust_label") or "").strip().lower()
+    comparability_label = str(program.get("comparability_label") or "").strip().lower()
+    if (
+        trust_label in TRUSTED_TRUST_LABELS
+        and comparability_label in TRUSTED_COMPARABILITY_LABELS
+    ):
+        return True
+
+    provenance_raw = program.get("data_provenance_json")
+    if not provenance_raw:
+        return False
+    try:
+        provenance = json.loads(provenance_raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return bool(provenance.get("eligible_for_promotion"))
+
+
+def _ensure_screening_leaderboard_entry(
+    nb: LabNotebook,
+    result_id: str,
+    program: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not _program_is_screening_admissible(program):
+        return None
+
+    existing = nb.get_leaderboard_entry(result_id)
+    if existing is not None:
+        return existing
+
+    program = program or {}
+    entry_id = nb.upsert_leaderboard(
+        result_id=result_id,
+        model_source=str(program.get("model_source") or "screening_backfill"),
+        architecture_desc=str(program.get("graph_fingerprint") or "")[:40],
+        screening_loss_ratio=program.get("loss_ratio"),
+        screening_novelty=program.get("novelty_score"),
+        screening_passed=bool(program.get("stage1_passed")),
+        tier="screening",
+        trust_label=program.get("trust_label"),
+        comparability_label=program.get("comparability_label"),
+        novelty_confidence=program.get("novelty_confidence"),
+        fp_jacobian_spectral_norm=program.get("fp_jacobian_spectral_norm"),
+        routing_savings_ratio=program.get("routing_savings_ratio"),
+        activation_sparsity_score=program.get("activation_sparsity_score"),
+        depth_savings_ratio=program.get("depth_savings_ratio"),
+        compression_ratio=program.get("compression_ratio"),
+        wikitext_perplexity=program.get("wikitext_perplexity"),
+        wikitext_score=program.get("wikitext_score"),
+        notes="Auto-admitted to screening from trusted Stage-1 survivor.",
+    )
+    return nb.get_leaderboard_entry(result_id) or {
+        "entry_id": entry_id,
+        "tier": "screening",
+    }
+
+
 def _evaluate_mode_eligibility(
     mode: str, result_id: str, tier: str, lb: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -168,6 +231,7 @@ def build_start_mode_eligibility(
     result_ids: List[str],
 ) -> Dict[str, Any]:
     """Validate candidate progression eligibility for start modes."""
+    nb.flush_writes()
     payload: Dict[str, Any] = {
         "mode": mode,
         "requested_result_ids": list(result_ids),
@@ -190,7 +254,12 @@ def build_start_mode_eligibility(
     ).fetchall()
     program_rows = nb.conn.execute(
         f"""
-        SELECT result_id, stage1_passed
+        SELECT result_id, stage1_passed, graph_fingerprint, model_source, loss_ratio,
+               novelty_score, novelty_confidence, fp_jacobian_spectral_norm,
+               routing_savings_ratio, activation_sparsity_score,
+               depth_savings_ratio, compression_ratio, wikitext_perplexity,
+               wikitext_score, trust_label, comparability_label,
+               data_provenance_json
         FROM program_results
         WHERE result_id IN ({placeholders})
         """,
@@ -205,6 +274,16 @@ def build_start_mode_eligibility(
         program = program_by_id.get(result_id)
 
         if lb is None:
+            lb = _ensure_screening_leaderboard_entry(nb, result_id, program)
+            if lb is not None:
+                leaderboard_by_id[result_id] = lb
+                tier = str(lb.get("tier") or "").lower()
+                failure = _evaluate_mode_eligibility(mode, result_id, tier, lb)
+                if failure is None:
+                    payload["eligible_result_ids"].append(result_id)
+                else:
+                    payload["ineligible"].append(failure)
+                continue
             payload["ineligible"].append(
                 _ineligible_from_missing_rows(result_id, program)
             )

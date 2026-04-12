@@ -45,5 +45,3 @@ class LabNotebook(
 
     Composed from targeted mixins under notebook/ directory.
     """
-
-    pass

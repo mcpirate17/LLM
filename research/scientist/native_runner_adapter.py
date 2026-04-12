@@ -26,16 +26,41 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def _designer_runtime_lib_path() -> Path:
+    return _designer_runtime_lib_candidates()[0]
+
+
+def _designer_runtime_lib_candidates() -> List[Path]:
     root = Path(__file__).resolve().parents[2]
-    return root / "aria_designer" / "runtime" / "lib" / "libaria_runtime.so"
+    return [
+        root / "aria_designer" / "runtime" / "lib" / "libaria_runtime.so",
+        root
+        / "research"
+        / "runtime"
+        / "native"
+        / "build"
+        / "libaria_native_runtime.so",
+        root
+        / "research"
+        / "runtime"
+        / "native"
+        / "cython"
+        / "aria_bridge.cpython-312-x86_64-linux-gnu.so",
+    ]
+
+
+def _resolve_designer_runtime_artifact() -> Path | None:
+    for candidate in _designer_runtime_lib_candidates():
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def detect_adapter_state() -> DesignerRuntimeAdapterState:
     enabled = _env_flag("NATIVE_RUNNER_ENABLED", True)
     strict = _env_flag("NATIVE_RUNNER_STRICT", False)
 
-    lib_path = _designer_runtime_lib_path()
-    designer_runtime_available = lib_path.exists()
+    runtime_artifact = _resolve_designer_runtime_artifact()
+    designer_runtime_available = runtime_artifact is not None
 
     if not enabled:
         return DesignerRuntimeAdapterState(
@@ -46,18 +71,21 @@ def detect_adapter_state() -> DesignerRuntimeAdapterState:
         )
 
     if not designer_runtime_available:
+        missing_candidates = ",".join(
+            str(path) for path in _designer_runtime_lib_candidates()
+        )
         return DesignerRuntimeAdapterState(
             enabled=True,
             strict=strict,
             designer_runtime_available=False,
-            reason=f"missing_designer_runtime_lib:{lib_path}",
+            reason=f"missing_designer_runtime_lib:{missing_candidates}",
         )
 
     return DesignerRuntimeAdapterState(
         enabled=True,
         strict=strict,
         designer_runtime_available=True,
-        reason="ready",
+        reason=f"ready:{runtime_artifact}",
     )
 
 

@@ -968,17 +968,25 @@ class _DashboardMixin:
             seed=int(seed),
         )
 
-    def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
-        """Record a single result from the orchestrator into the notebook."""
-        s1_result = jr.s1_result
-        program_metrics = jr.payload["metrics"]
-        graph = jr.payload["graph"]
-        i = jr.index
-        screening_stage = str(jr.payload.get("screening_stage") or "stage1")
-        screening_seed = int(jr.payload.get("screening_seed") or 0)
+    def _record_route_s09_to_s1(
+        self,
+        jr,
+        graph,
+        config,
+        results: Dict,
+        program_metrics: Dict[str, Any],
+        s1_result: Dict,
+        screening_seed: int,
+        i: int,
+    ) -> tuple:
+        """Handle S0.9 routing: promote passing candidates to full S1.
 
+        Returns (promoted_to_stage1: bool, s1_result: dict).
+        """
+        screening_stage = str(jr.payload.get("screening_stage") or "stage1")
         funnel = results.setdefault("funnel_counts", {})
         promoted_to_stage1 = screening_stage != "stage09"
+
         if screening_stage == "stage09":
             funnel["stage09_completed"] = int(funnel.get("stage09_completed", 0)) + 1
             stage09_passed = bool(s1_result.get("passed", False))
@@ -1021,154 +1029,60 @@ class _DashboardMixin:
                     "error": s1_result.get("error") or "failed_stage09_gate",
                 }
 
-        if promoted_to_stage1:
-            funnel["stage1_completed"] = int(funnel.get("stage1_completed", 0)) + 1
+        return promoted_to_stage1, s1_result
 
-        s1_passed = s1_result.get("passed", False)
-        loss_ratio = s1_result.get("loss_ratio")
-        final_loss = s1_result.get("final_loss")
-        throughput = s1_result.get("throughput")
-        training_curve = s1_result.get("training_curve")
+    def _record_baseline_comparisons(
+        self,
+        final_loss: Optional[float],
+        s1_result: Dict,
+        config,
+        program_metrics: Dict[str, Any],
+    ) -> None:
+        """Run discovery, validation, and standard baseline comparisons.
 
-        self._merge_train_result_metrics(program_metrics, s1_result, config)
-        self._merge_s1_telemetry(program_metrics, s1_result)
-
-        # Compute efficiency_multiple at screening time.
-        # MoE models: skip param count penalty (active params < total params).
-        from .synthesis import _graph_is_moe
+        Updates program_metrics in-place with baseline ratio fields.
+        """
+        if final_loss is None:
+            return
 
         try:
-            from ..leaderboard_scoring import compute_efficiency_multiple
-
-            eff = compute_efficiency_multiple(
-                loss_ratio=s1_result.get("loss_ratio"),
-                param_count=program_metrics.get("param_count"),
-                forward_time_ms=s1_result.get("forward_time_ms"),
-                peak_memory_mb=s1_result.get("peak_memory_mb"),
-                throughput_tok_s=s1_result.get("throughput"),
-                is_moe=_graph_is_moe(graph) if graph else False,
-            )
-            if eff:
-                program_metrics["efficiency_multiple"] = eff["geomean"]
-        except (ImportError, TypeError, ValueError) as e:
-            logger.debug("Efficiency multiple computation failed: %s", e)
-
-        # Merge traces
-        perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
-        if perf_report:
-            program_metrics["perf_report_json"] = json.dumps(json_safe(perf_report))
-            results.setdefault("_perf_traces", []).append(perf_report)
-
-        starvation_report = s1_result.get(
-            "starvation_report", s1_result.get("gpu_starvation")
-        )
-        if starvation_report:
-            program_metrics["starvation_report_json"] = json.dumps(
-                json_safe(starvation_report)
-            )
-            results.setdefault("_gpu_starvation", []).append(starvation_report)
-
-        kernel_timings = s1_result.get(
-            "kernel_timings_ms", s1_result.get("kernel_timing")
-        )
-        if kernel_timings:
-            program_metrics["kernel_timings_json"] = json.dumps(
-                json_safe(kernel_timings)
-            )
-            results.setdefault("_kernel_timing", []).append(kernel_timings)
-
-        if getattr(jr, "telemetry", None):
-            program_metrics["queue_telemetry_json"] = json.dumps(
-                json_safe(jr.telemetry)
+            baseline = self._get_baseline()
+            baseline_steps = int(s1_result.get("n_train_steps") or config.stage1_steps)
+            baseline_recipe = self._resolve_baseline_recipe(
+                s1_result, default_lr=config.stage1_lr
             )
 
-        if s1_passed:
-            results["stage1_passed"] += 1
-            funnel["stage1_survived"] = int(funnel.get("stage1_survived", 0)) + 1
-            with self._lock:
-                self._progress.stage1_passed += 1
-
-            logger.info(
-                "  ★ S1 SURVIVOR [%d] %s — loss_ratio=%.4f, params=%s",
-                i + 1,
-                graph.fingerprint()[:10],
-                loss_ratio or 0,
-                f"{program_metrics.get('param_count', 0):,}",
-            )
-
-            # Compare to baseline (dual-metric: discovery vs validation)
-            if final_loss is not None:
+            # 1. Discovery Baseline (Random Tokens)
+            discovery_loss = s1_result.get("discovery_loss")
+            if discovery_loss is not None:
                 try:
-                    baseline = self._get_baseline()
-                    baseline_steps = int(
-                        s1_result.get("n_train_steps") or config.stage1_steps
+                    discovery_steps = min(5, baseline_steps // 10)
+                    discovery_ratio = baseline.compare(
+                        discovery_loss,
+                        d_model=config.model_dim,
+                        seq_len=min(128, config.max_seq_len),
+                        n_steps=max(1, discovery_steps),
+                        vocab_size=config.vocab_size,
+                        batch_size=config.stage1_batch_size,
+                        lr=baseline_recipe["lr"],
+                        device=str(config.device),
+                        n_layers=2,
+                        data_mode="random",
+                        data_tag="discovery_baseline",
                     )
-                    baseline_recipe = self._resolve_baseline_recipe(
-                        s1_result, default_lr=config.stage1_lr
+                    program_metrics["discovery_baseline_ratio"] = discovery_ratio
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logger.debug("Discovery baseline failed: %s", e)
+
+            # 2. Validation Baseline (Corpus)
+            val_loss = s1_result.get("validation_loss")
+            if val_loss is not None:
+                try:
+                    v_data_fn, v_data_tag, v_cache = self._make_baseline_data_fn(
+                        config, split="val"
                     )
-
-                    # 1. Discovery Baseline (Random Tokens)
-                    discovery_loss = s1_result.get("discovery_loss")
-                    if discovery_loss is not None:
-                        try:
-                            discovery_steps = min(5, baseline_steps // 10)
-                            discovery_ratio = baseline.compare(
-                                discovery_loss,
-                                d_model=config.model_dim,
-                                seq_len=min(128, config.max_seq_len),
-                                n_steps=max(1, discovery_steps),
-                                vocab_size=config.vocab_size,
-                                batch_size=config.stage1_batch_size,
-                                lr=baseline_recipe["lr"],
-                                device=str(config.device),
-                                n_layers=2,
-                                data_mode="random",
-                                data_tag="discovery_baseline",
-                            )
-                            # Keep measured discovery_loss_ratio intact; store
-                            # baseline-relative comparison separately.
-                            program_metrics["discovery_baseline_ratio"] = (
-                                discovery_ratio
-                            )
-                        except (RuntimeError, ValueError, TypeError) as e:
-                            logger.debug("Discovery baseline failed: %s", e)
-
-                    # 2. Validation Baseline (Corpus)
-                    val_loss = s1_result.get("validation_loss")
-                    if val_loss is not None:
-                        try:
-                            v_data_fn, v_data_tag, v_cache = (
-                                self._make_baseline_data_fn(config, split="val")
-                            )
-                            v_baseline_ratio = baseline.compare(
-                                val_loss,
-                                d_model=config.model_dim,
-                                seq_len=min(128, config.max_seq_len),
-                                n_steps=max(1, baseline_steps),
-                                vocab_size=config.vocab_size,
-                                batch_size=config.stage1_batch_size,
-                                lr=baseline_recipe["lr"],
-                                device=str(config.device),
-                                n_layers=2,
-                                data_fn=v_data_fn,
-                                data_mode="corpus",
-                                data_tag=v_data_tag,
-                                cache_data_fn=v_cache,
-                            )
-                            # Keep measured validation_loss_ratio intact; store
-                            # baseline-relative comparison separately.
-                            program_metrics["validation_baseline_loss_ratio"] = (
-                                v_baseline_ratio
-                            )
-                            program_metrics["validation_baseline_ratio"] = (
-                                v_baseline_ratio
-                            )
-                        except (RuntimeError, ValueError, TypeError) as e:
-                            logger.debug("Validation baseline comparison failed: %s", e)
-
-                    # 3. Standard Baseline (for backward compatibility / fallback)
-                    baseline_ratio = baseline.compare(
-                        final_loss,
+                    v_baseline_ratio = baseline.compare(
+                        val_loss,
                         d_model=config.model_dim,
                         seq_len=min(128, config.max_seq_len),
                         n_steps=max(1, baseline_steps),
@@ -1177,114 +1091,117 @@ class _DashboardMixin:
                         lr=baseline_recipe["lr"],
                         device=str(config.device),
                         n_layers=2,
-                        data_mode="corpus" if val_loss is not None else "random",
-                        data_tag="standard_baseline",
+                        data_fn=v_data_fn,
+                        data_mode="corpus",
+                        data_tag=v_data_tag,
+                        cache_data_fn=v_cache,
                     )
-                    program_metrics["baseline_loss_ratio"] = baseline_ratio
+                    program_metrics["validation_baseline_loss_ratio"] = v_baseline_ratio
+                    program_metrics["validation_baseline_ratio"] = v_baseline_ratio
                 except (RuntimeError, ValueError, TypeError) as e:
-                    logger.debug("Standard baseline comparison failed: %s", e)
+                    logger.debug("Validation baseline comparison failed: %s", e)
 
-            # Z12: Diagnostic suite — record metrics for S1 survivors (informational only).
-            # The regression gate is NOT applied at screening tier because a single-layer
-            # model trained for 50 steps cannot learn the copy/induction tasks the gate
-            # requires. The gate should only be applied at investigation/validation tiers
-            # where multi-layer models are trained for longer.
-            try:
-                diag_dev = str(config.device) if torch.cuda.is_available() else "cpu"
-                diag_model = compile_model(
-                    [graph], vocab_size=config.vocab_size, max_seq_len=64
-                )
-                diag_result = run_diagnostic_suite(
-                    diag_model, device=diag_dev, n_steps=50
-                )
-                program_metrics["diagnostic_score"] = diag_result.diagnostic_score
-                program_metrics["diagnostic_tasks_json"] = json.dumps(
-                    json_safe(diag_result.to_dict())
-                )
-            except (ImportError, RuntimeError, ValueError) as e:
-                logger.debug(
-                    "Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e
-                )
+            # 3. Standard Baseline (for backward compatibility / fallback)
+            baseline_ratio = baseline.compare(
+                final_loss,
+                d_model=config.model_dim,
+                seq_len=min(128, config.max_seq_len),
+                n_steps=max(1, baseline_steps),
+                vocab_size=config.vocab_size,
+                batch_size=config.stage1_batch_size,
+                lr=baseline_recipe["lr"],
+                device=str(config.device),
+                n_layers=2,
+                data_mode="corpus" if val_loss is not None else "random",
+                data_tag="standard_baseline",
+            )
+            program_metrics["baseline_loss_ratio"] = baseline_ratio
+        except (RuntimeError, ValueError, TypeError) as e:
+            logger.debug("Standard baseline comparison failed: %s", e)
 
-        # Novelty scoring for S1 survivors
+    def _record_compute_novelty(
+        self,
+        s1_result: Dict,
+        graph,
+        config,
+        nb,
+        program_metrics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compute novelty score and extract behavioral fingerprint.
+
+        Returns novelty_kwargs dict for record_program_result.
+        """
         n_score = None
         nov = None
-        if s1_passed:
-            try:
-                fp = None
-                fp_dict = s1_result.get("_behavioral_fingerprint")
-                if fp_dict is not None:
-                    # Option B: reconstruct behavioral fingerprint from S1 worker
-                    fp = BehavioralFingerprint()
-                    for k, v in fp_dict.items():
-                        if hasattr(fp, k):
-                            setattr(fp, k, v)
 
-                    # Persist all behavioral fingerprint fields to DB
-                    program_metrics["fingerprint_json"] = json.dumps(
-                        json_safe(fp.to_dict())
-                    )
-                    program_metrics["fp_interaction_locality"] = fp.interaction_locality
-                    program_metrics["fp_interaction_sparsity"] = fp.interaction_sparsity
-                    program_metrics["fp_interaction_symmetry"] = fp.interaction_symmetry
-                    program_metrics["fp_interaction_hierarchy"] = (
-                        fp.interaction_hierarchy
-                    )
-                    program_metrics["fp_intrinsic_dim"] = fp.intrinsic_dim
-                    program_metrics["fp_isotropy"] = fp.isotropy
-                    program_metrics["fp_rank_ratio"] = fp.rank_ratio
-                    program_metrics["fp_jacobian_spectral_norm"] = (
-                        fp.jacobian_spectral_norm
-                    )
-                    program_metrics["fp_jacobian_effective_rank"] = (
-                        fp.jacobian_effective_rank
-                    )
-                    program_metrics["fp_sensitivity_uniformity"] = (
-                        fp.sensitivity_uniformity
-                    )
-                    program_metrics["fp_cka_vs_transformer"] = fp.cka_vs_transformer
-                    program_metrics["fp_cka_vs_ssm"] = fp.cka_vs_ssm
-                    program_metrics["fp_cka_vs_conv"] = fp.cka_vs_conv
-                    program_metrics["fp_hierarchy_fitness"] = fp.hierarchy_fitness
-                    program_metrics["fp_gromov_delta"] = fp.gromov_delta
+        try:
+            fp = None
+            fp_dict = s1_result.get("_behavioral_fingerprint")
+            if fp_dict is not None:
+                # Option B: reconstruct behavioral fingerprint from S1 worker
+                fp = BehavioralFingerprint()
+                for k, v in fp_dict.items():
+                    if hasattr(fp, k):
+                        setattr(fp, k, v)
 
-                    calibration_row = self._ensure_novelty_calibration(nb, config, fp)
-                    calibration = None
-                    if calibration_row:
-                        calibration = {
-                            "noise_floor_mean": calibration_row.get("noise_floor_mean"),
-                            "noise_floor_std": calibration_row.get("noise_floor_std"),
-                        }
-                    nov = novelty_score(graph, fingerprint=fp, calibration=calibration)
-                else:
-                    # Option A fallback: structural-only novelty
-                    nov = novelty_score(graph)
+                # Persist all behavioral fingerprint fields to DB
+                program_metrics["fingerprint_json"] = json.dumps(
+                    json_safe(fp.to_dict())
+                )
+                program_metrics["fp_interaction_locality"] = fp.interaction_locality
+                program_metrics["fp_interaction_sparsity"] = fp.interaction_sparsity
+                program_metrics["fp_interaction_symmetry"] = fp.interaction_symmetry
+                program_metrics["fp_interaction_hierarchy"] = fp.interaction_hierarchy
+                program_metrics["fp_intrinsic_dim"] = fp.intrinsic_dim
+                program_metrics["fp_isotropy"] = fp.isotropy
+                program_metrics["fp_rank_ratio"] = fp.rank_ratio
+                program_metrics["fp_jacobian_spectral_norm"] = fp.jacobian_spectral_norm
+                program_metrics["fp_jacobian_effective_rank"] = (
+                    fp.jacobian_effective_rank
+                )
+                program_metrics["fp_sensitivity_uniformity"] = fp.sensitivity_uniformity
+                program_metrics["fp_cka_vs_transformer"] = fp.cka_vs_transformer
+                program_metrics["fp_cka_vs_ssm"] = fp.cka_vs_ssm
+                program_metrics["fp_cka_vs_conv"] = fp.cka_vs_conv
+                program_metrics["fp_hierarchy_fitness"] = fp.hierarchy_fitness
+                program_metrics["fp_gromov_delta"] = fp.gromov_delta
 
-                n_score = nov.overall_novelty
-                novelty_valid, novelty_valid_reason, novelty_requires_justification = (
-                    self._resolve_novelty_promotion_validity(
-                        config,
-                        nov.novelty_valid_for_promotion,
-                        nov.novelty_validity_reason,
-                    )
-                )
-                program_metrics["novelty_raw_score"] = nov.raw_novelty
-                program_metrics["novelty_z_score"] = nov.novelty_z_score
-                program_metrics["novelty_reference_version"] = (
-                    nov.novelty_reference_version
-                    or (fp.novelty_reference_version if fp is not None else None)
-                )
-                program_metrics["novelty_valid_for_promotion"] = int(novelty_valid)
-                program_metrics["novelty_validity_reason"] = novelty_valid_reason
-                program_metrics["novelty_requires_justification"] = int(
-                    novelty_requires_justification
-                )
-            except (ImportError, RuntimeError, ValueError, TypeError) as e:
-                logger.debug(
-                    "Novelty scoring failed for %s: %s", graph.fingerprint()[:10], e
-                )
+                calibration_row = self._ensure_novelty_calibration(nb, config, fp)
+                calibration = None
+                if calibration_row:
+                    calibration = {
+                        "noise_floor_mean": calibration_row.get("noise_floor_mean"),
+                        "noise_floor_std": calibration_row.get("noise_floor_std"),
+                    }
+                nov = novelty_score(graph, fingerprint=fp, calibration=calibration)
+            else:
+                # Option A fallback: structural-only novelty
+                nov = novelty_score(graph)
 
-        # Record result
+            n_score = nov.overall_novelty
+            novelty_valid, novelty_valid_reason, novelty_requires_justification = (
+                self._resolve_novelty_promotion_validity(
+                    config,
+                    nov.novelty_valid_for_promotion,
+                    nov.novelty_validity_reason,
+                )
+            )
+            program_metrics["novelty_raw_score"] = nov.raw_novelty
+            program_metrics["novelty_z_score"] = nov.novelty_z_score
+            program_metrics["novelty_reference_version"] = (
+                nov.novelty_reference_version
+                or (fp.novelty_reference_version if fp is not None else None)
+            )
+            program_metrics["novelty_valid_for_promotion"] = int(novelty_valid)
+            program_metrics["novelty_validity_reason"] = novelty_valid_reason
+            program_metrics["novelty_requires_justification"] = int(
+                novelty_requires_justification
+            )
+        except (ImportError, RuntimeError, ValueError, TypeError) as e:
+            logger.debug(
+                "Novelty scoring failed for %s: %s", graph.fingerprint()[:10], e
+            )
+
         novelty_kwargs = {}
         if nov is not None:
             novelty_kwargs = dict(
@@ -1294,6 +1211,29 @@ class _DashboardMixin:
                 most_similar_to=nov.most_similar_to,
                 novelty_confidence=nov.novelty_confidence,
             )
+        return novelty_kwargs
+
+    def _record_persist_result(
+        self,
+        nb,
+        exp_id: str,
+        graph,
+        s1_result: Dict,
+        s1_passed: bool,
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        results: Dict,
+        loss_ratio,
+        final_loss,
+        throughput,
+        training_curve,
+    ) -> Optional[str]:
+        """Persist result to notebook and store training curve.
+
+        Returns result_id or None.
+        """
+        funnel = results.setdefault("funnel_counts", {})
+
         # Compute NCD before recording so values go into the initial INSERT
         if training_curve:
             try:
@@ -1352,8 +1292,20 @@ class _DashboardMixin:
                     "Screening benchmark payload persist failed for %s: %s", rid, e
                 )
 
-        # Every S1 survivor gets a screening-tier leaderboard entry
-        # flush async writes so program_results row exists before FK-dependent upsert
+        return rid
+
+    def _record_leaderboard_and_best(
+        self,
+        nb,
+        rid: Optional[str],
+        graph,
+        s1_passed: bool,
+        program_metrics: Dict[str, Any],
+        novelty_kwargs: Dict[str, Any],
+        results: Dict,
+        loss_ratio,
+    ) -> None:
+        """Upsert screening leaderboard entry and update best metrics."""
         if s1_passed and rid:
             nb.flush_writes()
             try:
@@ -1413,6 +1365,177 @@ class _DashboardMixin:
         except (KeyError, TypeError) as e:
             logger.debug("Best novelty score update failed: %s", e)
 
+    def _record_merge_metrics(
+        self,
+        jr,
+        graph,
+        s1_result: Dict,
+        program_metrics: Dict[str, Any],
+        results: Dict,
+        config,
+    ) -> None:
+        """Merge training result metrics, efficiency, and perf traces."""
+        self._merge_train_result_metrics(program_metrics, s1_result, config)
+        self._merge_s1_telemetry(program_metrics, s1_result)
+
+        from .synthesis import _graph_is_moe
+
+        try:
+            from ..leaderboard_scoring import compute_efficiency_multiple
+
+            eff = compute_efficiency_multiple(
+                loss_ratio=s1_result.get("loss_ratio"),
+                param_count=program_metrics.get("param_count"),
+                forward_time_ms=s1_result.get("forward_time_ms"),
+                peak_memory_mb=s1_result.get("peak_memory_mb"),
+                throughput_tok_s=s1_result.get("throughput"),
+                is_moe=_graph_is_moe(graph) if graph else False,
+            )
+            if eff:
+                program_metrics["efficiency_multiple"] = eff["geomean"]
+        except (ImportError, TypeError, ValueError) as e:
+            logger.debug("Efficiency multiple computation failed: %s", e)
+
+        self._merge_perf_traces(jr, s1_result, program_metrics, results)
+
+    def _merge_perf_traces(
+        self,
+        jr,
+        s1_result: Dict,
+        program_metrics: Dict[str, Any],
+        results: Dict,
+    ) -> None:
+        """Merge perf/starvation/kernel traces into program_metrics and results."""
+        perf_report = s1_result.get("perf_report", s1_result.get("perf_traces"))
+        if perf_report:
+            program_metrics["perf_report_json"] = json.dumps(json_safe(perf_report))
+            results.setdefault("_perf_traces", []).append(perf_report)
+
+        starvation_report = s1_result.get(
+            "starvation_report", s1_result.get("gpu_starvation")
+        )
+        if starvation_report:
+            program_metrics["starvation_report_json"] = json.dumps(
+                json_safe(starvation_report)
+            )
+            results.setdefault("_gpu_starvation", []).append(starvation_report)
+
+        kernel_timings = s1_result.get(
+            "kernel_timings_ms", s1_result.get("kernel_timing")
+        )
+        if kernel_timings:
+            program_metrics["kernel_timings_json"] = json.dumps(
+                json_safe(kernel_timings)
+            )
+            results.setdefault("_kernel_timing", []).append(kernel_timings)
+
+        if getattr(jr, "telemetry", None):
+            program_metrics["queue_telemetry_json"] = json.dumps(
+                json_safe(jr.telemetry)
+            )
+
+    def _record_orchestrator_result(self, jr, nb, exp_id, results, config):
+        """Record a single result from the orchestrator into the notebook."""
+        s1_result = jr.s1_result
+        program_metrics = jr.payload["metrics"]
+        graph = jr.payload["graph"]
+        i = jr.index
+        screening_seed = int(jr.payload.get("screening_seed") or 0)
+
+        # Step 1: S0.9 routing
+        promoted_to_stage1, s1_result = self._record_route_s09_to_s1(
+            jr, graph, config, results, program_metrics, s1_result, screening_seed, i
+        )
+
+        funnel = results.setdefault("funnel_counts", {})
+        if promoted_to_stage1:
+            funnel["stage1_completed"] = int(funnel.get("stage1_completed", 0)) + 1
+
+        s1_passed = s1_result.get("passed", False)
+        loss_ratio = s1_result.get("loss_ratio")
+        final_loss = s1_result.get("final_loss")
+        throughput = s1_result.get("throughput")
+        training_curve = s1_result.get("training_curve")
+
+        # Step 2: Merge train metrics, efficiency, and perf traces
+        self._record_merge_metrics(
+            jr, graph, s1_result, program_metrics, results, config
+        )
+
+        # Step 3: S1 survivor processing
+        if s1_passed:
+            results["stage1_passed"] += 1
+            funnel["stage1_survived"] = int(funnel.get("stage1_survived", 0)) + 1
+            with self._lock:
+                self._progress.stage1_passed += 1
+
+            logger.info(
+                "  ★ S1 SURVIVOR [%d] %s — loss_ratio=%.4f, params=%s",
+                i + 1,
+                graph.fingerprint()[:10],
+                loss_ratio or 0,
+                f"{program_metrics.get('param_count', 0):,}",
+            )
+
+            # Baseline comparisons
+            self._record_baseline_comparisons(
+                final_loss, s1_result, config, program_metrics
+            )
+
+            # Diagnostic suite (informational only at screening tier)
+            try:
+                diag_dev = str(config.device) if torch.cuda.is_available() else "cpu"
+                diag_model = compile_model(
+                    [graph], vocab_size=config.vocab_size, max_seq_len=64
+                )
+                diag_result = run_diagnostic_suite(
+                    diag_model, device=diag_dev, n_steps=50
+                )
+                program_metrics["diagnostic_score"] = diag_result.diagnostic_score
+                program_metrics["diagnostic_tasks_json"] = json.dumps(
+                    json_safe(diag_result.to_dict())
+                )
+            except (ImportError, RuntimeError, ValueError) as e:
+                logger.debug(
+                    "Diagnostic suite failed for %s: %s", graph.fingerprint()[:10], e
+                )
+
+        # Step 4: Novelty scoring
+        novelty_kwargs = {}
+        if s1_passed:
+            novelty_kwargs = self._record_compute_novelty(
+                s1_result, graph, config, nb, program_metrics
+            )
+
+        # Step 5: Persist result
+        rid = self._record_persist_result(
+            nb=nb,
+            exp_id=exp_id,
+            graph=graph,
+            s1_result=s1_result,
+            s1_passed=s1_passed,
+            program_metrics=program_metrics,
+            novelty_kwargs=novelty_kwargs,
+            results=results,
+            loss_ratio=loss_ratio,
+            final_loss=final_loss,
+            throughput=throughput,
+            training_curve=training_curve,
+        )
+
+        # Step 5b: Leaderboard + best metrics
+        self._record_leaderboard_and_best(
+            nb=nb,
+            rid=rid,
+            graph=graph,
+            s1_passed=s1_passed,
+            program_metrics=program_metrics,
+            novelty_kwargs=novelty_kwargs,
+            results=results,
+            loss_ratio=loss_ratio,
+        )
+
+        # Step 6: Emit event
         self._emit_event(
             "program_evaluated",
             {

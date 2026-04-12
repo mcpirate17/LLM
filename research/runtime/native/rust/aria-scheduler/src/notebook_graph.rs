@@ -13,6 +13,8 @@ pub struct NotebookGraph {
     pub nodes: HashMap<String, NotebookNode>,
     #[serde(default)]
     pub metadata: Value,
+    #[serde(default)]
+    pub output_node_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,7 +158,7 @@ impl NotebookGraph {
         order
     }
 
-    pub fn fingerprint(&self) -> Result<String, AriaError> {
+pub fn fingerprint(&self) -> Result<String, AriaError> {
         let order = self.canonical_topological_order();
         let mut id_to_rank = HashMap::with_capacity(order.len());
         for (idx, node_id) in order.iter().enumerate() {
@@ -198,6 +200,34 @@ impl NotebookGraph {
     fn node_by_id(&self, node_id: i64) -> Option<&NotebookNode> {
         self.nodes.values().find(|node| node.id == node_id)
     }
+}
+
+pub fn extract_graph_ops_json(json: &str) -> Result<Vec<String>, AriaError> {
+    let value: Value =
+        serde_json::from_str(json).map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let Some(nodes) = value.get("nodes").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+
+    let mut ops: Vec<String> = nodes
+        .values()
+        .filter_map(|node| {
+            let obj = node.as_object()?;
+            let op_name = obj
+                .get("op_name")
+                .and_then(Value::as_str)
+                .or_else(|| obj.get("op").and_then(Value::as_str))
+                .unwrap_or("")
+                .trim();
+            if op_name.is_empty() || op_name == "input" {
+                return None;
+            }
+            Some(op_name.to_string())
+        })
+        .collect();
+    ops.sort();
+    ops.dedup();
+    Ok(ops)
 }
 
 fn routing_compression_string(metadata: &Value) -> String {

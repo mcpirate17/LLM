@@ -62,6 +62,24 @@ def language_model_loss(
         )
 
 
+def clip_grad_norm(
+    parameters: Iterable[torch.Tensor],
+    max_norm: float,
+) -> torch.Tensor:
+    """Clip dense gradients through the native runner when possible."""
+    params = [param for param in parameters if param.grad is not None]
+    if not params:
+        return torch.zeros((), dtype=torch.float32)
+    try:
+        return load_runner_native().clip_grad_norm_(
+            [param.grad for param in params],
+            float(max_norm),
+            1e-6,
+        )
+    except Exception:
+        return torch.nn.utils.clip_grad_norm_(params, max_norm)
+
+
 def move_batches_to_device(
     batches: Sequence[torch.Tensor],
     device: str | torch.device,
@@ -278,6 +296,49 @@ def compute_grad_norm(model: nn.Module) -> float:
         return total**0.5
 
 
+def _pad_sequences_python(
+    sequences: list[list[int]],
+    device: str | torch.device,
+) -> tuple[torch.Tensor, int]:
+    """Fallback: pad variable-length sequences into (batch, max_len) int64 tensor."""
+    max_len = max((len(s) for s in sequences), default=0)
+    if max_len == 0:
+        return torch.zeros((len(sequences), 1), dtype=torch.long), 0
+    padded_np = np.zeros((len(sequences), max_len), dtype=np.int64)
+    for row, seq in enumerate(sequences):
+        seq_np = np.asarray(seq, dtype=np.int64)
+        padded_np[row, : seq_np.size] = seq_np
+    padded = torch.from_numpy(padded_np)
+    dev = torch.device(device)
+    if dev.type == "cuda":
+        padded = padded.pin_memory().to(dev, non_blocking=True)
+    elif dev != torch.device("cpu"):
+        padded = padded.to(dev)
+    return padded, max_len
+
+
+def _span_mean_python(
+    token_lps: torch.Tensor,
+    starts: torch.Tensor,
+    lengths: torch.Tensor,
+    max_len: int,
+    dev: torch.device,
+) -> torch.Tensor:
+    """Fallback: compute span-masked mean token log-probs."""
+    positions = torch.arange(max_len - 1, device=dev).unsqueeze(0)
+    span_mask = (positions >= starts.unsqueeze(1)) & (
+        positions < (lengths - 1).unsqueeze(1)
+    )
+    token_counts = span_mask.sum(dim=1)
+    n = token_lps.size(0)
+    mean_lps = torch.full((n,), float("-inf"), dtype=torch.float32, device=dev)
+    valid_spans = token_counts > 0
+    if bool(valid_spans.any()):
+        sums = (token_lps * span_mask).sum(dim=1)
+        mean_lps[valid_spans] = sums[valid_spans] / token_counts[valid_spans]
+    return mean_lps
+
+
 @torch.no_grad()
 def batched_span_mean_log_probs(
     model: nn.Module,
@@ -302,26 +363,30 @@ def batched_span_mean_log_probs(
     if not bool(valid.any()):
         return torch.full((n_seq,), float("-inf"), dtype=torch.float32)
 
-    dev = torch.device(device)
     valid_idx = valid.nonzero(as_tuple=False).squeeze(1)
     valid_idx_list = valid_idx.tolist()
-    valid_lengths_cpu = lengths[valid_idx]
     valid_starts_cpu = starts[valid_idx]
-    max_len = int(valid_lengths_cpu.max().item())
-    valid_count = len(valid_idx_list)
+    valid_lengths_cpu = lengths[valid_idx]
 
-    padded_np = np.zeros((valid_count, max_len), dtype=np.int64)
-    for row, seq_idx in enumerate(valid_idx_list):
-        seq_np = np.asarray(sequences[seq_idx], dtype=np.int64)
-        padded_np[row, : seq_np.size] = seq_np
+    # Try native padding (eliminates Python loop + numpy intermediary)
+    _native_ext = None
+    try:
+        from ._eval_native import load_eval_native
 
-    padded = torch.from_numpy(padded_np)
-    if dev.type == "cuda":
-        padded = padded.pin_memory().to(dev, non_blocking=True)
-    else:
-        padded = padded.to(dev)
-    valid_lengths = valid_lengths_cpu.to(dev, non_blocking=(dev.type == "cuda"))
-    valid_starts = valid_starts_cpu.to(dev, non_blocking=(dev.type == "cuda"))
+        _native_ext = load_eval_native()
+        valid_seqs = [list(sequences[i]) for i in valid_idx_list]
+        padded, valid_lengths_dev, max_len = _native_ext.pad_sequences_native(
+            valid_seqs, str(device)
+        )
+        dev = padded.device
+        valid_starts_dev = valid_starts_cpu.to(dev, non_blocking=(dev.type == "cuda"))
+    except Exception:
+        _native_ext = None
+        valid_seqs_py = [list(sequences[i]) for i in valid_idx_list]
+        padded, max_len = _pad_sequences_python(valid_seqs_py, device)
+        dev = padded.device
+        valid_lengths_dev = valid_lengths_cpu.to(dev, non_blocking=(dev.type == "cuda"))
+        valid_starts_dev = valid_starts_cpu.to(dev, non_blocking=(dev.type == "cuda"))
 
     logits = model(padded)
     if logits.shape[-1] > vocab_size:
@@ -330,24 +395,24 @@ def batched_span_mean_log_probs(
     targets = padded[:, 1:]
     token_lps = log_probs.gather(2, targets.unsqueeze(2)).squeeze(2)
 
-    positions = torch.arange(max_len - 1, device=dev).unsqueeze(0)
-    span_mask = (positions >= valid_starts.unsqueeze(1)) & (
-        positions < (valid_lengths - 1).unsqueeze(1)
-    )
-    token_counts = span_mask.sum(dim=1)
-    mean_lps = torch.full(
-        (valid_count,), float("-inf"), dtype=torch.float32, device=dev
-    )
-    valid_spans = token_counts > 0
-    if bool(valid_spans.any()):
-        sums = (token_lps * span_mask).sum(dim=1)
-        mean_lps[valid_spans] = sums[valid_spans] / token_counts[valid_spans]
+    # Try native span scoring
+    if _native_ext is not None:
+        try:
+            mean_lps = _native_ext.span_mean_log_probs_native(
+                token_lps, valid_starts_dev, valid_lengths_dev, max_len
+            )
+        except Exception:
+            mean_lps = _span_mean_python(
+                token_lps, valid_starts_dev, valid_lengths_dev, max_len, dev
+            )
+    else:
+        mean_lps = _span_mean_python(
+            token_lps, valid_starts_dev, valid_lengths_dev, max_len, dev
+        )
 
     out = torch.full((n_seq,), float("-inf"), dtype=torch.float32, device=dev)
     out[valid_idx] = mean_lps
-    if dev.type == "cpu":
-        return out
-    return out.cpu()
+    return out.cpu() if dev.type != "cpu" else out
 
 
 def iter_eligible_params(

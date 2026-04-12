@@ -1,53 +1,43 @@
 import React, { useState } from 'react';
 import { scoreColor } from '../../utils/format';
-import { candidateScore, candidateScoreBreakdown, TIER_ORDER } from '../../utils/scoringEngine';
 
 export function ScoreBreakdown({ entry }) {
   const [show, setShow] = useState(false);
-  const breakdown = candidateScoreBreakdown(entry, TIER_ORDER);
-  const score = candidateScore(entry, TIER_ORDER);
+  const breakdown = entry?.score_breakdown || {};
+  const score = Number(entry?.composite_score || 0);
 
   const keyMap = {
-    sLoss: { label: 'Screening Loss', color: 'var(--accent-blue)' },
-    iLoss: { label: 'Investigation Loss', color: '#1f6feb' },
-    loss: { label: 'Loss', color: 'var(--accent-blue)' },
+    perf_short: { label: 'Screening Loss', color: 'var(--accent-blue)' },
+    perf_medium: { label: 'Investigation Loss', color: '#1f6feb' },
+    perf_long: { label: 'Validation Loss', color: 'var(--accent-green)' },
     novelty: { label: 'Novelty', color: 'var(--accent-purple)' },
-    vBase: { label: 'Baseline', color: 'var(--accent-green)' },
-    baseline: { label: 'Baseline', color: 'var(--accent-green)' },
-    robust: { label: 'Robustness', color: 'var(--accent-yellow)' },
-    consistency: { label: 'Consistency', color: '#d29922' },
-    tierBonus: { label: 'Tier Bonus', color: 'var(--accent-orange)' },
-    throughput: { label: 'Throughput', color: 'var(--text-muted)' },
-    efficiencyBonus: { label: 'Efficiency', color: '#58a6ff' },
-    routingBonus: { label: 'Routing', color: '#3fb950' },
-    adaptiveBonus: { label: 'Adaptive Compute', color: '#c77dff' },
-    bindingBonus: { label: 'Binding Range', color: '#a371f7' },
-    blimpBonus: { label: 'BLiMP Linguistic', color: '#79c0ff' },
-    routingOverheadPenalty: { label: 'Routing Overhead', color: 'var(--accent-red)' },
-    sparsityBonus: { label: 'Sparsity', color: '#56d364' },
-    learningSpeedBonus: { label: 'Learning Speed', color: '#db61a2' },
-    externalComparisonBonus: { label: 'vs Baseline', color: '#f0883e' },
-    referenceDeltaBonus: { label: 'Ref Delta', color: '#e3b341' },
-    robustnessBonus: { label: 'Robustness Bonus', color: '#d29922' },
+    robustness: { label: 'Robustness', color: 'var(--accent-yellow)' },
+    long_context: { label: 'Long Context', color: '#79c0ff' },
+    speed: { label: 'Speed', color: 'var(--text-muted)' },
+    binding: { label: 'Binding Range', color: '#a371f7' },
+    blimp: { label: 'BLiMP Linguistic', color: '#79c0ff' },
+    compression: { label: 'Compression', color: '#56d364' },
+    sparsity: { label: 'Sparsity', color: '#3fb950' },
+    adaptive_computation: { label: 'Adaptive Compute', color: '#c77dff' },
+    routing_savings: { label: 'Routing', color: '#58a6ff' },
+    param_efficiency: { label: 'Param Efficiency', color: '#e3b341' },
+    learning_efficiency: { label: 'Learning Efficiency', color: '#db61a2' },
+    early_convergence: { label: 'Early Convergence', color: '#f0883e' },
+    cross_task: { label: 'Cross Task', color: '#3fb950' },
+    diagnostic: { label: 'Diagnostic', color: '#d29922' },
+    hellaswag: { label: 'HellaSwag', color: 'var(--accent-orange)' },
+    hierarchy: { label: 'Hierarchy', color: '#58a6ff' },
+    tinystories: { label: 'TinyStories', color: '#56d364' },
   };
 
   const positives = Object.entries(breakdown)
-    .filter(([, weight]) => weight > 0)
+    .filter(([key, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0 && !key.includes('penalty'))
     .map(([key, weight]) => ({
       key,
-      weight,
+      weight: Number(weight),
       ...(keyMap[key] || { label: key, color: 'var(--border)' })
     }));
 
-  const penalties = Object.entries(breakdown)
-    .filter(([, weight]) => weight < 0)
-    .map(([key, weight]) => ({
-      key,
-      weight,
-      ...(keyMap[key] || { label: key, color: 'var(--accent-red)' })
-    }));
-
-  const components = [...positives, ...penalties];
   const total = positives.reduce((acc, c) => acc + (Number(c.weight) || 0), 0) || 1;
 
   return (
@@ -100,19 +90,6 @@ export function ScoreBreakdown({ entry }) {
               </div>
             </div>
           ))}
-          {penalties.length > 0 && (
-            <>
-              <div style={{ borderTop: '1px solid var(--border)', margin: '6px 0', paddingTop: 4, fontWeight: 600, fontSize: 10, color: 'var(--accent-red)' }}>Penalties</div>
-              {penalties.map(c => (
-                <div key={`pen-${c.key}`} style={{ marginBottom: 4 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--accent-red)' }}>{c.label}</span>
-                    <span style={{ color: 'var(--accent-red)', fontWeight: 600 }}>{Number(c.weight).toFixed(1)}</span>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Internal composite only.</div>
         </div>
       )}

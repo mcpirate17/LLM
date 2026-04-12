@@ -485,8 +485,22 @@ class _ExperimentsMixin:
         """Delete an experiment and all FK-dependent child rows.
 
         Deletion order respects FK chains:
+        attribution_reports → hypotheses → experiments,
         healer_task_events → healer_tasks → experiments, etc.
         """
+        # attribution_reports → hypotheses (grandchild)
+        hypothesis_rows = self.conn.execute(
+            "SELECT hypothesis_id FROM hypotheses WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchall()
+        if hypothesis_rows:
+            hypothesis_ids = [r[0] for r in hypothesis_rows]
+            ph = ",".join("?" for _ in hypothesis_ids)
+            self.conn.execute(
+                f"DELETE FROM attribution_reports WHERE hypothesis_id IN ({ph})",
+                hypothesis_ids,
+            )
+
         # healer_task_events → healer_tasks (grandchild)
         task_rows = self.conn.execute(
             "SELECT task_id FROM healer_tasks WHERE experiment_id = ?",
@@ -672,7 +686,11 @@ class _ExperimentsMixin:
 
     def get_latest_completed_experiment_timestamp(self) -> float:
         row = self.conn.execute(
-            "SELECT MAX(timestamp) AS latest_ts FROM experiments WHERE status = 'completed'"
+            "SELECT MAX(timestamp) AS latest_ts FROM experiments "
+            "WHERE status = 'completed' "
+            "   OR (status = 'failed' "
+            "       AND n_programs_generated > 0 "
+            "       AND aria_summary LIKE 'REPAIRED FROM INTERRUPTED:%')"
         ).fetchone()
         if not row:
             return 0.0
@@ -720,6 +738,9 @@ class _ExperimentsMixin:
                       best_loss_ratio, best_novelty_score, duration_seconds
                FROM experiments
                WHERE status = 'completed'
+                  OR (status = 'failed'
+                      AND n_programs_generated > 0
+                      AND aria_summary LIKE 'REPAIRED FROM INTERRUPTED:%')
                ORDER BY timestamp ASC
                LIMIT ?""",
             (limit,),

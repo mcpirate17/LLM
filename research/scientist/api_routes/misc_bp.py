@@ -41,13 +41,24 @@ def _proxy_designer_ui(subpath: str = ""):
         logger.warning("Designer UI proxy failed for %s: %s", upstream, exc)
         return Response("Designer UI unavailable", status=502)
 
+    body = upstream_response.content
+    content_type = upstream_response.headers.get("Content-Type", "")
+    if "text/html" in content_type:
+        html = upstream_response.text
+        html = html.replace(
+            'from "/@react-refresh"', 'from "/designer-proxy/@react-refresh"'
+        )
+        html = html.replace('src="/@vite/client"', 'src="/designer-proxy/@vite/client"')
+        html = html.replace('src="/src/main.jsx"', 'src="/designer-proxy/src/main.jsx"')
+        body = html.encode(upstream_response.encoding or "utf-8")
+
     headers = [
         (key, value)
         for key, value in upstream_response.headers.items()
         if key.lower() not in _HOP_BY_HOP_HEADERS
     ]
     return Response(
-        upstream_response.content,
+        body,
         status=upstream_response.status_code,
         headers=headers,
     )

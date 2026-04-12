@@ -31,6 +31,26 @@ pytestmark = pytest.mark.native
 # ---------------------------------------------------------------------------
 
 
+def _setup_rust_dispatch(monkeypatch, fake_rust, *, compile_handle=None):
+    """Common monkeypatch setup for Rust dispatch tests."""
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_prepare_graph_input",
+        lambda graph, input_data: (np.zeros((1, 2, 4), dtype=np.float32), "fake-ir"),
+    )
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_try_import_rust_scheduler",
+        lambda: fake_rust,
+    )
+    if compile_handle is not None:
+        monkeypatch.setattr(
+            native_dispatch_module,
+            "_compile_rust_graph_handle",
+            lambda ir: compile_handle,
+        )
+
+
 def _make_simple_graph(
     model_dim: int = 4, ops: list[str] | None = None
 ) -> ComputationGraph:
@@ -301,16 +321,7 @@ def test_dispatch_graph_forward_saved_prefers_rust(monkeypatch):
                 "arena_capacity": 128,
             }
 
-    monkeypatch.setattr(
-        native_dispatch_module,
-        "_prepare_graph_input",
-        lambda graph, input_data: (np.zeros((1, 2, 4), dtype=np.float32), "fake-ir"),
-    )
-    monkeypatch.setattr(
-        native_dispatch_module,
-        "_try_import_rust_scheduler",
-        lambda: FakeRust(),
-    )
+    _setup_rust_dispatch(monkeypatch, FakeRust())
 
     result = native_dispatch_module.dispatch_graph_forward_native_saved(
         g, np.zeros((1, 2, 4), dtype=np.float32)
@@ -323,6 +334,102 @@ def test_dispatch_graph_forward_saved_prefers_rust(monkeypatch):
     assert set(result["saved_activations"]) == {0, 1}
     assert result["arena_bytes_used"] == 64
     assert result["arena_capacity"] == 128
+
+
+def test_dispatch_graph_forward_saved_prefers_rust_array_buffers(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_forward_saved_arrays(graph_json, input_array):
+            assert graph_json == "fake-ir"
+            assert input_array.shape == (1, 2, 4)
+            return {
+                "output": np.ones((1, 2, 4), dtype=np.float32),
+                "saved_activations": {
+                    0: np.zeros((1, 2, 4), dtype=np.float32),
+                    1: np.ones((1, 2, 4), dtype=np.float32),
+                },
+                "arena_bytes_used": 64,
+                "arena_capacity": 128,
+            }
+
+        @staticmethod
+        def execute_graph_forward_saved(graph_json, input_flat):
+            raise AssertionError("list fallback should not be used")
+
+    _setup_rust_dispatch(monkeypatch, FakeRust())
+
+    result = native_dispatch_module.dispatch_graph_forward_native_saved(
+        g, np.zeros((1, 2, 4), dtype=np.float32)
+    )
+
+    assert result["output"].shape == (1, 2, 4)
+    np.testing.assert_array_equal(
+        result["output"], np.ones((1, 2, 4), dtype=np.float32)
+    )
+    assert set(result["saved_activations"]) == {0, 1}
+
+
+def test_dispatch_graph_forward_saved_prefers_rust_saved_state_handle(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+    saved_state = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_forward_saved_arrays_handle(graph_json, input_array):
+            assert graph_json == "fake-ir"
+            assert input_array.shape == (1, 2, 4)
+            return {
+                "output": np.ones((1, 2, 4), dtype=np.float32),
+                "saved_state": saved_state,
+                "arena_bytes_used": 64,
+                "arena_capacity": 128,
+            }
+
+        @staticmethod
+        def execute_graph_forward_saved_arrays(graph_json, input_array):
+            raise AssertionError("dict fallback should not be used")
+
+    _setup_rust_dispatch(monkeypatch, FakeRust())
+
+    result = native_dispatch_module.dispatch_graph_forward_native_saved(
+        g, np.zeros((1, 2, 4), dtype=np.float32)
+    )
+
+    assert result["saved_activations"] is saved_state
+    assert result["output"].shape == (1, 2, 4)
+
+
+def test_dispatch_graph_forward_saved_prefers_compiled_graph_handle(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+    saved_state = object()
+    compiled_graph = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_forward_saved_compiled_arrays_handle(handle, input_array):
+            assert handle is compiled_graph
+            assert input_array.shape == (1, 2, 4)
+            return {
+                "output": np.ones((1, 2, 4), dtype=np.float32),
+                "saved_state": saved_state,
+                "arena_bytes_used": 64,
+                "arena_capacity": 128,
+            }
+
+        @staticmethod
+        def execute_graph_forward_saved_arrays_handle(graph_json, input_array):
+            raise AssertionError("json path should not be used")
+
+    _setup_rust_dispatch(monkeypatch, FakeRust(), compile_handle=compiled_graph)
+
+    result = native_dispatch_module.dispatch_graph_forward_native_saved(
+        g, np.zeros((1, 2, 4), dtype=np.float32)
+    )
+
+    assert result["saved_activations"] is saved_state
+    assert result["output"].shape == (1, 2, 4)
 
 
 def test_dispatch_graph_backward_prefers_rust(monkeypatch):
@@ -355,6 +462,154 @@ def test_dispatch_graph_backward_prefers_rust(monkeypatch):
     assert set(result) == {0, 1}
     np.testing.assert_array_equal(result[0], np.full(8, 2.0, dtype=np.float32))
     np.testing.assert_array_equal(result[1], np.full(8, 1.0, dtype=np.float32))
+
+
+def test_dispatch_graph_backward_prefers_rust_array_buffers(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_backward_arrays(graph_json, grad_output, saved_activations):
+            assert graph_json == "fake-ir"
+            assert grad_output.shape == (1, 2, 4)
+            assert saved_activations[0].shape == (1, 2, 4)
+            return {
+                "grads": {
+                    0: np.full((8,), 2.0, dtype=np.float32),
+                    1: np.full((8,), 1.0, dtype=np.float32),
+                },
+                "arena_bytes_used": 32,
+            }
+
+        @staticmethod
+        def execute_graph_backward(graph_json, grad_output, saved_activations):
+            raise AssertionError("list fallback should not be used")
+
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_try_import_rust_scheduler",
+        lambda: FakeRust(),
+    )
+
+    result = native_dispatch_module.dispatch_graph_backward_native(
+        g,
+        np.ones((1, 2, 4), dtype=np.float32),
+        {0: np.zeros((1, 2, 4), dtype=np.float32)},
+        ir_json="fake-ir",
+    )
+
+    assert set(result) == {0, 1}
+    np.testing.assert_array_equal(result[0], np.full(8, 2.0, dtype=np.float32))
+    np.testing.assert_array_equal(result[1], np.full(8, 1.0, dtype=np.float32))
+
+
+def test_dispatch_graph_backward_prefers_rust_saved_state_handle(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+    saved_state = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_backward_arrays_handle(graph_json, grad_output, saved_handle):
+            assert graph_json == "fake-ir"
+            assert grad_output.shape == (1, 2, 4)
+            assert saved_handle is saved_state
+            return {
+                "grads": {
+                    0: np.full((8,), 2.0, dtype=np.float32),
+                    1: np.full((8,), 1.0, dtype=np.float32),
+                },
+                "arena_bytes_used": 32,
+            }
+
+        @staticmethod
+        def execute_graph_backward_arrays(graph_json, grad_output, saved_activations):
+            raise AssertionError("dict fallback should not be used")
+
+    monkeypatch.setattr(
+        native_dispatch_module,
+        "_try_import_rust_scheduler",
+        lambda: FakeRust(),
+    )
+
+    result = native_dispatch_module.dispatch_graph_backward_native(
+        g,
+        np.ones((1, 2, 4), dtype=np.float32),
+        saved_state,
+        ir_json="fake-ir",
+    )
+
+    assert set(result) == {0, 1}
+    np.testing.assert_array_equal(result[0], np.full(8, 2.0, dtype=np.float32))
+
+
+def test_dispatch_graph_backward_prefers_compiled_graph_handle(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+    saved_state = object()
+    compiled_graph = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_backward_compiled_arrays_handle(
+            handle, grad_output, saved_handle
+        ):
+            assert handle is compiled_graph
+            assert grad_output.shape == (1, 2, 4)
+            assert saved_handle is saved_state
+            return {
+                "grads": {
+                    0: np.full((8,), 2.0, dtype=np.float32),
+                    1: np.full((8,), 1.0, dtype=np.float32),
+                },
+                "arena_bytes_used": 32,
+            }
+
+        @staticmethod
+        def execute_graph_backward_arrays_handle(graph_json, grad_output, saved_handle):
+            raise AssertionError("json path should not be used")
+
+    _setup_rust_dispatch(monkeypatch, FakeRust(), compile_handle=compiled_graph)
+
+    result = native_dispatch_module.dispatch_graph_backward_native(
+        g,
+        np.ones((1, 2, 4), dtype=np.float32),
+        saved_state,
+        ir_json="fake-ir",
+    )
+
+    assert set(result) == {0, 1}
+    np.testing.assert_array_equal(result[0], np.full(8, 2.0, dtype=np.float32))
+
+
+def test_dispatch_graph_native_cached_prefers_compiled_graph_handle(monkeypatch):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+    compiled_graph = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_with_stats_compiled_arrays(handle, input_array):
+            assert handle is compiled_graph
+            assert input_array.shape == (1, 2, 4)
+            return {
+                "output": np.ones((8,), dtype=np.float32),
+                "arena_bytes_used": 64,
+                "arena_capacity": 128,
+                "arena_alloc_count": 1,
+                "heap_fallback_count": 0,
+            }
+
+        @staticmethod
+        def execute_graph_with_stats_arrays(ir_json, input_array):
+            raise AssertionError("json path should not be used")
+
+    _setup_rust_dispatch(monkeypatch, FakeRust(), compile_handle=compiled_graph)
+
+    result = native_dispatch_module.dispatch_graph_native_cached(
+        "fake-ir",
+        g,
+        np.zeros((1, 2, 4), dtype=np.float32),
+    )
+
+    assert result.shape == (1, 2, 4)
 
 
 # ---------------------------------------------------------------------------

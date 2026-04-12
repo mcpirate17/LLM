@@ -606,12 +606,16 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
         model_dim=budget.get("model_dim", MODEL_DIM),
         vocab_size=budget.get("vocab_size", VOCAB_SIZE),
         device=budget.get("device", "cpu"),
-        run_fingerprint=budget.get("run_fingerprint", False),
-        run_novelty=budget.get("run_novelty", False),
+        run_fingerprint=budget.get("run_fingerprint", True),
+        run_novelty=budget.get("run_novelty", True),
         batch_size=budget.get("batch_size", 2),
         seq_len=budget.get("seq_len", 128),
     )
     result_dict = result.to_dict()
+    result_dict.setdefault("result_cohort", "designer")
+    result_dict.setdefault("trust_label", "exploratory")
+    result_dict.setdefault("comparability_label", "partial")
+    result_dict.setdefault("evaluation_protocol_version", "designer_bridge_v1")
     result_dict["benchmarking"] = build_benchmark_analysis(
         result_dict,
         external_observed=budget.get("benchmark_observed"),
@@ -665,6 +669,11 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
             "sandbox_passed": result_dict.get("sandbox_passed"),
             "overall_novelty": result_dict.get("overall_novelty"),
             "efficiency_score": result_dict.get("efficiency_score"),
+            "trust_label": result_dict.get("trust_label"),
+            "comparability_label": result_dict.get("comparability_label"),
+            "evaluation_protocol_version": result_dict.get(
+                "evaluation_protocol_version"
+            ),
             "benchmark_target_score": dig(
                 result_dict, "benchmarking", "summary", "score"
             ),

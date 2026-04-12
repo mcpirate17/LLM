@@ -7,6 +7,11 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
   const [details, setDetails] = useState([]);
   const [loading, setLoading] = useState(false);
 
+  const fmt = (value, digits = 4) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toFixed(digits) : '--';
+  };
+
   useEffect(() => {
     async function fetchDetails() {
       if (comparisonList.length === 0) {
@@ -16,7 +21,33 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
       setLoading(true);
       try {
         const results = await Promise.all(
-          comparisonList.map(id => apiCall(`/api/reproducibility-manifest/${id}`).then(r => r.json()))
+          comparisonList.map(async (id) => {
+            const [programRes, manifestRes] = await Promise.all([
+              apiCall(`/api/programs/${id}`),
+              apiCall(`/api/reproducibility-manifest/${id}`),
+            ]);
+            const [program, manifest] = await Promise.all([
+              programRes.json().catch(() => ({})),
+              manifestRes.json().catch(() => ({})),
+            ]);
+            if (!programRes.ok || program?.error) {
+              return { error: program?.error || `Failed to load ${id}` };
+            }
+            return {
+              result_id: id,
+              program,
+              manifest: manifest?.error ? null : manifest,
+              outcomes: {
+                ...(manifest?.outcomes || {}),
+                loss_ratio: program?.loss_ratio ?? manifest?.outcomes?.loss_ratio,
+                discovery_loss_ratio: program?.discovery_loss_ratio ?? manifest?.outcomes?.discovery_loss_ratio,
+                validation_loss_ratio: program?.validation_loss_ratio ?? manifest?.outcomes?.validation_loss_ratio,
+                novelty_score: program?.novelty_score ?? manifest?.outcomes?.novelty_score,
+                baseline_loss_ratio: program?.baseline_loss_ratio ?? manifest?.outcomes?.baseline_loss_ratio,
+                validation_baseline_ratio: program?.validation_baseline_ratio ?? manifest?.outcomes?.validation_baseline_ratio,
+              },
+            };
+          })
         );
         setDetails(results.filter(r => !r.error));
       } catch (e) {
@@ -140,6 +171,9 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
       </div>
 
       <div className="card" style={{ padding: 16 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Comparison uses the full program record. Open any row for the complete fingerprint, robustness, and benchmark panels.
+        </div>
         <div style={{ height: 400 }}>
           <ResponsiveContainer width="100%" height="100%">
             <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
@@ -181,19 +215,42 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
             <tbody>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Validation LR</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{d.outcomes?.validation_loss_ratio?.toFixed(4) || '--'}</td>)}
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.validation_loss_ratio ?? d.outcomes?.validation_loss_ratio)}</td>)}
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Discovery LR</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{d.outcomes?.discovery_loss_ratio?.toFixed(4) || '--'}</td>)}
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.discovery_loss_ratio ?? d.outcomes?.discovery_loss_ratio)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>Loss Ratio</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.loss_ratio ?? d.outcomes?.loss_ratio)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>Baseline Ratio</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.baseline_loss_ratio ?? d.outcomes?.baseline_loss_ratio)}</td>)}
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Novelty</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{d.outcomes?.novelty_score?.toFixed(3) || '--'}</td>)}
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.novelty_score ?? d.outcomes?.novelty_score, 3)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>Spectral</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.fp_jacobian_spectral_norm ?? d.program?.jacobian_spectral_norm)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>HellaSwag</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.hellaswag_acc, 3)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>Induction AUC</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.induction_auc, 3)}</td>)}
               </tr>
               <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Params</td>
-                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{(d.program?.param_count / 1e6).toFixed(1)}M</td>)}
+                {details.map(d => {
+                  const params = Number(d.program?.param_count);
+                  return <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{Number.isFinite(params) ? `${(params / 1e6).toFixed(1)}M` : '--'}</td>;
+                })}
               </tr>
             </tbody>
           </table>

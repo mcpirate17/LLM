@@ -21,6 +21,7 @@ import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from research.defaults import VOCAB_SIZE
 from research.eval.hellaswag_eval import (
     INVESTIGATION_N_EXAMPLES,
     SCREENING_N_EXAMPLES,
@@ -32,9 +33,15 @@ from research.scientist.leaderboard_scoring import (
     compute_composite,
     prefetch_program_results,
 )
-from research.scientist.notebook import LabNotebook
 from research.scientist.thresholds import HELLASWAG_RANDOM_CHANCE_GATE
 from research.tools._backfill_shared import DB_PATH, reconstruct_model
+from research.tools._script_audit import (
+    build_metric_backfill_context,
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
+from research.tools.backfill import store_probe_results
 
 _TIER_N_EXAMPLES = {
     "validation": VALIDATION_N_EXAMPLES,
@@ -81,11 +88,28 @@ def _query_candidates(nb, tiers: list[str], top: int, force: bool):
     return result, by_tier
 
 
-def _store_and_rescore(nb, entry_id, result_id, acc, status, n_total, is_ref, pr_cache):
+def _store_and_rescore(
+    nb,
+    entry_id,
+    result_id,
+    acc,
+    status,
+    n_total,
+    is_ref,
+    pr_cache,
+    provenance_context,
+):
     """Store HellaSwag result and recompute composite score. Returns (new_score, old_score) or None."""
-    nb.conn.execute(
-        "UPDATE program_results SET hellaswag_acc=?, hellaswag_status=?, hellaswag_n_examples=? WHERE result_id=?",
-        (acc, status, n_total, result_id),
+    store_probe_results(
+        nb,
+        result_id,
+        {
+            "hellaswag_acc": acc,
+            "hellaswag_status": status,
+            "hellaswag_n_examples": n_total,
+        },
+        write_leaderboard=False,
+        provenance_context=provenance_context,
     )
     nb.conn.execute(
         "UPDATE leaderboard SET hellaswag_acc=? WHERE result_id=?", (acc, result_id)
@@ -124,9 +148,29 @@ def main():
     args = parser.parse_args()
 
     tiers = [t.strip() for t in args.tier.split(",")]
-    nb = LabNotebook(DB_PATH)
+    nb, exp_id = start_script_experiment(
+        db_path=DB_PATH,
+        experiment_type="hellaswag_backfill",
+        config={
+            "tiers": tiers,
+            "top": args.top,
+            "device": args.device,
+            "force": bool(args.force),
+        },
+        source_script="backfill_hellaswag",
+        hypothesis="Backfill HellaSwag on leaderboard entries",
+    )
     _ensure_leaderboard_column(nb)
     rows, by_tier = _query_candidates(nb, tiers, args.top, args.force)
+    provenance_context = build_metric_backfill_context(
+        kind="hellaswag_backfill",
+        source_script="backfill_hellaswag",
+        experiment_id=exp_id,
+        device=args.device,
+        tiers=tiers,
+        top=args.top,
+        force=bool(args.force),
+    )
 
     total = len(rows)
     print(f"Entries to backfill: {total}  (device={args.device})")
@@ -138,6 +182,13 @@ def main():
 
     if total == 0:
         print("Nothing to backfill.")
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={"total": 0, "evaluated": 0, "failed": 0, "skipped": 0},
+            summary="HellaSwag backfill found no candidates",
+        )
+        nb.close()
         return
 
     if args.dry_run:
@@ -147,70 +198,107 @@ def main():
                 f"  [{fp}] tier={r['tier']} score={r['composite_score']:.1f} ref={bool(r['is_reference'])}"
             )
         print(f"\nDry run: would evaluate {total} entries.")
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="Dry-run invocation does not write results",
+            results={"total": total, "evaluated": 0, "dry_run": True},
+        )
+        nb.close()
         return
 
     pr_cache = prefetch_program_results(nb.conn, [r["result_id"] for r in rows])
     evaluated, failed, skipped, at_random = 0, 0, 0, 0
     t0 = time.time()
 
-    for i, row in enumerate(rows):
-        entry_id, result_id = row["entry_id"], row["result_id"]
-        graph_json = row["graph_json"]
-        fp = (row["graph_fingerprint"] or "")[:12]
-        is_ref = bool(row["is_reference"])
+    try:
+        for i, row in enumerate(rows):
+            entry_id, result_id = row["entry_id"], row["result_id"]
+            graph_json = row["graph_json"]
+            fp = (row["graph_fingerprint"] or "")[:12]
+            is_ref = bool(row["is_reference"])
 
-        if is_ref:
-            print(f"  [{fp}] skip: reference model")
-            skipped += 1
-            continue
-        if not graph_json or graph_json == "{}":
-            skipped += 1
-            print(f"  [{fp}] skip: no graph_json")
-            continue
+            if is_ref:
+                print(f"  [{fp}] skip: reference model")
+                skipped += 1
+                continue
+            if not graph_json or graph_json == "{}":
+                skipped += 1
+                print(f"  [{fp}] skip: no graph_json")
+                continue
 
-        n_examples = _TIER_N_EXAMPLES.get(row["tier"], 100)
-        try:
-            model = reconstruct_model(graph_json, args.device)
-            hs = evaluate_hellaswag(
-                model, VOCAB_SIZE, args.device, n_examples=n_examples
-            )
-            del model
-            if args.device == "cuda":
-                torch.cuda.empty_cache()
-
-            acc = hs.get("hellaswag_acc")
-            if acc is not None:
-                result = _store_and_rescore(
-                    nb,
-                    entry_id,
-                    result_id,
-                    acc,
-                    hs.get("hellaswag_status", "ok"),
-                    hs.get("hellaswag_total"),
-                    is_ref,
-                    pr_cache,
+            n_examples = _TIER_N_EXAMPLES.get(row["tier"], 100)
+            try:
+                model = reconstruct_model(graph_json, args.device)
+                hs = evaluate_hellaswag(
+                    model, VOCAB_SIZE, args.device, n_examples=n_examples
                 )
-                evaluated += 1
-                if acc <= HELLASWAG_RANDOM_CHANCE_GATE:
-                    at_random += 1
-                if result:
-                    new_score, old_score = result
-                    print(
-                        f"  [{fp}] acc={acc:.1%} score={old_score:.1f}->{new_score:.1f} ({new_score - old_score:+.1f})"
+                del model
+                if args.device == "cuda":
+                    torch.cuda.empty_cache()
+
+                acc = hs.get("hellaswag_acc")
+                if acc is not None:
+                    result = _store_and_rescore(
+                        nb,
+                        entry_id,
+                        result_id,
+                        acc,
+                        hs.get("hellaswag_status", "ok"),
+                        hs.get("hellaswag_total"),
+                        is_ref,
+                        pr_cache,
+                        provenance_context,
                     )
-            else:
+                    evaluated += 1
+                    if acc <= HELLASWAG_RANDOM_CHANCE_GATE:
+                        at_random += 1
+                    if result:
+                        new_score, old_score = result
+                        print(
+                            f"  [{fp}] acc={acc:.1%} score={old_score:.1f}->{new_score:.1f} ({new_score - old_score:+.1f})"
+                        )
+                else:
+                    failed += 1
+                    print(f"  [{fp}] status={hs.get('hellaswag_status')}")
+
+            except (RuntimeError, KeyError, ValueError) as e:
                 failed += 1
-                print(f"  [{fp}] status={hs.get('hellaswag_status')}")
+                print(f"  [{fp}] error: {e}")
+                if args.device == "cuda":
+                    torch.cuda.empty_cache()
 
-        except (RuntimeError, KeyError, ValueError) as e:
-            failed += 1
-            print(f"  [{fp}] error: {e}")
-            if args.device == "cuda":
-                torch.cuda.empty_cache()
-
-        if (i + 1) % 10 == 0:
-            nb.conn.commit()
-            print(f"  ... {i + 1}/{total} ({time.time() - t0:.0f}s)")
+            if (i + 1) % 10 == 0:
+                nb.conn.commit()
+                print(f"  ... {i + 1}/{total} ({time.time() - t0:.0f}s)")
+    except KeyboardInterrupt:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="KeyboardInterrupt",
+            results={
+                "total": total,
+                "evaluated": evaluated,
+                "failed": failed,
+                "skipped": skipped,
+            },
+        )
+        nb.close()
+        raise
+    except Exception as exc:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error=str(exc),
+            results={
+                "total": total,
+                "evaluated": evaluated,
+                "failed": failed,
+                "skipped": skipped,
+            },
+        )
+        nb.close()
+        raise
 
     nb.conn.commit()
     elapsed = time.time() - t0
@@ -219,6 +307,23 @@ def main():
     print(f"  Evaluated: {evaluated}, Failed: {failed}, Skipped: {skipped}")
     print(f"  At random chance (<=28%): {at_random}")
     print(f"  Time: {elapsed:.1f}s")
+    complete_script_experiment(
+        nb,
+        exp_id,
+        results={
+            "total": total,
+            "evaluated": evaluated,
+            "failed": failed,
+            "skipped": skipped,
+            "at_random": at_random,
+            "elapsed_s": round(elapsed, 3),
+        },
+        summary=(
+            f"HellaSwag backfill: evaluated={evaluated} failed={failed} "
+            f"skipped={skipped}"
+        ),
+    )
+    nb.close()
 
 
 if __name__ == "__main__":

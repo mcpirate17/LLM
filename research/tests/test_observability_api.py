@@ -92,8 +92,10 @@ class TestObservabilityAPI(unittest.TestCase):
         first_rid = result_ids[0] if result_ids else "fallback_rid"
         nb.conn.execute(
             "INSERT INTO leaderboard (entry_id, result_id, timestamp, model_source, tier, "
-            "screening_loss_ratio, composite_score) "
-            "VALUES (?, ?, ?, 'graph_synthesis', 'screening', 0.75, 0.6)",
+            "screening_loss_ratio, composite_score, result_cohort, trust_label, "
+            "comparability_label, evaluation_protocol_version, scoring_version) "
+            "VALUES (?, ?, ?, 'graph_synthesis', 'screening', 0.75, 0.6, "
+            "'search', 'candidate_screening', 'screening_only', 'screening_v1', 'v8')",
             ("lb_test_001", first_rid, time.time()),
         )
         nb.conn.commit()
@@ -190,6 +192,26 @@ class TestObservabilityAPI(unittest.TestCase):
         data = resp.get_json()
         self.assertIn("counters", data)
 
+    def test_db_health_includes_entity_accounting(self):
+        resp = self.client.get("/api/observability/db-health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("row_counts", data)
+        self.assertIn("entity_counts", data)
+        self.assertIn("row_volume", data["entity_counts"])
+        self.assertIn("run_volume", data["entity_counts"])
+        self.assertIn("graph_volume", data["entity_counts"])
+        self.assertIn("training_curve_density", data["entity_counts"])
+
+    def test_reporting_data_accounting_endpoint(self):
+        resp = self.client.get("/api/reporting/data-accounting")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("row_volume", data)
+        self.assertIn("run_volume", data)
+        self.assertIn("graph_volume", data)
+        self.assertIn("filtering", data)
+
     # ── P2 endpoints ──
 
     def test_grammar_evolution(self):
@@ -208,12 +230,61 @@ class TestObservabilityAPI(unittest.TestCase):
         data = resp.get_json()
         self.assertIn("patterns", data)
 
+    def test_failure_patterns_prefer_root_cause_and_failure_op(self):
+        from research.scientist.notebook import LabNotebook
+        from research.scientist.api_routes._observability_core import (
+            refresh_observability_caches,
+        )
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment("synthesis", {"n_programs": 1}, "obs root cause")
+        graph = {
+            "nodes": {
+                "0": {"op_name": "input"},
+                "1": {"op_name": "rmsnorm"},
+                "2": {"op_name": "swiglu_mlp"},
+                "3": {"op_name": "add"},
+            }
+        }
+        nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="obs_fp_root_cause",
+            graph_json=json.dumps(graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            error_type="insufficient_learning",
+            failure_op="swiglu_mlp",
+            failure_details_json=json.dumps(
+                {
+                    "error_type": "insufficient_learning",
+                    "failure_op": "swiglu_mlp",
+                    "root_cause_code": "generalization_failure",
+                }
+            ),
+        )
+        nb.flush_writes()
+        nb.close()
+        refresh_observability_caches()
+
+        resp = self.client.get("/api/observability/failure-patterns?top_ops=5")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+
+        by_error = {p["error_type"]: p for p in data["patterns"]}
+        self.assertIn("s1_generalization_failure", by_error)
+        top_ops = by_error["s1_generalization_failure"]["top_ops"]
+        self.assertTrue(top_ops)
+        self.assertEqual(top_ops[0]["op"], "swiglu_mlp")
+        self.assertNotIn("rmsnorm", [entry["op"] for entry in top_ops])
+
     def test_leaderboard_dynamics(self):
         resp = self.client.get("/api/observability/leaderboard-dynamics")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn("daily", data)
         self.assertIn("recent_promotions", data)
+        self.assertTrue(data.get("trusted_only"))
         self.assertGreaterEqual(len(data["recent_promotions"]), 1)
 
     def test_insight_effectiveness(self):

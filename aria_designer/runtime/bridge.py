@@ -338,7 +338,7 @@ def evaluate_workflow(
             seq_len=max(1, int(seq_len)),
             vocab_size=vocab_size,
             device=device,
-            run_stability_probe=False,
+            run_stability_probe=True,
         )
         result.sandbox = sandbox_res
         if not sandbox_res.passed:

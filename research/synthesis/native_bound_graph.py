@@ -287,6 +287,531 @@ class BoundNativeSubgraphDispatcher:
         target_inputs.append(param_id)
         return next_id
 
+    # -- Parametric op lowering handlers --
+    # Each returns (native_name, config, input_ids, next_id, early_return).
+    # early_return=True means the handler already appended final nodes/edges.
+
+    def _lower_linear_proj(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        dim_out: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        config = {"batch": self._rows(x), "dim_in": dim_in, "dim_out": dim_out}
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=("weight",),
+        )
+        return "linear", config, input_ids, next_id
+
+    def _lower_conv1d_seq(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        config = self._shape_config(x, dim_in)
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=("conv_weight",),
+        )
+        conv_bias = getattr(module, "conv_bias", None)
+        if conv_bias is None:
+            conv_bias = module.conv_weight.new_zeros(module.conv_weight.shape[0])
+        next_id = self._append_tensor_input(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            tensor=conv_bias,
+        )
+        return "conv1d_seq", config, input_ids, next_id
+
+    def _lower_normalization(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        op_name: str,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        if op_name == "rmsnorm":
+            config = {"batch": self._rows(x), "dim": dim_in, "eps": 1e-6}
+            attrs: tuple[str, ...] = ("weight",)
+        else:
+            config = {"batch": self._rows(x), "dim": dim_in, "eps": 1e-5}
+            attrs = ("weight", "bias")
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=attrs,
+        )
+        return op_name, config, input_ids, next_id
+
+    def _lower_gated_linear(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        dim_out: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        config = {"batch": self._rows(x), "dim_in": dim_in, "dim_out": dim_out}
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=("linear_weight", "linear_bias", "gate_weight", "gate_bias"),
+        )
+        return "gated_linear", config, input_ids, next_id
+
+    def _lower_rwkv_time_mixing(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        node: Any,
+        node_id: int,
+        dim_in: int,
+        dim_out: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> int:
+        """Multi-node: mixing → linear projection. Returns next_id (early return)."""
+        config = self._shape_config(x, dim_in)
+        mixing_output_id = next_id
+        next_id += 1
+        mixing_inputs = list(input_ids)
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=mixing_inputs,
+            module=module,
+            attr_paths=("w_decay", "u_bonus", "W_k", "W_v", "W_r"),
+        )
+        nodes.append(
+            {
+                "id": mixing_output_id,
+                "op_name": "rwkv_time_mixing",
+                "input_ids": mixing_inputs,
+                "config": config,
+                "is_input": False,
+                "is_output": False,
+            }
+        )
+        for iid in mixing_inputs:
+            edges.append({"source": iid, "target": mixing_output_id})
+
+        linear_inputs = [mixing_output_id]
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=linear_inputs,
+            module=module,
+            attr_paths=("W_o",),
+        )
+        nodes.append(
+            {
+                "id": node_id,
+                "op_name": "linear",
+                "input_ids": linear_inputs,
+                "config": {
+                    "batch": self._rows(x),
+                    "dim_in": dim_in,
+                    "dim_out": dim_out,
+                },
+                "is_input": False,
+                "is_output": node.is_output,
+            }
+        )
+        for iid in linear_inputs:
+            edges.append({"source": iid, "target": node_id})
+        return next_id
+
+    def _lower_rwkv_channel(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        config = {
+            **self._shape_config(x, dim_in),
+            "hidden_dim": int(module.key_proj.weight.shape[0]),
+        }
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=(
+                "mix_k",
+                "mix_r",
+                "key_proj.weight",
+                "receptance_proj.weight",
+                "value_proj.weight",
+            ),
+        )
+        return "rwkv_channel", config, input_ids, next_id
+
+    def _lower_swiglu_mlp(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        hidden_dim = int(module.gate_proj.weight.shape[0])
+        config = {"batch": self._rows(x), "dim": dim_in, "hidden_dim": hidden_dim}
+        swiglu_inputs = list(input_ids)
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=swiglu_inputs,
+            module=module,
+            attr_paths=("gate_proj.weight", "up_proj.weight", "down_proj.weight"),
+        )
+        for linear_name in ("gate_proj", "up_proj", "down_proj"):
+            linear = getattr(module, linear_name)
+            bias = getattr(linear, "bias", None)
+            if bias is None:
+                bias = linear.weight.new_zeros(linear.weight.shape[0])
+            next_id = self._append_tensor_input(
+                next_id=next_id,
+                payload_specs=payload_specs,
+                nodes=nodes,
+                edges=edges,
+                target_inputs=swiglu_inputs,
+                tensor=bias,
+            )
+        return "swiglu", config, swiglu_inputs, next_id
+
+    def _lower_conv_only(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        node: Any,
+        node_id: int,
+        dim_in: int,
+        dim_out: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> int:
+        """Multi-node: conv → linear → add. Returns next_id (early return)."""
+        config = self._shape_config(x, dim_in)
+        conv_output_id = next_id
+        next_id += 1
+        conv_inputs = list(input_ids)
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=conv_inputs,
+            module=module,
+            attr_paths=("conv_dw.weight",),
+        )
+        conv_bias = module.conv_dw.bias
+        if conv_bias is None:
+            conv_bias = module.conv_dw.weight.new_zeros(module.conv_dw.weight.shape[0])
+        next_id = self._append_tensor_input(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=conv_inputs,
+            tensor=conv_bias,
+        )
+        nodes.append(
+            {
+                "id": conv_output_id,
+                "op_name": "conv1d_seq",
+                "input_ids": conv_inputs,
+                "config": config,
+                "is_input": False,
+                "is_output": False,
+            }
+        )
+        for iid in conv_inputs:
+            edges.append({"source": iid, "target": conv_output_id})
+
+        linear_output_id = next_id
+        next_id += 1
+        linear_inputs = [conv_output_id]
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=linear_inputs,
+            module=module,
+            attr_paths=("conv_proj.weight",),
+        )
+        nodes.append(
+            {
+                "id": linear_output_id,
+                "op_name": "linear",
+                "input_ids": linear_inputs,
+                "config": {
+                    "batch": self._rows(x),
+                    "dim_in": dim_in,
+                    "dim_out": dim_out,
+                },
+                "is_input": False,
+                "is_output": False,
+            }
+        )
+        for iid in linear_inputs:
+            edges.append({"source": iid, "target": linear_output_id})
+
+        nodes.append(
+            {
+                "id": node_id,
+                "op_name": "add",
+                "input_ids": [input_ids[0], linear_output_id],
+                "config": {},
+                "is_input": False,
+                "is_output": node.is_output,
+            }
+        )
+        edges.append({"source": input_ids[0], "target": node_id})
+        edges.append({"source": linear_output_id, "target": node_id})
+        return next_id
+
+    def _lower_attention(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        op_name: str,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        if op_name == "softmax_attention":
+            config = {**self._shape_config(x, dim_in), "n_heads": int(module.n_heads)}
+        else:
+            config = self._shape_config(x, dim_in)
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=(
+                "q_proj.weight",
+                "k_proj.weight",
+                "v_proj.weight",
+                "o_proj.weight",
+            ),
+        )
+        return op_name, config, input_ids, next_id
+
+    def _lower_depth_weighted(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        op_name: str,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        if op_name in {"gated_lane_blend", "route_lanes"}:
+            scorer_attr, stack_name = "lane_scorer", "lane_projs"
+        elif op_name in {"depth_gated_transform", "route_recursion"}:
+            scorer_attr, stack_name = "depth_scorer", "depth_projs"
+        else:
+            scorer_attr, stack_name = "depth_scorer", "step_projs"
+        scorer = getattr(module, scorer_attr)
+        max_depth = int(scorer.shape[0])
+        config = {**self._shape_config(x, dim_in), "max_depth": max_depth}
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=(scorer_attr,),
+        )
+        next_id = self._emit_stacked_param_input(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_name=stack_name,
+            count=max_depth,
+        )
+        return "depth_weighted_proj", config, input_ids, next_id
+
+    def _lower_ssm_family(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        op_name: str,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        if op_name == "selective_scan":
+            config = self._shape_config(x, dim_in)
+            attrs: tuple[str, ...] = (
+                "A_log",
+                "dt_proj",
+                "B_proj.weight",
+                "C_proj.weight",
+            )
+        else:
+            config = {
+                **self._shape_config(x, dim_in),
+                "state_dim": int(module.ssm_A.shape[1]),
+            }
+            attrs = (
+                "ssm_A",
+                "ssm_B.weight",
+                "ssm_C.weight",
+                "ssm_D",
+                "ssm_dt.weight",
+                "ssm_dt.bias",
+            )
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=attrs,
+        )
+        return op_name, config, input_ids, next_id
+
+    def _lower_gated_delta(
+        self,
+        x: torch.Tensor,
+        module: torch.nn.Module,
+        dim_in: int,
+        input_ids: list[int],
+        next_id: int,
+        payload_specs: list[_PayloadSpec],
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> tuple[str, dict, list[int], int]:
+        config = {
+            **self._shape_config(x, dim_in),
+            "n_heads": int(getattr(module, "_gated_delta_heads", min(8, dim_in))),
+        }
+        next_id = self._emit_param_inputs(
+            next_id=next_id,
+            payload_specs=payload_specs,
+            nodes=nodes,
+            edges=edges,
+            target_inputs=input_ids,
+            module=module,
+            attr_paths=(
+                "q_proj.weight",
+                "k_proj.weight",
+                "v_proj.weight",
+                "alpha_proj.weight",
+                "beta_proj.weight",
+                "o_proj.weight",
+            ),
+        )
+        return "gated_delta", config, input_ids, next_id
+
+    # -- Op dispatch table --
+
+    _LOWER_DISPATCH_SIMPLE: dict[str, str] = {
+        "linear_proj": "_lower_linear_proj",
+        "linear_proj_down": "_lower_linear_proj",
+        "linear_proj_up": "_lower_linear_proj",
+        "gated_linear": "_lower_gated_linear",
+        "gated_delta": "_lower_gated_delta",
+    }
+    _LOWER_DISPATCH_CONV: set[str] = {"conv1d_seq"}
+    _LOWER_DISPATCH_NORM: set[str] = {"rmsnorm", "layernorm"}
+    _LOWER_DISPATCH_ATTN: set[str] = {"softmax_attention", "linear_attention"}
+    _LOWER_DISPATCH_DEPTH: set[str] = {
+        "depth_weighted_proj",
+        "adaptive_recursion",
+        "gated_lane_blend",
+        "route_lanes",
+        "depth_gated_transform",
+        "route_recursion",
+    }
+    _LOWER_DISPATCH_SSM: set[str] = {"selective_scan", "state_space"}
+    _LOWER_DISPATCH_EARLY_RETURN: set[str] = {"rwkv_time_mixing", "conv_only"}
+    _LOWER_DISPATCH_CHANNEL: set[str] = {"rwkv_channel"}
+    _LOWER_DISPATCH_SWIGLU: set[str] = {"swiglu_mlp"}
+
     def _lower_node(
         self,
         *,
@@ -301,6 +826,7 @@ class BoundNativeSubgraphDispatcher:
         op_name = node.op_name
         input_ids = list(node.input_ids)
 
+        # Fast path: pointwise, binary, input, output
         if node.is_input or op_name in BOUND_POINTWISE_OPS | BOUND_BINARY_OPS | {
             "output"
         }:
@@ -317,408 +843,123 @@ class BoundNativeSubgraphDispatcher:
                     "is_output": node.is_output,
                 }
             )
-            for input_id in input_ids:
-                edges.append({"source": input_id, "target": node_id})
+            for iid in input_ids:
+                edges.append({"source": iid, "target": node_id})
             return next_id
 
+        # Parametric path setup
         ir_idx = self._node_id_to_ir_idx[node_id]
         module = self._flat_ops[ir_idx]
         dim_in = int(self._graph.nodes[input_ids[0]].output_shape.dim)
         dim_out = int(node.output_shape.dim)
-        native_name = op_name
-        config: dict = {}
+        args = (x, module, dim_in, input_ids, next_id, payload_specs, nodes, edges)
 
-        if op_name in {"linear_proj", "linear_proj_down", "linear_proj_up"}:
-            native_name = "linear"
-            config = {"batch": self._rows(x), "dim_in": dim_in, "dim_out": dim_out}
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=("weight",),
+        # Multi-node early-return ops
+        if op_name == "rwkv_time_mixing":
+            return self._lower_rwkv_time_mixing(
+                x,
+                module,
+                node,
+                node_id,
+                dim_in,
+                dim_out,
+                input_ids,
+                next_id,
+                payload_specs,
+                nodes,
+                edges,
             )
-        elif op_name == "conv1d_seq":
-            config = self._shape_config(x, dim_in)
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=("conv_weight",),
+        if op_name == "conv_only":
+            return self._lower_conv_only(
+                x,
+                module,
+                node,
+                node_id,
+                dim_in,
+                dim_out,
+                input_ids,
+                next_id,
+                payload_specs,
+                nodes,
+                edges,
             )
-            conv_bias = getattr(module, "conv_bias", None)
-            if conv_bias is None:
-                conv_bias = module.conv_weight.new_zeros(module.conv_weight.shape[0])
-            next_id = self._append_tensor_input(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                tensor=conv_bias,
-            )
-            native_name = "conv1d_seq"
-        elif op_name == "rmsnorm":
-            config = {"batch": self._rows(x), "dim": dim_in, "eps": 1e-6}
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=("weight",),
-            )
-        elif op_name == "layernorm":
-            config = {"batch": self._rows(x), "dim": dim_in, "eps": 1e-5}
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=("weight", "bias"),
-            )
-        elif op_name == "gated_linear":
-            config = {"batch": self._rows(x), "dim_in": dim_in, "dim_out": dim_out}
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=("linear_weight", "linear_bias", "gate_weight", "gate_bias"),
-            )
-        elif op_name == "rwkv_time_mixing":
-            config = self._shape_config(x, dim_in)
-            mixing_output_id = next_id
-            next_id += 1
-            mixing_inputs = list(input_ids)
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=mixing_inputs,
-                module=module,
-                attr_paths=("w_decay", "u_bonus", "W_k", "W_v", "W_r"),
-            )
-            nodes.append(
-                {
-                    "id": mixing_output_id,
-                    "op_name": "rwkv_time_mixing",
-                    "input_ids": mixing_inputs,
-                    "config": config,
-                    "is_input": False,
-                    "is_output": False,
-                }
-            )
-            for input_id in mixing_inputs:
-                edges.append({"source": input_id, "target": mixing_output_id})
 
-            linear_inputs = [mixing_output_id]
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=linear_inputs,
-                module=module,
-                attr_paths=("W_o",),
-            )
-            nodes.append(
-                {
-                    "id": node_id,
-                    "op_name": "linear",
-                    "input_ids": linear_inputs,
-                    "config": {
-                        "batch": self._rows(x),
-                        "dim_in": dim_in,
-                        "dim_out": dim_out,
-                    },
-                    "is_input": False,
-                    "is_output": node.is_output,
-                }
-            )
-            for input_id in linear_inputs:
-                edges.append({"source": input_id, "target": node_id})
-            return next_id
-        elif op_name == "rwkv_channel":
-            config = {
-                **self._shape_config(x, dim_in),
-                "hidden_dim": int(module.key_proj.weight.shape[0]),
-            }
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=(
-                    "mix_k",
-                    "mix_r",
-                    "key_proj.weight",
-                    "receptance_proj.weight",
-                    "value_proj.weight",
-                ),
-            )
-        elif op_name == "swiglu_mlp":
-            hidden_dim = int(module.gate_proj.weight.shape[0])
-            config = {
-                "batch": self._rows(x),
-                "dim": dim_in,
-                "hidden_dim": hidden_dim,
-            }
-            swiglu_inputs = list(input_ids)
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=swiglu_inputs,
-                module=module,
-                attr_paths=(
-                    "gate_proj.weight",
-                    "up_proj.weight",
-                    "down_proj.weight",
-                ),
-            )
-            for linear_name in ("gate_proj", "up_proj", "down_proj"):
-                linear = getattr(module, linear_name)
-                bias = getattr(linear, "bias", None)
-                if bias is None:
-                    bias = linear.weight.new_zeros(linear.weight.shape[0])
-                next_id = self._append_tensor_input(
-                    next_id=next_id,
-                    payload_specs=payload_specs,
-                    nodes=nodes,
-                    edges=edges,
-                    target_inputs=swiglu_inputs,
-                    tensor=bias,
+        # Standard single-node ops
+        if op_name in self._LOWER_DISPATCH_SIMPLE:
+            method_name = self._LOWER_DISPATCH_SIMPLE[op_name]
+            method = getattr(self, method_name)
+            if method_name in (
+                "_lower_linear_proj",
+                "_lower_gated_linear",
+                "_lower_gated_delta",
+            ):
+                native_name, config, input_ids, next_id = method(
+                    x,
+                    module,
+                    dim_in,
+                    dim_out,
+                    input_ids,
+                    next_id,
+                    payload_specs,
+                    nodes,
+                    edges,
                 )
-            input_ids = swiglu_inputs
-            native_name = "swiglu"
-        elif op_name == "conv_only":
-            config = self._shape_config(x, dim_in)
-            conv_output_id = next_id
-            next_id += 1
-            conv_inputs = list(input_ids)
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=conv_inputs,
-                module=module,
-                attr_paths=("conv_dw.weight",),
-            )
-            conv_bias = module.conv_dw.bias
-            if conv_bias is None:
-                conv_bias = module.conv_dw.weight.new_zeros(
-                    module.conv_dw.weight.shape[0]
-                )
-            next_id = self._append_tensor_input(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=conv_inputs,
-                tensor=conv_bias,
-            )
-            nodes.append(
-                {
-                    "id": conv_output_id,
-                    "op_name": "conv1d_seq",
-                    "input_ids": conv_inputs,
-                    "config": config,
-                    "is_input": False,
-                    "is_output": False,
-                }
-            )
-            for input_id in conv_inputs:
-                edges.append({"source": input_id, "target": conv_output_id})
-
-            linear_output_id = next_id
-            next_id += 1
-            linear_inputs = [conv_output_id]
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=linear_inputs,
-                module=module,
-                attr_paths=("conv_proj.weight",),
-            )
-            nodes.append(
-                {
-                    "id": linear_output_id,
-                    "op_name": "linear",
-                    "input_ids": linear_inputs,
-                    "config": {
-                        "batch": self._rows(x),
-                        "dim_in": dim_in,
-                        "dim_out": dim_out,
-                    },
-                    "is_input": False,
-                    "is_output": False,
-                }
-            )
-            for input_id in linear_inputs:
-                edges.append({"source": input_id, "target": linear_output_id})
-
-            nodes.append(
-                {
-                    "id": node_id,
-                    "op_name": "add",
-                    "input_ids": [input_ids[0], linear_output_id],
-                    "config": {},
-                    "is_input": False,
-                    "is_output": node.is_output,
-                }
-            )
-            edges.append({"source": input_ids[0], "target": node_id})
-            edges.append({"source": linear_output_id, "target": node_id})
-            return next_id
-        elif op_name == "softmax_attention":
-            config = {
-                **self._shape_config(x, dim_in),
-                "n_heads": int(module.n_heads),
-            }
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=(
-                    "q_proj.weight",
-                    "k_proj.weight",
-                    "v_proj.weight",
-                    "o_proj.weight",
-                ),
-            )
-        elif op_name == "linear_attention":
-            config = self._shape_config(x, dim_in)
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=(
-                    "q_proj.weight",
-                    "k_proj.weight",
-                    "v_proj.weight",
-                    "o_proj.weight",
-                ),
-            )
-        elif op_name in {
-            "depth_weighted_proj",
-            "adaptive_recursion",
-            "gated_lane_blend",
-            "route_lanes",
-            "depth_gated_transform",
-            "route_recursion",
-        }:
-            if op_name in {"gated_lane_blend", "route_lanes"}:
-                scorer_attr = "lane_scorer"
-                stack_name = "lane_projs"
-            elif op_name in {"depth_gated_transform", "route_recursion"}:
-                scorer_attr = "depth_scorer"
-                stack_name = "depth_projs"
             else:
-                scorer_attr = "depth_scorer"
-                stack_name = "step_projs"
-            scorer = getattr(module, scorer_attr)
-            max_depth = int(scorer.shape[0])
-            config = {
-                **self._shape_config(x, dim_in),
-                "max_depth": max_depth,
-            }
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=(scorer_attr,),
+                native_name, config, input_ids, next_id = method(*args)
+        elif op_name in self._LOWER_DISPATCH_CONV:
+            native_name, config, input_ids, next_id = self._lower_conv1d_seq(*args)
+        elif op_name in self._LOWER_DISPATCH_NORM:
+            native_name, config, input_ids, next_id = self._lower_normalization(
+                x,
+                module,
+                op_name,
+                dim_in,
+                input_ids,
+                next_id,
+                payload_specs,
+                nodes,
+                edges,
             )
-            next_id = self._emit_stacked_param_input(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_name=stack_name,
-                count=max_depth,
+        elif op_name in self._LOWER_DISPATCH_ATTN:
+            native_name, config, input_ids, next_id = self._lower_attention(
+                x,
+                module,
+                op_name,
+                dim_in,
+                input_ids,
+                next_id,
+                payload_specs,
+                nodes,
+                edges,
             )
-            native_name = "depth_weighted_proj"
-        elif op_name == "selective_scan":
-            config = self._shape_config(x, dim_in)
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=("A_log", "dt_proj", "B_proj.weight", "C_proj.weight"),
+        elif op_name in self._LOWER_DISPATCH_DEPTH:
+            native_name, config, input_ids, next_id = self._lower_depth_weighted(
+                x,
+                module,
+                op_name,
+                dim_in,
+                input_ids,
+                next_id,
+                payload_specs,
+                nodes,
+                edges,
             )
-        elif op_name == "state_space":
-            config = {
-                **self._shape_config(x, dim_in),
-                "state_dim": int(module.ssm_A.shape[1]),
-            }
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=(
-                    "ssm_A",
-                    "ssm_B.weight",
-                    "ssm_C.weight",
-                    "ssm_D",
-                    "ssm_dt.weight",
-                    "ssm_dt.bias",
-                ),
+        elif op_name in self._LOWER_DISPATCH_SSM:
+            native_name, config, input_ids, next_id = self._lower_ssm_family(
+                x,
+                module,
+                op_name,
+                dim_in,
+                input_ids,
+                next_id,
+                payload_specs,
+                nodes,
+                edges,
             )
-        elif op_name == "gated_delta":
-            config = {
-                **self._shape_config(x, dim_in),
-                "n_heads": int(getattr(module, "_gated_delta_heads", min(8, dim_in))),
-            }
-            next_id = self._emit_param_inputs(
-                next_id=next_id,
-                payload_specs=payload_specs,
-                nodes=nodes,
-                edges=edges,
-                target_inputs=input_ids,
-                module=module,
-                attr_paths=(
-                    "q_proj.weight",
-                    "k_proj.weight",
-                    "v_proj.weight",
-                    "alpha_proj.weight",
-                    "beta_proj.weight",
-                    "o_proj.weight",
-                ),
-            )
+        elif op_name in self._LOWER_DISPATCH_CHANNEL:
+            native_name, config, input_ids, next_id = self._lower_rwkv_channel(*args)
+        elif op_name in self._LOWER_DISPATCH_SWIGLU:
+            native_name, config, input_ids, next_id = self._lower_swiglu_mlp(*args)
         else:
             raise ValueError(f"Unsupported bound native op: {op_name}")
 
@@ -732,8 +973,8 @@ class BoundNativeSubgraphDispatcher:
                 "is_output": node.is_output,
             }
         )
-        for input_id in input_ids:
-            edges.append({"source": input_id, "target": node_id})
+        for iid in input_ids:
+            edges.append({"source": iid, "target": node_id})
         return next_id
 
     def _plan_for_input(self, x: torch.Tensor) -> _BoundGraphPlan:

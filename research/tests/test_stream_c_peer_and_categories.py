@@ -191,6 +191,38 @@ class TestGetNearestPeers:
         nb = self._make_notebook(conn)
         assert nb.get_nearest_peers("nonexistent", n=5) == []
 
+    def test_skips_malformed_graph_json_rows(self):
+        conn = _create_test_db()
+        _insert_result(
+            conn,
+            "target",
+            "fp_target",
+            ["linear_proj", "rmsnorm"],
+            stage1=True,
+            loss_ratio=0.5,
+        )
+        _insert_result(
+            conn,
+            "peer",
+            "fp_peer",
+            ["linear_proj", "swiglu_mlp"],
+            stage1=False,
+            loss_ratio=0.9,
+        )
+        conn.execute(
+            """INSERT INTO program_results
+               (result_id, experiment_id, graph_fingerprint, graph_json,
+                stage1_passed, loss_ratio, novelty_score, graph_n_ops, timestamp)
+               VALUES ('bad_json', 'exp1', 'fp_bad', ?, 0, 0.99, 0.1, 2, 1.0)""",
+            ('{"nodes": {"0": {"op_name": "input"},',),
+        )
+        conn.commit()
+
+        nb = self._make_notebook(conn)
+        peers = nb.get_nearest_peers("fp_target", n=5)
+
+        assert [p["fingerprint"] for p in peers] == ["fp_peer"]
+
     def test_includes_tier_and_scores(self):
         conn = _create_test_db()
         _insert_result(

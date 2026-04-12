@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from flask import jsonify, request
 from ..runner import RunConfig
-from ..persona import get_aria
-from ..llm.context_experiment import build_program_context
 from ..refinement_scoring import oscillation_risk_score
+from research.tools.exact_graph_replay import start_exact_replay_async
 from ._helpers import get_runner
 from ..json_utils import json_safe
 from ._strategy_recommendations import (
@@ -20,9 +19,35 @@ from ._strategy_recommendations import (
     program_lineage_chain,
 )
 from .deps import ApiRouteContext
-from ._utils import with_notebook_context
+from ._utils import bind_notebook_view, with_notebook_context
+from ..screening_recompute import recompute_screening_metrics
 
 logger = logging.getLogger(__name__)
+
+_TRUST_LABEL_RANK = {
+    "": 0,
+    "candidate_screening": 1,
+    "candidate_grade": 2,
+    "reference": 3,
+}
+
+_COMPARABILITY_LABEL_RANK = {
+    "": 0,
+    "screening_only": 1,
+    "candidate_comparable": 2,
+    "reference_comparable": 3,
+}
+
+
+def _preserve_stronger_label(*values: Any, ranks: Dict[str, int], fallback: str) -> str:
+    best = fallback
+    best_rank = ranks.get(str(fallback).strip().lower(), 0)
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        if ranks.get(normalized, 0) > best_rank:
+            best = normalized
+            best_rank = ranks[normalized]
+    return best
 
 
 def _leaderboard_backed_program_detail(nb, result_id: str) -> Optional[Dict[str, Any]]:
@@ -98,564 +123,848 @@ def _leaderboard_backed_program_detail(nb, result_id: str) -> Optional[Dict[str,
     return merged
 
 
+def _get_cached_program_explanation(nb, result_id: str) -> Optional[str]:
+    row = nb.conn.execute(
+        "SELECT llm_explanation FROM program_results WHERE result_id = ?",
+        (result_id,),
+    ).fetchone()
+    if not row:
+        return None
+    explanation = row[0] if isinstance(row, (tuple, list)) else row["llm_explanation"]
+    return explanation or None
+
+
+def _generate_program_explanation(
+    nb, result_id: str, program: Dict[str, Any]
+) -> Optional[str]:
+    from ..llm.context_experiment import build_program_context
+    from ..persona import get_aria
+
+    aria = get_aria()
+    explanation = aria.explain_fingerprint(build_program_context(program))
+    if not explanation:
+        return None
+    nb.conn.execute(
+        "UPDATE program_results SET llm_explanation = ? WHERE result_id = ?",
+        (explanation, result_id),
+    )
+    nb.conn.commit()
+    return explanation
+
+
+def _api_program_detail(result_id, nb=None):
+    """Full program detail with parsed graph JSON + fingerprint + all metrics."""
+    requested_result_id = str(result_id or "").strip()
+    canonical_result_id = nb.resolve_canonical_result_id(requested_result_id)
+    result_id = canonical_result_id or requested_result_id
+
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        program = _leaderboard_backed_program_detail(nb, result_id)
+    if program is None:
+        # Fallback: resolve fingerprint (architecture_desc) to result_id
+        row = nb.conn.execute(
+            "SELECT result_id FROM leaderboard WHERE architecture_desc = ? LIMIT 1",
+            (result_id,),
+        ).fetchone()
+        if row:
+            resolved_id = row[0] if isinstance(row, (tuple, list)) else row["result_id"]
+            program = nb.get_program_detail(resolved_id)
+            if program is None:
+                program = _leaderboard_backed_program_detail(nb, resolved_id)
+    if program is None:
+        return jsonify({"error": "Not found"}), 404
+
+    program["requested_result_id"] = requested_result_id
+    program["canonical_result_id"] = result_id
+    program["superseded_requested_result"] = requested_result_id != result_id
+
+    try:
+        curve = nb.get_training_curve(result_id)
+        program["has_training_curve"] = len(curve) > 0
+    except Exception as exc:
+        logger.debug(
+            "Failed to load training curve for result_id=%s: %s", result_id, exc
+        )
+        program["has_training_curve"] = False
+
+    cached_explanation = _get_cached_program_explanation(nb, result_id)
+    if cached_explanation:
+        program["llm_explanation"] = cached_explanation
+
+    program = enrich_program_detail(nb, program)
+
+    try:
+        program["lineage_chain"] = program_lineage_chain(nb, result_id)
+    except Exception as exc:
+        logger.debug(
+            "Failed to load lineage chain for result_id=%s: %s", result_id, exc
+        )
+        program["lineage_chain"] = []
+
+    return jsonify(json_safe(program))
+
+
+def _api_program_explanation(result_id, nb=None):
+    """Generate or fetch cached LLM explanation for a program."""
+    requested_result_id = str(result_id or "").strip()
+    canonical_result_id = nb.resolve_canonical_result_id(requested_result_id)
+    result_id = canonical_result_id or requested_result_id
+    force = bool((request.get_json(silent=True) or {}).get("force", False))
+
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        program = _leaderboard_backed_program_detail(nb, result_id)
+    if program is None:
+        return jsonify({"error": "Not found"}), 404
+
+    if not force:
+        cached_explanation = _get_cached_program_explanation(nb, result_id)
+        if cached_explanation:
+            return jsonify(
+                json_safe(
+                    {
+                        "result_id": result_id,
+                        "requested_result_id": requested_result_id,
+                        "canonical_result_id": result_id,
+                        "superseded_requested_result": requested_result_id != result_id,
+                        "llm_explanation": cached_explanation,
+                        "source": "cached",
+                    }
+                )
+            )
+
+    try:
+        explanation = _generate_program_explanation(nb, result_id, program)
+    except Exception as exc:
+        logger.debug(
+            "LLM fingerprint explanation failed for result_id=%s: %s",
+            result_id,
+            exc,
+        )
+        return jsonify(
+            {
+                "result_id": result_id,
+                "requested_result_id": requested_result_id,
+                "canonical_result_id": result_id,
+                "superseded_requested_result": requested_result_id != result_id,
+                "llm_explanation": None,
+                "source": "unavailable",
+                "error": str(exc),
+            }
+        ), 503
+
+    if not explanation:
+        return jsonify(
+            {
+                "result_id": result_id,
+                "requested_result_id": requested_result_id,
+                "canonical_result_id": result_id,
+                "superseded_requested_result": requested_result_id != result_id,
+                "llm_explanation": None,
+                "source": "unavailable",
+            }
+        )
+
+    return jsonify(
+        json_safe(
+            {
+                "result_id": result_id,
+                "requested_result_id": requested_result_id,
+                "canonical_result_id": result_id,
+                "superseded_requested_result": requested_result_id != result_id,
+                "llm_explanation": explanation,
+                "source": "generated",
+            }
+        )
+    )
+
+
+def _api_program_lineage(result_id: str, nb=None):
+    """Program lineage chain for refinement traceability."""
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        return jsonify({"error": "Not found"}), 404
+    chain = program_lineage_chain(nb, result_id)
+    return jsonify(
+        json_safe(
+            {
+                "result_id": result_id,
+                "lineage_chain": chain,
+                "depth": len(chain),
+            }
+        )
+    )
+
+
+def _api_program_refine_analysis(result_id, nb=None):
+    from ..analytics import ExperimentAnalytics, RefinementAnalyzer
+
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        return jsonify({"error": "Not found"}), 404
+
+    analytics = ExperimentAnalytics(nb)
+    analyzer = RefinementAnalyzer(analytics)
+    analysis = analyzer.analyze_program_for_refinement(result_id, program)
+    return jsonify(json_safe(analysis))
+
+
+def _api_program_morph(result_id, nb=None):
+    """Generate scored mutation candidates for a program."""
+    import math as _math
+    import random as _random
+    from research.synthesis.grammar import GrammarConfig
+    from research.synthesis.serializer import graph_from_json, graph_to_json
+    from research.synthesis.validator import validate_graph
+    from ..search.evolution import _mutate_graph
+
+    try:
+        import sys as _sys
+
+        _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
+        if _designer_root not in _sys.path:
+            _sys.path.insert(0, _designer_root)
+        from aria_designer.runtime.importer import (
+            graph_to_workflow as _graph_to_workflow,
+        )
+    except ImportError:
+        _graph_to_workflow = None
+
+    body = request.get_json(silent=True) or {}
+    intent = str(body.get("intent", "balanced")).lower()
+    n_candidates = min(20, max(1, int(body.get("n_candidates", 5))))
+
+    if intent not in ("quality", "compression", "sparsity", "novelty", "balanced"):
+        return jsonify({"error": f"Invalid intent: {intent}"}), 400
+
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        return jsonify({"error": "Not found"}), 404
+
+    graph_json_str = program.get("graph_json")
+    if not graph_json_str:
+        return jsonify({"error": "No graph JSON for this program"}), 400
+
+    try:
+        parent_graph = graph_from_json(graph_json_str)
+    except Exception as e:
+        return jsonify({"error": f"Could not reconstruct graph: {e}"}), 400
+
+    grammar = GrammarConfig()
+    op_success: dict = {}
+    try:
+        for row in nb.get_op_success_rates():
+            n_used = float(row.get("n_used") or 0)
+            n_s1 = float(row.get("n_stage1_passed") or 0)
+            if n_used > 0:
+                op_success[str(row.get("op_name"))] = n_s1 / n_used
+    except Exception as exc:
+        logger.debug("Failed to load op success rates for morph suggestions: %s", exc)
+
+    if body.get("use_analysis"):
+        try:
+            from ..analytics import ExperimentAnalytics, RefinementAnalyzer
+
+            analytics = ExperimentAnalytics(nb)
+            analyzer = RefinementAnalyzer(analytics)
+            analysis_data = analyzer.analyze_program_for_refinement(result_id, program)
+            recipe = analysis_data.get("recipe", {})
+            hints = recipe.get("grammar_hints", {})
+            for op_name, mult in hints.get("boost_ops", {}).items():
+                current = grammar.op_weights.get(op_name, 1.0)
+                grammar.op_weights[op_name] = min(3.0, current * mult)
+        except Exception as e:
+            logger.warning("Morph: analysis hint application failed: %s", e)
+
+    rng = _random.Random(hash((result_id, intent, time.time())))
+    pool_size = n_candidates * 4
+    candidates = []
+    seen_fps = set()
+    parent_ops = sorted(
+        set(str(n.op_name) for n in parent_graph.nodes.values() if not n.is_input)
+    )
+
+    for _ in range(pool_size):
+        try:
+            child = _mutate_graph(parent_graph, grammar, rng)
+        except Exception as exc:
+            logger.debug(
+                "Morph candidate mutation failed for result_id=%s intent=%s: %s",
+                result_id,
+                intent,
+                exc,
+            )
+            continue
+        child.prune_unreachable_nodes()
+        validation = validate_graph(child, max_ops=30, max_depth=20)
+        if not validation.valid:
+            continue
+        fp = child.fingerprint()
+        if fp in seen_fps:
+            continue
+        seen_fps.add(fp)
+
+        child_ops_list = [
+            str(n.op_name) for n in child.nodes.values() if not n.is_input
+        ]
+        n_ops = max(1, int(child.n_ops()))
+        depth = max(1, int(child.depth()))
+        params = max(1.0, float(child.n_params_estimate()))
+        unique_ops = len(set(child_ops_list))
+
+        learned_quality = 0.5
+        if child_ops_list:
+            learned_quality = sum(
+                op_success.get(op, 0.5) for op in child_ops_list
+            ) / len(child_ops_list)
+        compression_proxy = 1.0 / (
+            1.0 + _math.log1p(params) + 0.25 * n_ops + 0.15 * depth
+        )
+        novelty_proxy = min(
+            1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0)
+        )
+        sparse_hint_ops = (
+            "sparse",
+            "gate",
+            "topk",
+            "mask",
+            "threshold",
+            "skip",
+            "mixture",
+        )
+        sparse_op_bonus = 0.0
+        if child_ops_list:
+            sparse_op_bonus = sum(
+                1.0
+                for op in child_ops_list
+                if any(t in op.lower() for t in sparse_hint_ops)
+            ) / len(child_ops_list)
+        sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
+        oscillation_risk, stability = oscillation_risk_score(child)
+        parent_novelty = float(program.get("novelty_score") or 0.0)
+        parent_quality = 1.0 - float(program.get("loss_ratio") or 1.0)
+
+        if intent == "quality":
+            score = (
+                0.60 * learned_quality
+                + 0.25 * parent_quality
+                + 0.15 * compression_proxy
+                - 0.10 * oscillation_risk
+            )
+        elif intent == "compression":
+            score = (
+                0.60 * compression_proxy
+                + 0.25 * learned_quality
+                + 0.15 * parent_quality
+                - 0.10 * oscillation_risk
+            )
+        elif intent == "sparsity":
+            score = (
+                0.60 * sparsity_proxy
+                + 0.25 * learned_quality
+                + 0.15 * compression_proxy
+                - 0.10 * oscillation_risk
+            )
+        elif intent == "novelty":
+            score = (
+                0.55 * novelty_proxy
+                + 0.25 * learned_quality
+                + 0.20 * parent_novelty
+                - 0.06 * oscillation_risk
+            )
+        else:
+            score = (
+                0.35 * learned_quality
+                + 0.25 * compression_proxy
+                + 0.20 * novelty_proxy
+                + 0.20 * max(parent_quality, parent_novelty)
+                - 0.10 * oscillation_risk
+            )
+
+        child_ops = sorted(set(child_ops_list))
+        added_ops = [op for op in child_ops if op not in parent_ops]
+        removed_ops = [op for op in parent_ops if op not in child_ops]
+
+        workflow_json = None
+        if _graph_to_workflow:
+            try:
+                wf = _graph_to_workflow(
+                    child, workflow_id=fp[:12], name=f"morph_{fp[:8]}"
+                )
+                workflow_json = wf
+            except Exception as exc:
+                logger.debug(
+                    "Failed to convert morph candidate to workflow for fingerprint=%s: %s",
+                    fp[:12],
+                    exc,
+                )
+
+        candidates.append(
+            {
+                "fingerprint": fp,
+                "score": round(float(score), 4),
+                "n_ops": n_ops,
+                "depth": depth,
+                "params_estimate": int(params),
+                "unique_ops": unique_ops,
+                "ops": child_ops,
+                "added_ops": added_ops,
+                "removed_ops": removed_ops,
+                "graph_json": graph_to_json(child),
+                "workflow_json": workflow_json,
+                "score_breakdown": {
+                    "learned_quality": round(float(learned_quality), 4),
+                    "compression_proxy": round(float(compression_proxy), 4),
+                    "novelty_proxy": round(float(novelty_proxy), 4),
+                    "sparsity_proxy": round(float(sparsity_proxy), 4),
+                    "oscillation_risk": round(float(oscillation_risk), 4),
+                    "has_residual": int(stability.get("has_residual", 0.0) > 0.5),
+                    "norm_count": int(stability.get("norm_count", 0.0)),
+                },
+            }
+        )
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    top = candidates[:n_candidates]
+
+    return jsonify(
+        {
+            "result_id": result_id,
+            "intent": intent,
+            "source_ops": parent_ops,
+            "source_fingerprint": parent_graph.fingerprint(),
+            "n_generated": len(seen_fps),
+            "candidates": top,
+        }
+    )
+
+
+def _api_program_external_benchmarks(result_id, nb=None):
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, (dict, list)):
+        return jsonify({"error": "Payload must be a JSON object or list."}), 400
+    ok = nb.set_external_benchmarks(result_id, payload)
+    if not ok:
+        return jsonify({"error": "Program result not found or payload invalid."}), 404
+    return jsonify({"status": "ok", "result_id": result_id})
+
+
+def _api_program_backfill_metrics(notebook_path: str, result_id, nb=None):
+    program = nb.get_program_detail(result_id)
+    if not program:
+        return jsonify({"error": "Program not found"}), 404
+    body = request.get_json(silent=True) or {}
+    device = str(body.get("device") or "cpu").strip().lower()
+    mode = str(body.get("mode") or "full_screening").strip().lower()
+    allow_insufficient_learning_metrics = bool(
+        body.get("allow_insufficient_learning_metrics", True)
+    )
+    if mode == "probe_only":
+        from research.tools.backfill import _fingerprint_one, store_probe_results
+
+        result = _fingerprint_one(
+            result_id=str(result_id),
+            graph_json_str=str(program.get("graph_json") or ""),
+            device=device,
+        )
+        store_probe_results(
+            nb=nb,
+            result_id=str(result_id),
+            updates=result,
+            write_leaderboard=True,
+            provenance_context={
+                "kind": "program_detail_backfill",
+                "source": "api_program_backfill_metrics_probe_only",
+                "device": device,
+            },
+        )
+        nb.conn.commit()
+        return jsonify({"status": "ok", "result_id": result_id, "backfill": result})
+
+    result = recompute_screening_metrics(
+        nb=nb,
+        notebook_path=Path(notebook_path),
+        result_id=str(result_id),
+        device=device,
+        allow_insufficient_learning_metrics=allow_insufficient_learning_metrics,
+        provenance_source="api_program_backfill_metrics",
+    )
+    return jsonify({"status": "ok", "result_id": result_id, "backfill": result})
+
+
+def _api_program_backfill_loss(notebook_path: str, result_id, nb=None):
+    program = nb.get_program_detail(result_id)
+    if not program:
+        return jsonify({"error": "Program not found"}), 404
+    graph_json = program.get("graph_json")
+    if not graph_json:
+        return jsonify({"error": "No graph_json for this program"}), 400
+    initial_loss = program.get("initial_loss")
+
+    exp_id = program.get("experiment_id")
+    config_json = None
+    if exp_id:
+        exp_row = nb.conn.execute(
+            "SELECT config_json FROM experiments WHERE experiment_id = ?", (exp_id,)
+        ).fetchone()
+        if exp_row:
+            config_json = exp_row["config_json"]
+
+    import dataclasses as _dc
+
+    config_dict = json.loads(config_json) if config_json else {}
+    valid_fields = {f.name for f in _dc.fields(RunConfig)}
+    filtered = {k: v for k, v in config_dict.items() if k in valid_fields}
+    config = RunConfig(**filtered)
+
+    import torch
+
+    body = request.get_json(silent=True) or {}
+    device = str(body.get("device", "cpu"))
+    dev = torch.device(device)
+
+    from research.synthesis.serializer import graph_from_json as _gfj
+
+    graph = _gfj(graph_json)
+    graph_dim = getattr(graph, "model_dim", None)
+    if graph_dim and config.model_dim != graph_dim:
+        config.model_dim = int(graph_dim)
+
+    from ..native_runner import compile_model_native_first as _compile
+
+    layer_graphs = [graph] * config.n_layers
+    model = _compile(
+        layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len
+    )
+    model = model.to(dev).eval()
+
+    seq_len = min(128, config.max_seq_len)
+    updates = {}
+
+    try:
+        losses = []
+        with torch.no_grad():
+            for i in range(2):
+                ids = torch.randint(0, config.vocab_size, (4, seq_len), device=dev)
+                logits = model(ids)
+                if isinstance(logits, tuple):
+                    logits = logits[0]
+                loss = torch.nn.functional.cross_entropy(
+                    logits[:, :-1].reshape(-1, logits.shape[-1]),
+                    ids[:, 1:].reshape(-1),
+                )
+                if torch.isfinite(loss):
+                    losses.append(loss.item())
+        if losses:
+            disc_loss = sum(losses) / len(losses)
+            updates["discovery_loss"] = disc_loss
+            if initial_loss:
+                disc_ratio = disc_loss / max(float(initial_loss), 1e-6)
+                updates["discovery_loss_ratio"] = disc_ratio
+            else:
+                updates["discovery_loss_ratio"] = None
+                updates["discovery_loss_ratio_note"] = "initial_loss_missing"
+    except Exception as e:
+        updates["discovery_loss_error"] = str(e)
+
+    data_mode = str(config.data_mode or "random").strip().lower()
+    if data_mode in ("corpus", "huggingface"):
+        try:
+            runner = get_runner(notebook_path)
+            if data_mode == "huggingface":
+                batcher = runner._get_hf_batcher(config)
+            else:
+                batcher = runner._get_corpus_batcher(config)
+            if batcher and batcher.ready:
+                losses = []
+                gen = torch.Generator(device=dev)
+                gen.manual_seed(9999)
+                with torch.no_grad():
+                    for i in range(2):
+                        batch = batcher.sample_batch(
+                            batch_size=4,
+                            seq_len=seq_len,
+                            generator=gen,
+                            device=dev,
+                            split="val",
+                        )
+                        if batch is None:
+                            continue
+                        logits = model(batch)
+                        if isinstance(logits, tuple):
+                            logits = logits[0]
+                        loss = torch.nn.functional.cross_entropy(
+                            logits[:, :-1].reshape(-1, logits.shape[-1]),
+                            batch[:, 1:].reshape(-1),
+                        )
+                        if torch.isfinite(loss):
+                            losses.append(loss.item())
+                if losses:
+                    val_loss = sum(losses) / len(losses)
+                    updates["validation_loss"] = val_loss
+                    if initial_loss:
+                        val_ratio = val_loss / max(float(initial_loss), 1e-6)
+                        updates["validation_loss_ratio"] = val_ratio
+                    else:
+                        updates["validation_loss_ratio"] = None
+                        updates["validation_loss_ratio_note"] = "initial_loss_missing"
+                    final_loss = program.get("final_loss")
+                    if final_loss:
+                        updates["generalization_gap"] = val_loss - float(final_loss)
+        except Exception as e:
+            updates["validation_loss_error"] = str(e)
+
+    del model
+    if device != "cpu":
+        torch.cuda.empty_cache()
+
+    if updates:
+        db_updates = {k: v for k, v in updates.items() if not k.endswith("_error")}
+        if db_updates:
+            set_parts = [f"{k} = ?" for k in db_updates]
+            vals = list(db_updates.values()) + [result_id]
+            nb.conn.execute(
+                f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
+                vals,
+            )
+            lb_cols = {
+                c[1]
+                for c in nb.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
+            }
+            lb_updates = {k: v for k, v in db_updates.items() if k in lb_cols}
+            if lb_updates:
+                lb_set = [f"{k} = ?" for k in lb_updates]
+                lb_vals = list(lb_updates.values()) + [result_id]
+                nb.conn.execute(
+                    f"UPDATE leaderboard SET {', '.join(lb_set)} WHERE result_id = ?",
+                    lb_vals,
+                )
+            nb.conn.commit()
+
+    return jsonify({"status": "ok", "result_id": result_id, "updates": updates})
+
+
+def _api_program_rescreen(notebook_path: str, result_id, nb=None):
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        program = _leaderboard_backed_program_detail(nb, result_id)
+    if program is None:
+        return jsonify({"error": "Program not found"}), 404
+    if not program.get("graph_json"):
+        return jsonify({"error": "No graph_json for this program"}), 400
+
+    body = request.get_json(silent=True) or {}
+    device = str(body.get("device") or "cuda").strip().lower()
+    if device not in {"cpu", "cuda"}:
+        return jsonify({"error": "device must be 'cpu' or 'cuda'"}), 400
+    repeat_per_source = int(body.get("repeat_per_source") or 1)
+    repeat_per_source = max(1, min(repeat_per_source, 8))
+    fast = bool(body.get("fast", True))
+    hypothesis = (
+        body.get("hypothesis") or f"UI-triggered exact replay for {result_id[:8]}"
+    )
+
+    try:
+        exp_id = start_exact_replay_async(
+            db_path=Path(notebook_path),
+            result_ids=[result_id],
+            repeat_per_source=repeat_per_source,
+            device=device,
+            fast=fast,
+            verbose=False,
+            hypothesis=str(hypothesis),
+        )
+    except Exception as exc:
+        logger.exception("Failed to start rescreen for %s", result_id)
+        return jsonify({"error": f"Failed to start screening replay: {exc}"}), 500
+
+    return jsonify(
+        {
+            "status": "started",
+            "mode": "exact_graph_replay",
+            "experiment_id": exp_id,
+            "result_id": result_id,
+            "repeat_per_source": repeat_per_source,
+            "device": device,
+            "fast": fast,
+        }
+    )
+
+
+def _api_program_promote_screening(result_id, nb=None):
+    program = nb.get_program_detail(result_id)
+    if program is None:
+        program = _leaderboard_backed_program_detail(nb, result_id)
+    if program is None:
+        return jsonify({"error": "Program not found"}), 404
+
+    entry = nb.get_leaderboard_entry(result_id)
+    trust_label = _preserve_stronger_label(
+        program.get("trust_label"),
+        entry.get("trust_label") if entry else None,
+        ranks=_TRUST_LABEL_RANK,
+        fallback="candidate_screening",
+    )
+    comparability_label = _preserve_stronger_label(
+        program.get("comparability_label"),
+        entry.get("comparability_label") if entry else None,
+        ranks=_COMPARABILITY_LABEL_RANK,
+        fallback="screening_only",
+    )
+    if not entry:
+        entry_id = nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source=program.get("model_source") or "manual_screening_promotion",
+            architecture_desc=str(program.get("graph_fingerprint") or "")[:40],
+            screening_loss_ratio=program.get("loss_ratio"),
+            screening_novelty=program.get("novelty_score"),
+            screening_passed=bool(program.get("stage1_passed")),
+            tier="screening",
+            trust_label=trust_label,
+            comparability_label=comparability_label,
+            notes="Manual screening promotion from Discoveries",
+        )
+        entry = nb.get_leaderboard_entry(result_id) or {"entry_id": entry_id}
+    else:
+        existing_notes = str(entry.get("notes") or "").strip()
+        note_prefix = "Manual screening promotion from Discoveries"
+        note_value = (
+            existing_notes
+            if note_prefix in existing_notes
+            else (
+                f"{existing_notes}\n{note_prefix}".strip()
+                if existing_notes
+                else note_prefix
+            )
+        )
+        nb.promote_to_tier(
+            entry["entry_id"],
+            "screening",
+            trust_label=trust_label,
+            comparability_label=comparability_label,
+            screening_passed=bool(program.get("stage1_passed")),
+            screening_loss_ratio=program.get("loss_ratio"),
+            screening_novelty=program.get("novelty_score"),
+            notes=note_value,
+        )
+
+    nb.conn.execute(
+        """
+        UPDATE program_results
+        SET trust_label = ?, comparability_label = ?, timestamp = ?
+        WHERE result_id = ?
+        """,
+        (trust_label, comparability_label, time.time(), result_id),
+    )
+    nb.conn.commit()
+
+    updated = nb.get_leaderboard_entry(result_id)
+    return jsonify(
+        {
+            "status": "ok",
+            "result_id": result_id,
+            "entry": updated or entry,
+        }
+    )
+
+
+def _api_programs(nb=None):
+    n = request.args.get("n", 20, type=int)
+    sort_by = request.args.get("sort", "novelty_score")
+    from ..analytics import ExperimentAnalytics
+
+    analytics = ExperimentAnalytics(nb)
+    programs = nb.get_top_programs(n, sort_by)
+    annotate_qkv_usage(programs, analytics)
+    return jsonify(json_safe(programs))
+
+
+def _api_training_curve(result_id, nb=None):
+    curve = nb.get_training_curve(result_id)
+    return jsonify(curve)
+
+
+def _api_purge_junk_programs(nb=None):
+    dry_run = True
+    if request.is_json and request.json:
+        dry_run = request.json.get("dry_run", True)
+    result = nb.purge_junk_programs(dry_run=dry_run)
+    return jsonify(result)
+
+
 def register_programs_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
 
-    @app.route("/api/programs/<result_id>")
-    @wnb
-    def api_program_detail(result_id, nb=None):
-        """Full program detail with parsed graph JSON + fingerprint + all metrics."""
-        aria = get_aria()
-        program = nb.get_program_detail(result_id)
-        if program is None:
-            program = _leaderboard_backed_program_detail(nb, result_id)
-        if program is None:
-            # Fallback: resolve fingerprint (architecture_desc) to result_id
-            row = nb.conn.execute(
-                "SELECT result_id FROM leaderboard WHERE architecture_desc = ? LIMIT 1",
-                (result_id,),
-            ).fetchone()
-            if row:
-                resolved_id = (
-                    row[0] if isinstance(row, (tuple, list)) else row["result_id"]
-                )
-                program = nb.get_program_detail(resolved_id)
-                if program is None:
-                    program = _leaderboard_backed_program_detail(nb, resolved_id)
-        if program is None:
-            return jsonify({"error": "Not found"}), 404
-
-        try:
-            curve = nb.get_training_curve(result_id)
-            program["has_training_curve"] = len(curve) > 0
-        except Exception as exc:
-            logger.debug(
-                "Failed to load training curve for result_id=%s: %s", result_id, exc
-            )
-            program["has_training_curve"] = False
-
-        try:
-            # Check for cached explanation first (avoid LLM call on every view)
-            cached_explanation = nb.conn.execute(
-                "SELECT llm_explanation FROM program_results WHERE result_id = ?",
-                (result_id,),
-            ).fetchone()
-            if cached_explanation and cached_explanation[0]:
-                program["llm_explanation"] = cached_explanation[0]
-            else:
-                ctx = build_program_context(program)
-                explanation = aria.explain_fingerprint(ctx)
-                if explanation:
-                    program["llm_explanation"] = explanation
-                    # Cache for future requests
-                    try:
-                        nb.conn.execute(
-                            "UPDATE program_results SET llm_explanation = ? WHERE result_id = ?",
-                            (explanation, result_id),
-                        )
-                        nb.conn.commit()
-                    except Exception as exc:
-                        logger.debug(
-                            "Failed to cache llm_explanation for result_id=%s: %s",
-                            result_id,
-                            exc,
-                        )
-        except Exception as e:
-            logger.debug(f"LLM fingerprint explanation failed for {result_id}: {e}")
-
-        program = enrich_program_detail(nb, program)
-
-        try:
-            program["lineage_chain"] = program_lineage_chain(nb, result_id)
-        except Exception as exc:
-            logger.debug(
-                "Failed to load lineage chain for result_id=%s: %s", result_id, exc
-            )
-            program["lineage_chain"] = []
-
-        return jsonify(json_safe(program))
-
-    @app.route("/api/programs/<result_id>/lineage")
-    @wnb
-    def api_program_lineage(result_id: str, nb=None):
-        """Program lineage chain for refinement traceability."""
-        program = nb.get_program_detail(result_id)
-        if program is None:
-            return jsonify({"error": "Not found"}), 404
-        chain = program_lineage_chain(nb, result_id)
-        return jsonify(
-            json_safe(
-                {
-                    "result_id": result_id,
-                    "lineage_chain": chain,
-                    "depth": len(chain),
-                }
-            )
-        )
-
-    @app.route("/api/programs/<result_id>/refine-analysis")
-    @wnb
-    def api_program_refine_analysis(result_id, nb=None):
-        from ..analytics import ExperimentAnalytics, RefinementAnalyzer
-
-        program = nb.get_program_detail(result_id)
-        if program is None:
-            return jsonify({"error": "Not found"}), 404
-
-        analytics = ExperimentAnalytics(nb)
-        analyzer = RefinementAnalyzer(analytics)
-        analysis = analyzer.analyze_program_for_refinement(result_id, program)
-        return jsonify(json_safe(analysis))
-
-    @app.route("/api/programs/<result_id>/morph", methods=["POST"])
-    @wnb
-    def api_program_morph(result_id, nb=None):
-        """Generate scored mutation candidates for a program."""
-        import math as _math
-        import random as _random
-        from ..synthesis.grammar import GrammarConfig
-        from ..synthesis.serializer import graph_from_json, graph_to_json
-        from ..synthesis.validator import validate_graph
-        from ..search.evolution import _mutate_graph
-
-        try:
-            import sys as _sys
-
-            _designer_root = str(Path(__file__).resolve().parents[2] / "aria_designer")
-            if _designer_root not in _sys.path:
-                _sys.path.insert(0, _designer_root)
-            from aria_designer.runtime.importer import (
-                graph_to_workflow as _graph_to_workflow,
-            )
-        except ImportError:
-            _graph_to_workflow = None
-
-        body = request.get_json(silent=True) or {}
-        intent = str(body.get("intent", "balanced")).lower()
-        n_candidates = min(20, max(1, int(body.get("n_candidates", 5))))
-
-        if intent not in ("quality", "compression", "sparsity", "novelty", "balanced"):
-            return jsonify({"error": f"Invalid intent: {intent}"}), 400
-
-        program = nb.get_program_detail(result_id)
-        if program is None:
-            return jsonify({"error": "Not found"}), 404
-
-        graph_json_str = program.get("graph_json")
-        if not graph_json_str:
-            return jsonify({"error": "No graph JSON for this program"}), 400
-
-        try:
-            parent_graph = graph_from_json(graph_json_str)
-        except Exception as e:
-            return jsonify({"error": f"Could not reconstruct graph: {e}"}), 400
-
-        grammar = GrammarConfig()
-        op_success: dict = {}
-        try:
-            for row in nb.get_op_success_rates():
-                n_used = float(row.get("n_used") or 0)
-                n_s1 = float(row.get("n_stage1_passed") or 0)
-                if n_used > 0:
-                    op_success[str(row.get("op_name"))] = n_s1 / n_used
-        except Exception as exc:
-            logger.debug(
-                "Failed to load op success rates for morph suggestions: %s", exc
-            )
-
-        if body.get("use_analysis"):
-            try:
-                from ..analytics import ExperimentAnalytics, RefinementAnalyzer
-
-                analytics = ExperimentAnalytics(nb)
-                analyzer = RefinementAnalyzer(analytics)
-                analysis_data = analyzer.analyze_program_for_refinement(
-                    result_id, program
-                )
-                recipe = analysis_data.get("recipe", {})
-                hints = recipe.get("grammar_hints", {})
-                for op_name, mult in hints.get("boost_ops", {}).items():
-                    current = grammar.op_weights.get(op_name, 1.0)
-                    grammar.op_weights[op_name] = min(3.0, current * mult)
-            except Exception as e:
-                logger.warning("Morph: analysis hint application failed: %s", e)
-
-        rng = _random.Random(hash((result_id, intent, time.time())))
-        pool_size = n_candidates * 4
-        candidates = []
-        seen_fps = set()
-        parent_ops = sorted(
-            set(str(n.op_name) for n in parent_graph.nodes.values() if not n.is_input)
-        )
-
-        for _ in range(pool_size):
-            try:
-                child = _mutate_graph(parent_graph, grammar, rng)
-            except Exception as exc:
-                logger.debug(
-                    "Morph candidate mutation failed for result_id=%s intent=%s: %s",
-                    result_id,
-                    intent,
-                    exc,
-                )
-                continue
-            child.prune_unreachable_nodes()
-            validation = validate_graph(child, max_ops=30, max_depth=20)
-            if not validation.valid:
-                continue
-            fp = child.fingerprint()
-            if fp in seen_fps:
-                continue
-            seen_fps.add(fp)
-
-            child_ops_list = [
-                str(n.op_name) for n in child.nodes.values() if not n.is_input
-            ]
-            n_ops = max(1, int(child.n_ops()))
-            depth = max(1, int(child.depth()))
-            params = max(1.0, float(child.n_params_estimate()))
-            unique_ops = len(set(child_ops_list))
-
-            learned_quality = 0.5
-            if child_ops_list:
-                learned_quality = sum(
-                    op_success.get(op, 0.5) for op in child_ops_list
-                ) / len(child_ops_list)
-            compression_proxy = 1.0 / (
-                1.0 + _math.log1p(params) + 0.25 * n_ops + 0.15 * depth
-            )
-            novelty_proxy = min(
-                1.0, (unique_ops / max(1, n_ops)) + (0.1 if depth >= 4 else 0.0)
-            )
-            sparse_hint_ops = (
-                "sparse",
-                "gate",
-                "topk",
-                "mask",
-                "threshold",
-                "skip",
-                "mixture",
-            )
-            sparse_op_bonus = 0.0
-            if child_ops_list:
-                sparse_op_bonus = sum(
-                    1.0
-                    for op in child_ops_list
-                    if any(t in op.lower() for t in sparse_hint_ops)
-                ) / len(child_ops_list)
-            sparsity_proxy = min(1.0, 0.7 * compression_proxy + 0.3 * sparse_op_bonus)
-            oscillation_risk, stability = oscillation_risk_score(child)
-            parent_novelty = float(program.get("novelty_score") or 0.0)
-            parent_quality = 1.0 - float(program.get("loss_ratio") or 1.0)
-
-            if intent == "quality":
-                score = (
-                    0.60 * learned_quality
-                    + 0.25 * parent_quality
-                    + 0.15 * compression_proxy
-                    - 0.10 * oscillation_risk
-                )
-            elif intent == "compression":
-                score = (
-                    0.60 * compression_proxy
-                    + 0.25 * learned_quality
-                    + 0.15 * parent_quality
-                    - 0.10 * oscillation_risk
-                )
-            elif intent == "sparsity":
-                score = (
-                    0.60 * sparsity_proxy
-                    + 0.25 * learned_quality
-                    + 0.15 * compression_proxy
-                    - 0.10 * oscillation_risk
-                )
-            elif intent == "novelty":
-                score = (
-                    0.55 * novelty_proxy
-                    + 0.25 * learned_quality
-                    + 0.20 * parent_novelty
-                    - 0.06 * oscillation_risk
-                )
-            else:
-                score = (
-                    0.35 * learned_quality
-                    + 0.25 * compression_proxy
-                    + 0.20 * novelty_proxy
-                    + 0.20 * max(parent_quality, parent_novelty)
-                    - 0.10 * oscillation_risk
-                )
-
-            child_ops = sorted(set(child_ops_list))
-            added_ops = [op for op in child_ops if op not in parent_ops]
-            removed_ops = [op for op in parent_ops if op not in child_ops]
-
-            workflow_json = None
-            if _graph_to_workflow:
-                try:
-                    wf = _graph_to_workflow(
-                        child, workflow_id=fp[:12], name=f"morph_{fp[:8]}"
-                    )
-                    workflow_json = wf
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to convert morph candidate to workflow for fingerprint=%s: %s",
-                        fp[:12],
-                        exc,
-                    )
-
-            candidates.append(
-                {
-                    "fingerprint": fp,
-                    "score": round(float(score), 4),
-                    "n_ops": n_ops,
-                    "depth": depth,
-                    "params_estimate": int(params),
-                    "unique_ops": unique_ops,
-                    "ops": child_ops,
-                    "added_ops": added_ops,
-                    "removed_ops": removed_ops,
-                    "graph_json": graph_to_json(child),
-                    "workflow_json": workflow_json,
-                    "score_breakdown": {
-                        "learned_quality": round(float(learned_quality), 4),
-                        "compression_proxy": round(float(compression_proxy), 4),
-                        "novelty_proxy": round(float(novelty_proxy), 4),
-                        "sparsity_proxy": round(float(sparsity_proxy), 4),
-                        "oscillation_risk": round(float(oscillation_risk), 4),
-                        "has_residual": int(stability.get("has_residual", 0.0) > 0.5),
-                        "norm_count": int(stability.get("norm_count", 0.0)),
-                    },
-                }
-            )
-
-        candidates.sort(key=lambda c: c["score"], reverse=True)
-        top = candidates[:n_candidates]
-
-        return jsonify(
-            {
-                "result_id": result_id,
-                "intent": intent,
-                "source_ops": parent_ops,
-                "source_fingerprint": parent_graph.fingerprint(),
-                "n_generated": len(seen_fps),
-                "candidates": top,
-            }
-        )
-
-    @app.route("/api/programs/<result_id>/external-benchmarks", methods=["POST"])
-    @wnb
-    def api_program_external_benchmarks(result_id, nb=None):
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, (dict, list)):
-            return jsonify({"error": "Payload must be a JSON object or list."}), 400
-        ok = nb.set_external_benchmarks(result_id, payload)
-        if not ok:
-            return jsonify(
-                {"error": "Program result not found or payload invalid."}
-            ), 404
-        return jsonify({"status": "ok", "result_id": result_id})
-
-    @app.route("/api/programs/<result_id>/backfill-metrics", methods=["POST"])
-    @wnb
-    def api_program_backfill_metrics(result_id, nb=None):
-        program = nb.get_program_detail(result_id)
-        if not program:
-            return jsonify({"error": "Program not found"}), 404
-        leaderboard = nb.conn.execute(
-            "SELECT entry_id, screening_loss_ratio FROM leaderboard WHERE result_id = ?",
-            (result_id,),
-        ).fetchone()
-        if not leaderboard:
-            return jsonify({"error": "No leaderboard entry for this result_id"}), 404
-        lb = dict(leaderboard)
-        row = {
-            "result_id": result_id,
-            "graph_json": program.get("graph_json"),
-            "entry_id": lb["entry_id"],
-            "screening_loss_ratio": lb.get("screening_loss_ratio"),
-        }
-        from ..tools.backfill_metrics import backfill_entry
-
-        body = request.get_json(silent=True) or {}
-        device = str(body.get("device", "cpu"))
-        result = backfill_entry(row, device=device)
-        return jsonify({"status": "ok", "result_id": result_id, "backfill": result})
-
-    @app.route("/api/programs/<result_id>/backfill-loss", methods=["POST"])
-    @wnb
-    def api_program_backfill_loss(result_id, nb=None):
-        program = nb.get_program_detail(result_id)
-        if not program:
-            return jsonify({"error": "Program not found"}), 404
-        graph_json = program.get("graph_json")
-        if not graph_json:
-            return jsonify({"error": "No graph_json for this program"}), 400
-        initial_loss = program.get("initial_loss")
-        if not initial_loss:
-            return jsonify(
-                {"error": "No initial_loss recorded — cannot compute ratios"}
-            ), 400
-
-        exp_id = program.get("experiment_id")
-        config_json = None
-        if exp_id:
-            exp_row = nb.conn.execute(
-                "SELECT config_json FROM experiments WHERE experiment_id = ?", (exp_id,)
-            ).fetchone()
-            if exp_row:
-                config_json = exp_row["config_json"]
-
-        import dataclasses as _dc
-
-        config_dict = json.loads(config_json) if config_json else {}
-        valid_fields = {f.name for f in _dc.fields(RunConfig)}
-        filtered = {k: v for k, v in config_dict.items() if k in valid_fields}
-        config = RunConfig(**filtered)
-
-        import torch
-
-        body = request.get_json(silent=True) or {}
-        device = str(body.get("device", "cpu"))
-        dev = torch.device(device)
-
-        from ..synthesis.serializer import graph_from_json as _gfj
-
-        graph = _gfj(graph_json)
-        graph_dim = getattr(graph, "model_dim", None)
-        if graph_dim and config.model_dim != graph_dim:
-            config.model_dim = int(graph_dim)
-
-        from ..native_runner import compile_model_native_first as _compile
-
-        layer_graphs = [graph] * config.n_layers
-        model = _compile(
-            layer_graphs, vocab_size=config.vocab_size, max_seq_len=config.max_seq_len
-        )
-        model = model.to(dev).eval()
-
-        seq_len = min(128, config.max_seq_len)
-        updates = {}
-
-        try:
-            losses = []
-            with torch.no_grad():
-                for i in range(2):
-                    ids = torch.randint(0, config.vocab_size, (4, seq_len), device=dev)
-                    logits = model(ids)
-                    if isinstance(logits, tuple):
-                        logits = logits[0]
-                    loss = torch.nn.functional.cross_entropy(
-                        logits[:, :-1].reshape(-1, logits.shape[-1]),
-                        ids[:, 1:].reshape(-1),
-                    )
-                    if torch.isfinite(loss):
-                        losses.append(loss.item())
-            if losses:
-                disc_loss = sum(losses) / len(losses)
-                disc_ratio = disc_loss / max(float(initial_loss), 1e-6)
-                updates["discovery_loss"] = disc_loss
-                updates["discovery_loss_ratio"] = disc_ratio
-        except Exception as e:
-            updates["discovery_loss_error"] = str(e)
-
-        data_mode = str(config.data_mode or "random").strip().lower()
-        if data_mode in ("corpus", "huggingface"):
-            try:
-                runner = get_runner(notebook_path)
-                if data_mode == "huggingface":
-                    batcher = runner._get_hf_batcher(config)
-                else:
-                    batcher = runner._get_corpus_batcher(config)
-                if batcher and batcher.ready:
-                    losses = []
-                    gen = torch.Generator(device=dev)
-                    gen.manual_seed(9999)
-                    with torch.no_grad():
-                        for i in range(2):
-                            batch = batcher.sample_batch(
-                                batch_size=4,
-                                seq_len=seq_len,
-                                generator=gen,
-                                device=dev,
-                                split="val",
-                            )
-                            if batch is None:
-                                continue
-                            logits = model(batch)
-                            if isinstance(logits, tuple):
-                                logits = logits[0]
-                            loss = torch.nn.functional.cross_entropy(
-                                logits[:, :-1].reshape(-1, logits.shape[-1]),
-                                batch[:, 1:].reshape(-1),
-                            )
-                            if torch.isfinite(loss):
-                                losses.append(loss.item())
-                    if losses:
-                        val_loss = sum(losses) / len(losses)
-                        val_ratio = val_loss / max(float(initial_loss), 1e-6)
-                        updates["validation_loss"] = val_loss
-                        updates["validation_loss_ratio"] = val_ratio
-                        final_loss = program.get("final_loss")
-                        if final_loss:
-                            updates["generalization_gap"] = val_loss - float(final_loss)
-            except Exception as e:
-                updates["validation_loss_error"] = str(e)
-
-        del model
-        if device != "cpu":
-            torch.cuda.empty_cache()
-
-        if updates:
-            db_updates = {k: v for k, v in updates.items() if not k.endswith("_error")}
-            if db_updates:
-                set_parts = [f"{k} = ?" for k in db_updates]
-                vals = list(db_updates.values()) + [result_id]
-                nb.conn.execute(
-                    f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
-                    vals,
-                )
-                lb_cols = {
-                    c[1]
-                    for c in nb.conn.execute(
-                        "PRAGMA table_info(leaderboard)"
-                    ).fetchall()
-                }
-                lb_updates = {k: v for k, v in db_updates.items() if k in lb_cols}
-                if lb_updates:
-                    lb_set = [f"{k} = ?" for k in lb_updates]
-                    lb_vals = list(lb_updates.values()) + [result_id]
-                    nb.conn.execute(
-                        f"UPDATE leaderboard SET {', '.join(lb_set)} WHERE result_id = ?",
-                        lb_vals,
-                    )
-                nb.conn.commit()
-
-        return jsonify({"status": "ok", "result_id": result_id, "updates": updates})
-
-    @app.route("/api/programs")
-    @wnb
-    def api_programs(nb=None):
-        n = request.args.get("n", 20, type=int)
-        sort_by = request.args.get("sort", "novelty_score")
-        from ..analytics import ExperimentAnalytics
-
-        analytics = ExperimentAnalytics(nb)
-        programs = nb.get_top_programs(n, sort_by)
-        annotate_qkv_usage(programs, analytics)
-        return jsonify(json_safe(programs))
-
-    @app.route("/api/programs/<result_id>/training-curve")
-    @wnb
-    def api_training_curve(result_id, nb=None):
-        curve = nb.get_training_curve(result_id)
-        return jsonify(curve)
-
-    @app.route("/api/programs/purge-junk", methods=["POST"])
-    @wnb
-    def api_purge_junk_programs(nb=None):
-        dry_run = True
-        if request.is_json and request.json:
-            dry_run = request.json.get("dry_run", True)
-        result = nb.purge_junk_programs(dry_run=dry_run)
-        return jsonify(result)
+    app.add_url_rule(
+        "/api/programs/<result_id>",
+        "api_program_detail",
+        bind_notebook_view(wnb, _api_program_detail),
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/explanation",
+        "api_program_explanation",
+        bind_notebook_view(wnb, _api_program_explanation),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/lineage",
+        "api_program_lineage",
+        bind_notebook_view(wnb, _api_program_lineage),
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/refine-analysis",
+        "api_program_refine_analysis",
+        bind_notebook_view(wnb, _api_program_refine_analysis),
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/morph",
+        "api_program_morph",
+        bind_notebook_view(wnb, _api_program_morph),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/external-benchmarks",
+        "api_program_external_benchmarks",
+        bind_notebook_view(wnb, _api_program_external_benchmarks),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/backfill-metrics",
+        "api_program_backfill_metrics",
+        bind_notebook_view(wnb, _api_program_backfill_metrics, notebook_path),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/backfill-loss",
+        "api_program_backfill_loss",
+        bind_notebook_view(wnb, _api_program_backfill_loss, notebook_path),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/rescreen",
+        "api_program_rescreen",
+        bind_notebook_view(wnb, _api_program_rescreen, notebook_path),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/promote-screening",
+        "api_program_promote_screening",
+        bind_notebook_view(wnb, _api_program_promote_screening),
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/programs", "api_programs", bind_notebook_view(wnb, _api_programs)
+    )
+    app.add_url_rule(
+        "/api/programs/<result_id>/training-curve",
+        "api_training_curve",
+        bind_notebook_view(wnb, _api_training_curve),
+    )
+    app.add_url_rule(
+        "/api/programs/purge-junk",
+        "api_purge_junk_programs",
+        bind_notebook_view(wnb, _api_purge_junk_programs),
+        methods=["POST"],
+    )

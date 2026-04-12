@@ -79,7 +79,10 @@ def _op_conv1d_seq(module, inputs, _):
         return aria_core.conv1d_seq_f32(x, module.conv_weight, conv_bias)
     kernel_size = module.conv_weight.shape[2]
     x_padded = F.pad(x.transpose(1, 2), (kernel_size - 1, 0))
-    out = F.conv1d(x_padded, module.conv_weight, groups=D)
+    conv_weight = module.conv_weight
+    if conv_weight.dtype != x.dtype:
+        conv_weight = conv_weight.to(x.dtype)
+    out = F.conv1d(x_padded, conv_weight, groups=D)
     return out.transpose(1, 2)
 
 
@@ -101,8 +104,14 @@ def _op_rwkv_channel(module, inputs, _):
         shifted[:, 1:] = x[:, :-1]
     xk = x * module.mix_k + shifted * (1 - module.mix_k)
     xr = x * module.mix_r + shifted * (1 - module.mix_r)
-    k = torch.square(torch.relu(module.key_proj(xk)))
-    return torch.sigmoid(module.receptance_proj(xr)) * module.value_proj(k)
+    k = torch.square(
+        torch.relu(_safe_linear(xk, module.key_proj.weight, module.key_proj.bias))
+    )
+    receptance = torch.sigmoid(
+        _safe_linear(xr, module.receptance_proj.weight, module.receptance_proj.bias)
+    )
+    value = _safe_linear(k, module.value_proj.weight, module.value_proj.bias)
+    return receptance * value
 
 
 def _op_diff_attention(module, inputs, _):
@@ -111,9 +120,21 @@ def _op_diff_attention(module, inputs, _):
         return x
     B, S, _ = x.shape
     nh, hd = module.n_heads, module.head_dim
-    q = module.q_proj(x).reshape(B, S, nh, 2, hd).permute(0, 2, 3, 1, 4)
-    k = module.k_proj(x).reshape(B, S, nh, 2, hd).permute(0, 2, 3, 1, 4)
-    v = module.v_proj(x).reshape(B, S, nh, hd).transpose(1, 2)
+    q = (
+        _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+        .reshape(B, S, nh, 2, hd)
+        .permute(0, 2, 3, 1, 4)
+    )
+    k = (
+        _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+        .reshape(B, S, nh, 2, hd)
+        .permute(0, 2, 3, 1, 4)
+    )
+    v = (
+        _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
+        .reshape(B, S, nh, hd)
+        .transpose(1, 2)
+    )
     out1 = F.scaled_dot_product_attention(
         q[:, :, 0],
         k[:, :, 0],
@@ -131,7 +152,7 @@ def _op_diff_attention(module, inputs, _):
         scale=hd**-0.5,
     )
     out = (out1 - module.lambda_param.abs() * out2).transpose(1, 2).reshape(B, S, -1)
-    return module.o_proj(out)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
 def _op_state_space(module, inputs, _):
@@ -167,9 +188,9 @@ def _op_gated_delta(module, inputs, _):
     if not hasattr(module, "q_proj"):
         return x
     B, S, D = x.shape
-    q = module.q_proj(x)
-    k = module.k_proj(x)
-    v = module.v_proj(x)
+    q = _safe_linear(x, module.q_proj.weight, module.q_proj.bias)
+    k = _safe_linear(x, module.k_proj.weight, module.k_proj.bias)
+    v = _safe_linear(x, module.v_proj.weight, module.v_proj.bias)
     alpha = torch.sigmoid(module.alpha_proj(x))
     beta = torch.sigmoid(module.beta_proj(x))
     eff_decay = alpha - beta
@@ -208,7 +229,7 @@ def _op_gated_delta(module, inputs, _):
         h = h_all[:, -1]
         out_f[:, c_start:c_end] = torch.einsum("bcd,bcde->bce", q_c, h_all)
     out = out_f.reshape(B, H, S, d).permute(0, 2, 1, 3).reshape(B, S, D)
-    return module.o_proj(out)
+    return _safe_linear(out, module.o_proj.weight, module.o_proj.bias)
 
 
 def _op_rwkv_time_mixing(module, inputs, _):
@@ -249,6 +270,8 @@ def _op_rwkv_time_mixing(module, inputs, _):
     indices = torch.arange(S, device=x.device, dtype=x.dtype)
     log_kernel = w.view(D, 1, 1) * (S - 1 - indices).view(1, 1, S)
     kernel = torch.exp(log_kernel.clamp(-20, 0))
+    if kernel.dtype != x.dtype:
+        kernel = kernel.to(x.dtype)
     u_wkv = (exp_k * v).permute(0, 2, 1)
     u_den = exp_k.permute(0, 2, 1)
     wkv_incl = F.conv1d(F.pad(u_wkv, (S - 1, 0)), kernel, groups=D)

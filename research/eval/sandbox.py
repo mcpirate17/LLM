@@ -27,6 +27,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from ..scientist.perf import PerfTracer, OpKernelProfiler
+from .routing_telemetry import collect_routing_telemetry
+
+_collect_routing_telemetry = collect_routing_telemetry
 from .sparsity import check_activation_sparsity
 from .utils import compute_grad_norm, language_model_loss, make_adamw
 from research.defaults import VOCAB_SIZE
@@ -408,201 +411,45 @@ def _run_backward_stage(
 
 def _gradient_health(model: nn.Module):
     grads = [p.grad for p in model.parameters() if p.grad is not None]
+    n_with_grad = len(grads)
+    if not grads:
+        return 0.0, False, True, 0
+
+    try:
+        from ._runner_native import load_runner_native
+
+        names = [f"p{i}" for i in range(len(grads))]
+        stats = load_runner_native().grad_stats_fused(grads, names)
+        return (
+            float(stats["total_norm"]),
+            bool(stats["has_nonfinite"]),
+            bool(stats["has_zero"]),
+            n_with_grad,
+        )
+    except Exception:
+        pass
+
+    # Python fallback
     has_nan = False
     has_zero = True
-    n_with_grad = len(grads)
-    total_norm = 0.0
-    if grads:
-        total_norm = compute_grad_norm(model)
-        try:
-            norms = torch._foreach_norm(grads, 2)
-            norm_vec = torch.stack([n.detach() for n in norms])
-            has_nan = not bool(torch.isfinite(norm_vec).all().item())
-            has_zero = not bool((norm_vec > 1e-10).any().item())
-        except RuntimeError as exc:
-            logger.debug(
-                "torch._foreach_norm failed during sandbox grad check; using scalar fallback: %s",
-                exc,
-            )
-            for grad in grads:
-                if torch.isnan(grad).any():
-                    has_nan = True
-                pnorm = grad.data.float().norm().item()
-                if pnorm > 1e-10:
-                    has_zero = False
-    return float(total_norm), has_nan, has_zero, n_with_grad
-
-
-def _collect_routing_telemetry(model: nn.Module, capture_heatmaps: bool):
-    def _accumulate_hist(acc, hist):
-        if acc is None:
-            return hist
-        if acc.numel() == hist.numel():
-            return acc + hist
-        if acc.numel() < hist.numel():
-            padded = torch.zeros_like(hist)
-            padded[: acc.numel()] = acc
-            return padded + hist
-        padded = torch.zeros_like(acc)
-        padded[: hist.numel()] = hist
-        return acc + padded
-
-    heatmaps = {}
-    total_savings = 0.0
-    total_depth_ratio = 0.0
-    routing_op_count = 0
-    tokens_total = 0
-    keep_count = 0
-    drop_count = 0
-    default_path_count = 0
-    routed_token_count = 0
-    sparse_span_count = 0
-    sparse_span_width_sum = 0.0
-    sparse_span_width_count = 0
-    sparse_span_coverage_tokens = 0
-    lane_histogram = None
-    confidence_histogram = None
-    confidence_sum = 0.0
-    confidence_sq_sum = 0.0
-    confidence_count = 0
-    route_strength_sum = 0.0
-    route_strength_count = 0
-    branch_weight_sum = None
-    branch_weight_count = 0
-    branch_dominance_sum = 0.0
-    routed_branch_share_sum = 0.0
-    medium_branch_share_sum = 0.0
-    hard_branch_share_sum = 0.0
-    routing_modes = set()
-    gate_types = set()
-    span_types = set()
-    lane_count_max = 0
-    trace_payloads = {}
-    for name, module in model.named_modules():
-        rt = getattr(module, "routing_telemetry", None)
-        if not rt:
-            continue
-        if rt.get("heatmap") is not None:
-            heatmaps[name] = rt["heatmap"]
-        routing_op_count += 1
-        tokens_total += int(rt.get("tokens_total", 0) or 0)
-        keep_count += int(rt.get("keep_count", 0) or 0)
-        drop_count += int(rt.get("drop_count", 0) or 0)
-        default_path_count += int(rt.get("default_path_count", 0) or 0)
-        routed_token_count += int(rt.get("routed_token_count", 0) or 0)
-        sparse_span_count += int(rt.get("sparse_span_count", 0) or 0)
-        sparse_span_width_sum += float(rt.get("sparse_span_width_sum", 0.0) or 0.0)
-        sparse_span_width_count += int(rt.get("sparse_span_width_count", 0) or 0)
-        sparse_span_coverage_tokens += int(
-            rt.get("sparse_span_coverage_tokens", 0) or 0
+    total_norm = float(compute_grad_norm(model))
+    try:
+        norms = torch._foreach_norm(grads, 2)
+        norm_vec = torch.stack([n.detach() for n in norms])
+        has_nan = not bool(torch.isfinite(norm_vec).all().item())
+        has_zero = not bool((norm_vec > 1e-10).any().item())
+    except RuntimeError as exc:
+        logger.debug(
+            "torch._foreach_norm failed during sandbox grad check; using scalar fallback: %s",
+            exc,
         )
-        confidence_sum += float(rt.get("confidence_sum", 0.0) or 0.0)
-        confidence_sq_sum += float(rt.get("confidence_sq_sum", 0.0) or 0.0)
-        confidence_count += int(rt.get("confidence_count", 0) or 0)
-        route_strength_sum += float(rt.get("route_strength_sum", 0.0) or 0.0)
-        route_strength_count += int(rt.get("route_strength_count", 0) or 0)
-        branch_dominance_sum += float(rt.get("branch_dominance_sum", 0.0) or 0.0)
-        routed_branch_share_sum += float(rt.get("routed_branch_share_sum", 0.0) or 0.0)
-        medium_branch_share_sum += float(rt.get("medium_branch_share_sum", 0.0) or 0.0)
-        hard_branch_share_sum += float(rt.get("hard_branch_share_sum", 0.0) or 0.0)
-        branch_weight_count += int(rt.get("branch_weight_count", 0) or 0)
-        if rt.get("routing_mode"):
-            routing_modes.add(str(rt["routing_mode"]))
-        if rt.get("gate_type"):
-            gate_types.add(str(rt["gate_type"]))
-        if rt.get("span_type"):
-            span_types.add(str(rt["span_type"]))
-        lane_count_max = max(lane_count_max, int(rt.get("lane_count", 0) or 0))
-        total_savings += rt.get("savings_ratio", 0.0)
-        total_depth_ratio += rt.get("depth_ratio", 1.0)
-        if isinstance(rt.get("lane_histogram"), torch.Tensor):
-            hist = rt["lane_histogram"].detach().to(torch.float32).cpu()
-            lane_histogram = _accumulate_hist(lane_histogram, hist)
-        if isinstance(rt.get("confidence_histogram"), torch.Tensor):
-            hist = rt["confidence_histogram"].detach().to(torch.float32).cpu()
-            confidence_histogram = _accumulate_hist(confidence_histogram, hist)
-        if isinstance(rt.get("branch_weight_sum"), torch.Tensor):
-            hist = rt["branch_weight_sum"].detach().to(torch.float32).cpu()
-            branch_weight_sum = _accumulate_hist(branch_weight_sum, hist)
-        if rt.get("trace_payload") is not None:
-            trace_payloads[name] = rt["trace_payload"]
-    payload = None
-    if routing_op_count > 0:
-        payload = {
-            "routing_savings_ratio": round(total_savings / routing_op_count, 4),
-            "routing_depth_ratio": round(total_depth_ratio / routing_op_count, 4),
-        }
-        if tokens_total > 0:
-            payload["routing_keep_drop_ratio"] = {
-                "keep": round(keep_count / tokens_total, 4),
-                "drop": round(drop_count / tokens_total, 4),
-            }
-            payload["default_path_fraction"] = round(
-                default_path_count / tokens_total, 4
-            )
-            payload["routed_compute_fraction"] = round(
-                routed_token_count / tokens_total, 4
-            )
-        if sparse_span_width_count > 0:
-            payload["sparse_span_count"] = int(sparse_span_count)
-            payload["average_span_width"] = round(
-                sparse_span_width_sum / sparse_span_width_count, 4
-            )
-        if tokens_total > 0:
-            payload["sparse_span_coverage"] = round(
-                sparse_span_coverage_tokens / tokens_total, 4
-            )
-        if lane_histogram is not None:
-            lane_probs = lane_histogram / lane_histogram.sum().clamp(min=1.0)
-            lane_entropy = float(
-                -(lane_probs * torch.log(lane_probs.clamp(min=1e-10))).sum().item()
-            )
-            payload["lane_utilization_histogram"] = lane_histogram.int().tolist()
-            payload["lane_entropy"] = round(lane_entropy, 4)
-            payload["lane_utilization"] = payload["lane_utilization_histogram"]
-            payload["active_lane_count"] = int((lane_histogram > 0).sum().item())
-            payload["dead_lane_count"] = int((lane_histogram == 0).sum().item())
-        if confidence_count > 0:
-            conf_mean = confidence_sum / confidence_count
-            conf_var = max(
-                0.0, (confidence_sq_sum / confidence_count) - (conf_mean * conf_mean)
-            )
-            payload["route_confidence_mean"] = round(conf_mean, 4)
-            payload["route_confidence_std"] = round(conf_var**0.5, 4)
-        if route_strength_count > 0:
-            payload["route_strength_mean"] = round(
-                route_strength_sum / route_strength_count, 4
-            )
-        if branch_weight_sum is not None and branch_weight_count > 0:
-            branch_means = (branch_weight_sum / max(branch_weight_count, 1)).tolist()
-            payload["branch_weight_mean"] = [round(float(v), 4) for v in branch_means]
-            payload["branch_dominance_mean"] = round(
-                branch_dominance_sum / branch_weight_count, 4
-            )
-            payload["routed_branch_share"] = round(
-                routed_branch_share_sum / branch_weight_count, 4
-            )
-            payload["medium_branch_share"] = round(
-                medium_branch_share_sum / branch_weight_count, 4
-            )
-            payload["hard_branch_share"] = round(
-                hard_branch_share_sum / branch_weight_count, 4
-            )
-        if confidence_histogram is not None:
-            payload["confidence_histogram"] = confidence_histogram.int().tolist()
-        if routing_modes:
-            payload["routing_modes"] = sorted(routing_modes)
-        if gate_types:
-            payload["gate_types"] = sorted(gate_types)
-        if span_types:
-            payload["span_types"] = sorted(span_types)
-        if lane_count_max > 0:
-            payload["lane_count"] = lane_count_max
-        if trace_payloads:
-            payload["routing_traces"] = trace_payloads
-        if capture_heatmaps and heatmaps:
-            payload["routing_heatmaps"] = heatmaps
-    return payload
+        for grad in grads:
+            if torch.isnan(grad).any():
+                has_nan = True
+            pnorm = grad.data.float().norm().item()
+            if pnorm > 1e-10:
+                has_zero = False
+    return total_norm, has_nan, has_zero, n_with_grad
 
 
 def _set_result_error(
@@ -886,7 +733,7 @@ def _run_stability_stage(
             vocab_size,
             run_training_dynamics_probe=run_training_dynamics_probe,
         )
-        result.routing_report = _collect_routing_telemetry(model, capture_heatmaps)
+        result.routing_report = collect_routing_telemetry(model, capture_heatmaps)
         result.sparsity_report = result.routing_report
         failed = _apply_stability_results(result, stability)
         if failed is not None:

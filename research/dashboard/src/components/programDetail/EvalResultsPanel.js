@@ -1,6 +1,8 @@
 import React from 'react';
 import { apiCall } from '../../services/apiService';
 
+const LONG_ACTION_TIMEOUT_MS = 120000;
+
 function EvalResultsPanel({
   program, leaderboardEntry, resultId, dispatch, state,
   onActionComplete, onClose,
@@ -15,14 +17,14 @@ function EvalResultsPanel({
 
   const fmt = (v, d = 4) => v != null ? Number(v).toFixed(d) : '--';
 
-  const investigateDisabled = actionStarting === 'investigate' || !canInvestigate;
-  const validateDisabled = actionStarting === 'validate' || !canValidate;
+  const investigateDisabled = actionStarting === 'investigate';
+  const validateDisabled = actionStarting === 'validate';
   const investigateTitle = canInvestigate
     ? 'Deep study with multiple training programs'
-    : 'Already investigated for this fingerprint. Enable override to run anyway.';
+    : 'Deep study with multiple training programs. This run will use override if needed.';
   const validateTitle = canValidate
     ? 'Publication-grade multi-seed validation'
-    : 'Already validated or not eligible. Enable override to run anyway.';
+    : 'Publication-grade multi-seed validation. This run will use override if needed.';
 
   if (!program.stage1_passed) return null;
 
@@ -82,6 +84,7 @@ function EvalResultsPanel({
                     dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
                     const res = await apiCall(`/api/experiments/start`, {
                       method: 'POST',
+                      timeoutMs: LONG_ACTION_TIMEOUT_MS,
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
                         mode: 'scale_up',
@@ -267,6 +270,7 @@ function EvalResultsPanel({
                     }
                     const res = await apiCall(`/api/experiments/start`, {
                       method: 'POST',
+                      timeoutMs: LONG_ACTION_TIMEOUT_MS,
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify(body),
                     });
@@ -328,16 +332,18 @@ function EvalResultsPanel({
           className="start-btn"
           disabled={investigateDisabled}
           onClick={async () => {
+            const forceRun = Boolean(overrideIneligible || !canInvestigate);
             dispatch({ type: 'SET_ACTION', payload: { starting: 'investigate', error: null } });
             try {
               const res = await apiCall(`/api/experiments/start`, {
                 method: 'POST',
+                timeoutMs: LONG_ACTION_TIMEOUT_MS,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   mode: 'investigation',
                   result_ids: [resultId],
-                  force: overrideIneligible,
-                  override_ineligible: overrideIneligible,
+                  force: forceRun,
+                  override_ineligible: forceRun,
                   preflight_override: true,
                   enforce_preflight: true,
                 }),
@@ -374,16 +380,18 @@ function EvalResultsPanel({
           className="start-btn"
           disabled={validateDisabled}
           onClick={async () => {
+            const forceRun = Boolean(overrideIneligible || !canValidate);
             dispatch({ type: 'SET_ACTION', payload: { starting: 'validate', error: null } });
             try {
               const res = await apiCall(`/api/experiments/start`, {
                 method: 'POST',
+                timeoutMs: LONG_ACTION_TIMEOUT_MS,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   mode: 'validation',
                   result_ids: [resultId],
-                  force: overrideIneligible,
-                  override_ineligible: overrideIneligible,
+                  force: forceRun,
+                  override_ineligible: forceRun,
                   preflight_override: true,
                   enforce_preflight: true,
                 }),
@@ -427,6 +435,8 @@ function EvalResultsPanel({
 }
 
 function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfillRunning, backfillResult, lossBackfillRunning, lossBackfillResult }) {
+  const trustLabel = String(program?.trust_label || leaderboardEntry?.trust_label || '').trim().toLowerCase();
+  const canPromoteScreening = Boolean(resultId) && trustLabel !== 'candidate_screening' && trustLabel !== 'candidate_grade' && trustLabel !== 'reference';
   const metrics = [
     { key: 'novelty_score', label: 'Novelty' },
     { key: 'fp_jacobian_spectral_norm', label: 'Spectral Norm' },
@@ -444,18 +454,86 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
     { key: 'param_efficiency', label: 'Param Efficiency' },
   ].filter(m => leaderboardEntry[m.key] == null) : [];
   const allMissing = [...missing, ...lbMissing];
-  if (allMissing.length === 0 && !backfillResult) return null;
   return (
     <div style={{
       padding: 12, background: 'var(--bg-tertiary)', borderRadius: 6,
       border: '1px solid var(--border)',
     }}>
-      {allMissing.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-          Missing: {allMissing.map(m => m.label).join(', ')}
-        </div>
-      )}
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+        {allMissing.length > 0
+          ? `Missing: ${allMissing.map(m => m.label).join(', ')}`
+          : 'On-demand repair tools. Use these to rescreen, recompute metrics, or recover missing losses for this row.'}
+      </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        {canPromoteScreening && (
+          <button
+            className="start-btn"
+            onClick={async () => {
+              dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
+              try {
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
+                const res = await apiCall(`/api/programs/${resultId}/promote-screening`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: data.error || 'Promote to screening failed' } });
+                  dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: false, backfillResult: { status: 'error' } } });
+                } else {
+                  dispatch({
+                    type: 'SET_BACKFILL',
+                    payload: {
+                      backfillRunning: false,
+                      backfillResult: { status: 'ok', mode: 'promote_screening' },
+                    }
+                  });
+                }
+              } catch (e) {
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
+                dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: false, backfillResult: { status: 'error' } } });
+              }
+            }}
+            style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(63, 185, 80, 0.15)', border: '1px solid rgba(63, 185, 80, 0.4)', color: 'var(--accent-green)' }}
+          >
+            {backfillRunning ? 'Promoting...' : 'Promote to Screening'}
+          </button>
+        )}
+        <button
+          className="start-btn"
+          onClick={async () => {
+            dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: true, backfillResult: null } });
+            try {
+              dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
+              const res = await apiCall(`/api/programs/${resultId}/rescreen`, {
+                method: 'POST',
+                timeoutMs: LONG_ACTION_TIMEOUT_MS,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device: 'cuda', fast: true, repeat_per_source: 1 }),
+              });
+              if (!res.ok) {
+                const err = await res.json();
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Rescreen failed' } });
+                dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: false, backfillResult: { status: 'error' } } });
+              } else {
+                const data = await res.json();
+                dispatch({
+                  type: 'SET_BACKFILL',
+                  payload: {
+                    backfillRunning: false,
+                    backfillResult: { status: 'ok', mode: 'rescreen', experiment_id: data.experiment_id },
+                  }
+                });
+              }
+            } catch (e) {
+              dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
+              dispatch({ type: 'SET_BACKFILL', payload: { backfillRunning: false, backfillResult: { status: 'error' } } });
+            }
+          }}
+          style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(88, 166, 255, 0.15)', border: '1px solid rgba(88, 166, 255, 0.4)', color: 'var(--accent-blue)' }}
+        >
+          {backfillRunning ? 'Starting...' : 'Rescreen'}
+        </button>
         <button
           className="start-btn"
           disabled={backfillRunning}
@@ -465,6 +543,7 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
               dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
               const res = await apiCall(`/api/programs/${resultId}/backfill-metrics`, {
                 method: 'POST',
+                timeoutMs: LONG_ACTION_TIMEOUT_MS,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ device: 'cpu' }),
               });
@@ -486,64 +565,71 @@ function BackfillSection({ program, leaderboardEntry, resultId, dispatch, backfi
           {backfillRunning ? 'Computing...' : 'Recompute Missing Metrics'}
         </button>
         {backfillResult && backfillResult.status === 'ok' && (
-          <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>Done — reload to see updates</span>
+          <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>
+            {backfillResult.mode === 'promote_screening'
+              ? 'Promoted to screening candidate pool'
+              : backfillResult.mode === 'rescreen'
+              ? `Rescreen queued${backfillResult.experiment_id ? ` (${String(backfillResult.experiment_id).slice(0, 8)})` : ''}`
+              : 'Done — reload to see updates'}
+          </span>
         )}
         {backfillResult && backfillResult.status === 'error' && (
           <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>Failed</span>
         )}
       </div>
-      {(program.discovery_loss_ratio == null || program.validation_loss_ratio == null) && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
-            Missing loss:{' '}
-            {[
-              program.discovery_loss_ratio == null && 'Discovery',
-              program.validation_loss_ratio == null && 'Validation',
-            ].filter(Boolean).join(', ')}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button
-              className="start-btn"
-              disabled={lossBackfillRunning}
-              onClick={async () => {
-                dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: true, lossBackfillResult: null } });
-                try {
-                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
-                  const res = await apiCall(`/api/programs/${resultId}/backfill-loss`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ device: 'cpu' }),
-                  });
-                  if (!res.ok) {
-                    const err = await res.json();
-                    dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Loss backfill failed' } });
-                    dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: false, lossBackfillResult: { status: 'error' } } });
-                  } else {
-                    const data = await res.json();
-                    dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: false, lossBackfillResult: data.updates || { status: 'ok' } } });
-                  }
-                } catch (e) {
-                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
-                  dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: false, lossBackfillResult: { status: 'error' } } });
-                }
-              }}
-              style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.4)', color: '#a78bfa' }}
-            >
-              {lossBackfillRunning ? 'Evaluating...' : 'Compute Discovery & Validation Loss'}
-            </button>
-            {lossBackfillResult && !lossBackfillResult.status && (
-              <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>
-                {lossBackfillResult.discovery_loss_ratio != null && `D.LR: ${Number(lossBackfillResult.discovery_loss_ratio).toFixed(4)}`}
-                {lossBackfillResult.discovery_loss_ratio != null && lossBackfillResult.validation_loss_ratio != null && ' | '}
-                {lossBackfillResult.validation_loss_ratio != null && `V.LR: ${Number(lossBackfillResult.validation_loss_ratio).toFixed(4)}`}
-              </span>
-            )}
-            {lossBackfillResult && lossBackfillResult.status === 'error' && (
-              <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>Failed</span>
-            )}
-          </div>
+      <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+          Loss repair:{' '}
+          {[
+            program.discovery_loss_ratio == null && 'Discovery',
+            program.validation_loss_ratio == null && 'Validation',
+          ].filter(Boolean).join(', ') || 'recompute available even if ratios already exist'}
         </div>
-      )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            className="start-btn"
+            disabled={lossBackfillRunning}
+            onClick={async () => {
+              dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: true, lossBackfillResult: null } });
+              try {
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: null } });
+                const res = await apiCall(`/api/programs/${resultId}/backfill-loss`, {
+                  method: 'POST',
+                  timeoutMs: LONG_ACTION_TIMEOUT_MS,
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ device: 'cpu' }),
+                });
+                if (!res.ok) {
+                  const err = await res.json();
+                  dispatch({ type: 'SET_ACTION', payload: { starting: null, error: err.error || 'Loss backfill failed' } });
+                  dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: false, lossBackfillResult: { status: 'error' } } });
+                } else {
+                  const data = await res.json();
+                  dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: false, lossBackfillResult: data.updates || { status: 'ok' } } });
+                }
+              } catch (e) {
+                dispatch({ type: 'SET_ACTION', payload: { starting: null, error: 'Error: ' + e.message } });
+                dispatch({ type: 'SET_BACKFILL', payload: { lossBackfillRunning: false, lossBackfillResult: { status: 'error' } } });
+              }
+            }}
+            style={{ padding: '6px 16px', fontSize: 12, background: 'rgba(139, 92, 246, 0.15)', border: '1px solid rgba(139, 92, 246, 0.4)', color: '#a78bfa' }}
+          >
+            {lossBackfillRunning ? 'Evaluating...' : 'Compute Discovery & Validation Loss'}
+          </button>
+          {lossBackfillResult && !lossBackfillResult.status && (
+            <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>
+              {lossBackfillResult.discovery_loss != null && `D: ${Number(lossBackfillResult.discovery_loss).toFixed(4)}`}
+              {lossBackfillResult.discovery_loss_ratio != null && ` (LR ${Number(lossBackfillResult.discovery_loss_ratio).toFixed(4)})`}
+              {(lossBackfillResult.discovery_loss != null || lossBackfillResult.discovery_loss_ratio != null) && (lossBackfillResult.validation_loss != null || lossBackfillResult.validation_loss_ratio != null) && ' | '}
+              {lossBackfillResult.validation_loss != null && `V: ${Number(lossBackfillResult.validation_loss).toFixed(4)}`}
+              {lossBackfillResult.validation_loss_ratio != null && ` (LR ${Number(lossBackfillResult.validation_loss_ratio).toFixed(4)})`}
+            </span>
+          )}
+          {lossBackfillResult && lossBackfillResult.status === 'error' && (
+            <span style={{ fontSize: 11, color: 'var(--accent-red)' }}>Failed</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

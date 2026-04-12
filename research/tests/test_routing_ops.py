@@ -9,6 +9,7 @@ import torch.nn as nn
 import pytest
 
 from research.synthesis.compiler_ops_routing import (
+    _apply_moe_load_balance,
     _op_feature_sparsity,
     _op_gated_lane_blend,
     _op_depth_gated_transform,
@@ -141,6 +142,70 @@ class TestGatedLaneBlend:
         result = _op_gated_lane_blend(module, [x], {"n_lanes": L})
         result.sum().backward()
         assert x.grad is not None
+
+
+class TestMoeLoadBalanceBias:
+    def test_resets_stale_bias_when_expert_count_changes(self):
+        module = DummyModule()
+        logits3 = torch.randn(2, 4, 3)
+        out3 = _apply_moe_load_balance(module, logits3, 3)
+        assert out3.shape == logits3.shape
+        assert tuple(module._moe_balance_bias.shape) == (3,)
+
+        logits2 = torch.randn(2, 4, 2)
+        out2 = _apply_moe_load_balance(module, logits2, 2)
+        assert out2.shape == logits2.shape
+        assert tuple(module._moe_balance_bias.shape) == (2,)
+
+        logits8 = torch.randn(2, 4, 8)
+        out8 = _apply_moe_load_balance(module, logits8, 8)
+        assert out8.shape == logits8.shape
+        assert tuple(module._moe_balance_bias.shape) == (8,)
+
+
+class TestRoutingTelemetryResize:
+    def test_resets_expert_counters_when_expert_count_changes(self):
+        module = DummyModule()
+        for _ in range(8):
+            _record_routing_telemetry(
+                module,
+                3,
+                torch.randint(0, 3, (2, 4)),
+                logits=torch.randn(2, 4, 3),
+            )
+        assert tuple(module.routing_telemetry["expert_counts"].shape) == (3,)
+
+        for _ in range(8):
+            _record_routing_telemetry(
+                module,
+                2,
+                torch.randint(0, 2, (2, 4)),
+                logits=torch.randn(2, 4, 2),
+            )
+        assert tuple(module.routing_telemetry["expert_counts"].shape) == (2,)
+        assert tuple(module.routing_telemetry["lane_histogram"].shape) == (2,)
+
+    def test_resets_branch_weight_counters_when_branch_count_changes(self):
+        module = DummyModule()
+        for _ in range(8):
+            _record_routing_telemetry(
+                module,
+                2,
+                torch.randint(0, 2, (2, 4)),
+                logits=torch.randn(2, 4, 2),
+                branch_weights=torch.tensor([0.4, 0.6]),
+            )
+        assert tuple(module.routing_telemetry["branch_weight_sum"].shape) == (2,)
+
+        for _ in range(8):
+            _record_routing_telemetry(
+                module,
+                5,
+                torch.randint(0, 5, (2, 4)),
+                logits=torch.randn(2, 4, 5),
+                branch_weights=torch.randn(5),
+            )
+        assert tuple(module.routing_telemetry["branch_weight_sum"].shape) == (5,)
 
 
 class TestSwiGLUMlp:

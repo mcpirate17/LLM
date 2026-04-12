@@ -36,8 +36,6 @@ _FIX_DETECTION_THRESHOLD = 0.3
 _FIX_WINDOW_HOURS = 48
 # Post-fix: retain this fraction of historical evidence
 _FIX_RETAIN_FRACTION = 0.3
-# Minimum weight floor — never zero
-_MIN_WEIGHT = 0.1
 # Weight range for grammar integration
 _WEIGHT_MIN = 0.1
 _WEIGHT_MAX = 8.0

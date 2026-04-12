@@ -250,7 +250,10 @@ class _ResultsAutomationMixin:
             analytics = ExperimentAnalytics(nb)
 
             report_data = {
-                "summary": nb.get_dashboard_summary(),
+                "summary": nb.get_dashboard_summary(
+                    include_data_accounting=False,
+                    include_template_observability=False,
+                ),
                 "top_programs": nb.get_top_programs(20, sort_by="loss_ratio"),
                 "recent_experiments": nb.get_recent_experiments(100),
                 "op_success_rates": analytics.op_success_rates(),

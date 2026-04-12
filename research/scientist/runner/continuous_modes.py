@@ -163,9 +163,11 @@ class _ContinuousModesMixin:
             }
 
         exp_config = config.to_dict()
+        exp_config["use_learned_grammar_weights"] = bool(
+            config.use_learned_grammar_weights and not is_control
+        )
         if is_control:
             exp_config["control_experiment"] = True
-            exp_config["use_learned_grammar_weights"] = False
 
         exp_id = self._start_preregistered_experiment(
             nb=nb,
@@ -240,7 +242,9 @@ class _ContinuousModesMixin:
             exp_id,
             synth_config,
             nb,
-            use_learned_grammar=not is_control,
+            use_learned_grammar=bool(
+                config.use_learned_grammar_weights and not is_control
+            ),
         )
         self._persist_applied_grammar_weights(nb, exp_id, results)
 

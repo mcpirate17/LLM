@@ -144,6 +144,24 @@ _MOTIF_TEMPLATE_ALLOWLIST: Dict[str, FrozenSet[str]] = {
             "state_space_block",
         }
     ),
+    "ssm_selective_scan": frozenset(
+        {
+            "state_space_block",
+            "adaptive_ssm_chain",
+            "attn_ssm_hybrid",
+            "latent_attn_ssm_hybrid",
+            "local_attn_ssm_hybrid",
+        }
+    ),
+    "ssm_scan_gelu": frozenset(
+        {
+            "adaptive_ssm_chain",
+            "state_space_block",
+            "attn_ssm_hybrid",
+            "latent_attn_ssm_hybrid",
+            "local_attn_ssm_hybrid",
+        }
+    ),
     "mix_integral_kernel": frozenset(
         {
             "residual_block",
@@ -243,6 +261,7 @@ _MOTIF_TEMPLATE_ALLOWLIST: Dict[str, FrozenSet[str]] = {
     "route_adaptive_recursion": frozenset(
         {"recursive_depth_router", "difficulty_routed_block", "conditional_compute"}
     ),
+    "merge_scan": frozenset({"token_merge_block", "token_merge_conv"}),
 }
 
 _CONTEXT_CLASS_PRIORS = {

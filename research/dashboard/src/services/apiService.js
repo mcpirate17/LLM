@@ -16,6 +16,12 @@ function _resolveApiBase() {
 const API_BASE = _resolveApiBase();
 const DEFAULT_TIMEOUT_MS = 30000;
 
+function buildTimeoutError(timeoutMs) {
+  return new Error(
+    `Request timed out after ${Math.round(timeoutMs / 1000)}s. The operation may still complete in the background; refresh to confirm.`
+  );
+}
+
 async function handleResponse(response) {
   if (!response.ok) {
     let errorData;
@@ -54,11 +60,22 @@ export const apiCall = (endpoint, options = {}) => {
 
   let timeoutId = null;
   if (controller && timeoutMs > 0) {
-    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    timeoutId = setTimeout(() => controller.abort('timeout'), timeoutMs);
   }
-  return fetch(url, config).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
-  });
+  return fetch(url, config)
+    .catch((error) => {
+      if (
+        controller
+        && controller.signal.aborted
+        && (error?.name === 'AbortError' || error instanceof TypeError)
+      ) {
+        throw buildTimeoutError(timeoutMs);
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+    });
 };
 
 const get = (endpoint) => apiCall(endpoint, { method: 'GET' }).then(handleResponse);

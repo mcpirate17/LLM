@@ -78,7 +78,7 @@ class _InsightsMixin:
             self._compute_combo_insights(combos, insights)
 
         # 6. Overall progress
-        summary = self.nb.get_dashboard_summary()
+        summary = self.nb.get_dashboard_headline_summary()
         total = summary.get("total_programs_evaluated", 0)
         survivors = summary.get("stage1_survivors", 0)
         if total >= 20:

@@ -149,6 +149,92 @@ def test_dispatch_graph_forward_saved_multi_input_cached_prefers_array_buffers(
     assert calls == {"arrays": 1, "lists": 0}
 
 
+def test_dispatch_graph_forward_saved_multi_input_cached_prefers_saved_state_handle(
+    monkeypatch,
+):
+    import research.scientist.native.dispatch as native_dispatch
+
+    saved_state = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_forward_saved_multi_input_arrays_handle(ir_json, inputs):
+            assert ir_json == "fake-ir"
+            assert len(inputs) == 2
+            return {
+                "output": [3.0, 7.0],
+                "saved_state": saved_state,
+                "arena_bytes_used": 32,
+                "arena_capacity": 64,
+            }
+
+        @staticmethod
+        def execute_graph_forward_saved_multi_input_arrays(ir_json, inputs):
+            raise AssertionError("dict fallback should not be used")
+
+    monkeypatch.setattr(
+        native_dispatch, "_try_import_rust_scheduler", lambda: FakeRust()
+    )
+
+    x = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    y = torch.tensor([3.0, 4.0], dtype=torch.float32)
+    result = dispatch_graph_forward_saved_multi_input_cached(
+        "fake-ir",
+        [x, y],
+        output_shape=(2,),
+    )
+
+    assert isinstance(result["output"], torch.Tensor)
+    torch.testing.assert_close(result["output"], torch.tensor([3.0, 7.0]))
+    assert result["saved_activations"] is saved_state
+
+
+def test_dispatch_graph_forward_saved_multi_input_cached_prefers_compiled_graph_handle(
+    monkeypatch,
+):
+    import research.scientist.native.dispatch as native_dispatch
+
+    saved_state = object()
+    compiled_graph = object()
+
+    class FakeRust:
+        @staticmethod
+        def execute_graph_forward_saved_multi_input_compiled_arrays_handle(
+            handle, inputs
+        ):
+            assert handle is compiled_graph
+            assert len(inputs) == 2
+            return {
+                "output": [3.0, 7.0],
+                "saved_state": saved_state,
+                "arena_bytes_used": 32,
+                "arena_capacity": 64,
+            }
+
+        @staticmethod
+        def execute_graph_forward_saved_multi_input_arrays_handle(ir_json, inputs):
+            raise AssertionError("json path should not be used")
+
+    monkeypatch.setattr(
+        native_dispatch, "_compile_rust_graph_handle", lambda ir: compiled_graph
+    )
+    monkeypatch.setattr(
+        native_dispatch, "_try_import_rust_scheduler", lambda: FakeRust()
+    )
+
+    x = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    y = torch.tensor([3.0, 4.0], dtype=torch.float32)
+    result = dispatch_graph_forward_saved_multi_input_cached(
+        "fake-ir",
+        [x, y],
+        output_shape=(2,),
+    )
+
+    assert isinstance(result["output"], torch.Tensor)
+    torch.testing.assert_close(result["output"], torch.tensor([3.0, 7.0]))
+    assert result["saved_activations"] is saved_state
+
+
 def test_dispatch_graph_native_multi_input_cached_rejects_non_cpu_host_bridge(
     monkeypatch,
 ):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
+import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,39 @@ def _try_import_rust_scheduler() -> Any:
     global _rust_scheduler_cache
     if _rust_scheduler_cache not in {False, None}:
         return _rust_scheduler_cache
+
+    local_scheduler = (
+        Path(__file__).resolve().parents[2]
+        / "runtime"
+        / "native"
+        / "rust"
+        / "aria-scheduler"
+        / "target"
+        / "release"
+        / "libaria_scheduler.so"
+    )
+    if local_scheduler.exists():
+        try:
+            sys.modules.pop("aria_scheduler", None)
+            spec = importlib.util.spec_from_file_location(
+                "aria_scheduler", local_scheduler
+            )
+            if spec is not None and spec.loader is not None:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules["aria_scheduler"] = module
+                spec.loader.exec_module(module)
+                _rust_scheduler_cache = module
+                logger.info(
+                    "Loaded Rust scheduler (aria_scheduler) from local build %s",
+                    local_scheduler,
+                )
+                return _rust_scheduler_cache
+        except Exception as exc:
+            logger.debug(
+                "Repo-local Rust scheduler load failed from %s: %s",
+                local_scheduler,
+                exc,
+            )
 
     try:
         from . import aria_scheduler

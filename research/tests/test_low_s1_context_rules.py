@@ -233,3 +233,36 @@ def test_residual_template_can_still_select_local_window_attn():
 
     assert result.valid, result.errors
     assert "local_window_attn" in _ops_in_graph(graph)
+
+
+def test_split2_concat_rejects_asymmetric_branch_restore():
+    graph = ComputationGraph(model_dim=256)
+    input_id = graph.add_input()
+    normed = graph.add_op("rmsnorm", [input_id])
+    split_a = graph.add_op("split2", [normed], {"part": 0})
+    split_b = graph.add_op("split2", [normed], {"part": 1})
+    restored_a = graph.add_op("linear_proj", [split_a], {"out_dim": 256})
+    merged = graph.add_op("concat", [restored_a, split_b])
+    projected = graph.add_op("linear_proj", [merged], {"out_dim": 256})
+    output_id = graph.add_op("add", [input_id, projected])
+    graph.set_output(output_id)
+
+    result = validate_graph(graph)
+
+    assert not result.valid
+    assert any("split2 branch restore mismatch" in err for err in result.errors)
+
+
+def test_split2_concat_allows_half_width_rejoin():
+    graph = ComputationGraph(model_dim=256)
+    input_id = graph.add_input()
+    normed = graph.add_op("rmsnorm", [input_id])
+    split_a = graph.add_op("split2", [normed], {"part": 0})
+    split_b = graph.add_op("split2", [normed], {"part": 1})
+    merged = graph.add_op("concat", [split_a, split_b])
+    output_id = graph.add_op("add", [input_id, merged])
+    graph.set_output(output_id)
+
+    result = validate_graph(graph)
+
+    assert result.valid, result.errors

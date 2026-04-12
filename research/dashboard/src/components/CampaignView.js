@@ -2,6 +2,12 @@ import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 
+const TIMELINE_INITIAL_ROWS = 40;
+const TIMELINE_PAGE_ROWS = 40;
+const HYPOTHESIS_INITIAL_ROWS = 30;
+const HYPOTHESIS_PAGE_ROWS = 30;
+const DECISION_INITIAL_ROWS = 30;
+const DECISION_PAGE_ROWS = 30;
 
 const STATUS_COLORS = {
   active: 'var(--accent-green)',
@@ -600,9 +606,15 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
   const [reportError, setReportError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [reportGeneratedAt, setReportGeneratedAt] = useState(null);
+  const [timelineVisibleCount, setTimelineVisibleCount] = useState(TIMELINE_INITIAL_ROWS);
+  const [hypothesisVisibleCount, setHypothesisVisibleCount] = useState(HYPOTHESIS_INITIAL_ROWS);
+  const [decisionVisibleCount, setDecisionVisibleCount] = useState(DECISION_INITIAL_ROWS);
 
   useEffect(() => {
     setLoading(true);
+    setTimelineVisibleCount(TIMELINE_INITIAL_ROWS);
+    setHypothesisVisibleCount(HYPOTHESIS_INITIAL_ROWS);
+    setDecisionVisibleCount(DECISION_INITIAL_ROWS);
     apiCall(`/api/campaigns/${campaignId}`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -635,6 +647,22 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
   const experiments = useMemo(() => Array.isArray(data?.experiments) ? data.experiments : [], [data?.experiments]);
   const hypotheses = useMemo(() => Array.isArray(data?.hypotheses) ? data.hypotheses : [], [data?.hypotheses]);
   const decisions = useMemo(() => Array.isArray(data?.decisions) ? data.decisions : [], [data?.decisions]);
+  const visibleExperiments = useMemo(
+    () => experiments.slice(0, timelineVisibleCount),
+    [experiments, timelineVisibleCount],
+  );
+  const visibleHypotheses = useMemo(
+    () => hypotheses.slice(0, hypothesisVisibleCount),
+    [hypotheses, hypothesisVisibleCount],
+  );
+  const visibleDecisions = useMemo(
+    () => decisions.slice(0, decisionVisibleCount),
+    [decisions, decisionVisibleCount],
+  );
+  const hypothesisByExperimentId = useMemo(
+    () => new Map(hypotheses.filter((h) => h.experiment_id).map((h) => [h.experiment_id, h])),
+    [hypotheses],
+  );
   
   const { confirmed, refuted, resolvedHypotheses, pendingHypotheses } = useMemo(() => {
     const c = hypotheses.filter(h => h.status === 'confirmed').length;
@@ -1005,8 +1033,8 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
             <p style={{ color: 'var(--text-muted)' }}>No experiments yet.</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {experiments.map((exp, i) => {
-                const linkedHyp = hypotheses.find(h => h.experiment_id === exp.experiment_id);
+              {visibleExperiments.map((exp, i) => {
+                const linkedHyp = hypothesisByExperimentId.get(exp.experiment_id);
                 return (
                   <div key={exp.experiment_id} style={{
                     padding: 10, background: 'var(--bg-secondary)', borderRadius: 4,
@@ -1045,6 +1073,17 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
                   </div>
                 );
               })}
+              {timelineVisibleCount < experiments.length && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 8 }}>
+                  <button
+                    className="refresh-btn"
+                    style={{ fontSize: 12, padding: '6px 12px' }}
+                    onClick={() => setTimelineVisibleCount((count) => Math.min(experiments.length, count + TIMELINE_PAGE_ROWS))}
+                  >
+                    Show More Timeline Rows ({experiments.length - timelineVisibleCount} remaining)
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1060,7 +1099,7 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
             </p>
           ) : (
             <HypothesisChain
-              hypotheses={hypotheses}
+              hypotheses={visibleHypotheses}
               onHandoff={onHypothesisHandoff}
               campaignContext={{
                 campaignId,
@@ -1068,6 +1107,17 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
                 objective: campaign.objective,
               }}
             />
+          )}
+          {hypothesisVisibleCount < hypotheses.length && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 12, padding: '6px 12px' }}
+                onClick={() => setHypothesisVisibleCount((count) => Math.min(hypotheses.length, count + HYPOTHESIS_PAGE_ROWS))}
+              >
+                Show More Hypotheses ({hypotheses.length - hypothesisVisibleCount} remaining)
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -1085,11 +1135,22 @@ function CampaignDetail({ campaignId, onBack, onSelectExperiment, onHypothesisHa
             </p>
           ) : (
             <DecisionLog
-              decisions={decisions}
+              decisions={visibleDecisions}
               hypotheses={hypotheses}
               experiments={experiments}
               onSelectExperiment={onSelectExperiment}
             />
+          )}
+          {decisionVisibleCount < decisions.length && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+              <button
+                className="refresh-btn"
+                style={{ fontSize: 12, padding: '6px 12px' }}
+                onClick={() => setDecisionVisibleCount((count) => Math.min(decisions.length, count + DECISION_PAGE_ROWS))}
+              >
+                Show More Decisions ({decisions.length - decisionVisibleCount} remaining)
+              </button>
+            </div>
           )}
         </div>
       )}

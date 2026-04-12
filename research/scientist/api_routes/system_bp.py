@@ -16,6 +16,7 @@ from ._helpers import (
     native_runner_canary_status_payload,
     resolve_runner_status,
 )
+from ._ml_influence_status import build_ml_influence_status
 from ._strategy_preflight import (
     normalize_start_mode,
     apply_live_screening_bias,
@@ -72,10 +73,10 @@ def register_system_routes(app, context: ApiRouteContext):
         llm_info = {
             "available": llm_reachable,
             "configured": llm is not None,
-            "backend": llm.name if llm else None,
+            "backend": getattr(llm, "name", None) if llm else None,
         }
 
-        summary = nb.get_dashboard_summary()
+        summary = nb.get_dashboard_headline_summary()
         runner_state = resolve_runner_status(nb, runner)
         db_info = {
             "path": notebook_path,
@@ -88,6 +89,7 @@ def register_system_routes(app, context: ApiRouteContext):
                 "cuda": {"available": cuda_available, **cuda_info},
                 "llm": llm_info,
                 "database": db_info,
+                "ml_influence": build_ml_influence_status(),
                 "native_runner": native_runner_capability_report(),
                 "native_runner_canary": native_runner_canary_status_payload(
                     force_refresh=refresh_canary

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import torch
 
 from ._runner_native import load_runner_native
-from .utils import make_adamw
+from .utils import clip_grad_norm, make_adamw
 
 
 @dataclass(slots=True)
@@ -17,6 +18,171 @@ class TrainLoopResult:
     final_loss: float
     steps_completed: int
     diverged: bool
+    telemetry: Optional[dict[str, Any]] = None
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _grad_stats(
+    parameters: Sequence[torch.Tensor],
+    parameter_names: Optional[Sequence[str]],
+) -> dict[str, Any]:
+    grads: list[torch.Tensor] = []
+    names: list[str] = []
+
+    for idx, param in enumerate(parameters):
+        if param.grad is None:
+            continue
+        grads.append(param.grad)
+        names.append(
+            parameter_names[idx] if parameter_names is not None else f"param_{idx}"
+        )
+
+    if not grads:
+        return {
+            "total_norm": 0.0,
+            "layer_norms": {},
+            "max_layer": None,
+            "max_layer_norm": 0.0,
+            "has_nonfinite": False,
+            "num_grads": 0,
+        }
+
+    try:
+        from ._runner_native import load_runner_native
+
+        return dict(load_runner_native().grad_stats_fused(grads, names))
+    except Exception:
+        pass
+
+    # Python fallback
+    layer_norms: dict[str, float | None] = {}
+    has_nonfinite = False
+    for i, grad in enumerate(grads):
+        grad_norm = _safe_float(grad.detach().float().norm().item())
+        layer_norms[names[i]] = grad_norm
+        if grad_norm is None:
+            has_nonfinite = True
+
+    try:
+        norms = torch._foreach_norm(grads, 2)
+        norm_vec = torch.stack([norm.detach().float() for norm in norms])
+        total_norm = _safe_float(torch.linalg.vector_norm(norm_vec, ord=2).item())
+    except RuntimeError:
+        total_sq = 0.0
+        total_norm = 0.0
+        for grad in grads:
+            grad_norm = _safe_float(grad.detach().float().norm().item())
+            if grad_norm is None:
+                total_norm = None
+                break
+            total_sq += grad_norm * grad_norm
+        if total_norm is not None:
+            total_norm = total_sq**0.5
+
+    if total_norm is None:
+        has_nonfinite = True
+
+    max_layer = None
+    max_layer_norm = 0.0
+    finite_layer_norms = [
+        (name, norm) for name, norm in layer_norms.items() if norm is not None
+    ]
+    if finite_layer_norms:
+        max_layer, max_layer_norm = max(finite_layer_norms, key=lambda item: item[1])
+
+    return {
+        "total_norm": 0.0 if total_norm is None else total_norm,
+        "layer_norms": layer_norms,
+        "max_layer": max_layer,
+        "max_layer_norm": max_layer_norm,
+        "has_nonfinite": has_nonfinite,
+        "num_grads": len(grads),
+    }
+
+
+def _append_step_telemetry(
+    train_telemetry: dict[str, Any],
+    *,
+    step: int,
+    loss: float | None,
+    lr_expected: list[float],
+    lr_actual_before_step: list[float],
+    lr_actual_after_scheduler: list[float],
+    pre_clip: dict[str, Any],
+    post_clip: dict[str, Any],
+    clipped: bool,
+) -> None:
+    steps = train_telemetry.setdefault("steps", [])
+    steps.append(
+        {
+            "step": int(step),
+            "loss": loss,
+            "lr_expected": lr_expected,
+            "lr_actual_before_step": lr_actual_before_step,
+            "lr_actual_after_scheduler": lr_actual_after_scheduler,
+            "pre_clip_total_grad_norm": pre_clip["total_norm"],
+            "post_clip_total_grad_norm": post_clip["total_norm"],
+            "pre_clip_layer_norms": pre_clip["layer_norms"],
+            "post_clip_layer_norms": post_clip["layer_norms"],
+            "pre_clip_max_layer": pre_clip["max_layer"],
+            "post_clip_max_layer": post_clip["max_layer"],
+            "pre_clip_max_layer_norm": pre_clip["max_layer_norm"],
+            "post_clip_max_layer_norm": post_clip["max_layer_norm"],
+            "clipped": bool(clipped),
+            "has_nonfinite_grad": bool(
+                pre_clip["has_nonfinite"] or post_clip["has_nonfinite"]
+            ),
+        }
+    )
+
+
+def _finalize_telemetry(
+    train_telemetry: dict[str, Any],
+    *,
+    diverged: bool,
+    steps_completed: int,
+) -> None:
+    steps = train_telemetry.get("steps", [])
+    if not steps:
+        train_telemetry["summary"] = {
+            "steps_completed": int(steps_completed),
+            "diverged": bool(diverged),
+            "max_pre_clip_grad_norm": None,
+            "max_post_clip_grad_norm": None,
+            "max_lr_delta": 0.0,
+            "nonfinite_grad_steps": 0,
+        }
+        return
+    max_pre = max(step["pre_clip_total_grad_norm"] for step in steps)
+    max_post = max(step["post_clip_total_grad_norm"] for step in steps)
+    max_lr_delta = 0.0
+    nonfinite_grad_steps = 0
+    for step in steps:
+        deltas = [
+            abs(expected - actual)
+            for expected, actual in zip(
+                step["lr_expected"], step["lr_actual_before_step"], strict=False
+            )
+        ]
+        if deltas:
+            max_lr_delta = max(max_lr_delta, max(deltas))
+        if step["has_nonfinite_grad"]:
+            nonfinite_grad_steps += 1
+    train_telemetry["summary"] = {
+        "steps_completed": int(steps_completed),
+        "diverged": bool(diverged),
+        "max_pre_clip_grad_norm": max_pre,
+        "max_post_clip_grad_norm": max_post,
+        "max_lr_delta": max_lr_delta,
+        "nonfinite_grad_steps": nonfinite_grad_steps,
+    }
 
 
 class _NativeOptimizerBase:
@@ -186,6 +352,8 @@ def run_training_loop(
     warmup_steps: int = 0,
     loss_trajectory: Optional[dict] = None,
     scheduler_step: Optional[Callable[[], None]] = None,
+    train_telemetry: Optional[dict[str, Any]] = None,
+    parameter_names: Optional[Sequence[str]] = None,
 ) -> TrainLoopResult:
     param_values = list(parameters)
     if optimizer is None:
@@ -197,16 +365,71 @@ def run_training_loop(
             momentum=momentum,
             betas=betas,
         )
+    if parameter_names is not None and len(parameter_names) != len(param_values):
+        raise ValueError("parameter_names length must match parameters")
+
+    base_group_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+    if train_telemetry is not None:
+        train_telemetry.clear()
+        train_telemetry["base_group_lrs"] = list(base_group_lrs)
+        train_telemetry["optimizer_name"] = (optimizer_name or "adamw").lower()
+        train_telemetry["warmup_steps"] = int(warmup_steps)
+        train_telemetry["clip_grad"] = float(clip_grad)
+    use_native_clip = any(param.device.type == "cuda" for param in param_values)
+
+    if train_telemetry is None and parameter_names is None:
+        final_loss = float("inf")
+        steps_completed = 0
+        diverged = False
+        for step in range(n_steps):
+            if warmup_steps > 0 and step < warmup_steps:
+                warmup_factor = (step + 1) / warmup_steps
+                for group_idx, group in enumerate(optimizer.param_groups):
+                    group["lr"] = base_group_lrs[group_idx] * warmup_factor
+
+            optimizer.zero_grad(set_to_none=True)
+            loss = compute_loss(step)
+            if not torch.isfinite(loss):
+                diverged = True
+                break
+
+            loss.backward()
+            if clip_grad > 0:
+                if use_native_clip:
+                    clip_grad_norm(param_values, clip_grad)
+                else:
+                    torch.nn.utils.clip_grad_norm_(param_values, clip_grad)
+            optimizer.step()
+            if scheduler_step is not None:
+                scheduler_step()
+
+            final_loss = float(loss.item())
+            steps_completed = step + 1
+            if loss_trajectory is not None:
+                loss_trajectory[steps_completed] = final_loss
+
+        return TrainLoopResult(
+            final_loss=final_loss,
+            steps_completed=steps_completed,
+            diverged=diverged,
+            telemetry=None,
+        )
 
     final_loss = float("inf")
     steps_completed = 0
     diverged = False
 
     for step in range(n_steps):
+        current_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         if warmup_steps > 0 and step < warmup_steps:
             warmup_factor = (step + 1) / warmup_steps
-            for group in optimizer.param_groups:
-                group["lr"] = lr * warmup_factor
+            expected_lrs = []
+            for group_idx, group in enumerate(optimizer.param_groups):
+                target_lr = base_group_lrs[group_idx] * warmup_factor
+                group["lr"] = target_lr
+                expected_lrs.append(float(target_lr))
+        else:
+            expected_lrs = current_lrs
 
         optimizer.zero_grad(set_to_none=True)
         loss = compute_loss(step)
@@ -215,19 +438,86 @@ def run_training_loop(
             break
 
         loss.backward()
+        pre_clip = _grad_stats(param_values, parameter_names)
+        if pre_clip["has_nonfinite"]:
+            diverged = True
+            if train_telemetry is not None:
+                _append_step_telemetry(
+                    train_telemetry,
+                    step=step + 1,
+                    loss=_safe_float(loss.item()),
+                    lr_expected=list(expected_lrs),
+                    lr_actual_before_step=[
+                        float(group["lr"]) for group in optimizer.param_groups
+                    ],
+                    lr_actual_after_scheduler=[
+                        float(group["lr"]) for group in optimizer.param_groups
+                    ],
+                    pre_clip=pre_clip,
+                    post_clip=pre_clip,
+                    clipped=False,
+                )
+            break
+
+        clipped = False
         if clip_grad > 0:
-            torch.nn.utils.clip_grad_norm_(param_values, clip_grad)
+            if use_native_clip:
+                clip_grad_norm(param_values, clip_grad)
+            else:
+                torch.nn.utils.clip_grad_norm_(param_values, clip_grad)
+            clipped = pre_clip["total_norm"] > float(clip_grad)
+        post_clip = _grad_stats(param_values, parameter_names)
+        actual_lrs_before_step = [
+            float(group["lr"]) for group in optimizer.param_groups
+        ]
+        if post_clip["has_nonfinite"]:
+            diverged = True
+            if train_telemetry is not None:
+                _append_step_telemetry(
+                    train_telemetry,
+                    step=step + 1,
+                    loss=_safe_float(loss.item()),
+                    lr_expected=list(expected_lrs),
+                    lr_actual_before_step=actual_lrs_before_step,
+                    lr_actual_after_scheduler=actual_lrs_before_step,
+                    pre_clip=pre_clip,
+                    post_clip=post_clip,
+                    clipped=clipped,
+                )
+            break
         optimizer.step()
         if scheduler_step is not None:
             scheduler_step()
+        actual_lrs_after_scheduler = [
+            float(group["lr"]) for group in optimizer.param_groups
+        ]
 
         final_loss = float(loss.item())
         steps_completed = step + 1
         if loss_trajectory is not None:
             loss_trajectory[steps_completed] = final_loss
+        if train_telemetry is not None:
+            _append_step_telemetry(
+                train_telemetry,
+                step=steps_completed,
+                loss=final_loss,
+                lr_expected=list(expected_lrs),
+                lr_actual_before_step=actual_lrs_before_step,
+                lr_actual_after_scheduler=actual_lrs_after_scheduler,
+                pre_clip=pre_clip,
+                post_clip=post_clip,
+                clipped=clipped,
+            )
 
+    if train_telemetry is not None:
+        _finalize_telemetry(
+            train_telemetry,
+            diverged=diverged,
+            steps_completed=steps_completed,
+        )
     return TrainLoopResult(
         final_loss=final_loss,
         steps_completed=steps_completed,
         diverged=diverged,
+        telemetry=train_telemetry,
     )

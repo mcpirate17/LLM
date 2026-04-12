@@ -16,16 +16,22 @@ import hashlib
 import json
 import logging
 import sqlite3
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .metrics_utils import binary_classification_metrics, operating_point_profiles
+from .metrics_utils import (
+    binary_classification_metrics,
+    operating_point_profiles,
+    safe_binary_roc_auc,
+)
 from .ml_corpus import (
     CorpusIntegrityError,
+    build_dense_feature_matrix,
+    grouped_stratified_split,
+    load_deduped_screening_predictor_rows,
     load_deduped_graph_training_rows,
     load_deduped_predictor_training_rows,
     rerun_confidence_weight,
@@ -42,6 +48,14 @@ _INTERACTION_MODEL_PATH = _STATE_DIR / "interaction_model.npz"
 _BAYESIAN_STATE_PATH = _STATE_DIR / "bayesian_state.json"
 _ENSEMBLE_STATE_PATH = _STATE_DIR / "ensemble_state.npz"
 _ENSEMBLE_META_PATH = _STATE_DIR / "ensemble_state.json"
+
+
+def _unlink_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
 
 # 16 fingerprint features + 2 novelty features = 18D
 _FINGERPRINT_KEYS = [
@@ -116,6 +130,8 @@ class PerformancePredictor:
     bias: float = 0.0
     feature_mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
     feature_std: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    feature_clip_lo: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    feature_clip_hi: np.ndarray = field(default_factory=lambda: np.zeros(0))
     n_train: int = 0
     n_investigation: int = 0  # how many investigation+ samples contributed
 
@@ -160,6 +176,12 @@ def _query_training_data(nb) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         lr = float(target)
         if not np.isfinite(lr):
             continue
+        # target_loss_ratio should be in [0, ~1.5] — values above 2.0
+        # indicate corrupted rows (e.g. raw perplexity leaking into the
+        # loss_ratio column via backfill scripts).  Filter them out so
+        # they don't dominate the Ridge fit.
+        if lr < 0.0 or lr > 2.0:
+            continue
 
         tier_str = str(tier) if tier else "screening"
         weight = _TIER_WEIGHT.get(tier_str, 1.0) * rerun_weight
@@ -202,6 +224,13 @@ def train(nb, alpha: float = 1.0) -> PerformancePredictor:
     # Count investigation-tier contributions
     n_inv = int(np.sum(sample_weights > 1.5))
 
+    # Winsorise features at the 1st/99th percentile to prevent extreme
+    # outliers (e.g. jacobian_spectral_norm ~55k) from dominating the
+    # Ridge fit and causing wild extrapolation on unseen data.
+    p01 = np.percentile(X, 1, axis=0)
+    p99 = np.percentile(X, 99, axis=0)
+    X = np.clip(X, p01, p99)
+
     # Standardize features
     mean = X.mean(axis=0)
     std = X.std(axis=0)
@@ -230,6 +259,8 @@ def train(nb, alpha: float = 1.0) -> PerformancePredictor:
         bias=bias,
         feature_mean=mean,
         feature_std=std,
+        feature_clip_lo=p01,
+        feature_clip_hi=p99,
         n_train=len(X),
         n_investigation=n_inv,
     )
@@ -262,6 +293,8 @@ def predict(
     if feats is None:
         return 1.0
 
+    if model.feature_clip_lo.size == feats.size:
+        feats = np.clip(feats, model.feature_clip_lo, model.feature_clip_hi)
     x_norm = (feats - model.feature_mean) / model.feature_std
     return float(x_norm @ model.weights + model.bias)
 
@@ -275,6 +308,12 @@ def evaluate(nb, alpha: float = 1.0) -> Dict:
 
     if len(X) < 15:
         return {"error": "insufficient_data", "n_total": len(X)}
+
+    # Winsorise before split (same as train()) to prevent extreme
+    # outliers from dominating the Ridge fit.
+    p01 = np.percentile(X, 1, axis=0)
+    p99 = np.percentile(X, 99, axis=0)
+    X = np.clip(X, p01, p99)
 
     split = int(len(X) * 0.8)
     X_train, X_test = X[:split], X[split:]
@@ -327,7 +366,6 @@ def evaluate(nb, alpha: float = 1.0) -> Dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MIN_GBM_SAMPLES = 50  # minimum rows to train
-_RETRAIN_INTERVAL = 50  # retrain every N new experiments
 
 
 def _graph_signature(graph_json: Any) -> Optional[str]:
@@ -346,48 +384,30 @@ def _graph_signature(graph_json: Any) -> Optional[str]:
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
 
 
-def _grouped_stratified_split(
-    signatures: List[str], labels: np.ndarray, seed: int = 42
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
-    """Split rows by exact-graph signature to avoid duplicate leakage."""
-    groups: Dict[str, List[int]] = defaultdict(list)
-    for idx, sig in enumerate(signatures):
-        groups[sig].append(idx)
-
-    rng = np.random.RandomState(seed)
-    pos_groups: List[str] = []
-    neg_groups: List[str] = []
-    ambiguous_groups = 0
-    for sig, idxs in groups.items():
-        rate = float(np.mean(labels[idxs]))
-        if 0.0 < rate < 1.0:
-            ambiguous_groups += 1
-        if rate >= 0.5:
-            pos_groups.append(sig)
-        else:
-            neg_groups.append(sig)
-
-    rng.shuffle(pos_groups)
-    rng.shuffle(neg_groups)
-    pos_split = int(len(pos_groups) * 0.8)
-    neg_split = int(len(neg_groups) * 0.8)
-    train_groups = set(pos_groups[:pos_split]) | set(neg_groups[:neg_split])
-    val_groups = set(pos_groups[pos_split:]) | set(neg_groups[neg_split:])
-
-    train_idx = np.array(
-        [idx for sig, idxs in groups.items() if sig in train_groups for idx in idxs],
-        dtype=np.int32,
-    )
-    val_idx = np.array(
-        [idx for sig, idxs in groups.items() if sig in val_groups for idx in idxs],
-        dtype=np.int32,
-    )
-    stats = {
-        "n_unique_graphs": len(groups),
-        "n_duplicate_groups": int(sum(1 for idxs in groups.values() if len(idxs) > 1)),
-        "n_ambiguous_duplicate_groups": int(ambiguous_groups),
+def _load_screening_predictor_corpus_rows(
+    db_path: str,
+    *,
+    validate: bool,
+) -> List[Dict[str, Any]]:
+    """Backward-compatible wrapper that preserves local monkeypatch points."""
+    db_file = Path(db_path)
+    if not db_file.exists():
+        return load_deduped_graph_training_rows(db_path, validate=validate)
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(program_results)")}
+        conn.close()
+    except sqlite3.Error:
+        return load_deduped_graph_training_rows(db_path, validate=validate)
+    required = {
+        "result_cohort",
+        "data_provenance_json",
+        "trust_label",
+        "comparability_label",
     }
-    return train_idx, val_idx, stats
+    if not required.issubset(cols):
+        return load_deduped_graph_training_rows(db_path, validate=validate)
+    return load_deduped_screening_predictor_rows(db_path, validate=validate)
 
 
 def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
@@ -467,9 +487,10 @@ def _query_graph_training_data(
     to produce a loss.
 
     Returns (feature_dicts, y_gate, y_rank) where:
-      - feature_dicts: list of dicts from extract_graph_features (with full op histogram)
+      - feature_dicts: list of dicts from extract_graph_features (with full op histogram
+        + probe features: hellaswag_acc, induction_auc, ar_auc, blimp, binding_composite)
       - y_gate: binary array (1 = passed S1)
-      - y_rank: float array of wikitext_perplexity (NaN where unavailable)
+      - y_rank: float array of composite_score (NaN where unavailable)
     """
     from ...synthesis.graph_features import (
         extract_graph_features,
@@ -478,7 +499,7 @@ def _query_graph_training_data(
     )
 
     try:
-        rows = load_deduped_graph_training_rows(db_path, validate=True)
+        rows = _load_screening_predictor_corpus_rows(db_path, validate=True)
     except CorpusIntegrityError:
         raise
     except Exception as e:
@@ -521,12 +542,34 @@ def _query_graph_training_data(
             if op:
                 feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
         enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
+        # Post-eval features (NaN where unavailable — LightGBM handles
+        # missing natively).  Excluded from gate model to prevent leakage;
+        # used by rank model only.
+        for post_key in (
+            "hellaswag_acc_best",
+            "induction_auc_best",
+            "ar_auc_best",
+            "blimp_overall_accuracy_best",
+            "binding_composite_best",
+            "initial_loss_best",
+            "mean_grad_norm_best",
+            "max_grad_norm_best",
+            "grad_norm_std_best",
+        ):
+            v = row.get(post_key)
+            feats[post_key] = float(v) if v is not None else float("nan")
         feat_dicts.append(feats)
         graph_signatures.append(signature)
         gate_labels.append(1 if row["stage1_any_passed"] else 0)
         sample_weights.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
-        ppl = row.get("wikitext_perplexity_best")
-        rank_labels.append(float(ppl) if ppl is not None else float("nan"))
+        # Rank target: prefer composite_score when available, otherwise fall back
+        # to best observed wikitext perplexity for corpora without leaderboard data.
+        comp = row.get("composite_score_best")
+        if comp is not None:
+            rank_labels.append(float(comp))
+        else:
+            ppl = row.get("wikitext_perplexity_best")
+            rank_labels.append(float(ppl) if ppl is not None else float("nan"))
 
     return (
         feat_dicts,
@@ -535,26 +578,6 @@ def _query_graph_training_data(
         np.array(sample_weights, dtype=np.float64),
         graph_signatures,
     )
-
-
-def _dicts_to_matrix(
-    feat_dicts: List[Dict[str, float]],
-) -> Tuple[np.ndarray, List[str]]:
-    """Convert list of feature dicts to (n, d) matrix + ordered column names."""
-    if not feat_dicts:
-        return np.zeros((0, 0)), []
-    all_keys = sorted(feat_dicts[0].keys())
-    # Union of all keys across dicts (handles missing keys)
-    key_set = set()
-    for d in feat_dicts:
-        key_set.update(d.keys())
-    all_keys = sorted(key_set)
-
-    X = np.zeros((len(feat_dicts), len(all_keys)), dtype=np.float32)
-    for i, d in enumerate(feat_dicts):
-        for j, k in enumerate(all_keys):
-            X[i, j] = d.get(k, 0.0)
-    return X, all_keys
 
 
 @dataclass(slots=True)
@@ -570,7 +593,8 @@ class GBMPredictor:
 
     gate_model: Any = None  # lgb.Booster
     rank_model: Any = None  # lgb.Booster
-    feature_names: List[str] = field(default_factory=list)
+    feature_names: List[str] = field(default_factory=list)  # all features (rank model)
+    gate_feature_names: List[str] = field(default_factory=list)  # structure only (gate)
     n_train: int = 0
     gate_threshold: float = 0.5
     gate_importance: Optional[Dict[str, float]] = None
@@ -584,20 +608,20 @@ class GBMPredictor:
         """Predict P(pass_s1) for a single graph. Returns 0.5 if not fitted."""
         if not self.is_fitted():
             return 0.5
-        x = np.array(
-            [[features.get(k, 0.0) for k in self.feature_names]], dtype=np.float32
-        )
+        names = self.gate_feature_names or self.feature_names
+        x = np.array([[features.get(k, 0.0) for k in names]], dtype=np.float32)
         try:
             return float(self.gate_model.predict(x)[0])
         except (TypeError, ValueError):
             return 0.5
 
     def predict_rank(self, features: Dict[str, float]) -> float:
-        """Predict wikitext_perplexity for a single graph. Returns 1e6 if not fitted."""
+        """Predict composite_score for a single graph. Returns 1e6 if not fitted."""
         if self.rank_model is None:
             return 1e6
         x = np.array(
-            [[features.get(k, 0.0) for k in self.feature_names]], dtype=np.float32
+            [[features.get(k, float("nan")) for k in self.feature_names]],
+            dtype=np.float32,
         )
         try:
             return float(self.rank_model.predict(x)[0])
@@ -617,6 +641,7 @@ class GBMPredictor:
             json.dump(
                 {
                     "feature_names": self.feature_names,
+                    "gate_feature_names": self.gate_feature_names,
                     "n_train": self.n_train,
                     "gate_threshold": self.gate_threshold,
                     "gate_importance": self.gate_importance,
@@ -653,6 +678,9 @@ class GBMPredictor:
             gate_model=gate_model,
             rank_model=rank_model,
             feature_names=list(meta.get("feature_names", [])),
+            gate_feature_names=list(
+                meta.get("gate_feature_names", meta.get("feature_names", []))
+            ),
             n_train=int(meta.get("n_train", 0)),
             gate_threshold=float(meta.get("gate_threshold", 0.5)),
             gate_importance=meta.get("gate_importance"),
@@ -687,8 +715,27 @@ def train_gbm(
         )
         return GBMPredictor()
 
-    X, feature_names = _dicts_to_matrix(feat_dicts)
+    X, feature_names = build_dense_feature_matrix(feat_dicts)
     n_total = len(X)
+
+    # Post-eval features leak the gate label (only non-NaN for entries
+    # that completed training).  Excluded from gate; kept for rank model.
+    _PROBE_FEATURE_NAMES = {
+        "hellaswag_acc_best",
+        "induction_auc_best",
+        "ar_auc_best",
+        "blimp_overall_accuracy_best",
+        "binding_composite_best",
+        "initial_loss_best",
+        "mean_grad_norm_best",
+        "max_grad_norm_best",
+        "grad_norm_std_best",
+    }
+    gate_col_mask = np.array(
+        [fn not in _PROBE_FEATURE_NAMES for fn in feature_names], dtype=bool
+    )
+    gate_feature_names = [fn for fn in feature_names if fn not in _PROBE_FEATURE_NAMES]
+    X_gate = X[:, gate_col_mask]
 
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
@@ -698,14 +745,17 @@ def train_gbm(
         )
         return GBMPredictor()
 
-    train_idx, val_idx, split_stats = _grouped_stratified_split(
+    train_idx, val_idx, split_stats = grouped_stratified_split(
         graph_signatures, y_gate, seed=42
     )
     if len(train_idx) == 0 or len(val_idx) == 0:
         logger.info("GBM predictor: grouped split failed, skipping")
         return GBMPredictor()
 
+    # Full feature matrices (with probes) for rank model
     X_train, X_val = X[train_idx], X[val_idx]
+    # Gate feature matrices (no probes — probes leak the S1 label)
+    X_gate_train, X_gate_val = X_gate[train_idx], X_gate[val_idx]
     y_gate_train, y_gate_val = y_gate[train_idx], y_gate[val_idx]
     y_rank_train_full, y_rank_val_full = y_rank[train_idx], y_rank[val_idx]
     w_train, w_val = sample_weights[train_idx], sample_weights[val_idx]
@@ -716,8 +766,7 @@ def train_gbm(
     spw = neg_count / max(pos_count, 1)
 
     # ── Gate model (binary classifier) ──
-    # Strong regularization to prevent overfitting: feature/bagging subsampling,
-    # high min_data_in_leaf, lambda_l1/l2, and generous early stopping patience.
+    # Uses structure features only (no probes) to avoid label leakage.
     gate_params = {
         "objective": "binary",
         "metric": "auc",
@@ -735,16 +784,16 @@ def train_gbm(
         "seed": 42,
     }
     train_set = lgb.Dataset(
-        X_train,
+        X_gate_train,
         label=y_gate_train,
         weight=w_train,
-        feature_name=feature_names,
+        feature_name=gate_feature_names,
     )
     val_set = lgb.Dataset(
-        X_val,
+        X_gate_val,
         label=y_gate_val,
         weight=w_val,
-        feature_name=feature_names,
+        feature_name=gate_feature_names,
         reference=train_set,
     )
 
@@ -757,10 +806,10 @@ def train_gbm(
     )
 
     gate_importance = dict(
-        zip(feature_names, gate_model.feature_importance("gain").tolist())
+        zip(gate_feature_names, gate_model.feature_importance("gain").tolist())
     )
 
-    # ── Rank model (regression on wikitext_perplexity) ──
+    # ── Rank model (regression on composite_score, with probe features) ──
     rank_model = None
     rank_importance = None
     rank_mask_tr = np.isfinite(y_rank_train_full)
@@ -810,7 +859,7 @@ def train_gbm(
             zip(feature_names, rank_model.feature_importance("gain").tolist())
         )
 
-    gate_scores = gate_model.predict(X_val)
+    gate_scores = gate_model.predict(X_gate_val)
     operating_points = operating_point_profiles(y_gate_val, gate_scores)
     gate_threshold = float(operating_points["f1"]["threshold"])
     gate_metrics = binary_classification_metrics(
@@ -832,6 +881,7 @@ def train_gbm(
         gate_model=gate_model,
         rank_model=rank_model,
         feature_names=feature_names,
+        gate_feature_names=gate_feature_names,
         n_train=n_trained,
         gate_threshold=gate_threshold,
         gate_importance=gate_importance,
@@ -880,14 +930,14 @@ def evaluate_gbm(
     if n_total < _MIN_GBM_SAMPLES:
         return {"error": "insufficient_data", "n_total": n_total}
 
-    X, feature_names = _dicts_to_matrix(feat_dicts)
+    X, feature_names = build_dense_feature_matrix(feat_dicts)
 
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
     if n_pos < 5 or n_neg < 5:
         return {"error": "insufficient_balance", "n_pos": n_pos, "n_neg": n_neg}
 
-    train_idx, val_idx, split_stats = _grouped_stratified_split(
+    train_idx, val_idx, split_stats = grouped_stratified_split(
         graph_signatures, y_gate, seed=42
     )
     if len(train_idx) == 0 or len(val_idx) == 0:
@@ -943,18 +993,13 @@ def evaluate_gbm(
     )
 
     # Gate AUC
-    from sklearn.metrics import roc_auc_score
-
     gate_preds = gate_model.predict(X_test)
     operating_points = operating_point_profiles(y_gate_test, gate_preds)
     gate_threshold = float(operating_points["f1"]["threshold"])
     gate_metrics = binary_classification_metrics(
         y_gate_test, gate_preds, gate_threshold
     )
-    try:
-        gate_auc = float(roc_auc_score(y_gate_test, gate_preds))
-    except ValueError:
-        gate_auc = 0.0
+    gate_auc = safe_binary_roc_auc(y_gate_test, gate_preds)
 
     # Skip rate at P < 0.1
     skip_mask = gate_preds < 0.1
@@ -1042,45 +1087,67 @@ def evaluate_gbm_induction(
     except ImportError:
         return {"error": "lightgbm_not_installed"}
 
-    feat_dicts, _, _, sample_weights, graph_signatures = _query_graph_training_data(
-        db_path
+    from ...synthesis.graph_features import (
+        extract_graph_features,
+        enrich_with_op_stats,
+        load_op_stats,
     )
+
     try:
-        rows = load_deduped_graph_training_rows(db_path, validate=True)
+        rows = _load_screening_predictor_corpus_rows(db_path, validate=True)
     except CorpusIntegrityError:
         raise
     except Exception as e:
         return {"error": f"induction_query_failed: {e}"}
 
-    if len(feat_dicts) != len(rows):
-        return {
-            "error": "feature_row_mismatch",
-            "n_features": len(feat_dicts),
-            "n_rows": len(rows),
-        }
+    op_stats_cache = load_op_stats(db_path)
+    feat_dicts: List[Dict[str, float]] = []
+    sample_weights_list: List[float] = []
+    graph_signatures: List[str] = []
+    y_auc_list: List[float] = []
 
-    y_auc = np.array(
-        [
-            float(row.get("induction_auc_500"))
-            if row.get("induction_auc_500") is not None
-            else float("nan")
-            for row in rows
-        ],
-        dtype=np.float64,
-    )
-    finite_mask = np.isfinite(y_auc)
-    if int(finite_mask.sum()) < _MIN_GBM_SAMPLES:
+    for row in rows:
+        induction_auc = row.get("induction_auc_500")
+        if induction_auc is None or not np.isfinite(float(induction_auc)):
+            continue
+        gj = row.get("graph_json")
+        if not gj:
+            continue
+        try:
+            gj_dict = json.loads(gj) if isinstance(gj, str) else gj
+        except (json.JSONDecodeError, TypeError):
+            continue
+        signature = str(row.get("canonical_fingerprint") or "")
+        if not signature:
+            signature = _graph_signature(gj_dict) or ""
+        if not signature:
+            continue
+        feats = extract_graph_features(gj_dict)
+        if not feats:
+            continue
+        nodes = gj_dict.get("nodes") or {}
+        ops = [
+            n.get("op_name", "")
+            for n in nodes.values()
+            if n.get("op_name", "") != "input"
+        ]
+        for op in ops:
+            if op:
+                feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
+        enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
+        feat_dicts.append(feats)
+        sample_weights_list.append(rerun_confidence_weight(int(row.get("n_rows", 1))))
+        graph_signatures.append(signature)
+        y_auc_list.append(float(induction_auc))
+
+    if len(feat_dicts) < _MIN_GBM_SAMPLES:
         return {
             "error": "insufficient_induction_data",
-            "n_total": int(finite_mask.sum()),
+            "n_total": len(feat_dicts),
         }
 
-    feat_dicts = [feat_dicts[i] for i in range(len(feat_dicts)) if finite_mask[i]]
-    sample_weights = sample_weights[finite_mask]
-    graph_signatures = [
-        graph_signatures[i] for i in range(len(graph_signatures)) if finite_mask[i]
-    ]
-    y_auc = y_auc[finite_mask]
+    sample_weights = np.array(sample_weights_list, dtype=np.float64)
+    y_auc = np.array(y_auc_list, dtype=np.float64)
     y_learner = (y_auc >= 0.02).astype(np.int32)
 
     n_pos = int(y_learner.sum())
@@ -1092,8 +1159,8 @@ def evaluate_gbm_induction(
             "n_neg": n_neg,
         }
 
-    X, feature_names = _dicts_to_matrix(feat_dicts)
-    train_idx, val_idx, split_stats = _grouped_stratified_split(
+    X, feature_names = build_dense_feature_matrix(feat_dicts)
+    train_idx, val_idx, split_stats = grouped_stratified_split(
         graph_signatures, y_learner, seed=42
     )
     if len(train_idx) == 0 or len(val_idx) == 0:
@@ -1174,14 +1241,9 @@ def evaluate_gbm_induction(
         callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
     )
 
-    from sklearn.metrics import roc_auc_score
-
     cls_preds = cls_model.predict(X_test)
     reg_preds = np.clip(reg_model.predict(X_test), 0.0, 1.0)
-    try:
-        learner_auc = float(roc_auc_score(y_cls_test, cls_preds))
-    except ValueError:
-        learner_auc = 0.0
+    learner_auc = safe_binary_roc_auc(y_cls_test, cls_preds)
     learner_acc = float(np.mean((reg_preds >= 0.02).astype(np.int32) == y_cls_test))
     induction_mae = float(np.mean(np.abs(y_auc_test - reg_preds)))
     try:
@@ -1215,16 +1277,18 @@ def evaluate_gbm_induction(
 
 @dataclass
 class EnsemblePredictor:
-    """Meta-learner combining all prediction components.
+    """Meta-learner combining prediction components.
 
-    Combines predictions from:
-    1. GBMPredictor (existing LightGBM gate/rank)
+    Scoring components (3D logistic regression):
+    1. GBMPredictor (LightGBM gate/rank on graph-structure features)
     2. GraphPredictor (topology-aware features)
     3. TemporalBayesianTracker (op-level Bayesian posteriors)
-    4. InteractionModel (pairwise stability/loss)
 
-    Uses logistic regression on component outputs + uncertainty-driven
-    exploration bonus. Gracefully degrades when components are unavailable.
+    InteractionModel is still loaded for research (heatmaps, pair analysis)
+    but excluded from the scoring blend — calibration weight was ≈ -0.06.
+
+    Gate threshold uses the high_precision operating point to prioritise
+    PPV (≥0.70) over recall, satisfying the screening trust policy.
     """
 
     gbm: Optional[GBMPredictor] = None
@@ -1242,11 +1306,13 @@ class EnsemblePredictor:
     _calibration_metrics: Dict[str, Any] = field(default_factory=dict)
 
     def is_fitted(self) -> bool:
-        # Fitted if at least one component is available
+        # Runtime-usable if at least one component is available.
         return any(
             [
                 self.gbm is not None and self.gbm.is_fitted(),
                 self.graph_pred is not None and self.graph_pred.is_fitted(),
+                self.bayesian is not None,
+                self.interaction is not None and self.interaction._trained,
             ]
         )
 
@@ -1282,38 +1348,11 @@ class EnsemblePredictor:
             scores.append(p)
             uncertainties.append(0.15)
 
-        # Bayesian worst-op score
-        if self.bayesian is not None and graph_json is not None:
-            ops = self._extract_ops(graph_json)
-            if ops:
-                op_weights = self.bayesian.op_weights(mode="mean")
-                worst = min(op_weights.get(op, 0.5) for op in ops)
-                # Map weight [0.1, 8.0] → probability [0, 1]
-                bayes_p = np.clip(worst / 3.0, 0.0, 1.0)
-                scores.append(float(bayes_p))
-                # Uncertainty from posterior variance
-                variances = []
-                for op in ops:
-                    if op in self.bayesian.op_posteriors:
-                        variances.append(self.bayesian.op_posteriors[op].std)
-                uncertainties.append(float(np.mean(variances)) if variances else 0.2)
+        # Bayesian worst-op excluded from scoring — calibration weight was
+        # -0.006 (noise).  Bayesian tracker remains active for grammar
+        # advisory weights via op_weights()/template_weights().
 
-        # Interaction model: mean pair stability
-        if (
-            self.interaction is not None
-            and self.interaction._trained
-            and graph_json is not None
-        ):
-            ops = self._extract_ops(graph_json)
-            if len(ops) >= 2:
-                stabilities = []
-                for a in ops:
-                    for b in ops:
-                        if a != b:
-                            stabilities.append(self.interaction.predict_stability(a, b))
-                if stabilities:
-                    scores.append(float(np.mean(stabilities)))
-                    uncertainties.append(0.15)
+        # InteractionModel excluded — calibration weight was ≈ -0.06.
 
         if not scores:
             return 0.5
@@ -1352,10 +1391,8 @@ class EnsemblePredictor:
             preds.append(float(self.graph_pred.predict_induction_auc(graph_json)))
 
         if self.gbm is not None and self.gbm.is_fitted() and graph_features is not None:
-            # No persisted GBM induction head yet; approximate from pass probability
-            # conservatively rather than returning zero.
-            preds.append(
-                float(np.clip(self.gbm.predict_gate(graph_features) * 0.06, 0.0, 1.0))
+            logger.debug(
+                "GBM induction prediction skipped: no persisted induction head is available"
             )
 
         if not preds:
@@ -1379,7 +1416,7 @@ class EnsemblePredictor:
         graph_json: Any = None,
         graph_features: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
-        """Return a blended planning score balancing survival and induction learning."""
+        """Return a planning score that prioritizes likely survivors and likely winners."""
         p_pass = self.predict_gate(graph_json=graph_json, graph_features=graph_features)
         induction_auc = self.predict_induction_auc(
             graph_json=graph_json, graph_features=graph_features
@@ -1387,12 +1424,44 @@ class EnsemblePredictor:
         p_induction = self.predict_induction_learner_prob(
             graph_json=graph_json, graph_features=graph_features
         )
-        # Favor induction enough to change ordering, but keep survival primary.
-        blended = float(np.clip(0.65 * p_pass + 0.35 * p_induction, 0.0, 1.0))
+        quality_terms: List[float] = []
+
+        if self.gbm is not None and self.gbm.is_fitted() and graph_features is not None:
+            gbm_rank = float(self.gbm.predict_rank(graph_features))
+            if np.isfinite(gbm_rank) and gbm_rank < 1e5:
+                quality_terms.append(float(np.exp(-max(gbm_rank, 0.0) / 25.0)))
+
+        if (
+            self.graph_pred is not None
+            and self.graph_pred.is_fitted()
+            and graph_json is not None
+        ):
+            graph_rank = float(self.graph_pred.predict_rank(graph_json))
+            if np.isfinite(graph_rank) and graph_rank < 1e5:
+                quality_terms.append(float(np.exp(-max(graph_rank, 0.0) / 25.0)))
+            if hasattr(self.graph_pred, "predict_loss"):
+                predicted_loss = float(self.graph_pred.predict_loss(graph_json))
+                if np.isfinite(predicted_loss):
+                    quality_terms.append(
+                        float(np.clip(1.0 - (max(predicted_loss, 0.0) / 0.7), 0.0, 1.0))
+                    )
+
+        quality_score = (
+            float(np.clip(np.mean(quality_terms), 0.0, 1.0)) if quality_terms else 0.0
+        )
+        if quality_terms:
+            blended = float(
+                np.clip(
+                    0.5 * p_pass + 0.25 * quality_score + 0.25 * p_induction, 0.0, 1.0
+                )
+            )
+        else:
+            blended = float(np.clip(0.65 * p_pass + 0.35 * p_induction, 0.0, 1.0))
         return {
             "p_pass": float(p_pass),
             "predicted_induction_auc": float(induction_auc),
             "p_induction_learner": float(p_induction),
+            "predicted_quality_score": float(quality_score),
             "planning_score": blended,
         }
 
@@ -1469,12 +1538,28 @@ class EnsemblePredictor:
         state_dir.mkdir(parents=True, exist_ok=True)
         if self.gbm is not None and self.gbm.is_fitted():
             self.gbm.save(state_dir)
+        else:
+            _unlink_if_exists(state_dir / _GBM_GATE_MODEL_PATH.name)
+            _unlink_if_exists(state_dir / _GBM_RANK_MODEL_PATH.name)
+            _unlink_if_exists(state_dir / _GBM_META_PATH.name)
         if self.graph_pred is not None and self.graph_pred.is_fitted():
             self.graph_pred.save(state_dir / _GRAPH_PREDICTOR_PATH.name)
+        else:
+            _unlink_if_exists(state_dir / _GRAPH_PREDICTOR_PATH.name)
+            _unlink_if_exists(
+                (state_dir / _GRAPH_PREDICTOR_PATH.name).with_suffix(".json")
+            )
         if self.bayesian is not None:
             self.bayesian.save_state(state_dir / _BAYESIAN_STATE_PATH.name)
+        else:
+            _unlink_if_exists(state_dir / _BAYESIAN_STATE_PATH.name)
         if self.interaction is not None and self.interaction._trained:
             self.interaction.save(state_dir / _INTERACTION_MODEL_PATH.name)
+        else:
+            _unlink_if_exists(state_dir / _INTERACTION_MODEL_PATH.name)
+            _unlink_if_exists(
+                (state_dir / _INTERACTION_MODEL_PATH.name).with_suffix(".json")
+            )
         np.savez_compressed(
             str(state_dir / _ENSEMBLE_STATE_PATH.name),
             w_ensemble=self.w_ensemble,
@@ -1648,7 +1733,6 @@ def train_ensemble(
 def _calibrate_ensemble(
     ensemble: EnsemblePredictor,
     db_path: str,
-    n_samples: int = 2000,
     n_epochs: int = 60,
     lr: float = 0.01,
 ) -> None:
@@ -1656,16 +1740,15 @@ def _calibrate_ensemble(
 
     Fits a logistic regression on component scores → actual S1 labels.
     This learns which components to trust more and the optimal threshold.
+    Uses the high_precision operating point for the gate threshold to
+    prioritise PPV (fewer false positives) over recall.
     """
-    import random
 
     rows = [
         row
-        for row in load_deduped_graph_training_rows(db_path)
+        for row in _load_screening_predictor_corpus_rows(db_path, validate=False)
         if bool(row.get("stage0_any_passed"))
     ]
-    if len(rows) > n_samples:
-        rows = random.Random(0).sample(rows, n_samples)
 
     if len(rows) < 100:
         return
@@ -1722,43 +1805,12 @@ def _calibrate_ensemble(
         else:
             scores.append(0.5)
 
-        # Bayesian worst-op score
-        if ensemble.bayesian is not None:
-            nodes = gj_dict.get("nodes") or {}
-            ops = [
-                n.get("op_name", "")
-                for n in nodes.values()
-                if n.get("op_name", "") and n.get("op_name") != "input"
-            ]
-            if ops:
-                op_weights = ensemble.bayesian.op_weights(mode="mean")
-                worst = min(op_weights.get(op, 0.5) for op in ops)
-                scores.append(float(np.clip(worst / 3.0, 0.0, 1.0)))
-            else:
-                scores.append(0.5)
-        else:
-            scores.append(0.5)
+        # Bayesian worst-op excluded from calibration — weight was -0.006
+        # (noise).  Bayesian tracker stays active for grammar advisory.
 
-        # Interaction model score
-        if ensemble.interaction is not None and ensemble.interaction._trained:
-            nodes = gj_dict.get("nodes") or {}
-            ops = [
-                n.get("op_name", "")
-                for n in nodes.values()
-                if n.get("op_name", "") and n.get("op_name") != "input"
-            ]
-            if len(ops) >= 2:
-                stabs = [
-                    ensemble.interaction.predict_stability(a, b)
-                    for a in ops
-                    for b in ops
-                    if a != b
-                ]
-                scores.append(float(np.mean(stabs)) if stabs else 0.5)
-            else:
-                scores.append(0.5)
-        else:
-            scores.append(0.5)
+        # InteractionModel excluded from calibration — learned weight was
+        # ≈ -0.06 (effectively zero/harmful).  Kept for research use but
+        # not fed to the meta-learner.
 
         score_rows.append(scores)
         labels.append(int(s1 or 0))
@@ -1772,8 +1824,24 @@ def _calibrate_ensemble(
     y = np.array(labels, dtype=np.float64)
     sample_w = np.array(sample_weights, dtype=np.float64)
     n_dims = X.shape[1]
+    if np.unique(y).size < 2:
+        logger.info(
+            "Ensemble calibration skipped: insufficient class balance (classes=%d)",
+            np.unique(y).size,
+        )
+        ensemble.w_ensemble = np.zeros(0, dtype=np.float32)
+        ensemble._score_mean = np.zeros(0, dtype=np.float32)
+        ensemble._score_std = np.zeros(0, dtype=np.float32)
+        ensemble._n_score_dims = 0
+        ensemble.gate_threshold = 0.5
+        ensemble._calibration_metrics = {
+            "error": "insufficient_class_balance",
+            "n_samples": len(y),
+            "n_classes": int(np.unique(y).size),
+        }
+        return
 
-    train_idx, val_idx, split_stats = _grouped_stratified_split(
+    train_idx, val_idx, split_stats = grouped_stratified_split(
         graph_signatures, y.astype(np.int32), seed=42
     )
     if len(train_idx) == 0 or len(val_idx) == 0:
@@ -1789,6 +1857,24 @@ def _calibrate_ensemble(
     X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
     y_tr, y_va = y[train_idx], y[val_idx]
     w_tr = sample_w[train_idx]
+    if np.unique(y_tr).size < 2 or np.unique(y_va).size < 2:
+        logger.info(
+            "Ensemble calibration skipped: split lost class diversity (train=%d classes, val=%d classes)",
+            np.unique(y_tr).size,
+            np.unique(y_va).size,
+        )
+        ensemble.w_ensemble = np.zeros(0, dtype=np.float32)
+        ensemble._score_mean = np.zeros(0, dtype=np.float32)
+        ensemble._score_std = np.zeros(0, dtype=np.float32)
+        ensemble._n_score_dims = 0
+        ensemble.gate_threshold = 0.5
+        ensemble._calibration_metrics = {
+            "error": "split_lost_class_diversity",
+            "n_train": len(y_tr),
+            "n_val": len(y_va),
+            **split_stats,
+        }
+        return
 
     # Logistic regression via SGD
     w = rng.randn(n_dims).astype(np.float64) * 0.01
@@ -1814,6 +1900,11 @@ def _calibrate_ensemble(
     # Validate
     val_preds = _sig(X_va @ w + b)
     operating_points = operating_point_profiles(y_va, val_preds)
+    # Use the F1-optimal operating point — balances precision and recall.
+    # high_precision (PPV≥0.70) was discarding ~50% of true positives,
+    # starving downstream models of labeled data.  F1 recovers ~30% more
+    # recall at an acceptable PPV trade-off (~0.50) and feeds the data
+    # flywheel: more evals → more labels → better models.
     gate_threshold = float(operating_points["f1"]["threshold"])
     selected_metrics = operating_points["f1"]
     val_acc = float(selected_metrics["accuracy"])

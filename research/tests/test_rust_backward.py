@@ -8,19 +8,10 @@ import json
 import math
 import pytest
 import numpy as np
+from research.scientist.native.core import _try_import_rust_scheduler
 
-# Try importing the Rust scheduler module.
-try:
-    import aria_scheduler  # type: ignore[import-untyped]
-
-    HAS_RUST_SCHEDULER = True
-except ImportError:
-    try:
-        from scientist import aria_scheduler  # type: ignore[import-untyped]
-
-        HAS_RUST_SCHEDULER = True
-    except ImportError:
-        HAS_RUST_SCHEDULER = False
+aria_scheduler = _try_import_rust_scheduler()
+HAS_RUST_SCHEDULER = aria_scheduler is not None
 
 pytestmark = [
     pytest.mark.native,
@@ -272,6 +263,25 @@ class TestForwardSaved:
         output = result["output"]
         expected = [1.0 / (1.0 + math.exp(-v)) for v in x]
         np.testing.assert_allclose(output, expected, atol=1e-5)
+
+    def test_relu_forward_saved_handle_round_trip(self):
+        graph_json = _relu_chain_graph()
+        x = np.array([-1.0, 0.0, 2.0, 3.5], dtype=np.float32)
+        result = aria_scheduler.execute_graph_forward_saved_arrays_handle(graph_json, x)
+
+        assert "output" in result
+        assert "saved_state" in result
+
+        grad_out = np.ones_like(x)
+        bwd = aria_scheduler.execute_graph_backward_arrays_handle(
+            graph_json,
+            grad_out,
+            result["saved_state"],
+        )
+        input_grad = np.array(bwd["grads"][0])
+        assert input_grad[0] == 0.0
+        assert input_grad[2] == 1.0
+        assert input_grad[3] == 1.0
 
 
 class TestBackwardRelu:

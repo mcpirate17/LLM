@@ -241,6 +241,16 @@ class TestMetadataFields:
                 "wikitext_pre_perplexity": 210.0,
                 "wikitext_ppl_improvement": 0.2,
                 "wikitext_score": 0.61,
+                "screening_wikitext_degraded": True,
+                "screening_wikitext_degraded_reasons": ["persistent_heavy_clipping"],
+                "screening_wikitext_clipped_steps": 4,
+                "screening_wikitext_clip_fraction": 0.8,
+                "screening_wikitext_max_lr_delta": 0.0,
+                "screening_wikitext_nonfinite_grad_steps": 0,
+                "max_grad_norm": 12.0,
+                "mean_grad_norm": 9.0,
+                "grad_norm_std": 1.5,
+                "final_lr": 0.0003,
             }
         )
 
@@ -252,6 +262,136 @@ class TestMetadataFields:
         assert bench["budget"]["n_train_steps"] == 50
         assert bench["metrics"]["wikitext_perplexity"] == 42.0
         assert bench["metrics"]["wikitext_score"] == 0.61
+        assert bench["diagnostics"]["screening_wikitext_degraded"] is True
+        assert bench["diagnostics"]["max_grad_norm"] == 12.0
+
+    def test_screening_eval_exposes_grad_and_lr_diagnostics(self, tiny_model):
+        fake_telemetry = {
+            "steps": [
+                {
+                    "step": 1,
+                    "loss": 5.0,
+                    "lr_expected": [1.5e-4],
+                    "lr_actual_before_step": [1.5e-4],
+                    "lr_actual_after_scheduler": [1.5e-4],
+                    "pre_clip_total_grad_norm": 2.0,
+                    "post_clip_total_grad_norm": 1.0,
+                    "pre_clip_layer_norms": {"embed.weight": 2.0},
+                    "post_clip_layer_norms": {"embed.weight": 1.0},
+                    "pre_clip_max_layer": "embed.weight",
+                    "post_clip_max_layer": "embed.weight",
+                    "pre_clip_max_layer_norm": 2.0,
+                    "post_clip_max_layer_norm": 1.0,
+                    "clipped": False,
+                    "has_nonfinite_grad": False,
+                },
+                {
+                    "step": 2,
+                    "loss": 4.0,
+                    "lr_expected": [3e-4],
+                    "lr_actual_before_step": [3e-4],
+                    "lr_actual_after_scheduler": [3e-4],
+                    "pre_clip_total_grad_norm": 20.0,
+                    "post_clip_total_grad_norm": 1.0,
+                    "pre_clip_layer_norms": {"embed.weight": 20.0},
+                    "post_clip_layer_norms": {"embed.weight": 1.0},
+                    "pre_clip_max_layer": "embed.weight",
+                    "post_clip_max_layer": "embed.weight",
+                    "pre_clip_max_layer_norm": 20.0,
+                    "post_clip_max_layer_norm": 1.0,
+                    "clipped": True,
+                    "has_nonfinite_grad": False,
+                },
+            ]
+        }
+
+        with patch("research.eval.wikitext_eval._prepare_batches") as mock_pb:
+            mock_pb.return_value = (
+                [torch.zeros(2, 16, dtype=torch.long)],
+                [torch.zeros(2, 16, dtype=torch.long)],
+                100,
+                50,
+            )
+            with patch(
+                "research.eval.wikitext_eval._screening_train_eval",
+                return_value=(120.0, 60.0, 3.5, {1: 5.0, 2: 4.0}, fake_telemetry),
+            ):
+                result = screening_wikitext_eval(
+                    tiny_model,
+                    vocab_size=256,
+                    device="cpu",
+                    seq_len=16,
+                    n_train_steps=2,
+                    n_train_batches=1,
+                    n_eval_batches=1,
+                    batch_size=2,
+                )
+
+        assert result["screening_wikitext_status"] == "ok"
+        assert result["max_grad_norm"] == 20.0
+        assert result["mean_grad_norm"] == 11.0
+        assert result["final_lr"] == 0.0003
+        assert result["screening_wikitext_degraded"] is False
+        assert result["training_curve"] == [
+            {"step": 1, "loss": 5.0, "grad_norm": 2.0},
+            {"step": 2, "loss": 4.0, "grad_norm": 20.0},
+        ]
+
+    def test_screening_eval_flags_persistent_heavy_clipping(self, tiny_model):
+        clipped_steps = []
+        for step in range(1, 5):
+            clipped_steps.append(
+                {
+                    "step": step,
+                    "loss": 5.0 - step,
+                    "lr_expected": [3e-4],
+                    "lr_actual_before_step": [3e-4],
+                    "lr_actual_after_scheduler": [3e-4],
+                    "pre_clip_total_grad_norm": 15.0,
+                    "post_clip_total_grad_norm": 1.0,
+                    "pre_clip_layer_norms": {"embed.weight": 15.0},
+                    "post_clip_layer_norms": {"embed.weight": 1.0},
+                    "pre_clip_max_layer": "embed.weight",
+                    "post_clip_max_layer": "embed.weight",
+                    "pre_clip_max_layer_norm": 15.0,
+                    "post_clip_max_layer_norm": 1.0,
+                    "clipped": True,
+                    "has_nonfinite_grad": False,
+                }
+            )
+
+        with patch("research.eval.wikitext_eval._prepare_batches") as mock_pb:
+            mock_pb.return_value = (
+                [torch.zeros(2, 16, dtype=torch.long)],
+                [torch.zeros(2, 16, dtype=torch.long)],
+                100,
+                50,
+            )
+            with patch(
+                "research.eval.wikitext_eval._screening_train_eval",
+                return_value=(
+                    120.0,
+                    80.0,
+                    4.0,
+                    {1: 4.5, 4: 3.0},
+                    {"steps": clipped_steps},
+                ),
+            ):
+                result = screening_wikitext_eval(
+                    tiny_model,
+                    vocab_size=256,
+                    device="cpu",
+                    seq_len=16,
+                    n_train_steps=4,
+                    n_train_batches=1,
+                    n_eval_batches=1,
+                    batch_size=2,
+                )
+
+        assert result["screening_wikitext_degraded"] is True
+        assert (
+            "persistent_heavy_clipping" in result["screening_wikitext_degraded_reasons"]
+        )
 
 
 # ── Graceful failure ─────────────────────────────────────────────────────

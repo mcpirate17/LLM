@@ -90,11 +90,53 @@ def test_build_multiscale_variant_can_enable_phase2_curriculum_and_merge():
         use_calibrated_merge=True,
     )
     ops = [node.op_name for node in graph.nodes.values()]
-    assert "calibrated_branch_merge" in ops
+    assert ops.count("calibrated_branch_merge") == 4
     hybrid_gate = next(
         node for node in graph.nodes.values() if node.op_name == "hybrid_token_gate"
     )
     assert hybrid_gate.config["curriculum_enabled"] is True
+
+
+def test_build_multiscale_variant_accepts_curriculum_overrides():
+    graph = build_multiscale_variant(
+        model_dim=64,
+        span_widths=(2, 3, 4),
+        medium_op="conv_only",
+        hard_op="mixed_recursion_gate",
+        route_temperature=0.85,
+        min_keep_fraction=0.125,
+        confidence_threshold=0.55,
+        enable_curriculum=True,
+        use_calibrated_merge=True,
+        gate_curriculum_overrides={
+            "threshold_start": 0.4,
+            "gate_temperature_start": 1.25,
+        },
+        router_curriculum_overrides={"confidence_threshold_start": 0.38},
+        hard_curriculum_overrides={"active_depth_mid": 1},
+        merge_curriculum_overrides={"routed_hard": {"min_secondary_share_start": 0.02}},
+    )
+    hybrid_gate = next(
+        node for node in graph.nodes.values() if node.op_name == "hybrid_token_gate"
+    )
+    first_router = next(
+        node for node in graph.nodes.values() if node.op_name == "hybrid_sparse_router"
+    )
+    merge_nodes = [
+        node
+        for node in graph.nodes.values()
+        if node.op_name == "calibrated_branch_merge"
+    ]
+    hard_node = next(
+        node for node in graph.nodes.values() if node.op_name == "mixed_recursion_gate"
+    )
+    assert hybrid_gate.config["threshold_start"] == 0.4
+    assert hybrid_gate.config["gate_temperature_start"] == 1.25
+    assert first_router.config["confidence_threshold_start"] == 0.38
+    assert hard_node.config["active_depth_mid"] == 1
+    assert any(
+        node.config.get("min_secondary_share_start") == 0.02 for node in merge_nodes
+    )
 
 
 def test_functional_micro_train_loop_invokes_step_callback():

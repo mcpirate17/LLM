@@ -10,7 +10,7 @@ from torch.utils.cpp_extension import load
 def load_runner_native():
     source = Path(__file__).with_name("_runner_native.cpp")
     return load(
-        name="eval_runner_native_ext",
+        name="eval_runner_native_ext_v4",
         sources=[str(source)],
         extra_cflags=["-O3"],
         verbose=False,

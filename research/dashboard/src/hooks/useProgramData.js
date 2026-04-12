@@ -206,7 +206,7 @@ export default function useProgramData({ resultId, defaultOverrideIneligible, on
         }
       });
 
-    apiCall('/api/leaderboard?limit=200', { signal })
+    apiCall('/api/leaderboard?limit=200&trusted_only=1', { signal })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!signal.aborted && data?.entries) {

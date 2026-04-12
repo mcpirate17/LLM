@@ -86,6 +86,23 @@ function SystemStatusSection({ systemStatus, onSystemStatusUpdate }) {
         </button>
       </div>
 
+      {systemStatus?.ml_influence && (
+        <div className="system-status-badges" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+          <span className={`sys-badge ${systemStatus.ml_influence.defaults.gbm_prescreener_enabled ? 'warn' : 'pass'}`}>
+            {systemStatus.ml_influence.defaults.gbm_prescreener_enabled ? 'ML Gate: Active' : 'ML Gate: Monitor Only'}
+          </span>
+          <span className={`sys-badge ${systemStatus.ml_influence.defaults.use_learned_candidate_weights ? 'warn' : 'pass'}`}>
+            {systemStatus.ml_influence.defaults.use_learned_candidate_weights ? 'Candidate Weights: Active' : 'Candidate Weights: Off'}
+          </span>
+          <span className={`sys-badge ${systemStatus.ml_influence.defaults.use_screening_signal_weights ? 'warn' : 'pass'}`}>
+            {systemStatus.ml_influence.defaults.use_screening_signal_weights ? 'Signal Weights: Active' : 'Signal Weights: Off'}
+          </span>
+          <span className={`sys-badge ${systemStatus.ml_influence.defaults.use_learned_grammar_weights ? 'warn' : 'pass'}`}>
+            {systemStatus.ml_influence.defaults.use_learned_grammar_weights ? 'Grammar Weights: Active' : 'Grammar Weights: Off'}
+          </span>
+        </div>
+      )}
+
       {showLlmConfig && (
         <div className="llm-config-section">
           <div className="config-grid">

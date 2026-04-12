@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List
 from flask import jsonify, request
 from ..json_utils import json_safe as _json_safe
+from ..trust_policy import is_trusted_entry, sql_trusted_clause
 from .deps import ApiRouteContext
 from ._utils import with_notebook_context
 from ._strategy_recommendations import (
@@ -15,8 +17,19 @@ from ._strategy_recommendations import (
     infer_tier_for_program,
     count_discovery_tiers,
 )
+from ._strategy_report import parse_bool_query
 
 logger = logging.getLogger(__name__)
+
+
+def _default_cross_run_stability() -> Dict[str, Any]:
+    return {
+        "trend": "unknown",
+        "seen_runs": 0,
+        "latest_rank": None,
+        "previous_rank": None,
+        "rank_delta": None,
+    }
 
 
 def _dedupe_discovery_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -49,6 +62,7 @@ def _search_discoveries(
     query: str,
     tier: str | None,
     limit: int,
+    trusted_only: bool = True,
     include_references: bool = False,
 ) -> List[Dict[str, Any]]:
     """Search leaderboard + raw stage1 survivors across the full notebook."""
@@ -64,14 +78,14 @@ def _search_discoveries(
             l.entry_id,
             l.tier AS leaderboard_tier,
             l.composite_score,
-            l.screening_loss_ratio,
+            l.screening_loss_ratio AS lb_screening_loss_ratio,
             l.screening_novelty,
             l.screening_passed,
-            l.investigation_loss_ratio,
+            l.investigation_loss_ratio AS lb_investigation_loss_ratio,
             l.investigation_robustness,
             l.investigation_passed,
-            l.validation_loss_ratio,
-            l.validation_baseline_ratio,
+            l.validation_loss_ratio AS lb_validation_loss_ratio,
+            l.validation_baseline_ratio AS lb_validation_baseline_ratio,
             l.validation_passed,
             l.discovery_loss_ratio AS leaderboard_discovery_loss_ratio,
             l.is_reference,
@@ -89,6 +103,10 @@ def _search_discoveries(
              OR LOWER(COALESCE(l.reference_name, '')) LIKE LOWER(?)
              OR LOWER(COALESCE(l.architecture_desc, '')) LIKE LOWER(?)
           )
+    """
+    if trusted_only:
+        sql += f" AND {sql_trusted_clause(table_alias='pr')}"
+    sql += """
         ORDER BY
             CASE
                 WHEN LOWER(COALESCE(pr.graph_fingerprint, '')) = LOWER(?) THEN 0
@@ -131,6 +149,16 @@ def _search_discoveries(
         entry["model_source"] = entry.get("leaderboard_model_source") or entry.get(
             "model_source"
         )
+        if entry.get("lb_screening_loss_ratio") is not None:
+            entry["screening_loss_ratio"] = entry.get("lb_screening_loss_ratio")
+        if entry.get("lb_investigation_loss_ratio") is not None:
+            entry["investigation_loss_ratio"] = entry.get("lb_investigation_loss_ratio")
+        if entry.get("lb_validation_loss_ratio") is not None:
+            entry["validation_loss_ratio"] = entry.get("lb_validation_loss_ratio")
+        if entry.get("lb_validation_baseline_ratio") is not None:
+            entry["validation_baseline_ratio"] = entry.get(
+                "lb_validation_baseline_ratio"
+            )
         if (
             entry.get("discovery_loss_ratio") is None
             and entry.get("leaderboard_discovery_loss_ratio") is not None
@@ -149,9 +177,12 @@ def _search_discoveries(
             continue
         if not include_references and entry.get("is_reference"):
             continue
+        if trusted_only and not is_trusted_entry(entry):
+            continue
         entries.append(entry)
 
     deduped = _dedupe_discovery_rows(entries)
+    deduped = nb._attach_canonical_program_scores(deduped)
     return deduped[:limit]
 
 
@@ -306,6 +337,58 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
     }
 
 
+def _apply_arch_spec_metrics(entries: List[Dict[str, Any]]) -> None:
+    for entry in entries:
+        spec_json = entry.get("_arch_spec_json")
+        if not spec_json:
+            continue
+        try:
+            spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("gap_nats") is not None:
+            entry["gap_vs_gpt2"] = float(spec["gap_nats"])
+        if (
+            spec.get("improvement_rate") is not None
+            and entry.get("loss_improvement_rate") is None
+        ):
+            entry["loss_improvement_rate"] = float(spec["improvement_rate"])
+
+
+def _apply_cross_run_stability(
+    nb,
+    entries: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    stability = compute_cross_run_stability(nb, entries)
+    stability_by_result = {
+        candidate.get("result_id"): candidate
+        for candidate in stability.get("candidates", [])
+        if candidate.get("result_id")
+    }
+    default_stability = _default_cross_run_stability()
+    for entry in entries:
+        entry["cross_run_stability"] = stability_by_result.get(
+            entry.get("result_id"),
+            default_stability.copy(),
+        )
+    return stability
+
+
+def _enrich_ranked_entries(
+    nb,
+    entries: List[Dict[str, Any]],
+    *,
+    analytics,
+) -> Dict[str, Any]:
+    attach_long_context_breakdown(nb, entries)
+    stability = _apply_cross_run_stability(nb, entries)
+    annotate_qkv_usage(entries, analytics)
+    _apply_arch_spec_metrics(entries)
+    return stability
+
+
 def register_leaderboard_routes(app, context: ApiRouteContext):
     notebook_path = context.notebook_path
     wnb = with_notebook_context(notebook_path)
@@ -321,6 +404,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         include_references = str(
             request.args.get("include_references", "1")
         ).strip().lower() not in {"0", "false", "no"}
+        trusted_only = parse_bool_query(request.args.get("trusted_only"), default=True)
         compact = str(request.args.get("compact", "0")).strip().lower() in {
             "1",
             "true",
@@ -335,57 +419,20 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             limit=base_limit,
             sort_by=sort_by,
             include_references=include_references,
+            trusted_only=trusted_only,
         )
         if quality == "promotable":
             entries = [entry for entry in entries if _entry_has_promotion_path(entry)]
             entries = entries[:limit]
         if not compact:
-            attach_long_context_breakdown(nb, entries)
-            stability = compute_cross_run_stability(
-                nb, nb.get_top_programs(20, sort_by="loss_ratio")
+            stability = _enrich_ranked_entries(
+                nb,
+                entries,
+                analytics=analytics,
             )
-            stability_by_result = {
-                c.get("result_id"): c
-                for c in stability.get("candidates", [])
-                if c.get("result_id")
-            }
-            for entry in entries:
-                entry["cross_run_stability"] = stability_by_result.get(
-                    entry.get("result_id"),
-                    {
-                        "trend": "unknown",
-                        "seen_runs": 0,
-                        "latest_rank": None,
-                        "previous_rank": None,
-                        "rank_delta": None,
-                    },
-                )
-            annotate_qkv_usage(entries, analytics)
         else:
             entries = [_compact_leaderboard_entry(entry) for entry in entries]
             stability = {"summary": {}, "window_size": 0}
-        # Enrich entries with gap_vs_gpt2 and loss_improvement_rate
-        # Data is already available from get_leaderboard()'s LEFT JOIN
-        import json as _json
-
-        for entry in entries:
-            spec_json = entry.get("_arch_spec_json")
-            if spec_json:
-                try:
-                    spec = (
-                        _json.loads(spec_json)
-                        if isinstance(spec_json, str)
-                        else spec_json
-                    )
-                    if spec.get("gap_nats") is not None:
-                        entry["gap_vs_gpt2"] = float(spec["gap_nats"])
-                    if (
-                        spec.get("improvement_rate") is not None
-                        and entry.get("loss_improvement_rate") is None
-                    ):
-                        entry["loss_improvement_rate"] = float(spec["improvement_rate"])
-                except (ValueError, TypeError, _json.JSONDecodeError):
-                    pass
         tiers = {}
         for entry in entries:
             t = entry.get("tier", "screening")
@@ -399,6 +446,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 "total": len(entries),
                 "compact": compact,
                 "quality": quality or "all",
+                "trusted_only": trusted_only,
                 "cross_run_stability_summary": stability.get("summary", {}),
                 "cross_run_stability_window": stability.get("window_size", 0),
             }
@@ -498,6 +546,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
         view = request.args.get("view", "ranked")
         search_query = str(request.args.get("q") or "").strip()
         search_scope = str(request.args.get("scope") or "ranked").strip().lower()
+        trusted_only = parse_bool_query(request.args.get("trusted_only"), default=True)
         from ..analytics import ExperimentAnalytics
 
         analytics = ExperimentAnalytics(nb)
@@ -512,7 +561,11 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
             ]
 
         if view == "all":
-            programs = nb.get_top_programs(limit, sort_by="loss_ratio")
+            programs = nb.get_top_programs(
+                limit,
+                sort_by="loss_ratio",
+                trusted_only=trusted_only,
+            )
             attach_long_context_breakdown(nb, programs)
             annotate_qkv_usage(programs, analytics)
             for p in programs:
@@ -534,6 +587,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                     "total": len(programs),
                     "counts": tier_counts,
                     "tier_counts": tier_counts,
+                    "trusted_only": trusted_only,
                     "view": "all",
                 }
             )
@@ -544,6 +598,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 query=search_query,
                 tier=tier,
                 limit=limit,
+                trusted_only=trusted_only,
                 include_references=False,
             )
         else:
@@ -552,28 +607,13 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 limit=limit,
                 sort_by=sort_by,
                 include_references=False,
+                trusted_only=trusted_only,
             )
-        attach_long_context_breakdown(nb, entries)
-        stability = compute_cross_run_stability(
-            nb, nb.get_top_programs(20, sort_by="loss_ratio")
+        stability = _enrich_ranked_entries(
+            nb,
+            entries,
+            analytics=analytics,
         )
-        stability_by_result = {
-            c.get("result_id"): c
-            for c in stability.get("candidates", [])
-            if c.get("result_id")
-        }
-        for entry in entries:
-            entry["cross_run_stability"] = stability_by_result.get(
-                entry.get("result_id"),
-                {
-                    "trend": "unknown",
-                    "seen_runs": 0,
-                    "latest_rank": None,
-                    "previous_rank": None,
-                    "rank_delta": None,
-                },
-            )
-        annotate_qkv_usage(entries, analytics)
         annotate_display_names(entries)
 
         return jsonify(
@@ -585,6 +625,7 @@ def register_leaderboard_routes(app, context: ApiRouteContext):
                 "tier_counts": tier_counts,
                 "cross_run_stability_summary": stability.get("summary", {}),
                 "cross_run_stability_window": stability.get("window_size", 0),
+                "trusted_only": trusted_only,
                 "search": {
                     "query": search_query,
                     "scope": search_scope,

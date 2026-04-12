@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -11,8 +13,28 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 from ..json_utils import fast_loads as _json_loads
-from ..thresholds import GPT2_REF
+from ..leaderboard_scoring import (
+    compute_efficiency_multiple as _compute_efficiency_multiple,
+    compute_pre_investigation_score as _compute_pre_investigation_score,
+)
 from ...synthesis.templates import TEMPLATES
+
+_TEMPLATE_DEF_RE = re.compile(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", re.M)
+_EMPTY_DATA_ACCOUNTING_SHAPE = {
+    "row_volume": {},
+    "run_volume": {},
+    "graph_volume": {},
+    "filtering": {},
+    "training_curve_density": {},
+    "leaderboard_tiers": {},
+}
+
+
+@lru_cache(maxsize=1)
+def _load_eval_native_module():
+    from ...eval._eval_native import load_eval_native
+
+    return load_eval_native()
 
 
 @lru_cache(maxsize=8192)
@@ -41,11 +63,277 @@ def _cached_extract_op_bigrams(graph_json: str) -> tuple[str, ...]:
     return tuple(sorted(bigrams))
 
 
+@lru_cache(maxsize=8192)
+def _cached_extract_observability_metadata(
+    graph_json: str,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[Dict[str, Any], ...]]:
+    try:
+        graph = _json_loads(graph_json) if graph_json else {}
+    except (json.JSONDecodeError, TypeError):
+        return (), (), ()
+    metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
+    templates = metadata.get("templates_used")
+    motifs = metadata.get("motifs_used")
+    slot_usage = metadata.get("template_slot_usage")
+    normalized_templates = (
+        tuple(str(item) for item in templates if item is not None)
+        if isinstance(templates, list)
+        else ()
+    )
+    normalized_motifs = (
+        tuple(str(item) for item in motifs if item is not None)
+        if isinstance(motifs, list)
+        else ()
+    )
+    normalized_slots = (
+        tuple(slot for slot in slot_usage if isinstance(slot, dict))
+        if isinstance(slot_usage, list)
+        else ()
+    )
+    return normalized_templates, normalized_motifs, normalized_slots
+
+
+@dataclass
+class _ObservabilityAccumulator:
+    __slots__ = (
+        "template_stats",
+        "motif_stats",
+        "slot_stats",
+        "experiment_buckets",
+        "loss_values",
+        "validation_losses",
+        "discovery_losses",
+        "motifs_per_graph",
+        "templates_per_graph",
+    )
+    template_stats: Dict[str, Dict[str, Any]]
+    motif_stats: Dict[str, Dict[str, Any]]
+    slot_stats: Dict[str, Dict[str, Any]]
+    experiment_buckets: Dict[str, Dict[str, Any]]
+    loss_values: List[float]
+    validation_losses: List[float]
+    discovery_losses: List[float]
+    motifs_per_graph: List[float]
+    templates_per_graph: List[float]
+
+
+def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize a single template's accumulated stats into a result dict."""
+    losses = stat["losses"]
+    stage1_losses = stat.get("stage1_losses") or []
+    validation_vals = stat["validation_losses"]
+    discovery_vals = stat["discovery_losses"]
+    novelties = stat["novelties"]
+    novelty_confidences = stat["novelty_confidences"]
+    induction_aucs = stat["induction_aucs"]
+    binding_aucs = stat["binding_aucs"]
+    ar_aucs = stat["ar_aucs"]
+    hellaswag_accs = stat["hellaswag_accs"]
+    screening_hellaswag_accs = stat["screening_hellaswag_accs"]
+    reasons = stat["failure_reasons"]
+    fast_lane_scores = stat["routing_fast_lane_scores"]
+    fast_lane_improvements = stat["routing_fast_lane_improvements"]
+    fast_lane_slopes = stat["routing_fast_lane_slopes"]
+    top_reason = None
+    if reasons:
+        top_reason = max(reasons.items(), key=lambda item: item[1])[0]
+    try:
+        core = _load_eval_native_module().summarize_template_stat_core(
+            int(stat["n_used"] or 0),
+            int(stat["n_stage0"] or 0),
+            int(stat["n_stage05"] or 0),
+            int(stat["n_stage1"] or 0),
+            [float(v) for v in losses],
+            [float(v) for v in validation_vals],
+            [float(v) for v in discovery_vals],
+            [float(v) for v in novelties],
+            [float(v) for v in novelty_confidences],
+            [float(v) for v in induction_aucs],
+            [float(v) for v in binding_aucs],
+            [float(v) for v in ar_aucs],
+            [float(v) for v in hellaswag_accs],
+            [float(v) for v in screening_hellaswag_accs],
+            int(stat.get("screening_wikitext_ok") or 0),
+            int(stat.get("screening_wikitext_runs") or 0),
+            int(stat.get("slot_count") or 0),
+            int(stat.get("routing_fast_lane_runs") or 0),
+            int(stat.get("routing_fast_lane_ok") or 0),
+            int(stat.get("routing_fast_lane_positive") or 0),
+            [float(v) for v in fast_lane_scores],
+            [float(v) for v in fast_lane_improvements],
+            [float(v) for v in fast_lane_slopes],
+        )
+    except Exception:
+        n_used = int(stat["n_used"] or 0)
+        core = {
+            "n_used": n_used,
+            "s0_rate": stat["n_stage0"] / max(n_used, 1),
+            "s05_rate": stat["n_stage05"] / max(n_used, 1),
+            "s1_rate": stat["n_stage1"] / max(n_used, 1),
+            "avg_loss_ratio": sum(losses) / len(losses) if losses else None,
+            "best_loss_ratio": min(losses) if losses else None,
+            "avg_validation_loss_ratio": (
+                sum(validation_vals) / len(validation_vals) if validation_vals else None
+            ),
+            "avg_discovery_loss_ratio": (
+                sum(discovery_vals) / len(discovery_vals) if discovery_vals else None
+            ),
+            "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
+            "avg_novelty_confidence": (
+                sum(novelty_confidences) / len(novelty_confidences)
+                if novelty_confidences
+                else None
+            ),
+            "avg_induction_auc": (
+                sum(induction_aucs) / len(induction_aucs) if induction_aucs else None
+            ),
+            "avg_binding_auc": (
+                sum(binding_aucs) / len(binding_aucs) if binding_aucs else None
+            ),
+            "avg_ar_auc": sum(ar_aucs) / len(ar_aucs) if ar_aucs else None,
+            "avg_hellaswag_acc": (
+                sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
+            ),
+            "avg_screening_hellaswag_acc": (
+                sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
+                if screening_hellaswag_accs
+                else None
+            ),
+            "screening_wikitext_ok_rate": (
+                int(stat.get("screening_wikitext_ok") or 0)
+                / max(int(stat.get("screening_wikitext_runs") or 0), 1)
+                if stat.get("screening_wikitext_runs")
+                else None
+            ),
+            "screening_metric_coverage": {
+                "induction": len(induction_aucs),
+                "binding": len(binding_aucs),
+                "associative_recall": len(ar_aucs),
+                "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
+                "wikitext": int(stat.get("screening_wikitext_runs") or 0),
+            },
+            "slot_count": int(stat.get("slot_count") or 0),
+            "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
+            "routing_fast_lane_ok_rate": (
+                int(stat.get("routing_fast_lane_ok") or 0)
+                / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
+                if stat.get("routing_fast_lane_runs")
+                else None
+            ),
+            "routing_fast_lane_positive_rate": (
+                int(stat.get("routing_fast_lane_positive") or 0)
+                / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
+                if stat.get("routing_fast_lane_runs")
+                else None
+            ),
+            "routing_fast_lane_avg_score": (
+                sum(fast_lane_scores) / len(fast_lane_scores)
+                if fast_lane_scores
+                else None
+            ),
+            "routing_fast_lane_avg_improvement": (
+                sum(fast_lane_improvements) / len(fast_lane_improvements)
+                if fast_lane_improvements
+                else None
+            ),
+            "routing_fast_lane_avg_slope": (
+                sum(fast_lane_slopes) / len(fast_lane_slopes)
+                if fast_lane_slopes
+                else None
+            ),
+            "evidence_level": (
+                "insufficient"
+                if n_used < 3
+                else "sparse"
+                if n_used < 10
+                else "building"
+                if n_used < 30
+                else "established"
+            ),
+        }
+    n_used = int(core["n_used"])
+    s0_rate = core["s0_rate"]
+    s05_rate = core["s05_rate"]
+    s1_rate = core["s1_rate"]
+    avg_loss_ratio = core["avg_loss_ratio"]
+    avg_validation_loss_ratio = core["avg_validation_loss_ratio"]
+    avg_induction_auc = core["avg_induction_auc"]
+    avg_binding_auc = core["avg_binding_auc"]
+    avg_hellaswag_acc = core["avg_hellaswag_acc"]
+    evidence_level = core["evidence_level"]
+
+    diagnosis: List[str] = []
+    actions: List[str] = []
+    if evidence_level == "insufficient":
+        diagnosis.append("Too little evidence to rank confidently.")
+        actions.append("Backfill this template before changing weights.")
+    elif s0_rate < 0.5:
+        diagnosis.append("Most runs fail before stable screening begins.")
+        actions.append("Audit template wiring and unsafe op combinations.")
+    elif s05_rate + 0.15 < s0_rate:
+        diagnosis.append(
+            "Candidates clear S0 but drop during the stability band before S1."
+        )
+        actions.append("Tighten motif compatibility and lane constraints.")
+    elif s1_rate < 0.15:
+        diagnosis.append("Template consumes budget but rarely reaches Stage 1.")
+        actions.append("Downweight until slot and motif evidence improves.")
+    elif s1_rate > 0.4:
+        diagnosis.append("Template is producing Stage-1 survivors consistently.")
+        actions.append("Use as a reference family for nearby sparse templates.")
+    if (
+        avg_validation_loss_ratio is not None
+        and avg_loss_ratio is not None
+        and avg_validation_loss_ratio > avg_loss_ratio * 1.15
+    ):
+        diagnosis.append(
+            "Validation materially trails training, suggesting brittle generalization."
+        )
+        actions.append("Reduce brittle motif mixes or extend slow-starter screening.")
+    if avg_induction_auc is not None and avg_induction_auc < 0.02 and s1_rate >= 0.2:
+        diagnosis.append("Survivors train, but induction evidence remains weak.")
+        actions.append("Bias backfills toward longer-range token-interaction motifs.")
+    if avg_binding_auc is not None and avg_binding_auc < 0.05 and s1_rate >= 0.2:
+        diagnosis.append("Binding/copy behavior is weak relative to survivor rate.")
+        actions.append("Probe slot choices that preserve non-local token access.")
+    if avg_hellaswag_acc is not None and avg_hellaswag_acc <= 0.27:
+        diagnosis.append("Commonsense signal is near noise floor.")
+        actions.append("Do not trust perplexity-only wins from this family.")
+    if (
+        stat.get("routing_fast_lane_runs")
+        and (stat.get("routing_fast_lane_positive") or 0) >= 2
+        and s1_rate < 0.2
+    ):
+        diagnosis.append("Fast-lane probes are positive despite poor short-run S1.")
+        actions.append("Treat it as a slow starter and extend targeted backfills.")
+    if top_reason and len(diagnosis) < 3:
+        diagnosis.append(f"Most common failure mode is {top_reason}.")
+    if not actions:
+        actions.append("Keep sampling while collecting more slot-level evidence.")
+    repeated_low_loss_count = sum(1 for v in stage1_losses if v <= 0.45)
+    very_low_loss_count = sum(1 for v in stage1_losses if v <= 0.40)
+    return {
+        "name": stat["name"],
+        **core,
+        "survivor_loss_median": (
+            statistics.median(stage1_losses) if stage1_losses else None
+        ),
+        "repeated_low_loss_count": repeated_low_loss_count,
+        "very_low_loss_count": very_low_loss_count,
+        "repeated_low_loss_family": repeated_low_loss_count >= 3,
+        "top_failure_reason": top_reason,
+        "failure_reasons": dict(sorted(reasons.items(), key=lambda item: -item[1])[:3]),
+        "diagnosis": diagnosis[:3],
+        "actions": actions[:3],
+    }
+
+
 class _MiscMixin:
     """Misc operations for the Lab Notebook."""
 
     __slots__ = ()
     _DASHBOARD_SUMMARY_TTL_S = 2.0
+    _TEMPLATE_OBSERVABILITY_TTL_S = 10.0
 
     @staticmethod
     def _percentile(values: List[float], pct: float) -> Optional[float]:
@@ -63,6 +351,7 @@ class _MiscMixin:
         return float(clean[lo] + (clean[hi] - clean[lo]) * frac)
 
     @staticmethod
+    @lru_cache(maxsize=1)
     def _infer_template_slot_counts() -> Dict[str, int]:
         counts: Dict[str, int] = {}
         structural_overrides = {
@@ -82,9 +371,7 @@ class _MiscMixin:
                 source = template_file.read_text(encoding="utf-8")
             except OSError:
                 continue
-            matches = list(
-                re.finditer(r"^def\s+(tpl_[A-Za-z0-9_]+)\s*\(", source, re.M)
-            )
+            matches = list(_TEMPLATE_DEF_RE.finditer(source))
             for idx, match in enumerate(matches):
                 name = match.group(1)
                 start = match.start()
@@ -99,38 +386,49 @@ class _MiscMixin:
         return counts
 
     def get_template_slot_observability(self, limit: int = 8) -> Dict[str, Any]:
+        now = time.time()
+        cached = self._template_observability_cache.get(limit)
+        if cached is not None and now < float(
+            self._template_observability_cache_expires_at or 0.0
+        ):
+            return dict(cached)
+
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
             """
             SELECT
-                experiment_id,
-                timestamp,
-                graph_json,
-                stage0_passed,
-                stage05_passed,
-                stage1_passed,
-                loss_ratio,
-                discovery_loss_ratio,
-                validation_loss_ratio,
-                novelty_score,
-                novelty_confidence,
-                error_type,
-                stage_at_death,
-                failure_details_json,
-                induction_auc,
-                binding_auc,
-                ar_auc,
-                hellaswag_acc,
-                screening_hellaswag_correct,
-                screening_hellaswag_total,
-                screening_wikitext_status,
-                routing_fast_lane_applied,
-                routing_fast_lane_status,
-                routing_fast_lane_score,
-                routing_fast_lane_ppl_improvement,
-                routing_fast_lane_slope,
-                routing_fast_lane_slope_consistent
-            FROM program_results
-            WHERE graph_json IS NOT NULL
+                pr.experiment_id,
+                pr.timestamp,
+                gf.templates_json,
+                gf.motifs_json,
+                gf.slot_usage_json,
+                pr.stage0_passed,
+                pr.stage05_passed,
+                pr.stage1_passed,
+                pr.loss_ratio,
+                pr.discovery_loss_ratio,
+                pr.validation_loss_ratio,
+                pr.novelty_score,
+                pr.novelty_confidence,
+                pr.error_type,
+                pr.stage_at_death,
+                pr.failure_details_json,
+                pr.induction_auc,
+                pr.binding_auc,
+                pr.ar_auc,
+                pr.hellaswag_acc,
+                pr.screening_hellaswag_correct,
+                pr.screening_hellaswag_total,
+                pr.screening_wikitext_status,
+                pr.routing_fast_lane_applied,
+                pr.routing_fast_lane_status,
+                pr.routing_fast_lane_score,
+                pr.routing_fast_lane_ppl_improvement,
+                pr.routing_fast_lane_slope,
+                pr.routing_fast_lane_slope_consistent
+            FROM program_results pr
+            JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
         ).fetchall()
         if not rows:
@@ -144,6 +442,18 @@ class _MiscMixin:
             }
 
         slot_counts = self._infer_template_slot_counts()
+        acc = self._accumulate_observability_stats(rows, slot_counts)
+        result = self._assemble_observability_result(acc, slot_counts, limit)
+        self._template_observability_cache[limit] = dict(result)
+        self._template_observability_cache_expires_at = (
+            now + self._TEMPLATE_OBSERVABILITY_TTL_S
+        )
+        return result
+
+    def _accumulate_observability_stats(
+        self, rows: list, slot_counts: Dict[str, int]
+    ) -> _ObservabilityAccumulator:
+        """Parse rows and accumulate per-template/motif/slot statistics."""
         template_stats: Dict[str, Dict[str, Any]] = {}
         motif_stats: Dict[str, Dict[str, Any]] = {}
         slot_stats: Dict[str, Dict[str, Any]] = {}
@@ -155,14 +465,34 @@ class _MiscMixin:
         templates_per_graph: List[float] = []
 
         for row in rows:
-            try:
-                graph = _json_loads(row["graph_json"]) if row["graph_json"] else {}
-            except (json.JSONDecodeError, TypeError, KeyError):
-                graph = {}
-            metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
-            templates = metadata.get("templates_used") or []
-            motifs = metadata.get("motifs_used") or []
-            slot_usage = metadata.get("template_slot_usage") or []
+            if row["templates_json"] is not None:
+                try:
+                    templates = tuple(
+                        str(item)
+                        for item in (json.loads(row["templates_json"]) or [])
+                        if item is not None
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    templates = ()
+                try:
+                    motifs = tuple(
+                        str(item)
+                        for item in (json.loads(row["motifs_json"]) or [])
+                        if item is not None
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    motifs = ()
+                try:
+                    loaded_slots = json.loads(row["slot_usage_json"]) or []
+                    slot_usage = tuple(
+                        item for item in loaded_slots if isinstance(item, dict)
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    slot_usage = ()
+            else:
+                templates, motifs, slot_usage = _cached_extract_observability_metadata(
+                    str(row.get("graph_json") or "")
+                )
             experiment_id = str(row["experiment_id"] or "")
             exp_bucket = experiment_buckets.setdefault(
                 experiment_id or f"exp_{len(experiment_buckets)}",
@@ -180,12 +510,6 @@ class _MiscMixin:
                 float(exp_bucket.get("timestamp") or 0.0),
                 float(row["timestamp"] or 0.0),
             )
-            if not isinstance(templates, list):
-                templates = []
-            if not isinstance(motifs, list):
-                motifs = []
-            if not isinstance(slot_usage, list):
-                slot_usage = []
 
             motifs_per_graph.append(float(len(motifs)))
             templates_per_graph.append(float(len(templates)))
@@ -240,6 +564,7 @@ class _MiscMixin:
                         "n_stage05": 0,
                         "n_stage1": 0,
                         "losses": [],
+                        "stage1_losses": [],
                         "validation_losses": [],
                         "discovery_losses": [],
                         "novelties": [],
@@ -267,6 +592,8 @@ class _MiscMixin:
                 stat["n_stage1"] += 1 if row["stage1_passed"] else 0
                 if loss_ratio is not None and math.isfinite(loss_ratio):
                     stat["losses"].append(float(loss_ratio))
+                    if row["stage1_passed"]:
+                        stat["stage1_losses"].append(float(loss_ratio))
                 if validation_lr is not None and math.isfinite(validation_lr):
                     stat["validation_losses"].append(float(validation_lr))
                 if discovery_lr is not None and math.isfinite(discovery_lr):
@@ -396,207 +723,28 @@ class _MiscMixin:
                 if loss_ratio is not None and math.isfinite(loss_ratio):
                     exp_slot["losses"].append(float(loss_ratio))
 
-        def summarize_template(stat: Dict[str, Any]) -> Dict[str, Any]:
-            losses = stat["losses"]
-            validation_vals = stat["validation_losses"]
-            discovery_vals = stat["discovery_losses"]
-            novelties = stat["novelties"]
-            novelty_confidences = stat["novelty_confidences"]
-            induction_aucs = stat["induction_aucs"]
-            binding_aucs = stat["binding_aucs"]
-            ar_aucs = stat["ar_aucs"]
-            hellaswag_accs = stat["hellaswag_accs"]
-            screening_hellaswag_accs = stat["screening_hellaswag_accs"]
-            reasons = stat["failure_reasons"]
-            fast_lane_scores = stat["routing_fast_lane_scores"]
-            fast_lane_improvements = stat["routing_fast_lane_improvements"]
-            fast_lane_slopes = stat["routing_fast_lane_slopes"]
-            top_reason = None
-            if reasons:
-                top_reason = max(reasons.items(), key=lambda item: item[1])[0]
-            n_used = int(stat["n_used"] or 0)
-            s0_rate = stat["n_stage0"] / max(n_used, 1)
-            s05_rate = stat["n_stage05"] / max(n_used, 1)
-            s1_rate = stat["n_stage1"] / max(n_used, 1)
-            avg_loss_ratio = sum(losses) / len(losses) if losses else None
-            avg_validation_loss_ratio = (
-                sum(validation_vals) / len(validation_vals) if validation_vals else None
-            )
-            avg_discovery_loss_ratio = (
-                sum(discovery_vals) / len(discovery_vals) if discovery_vals else None
-            )
-            avg_induction_auc = (
-                sum(induction_aucs) / len(induction_aucs) if induction_aucs else None
-            )
-            avg_binding_auc = (
-                sum(binding_aucs) / len(binding_aucs) if binding_aucs else None
-            )
-            avg_ar_auc = sum(ar_aucs) / len(ar_aucs) if ar_aucs else None
-            avg_hellaswag_acc = (
-                sum(hellaswag_accs) / len(hellaswag_accs) if hellaswag_accs else None
-            )
-            avg_screening_hellaswag_acc = (
-                sum(screening_hellaswag_accs) / len(screening_hellaswag_accs)
-                if screening_hellaswag_accs
-                else None
-            )
-            screening_wikitext_ok_rate = (
-                int(stat.get("screening_wikitext_ok") or 0)
-                / max(int(stat.get("screening_wikitext_runs") or 0), 1)
-                if stat.get("screening_wikitext_runs")
-                else None
-            )
-            if n_used < 3:
-                evidence_level = "insufficient"
-            elif n_used < 10:
-                evidence_level = "sparse"
-            elif n_used < 30:
-                evidence_level = "building"
-            else:
-                evidence_level = "established"
+        return _ObservabilityAccumulator(
+            template_stats=template_stats,
+            motif_stats=motif_stats,
+            slot_stats=slot_stats,
+            experiment_buckets=experiment_buckets,
+            loss_values=loss_values,
+            validation_losses=validation_losses,
+            discovery_losses=discovery_losses,
+            motifs_per_graph=motifs_per_graph,
+            templates_per_graph=templates_per_graph,
+        )
 
-            diagnosis: List[str] = []
-            actions: List[str] = []
-            if evidence_level == "insufficient":
-                diagnosis.append("Too little evidence to rank confidently.")
-                actions.append("Backfill this template before changing weights.")
-            elif s0_rate < 0.5:
-                diagnosis.append("Most runs fail before stable screening begins.")
-                actions.append("Audit template wiring and unsafe op combinations.")
-            elif s05_rate + 0.15 < s0_rate:
-                diagnosis.append(
-                    "Candidates clear S0 but drop during the stability band before S1."
-                )
-                actions.append("Tighten motif compatibility and lane constraints.")
-            elif s1_rate < 0.15:
-                diagnosis.append("Template consumes budget but rarely reaches Stage 1.")
-                actions.append("Downweight until slot and motif evidence improves.")
-            elif s1_rate > 0.4:
-                diagnosis.append(
-                    "Template is producing Stage-1 survivors consistently."
-                )
-                actions.append("Use as a reference family for nearby sparse templates.")
-            if (
-                avg_validation_loss_ratio is not None
-                and avg_loss_ratio is not None
-                and avg_validation_loss_ratio > avg_loss_ratio * 1.15
-            ):
-                diagnosis.append(
-                    "Validation materially trails training, suggesting brittle generalization."
-                )
-                actions.append(
-                    "Reduce brittle motif mixes or extend slow-starter screening."
-                )
-            if (
-                avg_induction_auc is not None
-                and avg_induction_auc < 0.02
-                and s1_rate >= 0.2
-            ):
-                diagnosis.append(
-                    "Survivors train, but induction evidence remains weak."
-                )
-                actions.append(
-                    "Bias backfills toward longer-range token-interaction motifs."
-                )
-            if (
-                avg_binding_auc is not None
-                and avg_binding_auc < 0.05
-                and s1_rate >= 0.2
-            ):
-                diagnosis.append(
-                    "Binding/copy behavior is weak relative to survivor rate."
-                )
-                actions.append(
-                    "Probe slot choices that preserve non-local token access."
-                )
-            if avg_hellaswag_acc is not None and avg_hellaswag_acc <= 0.27:
-                diagnosis.append("Commonsense signal is near noise floor.")
-                actions.append("Do not trust perplexity-only wins from this family.")
-            if (
-                stat.get("routing_fast_lane_runs")
-                and (stat.get("routing_fast_lane_positive") or 0) >= 2
-                and s1_rate < 0.2
-            ):
-                diagnosis.append(
-                    "Fast-lane probes are positive despite poor short-run S1."
-                )
-                actions.append(
-                    "Treat it as a slow starter and extend targeted backfills."
-                )
-            if top_reason and len(diagnosis) < 3:
-                diagnosis.append(f"Most common failure mode is {top_reason}.")
-            if not actions:
-                actions.append(
-                    "Keep sampling while collecting more slot-level evidence."
-                )
-            return {
-                "name": stat["name"],
-                "n_used": n_used,
-                "s0_rate": s0_rate,
-                "s05_rate": s05_rate,
-                "s1_rate": s1_rate,
-                "avg_loss_ratio": avg_loss_ratio,
-                "best_loss_ratio": min(losses) if losses else None,
-                "avg_validation_loss_ratio": avg_validation_loss_ratio,
-                "avg_discovery_loss_ratio": avg_discovery_loss_ratio,
-                "avg_novelty": (sum(novelties) / len(novelties) if novelties else None),
-                "avg_novelty_confidence": (
-                    sum(novelty_confidences) / len(novelty_confidences)
-                    if novelty_confidences
-                    else None
-                ),
-                "avg_induction_auc": avg_induction_auc,
-                "avg_binding_auc": avg_binding_auc,
-                "avg_ar_auc": avg_ar_auc,
-                "avg_hellaswag_acc": avg_hellaswag_acc,
-                "avg_screening_hellaswag_acc": avg_screening_hellaswag_acc,
-                "screening_wikitext_ok_rate": screening_wikitext_ok_rate,
-                "screening_metric_coverage": {
-                    "induction": len(induction_aucs),
-                    "binding": len(binding_aucs),
-                    "associative_recall": len(ar_aucs),
-                    "hellaswag": len(hellaswag_accs) + len(screening_hellaswag_accs),
-                    "wikitext": int(stat.get("screening_wikitext_runs") or 0),
-                },
-                "slot_count": int(stat.get("slot_count") or 0),
-                "routing_fast_lane_runs": int(stat.get("routing_fast_lane_runs") or 0),
-                "routing_fast_lane_ok_rate": (
-                    stat["routing_fast_lane_ok"]
-                    / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
-                    if stat.get("routing_fast_lane_runs")
-                    else None
-                ),
-                "routing_fast_lane_positive_rate": (
-                    stat["routing_fast_lane_positive"]
-                    / max(int(stat.get("routing_fast_lane_runs") or 0), 1)
-                    if stat.get("routing_fast_lane_runs")
-                    else None
-                ),
-                "routing_fast_lane_avg_score": (
-                    sum(fast_lane_scores) / len(fast_lane_scores)
-                    if fast_lane_scores
-                    else None
-                ),
-                "routing_fast_lane_avg_improvement": (
-                    sum(fast_lane_improvements) / len(fast_lane_improvements)
-                    if fast_lane_improvements
-                    else None
-                ),
-                "routing_fast_lane_avg_slope": (
-                    sum(fast_lane_slopes) / len(fast_lane_slopes)
-                    if fast_lane_slopes
-                    else None
-                ),
-                "top_failure_reason": top_reason,
-                "failure_reasons": dict(
-                    sorted(reasons.items(), key=lambda item: -item[1])[:3]
-                ),
-                "evidence_level": evidence_level,
-                "diagnosis": diagnosis[:3],
-                "actions": actions[:3],
-            }
-
-        template_rows = [summarize_template(stat) for stat in template_stats.values()]
+    def _assemble_observability_result(
+        self,
+        acc: _ObservabilityAccumulator,
+        slot_counts: Dict[str, int],
+        limit: int,
+    ) -> Dict[str, Any]:
+        """Sort, rank, and assemble the final observability result dict."""
+        template_rows = [
+            _summarize_template_stat(stat) for stat in acc.template_stats.values()
+        ]
         template_rows = [row for row in template_rows if row["n_used"] > 0]
         active_template_names = frozenset(TEMPLATES)
         active_template_rows = [
@@ -647,9 +795,21 @@ class _MiscMixin:
             inactive_template_rows,
             key=lambda row: (-(row["n_used"] or 0), row["name"]),
         )
+        low_loss_template_families = sorted(
+            [
+                row
+                for row in active_template_rows
+                if row.get("repeated_low_loss_family")
+            ],
+            key=lambda row: (
+                -(row.get("repeated_low_loss_count") or 0),
+                row["best_loss_ratio"] if row["best_loss_ratio"] is not None else 999.0,
+                -(row["n_used"] or 0),
+            ),
+        )[:limit]
 
         motif_rows = []
-        for stat in motif_stats.values():
+        for stat in acc.motif_stats.values():
             losses = stat["losses"]
             reasons = stat["failure_reasons"]
             top_reason = (
@@ -670,7 +830,7 @@ class _MiscMixin:
         )[:limit]
 
         slot_rows = []
-        for stat in slot_stats.values():
+        for stat in acc.slot_stats.values():
             reasons = stat["failure_reasons"]
             selected = stat["selected_motifs"]
             top_reason = (
@@ -724,19 +884,19 @@ class _MiscMixin:
 
         loss_distribution = {
             "training": {
-                "median": self._percentile(loss_values, 0.5),
-                "p25": self._percentile(loss_values, 0.25),
-                "p75": self._percentile(loss_values, 0.75),
+                "median": self._percentile(acc.loss_values, 0.5),
+                "p25": self._percentile(acc.loss_values, 0.25),
+                "p75": self._percentile(acc.loss_values, 0.75),
             },
             "validation": {
-                "median": self._percentile(validation_losses, 0.5),
-                "p25": self._percentile(validation_losses, 0.25),
-                "p75": self._percentile(validation_losses, 0.75),
+                "median": self._percentile(acc.validation_losses, 0.5),
+                "p25": self._percentile(acc.validation_losses, 0.25),
+                "p75": self._percentile(acc.validation_losses, 0.75),
             },
             "discovery": {
-                "median": self._percentile(discovery_losses, 0.5),
-                "p25": self._percentile(discovery_losses, 0.25),
-                "p75": self._percentile(discovery_losses, 0.75),
+                "median": self._percentile(acc.discovery_losses, 0.5),
+                "p25": self._percentile(acc.discovery_losses, 0.25),
+                "p75": self._percentile(acc.discovery_losses, 0.75),
             },
         }
 
@@ -830,6 +990,18 @@ class _MiscMixin:
             recommendations.append(
                 f"{induction_gap['name']} survives screening but still shows weak induction signal. Keep it in data-building mode, not champion mode."
             )
+        repeated_low_loss = next(
+            (
+                row
+                for row in low_loss_template_families
+                if (row.get("repeated_low_loss_count") or 0) >= 3
+            ),
+            None,
+        )
+        if repeated_low_loss:
+            recommendations.append(
+                f"{repeated_low_loss['name']} is a repeated low-loss family: {repeated_low_loss['repeated_low_loss_count']} S1 survivors at loss_ratio <= 0.45. Track it separately from benchmark-champion templates."
+            )
 
         zero_slot_templates = sorted(
             [
@@ -840,7 +1012,7 @@ class _MiscMixin:
         )[:10]
 
         sorted_buckets = sorted(
-            experiment_buckets.values(),
+            acc.experiment_buckets.values(),
             key=lambda item: float(item.get("timestamp") or 0.0),
         )[-20:]
         top_template_names = [row["name"] for row in top_templates[:3]]
@@ -910,6 +1082,7 @@ class _MiscMixin:
             "top_templates": top_templates,
             "struggling_templates": struggling_templates,
             "all_templates": all_templates,
+            "low_loss_template_families": low_loss_template_families,
             "inactive_templates": inactive_templates,
             "all_slots": all_slot_rows,
             "motif_slots": motif_rows,
@@ -921,13 +1094,13 @@ class _MiscMixin:
             "recommendations": recommendations[:6],
             "summary": {
                 "avg_templates_per_graph": (
-                    sum(templates_per_graph) / len(templates_per_graph)
-                    if templates_per_graph
+                    sum(acc.templates_per_graph) / len(acc.templates_per_graph)
+                    if acc.templates_per_graph
                     else 0.0
                 ),
                 "avg_motifs_per_graph": (
-                    sum(motifs_per_graph) / len(motifs_per_graph)
-                    if motifs_per_graph
+                    sum(acc.motifs_per_graph) / len(acc.motifs_per_graph)
+                    if acc.motifs_per_graph
                     else 0.0
                 ),
                 "templates_tracked": len(active_template_rows),
@@ -968,6 +1141,9 @@ class _MiscMixin:
                     if (row.get("routing_fast_lane_positive_rate") or 0) >= 0.5
                     and (row.get("routing_fast_lane_runs") or 0) >= 3
                 ),
+                "repeated_low_loss_templates": [
+                    row["name"] for row in low_loss_template_families
+                ],
             },
         }
 
@@ -1226,10 +1402,36 @@ class _MiscMixin:
             "exemplars": exemplars,
         }
 
-    def get_dashboard_summary(self) -> Dict:
-        """Get aggregate stats for the dashboard."""
+    def _empty_data_accounting_summary(self) -> Dict[str, Any]:
+        return {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in _EMPTY_DATA_ACCOUNTING_SHAPE.items()
+        }
+
+    def get_dashboard_headline_summary(self) -> Dict[str, Any]:
+        """Cheap dashboard counters without derived observability payloads."""
+        return self.get_dashboard_summary(
+            include_data_accounting=False,
+            include_template_observability=False,
+        )
+
+    def get_dashboard_summary(
+        self,
+        *,
+        include_data_accounting: bool = True,
+        include_template_observability: bool = True,
+    ) -> Dict:
+        """Get aggregate stats for the dashboard.
+
+        Heavy derived sections are opt-in so status-style callers stop paying
+        for observability and accounting payloads they do not use.
+        """
         now = time.time()
-        cached = getattr(self, "_dashboard_summary_cache", None)
+        cache_key = (
+            bool(include_data_accounting),
+            bool(include_template_observability),
+        )
+        cached = getattr(self, "_dashboard_summary_cache", {}).get(cache_key)
         expires_at = float(
             getattr(self, "_dashboard_summary_cache_expires_at", 0.0) or 0.0
         )
@@ -1240,7 +1442,16 @@ class _MiscMixin:
             """
             SELECT
                 COUNT(*) AS total_experiments,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_experiments
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_experiments,
+                SUM(
+                    CASE
+                        WHEN status = 'failed'
+                         AND n_programs_generated > 0
+                         AND aria_summary LIKE 'REPAIRED FROM INTERRUPTED:%'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS repaired_result_experiments
             FROM experiments
             """
         ).fetchone()
@@ -1286,6 +1497,9 @@ class _MiscMixin:
             """SELECT experiment_id, completed_at, results_json
                FROM experiments
                WHERE status = 'completed'
+                  OR (status = 'failed'
+                      AND n_programs_generated > 0
+                      AND aria_summary LIKE 'REPAIRED FROM INTERRUPTED:%')
                  AND results_json IS NOT NULL
                ORDER BY completed_at DESC
                LIMIT 1"""
@@ -1352,6 +1566,13 @@ class _MiscMixin:
             "completed_experiments": int(
                 (exp_row["completed_experiments"] or 0) if exp_row else 0
             ),
+            "repaired_result_experiments": int(
+                (exp_row["repaired_result_experiments"] or 0) if exp_row else 0
+            ),
+            "resultful_experiments": int(
+                ((exp_row["completed_experiments"] or 0) if exp_row else 0)
+                + ((exp_row["repaired_result_experiments"] or 0) if exp_row else 0)
+            ),
             "total_programs_evaluated": total_programs,
             "stage1_survivors": stage1_survivors,
             "survival_rate": stage1_survivors / max(total_programs, 1),
@@ -1407,11 +1628,268 @@ class _MiscMixin:
                 (program_row["unique_fingerprints"] or 0) if program_row else 0
             ),
             "latest_dedup": latest_dedup,
-            "template_observability": self.get_template_slot_observability(),
+            "data_accounting": (
+                self.get_data_accounting_summary()
+                if include_data_accounting
+                else self._empty_data_accounting_summary()
+            ),
+            "template_observability": (
+                self.get_template_slot_observability()
+                if include_template_observability
+                else {}
+            ),
         }
-        self._dashboard_summary_cache = dict(summary)
+        self._dashboard_summary_cache[cache_key] = dict(summary)
         self._dashboard_summary_cache_expires_at = now + self._DASHBOARD_SUMMARY_TTL_S
         return summary
+
+    def get_data_accounting_summary(self) -> Dict[str, Any]:
+        """Separate raw row volume from runs, canonical graphs, and comparable cohorts."""
+        entity_row = self.conn.execute(
+            """
+            WITH curve_rows AS (
+                SELECT result_id, COUNT(*) AS curve_rows
+                FROM training_curves
+                GROUP BY result_id
+            ),
+            run_rows AS (
+                SELECT
+                    result_id,
+                    graph_fingerprint,
+                    evaluation_protocol_version,
+                    COALESCE(train_budget_steps, n_train_steps) AS budget_steps,
+                    stage0_passed,
+                    stage05_passed,
+                    stage1_passed,
+                    trust_label,
+                    comparability_label,
+                    data_provenance_json,
+                    hellaswag_acc,
+                    ar_auc,
+                    induction_auc,
+                    binding_auc,
+                    wikitext_perplexity
+                FROM program_results
+            )
+            SELECT
+                (SELECT COUNT(*) FROM run_rows) AS program_result_rows,
+                (SELECT COUNT(*) FROM training_curves) AS training_curve_rows,
+                (SELECT COUNT(*) FROM leaderboard) AS leaderboard_rows,
+                (SELECT COUNT(DISTINCT result_id) FROM run_rows) AS unique_runs,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> '') AS unique_graphs,
+                (SELECT COUNT(DISTINCT graph_fingerprint || '|' || COALESCE(evaluation_protocol_version, ''))
+                  FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> '') AS unique_graph_protocols,
+                (SELECT COUNT(DISTINCT graph_fingerprint || '|' || COALESCE(evaluation_protocol_version, '') || '|' ||
+                                      COALESCE(CAST(budget_steps AS TEXT), ''))
+                  FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> '') AS unique_graph_protocol_budgets,
+                (SELECT COUNT(*) FROM run_rows WHERE COALESCE(stage0_passed, 0) = 0) AS runs_filtered_pre_s0,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE COALESCE(stage0_passed, 0) = 1 AND COALESCE(stage05_passed, 0) = 0) AS runs_filtered_pre_s05,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE COALESCE(stage05_passed, 0) = 1 AND COALESCE(stage1_passed, 0) = 0) AS runs_filtered_pre_s1,
+                (SELECT COUNT(*) FROM run_rows WHERE COALESCE(stage1_passed, 0) = 1) AS runs_reaching_s1_pass,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND COALESCE(stage0_passed, 0) = 0) AS graphs_any_filtered_pre_s0,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND COALESCE(stage0_passed, 0) = 1
+                    AND COALESCE(stage05_passed, 0) = 0) AS graphs_any_filtered_pre_s05,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND COALESCE(stage05_passed, 0) = 1
+                    AND COALESCE(stage1_passed, 0) = 0) AS graphs_any_filtered_pre_s1,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND COALESCE(stage1_passed, 0) = 1) AS graphs_any_s1_pass,
+                (SELECT COUNT(*) FROM (
+                    SELECT graph_fingerprint
+                    FROM run_rows
+                    WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    GROUP BY graph_fingerprint
+                    HAVING MAX(COALESCE(stage0_passed, 0)) = 0
+                )) AS graphs_all_filtered_pre_s0,
+                (SELECT COUNT(*) FROM (
+                    SELECT graph_fingerprint
+                    FROM run_rows
+                    WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    GROUP BY graph_fingerprint
+                    HAVING MAX(COALESCE(stage0_passed, 0)) = 1
+                       AND MAX(COALESCE(stage05_passed, 0)) = 0
+                )) AS graphs_all_filtered_pre_s05,
+                (SELECT COUNT(*) FROM (
+                    SELECT graph_fingerprint
+                    FROM run_rows
+                    WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    GROUP BY graph_fingerprint
+                    HAVING MAX(COALESCE(stage05_passed, 0)) = 1
+                       AND MAX(COALESCE(stage1_passed, 0)) = 0
+                )) AS graphs_all_filtered_pre_s1,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE hellaswag_acc IS NOT NULL
+                     OR ar_auc IS NOT NULL
+                     OR induction_auc IS NOT NULL
+                     OR binding_auc IS NOT NULL
+                     OR wikitext_perplexity IS NOT NULL) AS downstream_eval_runs,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND (hellaswag_acc IS NOT NULL
+                      OR ar_auc IS NOT NULL
+                      OR induction_auc IS NOT NULL
+                      OR binding_auc IS NOT NULL
+                      OR wikitext_perplexity IS NOT NULL)) AS downstream_eval_graphs,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE hellaswag_acc IS NOT NULL
+                    AND induction_auc IS NOT NULL
+                    AND binding_auc IS NOT NULL
+                    AND wikitext_perplexity IS NOT NULL) AS downstream_full_bundle_runs,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND hellaswag_acc IS NOT NULL
+                    AND induction_auc IS NOT NULL
+                    AND binding_auc IS NOT NULL
+                    AND wikitext_perplexity IS NOT NULL) AS downstream_full_bundle_graphs,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                    AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')) AS trusted_comparable_runs,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                    AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')) AS trusted_comparable_graphs,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE COALESCE(trust_label, '') IN ('candidate_grade', 'reference')
+                    AND COALESCE(comparability_label, '') IN ('candidate_comparable', 'reference_comparable')) AS promotable_runs,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND COALESCE(trust_label, '') IN ('candidate_grade', 'reference')
+                    AND COALESCE(comparability_label, '') IN ('candidate_comparable', 'reference_comparable')) AS promotable_graphs,
+                (SELECT COUNT(*) FROM run_rows
+                  WHERE json_extract(COALESCE(data_provenance_json, '{}'), '$.eligible_for_screening_model_training') = 1
+                     OR (COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                         AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable'))) AS screening_model_eligible_runs,
+                (SELECT COUNT(DISTINCT graph_fingerprint) FROM run_rows
+                  WHERE TRIM(COALESCE(graph_fingerprint, '')) <> ''
+                    AND (json_extract(COALESCE(data_provenance_json, '{}'), '$.eligible_for_screening_model_training') = 1
+                      OR (COALESCE(trust_label, '') IN ('candidate_screening', 'candidate_grade', 'reference')
+                          AND COALESCE(comparability_label, '') IN ('screening_only', 'candidate_comparable', 'reference_comparable')))) AS screening_model_eligible_graphs,
+                (SELECT ROUND(AVG(curve_rows), 2) FROM curve_rows) AS avg_training_curve_rows_per_run,
+                (SELECT AVG(curve_rows) FROM (
+                    SELECT curve_rows
+                    FROM curve_rows
+                    ORDER BY curve_rows
+                    LIMIT 2 - (SELECT COUNT(*) FROM curve_rows) % 2
+                    OFFSET (SELECT (COUNT(*) - 1) / 2 FROM curve_rows)
+                )) AS median_training_curve_rows_per_run,
+                (SELECT MAX(curve_rows) FROM curve_rows) AS max_training_curve_rows_per_run,
+                (SELECT COUNT(*) FROM curve_rows) AS runs_with_training_curves,
+                (SELECT (SELECT COUNT(*) FROM run_rows) - COUNT(*) FROM curve_rows) AS runs_without_training_curves
+            """
+        ).fetchone()
+
+        leaderboard_rows = self.conn.execute(
+            """
+            SELECT tier, COUNT(*) AS entry_count, COUNT(DISTINCT result_id) AS unique_results
+            FROM leaderboard
+            GROUP BY tier
+            ORDER BY entry_count DESC
+            """
+        ).fetchall()
+
+        return {
+            "row_volume": {
+                "program_result_rows": int(entity_row["program_result_rows"] or 0),
+                "training_curve_rows": int(entity_row["training_curve_rows"] or 0),
+                "leaderboard_rows": int(entity_row["leaderboard_rows"] or 0),
+            },
+            "run_volume": {
+                "unique_runs": int(entity_row["unique_runs"] or 0),
+                "trusted_comparable_runs": int(
+                    entity_row["trusted_comparable_runs"] or 0
+                ),
+                "promotable_runs": int(entity_row["promotable_runs"] or 0),
+                "screening_model_eligible_runs": int(
+                    entity_row["screening_model_eligible_runs"] or 0
+                ),
+                "downstream_eval_runs": int(entity_row["downstream_eval_runs"] or 0),
+                "downstream_full_bundle_runs": int(
+                    entity_row["downstream_full_bundle_runs"] or 0
+                ),
+            },
+            "graph_volume": {
+                "unique_graphs": int(entity_row["unique_graphs"] or 0),
+                "unique_graph_protocols": int(
+                    entity_row["unique_graph_protocols"] or 0
+                ),
+                "unique_graph_protocol_budgets": int(
+                    entity_row["unique_graph_protocol_budgets"] or 0
+                ),
+                "trusted_comparable_graphs": int(
+                    entity_row["trusted_comparable_graphs"] or 0
+                ),
+                "promotable_graphs": int(entity_row["promotable_graphs"] or 0),
+                "screening_model_eligible_graphs": int(
+                    entity_row["screening_model_eligible_graphs"] or 0
+                ),
+                "downstream_eval_graphs": int(
+                    entity_row["downstream_eval_graphs"] or 0
+                ),
+                "downstream_full_bundle_graphs": int(
+                    entity_row["downstream_full_bundle_graphs"] or 0
+                ),
+            },
+            "filtering": {
+                "runs_filtered_pre_s0": int(entity_row["runs_filtered_pre_s0"] or 0),
+                "runs_filtered_pre_s05": int(entity_row["runs_filtered_pre_s05"] or 0),
+                "runs_filtered_pre_s1": int(entity_row["runs_filtered_pre_s1"] or 0),
+                "runs_reaching_s1_pass": int(entity_row["runs_reaching_s1_pass"] or 0),
+                "graphs_any_filtered_pre_s0": int(
+                    entity_row["graphs_any_filtered_pre_s0"] or 0
+                ),
+                "graphs_any_filtered_pre_s05": int(
+                    entity_row["graphs_any_filtered_pre_s05"] or 0
+                ),
+                "graphs_any_filtered_pre_s1": int(
+                    entity_row["graphs_any_filtered_pre_s1"] or 0
+                ),
+                "graphs_any_s1_pass": int(entity_row["graphs_any_s1_pass"] or 0),
+                "graphs_all_filtered_pre_s0": int(
+                    entity_row["graphs_all_filtered_pre_s0"] or 0
+                ),
+                "graphs_all_filtered_pre_s05": int(
+                    entity_row["graphs_all_filtered_pre_s05"] or 0
+                ),
+                "graphs_all_filtered_pre_s1": int(
+                    entity_row["graphs_all_filtered_pre_s1"] or 0
+                ),
+            },
+            "training_curve_density": {
+                "runs_with_training_curves": int(
+                    entity_row["runs_with_training_curves"] or 0
+                ),
+                "runs_without_training_curves": int(
+                    entity_row["runs_without_training_curves"] or 0
+                ),
+                "avg_rows_per_run_with_curve": float(
+                    entity_row["avg_training_curve_rows_per_run"] or 0.0
+                ),
+                "median_rows_per_run_with_curve": float(
+                    entity_row["median_training_curve_rows_per_run"] or 0.0
+                ),
+                "max_rows_per_run_with_curve": int(
+                    entity_row["max_training_curve_rows_per_run"] or 0
+                ),
+            },
+            "leaderboard_tiers": {
+                str(row["tier"] or "unknown"): {
+                    "entries": int(row["entry_count"] or 0),
+                    "unique_results": int(row["unique_results"] or 0),
+                }
+                for row in leaderboard_rows
+            },
+        }
 
     # ── Leaderboard ──
 
@@ -1521,45 +1999,6 @@ class _MiscMixin:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return {"routing": None, "sparse": None, "moe": None}
 
-    def _count_routing_ops(self, result_id: str) -> Optional[int]:
-        """Count routing/branching ops in the graph for a program result."""
-        return self._graph_structural_counts(result_id).get("routing")
-
-    def _count_sparse_ops(self, result_id: str) -> Optional[int]:
-        """Count sparsity/compression ops in the graph for a program result."""
-        return self._graph_structural_counts(result_id).get("sparse")
-
-    def _count_moe_ops(self, result_id: str) -> Optional[int]:
-        """Count MoE-specific ops in the graph for a program result."""
-        return self._graph_structural_counts(result_id).get("moe")
-
-    @staticmethod
-    def _best_min(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
-        vals = [r.get(key) for r in rows if r.get(key) is not None]
-        if not vals:
-            return None
-        try:
-            return float(min(vals))
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _best_max(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
-        vals = [r.get(key) for r in rows if r.get(key) is not None]
-        if not vals:
-            return None
-        try:
-            return float(max(vals))
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _best_bool(rows: List[Dict[str, Any]], key: str) -> Optional[int]:
-        vals = [r.get(key) for r in rows if r.get(key) is not None]
-        if not vals:
-            return None
-        return int(any(bool(v) for v in vals))
-
     def compute_efficiency_multiple(
         self,
         loss_ratio: Optional[float] = None,
@@ -1579,44 +2018,15 @@ class _MiscMixin:
         MoE activates only a fraction of params per token.
         Returns dict with per-dimension ratios and ``geomean``, or None.
         """
-        ref = GPT2_REF
-        ratios: Dict[str, float] = {}
-
-        # x_quality: ref_loss / cand_loss (lower loss = better)
-        if loss_ratio is not None and loss_ratio > 0:
-            ratios["x_quality"] = ref["loss_ratio"] / loss_ratio
-
-        # x_params: ref_params / cand_params (fewer = better)
-        # MoE: skip — total params != active params
-        if param_count is not None and param_count > 0 and not is_moe:
-            ratios["x_params"] = ref["param_count"] / param_count
-
-        # x_flops: ref_flops / cand_flops (fewer = better)
-        if flops_forward is not None and flops_forward > 0:
-            ratios["x_flops"] = ref["flops_forward"] / flops_forward
-
-        # x_throughput: cand_tput / ref_tput (higher = better)
-        if throughput_tok_s is not None and throughput_tok_s > 0:
-            ratios["x_throughput"] = throughput_tok_s / ref["throughput_tok_s"]
-
-        # x_memory: ref_mem / cand_mem (less = better)
-        if peak_memory_mb is not None and peak_memory_mb > 0:
-            ratios["x_memory"] = ref["peak_memory_mb"] / peak_memory_mb
-
-        # x_latency: ref_lat / cand_lat (lower = better)
-        if forward_time_ms is not None and forward_time_ms > 0:
-            ratios["x_latency"] = ref["forward_time_ms"] / forward_time_ms
-
-        if len(ratios) < 3:
-            return None
-
-        geomean = 1.0
-        for v in ratios.values():
-            geomean *= v
-        geomean = geomean ** (1.0 / len(ratios))
-        ratios["geomean"] = geomean
-        ratios["n_dimensions"] = float(len(ratios) - 1)  # exclude geomean itself
-        return ratios
+        return _compute_efficiency_multiple(
+            loss_ratio=loss_ratio,
+            param_count=param_count,
+            flops_forward=flops_forward,
+            throughput_tok_s=throughput_tok_s,
+            peak_memory_mb=peak_memory_mb,
+            forward_time_ms=forward_time_ms,
+            is_moe=is_moe,
+        )
 
     @staticmethod
     def compute_composite_score(**kwargs) -> float:
@@ -1769,91 +2179,7 @@ class _MiscMixin:
         - Efficiency (10pts): throughput_tok_s, peak_memory_mb
         - Reference penalty (-20pts): if loss_ratio > 1.5 * best_reference_lr
         """
-        import math
-
-        score = 0.0
-
-        # ── Performance (40 pts) ──
-        lr = row.get("loss_ratio")
-        if lr is not None and lr > 0:
-            # Lower LR is better; LR=0.1 → 40pts, LR=0.8 → ~8pts
-            score += max(0, min(40, 40 * (1.0 - float(lr))))
-
-        dlr = row.get("discovery_loss_ratio")
-        if dlr is not None and dlr > 0:
-            # Bonus: up to 5pts from discovery loss (replaces top of performance)
-            score += max(0, min(5, 5 * (1.0 - float(dlr))))
-
-        lir = row.get("loss_improvement_rate")
-        if lir is not None and float(lir) > 0:
-            # Up to 5pts for improvement rate
-            score += min(5, float(lir) * 10)
-
-        # Cap performance at 40
-        score = min(40, score)
-
-        # ── Stability (20 pts) ──
-        stab = row.get("stability_score")
-        if stab is not None:
-            score += min(10, float(stab) * 10)
-
-        sn = row.get("fp_jacobian_spectral_norm")
-        if sn is not None and float(sn) > 0:
-            # Gaussian centered on 1.0: score = 6 * exp(-(log(sn))^2 / 2)
-            log_sn = math.log(float(sn))
-            score += max(0, min(6, 6 * math.exp(-log_sn * log_sn / 2.0)))
-
-        gns = row.get("grad_norm_std")
-        if gns is not None:
-            # Lower grad_norm_std is better; up to 4pts
-            score += max(0, min(4, 4 * max(0, 1.0 - float(gns))))
-
-        # ── Novelty (20 pts) ──
-        ns = row.get("novelty_score")
-        nc = row.get("novelty_confidence")
-        if ns is not None:
-            conf = float(nc) if nc is not None else 0.5
-            score += min(10, float(ns) * conf * 10)
-
-        sn_nov = row.get("structural_novelty")
-        if sn_nov is not None:
-            score += min(5, float(sn_nov) * 5)
-
-        bn = row.get("behavioral_novelty")
-        if bn is not None:
-            score += min(5, float(bn) * 5)
-
-        # ── Fingerprint quality (10 pts) ──
-        fid = row.get("fp_intrinsic_dim")
-        if fid is not None and float(fid) > 0:
-            # Higher intrinsic dim → better; up to 4pts, cap at dim=20
-            score += min(4, float(fid) / 5.0)
-
-        fiso = row.get("fp_isotropy")
-        if fiso is not None:
-            score += min(3, float(fiso) * 3)
-
-        frr = row.get("fp_rank_ratio")
-        if frr is not None:
-            score += min(3, float(frr) * 3)
-
-        # ── Efficiency (10 pts) ──
-        tp = row.get("throughput_tok_s")
-        if tp is not None and float(tp) > 0:
-            # Higher throughput → better; up to 5pts, 10k tok/s → 5pts
-            score += min(5, float(tp) / 2000.0)
-
-        mem = row.get("peak_memory_mb")
-        if mem is not None and float(mem) > 0:
-            # Lower memory → better; up to 5pts, 100MB → 5pts, 500MB → 1pt
-            score += max(0, min(5, 5 * (1.0 - float(mem) / 600.0)))
-
-        # ── Reference penalty (-20 pts) ──
-        if best_ref_lr is not None and lr is not None:
-            if float(lr) > 1.5 * float(best_ref_lr):
-                score -= 20
-
-        return max(0, min(100, round(score, 2)))
+        return _compute_pre_investigation_score(row, best_ref_lr=best_ref_lr)
 
     def get_references(self) -> List[Dict]:
         """Get all pinned reference architectures."""

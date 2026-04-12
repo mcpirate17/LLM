@@ -323,187 +323,175 @@ def _legacy_compile_model(
     )
 
 
-def compile_model_native_first(
+def _check_legacy_only_rollback(
     layer_graphs: List[Any],
-    vocab_size: int = VOCAB_SIZE,
-    max_seq_len: Optional[int] = None,
+    vocab_size: int,
+    max_seq_len: Optional[int],
+    disable_legacy_compile: bool,
     **kwargs: Any,
-):
-    """Compile model using native-first policy.
-
-    Phase-D behavior (transition state):
-    - If disabled (NATIVE_RUNNER_ENABLED=0): legacy compile via ``_legacy_compile_model``.
-    - If enabled: prefer an ABI-backed native model and attach native/hybrid
-      capability metadata to the compiled result.
-    - Legacy compile remains the transitional fallback until the native-only
-      gate is enforced.
-    - Always attaches an ``_native_runner_report`` to the compiled model.
-    """
-    disable_legacy_compile = _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE", False)
-    disable_legacy_compile_native_enabled = _env_flag(
-        "NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED",
-        False,
+) -> Optional[Any]:
+    """Check NATIVE_RUNNER_LEGACY_ONLY env flag and return a legacy model or None."""
+    if not _env_flag("NATIVE_RUNNER_LEGACY_ONLY", False):
+        return None
+    _maybe_warn_deprecated_legacy_only_flag()
+    state_check = detect_native_state()
+    if state_check.enabled:
+        raise RuntimeError(
+            "Invalid native-runner config: "
+            "NATIVE_RUNNER_LEGACY_ONLY=1 cannot be used when NATIVE_RUNNER_ENABLED=1. "
+            "Disable native mode first (NATIVE_RUNNER_ENABLED=0) to use legacy-only path."
+        )
+    if disable_legacy_compile:
+        raise RuntimeError(
+            "Invalid native-runner config: "
+            "NATIVE_RUNNER_LEGACY_ONLY=1 conflicts with NATIVE_RUNNER_DISABLE_LEGACY_COMPILE=1"
+        )
+    _FALLBACK_METRICS["total_compiles"] += 1
+    _record_legacy_compile_invocation()
+    return _legacy_compile_model(
+        layer_graphs, vocab_size=vocab_size, max_seq_len=max_seq_len, **kwargs
     )
 
-    # Emergency rollback: skip all native logic (only valid when native is NOT enabled).
-    # Phase D: NATIVE_RUNNER_LEGACY_ONLY conflicts with NATIVE_RUNNER_ENABLED.
-    if _env_flag("NATIVE_RUNNER_LEGACY_ONLY", False):
-        _maybe_warn_deprecated_legacy_only_flag()
-        state_check = detect_native_state()
-        if state_check.enabled:
-            raise RuntimeError(
-                "Invalid native-runner config: "
-                "NATIVE_RUNNER_LEGACY_ONLY=1 cannot be used when NATIVE_RUNNER_ENABLED=1. "
-                "Disable native mode first (NATIVE_RUNNER_ENABLED=0) to use legacy-only path."
-            )
-        if disable_legacy_compile:
-            raise RuntimeError(
-                "Invalid native-runner config: "
-                "NATIVE_RUNNER_LEGACY_ONLY=1 conflicts with NATIVE_RUNNER_DISABLE_LEGACY_COMPILE=1"
-            )
-        _FALLBACK_METRICS["total_compiles"] += 1
-        _record_legacy_compile_invocation()
-        return _legacy_compile_model(
-            layer_graphs, vocab_size=vocab_size, max_seq_len=max_seq_len, **kwargs
+
+def _prepare_native_dispatch(
+    *,
+    layer_graphs: List[Any],
+    state: Any,
+    capability: Dict[str, Any],
+    vocab_size: int,
+    max_seq_len: Optional[int],
+    kwargs: Dict[str, Any],
+) -> tuple[
+    Optional[Dict[str, Any]],  # op_support
+    Any,  # native_lib
+    bool,  # full_native_coverage
+    bool,  # partial_native_coverage
+    Dict[str, Any],  # abi_report
+    Optional[Any],  # early-return model (if ABI-only)
+]:
+    """Load native lib, prep ABI session, check op support, classify coverage."""
+    native_lib = _try_load_native_lib()
+    _FALLBACK_METRICS["total_compiles"] += 1
+    abi_report = _maybe_prepare_runner_abi_session(
+        layer_graphs=layer_graphs,
+        native_lib=native_lib,
+        state=state,
+        vocab_size=vocab_size,
+        max_seq_len=max_seq_len,
+    )
+    capability["runner_abi"] = {
+        "requested": bool(abi_report.get("requested")),
+        "attempted": bool(abi_report.get("attempted")),
+        "succeeded": bool(abi_report.get("succeeded")),
+        "reason": abi_report.get("reason"),
+        "model_handle": abi_report.get("model_handle"),
+    }
+    if (
+        state.strict
+        and bool(abi_report.get("requested"))
+        and not bool(abi_report.get("succeeded"))
+    ):
+        raise RuntimeError(
+            f"NATIVE_RUNNER_STRICT=1 and runner ABI prepare failed: {abi_report.get('reason')}"
         )
+    capability["runner_abi"]["model_only_requested"] = True
+    capability["execution_mode_classification"] = "native_abi_model_only"
+    if bool(abi_report.get("succeeded")) and abi_report.get("session") is not None:
+        model = _finalize_native_abi_model(
+            abi_session=abi_report["session"],
+            capability=capability,
+            vocab_size=vocab_size,
+            kwargs=kwargs,
+        )
+        return None, native_lib, False, False, abi_report, model
 
-    state = detect_native_state()
-    capability = native_runner_capability_report()
-    requested_mode = _requested_execution_mode()
-    capability["execution_mode_requested"] = requested_mode
-    capability["execution_path"] = "legacy_disabled"
-
-    if state.enabled and disable_legacy_compile_native_enabled:
-        disable_legacy_compile = True
-        capability["legacy_compile_disabled_reason"] = "native_enabled_gate"
-
-    if state.enabled:
-        _FALLBACK_METRICS["native_enabled_compiles"] += 1
-
-    # --- Phase 3: native kernel dispatch checking ---
     op_support: Optional[Dict[str, Any]] = None
-    native_lib = None
     full_native_coverage = False
     partial_native_coverage = False
-    abi_report: Dict[str, Any] = {
-        "requested": False,
-        "attempted": False,
-        "succeeded": False,
-        "reason": "disabled",
-        "model_handle": None,
-        "session": None,
-    }
-    if state.enabled:
-        native_lib = _try_load_native_lib()
-        _FALLBACK_METRICS["total_compiles"] += 1
-        abi_report = _maybe_prepare_runner_abi_session(
-            layer_graphs=layer_graphs,
-            native_lib=native_lib,
-            state=state,
-            vocab_size=vocab_size,
-            max_seq_len=max_seq_len,
-        )
-        capability["runner_abi"] = {
-            "requested": bool(abi_report.get("requested")),
-            "attempted": bool(abi_report.get("attempted")),
-            "succeeded": bool(abi_report.get("succeeded")),
-            "reason": abi_report.get("reason"),
-            "model_handle": abi_report.get("model_handle"),
-        }
-        if (
-            state.strict
-            and bool(abi_report.get("requested"))
-            and not bool(abi_report.get("succeeded"))
-        ):
-            raise RuntimeError(
-                f"NATIVE_RUNNER_STRICT=1 and runner ABI prepare failed: {abi_report.get('reason')}"
-            )
-        capability["runner_abi"]["model_only_requested"] = True
-        capability["execution_mode_classification"] = "native_abi_model_only"
-        if bool(abi_report.get("succeeded")) and abi_report.get("session") is not None:
-            return _finalize_native_abi_model(
-                abi_session=abi_report["session"],
-                capability=capability,
-                vocab_size=vocab_size,
-                kwargs=kwargs,
-            )
-        if layer_graphs:
-            op_support = _check_native_op_support(layer_graphs, native_lib)
-            capability["native_op_support"] = op_support
+    if layer_graphs:
+        op_support = _check_native_op_support(layer_graphs, native_lib)
+        capability["native_op_support"] = op_support
 
-            coverage = op_support["native_coverage"]
-            if coverage >= 1.0:
-                full_native_coverage = True
-                logger.debug(
-                    "Full native path available: all %d ops supported by kernel library",
-                    len(op_support["all_ops"]),
-                )
-                _FALLBACK_METRICS["native_dispatch_compiles"] += 1
-            elif state.strict:
-                raise RuntimeError(
-                    f"NATIVE_RUNNER_STRICT=1 but {len(op_support['unsupported'])} ops lack "
-                    f"native kernel support: {op_support['unsupported']}"
-                )
-            elif coverage >= PARTIAL_NATIVE_COVERAGE_THRESHOLD:
-                partial_native_coverage = True
-                logger.debug(
-                    "Partial native path: %.1f%% coverage (%d/%d ops). Unsupported: %s",
-                    coverage * 100,
-                    len(op_support["supported"]),
-                    len(op_support["kernel_relevant_ops"]),
-                    op_support["unsupported"],
-                )
-                _FALLBACK_METRICS["native_dispatch_compiles"] += 1
-            else:
-                _log_native_fallback_coverage(op_support)
+        coverage = op_support["native_coverage"]
+        if coverage >= 1.0:
+            full_native_coverage = True
+            logger.debug(
+                "Full native path available: all %d ops supported by kernel library",
+                len(op_support["all_ops"]),
+            )
+            _FALLBACK_METRICS["native_dispatch_compiles"] += 1
         elif state.strict:
-            # Strict with empty graphs: nothing to check, allow through.
-            pass
-
-    # --- IR validation (observational — log warnings but don't block) ---
-    if state.enabled and layer_graphs:
-        try:
-            from ..runtime.native.ir_validator import validate_ir
-            from ..synthesis.native_ir_converter import graph_to_native_ir
-
-            ir_errors: List = []
-            for i, g in enumerate(layer_graphs):
-                if not hasattr(g, "nodes"):
-                    continue  # skip non-ComputationGraph objects
-                ir_doc = graph_to_native_ir(g)
-                errs = validate_ir(ir_doc)
-                if errs:
-                    ir_errors.extend([(i, e) for e in errs])
-            if ir_errors:
-                logger.warning("IR validation errors: %s", ir_errors[:5])
-                capability["ir_validation"] = {
-                    "valid": False,
-                    "errors": [str(e) for e in ir_errors[:10]],
-                }
-            else:
-                capability["ir_validation"] = {"valid": True, "errors": []}
-        except Exception as exc:
-            logger.debug("IR validation skipped: %s", exc)
-            capability["ir_validation"] = {
-                "valid": None,
-                "errors": [f"validation_unavailable:{exc}"],
-            }
-
-    # --- Designer runtime probe (orthogonal to native kernel dispatch) ---
-    probe: Dict[str, Any] = {
-        "attempted": False,
-        "succeeded": False,
-        "parity_ok": None,
-        "reason": "not_attempted",
-    }
-    if state.enabled and state.designer_runtime_available:
-        capability["designer_runtime_probe"] = try_designer_runtime_probe(layer_graphs)
-        probe = capability["designer_runtime_probe"]
-        if bool(probe.get("succeeded")) and bool(probe.get("parity_ok")):
-            _FALLBACK_METRICS["probe_successes"] += 1
+            raise RuntimeError(
+                f"NATIVE_RUNNER_STRICT=1 but {len(op_support['unsupported'])} ops lack "
+                f"native kernel support: {op_support['unsupported']}"
+            )
+        elif coverage >= PARTIAL_NATIVE_COVERAGE_THRESHOLD:
+            partial_native_coverage = True
+            logger.debug(
+                "Partial native path: %.1f%% coverage (%d/%d ops). Unsupported: %s",
+                coverage * 100,
+                len(op_support["supported"]),
+                len(op_support["kernel_relevant_ops"]),
+                op_support["unsupported"],
+            )
+            _FALLBACK_METRICS["native_dispatch_compiles"] += 1
         else:
-            _FALLBACK_METRICS["probe_failures"] += 1
+            _log_native_fallback_coverage(op_support)
+    elif state.strict:
+        # Strict with empty graphs: nothing to check, allow through.
+        pass
 
+    return (
+        op_support,
+        native_lib,
+        full_native_coverage,
+        partial_native_coverage,
+        abi_report,
+        None,
+    )
+
+
+def _validate_ir_observational(
+    layer_graphs: List[Any],
+    capability: Dict[str, Any],
+) -> None:
+    """Convert graph to native IR and validate (informational only)."""
+    try:
+        from ..runtime.native.ir_validator import validate_ir
+        from ..synthesis.native_ir_converter import graph_to_native_ir
+
+        ir_errors: List = []
+        for i, g in enumerate(layer_graphs):
+            if not hasattr(g, "nodes"):
+                continue  # skip non-ComputationGraph objects
+            ir_doc = graph_to_native_ir(g)
+            errs = validate_ir(ir_doc)
+            if errs:
+                ir_errors.extend([(i, e) for e in errs])
+        if ir_errors:
+            logger.warning("IR validation errors: %s", ir_errors[:5])
+            capability["ir_validation"] = {
+                "valid": False,
+                "errors": [str(e) for e in ir_errors[:10]],
+            }
+        else:
+            capability["ir_validation"] = {"valid": True, "errors": []}
+    except Exception as exc:
+        logger.debug("IR validation skipped: %s", exc)
+        capability["ir_validation"] = {
+            "valid": None,
+            "errors": [f"validation_unavailable:{exc}"],
+        }
+
+
+def _compute_selective_candidate(
+    *,
+    requested_mode: str,
+    state: Any,
+    full_native_coverage: bool,
+    probe: Dict[str, Any],
+) -> tuple[bool, str]:
+    """Determine if selective execution is a candidate."""
     selective_candidate = False
     selective_reason = "mode_not_requested"
     if requested_mode == "selective":
@@ -519,13 +507,17 @@ def compile_model_native_first(
             selective_candidate = True
             selective_reason = "candidate_ready"
             _FALLBACK_METRICS["selective_mode_candidates"] += 1
+    return selective_candidate, selective_reason
 
-    capability["selective_execution"] = {
-        "requested": requested_mode == "selective",
-        "candidate": selective_candidate,
-        "reason": selective_reason,
-    }
 
+def _update_selective_guardrail(
+    *,
+    requested_mode: str,
+    selective_candidate: bool,
+    selective_reason: str,
+    capability: Dict[str, Any],
+) -> None:
+    """Threshold-based guardrail state machine for selective execution."""
     try:
         guardrail_threshold = int(
             str(os.environ.get("NATIVE_RUNNER_SELECTIVE_GUARDRAIL_WINDOW", "5"))
@@ -585,6 +577,35 @@ def compile_model_native_first(
         "history": [dict(item) for item in _SELECTIVE_GUARDRAIL_HISTORY],
     }
 
+
+def _run_designer_runtime_probe(
+    state: Any,
+    layer_graphs: List[Any],
+    capability: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Designer runtime probe (orthogonal to native kernel dispatch)."""
+    probe: Dict[str, Any] = {
+        "attempted": False,
+        "succeeded": False,
+        "parity_ok": None,
+        "reason": "not_attempted",
+    }
+    if state.enabled and state.designer_runtime_available:
+        capability["designer_runtime_probe"] = try_designer_runtime_probe(layer_graphs)
+        probe = capability["designer_runtime_probe"]
+        if bool(probe.get("succeeded")) and bool(probe.get("parity_ok")):
+            _FALLBACK_METRICS["probe_successes"] += 1
+        else:
+            _FALLBACK_METRICS["probe_failures"] += 1
+    return probe
+
+
+def _activate_selective_dispatch(
+    selective_candidate: bool,
+    native_lib: Any,
+    capability: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Activate selective native dispatch if candidate, update metrics."""
     selective_activation: Dict[str, Any] = {
         "activated": False,
         "ops": ["relu", "add"],
@@ -597,7 +618,20 @@ def compile_model_native_first(
         else:
             _FALLBACK_METRICS["selective_mode_activation_failures"] += 1
     capability["selective_execution"]["activation"] = selective_activation
+    return selective_activation
 
+
+def _classify_execution_path(
+    *,
+    state: Any,
+    capability: Dict[str, Any],
+    op_support: Optional[Dict[str, Any]],
+    selective_candidate: bool,
+    selective_activation: Dict[str, Any],
+    full_native_coverage: bool,
+    partial_native_coverage: bool,
+) -> None:
+    """Set final execution path based on coverage + selective status, record fallback metrics."""
     if selective_candidate:
         if bool(selective_activation.get("activated")):
             capability["execution_path"] = "selective_native_active_legacy_compile"
@@ -621,6 +655,94 @@ def compile_model_native_first(
     if state.enabled and partial_native_coverage:
         _FALLBACK_METRICS["hybrid_compiles"] += 1
 
+
+def _attach_abi_session_to_model(
+    *,
+    model: Any,
+    abi_report: Dict[str, Any],
+    capability: Dict[str, Any],
+) -> None:
+    """Attach ABI session to legacy-compiled model if available."""
+    abi_session = abi_report.get("session")
+    if abi_session is None:
+        return
+    try:
+        setattr(model, "_native_runner_abi_session", abi_session)
+        capability["runner_abi"]["session_attached"] = True
+        if capability.get("execution_path") == "selective_native_active_legacy_compile":
+            capability["execution_path"] = "selective_native_abi_ready_legacy_compile"
+    except Exception as exc:
+        logger.debug("Failed to attach runner ABI session: %s", exc)
+        capability["runner_abi"]["session_attached"] = False
+        capability["runner_abi"]["attach_error"] = str(exc)
+        try:
+            abi_session.close()
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Suppressed error: %s", exc)
+
+
+def _apply_selective_layers_if_enabled(
+    *,
+    model: Any,
+    layer_graphs: List[Any],
+    capability: Dict[str, Any],
+    max_seq_len: Optional[int],
+    selective_candidate: bool,
+    selective_activation: Dict[str, Any],
+) -> None:
+    """Apply selective Designer layer replacements if all prerequisites met."""
+    selective_layer_exec_enabled = _env_flag(
+        "NATIVE_RUNNER_SELECTIVE_LAYER_EXEC", False
+    )
+    selective_layer_strict = _env_flag("NATIVE_RUNNER_SELECTIVE_LAYER_STRICT", False)
+    capability["selective_execution"]["layer_exec_enabled"] = (
+        selective_layer_exec_enabled
+    )
+    capability["selective_execution"]["layer_exec_strict"] = selective_layer_strict
+    if (
+        selective_candidate
+        and bool(selective_activation.get("activated"))
+        and selective_layer_exec_enabled
+    ):
+        _apply_selective_designer_layers(
+            model=model,
+            layer_graphs=layer_graphs,
+            capability=capability,
+            max_seq_len=max_seq_len,
+            selective_layer_strict=selective_layer_strict,
+        )
+    elif selective_candidate and bool(selective_activation.get("activated")):
+        capability["selective_execution"]["layer_build"] = {
+            "attempted": False,
+            "compiled_layers": 0,
+            "failed_layers": 0,
+            "total_layers": int(len(layer_graphs or [])),
+            "errors": ["layer_exec_disabled_by_env"],
+            "skip_reasons": [],
+            "skipped_layers": 0,
+            "applied_layers": 0,
+            "layer_results": [],
+        }
+        capability["selective_execution"]["layer_build"]["summary"] = (
+            _summarize_layer_build(capability["selective_execution"]["layer_build"])
+        )
+
+
+def _compile_legacy_and_attach(
+    *,
+    state: Any,
+    capability: Dict[str, Any],
+    layer_graphs: List[Any],
+    vocab_size: int,
+    max_seq_len: Optional[int],
+    kwargs: Dict[str, Any],
+    disable_legacy_compile: bool,
+    abi_report: Dict[str, Any],
+    op_support: Optional[Dict[str, Any]],
+    selective_candidate: bool,
+    selective_activation: Dict[str, Any],
+) -> Any:
+    """Legacy compile fallback, attach native wrappers/dispatchers, ABI session, selective layers."""
     if not state.enabled:
         capability["runner_abi"] = {
             "requested": False,
@@ -685,63 +807,28 @@ def compile_model_native_first(
             supported_ops=supported_set,
         )
 
-    abi_session = abi_report.get("session")
-    if abi_session is not None:
-        try:
-            setattr(model, "_native_runner_abi_session", abi_session)
-            capability["runner_abi"]["session_attached"] = True
-            if (
-                capability.get("execution_path")
-                == "selective_native_active_legacy_compile"
-            ):
-                capability["execution_path"] = (
-                    "selective_native_abi_ready_legacy_compile"
-                )
-        except Exception as exc:
-            logger.debug("Failed to attach runner ABI session: %s", exc)
-            capability["runner_abi"]["session_attached"] = False
-            capability["runner_abi"]["attach_error"] = str(exc)
-            try:
-                abi_session.close()
-            except (OSError, RuntimeError) as exc:
-                logger.debug("Suppressed error: %s", exc)
-
-    selective_layer_exec_enabled = _env_flag(
-        "NATIVE_RUNNER_SELECTIVE_LAYER_EXEC", False
+    _attach_abi_session_to_model(
+        model=model,
+        abi_report=abi_report,
+        capability=capability,
     )
-    selective_layer_strict = _env_flag("NATIVE_RUNNER_SELECTIVE_LAYER_STRICT", False)
-    capability["selective_execution"]["layer_exec_enabled"] = (
-        selective_layer_exec_enabled
+    _apply_selective_layers_if_enabled(
+        model=model,
+        layer_graphs=layer_graphs,
+        capability=capability,
+        max_seq_len=max_seq_len,
+        selective_candidate=selective_candidate,
+        selective_activation=selective_activation,
     )
-    capability["selective_execution"]["layer_exec_strict"] = selective_layer_strict
-    if (
-        selective_candidate
-        and bool(selective_activation.get("activated"))
-        and selective_layer_exec_enabled
-    ):
-        _apply_selective_designer_layers(
-            model=model,
-            layer_graphs=layer_graphs,
-            capability=capability,
-            max_seq_len=max_seq_len,
-            selective_layer_strict=selective_layer_strict,
-        )
-    elif selective_candidate and bool(selective_activation.get("activated")):
-        capability["selective_execution"]["layer_build"] = {
-            "attempted": False,
-            "compiled_layers": 0,
-            "failed_layers": 0,
-            "total_layers": int(len(layer_graphs or [])),
-            "errors": ["layer_exec_disabled_by_env"],
-            "skip_reasons": [],
-            "skipped_layers": 0,
-            "applied_layers": 0,
-            "layer_results": [],
-        }
-        capability["selective_execution"]["layer_build"]["summary"] = (
-            _summarize_layer_build(capability["selective_execution"]["layer_build"])
-        )
+    return model
 
+
+def _finalize_capability_report(
+    model: Any,
+    capability: Dict[str, Any],
+    native_lib: Any,
+) -> None:
+    """Guardrail checks, fallback rate validation, attach report."""
     _maybe_fail_on_fallback_rate()
     _maybe_fail_on_legacy_compile_usage()
     # Refresh fallback telemetry after current compile increments.
@@ -771,4 +858,120 @@ def compile_model_native_first(
             "loaded" if native_lib is not None else "unavailable",
         )
 
+
+def compile_model_native_first(
+    layer_graphs: List[Any],
+    vocab_size: int = VOCAB_SIZE,
+    max_seq_len: Optional[int] = None,
+    **kwargs: Any,
+):
+    """Compile model using native-first policy (Phase-D transition state).
+
+    Attaches ``_native_runner_report`` capability metadata to the compiled model.
+    """
+    disable_legacy = _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE", False)
+    if _env_flag("NATIVE_RUNNER_DISABLE_LEGACY_COMPILE_NATIVE_ENABLED", False):
+        disable_legacy_native_gate = True
+    else:
+        disable_legacy_native_gate = False
+
+    legacy_model = _check_legacy_only_rollback(
+        layer_graphs, vocab_size, max_seq_len, disable_legacy, **kwargs
+    )
+    if legacy_model is not None:
+        return legacy_model
+
+    state = detect_native_state()
+    capability = native_runner_capability_report()
+    requested_mode = _requested_execution_mode()
+    capability["execution_mode_requested"] = requested_mode
+    capability["execution_path"] = "legacy_disabled"
+
+    if state.enabled and disable_legacy_native_gate:
+        disable_legacy = True
+        capability["legacy_compile_disabled_reason"] = "native_enabled_gate"
+    if state.enabled:
+        _FALLBACK_METRICS["native_enabled_compiles"] += 1
+
+    # --- Phase 3: native kernel dispatch checking ---
+    op_support: Optional[Dict[str, Any]] = None
+    native_lib = None
+    full_native = False
+    partial_native = False
+    abi_report: Dict[str, Any] = {
+        "requested": False,
+        "attempted": False,
+        "succeeded": False,
+        "reason": "disabled",
+        "model_handle": None,
+        "session": None,
+    }
+    if state.enabled:
+        (
+            op_support,
+            native_lib,
+            full_native,
+            partial_native,
+            abi_report,
+            early_model,
+        ) = _prepare_native_dispatch(
+            layer_graphs=layer_graphs,
+            state=state,
+            capability=capability,
+            vocab_size=vocab_size,
+            max_seq_len=max_seq_len,
+            kwargs=kwargs,
+        )
+        if early_model is not None:
+            return early_model
+
+    if state.enabled and layer_graphs:
+        _validate_ir_observational(layer_graphs, capability)
+
+    probe = _run_designer_runtime_probe(state, layer_graphs, capability)
+    selective_candidate, selective_reason = _compute_selective_candidate(
+        requested_mode=requested_mode,
+        state=state,
+        full_native_coverage=full_native,
+        probe=probe,
+    )
+    capability["selective_execution"] = {
+        "requested": requested_mode == "selective",
+        "candidate": selective_candidate,
+        "reason": selective_reason,
+    }
+    _update_selective_guardrail(
+        requested_mode=requested_mode,
+        selective_candidate=selective_candidate,
+        selective_reason=selective_reason,
+        capability=capability,
+    )
+    selective_activation = _activate_selective_dispatch(
+        selective_candidate, native_lib, capability
+    )
+    _classify_execution_path(
+        state=state,
+        capability=capability,
+        op_support=op_support,
+        selective_candidate=selective_candidate,
+        selective_activation=selective_activation,
+        full_native_coverage=full_native,
+        partial_native_coverage=partial_native,
+    )
+
+    model = _compile_legacy_and_attach(
+        state=state,
+        capability=capability,
+        layer_graphs=layer_graphs,
+        vocab_size=vocab_size,
+        max_seq_len=max_seq_len,
+        kwargs=kwargs,
+        disable_legacy_compile=disable_legacy,
+        abi_report=abi_report,
+        op_support=op_support,
+        selective_candidate=selective_candidate,
+        selective_activation=selective_activation,
+    )
+
+    _finalize_capability_report(model, capability, native_lib)
     return model

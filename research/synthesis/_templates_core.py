@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     MOTIF_CLASS_CONV,
+    MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_FFN,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_MOE,
@@ -75,7 +77,7 @@ def tpl_sequential(
 
     Stack 2-3 mini residual blocks in sequence with pre-norm.
     """
-    n_motifs = rng.choice([2, 3])
+    n_motifs = 2
     current = input_id
     for _ in range(n_motifs):
         # Pre-norm before each motif
@@ -83,7 +85,16 @@ def tpl_sequential(
         normed = _instantiate_motif(graph, current, norm, rng) if norm else current
 
         motif = _pick_compatible_motif_from_classes(
-            graph, normed, rng, _ALL_CLASSES, weights
+            graph,
+            normed,
+            rng,
+            (
+                MOTIF_CLASS_ATTENTION,
+                MOTIF_CLASS_CONV,
+                MOTIF_CLASS_FFN,
+                MOTIF_CLASS_EFFICIENT_PROJ,
+            ),
+            weights,
         )
         if motif:
             processed = _instantiate_motif(graph, normed, motif, rng)
@@ -172,19 +183,22 @@ def tpl_parallel_split(
         graph, "split2", [normed], {"part": 1}, context="parallel_split.split_b"
     )
 
-    # Per-lane norm + motif
+    # Per-lane norm + motif. split2 halves width, so both lanes must stay in
+    # bottleneck-safe motif classes until concat. Letting a lane restore to
+    # full width before the join is what created the asymmetric concat
+    # scaffolds now rejected by validation.
     norm_a = _pick_compatible_motif(graph, split_a, rng, MOTIF_CLASS_NORM, weights)
     lane_a = _instantiate_motif(graph, split_a, norm_a, rng) if norm_a else split_a
     motif_a = _pick_compatible_motif_from_classes(
-        graph, lane_a, rng, _MIXER_CLASSES, weights
+        graph, lane_a, rng, _BOTTLENECK_CLASSES, weights
     )
     path_a = _instantiate_motif(graph, lane_a, motif_a, rng) if motif_a else lane_a
 
     norm_b = _pick_compatible_motif(graph, split_b, rng, MOTIF_CLASS_NORM, weights)
     lane_b = _instantiate_motif(graph, split_b, norm_b, rng) if norm_b else split_b
 
-    # 30% chance: channel-shuffle wrap around path_b's motif
-    path_b = _shuffle_wrap(graph, lane_b, rng, _FFN_CLASSES, weights, prob=0.3)
+    # 30% chance: channel-shuffle wrap around a bottleneck-safe path_b motif.
+    path_b = _shuffle_wrap(graph, lane_b, rng, _BOTTLENECK_CLASSES, weights, prob=0.3)
 
     merged = _add(graph, "concat", [path_a, path_b], context="parallel_split.concat")
 
@@ -641,15 +655,6 @@ def tpl_token_merge_block(
     # Post-merge norm: satisfies conv1d_seq.must_precede and swiglu_mlp predecessor rules
     post_norm = _add(graph, "rmsnorm", [merged], context="token_merge_block.post_norm")
 
-    # 40% chance: attention after merge for global context recovery
-    if rng.random() < 0.4:
-        attn = _pick_compatible_motif(
-            graph, post_norm, rng, MOTIF_CLASS_ATTENTION, weights
-        )
-        if attn:
-            attended = _instantiate_motif(graph, post_norm, attn, rng)
-            post_norm = _fix_dim(graph, attended)
-
     # Channel op: conv1d_seq or swiglu_mlp (both confirmed high-perf)
     channel_op = rng.choice(["conv1d_seq", "swiglu_mlp"])
     if channel_op == "swiglu_mlp":
@@ -713,15 +718,6 @@ def tpl_token_merge_conv(
 
     # Post-merge norm: satisfies conv1d_seq.must_precede
     post_norm = _add(graph, "rmsnorm", [merged], context="token_merge_conv.post_norm")
-
-    # 40% chance: attention after merge for global context recovery
-    if rng.random() < 0.4:
-        attn = _pick_compatible_motif(
-            graph, post_norm, rng, MOTIF_CLASS_ATTENTION, weights
-        )
-        if attn:
-            attended = _instantiate_motif(graph, post_norm, attn, rng)
-            post_norm = _fix_dim(graph, attended)
 
     # conv1d_seq → swiglu_mlp (exact winning sequence)
     conv = _add(graph, "conv1d_seq", [post_norm], context="token_merge_conv.conv")

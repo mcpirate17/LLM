@@ -45,3 +45,7 @@ Update this file after ANY correction from the user.
 ### Motif class isolation
 - `reduce_core`, `guarded_act`, and `moe_core` motif classes were only in `_ALL_CLASSES`, not in `_FFN_CLASSES` or `_MIXER_CLASSES`. Templates mostly use `_FFN_CLASSES` and `_MIXER_CLASSES`, so these classes were rarely sampled.
 - General rule: when adding a new motif class, ensure it's in at least one of the frequently-used class groups (`_FFN_CLASSES` or `_MIXER_CLASSES`).
+
+## 2026-04-12 — Route extraction and dead-code audit
+- Large Flask route registrars can be split safely by lifting handlers to module scope and binding `notebook_path` through `functools.partial`, then applying `with_notebook_context(...)` at registration time.
+- Dead-code reports were overinclusive for this pass. Before deleting a flagged module, verify live imports, route wiring, and websocket endpoints directly; `research/arch_builder.py`, `research/scientist/perf.py`, `aria_designer/api/app/collaboration.py`, `aria_designer/api/app/database.py`, and the synthesis template modules were all still wired.

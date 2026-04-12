@@ -796,6 +796,39 @@ CREATE TABLE IF NOT EXISTS knowledge_digests (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_digests_ts ON knowledge_digests(timestamp DESC);
 
+CREATE TABLE IF NOT EXISTS program_graph_features (
+    result_id TEXT PRIMARY KEY REFERENCES program_results(result_id) ON DELETE CASCADE,
+    graph_fingerprint TEXT,
+    template_name TEXT,
+    templates_json TEXT,
+    motifs_json TEXT,
+    slot_usage_json TEXT,
+    op_count INTEGER NOT NULL DEFAULT 0,
+    pair_count INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS program_graph_ops (
+    result_id TEXT NOT NULL REFERENCES program_results(result_id) ON DELETE CASCADE,
+    graph_fingerprint TEXT,
+    op_name TEXT NOT NULL,
+    PRIMARY KEY (result_id, op_name)
+);
+
+CREATE TABLE IF NOT EXISTS program_graph_pairs (
+    result_id TEXT NOT NULL REFERENCES program_results(result_id) ON DELETE CASCADE,
+    graph_fingerprint TEXT,
+    signature TEXT NOT NULL,
+    PRIMARY KEY (result_id, signature)
+);
+
+CREATE INDEX IF NOT EXISTS idx_program_graph_features_fp ON program_graph_features(graph_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_program_graph_features_template ON program_graph_features(template_name);
+CREATE INDEX IF NOT EXISTS idx_program_graph_ops_fp ON program_graph_ops(graph_fingerprint, op_name);
+CREATE INDEX IF NOT EXISTS idx_program_graph_ops_op ON program_graph_ops(op_name);
+CREATE INDEX IF NOT EXISTS idx_program_graph_pairs_fp ON program_graph_pairs(graph_fingerprint, signature);
+CREATE INDEX IF NOT EXISTS idx_program_graph_pairs_sig ON program_graph_pairs(signature);
+
 -- Analytics tables for feedback-driven template/op/motif selection
 CREATE TABLE IF NOT EXISTS template_stats (
     template_name TEXT PRIMARY KEY,
@@ -905,6 +938,13 @@ CREATE INDEX IF NOT EXISTS idx_induction_metrics_archive_fp ON induction_metrics
 
 # Columns added in the schema expansion — used for migration
 _PROGRAM_RESULTS_NEW_COLUMNS = {
+    # Candidate-readiness provenance
+    "result_cohort": "TEXT",
+    "trust_label": "TEXT",
+    "comparability_label": "TEXT",
+    "evaluation_protocol_version": "TEXT",
+    "init_regime": "TEXT",
+    "data_provenance_json": "TEXT",
     "compile_time_ms": "REAL",
     "forward_time_ms": "REAL",
     "backward_time_ms": "REAL",

@@ -568,11 +568,15 @@ def generate_layer_graph(
             for i in range(n_templates)
         }
 
+    skip_global_decorators = bool(graph.metadata.get("_skip_global_decorators", False))
+
     # Optional spectral filter injection (driven by freq_domain_prob)
     # Wrapped in residual: FFT numerical drift is unrecoverable without skip.
-    # rmsnorm before spectral_filter satisfies MATH_SPACE_RULES.
+    # Skip when the template already owns its merge/post path and sits near the
+    # screening op budget.
     if (
-        rng.random() < config.freq_domain_prob
+        not skip_global_decorators
+        and rng.random() < config.freq_domain_prob
         and "spectral_filter" in PRIMITIVE_REGISTRY
         and not _graph_exceeds_final_budget(graph, config)
     ):
@@ -600,7 +604,8 @@ def generate_layer_graph(
     last_node = graph.nodes[current]
     has_outer_residual = last_node.op_name == "add" and input_id in last_node.input_ids
     if (
-        not has_outer_residual
+        not skip_global_decorators
+        and not has_outer_residual
         and graph.n_ops() < config.max_ops
         and rng.random() < config.residual_prob
     ):
@@ -832,7 +837,7 @@ def _graph_exceeds_final_budget(
 ) -> bool:
     """Mirror the final screening depth/op budget during generation."""
     depth_limit = config.max_depth + max(0, int(config.min_splits)) * 3
-    return graph.n_ops() >= config.max_ops or graph.depth() >= depth_limit
+    return graph.n_ops() > config.max_ops or graph.depth() > depth_limit
 
 
 def batch_generate(

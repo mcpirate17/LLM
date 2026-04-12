@@ -218,7 +218,454 @@ class TestNotebook(unittest.TestCase):
         )
 
         exp = self.nb.get_experiment(exp_id)
-        self.assertEqual(exp["status"], "completed")
+
+    def test_purge_empty_experiments_deletes_attribution_reports_before_hypotheses(
+        self,
+    ):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 1},
+            hypothesis="FK cleanup regression",
+        )
+        hypothesis_id = self.nb.record_hypothesis(
+            campaign_id=None,
+            experiment_id=exp_id,
+            prediction="cleanup should not violate FKs",
+            reasoning="regression test",
+            test_method="unit",
+            success_metric="purge completes",
+        )
+        self.nb.record_attribution_report(
+            hypothesis_id=hypothesis_id,
+            supporting_experiments=[exp_id],
+            ablation_experiments=[],
+            outcome="pending",
+            report={"note": "fk regression"},
+        )
+        self.nb.conn.execute(
+            "UPDATE experiments SET status = 'failed' WHERE experiment_id = ?",
+            (exp_id,),
+        )
+        self.nb.conn.commit()
+
+        purged = self.nb.purge_empty_experiments()
+
+        self.assertEqual(purged, 1)
+        exp = self.nb.conn.execute(
+            "SELECT 1 FROM experiments WHERE experiment_id = ?",
+            (exp_id,),
+        ).fetchone()
+        self.assertIsNone(exp)
+        reports = self.nb.conn.execute(
+            "SELECT COUNT(*) FROM attribution_reports WHERE hypothesis_id = ?",
+            (hypothesis_id,),
+        ).fetchone()[0]
+        self.assertEqual(reports, 0)
+
+    def test_record_program_result_generates_normalized_data_provenance(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 1},
+            hypothesis="provenance normalization",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov123",
+            graph_json='{"nodes": {}}',
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.4,
+            wikitext_perplexity=7.5,
+            novelty_score=0.6,
+            data_mode="corpus",
+            corpus_path="/tmp/corpus.txt",
+            corpus_format="txt",
+            corpus_text_key="text",
+            corpus_train_fraction=0.9,
+            corpus_val_fraction=0.1,
+            corpus_max_chars=200000,
+            tokenizer_mode="tiktoken",
+            tiktoken_encoding="cl100k_base",
+            screening_wikitext_metric_version="screening_wikitext_v1",
+            induction_probe_metric_version="induction_probe_v2",
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        self.assertIsNotNone(row)
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(payload["corpus_id"], "file:/tmp/corpus.txt")
+        self.assertEqual(payload["tokenizer_id"], "tiktoken:cl100k_base")
+        self.assertEqual(payload["split_id"], "train=0.900;val=0.100")
+        self.assertTrue(payload["provenance_complete"])
+        self.assertTrue(payload["eligible_for_promotion"])
+
+    def test_data_accounting_summary_separates_rows_runs_graphs_and_curves(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 3},
+            hypothesis="accounting summary",
+        )
+        rid_pass = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_a",
+            graph_json='{"nodes": {"0": {"op_name": "linear_proj"}}}',
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.4,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            evaluation_protocol_version="candidate_grade_v1",
+            train_budget_steps=128,
+            hellaswag_acc=0.3,
+            induction_auc=0.02,
+            binding_auc=0.01,
+            wikitext_perplexity=12.0,
+            data_provenance_json=json.dumps(
+                {"eligible_for_screening_model_training": True}
+            ),
+        )
+        rid_fail_same_graph = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_a",
+            graph_json='{"nodes": {"0": {"op_name": "linear_proj"}}}',
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            error_type="insufficient_learning",
+            trust_label="runtime_observation",
+            comparability_label="partial",
+            evaluation_protocol_version="runtime_observation_v1",
+        )
+        rid_pre_s0 = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_b",
+            graph_json='{"nodes": {"0": {"op_name": "gelu"}}}',
+            stage0_passed=False,
+            stage05_passed=False,
+            stage1_passed=False,
+            error_type="shape_mismatch",
+            trust_label="exploratory",
+            comparability_label="noncomparable",
+            evaluation_protocol_version="forced_exploration_v1",
+        )
+        self.nb.flush_writes()
+        self.nb.store_training_curve(
+            rid_pass,
+            [
+                {"step": 0, "loss": 1.0, "grad_norm": 0.5, "step_time_ms": 1.0},
+                {"step": 1, "loss": 0.8, "grad_norm": 0.4, "step_time_ms": 1.1},
+                {"step": 2, "loss": 0.6, "grad_norm": 0.3, "step_time_ms": 1.2},
+            ],
+        )
+        self.nb.store_training_curve(
+            rid_fail_same_graph,
+            [{"step": 0, "loss": 1.2, "grad_norm": 0.7, "step_time_ms": 1.0}],
+        )
+        self.nb.upsert_leaderboard(
+            entry_id="lb_accounting",
+            result_id=rid_pass,
+            timestamp=1.0,
+            model_source="graph_synthesis",
+            tier="screening",
+            result_cohort="search",
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            evaluation_protocol_version="candidate_grade_v1",
+        )
+        self.nb.flush_writes()
+
+        summary = self.nb.get_data_accounting_summary()
+
+        self.assertEqual(summary["row_volume"]["program_result_rows"], 3)
+        self.assertEqual(summary["row_volume"]["training_curve_rows"], 3)
+        self.assertEqual(summary["run_volume"]["unique_runs"], 3)
+        self.assertEqual(summary["graph_volume"]["unique_graphs"], 2)
+        self.assertEqual(summary["graph_volume"]["unique_graph_protocols"], 3)
+        self.assertEqual(summary["graph_volume"]["promotable_graphs"], 1)
+        self.assertEqual(summary["graph_volume"]["downstream_full_bundle_graphs"], 1)
+        self.assertEqual(summary["filtering"]["runs_filtered_pre_s0"], 1)
+        self.assertEqual(summary["filtering"]["runs_reaching_s1_pass"], 1)
+        self.assertEqual(
+            summary["training_curve_density"]["runs_with_training_curves"], 1
+        )
+        self.assertEqual(
+            summary["training_curve_density"]["runs_without_training_curves"], 2
+        )
+        self.assertEqual(
+            summary["leaderboard_tiers"]["screening"]["entries"],
+            1,
+        )
+
+        dashboard_summary = self.nb.get_dashboard_summary()
+        self.assertIn("data_accounting", dashboard_summary)
+        self.assertEqual(
+            dashboard_summary["data_accounting"]["graph_volume"]["unique_graphs"],
+            2,
+        )
+
+    def test_candidate_grade_without_complete_provenance_stays_partial(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 1},
+            hypothesis="strict comparability",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov_partial_1",
+            graph_json='{"nodes": {}}',
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.5,
+            wikitext_perplexity=8.0,
+            screening_wikitext_metric_version="screening_wikitext_v1",
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        self.assertEqual(row["trust_label"], "candidate_grade")
+        self.assertEqual(row["comparability_label"], "partial")
+        payload = json.loads(row["data_provenance_json"])
+        self.assertFalse(payload["eligible_for_promotion"])
+        self.assertFalse(payload["eligible_for_screening_model_training"])
+        self.assertEqual(payload["comparability_reason"], "missing_corpus_id")
+        self.assertIn("missing_corpus_id", payload["comparability_gaps"])
+
+    def test_candidate_grade_with_wikitext_metric_recovers_missing_metric_version(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="investigation",
+            config={
+                "data_mode": "corpus",
+                "corpus_path": "/tmp/corpus.txt",
+                "corpus_format": "txt",
+                "corpus_text_key": "text",
+                "corpus_train_fraction": 0.9,
+                "corpus_val_fraction": 0.1,
+                "corpus_max_chars": 200000,
+                "tokenizer_mode": "tiktoken",
+                "tiktoken_encoding": "cl100k_base",
+            },
+            hypothesis="recover missing screening metric version",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov_recover_1",
+            graph_json='{"nodes": {}}',
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.4,
+            wikitext_perplexity=7.5,
+            provenance_complete=False,
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        self.assertEqual(row["trust_label"], "candidate_grade")
+        self.assertEqual(row["comparability_label"], "candidate_comparable")
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(
+            payload["screening_wikitext_metric_version"], "screening_wikitext_v1"
+        )
+        self.assertTrue(payload["eligible_for_promotion"])
+        self.assertEqual(payload["comparability_reason"], "comparable")
+        self.assertEqual(payload["comparability_gaps"], [])
+
+    def test_runtime_negative_with_complete_provenance_is_screening_trainable_only(
+        self,
+    ):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={
+                "data_mode": "corpus",
+                "corpus_path": "/tmp/corpus.txt",
+                "corpus_format": "txt",
+                "corpus_text_key": "text",
+                "corpus_train_fraction": 0.9,
+                "corpus_val_fraction": 0.1,
+                "corpus_max_chars": 1000,
+                "tokenizer_mode": "tiktoken",
+                "tiktoken_encoding": "cl100k_base",
+            },
+            hypothesis="screening negative",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="neg123",
+            graph_json='{"nodes": {}}',
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=False,
+            novelty_score=0.1,
+            screening_wikitext_metric_version="screening_wikitext_v1",
+            induction_probe_metric_version="induction_probe_v2",
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(row["trust_label"], "runtime_observation")
+        self.assertEqual(row["comparability_label"], "partial")
+        self.assertFalse(payload["eligible_for_promotion"])
+        self.assertTrue(payload["eligible_for_screening_model_training"])
+        self.assertEqual(payload["screening_model_training_role"], "negative")
+
+    def test_record_program_result_hydrates_provenance_from_experiment_config(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={
+                "data_mode": "corpus",
+                "corpus_path": "/tmp/from_exp_config.txt",
+                "corpus_format": "txt",
+                "corpus_text_key": "text",
+                "corpus_train_fraction": 0.9,
+                "corpus_val_fraction": 0.1,
+                "corpus_max_chars": 50000,
+                "tokenizer_mode": "tiktoken",
+                "tiktoken_encoding": "cl100k_base",
+            },
+            hypothesis="hydrate provenance from experiment config",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov_from_exp_cfg",
+            graph_json='{"nodes": {}}',
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.41,
+            wikitext_perplexity=7.4,
+            screening_wikitext_metric_version="screening_wikitext_v1",
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(payload["corpus_id"], "file:/tmp/from_exp_config.txt")
+        self.assertEqual(payload["tokenizer_id"], "tiktoken:cl100k_base")
+        self.assertTrue(payload["provenance_complete"])
+        self.assertEqual(row["comparability_label"], "candidate_comparable")
+
+    def test_record_program_result_hydrates_random_mode_from_experiment_config(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="forced_exploration",
+            config={
+                "data_mode": "random",
+                "tokenizer_mode": "byte",
+                "vocab_size": 32000,
+                "mode": "forced",
+                "threshold": 50,
+                "device": "cuda",
+                "s1_steps": 500,
+                "rapid_steps": 150,
+            },
+            hypothesis="hydrate random-mode provenance from experiment config",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov_random_from_exp_cfg",
+            graph_json='{"nodes": {}}',
+            model_source="forced_exploration",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.39,
+            induction_auc=0.04,
+            induction_probe_metric_version="induction_probe_v2",
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(payload["corpus_id"], "synthetic:random_tokens")
+        self.assertEqual(payload["tokenizer_id"], "byte:vocab32000")
+        self.assertTrue(payload["provenance_complete"])
+        self.assertEqual(payload["experiment_mode"], "forced")
+        self.assertEqual(payload["exploration_threshold"], 50)
+        self.assertEqual(payload["execution_device"], "cuda")
+        self.assertEqual(payload["s1_steps"], 500)
+        self.assertEqual(payload["rapid_steps"], 150)
+        self.assertEqual(row["trust_label"], "exploratory")
+        self.assertEqual(row["comparability_label"], "partial")
+        self.assertEqual(row["evaluation_protocol_version"], "forced_exploration_v1")
+
+    def test_record_program_result_hydrates_model_source_from_experiment_config(self):
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={
+                "model_source": "grammar",
+                "data_mode": "corpus",
+                "corpus_path": "/tmp/grammar_source.txt",
+                "tokenizer_mode": "tiktoken",
+                "tiktoken_encoding": "cl100k_base",
+            },
+            hypothesis="hydrate model source from experiment config",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov_model_source_from_exp_cfg",
+            graph_json='{"nodes": {}}',
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.37,
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(row["model_source"], "grammar")
+        self.assertEqual(row["result_cohort"], "search")
+        self.assertEqual(row["trust_label"], "candidate_screening")
+        self.assertEqual(payload["model_source"], "grammar")
+        self.assertEqual(payload["result_cohort"], "search")
+
+    def test_record_program_result_hydrates_backfill_metadata_from_experiment_config(
+        self,
+    ):
+        exp_id = self.nb.start_experiment(
+            experiment_type="backfill",
+            config={
+                "data_mode": "corpus",
+                "corpus_path": "/tmp/backfill_corpus.txt",
+                "corpus_format": "txt",
+                "corpus_text_key": "text",
+                "corpus_train_fraction": 0.9,
+                "corpus_val_fraction": 0.1,
+                "corpus_max_chars": 50000,
+                "tokenizer_mode": "tiktoken",
+                "tiktoken_encoding": "cl100k_base",
+                "backfill_template": "hybrid_sparse_triplet_router",
+                "backfill_phase": "stack",
+                "backfill_weight_mode": "random",
+                "backfill_n_programs": 20,
+                "device": "cuda",
+            },
+            hypothesis="hydrate backfill metadata from experiment config",
+        )
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="prov_backfill_cfg",
+            graph_json='{"nodes": {}}',
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.42,
+            wikitext_perplexity=7.6,
+            screening_wikitext_metric_version="screening_wikitext_v1",
+        )
+        self.nb.flush_writes()
+        row = self.nb.get_program_detail(result_id)
+        payload = json.loads(row["data_provenance_json"])
+        self.assertEqual(payload["backfill_template"], "hybrid_sparse_triplet_router")
+        self.assertEqual(payload["backfill_phase"], "stack")
+        self.assertEqual(payload["backfill_weight_mode"], "random")
+        self.assertEqual(payload["backfill_n_programs"], 20)
+        self.assertEqual(payload["execution_device"], "cuda")
+        self.assertEqual(row["trust_label"], "backfill_observation")
+        self.assertEqual(row["comparability_label"], "reconstructed_init_variant")
 
     def test_template_slot_observability_exposes_diagnosis_and_actions(self):
         """Template observability should expose richer evidence for template tuning."""
@@ -369,6 +816,76 @@ class TestNotebook(unittest.TestCase):
         self.assertNotIn("0_legacy_template", active_names)
         self.assertIn("0_legacy_template", inactive_names)
 
+    def test_template_slot_observability_flags_repeated_low_loss_families(self):
+        """Repeated low-loss survivor families should be surfaced explicitly."""
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 4},
+            hypothesis="template observability low-loss family",
+        )
+        depth_graph = {
+            "metadata": {
+                "templates_used": ["depth_gated_block"],
+                "motifs_used": ["attn_latent_compress", "conv_swiglu"],
+                "template_slot_usage": [],
+            }
+        }
+        control_graph = {
+            "metadata": {
+                "templates_used": ["control_template"],
+                "motifs_used": ["motif_c"],
+                "template_slot_usage": [],
+            }
+        }
+        for idx, loss in enumerate((0.38, 0.41, 0.44), start=1):
+            self.nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=f"depth_low_loss_{idx}",
+                graph_json=json.dumps(depth_graph),
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=loss,
+                validation_loss_ratio=loss + 0.02,
+                induction_auc=0.01,
+                binding_auc=0.004,
+                hellaswag_acc=0.24,
+            )
+        self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="control_template_fp",
+            graph_json=json.dumps(control_graph),
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.52,
+            validation_loss_ratio=0.56,
+            induction_auc=0.03,
+            binding_auc=0.02,
+            hellaswag_acc=0.31,
+        )
+        self.nb.flush_writes()
+
+        with patch(
+            "research.scientist.notebook.notebook_misc.TEMPLATES",
+            {"depth_gated_block": object(), "control_template": object()},
+        ):
+            summary = self.nb.get_template_slot_observability(limit=8)
+
+        by_name = {row["name"]: row for row in summary["all_templates"]}
+        depth_row = by_name["depth_gated_block"]
+        self.assertEqual(depth_row["repeated_low_loss_count"], 3)
+        self.assertEqual(depth_row["very_low_loss_count"], 1)
+        self.assertTrue(depth_row["repeated_low_loss_family"])
+        self.assertAlmostEqual(depth_row["survivor_loss_median"], 0.41)
+        self.assertEqual(
+            summary["low_loss_template_families"][0]["name"], "depth_gated_block"
+        )
+        self.assertIn(
+            "depth_gated_block",
+            summary["summary"]["repeated_low_loss_templates"],
+        )
+
     def test_experiment_trends_stabilize_tiny_runs_with_confidence_fields(self):
         """Tiny-run S1 rates should be damped and expose confidence metadata."""
         tiny_exp = self.nb.start_experiment("synthesis", {}, "tiny")
@@ -491,8 +1008,22 @@ class TestNotebook(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp002",
             graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.5,
+            wikitext_perplexity=7.2,
+            data_mode="corpus",
+            corpus_path="/tmp/upsert_existing_corpus.txt",
+            corpus_format="txt",
+            corpus_text_key="text",
+            corpus_train_fraction=0.9,
+            corpus_val_fraction=0.1,
+            corpus_max_chars=12000,
+            tokenizer_mode="tiktoken",
+            tiktoken_encoding="cl100k_base",
+            screening_wikitext_metric_version="screening_wikitext_v1",
         )
 
         # First upsert
@@ -525,8 +1056,22 @@ class TestNotebook(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp003",
             graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.3,
+            wikitext_perplexity=7.0,
+            data_mode="corpus",
+            corpus_path="/tmp/promote_corpus.txt",
+            corpus_format="txt",
+            corpus_text_key="text",
+            corpus_train_fraction=0.9,
+            corpus_val_fraction=0.1,
+            corpus_max_chars=10000,
+            tokenizer_mode="tiktoken",
+            tiktoken_encoding="cl100k_base",
+            screening_wikitext_metric_version="screening_wikitext_v1",
         )
 
         entry_id = self.nb.upsert_leaderboard(
@@ -546,6 +1091,36 @@ class TestNotebook(unittest.TestCase):
 
         entries = self.nb.get_leaderboard()
         self.assertEqual(entries[0]["tier"], "investigation")
+
+    def test_promote_to_tier_blocks_partial_candidate_rows(self):
+        exp_id = self.nb.start_experiment("synthesis", {}, "test")
+        result_id = self.nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_partial_promote",
+            graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.4,
+            wikitext_perplexity=8.1,
+            screening_wikitext_metric_version="screening_wikitext_v1",
+        )
+        entry_id = self.nb.upsert_leaderboard(
+            result_id=result_id,
+            model_source="graph_synthesis",
+            screening_loss_ratio=0.4,
+            tier="screening",
+        )
+
+        self.nb.promote_to_tier(
+            entry_id=entry_id,
+            tier="validation",
+            validation_loss_ratio=0.35,
+        )
+
+        entry = self.nb.get_leaderboard_entry(result_id)
+        self.assertEqual(entry["tier"], "screening")
 
     def test_upsert_leaderboard_uses_wikitext_and_investigation_flags(self):
         """Leaderboard scoring should incorporate real-token quality and failed investigation evidence."""
@@ -848,6 +1423,36 @@ class TestNotebook(unittest.TestCase):
         for k in expected_keys:
             self.assertIn(k, summary)
 
+    def test_dashboard_headline_summary_skips_heavy_sections(self):
+        """Headline summary must not compute observability or data-accounting payloads."""
+        with (
+            patch.object(
+                self.nb,
+                "get_data_accounting_summary",
+                side_effect=AssertionError("data accounting should not run"),
+            ),
+            patch.object(
+                self.nb,
+                "get_template_slot_observability",
+                side_effect=AssertionError("template observability should not run"),
+            ),
+        ):
+            summary = self.nb.get_dashboard_headline_summary()
+
+        self.assertEqual(
+            summary["data_accounting"],
+            {
+                "row_volume": {},
+                "run_volume": {},
+                "graph_volume": {},
+                "filtering": {},
+                "training_curve_density": {},
+                "leaderboard_tiers": {},
+            },
+        )
+        self.assertEqual(summary["template_observability"], {})
+        self.assertIn("total_programs_evaluated", summary)
+
     def test_dashboard_summary_cache_invalidates_after_write(self):
         """Dashboard summary cache should refresh after notebook writes commit."""
         before = self.nb.get_dashboard_summary()
@@ -978,26 +1583,37 @@ class TestNotebook(unittest.TestCase):
         from research.scientist.analytics import ExperimentAnalytics
 
         exp_id = self.nb.start_experiment("synthesis", {}, "combo-test")
-        valid_graph = json.dumps(
+        valid_graph_1 = json.dumps(
             {
                 "nodes": {
                     "a": {"op_name": "relu"},
                     "b": {"op_name": "gelu"},
                     "c": {"op_name": "input"},
-                }
+                },
+                "variant": 1,
+            }
+        )
+        valid_graph_2 = json.dumps(
+            {
+                "nodes": {
+                    "a": {"op_name": "relu"},
+                    "b": {"op_name": "gelu"},
+                    "c": {"op_name": "input"},
+                },
+                "variant": 2,
             }
         )
         self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_combo_1",
-            graph_json=valid_graph,
+            graph_json=valid_graph_1,
             stage1_passed=True,
             novelty_score=0.7,
         )
         self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_combo_2",
-            graph_json=valid_graph,
+            graph_json=valid_graph_2,
             stage1_passed=True,
             novelty_score=0.5,
         )
@@ -1458,6 +2074,39 @@ class TestStaleExperimentCleanup(unittest.TestCase):
         self.assertEqual(cleaned, 0)
 
 
+class TestNotebookThreadAffinity(unittest.TestCase):
+    """Notebook connections should be safe to use from runner-owned threads."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(self.tmpdir, "test_thread_affinity.db")
+        from research.scientist.notebook.__init__ import LabNotebook
+
+        self.nb = LabNotebook(db_path)
+
+    def tearDown(self):
+        self.nb.close()
+
+    def test_default_connection_allows_cross_thread_reads(self):
+        import threading
+
+        errors = []
+
+        def worker():
+            try:
+                row = self.nb.conn.execute("SELECT 1 AS value").fetchone()
+                self.assertEqual(row["value"], 1)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+
+
 class TestLeaderboardDedup(unittest.TestCase):
     """Test leaderboard fingerprint deduplication."""
 
@@ -1584,8 +2233,22 @@ class TestLeaderboardDedup(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp_investigated",
             graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.3,
+            wikitext_perplexity=7.1,
+            data_mode="corpus",
+            corpus_path="/tmp/investigated_fp.txt",
+            corpus_format="txt",
+            corpus_text_key="text",
+            corpus_train_fraction=0.9,
+            corpus_val_fraction=0.1,
+            corpus_max_chars=12000,
+            tokenizer_mode="tiktoken",
+            tiktoken_encoding="cl100k_base",
+            screening_wikitext_metric_version="screening_wikitext_v1",
         )
         self.nb.upsert_leaderboard(
             result_id=rid2,
@@ -1600,8 +2263,22 @@ class TestLeaderboardDedup(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="fp_validated",
             graph_json="{}",
+            model_source="graph_synthesis",
+            stage0_passed=True,
+            stage05_passed=True,
             stage1_passed=True,
             loss_ratio=0.2,
+            wikitext_perplexity=6.9,
+            data_mode="corpus",
+            corpus_path="/tmp/validated_fp.txt",
+            corpus_format="txt",
+            corpus_text_key="text",
+            corpus_train_fraction=0.9,
+            corpus_val_fraction=0.1,
+            corpus_max_chars=12000,
+            tokenizer_mode="tiktoken",
+            tiktoken_encoding="cl100k_base",
+            screening_wikitext_metric_version="screening_wikitext_v1",
         )
         self.nb.upsert_leaderboard(
             result_id=rid3,

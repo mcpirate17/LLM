@@ -188,8 +188,10 @@ def _load_op_categories(notebook_db: Path, profiling_db: Path) -> Dict[str, str]
             if name not in categories:
                 cat = prim.category
                 categories[name] = cat.value if hasattr(cat, "value") else str(cat)
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug(
+            "Primitive registry unavailable while loading op categories: %s", exc
+        )
 
     return categories
 

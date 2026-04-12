@@ -27,9 +27,8 @@ from ._utils import with_notebook_context
 logger = logging.getLogger(__name__)
 
 
-def register_strategy_bp_routes(app, context: ApiRouteContext):
-    notebook_path = context.notebook_path
-    wnb = with_notebook_context(notebook_path)
+def _register_decision_routes(app, notebook_path: str, wnb) -> None:
+    """Decision: decision-packet, reproducibility-manifest, workflow-export."""
 
     @app.route("/api/decision-packet/<result_id>")
     @wnb
@@ -134,8 +133,8 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
         if not row or not row["graph_json"]:
             return jsonify({"error": "Program not found or has no graph"}), 404
 
-        from ..synthesis.serializer import graph_from_json
-        from ..synthesis.workflow_converter import graph_to_workflow
+        from research.synthesis.serializer import graph_from_json
+        from research.synthesis.workflow_converter import graph_to_workflow
 
         graph = graph_from_json(row["graph_json"], model_dim=row["model_dim"])
         workflow = graph_to_workflow(
@@ -145,6 +144,10 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
             metadata={"result_id": result_id},
         )
         return jsonify(workflow)
+
+
+def _register_fingerprint_routes(app, notebook_path: str, wnb) -> None:
+    """Fingerprint: references, fingerprint/resolve, fingerprint/history."""
 
     @app.route("/api/references")
     @wnb
@@ -158,6 +161,7 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 limit=500,
                 sort_by="composite_score",
                 include_references=True,
+                trusted_only=True,
             )
             if entry.get("is_reference")
         ]
@@ -329,6 +333,10 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
             }
         )
 
+
+def _register_execution_routes(app, notebook_path: str) -> None:
+    """Execution: worker/evaluate, progress."""
+
     @app.route("/api/worker/evaluate", methods=["POST"])
     def api_worker_evaluate():
         """Z12: Distributed worker endpoint for evaluating a computation graph."""
@@ -343,8 +351,8 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
             return jsonify({"error": "Missing graph_json or config"}), 400
 
         try:
-            from ..synthesis.graph import json_to_graph
-            from ..synthesis.compiler import compile_model
+            from research.synthesis.graph import json_to_graph
+            from research.synthesis.compiler import compile_model
             import torch
 
             graph = json_to_graph(graph_json)
@@ -394,6 +402,10 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 "run_trigger": trigger,
             }
         )
+
+
+def _register_briefing_routes(app, notebook_path: str, wnb) -> None:
+    """Briefing: strategy/briefing."""
 
     @app.route("/api/strategy/briefing")
     @wnb
@@ -448,3 +460,12 @@ def register_strategy_bp_routes(app, context: ApiRouteContext):
                 "ref_comparison": data["ref_comparison"],
             }
         )
+
+
+def register_strategy_bp_routes(app, context: ApiRouteContext):
+    notebook_path = context.notebook_path
+    wnb = with_notebook_context(notebook_path)
+    _register_decision_routes(app, notebook_path, wnb)
+    _register_fingerprint_routes(app, notebook_path, wnb)
+    _register_execution_routes(app, notebook_path)
+    _register_briefing_routes(app, notebook_path, wnb)

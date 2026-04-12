@@ -182,16 +182,40 @@ def _routing_curriculum_config(
     }
 
 
-def _merge_config(curriculum_enabled: bool) -> dict[str, Any]:
-    config = {
-        "n_branches": 5,
+def _updated(base: dict[str, Any], extra: dict[str, Any] | None) -> dict[str, Any]:
+    if not extra:
+        return base
+    return {**base, **extra}
+
+
+def _merge_config() -> dict[str, Any]:
+    return {
+        "n_branches": 2,
         "normalize_inputs": True,
         "merge_temperature": 0.9,
-        "routed_floor": 0.34,
-        "medium_floor": 0.16,
-        "hard_floor": 0.08,
-        "hard_cap": 0.2,
-        "fallback_cap": 0.68,
+    }
+
+
+def _binary_merge_config(
+    *,
+    curriculum_enabled: bool,
+    primary_role: str,
+    secondary_role: str,
+    min_secondary_share: float,
+    max_secondary_share: float,
+    min_secondary_start: float | None = None,
+    min_secondary_mid: float | None = None,
+    min_secondary_end: float | None = None,
+    max_secondary_start: float | None = None,
+    max_secondary_mid: float | None = None,
+    max_secondary_end: float | None = None,
+) -> dict[str, Any]:
+    config = {
+        **_merge_config(),
+        "primary_role": primary_role,
+        "secondary_role": secondary_role,
+        "min_secondary_share": min_secondary_share,
+        "max_secondary_share": max_secondary_share,
     }
     if curriculum_enabled:
         config.update(
@@ -199,21 +223,24 @@ def _merge_config(curriculum_enabled: bool) -> dict[str, Any]:
                 "curriculum_enabled": True,
                 "curriculum_warmup_frac": 0.25,
                 "curriculum_mid_frac": 0.65,
-                "routed_floor_start": 0.42,
-                "routed_floor_mid": 0.37,
-                "routed_floor_end": 0.34,
-                "medium_floor_start": 0.26,
-                "medium_floor_mid": 0.2,
-                "medium_floor_end": 0.16,
-                "hard_floor_start": 0.04,
-                "hard_floor_mid": 0.08,
-                "hard_floor_end": 0.1,
-                "hard_cap_start": 0.1,
-                "hard_cap_mid": 0.16,
-                "hard_cap_end": 0.22,
-                "fallback_cap_start": 0.58,
-                "fallback_cap_mid": 0.64,
-                "fallback_cap_end": 0.68,
+                "min_secondary_share_start": min_secondary_share
+                if min_secondary_start is None
+                else min_secondary_start,
+                "min_secondary_share_mid": min_secondary_share
+                if min_secondary_mid is None
+                else min_secondary_mid,
+                "min_secondary_share_end": min_secondary_share
+                if min_secondary_end is None
+                else min_secondary_end,
+                "max_secondary_share_start": max_secondary_share
+                if max_secondary_start is None
+                else max_secondary_start,
+                "max_secondary_share_mid": max_secondary_share
+                if max_secondary_mid is None
+                else max_secondary_mid,
+                "max_secondary_share_end": max_secondary_share
+                if max_secondary_end is None
+                else max_secondary_end,
             }
         )
     return config
@@ -245,17 +272,24 @@ def build_multiscale_variant(
     confidence_threshold: float,
     enable_curriculum: bool = False,
     use_calibrated_merge: bool = False,
+    gate_curriculum_overrides: dict[str, Any] | None = None,
+    router_curriculum_overrides: dict[str, Any] | None = None,
+    hard_curriculum_overrides: dict[str, Any] | None = None,
+    merge_curriculum_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> ComputationGraph:
     graph = ComputationGraph(model_dim=model_dim)
     inp = graph.add_input()
     default_path = graph.add_op("default_path", [inp], {})
     gate_config: dict[str, Any] = {"threshold": 0.5}
     if enable_curriculum:
-        gate_config = _routing_curriculum_config(
-            threshold=0.5,
-            route_temperature=route_temperature,
-            min_keep_fraction=min_keep_fraction,
-            confidence_threshold=confidence_threshold,
+        gate_config = _updated(
+            _routing_curriculum_config(
+                threshold=0.5,
+                route_temperature=route_temperature,
+                min_keep_fraction=min_keep_fraction,
+                confidence_threshold=confidence_threshold,
+            ),
+            gate_curriculum_overrides,
         )
     gated = graph.add_op("hybrid_token_gate", [inp], gate_config)
     gated_skip = graph.add_op("add", [inp, gated], {})
@@ -275,16 +309,19 @@ def build_multiscale_variant(
             "route_temperature": route_temperature,
         }
         if enable_curriculum:
-            router_config = {
-                **_routing_curriculum_config(
-                    threshold=0.5,
-                    route_temperature=route_temperature,
-                    min_keep_fraction=min_keep_fraction,
-                    confidence_threshold=confidence_threshold,
-                ),
-                "span_width": width,
-                "lane_count": width,
-            }
+            router_config = _updated(
+                {
+                    **_routing_curriculum_config(
+                        threshold=0.5,
+                        route_temperature=route_temperature,
+                        min_keep_fraction=min_keep_fraction,
+                        confidence_threshold=confidence_threshold,
+                    ),
+                    "span_width": width,
+                    "lane_count": width,
+                },
+                router_curriculum_overrides,
+            )
         routed_nodes.append(
             graph.add_op(
                 "hybrid_sparse_router",
@@ -305,17 +342,87 @@ def build_multiscale_variant(
     hard = graph.add_op(
         hard_op,
         _hard_inputs(hard_op, gated, hard_signal, hard_seed),
-        _hard_curriculum_config(hard_op, _hard_config(hard_op))
-        if enable_curriculum
-        else _hard_config(hard_op),
+        _updated(
+            _hard_curriculum_config(hard_op, _hard_config(hard_op))
+            if enable_curriculum
+            else _hard_config(hard_op),
+            hard_curriculum_overrides,
+        ),
     )
     hard = graph.add_op("linear_proj", [hard], {"out_dim": model_dim})
 
     if use_calibrated_merge:
+        merge_curriculum_overrides = merge_curriculum_overrides or {}
         out = graph.add_op(
             "calibrated_branch_merge",
-            [default_path, medium, hard, gated_skip, inp],
-            _merge_config(enable_curriculum),
+            [default_path, medium],
+            _updated(
+                _binary_merge_config(
+                    curriculum_enabled=enable_curriculum,
+                    primary_role="default",
+                    secondary_role="medium",
+                    min_secondary_share=0.18,
+                    max_secondary_share=0.42,
+                    min_secondary_start=0.26,
+                    min_secondary_mid=0.22,
+                    min_secondary_end=0.18,
+                ),
+                merge_curriculum_overrides.get("default_medium"),
+            ),
+        )
+        out = graph.add_op(
+            "calibrated_branch_merge",
+            [out, hard],
+            _updated(
+                _binary_merge_config(
+                    curriculum_enabled=enable_curriculum,
+                    primary_role="routed",
+                    secondary_role="hard",
+                    min_secondary_share=0.08,
+                    max_secondary_share=0.2,
+                    min_secondary_start=0.04,
+                    min_secondary_mid=0.08,
+                    min_secondary_end=0.1,
+                    max_secondary_start=0.1,
+                    max_secondary_mid=0.16,
+                    max_secondary_end=0.22,
+                ),
+                merge_curriculum_overrides.get("routed_hard"),
+            ),
+        )
+        out = graph.add_op(
+            "calibrated_branch_merge",
+            [out, gated_skip],
+            _updated(
+                _binary_merge_config(
+                    curriculum_enabled=enable_curriculum,
+                    primary_role="routed",
+                    secondary_role="skip",
+                    min_secondary_share=0.08,
+                    max_secondary_share=0.22,
+                    max_secondary_start=0.18,
+                    max_secondary_mid=0.2,
+                    max_secondary_end=0.22,
+                ),
+                merge_curriculum_overrides.get("routed_skip"),
+            ),
+        )
+        out = graph.add_op(
+            "calibrated_branch_merge",
+            [out, inp],
+            _updated(
+                _binary_merge_config(
+                    curriculum_enabled=enable_curriculum,
+                    primary_role="routed",
+                    secondary_role="input",
+                    min_secondary_share=0.06,
+                    max_secondary_share=0.18,
+                    max_secondary_start=0.14,
+                    max_secondary_mid=0.16,
+                    max_secondary_end=0.18,
+                ),
+                merge_curriculum_overrides.get("routed_input"),
+            ),
         )
     else:
         out = graph.add_op("add", [default_path, medium], {})

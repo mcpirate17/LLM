@@ -25,11 +25,31 @@ const STATUS_OPTIONS = [
   { value: 'breakthrough', label: 'Breakthrough' },
 ];
 
+function provenanceStatus(entry) {
+  const cohort = String(entry?.result_cohort || '').trim().toLowerCase();
+  const experimentType = String(entry?.experiment_type || '').trim().toLowerCase();
+  const trustLabel = String(entry?.trust_label || '').trim().toLowerCase();
+
+  if (experimentType === 'exact_graph_replay' || cohort === 'exact_graph_replay') {
+    return { label: 'Replay', color: 'var(--accent-blue)' };
+  }
+  if (
+    cohort === 'backfill'
+    || trustLabel === 'backfill_observation'
+    || String(entry?.comparability_label || '').trim().toLowerCase() === 'reconstructed_init_variant'
+  ) {
+    return { label: 'Backfill', color: 'var(--accent-orange, #d29922)' };
+  }
+  return null;
+}
+
 export function SummaryBar({ tierCounts }) {
   const total = tierCounts?.all || 0;
   const validated = (tierCounts?.validation || 0) + (tierCounts?.breakthrough || 0);
   const breakthroughs = tierCounts?.breakthrough || 0;
   const references = tierCounts?.references || 0;
+  const backfill = tierCounts?.backfill || 0;
+  const replay = tierCounts?.replay || 0;
 
   return (
     <div
@@ -52,6 +72,8 @@ export function SummaryBar({ tierCounts }) {
       <Stat value={tierCounts?.investigation || 0} label="investigation" color="var(--accent-yellow)" />
       <Stat value={validated} label="validated" color="var(--accent-purple)" />
       <Stat value={breakthroughs} label="breakthroughs" color="var(--accent-green)" />
+      {backfill > 0 && <Stat value={backfill} label="backfill" color="var(--accent-orange, #d29922)" />}
+      {replay > 0 && <Stat value={replay} label="replay" color="var(--accent-blue)" />}
       <Stat value={references} label="references" color="var(--accent-purple)" />
     </div>
   );
@@ -70,9 +92,10 @@ function Stat({ value, label, color }) {
 
 export function StatusBadge({ entry }) {
   const tier = entry.tier;
-  const color = TIER_COLORS[tier] || 'var(--text-muted)';
+  const provenance = provenanceStatus(entry);
+  const color = provenance?.color || TIER_COLORS[tier] || 'var(--text-muted)';
 
-  let label = STATUS_LABELS[tier] || tier || 'Unknown';
+  let label = provenance?.label || STATUS_LABELS[tier] || tier || 'Unknown';
   if (tier === 'investigation' && entry.investigation_robustness != null && !entry.investigation_passed) {
     label = 'Brittle';
   } else if (tier === 'validation' && entry.validation_baseline_ratio != null && !entry.validation_passed) {
@@ -82,6 +105,7 @@ export function StatusBadge({ entry }) {
   return (
     <span
       style={{
+        display: 'inline-block',
         padding: '2px 8px',
         borderRadius: 4,
         fontSize: 11,
@@ -90,6 +114,7 @@ export function StatusBadge({ entry }) {
         background: `${color}22`,
         border: `1px solid ${color}`,
         textTransform: 'uppercase',
+        whiteSpace: 'nowrap',
       }}
     >
       {label}
@@ -204,6 +229,8 @@ export function ScoreCell({ entry }) {
 
 export function ExpandedDetail({
   entry,
+  onRescreen,
+  onPromoteScreening,
   onInvestigate,
   onValidate,
   onQueueAdd,
@@ -226,6 +253,9 @@ export function ExpandedDetail({
   };
   const hasBeenInvestigated = entry.investigation_loss_ratio != null || ['investigation', 'validation', 'breakthrough'].includes(entry.tier);
   const hasBeenValidated = entry.validation_loss_ratio != null || ['validation', 'breakthrough'].includes(entry.tier);
+  const isTrusted = ['candidate_screening', 'candidate_grade', 'reference'].includes(String(entry.trust_label || '').trim().toLowerCase());
+  const screeningActionLabel = 'Replay';
+  const showPromoteScreening = entry.result_id && !entry.is_reference && !isTrusted;
   const canDelete = !entry.is_reference && (entry.tier === 'screening' || entry.tier === 'failed' || entry.tier === 'rejected' || entry.screening_passed === false || entry.investigation_passed === false || entry.validation_passed === false);
 
   return (
@@ -314,6 +344,34 @@ export function ExpandedDetail({
           <div>
             <div style={{ fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', fontSize: 10, color: 'var(--text-muted)' }}>Actions</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {entry.result_id && !entry.is_reference && (
+                <button
+                  onClick={() => onRescreen?.(entry.result_id)}
+                  style={{
+                    ...actionBtnStyle,
+                    background: 'rgba(88, 166, 255, 0.12)',
+                    border: '1px solid rgba(88, 166, 255, 0.4)',
+                    color: 'var(--accent-blue)',
+                  }}
+                  title={isTrusted ? 'Replay this fingerprint through the current loss-oriented screening replay path' : 'Replay this fingerprint through the current loss-oriented screening replay path'}
+                >
+                  {screeningActionLabel}
+                </button>
+              )}
+              {showPromoteScreening && (
+                <button
+                  onClick={() => onPromoteScreening?.(entry.result_id)}
+                  style={{
+                    ...actionBtnStyle,
+                    background: 'rgba(63, 185, 80, 0.12)',
+                    border: '1px solid rgba(63, 185, 80, 0.4)',
+                    color: 'var(--accent-green)',
+                  }}
+                  title="Promote this row into the trusted screening candidate pool"
+                >
+                  Promote
+                </button>
+              )}
               {!hasBeenInvestigated && (
                 <button
                   onClick={() => onInvestigate([entry.result_id])}

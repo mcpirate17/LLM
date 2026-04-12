@@ -17,6 +17,8 @@ Probes: binding, hellaswag, blimp, triage, fingerprint, rescore, all
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import multiprocessing as mp
 import os
 import sys
@@ -39,8 +41,23 @@ from research.scientist.leaderboard_scoring import (
 from research.scientist.notebook import LabNotebook
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
+from research.training.data_pipeline import CorpusConfig, CorpusTokenBatcher
+from research.tools._script_audit import (
+    build_metric_backfill_context,
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
 
 DB_PATH = "research/lab_notebook.db"
+logger = logging.getLogger(__name__)
+_BACKFILL_CORPUS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "corpus",
+    "wikitext103_train.npy",
+)
+_BACKFILL_BATCHERS: dict[int, CorpusTokenBatcher | None] = {}
+_BACKFILL_CORPUS_WARNED = False
 
 # ── Probe registry ──────────────────────────────────────────────────────
 
@@ -60,6 +77,57 @@ def reconstruct_model(graph_json_str: str, device: str) -> nn.Module:
     return model.to(device).eval(), graph
 
 
+def _get_backfill_batcher(vocab_size: int) -> CorpusTokenBatcher | None:
+    cached = _BACKFILL_BATCHERS.get(int(vocab_size))
+    if cached is not None:
+        return cached
+    config = CorpusConfig(
+        path=_BACKFILL_CORPUS_PATH,
+        fmt="auto",
+        tokenizer="byte",
+        max_chars=200_000,
+        train_fraction=1.0,
+        val_fraction=0.0,
+    )
+    batcher = CorpusTokenBatcher(config, int(vocab_size))
+    if not batcher.ready:
+        _BACKFILL_BATCHERS[int(vocab_size)] = None
+        return None
+    _BACKFILL_BATCHERS[int(vocab_size)] = batcher
+    return batcher
+
+
+def _sample_micro_train_batch(
+    vocab_size: int,
+    *,
+    batch_size: int,
+    seq_len: int,
+    device: str,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    global _BACKFILL_CORPUS_WARNED
+
+    batcher = _get_backfill_batcher(int(vocab_size))
+    if batcher is not None:
+        batch = batcher.sample_batch(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            generator=generator,
+            device=torch.device(device),
+            split="train",
+        )
+        if batch is not None:
+            return batch
+
+    if not _BACKFILL_CORPUS_WARNED:
+        logger.warning(
+            "Backfill micro-train corpus unavailable; falling back to random tokens (%s)",
+            _BACKFILL_CORPUS_PATH,
+        )
+        _BACKFILL_CORPUS_WARNED = True
+    return torch.randint(0, int(vocab_size), (batch_size, seq_len), device=device)
+
+
 def micro_train(
     model: nn.Module,
     steps: int,
@@ -68,12 +136,20 @@ def micro_train(
     batch_size: int = 8,
     lr: float = 3e-4,
 ) -> None:
-    """Random-token micro-training so binding probes run on a trained model."""
+    """Corpus-backed micro-training so probe scores reflect learned behavior."""
     model.train()
     vs = getattr(model, "vocab_size", VOCAB_SIZE)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(12345)
     for _ in range(steps):
-        data = torch.randint(0, vs, (batch_size, seq_len), device=device)
+        data = _sample_micro_train_batch(
+            vs,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=device,
+            generator=generator,
+        )
         logits = model(data)
         loss = F.cross_entropy(logits[:, :-1].reshape(-1, vs), data[:, 1:].reshape(-1))
         opt.zero_grad(set_to_none=True)
@@ -85,6 +161,9 @@ def micro_train(
 
 def clear_gpu(device: str) -> None:
     if device != "cpu" and torch.cuda.is_available():
+        import gc
+
+        gc.collect()
         torch.cuda.empty_cache()
 
 
@@ -215,49 +294,18 @@ def run_binding_probe(
     model: nn.Module,
     device: str,
 ) -> Dict[str, Any]:
-    from research.eval.associative_recall import associative_recall_score
-    from research.eval.binding_range import binding_range_profile
-    from research.eval.native_induction import (
-        induction_result_metadata,
-        induction_score_gold,
-    )
-    from research.scientist.thresholds import (
-        BINDING_AR_SOFT_GATE,
-        BINDING_BINDING_AUC_SOFT_GATE,
-        BINDING_INDUCTION_SOFT_GATE,
+    from research.eval.binding_pipeline import (
+        compute_binding_composite,
+        compute_local_only,
+        run_full_binding_probes,
     )
 
-    ar = associative_recall_score(
-        model,
-        n_pairs=20,
-        n_eval=200,
-        n_train_steps=500,
-        batch_size=16,
-        device=device,
-    )
-    ind = induction_score_gold(model, device=device)
-    br = binding_range_profile(
-        model,
-        distances=(2, 4, 8, 16, 32, 64),
-        n_eval=200,
-        device=device,
-    )
-    bc = 0.4 * ar.auc + 0.3 * ind.auc + 0.3 * br.auc
-    is_local = int(
-        ar.auc < BINDING_AR_SOFT_GATE
-        and ind.auc < BINDING_INDUCTION_SOFT_GATE
-        and br.auc < BINDING_BINDING_AUC_SOFT_GATE
-    )
-    result = {
-        "ar_auc": ar.auc,
-        "ar_final_acc": ar.final_acc,
-        "ar_timed_out": int(ar.timed_out),
-        "ar_above_chance": int(ar.above_chance),
-        "binding_auc": br.auc,
-        "binding_composite": round(bc, 4),
-        "local_only": is_local,
-    }
-    result.update(induction_result_metadata(ind))
+    probe = run_full_binding_probes(model, device=device)
+    bc = compute_binding_composite(probe.ar_auc, probe.induction_auc, probe.binding_auc)
+    is_local = compute_local_only(probe.ar_auc, probe.induction_auc, probe.binding_auc)
+    result = probe.to_result_dict()
+    result["binding_composite"] = bc
+    result["local_only"] = is_local
     return result
 
 
@@ -421,6 +469,7 @@ def store_probe_results(
     result_id: str,
     updates: Dict[str, Any],
     write_leaderboard: bool = True,
+    provenance_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write probe results to program_results and optionally leaderboard."""
     if not updates:
@@ -437,6 +486,29 @@ def store_probe_results(
             f"UPDATE program_results SET {set_clause} WHERE result_id = ?",
             (*vals, result_id),
         )
+        if provenance_context and "data_provenance_json" in pr_cols:
+            row = nb.conn.execute(
+                "SELECT data_provenance_json FROM program_results WHERE result_id = ?",
+                (result_id,),
+            ).fetchone()
+            raw_payload = row["data_provenance_json"] if row else None
+            try:
+                payload = json.loads(raw_payload) if raw_payload else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            history = payload.get("metric_backfills")
+            if not isinstance(history, list):
+                history = []
+            history = [entry for entry in history if isinstance(entry, dict)]
+            history.append(dict(provenance_context))
+            payload["metric_backfills"] = history[-5:]
+            payload["last_metric_backfill"] = dict(provenance_context)
+            nb.conn.execute(
+                "UPDATE program_results SET data_provenance_json = ? WHERE result_id = ?",
+                (json.dumps(payload, sort_keys=True, separators=(",", ":")), result_id),
+            )
         fp_row = nb.conn.execute(
             "SELECT graph_fingerprint FROM program_results WHERE result_id = ?",
             (result_id,),
@@ -529,7 +601,35 @@ def run_backfill(
     dry_run: bool,
     fp_timeout: int,
 ) -> None:
-    nb = LabNotebook(DB_PATH)
+    nb, exp_id = start_script_experiment(
+        db_path=DB_PATH,
+        experiment_type="probe_backfill",
+        config={
+            "probes": list(probes),
+            "tiers": list(tiers),
+            "top_per_tier": top_per_tier,
+            "device": device,
+            "train_steps": train_steps,
+            "n_passes": n_passes,
+            "force": force,
+            "fp_timeout": fp_timeout,
+        },
+        source_script="backfill",
+        hypothesis=f"Backfill probes: {','.join(probes)}",
+    )
+    provenance_context = build_metric_backfill_context(
+        kind="probe_backfill",
+        source_script="backfill",
+        experiment_id=exp_id,
+        device=device,
+        probes=list(probes),
+        tiers=list(tiers),
+        top_per_tier=top_per_tier,
+        train_steps=train_steps,
+        passes=n_passes,
+        force=bool(force),
+        fp_timeout=fp_timeout,
+    )
 
     # Determine which null column to filter on (use first probe's column)
     null_col = _PROBE_NULL_COLUMN.get(probes[0]) if len(probes) == 1 else None
@@ -550,6 +650,12 @@ def run_backfill(
 
     if total == 0:
         print("Nothing to backfill.")
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={"total": 0, "evaluated": 0, "failed": 0, "no_graph": 0},
+            summary=f"Backfill {','.join(probes)} found no candidates",
+        )
         nb.conn.close()
         return
 
@@ -561,6 +667,12 @@ def run_backfill(
         if total > 20:
             print(f"  ... and {total - 20} more")
         print(f"\nDry run: would evaluate {total} entries.")
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="Dry-run invocation does not write results",
+            results={"total": total, "evaluated": 0, "dry_run": True},
+        )
         nb.conn.close()
         return
 
@@ -576,79 +688,113 @@ def run_backfill(
     no_graph = 0
     t0 = time.time()
 
-    for i, cand in enumerate(candidates):
-        fp = cand.graph_fingerprint
-        if not cand.graph_json or cand.graph_json == "{}":
-            no_graph += 1
-            continue
+    try:
+        for i, cand in enumerate(candidates):
+            fp = cand.graph_fingerprint
+            if not cand.graph_json or cand.graph_json == "{}":
+                no_graph += 1
+                continue
 
-        # Determine which probes to actually run for this candidate
-        active_probes = [
-            p for p in probes if force or not _probe_has_data(nb, cand.result_id, p)
-        ]
-        if not active_probes:
-            continue
+            # Determine which probes to actually run for this candidate
+            active_probes = [
+                p for p in probes if force or not _probe_has_data(nb, cand.result_id, p)
+            ]
+            if not active_probes:
+                continue
 
-        try:
-            pass_results: List[Dict[str, Any]] = []
+            try:
+                pass_results: List[Dict[str, Any]] = []
 
-            for pass_idx in range(n_passes):
-                pass_updates: Dict[str, Any] = {}
-                model = None
-                graph = None
+                for pass_idx in range(n_passes):
+                    pass_updates: Dict[str, Any] = {}
+                    model = None
+                    graph = None
 
-                if needs_model:
-                    model, graph = reconstruct_model(cand.graph_json, device)
-                    if needs_train:
-                        micro_train(model, train_steps, device)
+                    if needs_model:
+                        model, graph = reconstruct_model(cand.graph_json, device)
+                        if needs_train:
+                            micro_train(model, train_steps, device)
 
-                for probe_name in active_probes:
-                    probe_updates = _run_single_probe(
-                        probe_name,
-                        model,
-                        graph,
-                        device,
-                        cand,
-                        fp_timeout,
+                    for probe_name in active_probes:
+                        probe_updates = _run_single_probe(
+                            probe_name,
+                            model,
+                            graph,
+                            device,
+                            cand,
+                            fp_timeout,
+                        )
+                        if probe_updates:
+                            pass_updates.update(probe_updates)
+
+                    if model is not None:
+                        del model
+                        clear_gpu(device)
+
+                    pass_results.append(pass_updates)
+
+                # Average across passes
+                all_updates = _average_numeric_updates(pass_results)
+
+                # Write all results in one batch
+                if all_updates:
+                    store_probe_results(
+                        nb,
+                        cand.result_id,
+                        all_updates,
+                        provenance_context=provenance_context,
                     )
-                    if probe_updates:
-                        pass_updates.update(probe_updates)
 
-                if model is not None:
-                    del model
-                    clear_gpu(device)
+                # Rescore with new data
+                new_score, old_score = rescore_entry(
+                    nb,
+                    cand.entry_id,
+                    cand.result_id,
+                    cand.is_reference,
+                    pr_cache,
+                    all_updates,
+                )
+                evaluated += 1
 
-                pass_results.append(pass_updates)
+                delta = new_score - old_score
+                delta_str = f" ({delta:+.1f})" if abs(delta) > 0.1 else ""
+                print(f"  [{fp}] {cand.tier} score={new_score:.1f}{delta_str}")
 
-            # Average across passes
-            all_updates = _average_numeric_updates(pass_results)
+            except (RuntimeError, KeyError, ValueError, TypeError) as e:
+                failed += 1
+                print(f"  [{fp}] error: {e}")
+                clear_gpu(device)
 
-            # Write all results in one batch
-            if all_updates:
-                store_probe_results(nb, cand.result_id, all_updates)
-
-            # Rescore with new data
-            new_score, old_score = rescore_entry(
-                nb,
-                cand.entry_id,
-                cand.result_id,
-                cand.is_reference,
-                pr_cache,
-                all_updates,
-            )
-            evaluated += 1
-
-            delta = new_score - old_score
-            delta_str = f" ({delta:+.1f})" if abs(delta) > 0.1 else ""
-            print(f"  [{fp}] {cand.tier} score={new_score:.1f}{delta_str}")
-
-        except (RuntimeError, KeyError, ValueError, TypeError) as e:
-            failed += 1
-            print(f"  [{fp}] error: {e}")
-            clear_gpu(device)
-
-        if (i + 1) % 10 == 0:
-            nb.conn.commit()
+            if (i + 1) % 10 == 0:
+                nb.conn.commit()
+    except KeyboardInterrupt:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error="KeyboardInterrupt",
+            results={
+                "total": total,
+                "evaluated": evaluated,
+                "failed": failed,
+                "no_graph": no_graph,
+            },
+        )
+        nb.conn.close()
+        raise
+    except Exception as exc:
+        fail_script_experiment(
+            nb,
+            exp_id,
+            error=str(exc),
+            results={
+                "total": total,
+                "evaluated": evaluated,
+                "failed": failed,
+                "no_graph": no_graph,
+            },
+        )
+        nb.conn.close()
+        raise
 
     nb.conn.commit()
     elapsed = time.time() - t0
@@ -658,6 +804,22 @@ def run_backfill(
     print(f"  Failed:    {failed}")
     print(f"  No graph:  {no_graph}")
 
+    complete_script_experiment(
+        nb,
+        exp_id,
+        results={
+            "total": total,
+            "evaluated": evaluated,
+            "failed": failed,
+            "no_graph": no_graph,
+            "elapsed_s": round(elapsed, 3),
+            "probes": list(probes),
+        },
+        summary=(
+            f"Backfill {','.join(probes)}: evaluated={evaluated} "
+            f"failed={failed} no_graph={no_graph}"
+        ),
+    )
     nb.conn.close()
 
 
@@ -732,9 +894,30 @@ def main():
         probes = list(_ALL_PROBES)
     elif probe_str == "rescore":
         # Rescore-only mode
-        nb = LabNotebook(DB_PATH)
-        total, changed = rescore_all(nb)
-        print(f"Rescored {total} entries, {changed} changed.")
+        nb, exp_id = start_script_experiment(
+            db_path=DB_PATH,
+            experiment_type="score_backfill",
+            config={"mode": "rescore"},
+            source_script="backfill",
+            hypothesis="Bulk leaderboard rescore",
+        )
+        try:
+            total, changed = rescore_all(nb)
+            print(f"Rescored {total} entries, {changed} changed.")
+            complete_script_experiment(
+                nb,
+                exp_id,
+                results={"total": total, "changed": changed, "mode": "rescore"},
+                summary=f"Bulk rescore complete: changed={changed}/{total}",
+            )
+        except KeyboardInterrupt:
+            fail_script_experiment(nb, exp_id, error="KeyboardInterrupt")
+            nb.conn.close()
+            raise
+        except Exception as exc:
+            fail_script_experiment(nb, exp_id, error=str(exc))
+            nb.conn.close()
+            raise
         nb.conn.close()
         return
     else:

@@ -134,7 +134,14 @@ class RunConfig:
     stage1_discovery_batches: int = 2
     stage1_discovery_batch_size: int = 4
     skip_screening_hellaswag: bool = False
+    skip_screening_blimp: bool = False
+    skip_ar_probe: bool = False
     skip_binding_probes: bool = False
+    skip_induction_probe: bool = False
+    skip_binding_probe: bool = False
+    binding_probe_offload_source_model: bool = False
+    binding_probe_train_batch_size: int = 0
+    binding_probe_eval_batch_size: int = 0
     skip_post_s1_fingerprint: bool = False
     skip_post_s1_triage: bool = False
     screening_probe_seed: int | None = None
@@ -335,6 +342,9 @@ class RunConfig:
     # Checkpoint/resume
     checkpoint_dir: str = "checkpoints"
     checkpoint_interval: int = 1  # save continuous checkpoint every N experiments
+    phase_checkpoint_step_interval: int = (
+        100  # save validation/investigation train state every N steps
+    )
     resume_experiment_id: str = ""  # experiment ID to resume (empty = fresh start)
     keep_checkpoints: bool = False  # keep checkpoints after successful completion
     # Campaign system
@@ -391,11 +401,15 @@ class RunConfig:
     category_weights: Optional[Dict[str, float]] = None
     op_weights: Optional[Dict[str, float]] = None
     template_weights: Optional[Dict[str, float]] = None
-    use_learned_candidate_weights: bool = True
-    use_screening_signal_weights: bool = True
+    use_learned_grammar_weights: bool = False
+    use_learned_candidate_weights: bool = False
+    use_screening_signal_weights: bool = False
+    allow_unproven_ml_influence: bool = False
     routing_mandatory: bool = True  # require routing/MoE ops in every graph
     persist_screening_failures: bool = (
-        False  # keep early failed graphs for data collection
+        True  # keep early failed graphs for data collection — produces
+        # hard negatives (good ops, bad structure) that teach the gate
+        # model to look beyond op identity
     )
     disable_runtime_dedup: bool = False  # allow repeated fingerprints through screening when collecting template backfill evidence
     # Branching / width control (passed to GrammarConfig)
@@ -514,6 +528,13 @@ class ExternalEvalResult:
     scaling_d512_param_efficiency: Optional[float] = None
     fp_gromov_delta: Optional[float] = None
     fp_hierarchy_fitness: Optional[float] = None
+    # Long-context retrieval sub-scores
+    long_ctx_assoc_score: Optional[float] = None
+    long_ctx_passkey_score: Optional[float] = None
+    long_ctx_multi_hop_score: Optional[float] = None
+    long_ctx_retrieval_aggregate: Optional[float] = None
+    long_ctx_scaling_score: Optional[float] = None
+    long_ctx_combined_score: Optional[float] = None
     robustness_checks_attempted: int = 0
     robustness_checks_failed: int = 0
 

@@ -107,6 +107,23 @@ const CONTEXT_SWITCH_EVENT_TYPES = new Set([
   'nov_gen',
 ]);
 
+const TERMINAL_EVENT_TYPES = new Set(['complete', 'failed']);
+const PROGRESSION_EVENT_TYPES = new Set([
+  'scaleup_start',
+  'scaleup_progress',
+  'scaleup_complete',
+  'auto_scaleup',
+  'invest_start',
+  'invest_progress',
+  'invest_complete',
+  'validate_start',
+  'validate_progress',
+  'validate_phase',
+  'validate_complete',
+  'auto_investigate',
+  'auto_validate',
+]);
+
 function normalizeLiveFeedEvent(rawEvent) {
   if (!rawEvent || typeof rawEvent !== 'object') return null;
   const rawType = String(rawEvent.type || rawEvent.event_type || rawEvent.event || '').trim();
@@ -149,6 +166,21 @@ function annotateGenerationHistory(events) {
 
     generationState.set(runKey, generation);
     return annotated;
+  });
+}
+
+function reconcileTerminalEvents(events) {
+  const latestTerminalIndex = new Map();
+  events.forEach((event, index) => {
+    const experimentId = event?.experiment_id || null;
+    if (!experimentId || !TERMINAL_EVENT_TYPES.has(event?.type)) return;
+    latestTerminalIndex.set(experimentId, index);
+  });
+
+  return events.filter((event, index) => {
+    const experimentId = event?.experiment_id || null;
+    if (!experimentId || !TERMINAL_EVENT_TYPES.has(event?.type)) return true;
+    return latestTerminalIndex.get(experimentId) === index;
   });
 }
 
@@ -752,7 +784,18 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   const [showControls, setShowControls] = useState(false);
   const [nowTs, setNowTs] = useState(Date.now());
   const prevConnectedRef = useRef(null);
-  const displayEvents = useMemo(() => annotateGenerationHistory(events), [events]);
+  const displayEvents = useMemo(
+    () => annotateGenerationHistory(reconcileTerminalEvents(events)),
+    [events]
+  );
+  const mainDisplayEvents = useMemo(
+    () => displayEvents.filter((evt) => !PROGRESSION_EVENT_TYPES.has(evt?.type)),
+    [displayEvents]
+  );
+  const progressionDisplayEvents = useMemo(
+    () => displayEvents.filter((evt) => PROGRESSION_EVENT_TYPES.has(evt?.type)),
+    [displayEvents]
+  );
 
   useEffect(() => {
     const interval = setInterval(() => setNowTs(Date.now()), 10000);
@@ -1014,6 +1057,17 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
     return { latestValidationProgress: progress, latestValidationPhase: phase, latestValidationCompletion: completion };
   }, [displayEvents]);
 
+  const latestTerminalEvent = useMemo(() => {
+    const currentExperimentId = activeExperimentRef.current || experimentId || null;
+    for (let i = mainDisplayEvents.length - 1; i >= 0; i--) {
+      const evt = mainDisplayEvents[i];
+      if (!TERMINAL_EVENT_TYPES.has(evt?.type)) continue;
+      if (currentExperimentId && evt?.experiment_id !== currentExperimentId) continue;
+      return evt;
+    }
+    return null;
+  }, [mainDisplayEvents, experimentId]);
+
   const lossCurveMeta = useMemo(() => {
     const lastPoint = lossCurve.length ? lossCurve[lossCurve.length - 1] : null;
     const segments = splitCurveIntoSegments(lossCurve);
@@ -1022,6 +1076,18 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
   }, [lossCurve, nowTs]);
 
   const liveStatus = useMemo(() => {
+    if (latestTerminalEvent?.type === 'complete') {
+      return {
+        tone: 'success',
+        text: 'Experiment completed. Analysis recorded in the notebook.',
+      };
+    }
+    if (latestTerminalEvent?.type === 'failed') {
+      return {
+        tone: 'warn',
+        text: `Experiment failed${latestTerminalEvent?.error ? `: ${latestTerminalEvent.error}` : '.'}`,
+      };
+    }
     const status = String(progress?.status || '').toLowerCase();
     if (status === 'completed') {
       return {
@@ -1066,7 +1132,7 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
       tone: 'info',
       text: progress?.aria_message || '',
     };
-  }, [progress, latestValidationProgress, latestValidationPhase, latestValidationCompletion, lossCurveMeta]);
+  }, [progress, latestTerminalEvent, latestValidationProgress, latestValidationPhase, latestValidationCompletion, lossCurveMeta]);
 
   const curveCards = useMemo(() => {
     const currentExperimentId = lossCurveExpRef.current || activeExperimentRef.current || null;
@@ -1183,13 +1249,29 @@ function LiveFeed({ apiBase, experimentId = null, progress = null }) {
             {connected ? 'Waiting for experiment events...' : 'Unable to connect to event stream. Is the server running?'}
           </div>
         ) : (
-          displayEvents.map((evt, i) => (
-            <FeedItem
-              key={i}
-              evt={evt}
-              prevExpId={i > 0 ? (displayEvents[i - 1]?.experiment_id || null) : null}
-            />
-          ))
+          <>
+            {mainDisplayEvents.map((evt, i) => (
+              <FeedItem
+                key={`main-${i}`}
+                evt={evt}
+                prevExpId={i > 0 ? (mainDisplayEvents[i - 1]?.experiment_id || null) : null}
+              />
+            ))}
+            {progressionDisplayEvents.length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  Progression Activity
+                </div>
+                {progressionDisplayEvents.map((evt, i) => (
+                  <FeedItem
+                    key={`progress-${i}`}
+                    evt={evt}
+                    prevExpId={i > 0 ? (progressionDisplayEvents[i - 1]?.experiment_id || null) : null}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

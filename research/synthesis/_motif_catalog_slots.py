@@ -565,18 +565,6 @@ SLOT_MOTIFS: Tuple[Motif, ...] = (
         avg_loss_ratio=0.0,
         lift=1.0,
     ),
-    Motif(
-        name="mix_transpose",
-        motif_class=MOTIF_CLASS_CHANNEL,
-        steps=(
-            MotifStep("transpose_sd", OpRole.MIX),
-            MotifStep("linear_proj", OpRole.PROJECT),
-        ),
-        description="transpose_sd → projection (seq<->dim swap)",
-        support=0,
-        avg_loss_ratio=0.0,
-        lift=1.0,
-    ),
     # ── I. Cumprod motif (sigmoid guards decay) ───────────────────
     Motif(
         name="decay_cumprod",

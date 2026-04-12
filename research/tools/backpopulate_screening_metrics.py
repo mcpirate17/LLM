@@ -10,6 +10,7 @@ are inserted.
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import dataclasses
 import json
@@ -25,6 +26,16 @@ from typing import Any, Dict, List, Mapping, Sequence
 import torch
 
 from research.eval.screening_rapid import RapidScreeningCheck
+from research.eval.binding_curriculum import (
+    CURRICULUM_BINDING_DISTANCES,
+    CURRICULUM_BINDING_EVAL_SCREENING,
+    curriculum_binding_range_profile,
+)
+from research.eval.hellaswag_eval import screening_hellaswag_eval
+from research.eval.native_induction import (
+    induction_result_metadata,
+    induction_score_gold,
+)
 from research.scientist.notebook import LabNotebook
 from research.scientist.native_runner import compile_model_native_first as compile_model
 from research.scientist.runner import ExperimentRunner, RunConfig
@@ -42,6 +53,7 @@ DEFAULT_BATCH_COMMIT = 10
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
 DEFAULT_WORKER_TIMEOUT_SECONDS = None
 DEFAULT_POST_TRAIN_STABILITY_RUNS = 1
+DEFAULT_SELECTION_SLICE = "backfill"
 RAPID_REQUIRED_FIELDS = (
     "rapid_screening_passed",
     "rapid_screening_elapsed_ms",
@@ -62,6 +74,10 @@ POST_TARGET_ALIASES = {
     "hellaswag": "hellaswag",
     "two": "binding",
     "binding": "binding",
+    "induction": "induction",
+    "ar": "ar",
+    "blimp": "blimp",
+    "ncd": "ncd",
     "all": "all",
 }
 
@@ -80,7 +96,8 @@ def _normalize_post_target(raw: str) -> str:
     key = str(raw).strip().lower()
     if key not in POST_TARGET_ALIASES:
         raise argparse.ArgumentTypeError(
-            f"Unsupported --post-train-target={raw!r}; use one, two, all, full, hellaswag, or binding."
+            f"Unsupported --post-train-target={raw!r}; "
+            "use one, two, all, full, hellaswag, binding, induction, ar, blimp, or ncd."
         )
     return POST_TARGET_ALIASES[key]
 
@@ -88,8 +105,16 @@ def _normalize_post_target(raw: str) -> str:
 def _target_post_fields(target: str) -> tuple[str, ...]:
     if target == "hellaswag":
         return ("hellaswag_acc",)
+    if target == "induction":
+        return ("induction_auc",)
     if target == "binding":
-        return ("induction_auc", "binding_auc", "binding_composite")
+        return ("binding_auc",)
+    if target == "ar":
+        return ("ar_auc",)
+    if target == "blimp":
+        return ("blimp_overall_accuracy",)
+    if target == "ncd":
+        return ("ncd_score",)
     if target == "all":
         return ("hellaswag_acc", "induction_auc", "binding_auc", "binding_composite")
     return POST_REQUIRED_FIELDS
@@ -107,6 +132,26 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--result-id", action="append", default=[])
     parser.add_argument("--from-report", type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--selection-slice",
+        choices=("backfill", "trusted_candidates", "nonref_unique_fingerprints"),
+        default=DEFAULT_SELECTION_SLICE,
+        help=(
+            "Which row cohort to scan when --result-id/--from-report are not used. "
+            "'backfill' preserves legacy behavior; 'trusted_candidates' targets "
+            "candidate_grade + candidate_comparable rows; "
+            "'nonref_unique_fingerprints' targets the latest row for each "
+            "non-reference graph fingerprint."
+        ),
+    )
+    parser.add_argument(
+        "--balance-by-family",
+        action="store_true",
+        help=(
+            "When selecting without explicit result ids, interleave graph families "
+            "so dense/sparse/routing/moe coverage grows more evenly."
+        ),
+    )
     parser.add_argument("--skip-rapid", action="store_true")
     parser.add_argument("--skip-post-train", action="store_true")
     parser.add_argument(
@@ -116,7 +161,8 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Which post-train metric family to backfill: "
             "'one'/'hellaswag', 'two'/'binding' (induction+binding AUCs), "
-            "'all' (hellaswag+binding probes), or 'full' (legacy full post-train, including wikitext)."
+            "'induction', 'all' (hellaswag+induction+binding probes), "
+            "or 'full' (legacy full post-train, including wikitext)."
         ),
     )
     parser.add_argument(
@@ -184,15 +230,20 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--worker-payload", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--worker-output", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--audit-prefix", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--audit-experiment-id", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--audit-source-script", default="", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def _truthy(row: Mapping[str, Any], key: str) -> bool:
-    return bool(int(row[key] or 0))
+    return bool(int(_row_value(row, key) or 0))
 
 
-def _json_dump(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+def _row_value(row: Mapping[str, Any], key: str) -> Any:
+    if key in row.keys():
+        return row[key]
+    return None
 
 
 def _needs_rapid(row: Mapping[str, Any], force: bool) -> bool:
@@ -216,11 +267,54 @@ def _needs_post_train(
 ) -> bool:
     if not _truthy(row, "stage0_passed") or not _truthy(row, "stage05_passed"):
         return False
-    if row["n_train_steps"] is None:
+    if _supports_compile_only_post_target(target_fields):
+        if force:
+            return True
+        return any(_row_value(row, key) is None for key in target_fields)
+    if not _has_replayable_train_budget(row):
         return False
     if force:
         return True
-    return any(row[key] is None for key in target_fields)
+    return any(_row_value(row, key) is None for key in target_fields)
+
+
+def _is_reference_row(row: Mapping[str, Any]) -> bool:
+    trust_label = str(_row_value(row, "trust_label") or "").strip().lower()
+    comparability_label = (
+        str(_row_value(row, "comparability_label") or "").strip().lower()
+    )
+    result_id = str(_row_value(row, "result_id") or "").strip().lower()
+    return (
+        trust_label == "reference"
+        or comparability_label == "reference_comparable"
+        or result_id.startswith("ref_")
+    )
+
+
+def _has_replayable_train_budget(row: Mapping[str, Any]) -> bool:
+    if _row_value(row, "n_train_steps") is not None:
+        return True
+    if _row_value(row, "train_budget_steps") is not None:
+        return True
+    return _truthy(row, "stage1_passed") and _is_reference_row(row)
+
+
+def _is_binding_only_target(target_fields: Sequence[str]) -> bool:
+    return tuple(target_fields) == ("binding_auc",)
+
+
+def _supports_compile_only_post_target(target_fields: Sequence[str]) -> bool:
+    fields = set(target_fields)
+    compile_only_fields = {
+        "hellaswag_acc",
+        "induction_auc",
+        "binding_auc",
+        "binding_composite",
+        "ar_auc",
+        "blimp_overall_accuracy",
+        "ncd_score",
+    }
+    return bool(fields) and fields.issubset(compile_only_fields)
 
 
 def _candidate_result_ids(args: argparse.Namespace) -> List[str]:
@@ -251,7 +345,11 @@ def _fetch_rows(
     result_ids: Sequence[str],
     limit: int,
     force: bool,
+    selection_slice: str,
+    balance_by_family: bool,
+    target_post_fields: Sequence[str],
 ) -> List[sqlite3.Row]:
+    compile_only = _supports_compile_only_post_target(target_post_fields)
     base = """
         SELECT
             pr.result_id,
@@ -272,6 +370,12 @@ def _fetch_rows(
             pr.induction_auc,
             pr.binding_auc,
             pr.binding_composite,
+            pr.ar_auc,
+            pr.blimp_overall_accuracy,
+            pr.ncd_score,
+            pr.trust_label,
+            pr.comparability_label,
+            pr.data_provenance_json,
             e.config_json,
             e.timestamp
         FROM program_results pr
@@ -287,29 +391,140 @@ def _fetch_rows(
         base += f" AND pr.result_id IN ({placeholders})"
         params.extend(result_ids)
     else:
-        base += " AND e.experiment_type = 'backfill'"
-    if not result_ids and not force:
-        base += """
-          AND (
-            pr.rapid_screening_passed IS NULL OR
-            pr.rapid_screening_elapsed_ms IS NULL OR
-            pr.rapid_screening_steps_completed IS NULL OR
-            pr.rapid_screening_max_steps IS NULL OR
-            (
-              pr.n_train_steps IS NOT NULL AND (
-                pr.wikitext_perplexity IS NULL OR
-                pr.hellaswag_acc IS NULL OR
-                pr.induction_auc IS NULL OR
-                pr.binding_auc IS NULL OR
-                pr.binding_composite IS NULL
-              )
+        if selection_slice == "trusted_candidates":
+            base += (
+                " AND pr.trust_label = 'candidate_grade'"
+                " AND pr.comparability_label = 'candidate_comparable'"
+                " AND pr.stage1_passed = 1"
             )
-          )
-        """
-    base += " ORDER BY e.timestamp ASC, pr.result_id ASC"
+        elif selection_slice == "nonref_unique_fingerprints":
+            base += (
+                " AND COALESCE(pr.trust_label, '') <> 'reference'"
+                " AND TRIM(COALESCE(pr.graph_fingerprint, '')) <> ''"
+            )
+        else:
+            base += " AND e.experiment_type = 'backfill'"
+    if not result_ids and not force:
+        if selection_slice == "trusted_candidates":
+            missing_target_sql = " OR ".join(
+                f"pr.{field} IS NULL" for field in target_post_fields
+            )
+            budget_clause = (
+                "1=1"
+                if compile_only
+                else """
+                pr.n_train_steps IS NOT NULL OR
+                pr.train_budget_steps IS NOT NULL OR
+                (
+                  pr.stage1_passed = 1 AND (
+                    COALESCE(pr.trust_label, '') = 'reference' OR
+                    COALESCE(pr.comparability_label, '') = 'reference_comparable' OR
+                    pr.result_id LIKE 'ref\\_%' ESCAPE '\\'
+                  )
+                )
+            """
+            )
+            base += f"""
+              AND ({budget_clause})
+              AND ({missing_target_sql})
+            """
+        else:
+            budget_clause = (
+                "1=1"
+                if compile_only
+                else """
+                    pr.n_train_steps IS NOT NULL OR
+                    pr.train_budget_steps IS NOT NULL OR
+                    (
+                      pr.stage1_passed = 1 AND (
+                        COALESCE(pr.trust_label, '') = 'reference' OR
+                        COALESCE(pr.comparability_label, '') = 'reference_comparable' OR
+                        pr.result_id LIKE 'ref\\_%' ESCAPE '\\'
+                      )
+                    )
+            """
+            )
+            base += f"""
+              AND (
+                pr.rapid_screening_passed IS NULL OR
+                pr.rapid_screening_elapsed_ms IS NULL OR
+                pr.rapid_screening_steps_completed IS NULL OR
+                pr.rapid_screening_max_steps IS NULL OR
+                (
+                  ({budget_clause}) AND (
+                    pr.wikitext_perplexity IS NULL OR
+                    pr.hellaswag_acc IS NULL OR
+                    pr.induction_auc IS NULL OR
+                    pr.binding_auc IS NULL OR
+                    pr.binding_composite IS NULL
+                  )
+                )
+              )
+            """
+    if selection_slice == "nonref_unique_fingerprints":
+        base += " ORDER BY pr.timestamp DESC, pr.result_id DESC"
+    else:
+        base += " ORDER BY e.timestamp ASC, pr.result_id ASC"
+    rows = list(conn.execute(base, tuple(params)).fetchall())
+    if not result_ids and selection_slice == "nonref_unique_fingerprints":
+        rows = _dedupe_rows_by_fingerprint_keep_latest(rows)
+    if not result_ids and balance_by_family:
+        rows = _interleave_rows_by_family(rows)
     if limit > 0:
-        base += f" LIMIT {int(limit)}"
-    return conn.execute(base, tuple(params)).fetchall()
+        rows = rows[: int(limit)]
+    return rows
+
+
+def _graph_family_from_row(row: sqlite3.Row) -> str:
+    raw = row["data_provenance_json"] if "data_provenance_json" in row.keys() else None
+    if isinstance(raw, str) and raw.strip():
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, dict):
+            graph = payload.get("graph") or {}
+            if isinstance(graph, dict):
+                family = str(graph.get("graph_family") or "").strip().lower()
+                if family:
+                    return family
+    return "unknown"
+
+
+def _interleave_rows_by_family(rows: Sequence[sqlite3.Row]) -> List[sqlite3.Row]:
+    buckets: dict[str, list[sqlite3.Row]] = {}
+    family_order: list[str] = []
+    for row in rows:
+        family = _graph_family_from_row(row)
+        if family not in buckets:
+            buckets[family] = collections.deque()
+            family_order.append(family)
+        buckets[family].append(row)
+    interleaved: List[sqlite3.Row] = []
+    while True:
+        progressed = False
+        for family in family_order:
+            bucket = buckets[family]
+            if bucket:
+                interleaved.append(bucket.popleft())
+                progressed = True
+        if not progressed:
+            break
+    return interleaved
+
+
+def _dedupe_rows_by_fingerprint_keep_latest(
+    rows: Sequence[sqlite3.Row],
+) -> List[sqlite3.Row]:
+    seen: set[str] = set()
+    deduped: List[sqlite3.Row] = []
+    for row in rows:
+        fingerprint = str(row["graph_fingerprint"] or "").strip()
+        if not fingerprint or fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        deduped.append(row)
+    return deduped
 
 
 def _build_run_config(row: sqlite3.Row, device: str) -> RunConfig:
@@ -332,6 +547,10 @@ def _build_run_config(row: sqlite3.Row, device: str) -> RunConfig:
     config.enable_stage09_cheap_train_gate = False
     config.skip_post_s1_fingerprint = True
     config.skip_post_s1_triage = True
+    if not bool(getattr(config, "binding_probe_offload_source_model", False)):
+        config.binding_probe_offload_source_model = False
+    if int(getattr(config, "binding_probe_eval_batch_size", 0) or 0) <= 0:
+        config.binding_probe_eval_batch_size = 16 if device.startswith("cuda") else 32
     config.screening_probe_seed = ExperimentRunner._stable_seed(
         row["result_id"],
         row["graph_fingerprint"],
@@ -499,6 +718,229 @@ def _run_post_train(
                 pass
 
 
+def _run_binding_probe_only(
+    graph_json: str,
+    config: RunConfig,
+    device: str,
+    result_id: str,
+) -> Dict[str, Any]:
+    graph = graph_from_json(graph_json)
+    compile_seed = ExperimentRunner._stable_seed(
+        result_id, graph.fingerprint(), "backpopulate_binding_compile"
+    )
+    with _deterministic_compile_seed(device, compile_seed):
+        model = compile_model(
+            [graph] * int(config.n_layers),
+            vocab_size=int(config.vocab_size),
+            max_seq_len=config.max_seq_len,
+        )
+    dev = resolve_device(device)
+    try:
+        br = curriculum_binding_range_profile(
+            model,
+            distances=CURRICULUM_BINDING_DISTANCES,
+            n_train_steps=400,
+            n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
+            train_batch_size=max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "binding_probe_train_batch_size",
+                        16,
+                    )
+                    or 16
+                ),
+            ),
+            eval_batch_size=max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "binding_probe_eval_batch_size",
+                        32,
+                    )
+                    or 32
+                ),
+            ),
+            device=str(dev),
+            seed=getattr(config, "screening_probe_seed", None),
+            offload_source_model=bool(
+                getattr(config, "binding_probe_offload_source_model", False)
+            ),
+        )
+        return screening_probe_fields(
+            {
+                "binding_auc": br.auc,
+                "binding_distance_accuracies": br.distance_accuracies,
+                "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
+                "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
+                "binding_probe_elapsed_ms": br.elapsed_ms,
+            }
+        )
+    finally:
+        del model
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+
+def _run_compile_only_post_eval(
+    graph_json: str,
+    config: RunConfig,
+    device: str,
+    result_id: str,
+    target_post_fields: Sequence[str],
+) -> Dict[str, Any]:
+    graph = graph_from_json(graph_json)
+    compile_seed = ExperimentRunner._stable_seed(
+        result_id, graph.fingerprint(), "backpopulate_compile_only_eval"
+    )
+    with _deterministic_compile_seed(device, compile_seed):
+        model = compile_model(
+            [graph] * int(config.n_layers),
+            vocab_size=int(config.vocab_size),
+            max_seq_len=config.max_seq_len,
+        )
+    dev = resolve_device(device)
+    model = model.to(dev)
+    target_set = set(target_post_fields)
+    updates: Dict[str, Any] = {}
+    try:
+        if "hellaswag_acc" in target_set:
+            hs = screening_hellaswag_eval(model, int(config.vocab_size), str(dev))
+            if hs.get("hellaswag_status") == "all_failed":
+                updates["hellaswag_acc"] = None
+                updates["screening_hellaswag_correct"] = None
+                updates["screening_hellaswag_total"] = None
+            elif hs.get("hellaswag_acc") is not None:
+                updates["hellaswag_acc"] = hs.get("hellaswag_acc")
+            if hs.get("hellaswag_status") is not None:
+                updates["hellaswag_status"] = hs.get("hellaswag_status")
+            if hs.get("hellaswag_total") is not None:
+                updates["hellaswag_n_examples"] = hs.get("hellaswag_total")
+                updates["screening_hellaswag_correct"] = hs.get("hellaswag_correct")
+                updates["screening_hellaswag_total"] = hs.get("hellaswag_total")
+            if hs.get("elapsed_ms") is not None:
+                updates["screening_hellaswag_elapsed_ms"] = hs.get("elapsed_ms")
+
+        if "induction_auc" in target_set or "binding_composite" in target_set:
+            ind = induction_score_gold(
+                model,
+                device=str(dev),
+                seed=getattr(config, "screening_probe_seed", None),
+            )
+            updates.update(induction_result_metadata(ind))
+
+        if "binding_auc" in target_set or "binding_composite" in target_set:
+            br = curriculum_binding_range_profile(
+                model,
+                distances=CURRICULUM_BINDING_DISTANCES,
+                n_train_steps=400,
+                n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
+                train_batch_size=max(
+                    1,
+                    int(
+                        getattr(
+                            config,
+                            "binding_probe_train_batch_size",
+                            16,
+                        )
+                        or 16
+                    ),
+                ),
+                eval_batch_size=max(
+                    1,
+                    int(
+                        getattr(
+                            config,
+                            "binding_probe_eval_batch_size",
+                            32,
+                        )
+                        or 32
+                    ),
+                ),
+                device=str(dev),
+                seed=getattr(config, "screening_probe_seed", None),
+                offload_source_model=bool(
+                    getattr(config, "binding_probe_offload_source_model", False)
+                ),
+            )
+            updates.update(
+                {
+                    "binding_auc": br.auc,
+                    "binding_distance_accuracies": br.distance_accuracies,
+                    "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
+                    "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
+                    "binding_probe_elapsed_ms": br.elapsed_ms,
+                }
+            )
+
+        if "ar_auc" in target_set:
+            from research.eval.associative_recall import associative_recall_score
+
+            ar = associative_recall_score(
+                model,
+                n_pairs=20,
+                n_eval=200,
+                n_train_steps=500,
+                batch_size=16,
+                device=str(dev),
+            )
+            updates["ar_auc"] = ar.auc
+            updates["ar_final_acc"] = ar.final_acc
+            updates["ar_timed_out"] = int(ar.timed_out)
+            updates["ar_above_chance"] = int(ar.above_chance)
+
+        if "blimp_overall_accuracy" in target_set:
+            from research.eval.blimp_eval import evaluate_blimp
+
+            blimp = evaluate_blimp(
+                model, int(config.vocab_size), str(dev), n_per_subtask=50
+            )
+            updates["blimp_overall_accuracy"] = blimp.overall_accuracy
+            updates["blimp_subtask_accuracies_json"] = json.dumps(
+                blimp.subtask_accuracies
+            )
+            updates["blimp_n_subtasks"] = blimp.n_subtasks
+            updates["blimp_status"] = blimp.status
+
+        if "ncd_score" in target_set:
+            from research.eval.ncd import compute_graph_ncd
+
+            ncd_result = compute_graph_ncd(graph_json)
+            updates["ncd_score"] = ncd_result.get("ncd_score")
+            updates["ncd_description_length_per_param"] = ncd_result.get(
+                "description_length_per_param"
+            )
+
+        # screening_probe_fields is a whitelist — pass probe fields through
+        # it, then re-merge BLiMP/NCD fields that aren't in the whitelist.
+        extra = {}
+        for k in (
+            "blimp_overall_accuracy",
+            "blimp_subtask_accuracies_json",
+            "blimp_n_subtasks",
+            "blimp_status",
+            "ncd_score",
+            "ncd_description_length_per_param",
+        ):
+            if k in updates:
+                extra[k] = updates[k]
+        result = screening_probe_fields(updates)
+        result.update(extra)
+        return result
+    finally:
+        del model
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+
 def _recover_hellaswag_after_gate_failure(
     *,
     model: torch.nn.Module,
@@ -519,7 +961,9 @@ def _recover_hellaswag_after_gate_failure(
 
     hs = screening_hellaswag_eval(model, config.vocab_size, device)
     updates: Dict[str, Any] = {}
-    if hs.get("hellaswag_acc") is not None:
+    if hs.get("hellaswag_status") == "all_failed":
+        updates["hellaswag_acc"] = None
+    elif hs.get("hellaswag_acc") is not None:
         updates["hellaswag_acc"] = hs.get("hellaswag_acc")
     if hs.get("hellaswag_status") is not None:
         updates["hellaswag_status"] = hs.get("hellaswag_status")
@@ -531,8 +975,23 @@ def _recover_hellaswag_after_gate_failure(
 def _select_updates(
     row: sqlite3.Row, updates: Dict[str, Any], force: bool
 ) -> Dict[str, Any]:
+    clearable_null_fields = set()
+    if updates.get("hellaswag_status") == "all_failed":
+        # Force-clearing stale HellaSwag values keeps old 0.0 rows from surviving
+        # a rerun that never scored a valid example.
+        clearable_null_fields.update(
+            {
+                "hellaswag_acc",
+                "screening_hellaswag_correct",
+                "screening_hellaswag_total",
+            }
+        )
     if force:
-        return {k: v for k, v in updates.items() if v is not None}
+        return {
+            k: v
+            for k, v in updates.items()
+            if v is not None or k in clearable_null_fields
+        }
     selected: Dict[str, Any] = {}
     for key, value in updates.items():
         if value is None:
@@ -540,6 +999,28 @@ def _select_updates(
         if key not in row.keys() or row[key] is None:
             selected[key] = value
     return selected
+
+
+def _merge_binding_composite_from_existing(
+    row: Mapping[str, Any], updates: Dict[str, Any], force: bool
+) -> None:
+    binding_auc = updates.get("binding_auc")
+    induction_auc = updates.get("induction_auc")
+    if induction_auc is None:
+        induction_auc = row.get("induction_auc")
+    if binding_auc is None:
+        binding_auc = row.get("binding_auc")
+    if induction_auc is None or binding_auc is None:
+        return
+    if (
+        force
+        or row.get("binding_composite") is None
+        or "binding_auc" in updates
+        or "induction_auc" in updates
+    ):
+        updates["binding_composite"] = round(
+            0.3 * float(induction_auc) + 0.3 * float(binding_auc), 4
+        )
 
 
 def _missing_required_fields(
@@ -558,6 +1039,11 @@ def _missing_required_fields(
                     missing.append(key)
     if post_needed:
         for key in target_post_fields:
+            if (
+                key == "hellaswag_acc"
+                and updates.get("hellaswag_status") == "all_failed"
+            ):
+                continue
             if force or row.get(key) is None:
                 if updates.get(key) is None:
                     missing.append(key)
@@ -626,10 +1112,15 @@ def _evaluate_row_payload(
     stability_probe_abs_tol: float,
     allow_insufficient_learning_metrics: bool,
     post_train_target: str,
+    selection_slice: str = DEFAULT_SELECTION_SLICE,
 ) -> Dict[str, Any]:
     row = payload
     target_post_fields = _target_post_fields(post_train_target)
-    rapid_needed = (not skip_rapid) and _needs_rapid(row, force)
+    rapid_needed = (
+        selection_slice != "trusted_candidates"
+        and (not skip_rapid)
+        and _needs_rapid(row, force)
+    )
     post_needed = (not skip_post_train) and _needs_post_train(
         row, force, target_post_fields
     )
@@ -639,16 +1130,20 @@ def _evaluate_row_payload(
     target_post_field_set = set(target_post_fields)
     config.skip_screening_wikitext = (
         "wikitext_perplexity" not in target_post_field_set
-        or row.get("wikitext_perplexity") is not None
+        or (not force and row.get("wikitext_perplexity") is not None)
     )
-    config.skip_screening_hellaswag = (
-        "hellaswag_acc" not in target_post_field_set
-        or row.get("hellaswag_acc") is not None
+    config.skip_screening_hellaswag = "hellaswag_acc" not in target_post_field_set or (
+        not force and row.get("hellaswag_acc") is not None
     )
-    target_probe_fields = {"induction_auc", "binding_auc", "binding_composite"}
-    config.skip_binding_probes = not bool(
-        target_probe_fields & target_post_field_set
-    ) or all(row.get(key) is not None for key in target_probe_fields)
+    config.skip_induction_probe = "induction_auc" not in target_post_field_set or (
+        not force and row.get("induction_auc") is not None
+    )
+    config.skip_binding_probe = "binding_auc" not in target_post_field_set or (
+        not force and row.get("binding_auc") is not None
+    )
+    config.skip_binding_probes = (
+        config.skip_induction_probe and config.skip_binding_probe
+    )
     if rapid_needed:
         updates.update(
             _run_rapid(
@@ -658,7 +1153,18 @@ def _evaluate_row_payload(
                 str(row["result_id"]),
             )
         )
-    if post_needed:
+    if post_needed and _supports_compile_only_post_target(target_post_fields):
+        updates.update(
+            _run_compile_only_post_eval(
+                str(row["graph_json"]),
+                config,
+                device,
+                str(row["result_id"]),
+                target_post_fields,
+            )
+        )
+        _merge_binding_composite_from_existing(row, updates, force)
+    elif post_needed:
         post_runs: List[Dict[str, Any]] = []
         for _ in range(max(1, int(post_train_stability_runs))):
             runner = ExperimentRunner(notebook_path=str(DB_PATH))
@@ -688,6 +1194,7 @@ def _evaluate_row_payload(
             probe_abs_tol=stability_probe_abs_tol,
         )
         updates.update(post_runs[-1])
+        _merge_binding_composite_from_existing(row, updates, force)
     updates = _select_updates(row, updates, force)
     missing_required = _missing_required_fields(
         row=row,
@@ -725,6 +1232,8 @@ def _run_worker_subprocess(
             "research.tools.backpopulate_screening_metrics",
             "--device",
             str(args.device),
+            "--selection-slice",
+            str(args.selection_slice),
             "--worker-payload",
             str(payload_path),
             "--worker-output",
@@ -746,6 +1255,8 @@ def _run_worker_subprocess(
             cmd.append("--skip-rapid")
         if args.skip_post_train:
             cmd.append("--skip-post-train")
+        if args.balance_by_family:
+            cmd.append("--balance-by-family")
         if args.allow_insufficient_learning_metrics:
             cmd.append("--allow-insufficient-learning-metrics")
         try:
@@ -806,6 +1317,62 @@ def _write_report(report_path: Path, rows: Sequence[Dict[str, Any]]) -> None:
             f.write("\t".join(clean[h] for h in headers) + "\n")
 
 
+def _backpopulate_provenance_context(
+    args: argparse.Namespace, device: str
+) -> Dict[str, Any]:
+    return {
+        "kind": "screening_metric_backfill",
+        "prefix": str(getattr(args, "audit_prefix", "") or ""),
+        "experiment_id": str(getattr(args, "audit_experiment_id", "") or ""),
+        "source_script": str(getattr(args, "audit_source_script", "") or ""),
+        "post_train_target": str(args.post_train_target),
+        "allow_insufficient_learning_metrics": bool(
+            args.allow_insufficient_learning_metrics
+        ),
+        "post_train_stability_runs": int(args.post_train_stability_runs),
+        "worker_timeout_seconds": args.worker_timeout_seconds,
+        "device": str(device),
+        "updated_at": round(time.time(), 3),
+    }
+
+
+def _apply_row_updates(
+    nb: LabNotebook,
+    *,
+    result_id: str,
+    updates: Dict[str, Any],
+    provenance_context: Dict[str, Any],
+) -> None:
+    """Apply one row's updates inside a short-lived transaction."""
+    if not updates:
+        return
+    with nb.batch():
+        store_probe_results(
+            nb,
+            result_id,
+            updates,
+            write_leaderboard=True,
+            provenance_context=provenance_context,
+        )
+
+
+def _print_backpopulate_summary(
+    *,
+    processed: int,
+    total_rows: int,
+    updated: int,
+    updated_cuda: int,
+    report_path: Path,
+    elapsed: float,
+    interrupted: bool = False,
+) -> None:
+    prefix = "Interrupted after" if interrupted else "Processed"
+    print(
+        f"{prefix} {processed}/{total_rows} rows, updated {updated} "
+        f"(cuda={updated_cuda}), report={report_path}, elapsed={elapsed:.1f}s"
+    )
+
+
 def main() -> None:
     args = _parse_args()
     if args.worker_payload and args.worker_output:
@@ -823,6 +1390,7 @@ def main() -> None:
                 stability_probe_abs_tol=args.stability_probe_abs_tol,
                 allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
                 post_train_target=args.post_train_target,
+                selection_slice=args.selection_slice,
             )
             result["ok"] = 1
         except Exception as exc:  # noqa: BLE001
@@ -836,7 +1404,16 @@ def main() -> None:
     nb = LabNotebook(str(args.db))
     nb.conn.row_factory = sqlite3.Row
     result_ids = _candidate_result_ids(args)
-    rows = _fetch_rows(nb.conn, result_ids, args.limit, args.force)
+    target_post_fields = _target_post_fields(args.post_train_target)
+    rows = _fetch_rows(
+        nb.conn,
+        result_ids,
+        args.limit,
+        args.force,
+        args.selection_slice,
+        args.balance_by_family,
+        target_post_fields,
+    )
     if not rows:
         print("No candidate rows found.")
         return
@@ -847,13 +1424,12 @@ def main() -> None:
     consecutive_failures = 0
     report_rows: List[Dict[str, Any]] = []
     t0 = time.time()
-    target_post_fields = _target_post_fields(args.post_train_target)
 
-    for start in range(0, len(rows), max(1, int(args.batch_commit))):
-        chunk = rows[start : start + max(1, int(args.batch_commit))]
-        chunk_report_rows: List[Dict[str, Any]] = []
-        stop_error: str | None = None
-        with nb.batch():
+    try:
+        for start in range(0, len(rows), max(1, int(args.batch_commit))):
+            chunk = rows[start : start + max(1, int(args.batch_commit))]
+            chunk_report_rows: List[Dict[str, Any]] = []
+            stop_error: str | None = None
             for row in chunk:
                 processed += 1
                 rapid_needed = (not args.skip_rapid) and _needs_rapid(row, args.force)
@@ -883,16 +1459,21 @@ def main() -> None:
                             stability_probe_abs_tol=args.stability_probe_abs_tol,
                             allow_insufficient_learning_metrics=args.allow_insufficient_learning_metrics,
                             post_train_target=args.post_train_target,
+                            selection_slice=args.selection_slice,
                         )
                         rapid_needed = int(worker.get("rapid_needed") or 0)
                         post_needed = int(worker.get("post_needed") or 0)
                         updates = dict(worker.get("updates") or {})
                     if updates and not args.dry_run:
-                        store_probe_results(
+                        # Keep the write transaction short. Holding nb.batch() open
+                        # across the expensive CUDA replay loop starves other writers.
+                        _apply_row_updates(
                             nb,
-                            str(row["result_id"]),
-                            updates,
-                            write_leaderboard=True,
+                            result_id=str(row["result_id"]),
+                            updates=updates,
+                            provenance_context=_backpopulate_provenance_context(
+                                args, source_device
+                            ),
                         )
                         updated += 1
                         updated_cuda += 1
@@ -936,18 +1517,37 @@ def main() -> None:
                         f"see report {args.report} for the exact failing rows."
                     )
                     break
-        report_rows.extend(chunk_report_rows)
-        _write_report(args.report, report_rows)
-        if stop_error:
-            raise RuntimeError(stop_error)
+            report_rows.extend(chunk_report_rows)
+            _write_report(args.report, report_rows)
+            if stop_error:
+                raise RuntimeError(stop_error)
 
-    _write_report(args.report, report_rows)
-    elapsed = time.time() - t0
-    print(
-        f"Processed {processed} rows, updated {updated} "
-        f"(cuda={updated_cuda}), "
-        f"report={args.report}, elapsed={elapsed:.1f}s"
-    )
+        _write_report(args.report, report_rows)
+        elapsed = time.time() - t0
+        _print_backpopulate_summary(
+            processed=processed,
+            total_rows=len(rows),
+            updated=updated,
+            updated_cuda=updated_cuda,
+            report_path=args.report,
+            elapsed=elapsed,
+        )
+    except KeyboardInterrupt:
+        _write_report(args.report, report_rows)
+        elapsed = time.time() - t0
+        _print_backpopulate_summary(
+            processed=processed,
+            total_rows=len(rows),
+            updated=updated,
+            updated_cuda=updated_cuda,
+            report_path=args.report,
+            elapsed=elapsed,
+            interrupted=True,
+        )
+        print("Keyboard interrupt received. Partial results were preserved.")
+        return
+    finally:
+        nb.close()
 
 
 if __name__ == "__main__":

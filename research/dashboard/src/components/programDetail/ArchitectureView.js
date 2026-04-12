@@ -12,6 +12,17 @@ import RefinementAdvisor from '../program/RefinementAdvisor';
  * Right column of the two-column grid: fingerprint radar, CKA similarity, timing.
  */
 export function FingerprintColumn({ program, fmtMs, fmtMem, fmtInt }) {
+  const fingerprintMetrics = [
+    ['Spectral Norm', program.fp_jacobian_spectral_norm ?? program.jacobian_spectral_norm],
+    ['Interaction Locality', program.fp_interaction_locality],
+    ['Interaction Sparsity', program.fp_interaction_sparsity],
+    ['Isotropy', program.fp_isotropy],
+    ['Rank Ratio', program.fp_rank_ratio],
+    ['Sensitivity Uniformity', program.fp_sensitivity_uniformity],
+    ['Structural Novelty', program.structural_novelty],
+    ['Behavioral Novelty', program.behavioral_novelty],
+  ].filter(([, value]) => value != null && Number.isFinite(Number(value)));
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: -8 }}>
@@ -66,6 +77,18 @@ export function FingerprintColumn({ program, fmtMs, fmtMem, fmtInt }) {
           </div>
         )}
       </div>
+      {fingerprintMetrics.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8 }}>
+            Fingerprint Metrics
+          </div>
+          <div style={{ fontSize: 13 }}>
+            {fingerprintMetrics.map(([label, value]) => (
+              <MetricRow key={label} label={label} value={Number(value).toFixed(4)} />
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', marginBottom: 8, marginTop: 12 }}>
         Sandbox Timing
       </div>

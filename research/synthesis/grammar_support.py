@@ -76,6 +76,8 @@ OP_TO_TEMPLATE: Dict[str, str] = {
     "score_depth_blend": "mixed_recursion",
     "difficulty_blend_3way": "three_lane_adaptive",
     "relu_gated_moe": "moe",
+    "gated_lane_blend": "gated_lane_blend_block",
+    "depth_gated_transform": "depth_gated_block",
 }
 
 EFFICIENCY_TEMPLATES: FrozenSet[str] = frozenset(

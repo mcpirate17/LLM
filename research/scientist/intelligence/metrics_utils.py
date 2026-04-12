@@ -5,6 +5,22 @@ from typing import Any, Dict
 import numpy as np
 
 
+def safe_binary_roc_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    y_true = np.asarray(y_true).astype(np.int32)
+    y_score = np.asarray(y_score, dtype=np.float64)
+    if y_true.size == 0:
+        return 0.0
+    if np.unique(y_true).size < 2:
+        return 0.0
+    try:
+        from sklearn.metrics import roc_auc_score
+
+        score = float(roc_auc_score(y_true, y_score))
+        return score if np.isfinite(score) else 0.0
+    except Exception:
+        return 0.0
+
+
 def binary_classification_metrics(
     y_true: np.ndarray,
     y_score: np.ndarray,
@@ -33,12 +49,7 @@ def binary_classification_metrics(
         else 0.0
     )
 
-    try:
-        from sklearn.metrics import roc_auc_score
-
-        roc_auc = float(roc_auc_score(y_true, y_score))
-    except Exception:
-        roc_auc = 0.0
+    roc_auc = safe_binary_roc_auc(y_true, y_score)
 
     return {
         "threshold": float(threshold),

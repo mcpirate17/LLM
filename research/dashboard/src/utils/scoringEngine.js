@@ -91,8 +91,13 @@ function bestLossForEfficiency(entry) {
 // ── Shared leaderboard helpers ──────────────────────────────────────
 
 export function bestLoss(entry) {
-  if (entry?.validation_loss_ratio != null) return Number(entry.validation_loss_ratio);
-  if (entry?.investigation_loss_ratio != null) return Number(entry.investigation_loss_ratio);
+  const tier = String(entry?.tier || '').toLowerCase();
+  if ((tier === 'validation' || tier === 'breakthrough') && entry?.validation_loss_ratio != null) {
+    return Number(entry.validation_loss_ratio);
+  }
+  if ((tier === 'investigation' || tier === 'investigation_failed' || tier === 'validation' || tier === 'breakthrough') && entry?.investigation_loss_ratio != null) {
+    return Number(entry.investigation_loss_ratio);
+  }
   if (entry?.screening_loss_ratio != null) return Number(entry.screening_loss_ratio);
   if (entry?.loss_ratio != null) return Number(entry.loss_ratio);
   return null;
@@ -628,7 +633,7 @@ function hasTieredFields(entry) {
  * program_results table.
  */
 function tieredBreakdown(entry, tierOrder) {
-  const sLoss = entry.validation_loss_ratio ?? entry.screening_loss_ratio;
+  const sLoss = entry.screening_loss_ratio;
   const screeningLoss = normalizeLossRatio(sLoss);
   const novelty = entry.screening_novelty != null ? Math.min(entry.screening_novelty, 1.0) : 0;
   const investigationLoss = normalizeLossRatio(entry.investigation_loss_ratio);

@@ -12,10 +12,31 @@ import {
   SummaryBar,
 } from './discoveries/DiscoveryUiBits';
 import SortIndicator from './shared/SortIndicator';
-import useVirtualRows from '../hooks/useVirtualRows';
 
 const DISCOVERIES_PREFS_KEY = 'aria_discoveries_prefs_v1';
 const QUALITY_FLOOR_THRESHOLD = 0.8;
+
+function provenanceBucket(entry) {
+  const cohort = String(entry?.result_cohort || '').trim().toLowerCase();
+  const experimentType = String(entry?.experiment_type || '').trim().toLowerCase();
+  const trustLabel = String(entry?.trust_label || '').trim().toLowerCase();
+  const comparabilityLabel = String(entry?.comparability_label || '').trim().toLowerCase();
+
+  if (experimentType === 'exact_graph_replay' || cohort === 'exact_graph_replay') {
+    return 'replay';
+  }
+  if (
+    cohort === 'backfill'
+    || trustLabel === 'backfill_observation'
+    || comparabilityLabel === 'reconstructed_init_variant'
+  ) {
+    return 'backfill';
+  }
+  if (['candidate_screening', 'candidate_grade', 'reference'].includes(trustLabel)) {
+    return 'trusted';
+  }
+  return 'untrusted';
+}
 
 function discoveryLossDisplay(entry) {
   if (entry?.discovery_loss_ratio != null) return Number(entry.discovery_loss_ratio);
@@ -45,31 +66,61 @@ function finitePositiveOrNull(value) {
 const COLUMNS = [
   { key: '_score', label: 'Discovery Score', width: 124, title: 'Internal ranking score based on novelty and performance.' },
   { key: 'display_name', label: 'Architecture', width: 240, title: 'Human-readable name or fingerprint of the model topology.' },
-  { key: 'architecture_family', label: 'Family', title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
-  { key: 'discovery_loss_ratio', label: 'Discovery Loss', title: 'Loss ratio on random tokens (fast triage).' },
-  { key: 'validation_loss_ratio', label: 'Validation Loss', title: 'Loss ratio on real micro-corpus (true causal performance).' },
-  { key: '_best_loss', label: 'Best Loss', title: 'The lowest loss ratio achieved by this architecture across all tests.' },
-  { key: '_vs_ref', label: 'vs Ref', title: 'How this model compares to the GPT-2 baseline (lower % is better).' },
-  { key: '_novelty', label: 'Novelty', title: 'Measures how unique this model is compared to existing designs.' },
-  { key: 'param_efficiency', label: 'Param Eff', title: 'Parameter efficiency: FLOPs per parameter (higher = parameters are used more efficiently).' },
-  { key: 'sample_efficiency', label: 'Sample Eff', title: 'How quickly the model converges to 25% of initial loss (1.0 = instant, 0.0 = never).' },
-  { key: 'investigation_robustness', label: 'Robustness', title: 'Consistency across different training recipes (higher is more stable).' },
-  { key: 'robustness_long_ctx_score', label: 'LongCtx', title: 'Combined long-context score used in final evaluation.' },
-  { key: 'robustness_long_ctx_scaling_score', label: 'LC-Scale', title: 'Long-context scaling component score.' },
-  { key: 'robustness_long_ctx_assoc_score', label: 'LC-Assoc', title: 'Associative retrieval benchmark score.' },
-  { key: 'robustness_long_ctx_multi_hop_score', label: 'LC-MHop', title: 'Multi-hop retrieval benchmark score.' },
-  { key: 'robustness_long_ctx_passkey_score', label: 'LC-Passkey', title: 'Zero-shot passkey retrieval benchmark score.' },
-  { key: 'robustness_long_ctx_retrieval_aggregate', label: 'LC-Retr', title: 'Aggregate retrieval score across long-context benchmarks.' },
-  { key: 'max_viable_seq_len', label: 'LC-MaxLen', title: 'Maximum viable sequence length from long-context scaling sweep.' },
-  { key: 'jacobian_spectral_norm', label: 'Spectral', title: 'Jacobian Spectral Norm: stability of gradient propagation (lower is better).' },
-  { key: 'init_sensitivity_std', label: 'InitStd', title: 'Sensitivity to weight initialization (lower means more predictable).' },
-  { key: 'tier', label: 'Status', width: 96, title: 'Current research phase of this architecture.' },
-  { key: '_actions', label: '', title: 'Actions' },
+  { key: 'architecture_family', label: 'Family', width: 120, title: 'The architectural category (e.g., Attention, SSM, Hybrid).' },
+  { key: 'discovery_loss_ratio', label: 'Disc Loss', width: 92, title: 'Loss ratio on random tokens (fast triage).' },
+  { key: 'validation_loss_ratio', label: 'Val Loss', width: 92, title: 'Loss ratio on real micro-corpus (true causal performance).' },
+  { key: '_best_loss', label: 'Best', width: 84, title: 'The lowest loss ratio achieved by this architecture across all tests.' },
+  { key: '_vs_ref', label: 'vs Ref', width: 84, title: 'How this model compares to the GPT-2 baseline (lower % is better).' },
+  { key: '_novelty', label: 'Novelty', width: 78, title: 'Measures how unique this model is compared to existing designs.' },
+  { key: 'param_efficiency', label: 'P Eff', width: 78, title: 'Parameter efficiency: FLOPs per parameter (higher = parameters are used more efficiently).' },
+  { key: 'sample_efficiency', label: 'S Eff', width: 78, title: 'How quickly the model converges to 25% of initial loss (1.0 = instant, 0.0 = never).' },
+  { key: 'investigation_robustness', label: 'Robust', width: 82, title: 'Consistency across different training recipes (higher is more stable).' },
+  { key: 'robustness_long_ctx_score', label: 'LongCtx', width: 82, title: 'Combined long-context score used in final evaluation.' },
+  { key: 'robustness_long_ctx_scaling_score', label: 'LC-Scale', width: 82, title: 'Long-context scaling component score.' },
+  { key: 'robustness_long_ctx_assoc_score', label: 'LC-Assoc', width: 82, title: 'Associative retrieval benchmark score.' },
+  { key: 'robustness_long_ctx_multi_hop_score', label: 'LC-MHop', width: 82, title: 'Multi-hop retrieval benchmark score.' },
+  { key: 'robustness_long_ctx_passkey_score', label: 'LC-Key', width: 82, title: 'Zero-shot passkey retrieval benchmark score.' },
+  { key: 'robustness_long_ctx_retrieval_aggregate', label: 'LC-Retr', width: 82, title: 'Aggregate retrieval score across long-context benchmarks.' },
+  { key: 'max_viable_seq_len', label: 'MaxLen', width: 86, title: 'Maximum viable sequence length from long-context scaling sweep.' },
+  { key: 'jacobian_spectral_norm', label: 'Spectral', width: 82, title: 'Jacobian Spectral Norm: stability of gradient propagation (lower is better).' },
+  { key: 'init_sensitivity_std', label: 'InitStd', width: 82, title: 'Sensitivity to weight initialization (lower means more predictable).' },
+  { key: 'tier', label: 'Status', width: 128, title: 'Current research phase of this architecture.' },
+  { key: '_details', label: 'View', width: 72, title: 'Open the detailed fingerprint side panel for this architecture.' },
+  { key: '_compare', label: 'Cmp', width: 72, title: 'Add architecture to side-by-side comparison.' },
+  { key: '_designer', label: 'UI', width: 72, title: 'Open architecture in the visual designer.' },
+];
+
+const CORE_VISIBLE_COLUMNS = [
+  '_score',
+  'display_name',
+  'architecture_family',
+  'discovery_loss_ratio',
+  'validation_loss_ratio',
+  '_best_loss',
+  '_novelty',
+  'jacobian_spectral_norm',
+  'tier',
+  '_details',
+  '_compare',
+  '_designer',
+];
+
+const RESEARCH_VISIBLE_COLUMNS = [
+  ...CORE_VISIBLE_COLUMNS,
+  '_vs_ref',
+  'param_efficiency',
+  'sample_efficiency',
+  'investigation_robustness',
+  'robustness_long_ctx_score',
+  'max_viable_seq_len',
+  'init_sensitivity_std',
 ];
 
 function Discoveries({
   onSelectProgram,
   onAddToComparison,
+  onRescreen,
+  onPromoteScreening,
   onInvestigate,
   onValidate,
   highlightResultId,
@@ -122,6 +173,11 @@ function Discoveries({
   const [qualityFloorEnabled, setQualityFloorEnabled] = useState(() =>
     typeof prefs?.qualityFloorEnabled === 'boolean' ? prefs.qualityFloorEnabled : true
   );
+  const [sourceFilter, setSourceFilter] = useState(() =>
+    ['trusted', 'all', 'untrusted', 'backfill', 'replay'].includes(prefs?.sourceFilter)
+      ? prefs.sourceFilter
+      : (typeof prefs?.trustedOnly === 'boolean' ? (prefs.trustedOnly ? 'trusted' : 'all') : 'trusted')
+  );
   const [visibleColumns, setVisibleColumns] = useState(() =>
     {
       const requiredLongCtx = [
@@ -148,12 +204,20 @@ function Discoveries({
       for (const key of requiredLongCtx) {
         if (!defaults.includes(key) && validKeys.has(key)) defaults.push(key);
       }
-      return defaults;
+      return CORE_VISIBLE_COLUMNS.filter((key) => validKeys.has(key));
     }
   );
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
   const highlightRef = useRef(null);
+  const visibleTableColumns = useMemo(
+    () => COLUMNS.filter((col) => visibleColumns.includes(col.key)),
+    [visibleColumns]
+  );
+  const applyColumnPreset = useCallback((keys) => {
+    const valid = new Set(COLUMNS.map((col) => col.key));
+    setVisibleColumns(keys.filter((key) => valid.has(key)));
+  }, []);
 
   // Persist preferences
   useEffect(() => {
@@ -161,10 +225,10 @@ function Discoveries({
       if (typeof window === 'undefined') return;
       window.localStorage.setItem(DISCOVERIES_PREFS_KEY, JSON.stringify({
         activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences,
-        qualityFloorEnabled, visibleColumns, hideFailed,
+        qualityFloorEnabled, visibleColumns, hideFailed, sourceFilter,
       }));
     } catch {}
-  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns, hideFailed]);
+  }, [activeTier, sortKey, sortDesc, searchQuery, showChart, showReferences, qualityFloorEnabled, visibleColumns, hideFailed, sourceFilter]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -200,7 +264,13 @@ function Discoveries({
       setError(null);
     }
     try {
-      const params = new URLSearchParams({ sort: 'composite_score', limit: '200', view: 'ranked' });
+      const limit = sourceFilter === 'trusted' ? '200' : '2500';
+      const params = new URLSearchParams({
+        sort: 'composite_score',
+        limit,
+        view: 'ranked',
+        trusted_only: sourceFilter === 'trusted' ? '1' : '0',
+      });
       if (activeTier !== 'all') params.set('tier', activeTier);
       const q = debouncedSearchQuery.trim();
       if (q) {
@@ -224,14 +294,14 @@ function Discoveries({
     } finally {
       if (!isBackground) setLoading(false);
     }
-  }, [activeTier, debouncedSearchQuery]);
+  }, [activeTier, debouncedSearchQuery, sourceFilter]);
 
   useEffect(() => {
     fetchData(slowPollTick > 0);
   }, [fetchData, slowPollTick]);
 
   const handleSort = (key) => {
-    if (key === '_actions') return;
+    if (key === '_details' || key === '_compare' || key === '_designer') return;
     if (sortKey === key) setSortDesc(!sortDesc);
     else { setSortKey(key); setSortDesc(true); }
   };
@@ -326,6 +396,8 @@ function Discoveries({
 
       return {
         ...e,
+        discovery_loss_ratio: discoveryLossDisplay(e),
+        validation_loss_ratio: validationLossDisplay(e),
         // Keep Discoveries score aligned with backend leaderboard composite when present.
         _score: (e.composite_score != null ? Number(e.composite_score) : candidateScore(e, TIER_ORDER)),
         _best_loss: entryBestLoss,
@@ -368,9 +440,24 @@ function Discoveries({
     return refs;
   }, [data?.references]);
 
+  const sourceFiltered = useMemo(() => {
+    return sorted.filter((entry) => {
+      const bucket = provenanceBucket(entry);
+      if (sourceFilter === 'all') return true;
+      if (sourceFilter === 'trusted') return bucket === 'trusted';
+      if (sourceFilter === 'untrusted') return bucket !== 'trusted';
+      return bucket === sourceFilter;
+    });
+  }, [sorted, sourceFilter]);
+
+  const effectiveQualityFloorEnabled = useMemo(() => {
+    if (!qualityFloorEnabled) return false;
+    return sourceFilter === 'trusted' || sourceFilter === 'all';
+  }, [qualityFloorEnabled, sourceFilter]);
+
   const failedFiltered = useMemo(() => {
-    if (!hideFailed) return sorted;
-    return sorted.filter(e => {
+    if (!hideFailed) return sourceFiltered;
+    return sourceFiltered.filter(e => {
       if (e.is_reference) return true;
       const tier = String(e.tier || '').toLowerCase();
       // Tier-based failures
@@ -382,37 +469,49 @@ function Discoveries({
       if (tier === 'validation' && e.validation_baseline_ratio != null && !e.validation_passed) return false;
       return true;
     });
-  }, [sorted, hideFailed]);
+  }, [sourceFiltered, hideFailed]);
 
   const failedHiddenCount = useMemo(() => {
     if (!hideFailed) return 0;
-    return Math.max(0, (sorted?.length || 0) - (failedFiltered?.length || 0));
-  }, [hideFailed, sorted, failedFiltered]);
+    return Math.max(0, (sourceFiltered?.length || 0) - (failedFiltered?.length || 0));
+  }, [hideFailed, sourceFiltered, failedFiltered]);
 
   const qualityFiltered = useMemo(() => {
-    if (!qualityFloorEnabled) return failedFiltered;
+    if (!effectiveQualityFloorEnabled) return failedFiltered;
     return failedFiltered.filter((e) => {
       if (e?.is_reference) return true;
       const score = e?.composite_score;
       return score != null && (Number(score) / 100.0) >= QUALITY_FLOOR_THRESHOLD;
     });
-  }, [failedFiltered, qualityFloorEnabled]);
+  }, [failedFiltered, effectiveQualityFloorEnabled]);
 
   const qualityHiddenCount = useMemo(() => {
-    if (!qualityFloorEnabled) return 0;
+    if (!effectiveQualityFloorEnabled) return 0;
     return Math.max(0, (failedFiltered?.length || 0) - (qualityFiltered?.length || 0));
-  }, [qualityFloorEnabled, failedFiltered, qualityFiltered]);
+  }, [effectiveQualityFloorEnabled, failedFiltered, qualityFiltered]);
 
   const filtered = qualityFiltered;
 
-  const { containerProps: virtualContainerProps, visibleRows, topPadding, bottomPadding, startIndex } = useVirtualRows({
-    rows: filtered,
-    rowHeight: 40,
-    overscan: 10,
-    containerHeight: 700,
-  });
-
   const counts = data?.counts || data?.tier_counts || {};
+  const summaryCounts = useMemo(() => {
+    const base = { ...(counts || {}) };
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    let backfill = 0;
+    let replay = 0;
+    for (const entry of entries) {
+      const bucket = provenanceBucket(entry);
+      if (bucket === 'replay') {
+        replay += 1;
+        continue;
+      }
+      if (bucket === 'backfill') {
+        backfill += 1;
+      }
+    }
+    base.backfill = backfill;
+    base.replay = replay;
+    return base;
+  }, [counts, data?.entries]);
   const tiers = ['all', 'screening', 'investigation', 'validation', 'breakthrough'];
   const hasLoadedData = Boolean(
     data && (Array.isArray(data.entries) || Array.isArray(data.references))
@@ -430,7 +529,7 @@ function Discoveries({
       {/* Summary bar */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
-          <SummaryBar tierCounts={counts} />
+          <SummaryBar tierCounts={summaryCounts} />
         </div>
         <button
           className={`refresh-btn ${showChart ? 'active' : ''}`}
@@ -494,6 +593,45 @@ function Discoveries({
             </span>
           )}
         </button>
+        <label
+          title="Filter by provenance source"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 11,
+            padding: '0 10px',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            color: 'var(--text-secondary)',
+            background: 'transparent',
+            minHeight: 28,
+          }}
+        >
+          <span style={{ color: 'var(--text-muted)' }}>Source</span>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            aria-label="Filter by source provenance"
+            style={{
+              fontSize: 11,
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              outline: 'none',
+              cursor: 'pointer',
+              padding: '3px 22px 3px 8px',
+              appearance: 'auto',
+            }}
+          >
+            <option value="trusted">Trusted</option>
+            <option value="all">All</option>
+            <option value="untrusted">Untrusted</option>
+            <option value="backfill">Backfill</option>
+            <option value="replay">Replay</option>
+          </select>
+        </label>
         <button
           onClick={() => setHideFailed(v => !v)}
           aria-label={hideFailed ? 'Show failed' : 'Hide failed'}
@@ -530,6 +668,45 @@ function Discoveries({
           }}
         >
           Columns
+        </button>
+        <button
+          onClick={() => applyColumnPreset(CORE_VISIBLE_COLUMNS)}
+          style={{
+            fontSize: 11, padding: '5px 10px', cursor: 'pointer',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+          }}
+          title="Show the core discovery columns"
+        >
+          Core
+        </button>
+        <button
+          onClick={() => applyColumnPreset(RESEARCH_VISIBLE_COLUMNS)}
+          style={{
+            fontSize: 11, padding: '5px 10px', cursor: 'pointer',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+          }}
+          title="Show an expanded research-oriented column set"
+        >
+          Research
+        </button>
+        <button
+          onClick={() => applyColumnPreset(COLUMNS.map((col) => col.key))}
+          style={{
+            fontSize: 11, padding: '5px 10px', cursor: 'pointer',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+          }}
+          title="Show all available columns"
+        >
+          All
         </button>
         <button
           onClick={fetchData}
@@ -588,6 +765,11 @@ function Discoveries({
         {qualityFloorEnabled && qualityHiddenCount > 0 && (
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent-yellow)' }}>
             {qualityHiddenCount} low-quality hidden
+          </span>
+        )}
+        {qualityFloorEnabled && !effectiveQualityFloorEnabled && (
+          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            quality floor bypassed for {sourceFilter}
           </span>
         )}
         {hideFailed && failedHiddenCount > 0 && (
@@ -675,13 +857,20 @@ function Discoveries({
               Refreshing discoveries...
             </p>
           )}
-          <div {...virtualContainerProps} style={{ ...virtualContainerProps.style, overflowX: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
-          <table className="data-table table-wide">
+          <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+          <table className="data-table table-wide" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: 26 }} />
+              <col style={{ width: 44 }} />
+              {visibleTableColumns.map((col) => (
+                <col key={col.key} style={{ width: col.width ? `${col.width}px` : '104px' }} />
+              ))}
+            </colgroup>
             <thead style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-card, #1a1a2e)' }}>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
                 <th style={{ ...thStyle, width: 26, position: 'sticky', top: 0, background: 'inherit' }} aria-label="Pinned marker" />
                 <th style={{ ...thStyle, position: 'sticky', top: 0, background: 'inherit' }}>#</th>
-                {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => (
+                {visibleTableColumns.map(col => (
                   <th
                     key={col.key}
                     onClick={() => handleSort(col.key)}
@@ -692,7 +881,7 @@ function Discoveries({
                       top: 0,
                       background: 'inherit',
                       width: col.width ? `${col.width}px` : undefined,
-                      cursor: col.key === '_actions' ? 'default' : 'pointer',
+                      cursor: (col.key === '_details' || col.key === '_compare' || col.key === '_designer') ? 'default' : 'pointer',
                       userSelect: 'none',
                     }}
                   >
@@ -703,10 +892,8 @@ function Discoveries({
               </tr>
             </thead>
             <tbody>
-              {topPadding > 0 && <tr style={{ height: topPadding }} />}
-              {visibleRows.map((entry, i) => {
-                const globalIndex = startIndex + i;
-                const rowId = entry.entry_id || entry.result_id || globalIndex;
+              {filtered.map((entry, i) => {
+                const rowId = entry.entry_id || entry.result_id || i;
                 const isExpanded = expandedRowId === rowId;
                 const isHighlighted = highlightId && entry.result_id === highlightId;
                 const isQueued = !!entry.result_id && queuedSet.has(entry.result_id);
@@ -717,7 +904,7 @@ function Discoveries({
                   <DiscoveryRow
                     key={rowId}
                     entry={entry}
-                    i={globalIndex}
+                    i={i}
                     rowId={rowId}
                     isExpanded={isExpanded}
                     isHighlighted={isHighlighted}
@@ -730,11 +917,13 @@ function Discoveries({
                     onAddToComparison={onAddToComparison}
                     tdStyle={tdStyle}
                     COLUMNS={COLUMNS}
-                    visibleColumns={visibleColumns}
+                    visibleColumns={visibleTableColumns.map((col) => col.key)}
                     onOpenInDesigner={onOpenInDesigner}
                     setExpandedRowId={setExpandedRowId}
                     actionBtnStyle={actionBtnStyle}
                     handleDelete={handleDelete}
+                    onRescreen={onRescreen}
+                    onPromoteScreening={onPromoteScreening}
                     onInvestigate={onInvestigate}
                     onValidate={onValidate}
                     onQueueAdd={onQueueAdd}
@@ -746,7 +935,6 @@ function Discoveries({
                   />
                 );
               })}
-              {bottomPadding > 0 && <tr style={{ height: bottomPadding }} />}
             </tbody>
           </table>
         </div>
@@ -766,7 +954,7 @@ const tdStyle = {
 };
 
 const actionBtnStyle = {
-  padding: '4px 10px', fontSize: 11,
+  padding: '4px 8px', fontSize: 10,
   border: '1px solid rgba(88, 166, 255, 0.4)', borderRadius: 4,
   background: 'rgba(88, 166, 255, 0.12)', color: 'var(--accent-blue)', cursor: 'pointer',
 };
@@ -792,6 +980,8 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
   setExpandedRowId,
   actionBtnStyle,
   handleDelete,
+  onRescreen,
+  onPromoteScreening,
   onInvestigate,
   onValidate,
   onQueueAdd,
@@ -817,7 +1007,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               : entry.tier === 'breakthrough' ? 'rgba(63, 185, 80, 0.08)' : undefined,
           animation: isHighlighted ? 'leaderboard-pulse 1.5s ease-in-out 2' : undefined,
         }}
-        onClick={() => onSelectProgram?.(entry.result_id)}
+        onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
       >
         <td style={{ ...tdStyle, width: 26, textAlign: 'center', paddingLeft: 4, paddingRight: 4 }}>
           {isPinnedReference ? (
@@ -827,7 +1017,9 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
           ) : null}
         </td>
         <td style={tdStyle}>{i + 1}</td>
-        {COLUMNS.filter(col => visibleColumns.includes(col.key)).map(col => {
+        {visibleColumns.map((colKey) => {
+          const col = COLUMNS.find((item) => item.key === colKey);
+          if (!col) return null;
           switch (col.key) {
             case '_score':
               return <td key={col.key} style={tdStyle}><ScoreCell entry={entry} /></td>;
@@ -844,7 +1036,7 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
               );
             case 'architecture_family':
               return (
-                <td key={col.key} style={tdStyle}>
+                <td key={col.key} style={{ ...tdStyle, whiteSpace: 'normal' }}>
                   <span style={{
                     fontSize: 11, padding: '1px 6px', borderRadius: 3,
                     background: 'var(--bg-tertiary)', color: 'var(--text-secondary)',
@@ -856,54 +1048,62 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
             case 'discovery_loss_ratio':
               const discoveryDisplay = discoveryLossDisplay(entry);
               return (
-                <td key={col.key} style={{ ...tdStyle, color: lossColor(discoveryDisplay), fontFamily: 'monospace' }}>
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', color: lossColor(discoveryDisplay), fontFamily: 'monospace' }}>
                   {discoveryDisplay != null ? Number(discoveryDisplay).toFixed(4) : '--'}
                 </td>
               );
             case 'validation_loss_ratio':
               const validationDisplay = validationLossDisplay(entry);
               return (
-                <td key={col.key} style={{ ...tdStyle, color: lossColor(validationDisplay), fontFamily: 'monospace' }}>
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', color: lossColor(validationDisplay), fontFamily: 'monospace' }}>
                   {validationDisplay != null ? Number(validationDisplay).toFixed(4) : '--'}
                 </td>
               );
             case '_best_loss':
               return (
-                <td key={col.key} style={{ ...tdStyle, color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', color: lossColor(entry._best_loss), fontFamily: 'monospace' }}>
                   {entry._best_loss != null ? (Number(entry._best_loss) !== 0 && Math.abs(Number(entry._best_loss)) < 0.0001 ? Number(entry._best_loss).toExponential(2) : Number(entry._best_loss).toFixed(4)) : '--'}
                 </td>
               );
             case '_vs_ref':
               return (
-                <td key={col.key} style={{ ...tdStyle, fontFamily: 'monospace', color: entry._vs_ref != null ? (entry._vs_ref <= 100 ? 'var(--accent-green)' : 'var(--accent-red)') : 'var(--text-muted)' }}>
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: entry._vs_ref != null ? (entry._vs_ref <= 100 ? 'var(--accent-green)' : 'var(--accent-red)') : 'var(--text-muted)' }}>
                   {entry._vs_ref != null ? `${entry._vs_ref.toFixed(1)}%` : '--'}
                 </td>
               );
             case '_novelty':
               return (
-                <td key={col.key} style={{ ...tdStyle, color: noveltyColor(entry._novelty), fontFamily: 'monospace' }}>
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', color: noveltyColor(entry._novelty), fontFamily: 'monospace' }}>
                   {entry._novelty != null ? Number(entry._novelty).toFixed(3) : '--'}
                 </td>
               );
             case 'param_efficiency':
               return (
-                <td key={col.key} style={tdStyle}>{entry.param_efficiency != null ? Number(entry.param_efficiency).toFixed(3) : '--'}</td>
+                <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.param_efficiency != null ? Number(entry.param_efficiency).toFixed(3) : '--'}</td>
               );
-            case 'robustness_long_ctx_best_score':
-              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_best_score != null ? Number(entry.robustness_long_ctx_best_score).toFixed(3) : '--'}</td>;
+            case 'sample_efficiency':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.sample_efficiency != null ? Number(entry.sample_efficiency).toFixed(3) : '--'}</td>;
+            case 'investigation_robustness':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.investigation_robustness != null ? Number(entry.investigation_robustness).toFixed(3) : '--'}</td>;
+            case 'robustness_long_ctx_score':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.robustness_long_ctx_score != null ? Number(entry.robustness_long_ctx_score).toFixed(3) : '--'}</td>;
+            case 'robustness_long_ctx_scaling_score':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.robustness_long_ctx_scaling_score != null ? Number(entry.robustness_long_ctx_scaling_score).toFixed(3) : '--'}</td>;
+            case 'robustness_long_ctx_assoc_score':
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.robustness_long_ctx_assoc_score != null ? Number(entry.robustness_long_ctx_assoc_score).toFixed(3) : '--'}</td>;
             case 'robustness_long_ctx_multi_hop_score':
-              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_multi_hop_score != null ? Number(entry.robustness_long_ctx_multi_hop_score).toFixed(3) : '--'}</td>;
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.robustness_long_ctx_multi_hop_score != null ? Number(entry.robustness_long_ctx_multi_hop_score).toFixed(3) : '--'}</td>;
             case 'robustness_long_ctx_passkey_score':
-              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_passkey_score != null ? Number(entry.robustness_long_ctx_passkey_score).toFixed(3) : '--'}</td>;
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.robustness_long_ctx_passkey_score != null ? Number(entry.robustness_long_ctx_passkey_score).toFixed(3) : '--'}</td>;
             case 'robustness_long_ctx_retrieval_aggregate':
-              return <td key={col.key} style={tdStyle}>{entry.robustness_long_ctx_retrieval_aggregate != null ? Number(entry.robustness_long_ctx_retrieval_aggregate).toFixed(3) : '--'}</td>;
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.robustness_long_ctx_retrieval_aggregate != null ? Number(entry.robustness_long_ctx_retrieval_aggregate).toFixed(3) : '--'}</td>;
             case 'max_viable_seq_len':
-              return <td key={col.key} style={tdStyle}>{entry.max_viable_seq_len != null ? Number(entry.max_viable_seq_len).toFixed(0) : '--'}</td>;
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.max_viable_seq_len != null ? Number(entry.max_viable_seq_len).toFixed(0) : '--'}</td>;
             case 'jacobian_spectral_norm':
               const specVal = finitePositiveOrNull(entry.jacobian_spectral_norm ?? entry.fp_jacobian_spectral_norm);
-              return <td key={col.key} style={tdStyle}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{specVal != null ? Number(specVal).toFixed(4) : '--'}</td>;
             case 'init_sensitivity_std':
-              return <td key={col.key} style={tdStyle}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
+              return <td key={col.key} style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{entry.init_sensitivity_std != null ? Number(entry.init_sensitivity_std).toFixed(4) : '--'}</td>;
             case 'tier':
               return (
                 <td key={col.key} style={tdStyle}>
@@ -912,76 +1112,72 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
                   </div>
                 </td>
               );
-            case '_actions':
+            case '_details':
               return (
                 <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <button
+                    onClick={() => {
+                      if (entry.result_id) onSelectProgram?.(entry.result_id);
+                    }}
+                    style={{
+                      ...actionBtnStyle,
+                      width: '100%',
+                      borderColor: 'var(--accent-blue)',
+                      color: 'var(--accent-blue)',
+                      background: 'transparent',
+                    }}
+                    title={entry.result_id ? 'Open detailed fingerprint side panel' : 'Detail view unavailable: missing result ID'}
+                  >
+                    View
+                  </button>
+                </td>
+              );
+            case '_compare':
+              return (
+                <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                  {onAddToComparison ? (
                     <button
-                      onClick={() => setExpandedRowId(isExpanded ? null : rowId)}
+                      onClick={() => {
+                        if (entry.result_id) onAddToComparison(entry.result_id);
+                      }}
+                      disabled={!entry.result_id}
                       style={{
                         ...actionBtnStyle,
-                        borderColor: 'var(--accent-blue)',
-                        color: 'var(--accent-blue)',
-                        background: isExpanded ? 'rgba(88, 166, 255, 0.12)' : 'transparent',
+                        width: '100%',
+                        borderColor: 'var(--accent-green)',
+                        color: 'var(--accent-green)',
+                        opacity: entry.result_id ? 1 : 0.5,
+                        cursor: entry.result_id ? 'pointer' : 'not-allowed',
                       }}
+                      title={entry.result_id ? 'Add architecture to side-by-side comparison' : 'Comparison unavailable: missing result ID'}
                     >
-                      {isExpanded ? 'Collapse' : 'Details'}
+                      Cmp
                     </button>
-                    {onAddToComparison && (
-                      <button
-                        onClick={() => {
-                          if (entry.result_id) onAddToComparison(entry.result_id);
-                        }}
-                        disabled={!entry.result_id}
-                        style={{
-                          ...actionBtnStyle,
-                          borderColor: 'var(--accent-green)',
-                          color: 'var(--accent-green)',
-                          opacity: entry.result_id ? 1 : 0.5,
-                          cursor: entry.result_id ? 'pointer' : 'not-allowed',
-                        }}
-                        title={entry.result_id ? 'Add architecture to side-by-side comparison' : 'Comparison unavailable: missing result ID'}
-                      >
-                        Compare
-                      </button>
-                    )}
-                    {onOpenInDesigner && (
-                      <button
-                        onClick={() => {
-                          if (entry.result_id) onOpenInDesigner(entry.result_id)
-                        }}
-                        disabled={!entry.result_id}
-                        style={{
-                          ...actionBtnStyle,
-                          borderColor: 'var(--accent-purple)',
-                          color: 'var(--accent-purple)',
-                          opacity: entry.result_id ? 1 : 0.5,
-                          cursor: entry.result_id ? 'pointer' : 'not-allowed',
-                        }}
-                        title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
-                      >
-                        Designer
-                      </button>
-                    )}
-                    {canDelete && (
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`Delete ${entry.entry_id?.slice(0, 11) || entry.result_id?.slice(0, 11)} and all associated data?`)) {
-                            handleDelete(entry.entry_id || entry.result_id);
-                          }
-                        }}
-                        style={{
-                          ...actionBtnStyle,
-                          borderColor: 'rgba(248, 81, 73, 0.4)',
-                          background: 'rgba(248, 81, 73, 0.12)',
-                          color: 'var(--accent-red, #f85149)',
-                        }}
-                        title="Delete entry and all associated data"
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </div>
+                  ) : <span style={{ color: 'var(--text-muted)' }}>--</span>}
+                </td>
+              );
+            case '_designer':
+              return (
+                <td key={col.key} style={tdStyle} onClick={e => e.stopPropagation()}>
+                  {onOpenInDesigner ? (
+                    <button
+                      onClick={() => {
+                        if (entry.result_id) onOpenInDesigner(entry.result_id)
+                      }}
+                      disabled={!entry.result_id}
+                      style={{
+                        ...actionBtnStyle,
+                        width: '100%',
+                        borderColor: 'var(--accent-purple)',
+                        color: 'var(--accent-purple)',
+                        opacity: entry.result_id ? 1 : 0.5,
+                        cursor: entry.result_id ? 'pointer' : 'not-allowed',
+                      }}
+                      title={entry.result_id ? 'Open architecture in visual designer' : 'Designer unavailable: missing result ID'}
+                    >
+                      Open
+                    </button>
+                  ) : <span style={{ color: 'var(--text-muted)' }}>--</span>}
                 </td>
               );
             default:
@@ -992,6 +1188,8 @@ const DiscoveryRow = React.memo(function DiscoveryRow({
       {isExpanded && (
         <ExpandedDetail
           entry={entry}
+          onRescreen={onRescreen}
+          onPromoteScreening={onPromoteScreening}
           onInvestigate={onInvestigate}
           onValidate={onValidate}
           onQueueAdd={onQueueAdd}

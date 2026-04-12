@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..native.core import _try_import_rust_scheduler
+from .graph_ops import extract_unique_graph_ops_batch
 from .ml_corpus import (
     CorpusIntegrityError,
     load_deduped_graph_training_rows,
@@ -64,6 +66,151 @@ def _huber_loss(
     loss = np.where(quadratic, 0.5 * diff**2, delta * (abs_diff - 0.5 * delta))
     grad = np.where(quadratic, diff, delta * np.sign(diff))
     return float(np.mean(loss)), grad
+
+
+def _train_interaction_python(
+    *,
+    u: np.ndarray,
+    v: np.ndarray,
+    W_s: np.ndarray,
+    W_l: np.ndarray,
+    b_s: float,
+    b_l: float,
+    stab_idx: np.ndarray,
+    stab_labels: np.ndarray,
+    stab_weights: np.ndarray,
+    loss_idx: np.ndarray,
+    loss_labels: np.ndarray,
+    loss_weights: np.ndarray,
+    n_epochs: int,
+    lr: float,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float]:
+    rng = np.random.RandomState(seed)
+    best_loss = float("inf")
+    for _epoch in range(n_epochs):
+        total_loss = 0.0
+        perm = rng.permutation(len(stab_idx))
+        stab_idx_s = stab_idx[perm]
+        stab_labels_s = stab_labels[perm]
+        stab_weights_s = stab_weights[perm]
+
+        for start in range(0, len(stab_idx_s), _BATCH_SIZE):
+            end = min(start + _BATCH_SIZE, len(stab_idx_s))
+            batch_i = stab_idx_s[start:end, 0]
+            batch_j = stab_idx_s[start:end, 1]
+            batch_y = stab_labels_s[start:end]
+            batch_w = stab_weights_s[start:end]
+            bs = end - start
+
+            u_batch = u[batch_i]
+            v_batch = v[batch_j]
+            uW = u_batch @ W_s
+            logits = np.sum(uW * v_batch, axis=1) + b_s
+            preds = _sigmoid(logits)
+
+            eps = 1e-8
+            bce = -(
+                batch_y * np.log(preds + eps) + (1 - batch_y) * np.log(1 - preds + eps)
+            )
+            total_loss += float(np.sum(bce * batch_w))
+
+            d_logit = (preds - batch_y) * batch_w
+            d_logit_2d = d_logit[:, None]
+            dW_s = (u_batch * d_logit_2d).T @ v_batch / bs
+            db_s = float(np.mean(d_logit))
+            du_batch = d_logit_2d * (v_batch @ W_s.T)
+            dv_batch = d_logit_2d * uW
+
+            W_s -= lr * dW_s
+            b_s -= lr * db_s
+            np.add.at(u, batch_i, -lr * du_batch / bs)
+            np.add.at(v, batch_j, -lr * dv_batch / bs)
+
+        if len(loss_idx) > 0:
+            perm_l = rng.permutation(len(loss_idx))
+            for start in range(0, min(len(loss_idx), 2000), _BATCH_SIZE):
+                end = min(start + _BATCH_SIZE, len(loss_idx))
+                batch_i = loss_idx[perm_l[start:end], 0]
+                batch_j = loss_idx[perm_l[start:end], 1]
+                batch_y = loss_labels[perm_l[start:end]]
+                batch_w = loss_weights[perm_l[start:end]]
+                bs = end - start
+
+                u_batch = u[batch_i]
+                v_batch = v[batch_j]
+                uW_l = u_batch @ W_l
+                preds_l = np.sum(uW_l * v_batch, axis=1) + b_l
+
+                _, grad_hl = _huber_loss(preds_l, batch_y)
+                grad_hl *= batch_w
+                total_loss += 0.5 * float(np.sum(np.abs(grad_hl)))
+
+                d_2d = (grad_hl * 0.5)[:, None]
+                dW_l = (u_batch * d_2d).T @ v_batch / bs
+                db_l = float(np.mean(grad_hl * 0.5))
+
+                W_l -= lr * dW_l
+                b_l -= lr * db_l
+                np.add.at(u, batch_i, -lr * d_2d * (v_batch @ W_l.T) / bs)
+                np.add.at(v, batch_j, -lr * d_2d * uW_l / bs)
+
+        if total_loss < best_loss:
+            best_loss = total_loss
+
+    return u, v, W_s, W_l, float(b_s), float(b_l), float(best_loss)
+
+
+def _train_interaction_native(
+    *,
+    u: np.ndarray,
+    v: np.ndarray,
+    W_s: np.ndarray,
+    W_l: np.ndarray,
+    b_s: float,
+    b_l: float,
+    stab_idx: np.ndarray,
+    stab_labels: np.ndarray,
+    stab_weights: np.ndarray,
+    loss_idx: np.ndarray,
+    loss_labels: np.ndarray,
+    loss_weights: np.ndarray,
+    n_epochs: int,
+    lr: float,
+    seed: int,
+) -> Optional[
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float]
+]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "train_interaction_model_native_py"):
+        return None
+    result = rust.train_interaction_model_native_py(
+        np.ascontiguousarray(u, dtype=np.float64),
+        np.ascontiguousarray(v, dtype=np.float64),
+        np.ascontiguousarray(W_s, dtype=np.float64),
+        np.ascontiguousarray(W_l, dtype=np.float64),
+        float(b_s),
+        float(b_l),
+        np.ascontiguousarray(stab_idx, dtype=np.int32),
+        np.ascontiguousarray(stab_labels, dtype=np.float64),
+        np.ascontiguousarray(stab_weights, dtype=np.float64),
+        np.ascontiguousarray(loss_idx, dtype=np.int32),
+        np.ascontiguousarray(loss_labels, dtype=np.float64),
+        np.ascontiguousarray(loss_weights, dtype=np.float64),
+        int(n_epochs),
+        float(lr),
+        int(_BATCH_SIZE),
+        int(seed),
+    )
+    return (
+        np.asarray(result["u"], dtype=np.float64),
+        np.asarray(result["v"], dtype=np.float64),
+        np.asarray(result["W_s"], dtype=np.float64),
+        np.asarray(result["W_l"], dtype=np.float64),
+        float(result["b_s"]),
+        float(result["b_l"]),
+        float(result["best_loss"]),
+    )
 
 
 @dataclass
@@ -228,24 +375,16 @@ class InteractionModel:
             try:
                 rows = load_deduped_graph_training_rows(notebook_db, validate=True)
                 now = time.time()
-                for row in rows:
+                graph_payloads = [row["graph_json"] for row in rows]
+                extracted_ops = extract_unique_graph_ops_batch(graph_payloads)
+                for row, ops in zip(rows, extracted_ops):
                     gj = row["graph_json"]
                     s1 = bool(row["stage1_any_passed"])
                     loss_ratio = row.get("loss_ratio_best")
                     ts = row.get("latest_timestamp", None)
                     rerun_weight = rerun_confidence_weight(int(row.get("n_rows", 1)))
-                    try:
-                        g = json.loads(gj) if isinstance(gj, str) else gj
-                    except (json.JSONDecodeError, TypeError):
+                    if not ops:
                         continue
-                    nodes = g.get("nodes") or {}
-                    ops = sorted(
-                        set(
-                            n.get("op_name", "")
-                            for n in nodes.values()
-                            if n.get("op_name", "") and n.get("op_name") != "input"
-                        )
-                    )
                     age = now - (ts or now)
                     w = (
                         math.exp(-math.log(2) * age / half_life)
@@ -345,95 +484,50 @@ class InteractionModel:
             len(loss_idx),
         )
 
-        # ── Training loop ──
-        best_loss = float("inf")
-        for epoch in range(n_epochs):
-            total_loss = 0.0
+        native_result = None
+        try:
+            native_result = _train_interaction_native(
+                u=u,
+                v=v,
+                W_s=W_s,
+                W_l=W_l,
+                b_s=b_s,
+                b_l=b_l,
+                stab_idx=stab_idx,
+                stab_labels=stab_labels,
+                stab_weights=stab_weights,
+                loss_idx=loss_idx,
+                loss_labels=loss_labels,
+                loss_weights=loss_weights,
+                n_epochs=n_epochs,
+                lr=lr,
+                seed=seed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Native interaction training failed; falling back to Python: %s", exc
+            )
 
-            # Shuffle
-            perm = rng.permutation(len(stab_idx))
-            stab_idx_s = stab_idx[perm]
-            stab_labels_s = stab_labels[perm]
-            stab_weights_s = stab_weights[perm]
-
-            # Mini-batch SGD for stability
-            for start in range(0, len(stab_idx_s), _BATCH_SIZE):
-                end = min(start + _BATCH_SIZE, len(stab_idx_s))
-                batch_i = stab_idx_s[start:end, 0]
-                batch_j = stab_idx_s[start:end, 1]
-                batch_y = stab_labels_s[start:end]
-                batch_w = stab_weights_s[start:end]
-                bs = end - start
-
-                # Forward: logit = u_i^T W_s v_j + b_s
-                u_batch = u[batch_i]  # (bs, d)
-                v_batch = v[batch_j]  # (bs, d)
-                uW = u_batch @ W_s  # (bs, d)
-                logits = np.sum(uW * v_batch, axis=1) + b_s  # (bs,)
-                preds = _sigmoid(logits)
-
-                # BCE loss (weighted)
-                eps = 1e-8
-                bce = -(
-                    batch_y * np.log(preds + eps)
-                    + (1 - batch_y) * np.log(1 - preds + eps)
-                )
-                total_loss += float(np.sum(bce * batch_w))
-
-                # Gradients
-                d_logit = (preds - batch_y) * batch_w  # (bs,)
-                d_logit_2d = d_logit[:, None]  # (bs, 1)
-
-                # dW_s = sum(u_i * d_logit * v_j^T)
-                dW_s = (u_batch * d_logit_2d).T @ v_batch / bs
-                db_s = float(np.mean(d_logit))
-                # du = d_logit * (W_s @ v_j)
-                du_batch = d_logit_2d * (v_batch @ W_s.T)
-                # dv = d_logit * (u_i @ W_s)
-                dv_batch = d_logit_2d * uW
-
-                # Update
-                W_s -= lr * dW_s
-                b_s -= lr * db_s
-                np.add.at(u, batch_i, -lr * du_batch / bs)
-                np.add.at(v, batch_j, -lr * dv_batch / bs)
-
-            # Loss prediction
-            if len(loss_idx) > 0:
-                perm_l = rng.permutation(len(loss_idx))
-                for start in range(0, min(len(loss_idx), 2000), _BATCH_SIZE):
-                    end = min(start + _BATCH_SIZE, len(loss_idx))
-                    batch_i = loss_idx[perm_l[start:end], 0]
-                    batch_j = loss_idx[perm_l[start:end], 1]
-                    batch_y = loss_labels[perm_l[start:end]]
-                    batch_w = loss_weights[perm_l[start:end]]
-                    bs = end - start
-
-                    u_batch = u[batch_i]
-                    v_batch = v[batch_j]
-                    uW_l = u_batch @ W_l
-                    preds_l = np.sum(uW_l * v_batch, axis=1) + b_l
-
-                    hl, grad_hl = _huber_loss(preds_l, batch_y)
-                    grad_hl *= batch_w
-                    total_loss += 0.5 * float(np.sum(np.abs(grad_hl)))
-
-                    d_2d = (grad_hl * 0.5)[:, None]
-                    dW_l = (u_batch * d_2d).T @ v_batch / bs
-                    db_l = float(np.mean(grad_hl * 0.5))
-
-                    W_l -= lr * dW_l
-                    b_l -= lr * db_l
-                    np.add.at(u, batch_i, -lr * d_2d * (v_batch @ W_l.T) / bs)
-                    np.add.at(v, batch_j, -lr * d_2d * uW_l / bs)
-
-            if epoch % 20 == 0 or epoch == n_epochs - 1:
-                logger.info(
-                    "Epoch %d/%d: total_loss=%.4f", epoch + 1, n_epochs, total_loss
-                )
-
-            if total_loss < best_loss:
-                best_loss = total_loss
+        if native_result is None:
+            u, v, W_s, W_l, b_s, b_l, best_loss = _train_interaction_python(
+                u=u,
+                v=v,
+                W_s=W_s,
+                W_l=W_l,
+                b_s=b_s,
+                b_l=b_l,
+                stab_idx=stab_idx,
+                stab_labels=stab_labels,
+                stab_weights=stab_weights,
+                loss_idx=loss_idx,
+                loss_labels=loss_labels,
+                loss_weights=loss_weights,
+                n_epochs=n_epochs,
+                lr=lr,
+                seed=seed,
+            )
+        else:
+            u, v, W_s, W_l, b_s, b_l, best_loss = native_result
 
         model = cls(
             u=u.astype(np.float32),

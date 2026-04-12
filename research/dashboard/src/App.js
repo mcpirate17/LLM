@@ -29,6 +29,8 @@ import useAutoRepair from './hooks/useAutoRepair';
 import useKeyboardShortcuts from './hooks/useKeyboardShortcuts';
 import './App.css';
 
+const LONG_ACTION_TIMEOUT_MS = 120000;
+
 // Lazy-loaded components (only fetched when their tab/drawer is opened)
 const ExperimentList = React.lazy(() => import('./components/ExperimentList'));
 const ExperimentDetail = React.lazy(() => import('./components/ExperimentDetail'));
@@ -245,6 +247,7 @@ function AppContent({ onRunningChange }) {
 
   // Action error state (replaces alert())
   const [actionError, setActionError] = useState(null);
+  const [actionNotice, setActionNotice] = useState(null);
   const [blockedConfig, setBlockedConfig] = useState(null);
   const [overrideIneligibleAlways, setOverrideIneligibleAlways] = useLocalStorage(OVERRIDE_INELIGIBLE_ALWAYS_KEY, false);
 
@@ -274,6 +277,7 @@ function AppContent({ onRunningChange }) {
   const [comparisonList, setComparisonList] = useState([]);
 
   const handleAddToComparison = useCallback((resultId) => {
+    if (!resultId) return;
     setComparisonList(prev => {
       if (prev.includes(resultId)) return prev;
       if (prev.length >= 5) {
@@ -282,6 +286,7 @@ function AppContent({ onRunningChange }) {
       }
       return [...prev, resultId];
     });
+    setActiveTab('comparison');
   }, []);
 
   const handleRemoveFromComparison = useCallback((resultId) => {
@@ -303,6 +308,21 @@ function AppContent({ onRunningChange }) {
       setAutonomousMode(autonomousActive);
     }
   }, [ariaCycle]);
+
+  useEffect(() => {
+    const experimentId = actionNotice?.clearOnExperimentId;
+    if (!experimentId || !Array.isArray(centralizedExperiments)) {
+      return;
+    }
+    const match = centralizedExperiments.find((exp) => exp?.experiment_id === experimentId);
+    if (!match) {
+      return;
+    }
+    const status = String(match.status || '').trim().toLowerCase();
+    if (status && !['running', 'queued', 'starting', 'pending'].includes(status)) {
+      setActionNotice(null);
+    }
+  }, [actionNotice, centralizedExperiments]);
 
   // Global keyboard shortcuts
   useKeyboardShortcuts({
@@ -436,6 +456,7 @@ function AppContent({ onRunningChange }) {
     try {
       const res = await apiCall(`/api/experiments/start`, {
         method: 'POST',
+        timeoutMs: LONG_ACTION_TIMEOUT_MS,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
       });
@@ -751,6 +772,58 @@ function AppContent({ onRunningChange }) {
 
   const handleInvestigate = (resultIds) => startProgression('investigation', resultIds);
   const handleValidate = (resultIds) => startProgression('validation', resultIds);
+  const handleRescreen = async (resultId) => {
+    if (!resultId) {
+      setActionError('Missing result ID for screening replay.');
+      return;
+    }
+    try {
+      const res = await apiCall(`/api/programs/${resultId}/rescreen`, {
+        method: 'POST',
+        timeoutMs: LONG_ACTION_TIMEOUT_MS,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fast: true, device: 'cuda' }),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        setActionError(payload?.error || 'Failed to start screening replay');
+        return;
+      }
+      setActionNotice({
+        message: `Screening replay started for ${String(resultId).slice(0, 8)} (${String(payload?.experiment_id || '').slice(0, 8)}).`,
+        tone: 'info',
+        clearOnExperimentId: payload?.experiment_id || null,
+      });
+      fetchDashboard();
+    } catch (err) {
+      setActionError(`Failed to start screening replay: ${err.message}`);
+    }
+  };
+  const handlePromoteScreening = async (resultId) => {
+    if (!resultId) {
+      setActionError('Missing result ID for screening promotion.');
+      return;
+    }
+    try {
+      const res = await apiCall(`/api/programs/${resultId}/promote-screening`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        setActionError(payload?.error || 'Failed to promote screening candidate');
+        return;
+      }
+      setActionNotice({
+        message: `Promoted ${String(resultId).slice(0, 8)} into screened candidates.`,
+        tone: 'info',
+        clearOnExperimentId: null,
+      });
+      fetchDashboard();
+    } catch (err) {
+      setActionError(`Failed to promote screening candidate: ${err.message}`);
+    }
+  };
 
 
   const handleRunProductionTemplate = async (template) => {
@@ -1111,6 +1184,34 @@ function AppContent({ onRunningChange }) {
           </div>
         )}
 
+        {actionNotice?.message && (
+          <div
+            className="error-banner"
+            style={{
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderColor: 'rgba(88, 166, 255, 0.45)',
+              background: 'rgba(88, 166, 255, 0.10)',
+              color: 'var(--accent-blue)',
+            }}
+            onClick={() => setActionNotice(null)}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span>{actionNotice.message}</span>
+            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); setActionNotice(null); }}
+              aria-label="Dismiss notice"
+              style={{
+                background: 'none', border: 'none', color: 'inherit', cursor: 'pointer',
+                fontSize: 16, padding: '0 4px', opacity: 0.8, flexShrink: 0,
+              }}
+            >&times;</button>
+          </div>
+        )}
+
         {data?.is_running && (
           <div className="card" style={{ marginBottom: 12, padding: '10px 12px', borderLeft: '3px solid var(--accent-green)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1259,6 +1360,8 @@ function AppContent({ onRunningChange }) {
             <Discoveries
               onSelectProgram={handleSelectProgram}
               onAddToComparison={handleAddToComparison}
+              onRescreen={handleRescreen}
+              onPromoteScreening={handlePromoteScreening}
               onInvestigate={handleInvestigate}
               onValidate={handleValidate}
               highlightResultId={leaderboardHighlight}

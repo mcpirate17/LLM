@@ -7,6 +7,7 @@ picking, and the motif instantiation engine.
 from __future__ import annotations
 
 import random
+import re
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ from .primitives import (
     algebraic_types_compatible,
 )
 from .context_rules import (
+    CONTEXT_RULES,
     motif_allowed_in_template as _motif_allowed_in_template,
 )
 
@@ -163,8 +165,22 @@ def _step_is_compatible(graph: ComputationGraph, node_id: int, op_name: str) -> 
     return algebraic_types_compatible(current_type, next_op.algebraic_type)
 
 
+def _context_pair_allowed(prev_op: str | None, next_op: str) -> bool:
+    if prev_op is None:
+        return True
+    prev_rule = CONTEXT_RULES.get(prev_op)
+    if prev_rule is not None and next_op in prev_rule.forbidden_successors:
+        return False
+    next_rule = CONTEXT_RULES.get(next_op)
+    if next_rule is not None and prev_op in next_rule.forbidden_predecessors:
+        return False
+    return True
+
+
 def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) -> bool:
     current_type = _node_output_type(graph, node_id)
+    current_node = graph.nodes[node_id]
+    previous_op = None if current_node.is_input else current_node.op_name
     # Approximate depth of node_id for min_layer_depth check
     depth = 0
     nid = node_id
@@ -180,12 +196,14 @@ def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) ->
             step_op is None
             or step_op.n_inputs != 1
             or not algebraic_types_compatible(current_type, step_op.algebraic_type)
+            or not _context_pair_allowed(previous_op, step.op_name)
         ):
             return False
         # Reject motif if op requires deeper placement than current position
         if step_op.min_layer_depth > 0 and depth < step_op.min_layer_depth:
             return False
         current_type = step_op.algebraic_type
+        previous_op = step.op_name
     return True
 
 
@@ -214,7 +232,105 @@ _SLOT_MOTIF_DENYLIST: dict[str, frozenset[str]] = {
     "mamba_reference.slot1": frozenset({"norm_layer", "norm_rms"}),
     # gate_bias_act repeatedly destabilizes the retrieval post-processing slot.
     "topk_retrieval.slot1": frozenset({"gate_bias_act"}),
+    # Both pre-norm variants underperform badly in these templates; leaving the
+    # slot empty is better than forcing a weak normalization choice.
+    "routed_bottleneck.slot0": frozenset({"norm_layer", "norm_rms"}),
+    "conditional_compute.slot0": frozenset({"norm_layer", "norm_rms"}),
+    # Repeatedly toxic sparse placements on the entropy-gated path.
+    "conditional_compute.slot1": frozenset({"sparse_block", "sparse_ternary"}),
+    # The generic sequential carrier still admits a few motifs whose internal
+    # substitutions violate local context rules in this template.
+    "sequential.slot1": frozenset(
+        {"ffn_bottleneck", "ffn_expand_contract", "sparse_gated_ffn"}
+    ),
+    "sequential.slot3": frozenset(
+        {"ffn_bottleneck", "ffn_expand_contract", "sparse_gated_ffn"}
+    ),
+    # Post-mask signal is fragile — routing motifs corrupt the masked stream.
+    "depth_token_mask_block.slot1": frozenset(
+        {
+            "route_mod_topk",
+            "route_lanes_block",
+            "route_recursion_block",
+            "route_speculative",
+            "route_topk_gate",
+            "route_topk_sparse",
+        }
+    ),
 }
+
+_SLOT_MOTIF_ALLOWLIST: dict[str, frozenset[str]] = {
+    # This slot is a cheap feature gate inside a D/4 bottleneck, not a full
+    # token-routing stage. Keep it to lightweight gating motifs.
+    "routed_bottleneck.slot1": frozenset(
+        {
+            "conditional_skip",
+            "gate_bias_act",
+            "gate_linear",
+            "gate_scale",
+            "gate_swiglu",
+            "route_identity",
+        }
+    ),
+    # Generic sparse motifs repeatedly degrade this compressed slot; only keep
+    # the bottleneck-aware sparse motif that was designed for reduced-rank use.
+    "routed_bottleneck.slot2": frozenset({"bottleneck_sparse"}),
+    # This compressed post-attention slot is a true bottleneck transform, not a
+    # routing or entropy-gating stage. Keep it on the reduced-rank sparse path.
+    "attn_bottleneck_hybrid.slot2": frozenset({"bottleneck_sparse"}),
+}
+
+_SLOT_MOTIF_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {
+    "conditional_compute.slot1": {
+        "bottleneck_sparse": 1.35,
+        "sparse_nm": 1.2,
+        "sparse_semi_structured": 1.1,
+    },
+    "depth_gated_block.slot1": {
+        # This shell optimizes best when the post-depth mixer behaves like a
+        # smooth refinement stage rather than another heavy routing/gating hop.
+        "channel_rwkv": 1.45,
+        "attn_linear": 1.35,
+        "spectral_filter_mix": 1.25,
+        "clifford_attention_mix": 1.2,
+        "attn_latent_compress": 1.15,
+        "conv_local": 0.8,
+        "conv_dilated": 0.8,
+        "conv_only": 0.85,
+        "mamba_selective": 0.9,
+        "mamba_block": 0.9,
+    },
+}
+
+
+def _normalize_slot_key(slot_key: str) -> str:
+    """Map instanceful telemetry keys to the canonical template.slotN form."""
+    return re.sub(r"\[\d+\]", "", slot_key)
+
+
+def get_slot_rule_summary() -> list[dict[str, object]]:
+    """Return the configured slot compatibility rules in canonical form."""
+    slot_keys = sorted(
+        set(_SLOT_MOTIF_DENYLIST)
+        | set(_SLOT_MOTIF_ALLOWLIST)
+        | set(_SLOT_MOTIF_WEIGHT_MULTIPLIERS)
+    )
+    summary: list[dict[str, object]] = []
+    for slot_key in slot_keys:
+        multipliers = _SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key, {})
+        summary.append(
+            {
+                "slot_key": slot_key,
+                "template_name": slot_key.split(".slot", 1)[0],
+                "slot_index": int(slot_key.rsplit("slot", 1)[1]),
+                "allowed_motifs": sorted(_SLOT_MOTIF_ALLOWLIST.get(slot_key, ())),
+                "blocked_motifs": sorted(_SLOT_MOTIF_DENYLIST.get(slot_key, ())),
+                "weight_multipliers": {
+                    name: multipliers[name] for name in sorted(multipliers)
+                },
+            }
+        )
+    return summary
 
 
 def _filter_slot_candidates(
@@ -222,15 +338,18 @@ def _filter_slot_candidates(
     candidates: list[Motif],
 ) -> list[Motif]:
     """Drop motifs that are known-bad for the active template slot."""
-    slot_key = _current_slot_key(graph)
+    slot_key = _normalize_slot_key(_current_slot_key(graph))
+    allowed = _SLOT_MOTIF_ALLOWLIST.get(slot_key)
+    if allowed is not None:
+        candidates = [motif for motif in candidates if motif.name in allowed]
     denied = _SLOT_MOTIF_DENYLIST.get(slot_key)
-    if not denied:
-        return candidates
-    filtered = [motif for motif in candidates if motif.name not in denied]
-    return filtered or candidates
+    if denied:
+        candidates = [motif for motif in candidates if motif.name not in denied]
+    return candidates
 
 
 def _select_from_candidates(
+    graph: ComputationGraph,
     candidates: list[Motif],
     rng: random.Random,
     weights: MotifWeights,
@@ -239,8 +358,12 @@ def _select_from_candidates(
         return None
     if len(candidates) == 1:
         return candidates[0]
+    slot_key = _normalize_slot_key(_current_slot_key(graph))
+    slot_multipliers = _SLOT_MOTIF_WEIGHT_MULTIPLIERS.get(slot_key, {})
     candidate_weights = [
-        weights.get(m.name, m.lift) if weights else m.lift for m in candidates
+        (weights.get(m.name, m.lift) if weights else m.lift)
+        * slot_multipliers.get(m.name, 1.0)
+        for m in candidates
     ]
     return rng.choices(candidates, weights=candidate_weights, k=1)[0]
 
@@ -272,7 +395,7 @@ def _pick_compatible_motif(
     if len(classes) > 1:
         slot_adaptations = graph.metadata.get("_slot_adaptations")
         if slot_adaptations:
-            slot_key = _current_slot_key(graph)
+            slot_key = _normalize_slot_key(_current_slot_key(graph))
             extra_classes = slot_adaptations.get(slot_key, ())
             if extra_classes:
                 classes = tuple(set(classes) | set(extra_classes))
@@ -286,7 +409,7 @@ def _pick_compatible_motif(
             is_wildcard = True
     candidates = _filter_slot_candidates(graph, candidates)
 
-    selected = _select_from_candidates(candidates, rng, weights)
+    selected = _select_from_candidates(graph, candidates, rng, weights)
     _record_slot_usage(
         graph,
         node_id=node_id,
@@ -329,6 +452,7 @@ def _record_slot_usage(
         "template_instance": template_instance,
         "slot_index": slot_index,
         "slot_key": f"{template_name}[{template_instance}].slot{slot_index}",
+        "slot_key_canonical": f"{template_name}.slot{slot_index}",
         "slot_classes": class_list,
         "selected_motif": selected.name if selected else None,
         "selected_motif_class": selected.motif_class if selected else None,
@@ -357,6 +481,7 @@ def record_template_slot_binding(
         "template_instance": int(template_instance),
         "slot_index": int(slot_index),
         "slot_key": str(slot_key),
+        "slot_key_canonical": _normalize_slot_key(str(slot_key)),
         "slot_classes": [str(cls) for cls in slot_classes],
         "selected_motif": str(selected_name),
         "selected_motif_class": str(selected_class),

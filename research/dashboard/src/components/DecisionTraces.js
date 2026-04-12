@@ -19,7 +19,7 @@ export function DecisionTraces() {
     const fetchDecisions = async () => {
       try {
         // Fetch standard decisions
-        const data = await apiService.getLeaderboard('?limit=100');
+        const data = await apiService.getLeaderboard('?limit=100&trusted_only=1');
         // We also want actual decision events if available
         const resp = await apiService.getDashboardSummary();
 

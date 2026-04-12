@@ -156,27 +156,21 @@ def test_calibrated_branch_merge_protects_routed_share_and_emits_metrics():
     module = SimpleNamespace(_routing_progress=0.0)
     config = {
         "normalize_inputs": True,
-        "routed_floor": 0.34,
-        "medium_floor": 0.2,
-        "hard_floor": 0.06,
-        "hard_cap": 0.12,
-        "fallback_cap": 0.58,
+        "primary_role": "routed",
+        "secondary_role": "skip",
+        "min_secondary_share": 0.08,
+        "max_secondary_share": 0.22,
     }
-    default = torch.full((1, 4, 8), 12.0)
-    medium = torch.full((1, 4, 8), 0.5)
-    hard = torch.full((1, 4, 8), 0.25)
+    routed = torch.full((1, 4, 8), 0.5)
     skip = torch.full((1, 4, 8), 10.0)
-    inp = torch.full((1, 4, 8), 9.0)
 
-    out = _op_calibrated_branch_merge(
-        module, [default, medium, hard, skip, inp], config
-    )
+    out = _op_calibrated_branch_merge(module, [routed, skip], config)
 
-    assert out.shape == default.shape
+    assert out.shape == routed.shape
     telemetry = getattr(module, "routing_telemetry", {})
     assert telemetry.get("branch_weight_count", 0) > 0
     assert telemetry.get("routed_branch_share_sum", 0.0) > 0.0
     branch_weights = telemetry.get("branch_weight_sum")
     assert branch_weights is not None
-    routed_share = float((branch_weights[1] + branch_weights[2]).item())
-    assert routed_share >= 0.3
+    secondary_share = float(branch_weights[1].item())
+    assert 0.08 <= secondary_share <= 0.22

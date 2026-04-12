@@ -13,6 +13,9 @@ function SummaryCards({ learningTrend }) {
   const novelty = summary.top_novelty_score || 0;
   const noveltyColor = novelty > 0.8 ? 'green' : novelty > 0.5 ? 'yellow' : 'purple';
   const latestPerf = summary.latest_perf_report || null;
+  const accounting = summary.data_accounting || {};
+  const graphVolume = accounting.graph_volume || {};
+  const runVolume = accounting.run_volume || {};
 
   // Build pass rate sub-text with trend arrow
   let passRateSub = survRate > 0.05 ? 'Strong throughput' : survRate > 0 ? 'Some candidates pass' : 'No passing candidates yet';
@@ -36,9 +39,9 @@ function SummaryCards({ learningTrend }) {
       color: summary.total_experiments > 5 ? 'green' : '',
     },
     {
-      label: 'Candidates Tested',
+      label: 'Run Records',
       value: summary.total_programs_evaluated,
-      sub: `${summary.stage1_survivors} survivor${summary.stage1_survivors !== 1 ? 's' : ''}`,
+      sub: `${graphVolume.unique_graphs || summary.unique_fingerprints || 0} unique graphs, ${summary.stage1_survivors} survivor${summary.stage1_survivors !== 1 ? 's' : ''}`,
       color: summary.stage1_survivors > 0 ? 'green' : '',
     },
     {
@@ -59,9 +62,11 @@ function SummaryCards({ learningTrend }) {
       value: summary.avg_sparsity_ratio > 0.1 
         ? `${(summary.avg_sparsity_ratio * 100).toFixed(0)}% Sparse`
         : (summary.avg_routing_entropy != null ? `\u03A3 ${summary.avg_routing_entropy.toFixed(2)}` : '—'),
-      sub: summary.avg_depth_savings > 0 
-        ? `${(summary.avg_depth_savings * 100).toFixed(1)}% adaptive savings`
-        : (summary.avg_sparsity_ratio > 0.1 ? 'Structured Sparsity' : 'Dense architectures'),
+      sub: runVolume.promotable_runs > 0
+        ? `${runVolume.promotable_runs} comparable run${runVolume.promotable_runs !== 1 ? 's' : ''}`
+        : (summary.avg_depth_savings > 0 
+          ? `${(summary.avg_depth_savings * 100).toFixed(1)}% adaptive savings`
+          : (summary.avg_sparsity_ratio > 0.1 ? 'Structured Sparsity' : 'Dense architectures')),
       color: (summary.avg_depth_savings > 0.2 || summary.avg_sparsity_ratio > 0.4) ? 'green' : 'purple',
     },
     {

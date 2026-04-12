@@ -13,8 +13,9 @@ import uuid
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
+from .graph_features import build_graph_feature_rows
 from ._shared import (
     LOGGER,
     NOTEBOOK_SCHEMA,
@@ -122,7 +123,7 @@ class _NotebookCore:
         db_path: str | Path = "research/lab_notebook.db",
         *,
         skip_migrate: bool = False,
-        check_same_thread: bool = True,
+        check_same_thread: bool = False,
     ):
         self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,8 +143,10 @@ class _NotebookCore:
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
         self._leaderboard_columns: Optional[set[str]] = None
-        self._dashboard_summary_cache: Optional[Dict[str, Any]] = None
+        self._dashboard_summary_cache: Dict[tuple[bool, bool], Dict[str, Any]] = {}
         self._dashboard_summary_cache_expires_at: float = 0.0
+        self._template_observability_cache: Dict[int, Dict[str, Any]] = {}
+        self._template_observability_cache_expires_at: float = 0.0
         self.conn.executescript(NOTEBOOK_SCHEMA)
         self._maybe_commit()
 
@@ -255,6 +258,145 @@ class _NotebookCore:
         self._invalidate_dashboard_summary_cache()
         self._write_queue.put((sql, params))
 
+    def _store_graph_features_async(
+        self,
+        *,
+        result_id: str,
+        graph_fingerprint: str,
+        graph_json: str,
+    ) -> None:
+        if not result_id or not isinstance(graph_json, str) or not graph_json.strip():
+            return
+        rows = build_graph_feature_rows(
+            result_id=result_id,
+            graph_fingerprint=graph_fingerprint,
+            graph_json=graph_json,
+        )
+        self._submit_write(
+            "DELETE FROM program_graph_pairs WHERE result_id = ?",
+            (result_id,),
+        )
+        self._submit_write(
+            "DELETE FROM program_graph_ops WHERE result_id = ?",
+            (result_id,),
+        )
+        self._submit_write(
+            """INSERT OR REPLACE INTO program_graph_features
+               (result_id, graph_fingerprint, template_name, templates_json, motifs_json,
+                slot_usage_json, op_count, pair_count, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows["feature_row"],
+        )
+        if rows["op_rows"]:
+            self._submit_write(
+                """INSERT OR REPLACE INTO program_graph_ops
+                   (result_id, graph_fingerprint, op_name)
+                   VALUES (?, ?, ?)""",
+                rows["op_rows"],
+            )
+        if rows["pair_rows"]:
+            self._submit_write(
+                """INSERT OR REPLACE INTO program_graph_pairs
+                   (result_id, graph_fingerprint, signature)
+                   VALUES (?, ?, ?)""",
+                rows["pair_rows"],
+            )
+
+    def _backfill_missing_graph_features(
+        self,
+        *,
+        result_ids: Optional[Iterable[str]] = None,
+        limit: int = 2000,
+    ) -> int:
+        where_clause = (
+            "pr.graph_json IS NOT NULL AND TRIM(CAST(pr.graph_json AS TEXT)) <> ''"
+        )
+        params: list[Any] = []
+        if result_ids is not None:
+            requested = [str(item).strip() for item in result_ids if str(item).strip()]
+            if not requested:
+                return 0
+            placeholders = ",".join("?" for _ in requested)
+            where_clause += f" AND pr.result_id IN ({placeholders})"
+            params.extend(requested)
+        query = f"""
+            SELECT pr.result_id, COALESCE(pr.graph_fingerprint, '') AS graph_fingerprint, pr.graph_json
+            FROM program_results pr
+            LEFT JOIN program_graph_features gf ON gf.result_id = pr.result_id
+            WHERE gf.result_id IS NULL
+              AND {where_clause}
+            LIMIT ?
+        """
+        params.append(int(limit))
+        rows = self.conn.execute(query, tuple(params)).fetchall()
+        if not rows:
+            return 0
+
+        feature_rows = []
+        op_rows = []
+        pair_rows = []
+        result_keys = []
+        for row in rows:
+            result_id = str(row["result_id"] or "").strip()
+            if not result_id:
+                continue
+            built = build_graph_feature_rows(
+                result_id=result_id,
+                graph_fingerprint=str(row["graph_fingerprint"] or ""),
+                graph_json=str(row["graph_json"] or ""),
+            )
+            result_keys.append((result_id,))
+            feature_rows.append(built["feature_row"])
+            op_rows.extend(built["op_rows"])
+            pair_rows.extend(built["pair_rows"])
+        if not feature_rows:
+            return 0
+
+        with self.batch():
+            self.conn.executemany(
+                "DELETE FROM program_graph_pairs WHERE result_id = ?",
+                result_keys,
+            )
+            self.conn.executemany(
+                "DELETE FROM program_graph_ops WHERE result_id = ?",
+                result_keys,
+            )
+            self.conn.executemany(
+                """INSERT OR REPLACE INTO program_graph_features
+                   (result_id, graph_fingerprint, template_name, templates_json, motifs_json,
+                    slot_usage_json, op_count, pair_count, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                feature_rows,
+            )
+            if op_rows:
+                self.conn.executemany(
+                    """INSERT OR REPLACE INTO program_graph_ops
+                       (result_id, graph_fingerprint, op_name)
+                       VALUES (?, ?, ?)""",
+                    op_rows,
+                )
+            if pair_rows:
+                self.conn.executemany(
+                    """INSERT OR REPLACE INTO program_graph_pairs
+                       (result_id, graph_fingerprint, signature)
+                       VALUES (?, ?, ?)""",
+                    pair_rows,
+                )
+        return len(feature_rows)
+
+    def _ensure_graph_features(
+        self,
+        *,
+        result_ids: Optional[Iterable[str]] = None,
+        batch_limit: int = 2000,
+    ) -> None:
+        while self._backfill_missing_graph_features(
+            result_ids=result_ids,
+            limit=batch_limit,
+        ):
+            if result_ids is not None:
+                break
+
     def flush_writes(self, timeout: float = 5.0):
         """Block until the async write queue is drained and committed.
 
@@ -291,16 +433,26 @@ class _NotebookCore:
                 else:
                     raise
 
-    def _migrate_impl(self):
-        """Internal migration logic."""
-        # Migrate experiments table
+    # -- Per-table migration helpers --
+
+    def _migrate_experiments_table(self) -> None:
         try:
             self.conn.execute("SELECT llm_analysis FROM experiments LIMIT 1")
         except sqlite3.OperationalError:
             self.conn.execute("ALTER TABLE experiments ADD COLUMN llm_analysis TEXT")
             self._maybe_commit()
+        exp_cols = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(experiments)").fetchall()
+        }
+        if "campaign_id" not in exp_cols:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN campaign_id TEXT")
+        if "preregistration_id" not in exp_cols:
+            self.conn.execute(
+                "ALTER TABLE experiments ADD COLUMN preregistration_id TEXT"
+            )
 
-        # Migrate program_results: add new columns if missing
+    def _migrate_program_results_table(self) -> None:
         existing = {
             row[1]
             for row in self.conn.execute(
@@ -314,10 +466,7 @@ class _NotebookCore:
                         f"ALTER TABLE program_results ADD COLUMN {col_name} {col_type}"
                     )
                 except sqlite3.OperationalError:
-                    # Column may already exist in older DBs with partial migrations.
                     pass
-
-        # Migrate program_results: add arch_spec_json if missing
         if "arch_spec_json" not in existing:
             self.conn.execute(
                 "ALTER TABLE program_results ADD COLUMN arch_spec_json TEXT"
@@ -327,7 +476,7 @@ class _NotebookCore:
                 "ALTER TABLE program_results ADD COLUMN model_source TEXT"
             )
 
-        # Ensure leaderboard table exists (created in schema but needed for old DBs)
+    def _migrate_leaderboard_create(self) -> None:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS leaderboard (
                 entry_id TEXT PRIMARY KEY,
@@ -365,7 +514,8 @@ class _NotebookCore:
             CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON program_results(timestamp);
             CREATE INDEX IF NOT EXISTS idx_programs_exp_ts ON program_results(experiment_id, timestamp);
         """)
-        # Migrate decisions: add evidence_pack_json if missing
+
+    def _migrate_decisions_table(self) -> None:
         try:
             decision_cols = {
                 row[1]
@@ -380,7 +530,8 @@ class _NotebookCore:
                 )
             except sqlite3.OperationalError:
                 pass
-        # Migrate op_success_rates: add avg_novelty_confidence if missing
+
+    def _migrate_op_success_rates_table(self) -> None:
         osr_cols = {
             row[1]
             for row in self.conn.execute(
@@ -392,25 +543,44 @@ class _NotebookCore:
                 "ALTER TABLE op_success_rates ADD COLUMN avg_novelty_confidence REAL"
             )
 
-        # Migrate experiments: add campaign_id if missing
-        exp_cols = {
-            row[1]
-            for row in self.conn.execute("PRAGMA table_info(experiments)").fetchall()
-        }
-        if "campaign_id" not in exp_cols:
-            self.conn.execute("ALTER TABLE experiments ADD COLUMN campaign_id TEXT")
-        if "preregistration_id" not in exp_cols:
+    def _migrate_orphan_preregistration_repair(self) -> None:
+        try:
+            orphan_prereg_rows = self.conn.execute("""
+                SELECT preregistration_id
+                FROM hypothesis_preregistrations hp
+                WHERE hp.experiment_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM experiments e WHERE e.experiment_id = hp.experiment_id
+                  )
+            """).fetchall()
+        except sqlite3.OperationalError:
+            orphan_prereg_rows = []
+        if orphan_prereg_rows:
+            orphan_ids = [str(row[0]) for row in orphan_prereg_rows]
+            ph = ",".join("?" for _ in orphan_ids)
             self.conn.execute(
-                "ALTER TABLE experiments ADD COLUMN preregistration_id TEXT"
+                f"""
+                UPDATE hypothesis_preregistrations
+                SET experiment_id = NULL,
+                    status = CASE WHEN status = 'linked' THEN 'registered' ELSE status END,
+                    notes = TRIM(COALESCE(notes || '\n', '') || ?)
+                WHERE preregistration_id IN ({ph})
+                """,
+                (
+                    "Auto-repaired orphaned experiment link during notebook startup.",
+                    *orphan_ids,
+                ),
+            )
+            LOGGER.warning(
+                "Repaired %d orphaned hypothesis_preregistrations rows", len(orphan_ids)
             )
 
-        training_curves_row = self.conn.execute(
+    def _migrate_training_curves_fk(self) -> None:
+        tc_row = self.conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'training_curves'"
         ).fetchone()
-        training_curves_sql = (
-            str(training_curves_row[0] or "") if training_curves_row else ""
-        )
-        if "REFERENCES program_results" not in training_curves_sql:
+        tc_sql = str(tc_row[0] or "") if tc_row else ""
+        if "REFERENCES program_results" not in tc_sql:
             self.conn.execute(
                 "DELETE FROM training_curves "
                 "WHERE NOT EXISTS (SELECT 1 FROM program_results pr WHERE pr.result_id = training_curves.result_id)"
@@ -418,18 +588,14 @@ class _NotebookCore:
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS training_curves_new (
                     result_id TEXT NOT NULL REFERENCES program_results(result_id) ON DELETE CASCADE,
-                    step INTEGER NOT NULL,
-                    loss REAL,
-                    grad_norm REAL,
-                    step_time_ms REAL,
+                    step INTEGER NOT NULL, loss REAL, grad_norm REAL, step_time_ms REAL,
                     PRIMARY KEY (result_id, step)
                 )
             """)
             self.conn.execute("""
                 INSERT OR REPLACE INTO training_curves_new (result_id, step, loss, grad_norm, step_time_ms)
                 SELECT tc.result_id, tc.step, tc.loss, tc.grad_norm, tc.step_time_ms
-                FROM training_curves tc
-                JOIN program_results pr ON pr.result_id = tc.result_id
+                FROM training_curves tc JOIN program_results pr ON pr.result_id = tc.result_id
             """)
             self.conn.execute("DROP TABLE training_curves")
             self.conn.execute(
@@ -439,7 +605,7 @@ class _NotebookCore:
                 "CREATE INDEX IF NOT EXISTS idx_training_curves_result ON training_curves(result_id)"
             )
 
-        # Migrate hypotheses: add metadata_json if missing
+    def _migrate_hypotheses_table(self) -> None:
         hyp_cols = {
             row[1]
             for row in self.conn.execute("PRAGMA table_info(hypotheses)").fetchall()
@@ -447,7 +613,7 @@ class _NotebookCore:
         if "metadata_json" not in hyp_cols:
             self.conn.execute("ALTER TABLE hypotheses ADD COLUMN metadata_json TEXT")
 
-        # Migrate campaigns: add completion_reason and successor_campaign_id
+    def _migrate_campaigns_table(self) -> None:
         camp_cols = {
             row[1]
             for row in self.conn.execute("PRAGMA table_info(campaigns)").fetchall()
@@ -459,7 +625,7 @@ class _NotebookCore:
                 "ALTER TABLE campaigns ADD COLUMN successor_campaign_id TEXT"
             )
 
-        # Migrate insights: add semantic identity columns and collapse duplicates.
+    def _migrate_insights_semantic(self) -> None:
         insight_cols = {
             row[1]
             for row in self.conn.execute("PRAGMA table_info(insights)").fetchall()
@@ -513,33 +679,7 @@ class _NotebookCore:
                 ),
             )
 
-        def _supersede_active_semantic_duplicates() -> None:
-            active_rows = self.conn.execute(
-                """SELECT insight_id, semantic_key
-                   FROM insights
-                   WHERE status = 'active'
-                     AND semantic_key IS NOT NULL
-                     AND semantic_key != ''
-                   ORDER BY confidence DESC, timestamp DESC"""
-            ).fetchall()
-            seen_semantic: set[str] = set()
-            for row in active_rows:
-                sem = str(
-                    row["semantic_key"] if isinstance(row, sqlite3.Row) else row[1]
-                )
-                insight_id = (
-                    row["insight_id"] if isinstance(row, sqlite3.Row) else row[0]
-                )
-                if sem in seen_semantic:
-                    self.conn.execute(
-                        "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
-                        (insight_id,),
-                    )
-                    continue
-                seen_semantic.add(sem)
-
-        _supersede_active_semantic_duplicates()
-
+        self._supersede_active_semantic_duplicates()
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_insights_semantic_key ON insights(semantic_key)"
         )
@@ -550,14 +690,37 @@ class _NotebookCore:
                    WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
             )
         except sqlite3.IntegrityError:
-            _supersede_active_semantic_duplicates()
+            self._supersede_active_semantic_duplicates()
             self.conn.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_active_semantic_unique
                    ON insights(semantic_key)
                    WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''"""
             )
 
-        # Migrate insights: add Bayesian columns (alpha, beta_, display_only, etc.)
+    def _supersede_active_semantic_duplicates(self) -> None:
+        active_rows = self.conn.execute(
+            """SELECT insight_id, semantic_key
+               FROM insights
+               WHERE status = 'active' AND semantic_key IS NOT NULL AND semantic_key != ''
+               ORDER BY confidence DESC, timestamp DESC"""
+        ).fetchall()
+        seen_semantic: set[str] = set()
+        for row in active_rows:
+            sem = str(row["semantic_key"] if isinstance(row, sqlite3.Row) else row[1])
+            insight_id = row["insight_id"] if isinstance(row, sqlite3.Row) else row[0]
+            if sem in seen_semantic:
+                self.conn.execute(
+                    "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
+                    (insight_id,),
+                )
+                continue
+            seen_semantic.add(sem)
+
+    def _migrate_insights_bayesian(self) -> None:
+        insight_cols = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(insights)").fetchall()
+        }
         for col_name, col_def in (
             ("alpha", "REAL DEFAULT 1.0"),
             ("beta_", "REAL DEFAULT 1.0"),
@@ -574,13 +737,11 @@ class _NotebookCore:
                     )
                 except sqlite3.OperationalError:
                     pass
-
-        # Backfill display_only=1 for existing failure_mode insights
         self.conn.execute(
             "UPDATE insights SET display_only = 1 WHERE category = 'failure_mode' AND display_only = 0"
         )
 
-        # Migrate leaderboard: add efficiency and robustness columns
+    def _migrate_leaderboard_columns(self) -> None:
         lb_cols = {
             row[1]
             for row in self.conn.execute("PRAGMA table_info(leaderboard)").fetchall()
@@ -638,36 +799,34 @@ class _NotebookCore:
             "routing_confidence_mean REAL",
             "routing_drop_rate REAL",
             "efficiency_multiple REAL",
-            # Real-token eval trajectory (action plan Phase 0)
             "robustness_grade TEXT",
             "evaluation_stage TEXT",
             "eval_budget_steps INTEGER",
             "capability_tier TEXT",
             "wikitext_ppl_improvement_ratio REAL",
-            # Trajectory probe v2 metrics
             "peak_ppl REAL",
             "peak_step INTEGER",
             "steps_to_divergence INTEGER",
             "ppl_500 REAL",
-            # Recipe re-roll tracking (Phase 5)
             "reinvestigation_count INTEGER DEFAULT 0",
-            # Triage op census (post-S1 cheap eval)
             "n_routing_ops INTEGER",
             "n_sparse_ops INTEGER",
             "n_moe_ops INTEGER",
-            # Per-fingerprint replication aggregates (Stream A)
             "replication_n INTEGER",
             "replication_loss_mean REAL",
             "replication_loss_std REAL",
             "replication_best_vs_mean_gap REAL",
-            # HellaSwag commonsense reasoning eval
             "hellaswag_acc REAL",
-            # Binding probes
             "ar_auc REAL",
             "induction_auc REAL",
             "binding_auc REAL",
             "binding_composite REAL",
             "local_only INTEGER DEFAULT 0",
+            "result_cohort TEXT",
+            "trust_label TEXT",
+            "comparability_label TEXT",
+            "evaluation_protocol_version TEXT",
+            "scoring_version TEXT",
         ):
             col_name = col.split()[0]
             if col_name not in lb_cols:
@@ -675,8 +834,6 @@ class _NotebookCore:
                     self.conn.execute(f"ALTER TABLE leaderboard ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
-
-        # Migrate leaderboard: add reference/pin columns
         if "is_reference" not in lb_cols:
             try:
                 self.conn.execute(
@@ -692,6 +849,20 @@ class _NotebookCore:
             except sqlite3.OperationalError:
                 pass
 
+    def _migrate_impl(self):
+        """Internal migration logic — delegates to per-table helpers."""
+        self._migrate_experiments_table()
+        self._migrate_program_results_table()
+        self._migrate_leaderboard_create()
+        self._migrate_decisions_table()
+        self._migrate_op_success_rates_table()
+        self._migrate_orphan_preregistration_repair()
+        self._migrate_training_curves_fk()
+        self._migrate_hypotheses_table()
+        self._migrate_campaigns_table()
+        self._migrate_insights_semantic()
+        self._migrate_insights_bayesian()
+        self._migrate_leaderboard_columns()
         self._program_results_columns = None
         self._leaderboard_columns = None
         self._maybe_commit()
@@ -835,5 +1006,7 @@ class _NotebookCore:
 
     def _invalidate_dashboard_summary_cache(self) -> None:
         """Clear the short-lived dashboard summary cache after writes."""
-        self._dashboard_summary_cache = None
+        self._dashboard_summary_cache = {}
         self._dashboard_summary_cache_expires_at = 0.0
+        self._template_observability_cache = {}
+        self._template_observability_cache_expires_at = 0.0

@@ -76,6 +76,30 @@ def screening_wikitext_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any
                 "wikitext_ppl_improvement": result.get("wikitext_ppl_improvement"),
                 "wikitext_score": result.get("wikitext_score"),
             },
+            "diagnostics": {
+                "screening_wikitext_degraded": result.get(
+                    "screening_wikitext_degraded"
+                ),
+                "screening_wikitext_degraded_reasons": result.get(
+                    "screening_wikitext_degraded_reasons"
+                ),
+                "screening_wikitext_clipped_steps": result.get(
+                    "screening_wikitext_clipped_steps"
+                ),
+                "screening_wikitext_clip_fraction": result.get(
+                    "screening_wikitext_clip_fraction"
+                ),
+                "screening_wikitext_max_lr_delta": result.get(
+                    "screening_wikitext_max_lr_delta"
+                ),
+                "screening_wikitext_nonfinite_grad_steps": result.get(
+                    "screening_wikitext_nonfinite_grad_steps"
+                ),
+                "max_grad_norm": result.get("max_grad_norm"),
+                "mean_grad_norm": result.get("mean_grad_norm"),
+                "grad_norm_std": result.get("grad_norm_std"),
+                "final_lr": result.get("final_lr"),
+            },
         }
     }
     return payload
@@ -264,6 +288,7 @@ def _screening_train_eval(
         model, params, buffers, val_batches, vocab_size
     )
     loss_trajectory: Dict[int, float] = {}
+    train_telemetry: Dict[str, Any] = {}
     model.train()
     train_final_loss = functional_micro_train_loop(
         model,
@@ -274,12 +299,106 @@ def _screening_train_eval(
         n_steps=n_train_steps,
         lr=lr,
         loss_trajectory=loss_trajectory,
+        train_telemetry=train_telemetry,
     )
     model.eval()
     post_ppl = functional_compute_perplexity(
         model, params, buffers, val_batches, vocab_size
     )
-    return pre_ppl, post_ppl, train_final_loss, loss_trajectory
+    return pre_ppl, post_ppl, train_final_loss, loss_trajectory, train_telemetry
+
+
+def _training_curve_from_telemetry(
+    train_telemetry: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    curve: List[Dict[str, Any]] = []
+    for step in train_telemetry.get("steps", []) or []:
+        curve.append(
+            {
+                "step": int(step.get("step", 0)),
+                "loss": step.get("loss"),
+                "grad_norm": step.get("pre_clip_total_grad_norm"),
+            }
+        )
+    return curve
+
+
+def _screening_telemetry_metrics(
+    train_telemetry: Dict[str, Any],
+    *,
+    clip_grad: float,
+) -> Dict[str, Any]:
+    steps = train_telemetry.get("steps", []) or []
+    if not steps:
+        return {
+            "training_curve": [],
+            "max_grad_norm": None,
+            "mean_grad_norm": None,
+            "grad_norm_std": None,
+            "final_lr": None,
+            "screening_wikitext_degraded": False,
+            "screening_wikitext_degraded_reasons": [],
+            "screening_wikitext_clipped_steps": 0,
+            "screening_wikitext_clip_fraction": 0.0,
+            "screening_wikitext_max_lr_delta": 0.0,
+            "screening_wikitext_nonfinite_grad_steps": 0,
+        }
+
+    grad_norms = [
+        float(step["pre_clip_total_grad_norm"])
+        for step in steps
+        if step.get("pre_clip_total_grad_norm") is not None
+    ]
+    max_grad_norm = max(grad_norms) if grad_norms else None
+    mean_grad_norm = sum(grad_norms) / len(grad_norms) if grad_norms else None
+    grad_norm_std = None
+    if grad_norms:
+        mean = mean_grad_norm or 0.0
+        grad_norm_std = math.sqrt(
+            sum((value - mean) ** 2 for value in grad_norms) / len(grad_norms)
+        )
+    clipped_steps = sum(1 for step in steps if step.get("clipped"))
+    clip_fraction = clipped_steps / max(len(steps), 1)
+    final_lr_values = steps[-1].get("lr_actual_after_scheduler") or []
+    final_lr = float(final_lr_values[0]) if final_lr_values else None
+    max_lr_delta = max(
+        (
+            max(
+                abs(expected - actual)
+                for expected, actual in zip(
+                    step.get("lr_expected") or [],
+                    step.get("lr_actual_before_step") or [],
+                    strict=False,
+                )
+            )
+            if (step.get("lr_expected") and step.get("lr_actual_before_step"))
+            else 0.0
+        )
+        for step in steps
+    )
+    nonfinite_grad_steps = sum(1 for step in steps if step.get("has_nonfinite_grad"))
+    degraded_reasons: List[str] = []
+    if nonfinite_grad_steps > 0:
+        degraded_reasons.append("nonfinite_grad")
+    if clip_fraction >= 0.75 and (max_grad_norm or 0.0) > max(clip_grad * 10.0, 10.0):
+        degraded_reasons.append("persistent_heavy_clipping")
+    if max_lr_delta > 1e-8:
+        degraded_reasons.append("lr_mismatch")
+    return {
+        "training_curve": _training_curve_from_telemetry(train_telemetry),
+        "max_grad_norm": round(max_grad_norm, 6) if max_grad_norm is not None else None,
+        "mean_grad_norm": round(mean_grad_norm, 6)
+        if mean_grad_norm is not None
+        else None,
+        "grad_norm_std": round(grad_norm_std, 6) if grad_norm_std is not None else None,
+        "final_lr": round(final_lr, 10) if final_lr is not None else None,
+        "screening_wikitext_degraded": bool(degraded_reasons),
+        "screening_wikitext_degraded_reasons": degraded_reasons,
+        "screening_wikitext_clipped_steps": clipped_steps,
+        "screening_wikitext_clip_fraction": round(clip_fraction, 6),
+        "screening_wikitext_max_lr_delta": round(max_lr_delta, 10),
+        "screening_wikitext_nonfinite_grad_steps": nonfinite_grad_steps,
+    }
 
 
 def _trajectory_summary(
@@ -605,7 +724,7 @@ def screening_wikitext_eval(
 
     try:
         with disable_native_probe_dispatch(model, device=device):
-            pre_ppl, post_ppl, train_final_loss, loss_trajectory = (
+            pre_ppl, post_ppl, train_final_loss, loss_trajectory, train_telemetry = (
                 _screening_train_eval(
                     model,
                     params,
@@ -632,6 +751,7 @@ def screening_wikitext_eval(
         )
         meta["screening_wikitext_status"] = "ok"
         meta.update(_screening_slope_metrics(loss_trajectory, n_train_steps))
+        meta.update(_screening_telemetry_metrics(train_telemetry, clip_grad=1.0))
     except Exception as exc:
         meta["screening_wikitext_status"] = "eval_failed"
         meta["error"] = str(exc)

@@ -7,7 +7,7 @@ class CompiledOpRuntimeMixin:
     def _cast_params_to(self, dtype: torch.dtype) -> None:
         if getattr(self, "_last_cast_dtype", None) == dtype:
             return
-        for param in self.parameters():
+        for param in getattr(self, "_param_values", ()):
             if param.dtype != dtype:
                 param.data = param.data.to(dtype)
         self._last_cast_dtype = dtype

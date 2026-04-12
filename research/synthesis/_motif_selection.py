@@ -12,6 +12,21 @@ from ._motif_rules import _get_valid_activations
 from ._motif_types import Motif, MotifStep
 from .op_roles import OpRole
 
+
+def _context_pair_allowed(prev_op: Optional[str], next_op: Optional[str]) -> bool:
+    if prev_op is None or next_op is None:
+        return True
+    from .context_rules import CONTEXT_RULES
+
+    prev_rule = CONTEXT_RULES.get(prev_op)
+    if prev_rule is not None and next_op in prev_rule.forbidden_successors:
+        return False
+    next_rule = CONTEXT_RULES.get(next_op)
+    if next_rule is not None and prev_op in next_rule.forbidden_predecessors:
+        return False
+    return True
+
+
 # ── Assembled motif list from all catalogs ─────────────────────────
 
 _MOTIF_LIST: Tuple[Motif, ...] = CORE_MOTIFS + EXTENDED_MOTIFS + SLOT_MOTIFS
@@ -75,6 +90,14 @@ def resolve_step(
     """
     if step.substitutable and step.role == OpRole.ACTIVATE:
         candidates = _get_valid_activations(prev_op=prev_op, next_op=next_op)
+        candidates = [
+            candidate
+            for candidate in candidates
+            if _context_pair_allowed(prev_op, candidate)
+            and _context_pair_allowed(candidate, next_op)
+        ]
+        if not candidates:
+            candidates = ["gelu", "silu", "relu"]
         if op_weights and len(candidates) > 1:
             weights = [op_weights.get(c, 1.0) for c in candidates]
             op_name = rng.choices(candidates, weights=weights, k=1)[0]

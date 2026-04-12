@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..native.core import _try_import_rust_scheduler
+from .graph_ops import extract_unique_graph_ops_batch
 from .ml_corpus import load_deduped_graph_training_rows
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,45 @@ _LEARNING_RATE = 0.01
 _N_EPOCHS = 50
 _BATCH_SIZE = 256
 _TEMPORAL_HALF_LIFE_DAYS = 30
+
+
+def _run_native_embedding_epoch(
+    embeddings: np.ndarray,
+    positive_pairs: List[Tuple[int, int]],
+    negative_pairs: List[Tuple[int, int]],
+    pair_stability: List[Tuple[int, int, bool]],
+    *,
+    lr: float,
+    seed: int,
+) -> Optional[Tuple[np.ndarray, float, int]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "train_op_embeddings_epoch_native_py"):
+        return None
+    result = rust.train_op_embeddings_epoch_native_py(
+        np.ascontiguousarray(embeddings, dtype=np.float64),
+        np.ascontiguousarray(np.asarray(positive_pairs, dtype=np.int32).reshape(-1, 2)),
+        np.ascontiguousarray(np.asarray(negative_pairs, dtype=np.int32).reshape(-1, 2)),
+        np.ascontiguousarray(
+            np.asarray([(a, b) for a, b, _ in pair_stability], dtype=np.int32).reshape(
+                -1, 2
+            )
+        ),
+        np.ascontiguousarray(
+            np.asarray(
+                [float(stable) for _, _, stable in pair_stability], dtype=np.float64
+            )
+        ),
+        float(lr),
+        int(_BATCH_SIZE),
+        float(_TRIPLET_MARGIN),
+        float(_PAIR_WEIGHT),
+        int(seed),
+    )
+    return (
+        np.asarray(result["embeddings"], dtype=np.float64),
+        float(result["total_loss"]),
+        int(result["n_samples"]),
+    )
 
 
 @dataclass
@@ -271,42 +312,60 @@ class OpEmbeddings:
         for epoch in range(n_epochs):
             total_loss = 0.0
             n_samples = 0
+            native_epoch = None
+            try:
+                native_epoch = _run_native_embedding_epoch(
+                    embeddings,
+                    positive_pairs,
+                    negative_pairs,
+                    pair_stability,
+                    lr=lr,
+                    seed=seed + epoch,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Native op-embedding epoch failed; falling back to Python: %s", exc
+                )
 
-            # Contrastive loss (triplet)
-            rng.shuffle(positive_pairs)
-            for batch_start in range(0, min(len(positive_pairs), 2000), _BATCH_SIZE):
-                batch = positive_pairs[batch_start : batch_start + _BATCH_SIZE]
-                for anchor_idx, pos_idx in batch:
-                    # Sample a negative
-                    if not negative_pairs:
-                        continue
-                    neg_idx_pair = negative_pairs[rng.randint(len(negative_pairs))]
-                    neg_idx = (
-                        neg_idx_pair[1]
-                        if neg_idx_pair[0] == anchor_idx
-                        else neg_idx_pair[0]
-                    )
+            if native_epoch is not None:
+                embeddings, native_loss, native_samples = native_epoch
+                total_loss += native_loss
+                n_samples += native_samples
+            else:
+                rng.shuffle(positive_pairs)
+                for batch_start in range(
+                    0, min(len(positive_pairs), 2000), _BATCH_SIZE
+                ):
+                    batch = positive_pairs[batch_start : batch_start + _BATCH_SIZE]
+                    for anchor_idx, pos_idx in batch:
+                        if not negative_pairs:
+                            continue
+                        neg_idx_pair = negative_pairs[rng.randint(len(negative_pairs))]
+                        neg_idx = (
+                            neg_idx_pair[1]
+                            if neg_idx_pair[0] == anchor_idx
+                            else neg_idx_pair[0]
+                        )
 
-                    a = embeddings[anchor_idx]
-                    p = embeddings[pos_idx]
-                    n_vec = embeddings[neg_idx]
+                        a = embeddings[anchor_idx]
+                        p = embeddings[pos_idx]
+                        n_vec = embeddings[neg_idx]
 
-                    d_pos = np.sum((a - p) ** 2)
-                    d_neg = np.sum((a - n_vec) ** 2)
-                    margin_loss = max(0.0, d_pos - d_neg + _TRIPLET_MARGIN)
+                        d_pos = np.sum((a - p) ** 2)
+                        d_neg = np.sum((a - n_vec) ** 2)
+                        margin_loss = max(0.0, d_pos - d_neg + _TRIPLET_MARGIN)
 
-                    if margin_loss > 0:
-                        # Gradient update
-                        grad_a = 2.0 * ((a - p) - (a - n_vec))
-                        grad_p = 2.0 * (p - a)
-                        grad_n = 2.0 * (a - n_vec)
+                        if margin_loss > 0:
+                            grad_a = 2.0 * ((a - p) - (a - n_vec))
+                            grad_p = 2.0 * (p - a)
+                            grad_n = 2.0 * (a - n_vec)
 
-                        embeddings[anchor_idx] -= lr * grad_a
-                        embeddings[pos_idx] -= lr * grad_p
-                        embeddings[neg_idx] += lr * grad_n
+                            embeddings[anchor_idx] -= lr * grad_a
+                            embeddings[pos_idx] -= lr * grad_p
+                            embeddings[neg_idx] += lr * grad_n
 
-                        total_loss += margin_loss
-                        n_samples += 1
+                            total_loss += margin_loss
+                            n_samples += 1
 
             # Auxiliary loss: predict profiling features from embedding
             if obj._profiling_features is not None and obj._feature_std is not None:
@@ -327,11 +386,13 @@ class OpEmbeddings:
                     grad_aux = (2.0 / (obj.n_ops * n_feat)) * aux_error @ W_dec.T
                     embeddings -= lr * _AUX_WEIGHT * grad_aux
                     total_loss += _AUX_WEIGHT * aux_loss
-                except np.linalg.LinAlgError:
-                    pass
+                except np.linalg.LinAlgError as exc:
+                    logger.warning(
+                        "OpEmbeddings auxiliary decoder solve failed: %s", exc
+                    )
 
-            # Pair stability loss
-            if pair_stability:
+            # Pair stability loss stays on the Python path only when native is unavailable.
+            if pair_stability and native_epoch is None:
                 stab_batch = pair_stability[: min(len(pair_stability), 1000)]
                 for idx_a, idx_b, stable in stab_batch:
                     # Elementwise product → linear → sigmoid
@@ -442,24 +503,14 @@ def _extract_cooccurrence_pairs(
     if temporal_days is not None:
         cutoff = time.time() - temporal_days * 86400
 
-    for row in rows:
+    graph_payloads = [row["graph_json"] for row in rows]
+    extracted_ops = extract_unique_graph_ops_batch(graph_payloads)
+
+    for row, extracted in zip(rows, extracted_ops):
         if cutoff is not None and float(row.get("latest_timestamp", 0.0)) <= cutoff:
             continue
-        graph_json = row["graph_json"]
         s1_passed = row["stage1_any_passed"]
-        try:
-            g = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-        nodes = g.get("nodes") or {}
-        ops = set()
-        for node in nodes.values():
-            op = node.get("op_name", "")
-            if op and op != "input" and op in op_to_idx:
-                ops.add(op)
-
-        op_list = sorted(ops)
+        op_list = [op for op in extracted if op in op_to_idx]
         target = positive if s1_passed else negative
 
         for i, a in enumerate(op_list):

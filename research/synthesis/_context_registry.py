@@ -61,7 +61,11 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     # ── Restricted-use: dimension-changing ops ───────────────────────
     "linear_proj_down": ContextRule(
         search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=frozenset(),
+        forbidden_predecessors=frozenset(
+            {
+                "neg",  # common up->neg->down collapse chain with poor screening outcomes
+            }
+        ),
         # Down-projection collapses dim — feeding into ops that expect
         # full model_dim causes RuntimeError or capacity starvation
         # (85-100% fail rate across swiglu_mlp, relu_gate_routing, etc.).
@@ -335,7 +339,8 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
                 "split2",
                 "split3",  # halved dim breaks multi-head structure
                 "linear_proj_down",  # reduced dim breaks head dimension
-                "token_merge",  # destroyed token order breaks attention
+                "token_merge",  # old alias kept for notebook compatibility
+                "adjacent_token_merge",  # destroyed token order breaks attention
                 "transpose_sd",  # wrong axis orientation
             }
         )
@@ -365,16 +370,20 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
         | _STRUCTURAL_SPLIT_OPS
         | frozenset(
             {
+                "add",  # dominant crash site: residual sum destabilizes scan state
                 "identity",  # strips causal context
-                "token_merge",  # destroys token ordering SSM depends on
+                "token_merge",  # old alias kept for notebook compatibility
+                "adjacent_token_merge",  # destroys token ordering SSM depends on
                 "transpose_sd",  # transposes (S,D) axes, breaks SSM state shape
             }
         ),
         forbidden_successors=frozenset(
             {
                 "output_head",
+                "linear_proj",  # raw scan output into projection is a common crash/no-learn pattern
                 "selective_scan",  # SSM->SSM chaining 96% fail
                 "state_space",  # same failure mode
+                "ternary_projection",  # quantized ternary branch kills already fragile scan signal
             }
         ),
         requires_residual_context=True,  # SSM output needs residual path
@@ -406,6 +415,7 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
             {
                 "linear_proj_down",  # 100% fail (15/15)
                 "nm_sparse_linear",  # 100% fail (6/6)
+                "rmsnorm",  # historical low-value washout path after gated MLP
             }
         ),
     ),
@@ -538,7 +548,11 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     "moe_topk": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=frozenset(
-            {"rmsnorm", "layernorm"}  # 5% consec S1 (20 samples) — needs proj between
+            {
+                "rmsnorm",
+                "layernorm",
+                "linear_proj_up",
+            }  # norm needs proj between; up-project before gate is a recurrent bad route
         )
         | _REDUCE_OPS,
         forbidden_successors=frozenset({"output_head"}),
@@ -795,7 +809,8 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     # Gating gaps
     "relu_gated_moe": ContextRule(
         search_mode=SearchMode.GENERAL,
-        forbidden_predecessors=_REDUCE_OPS | frozenset({"linear_proj_down"}),
+        forbidden_predecessors=_REDUCE_OPS
+        | frozenset({"linear_proj_down", "rmsnorm", "layernorm"}),
         forbidden_successors=_GATING_OPS | frozenset({"output_head"}),
     ),
     "cheap_verify_blend": ContextRule(  # was: speculative
@@ -817,8 +832,51 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     ),
     "adjacent_token_merge": ContextRule(  # was: token_merge
         search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS | _STRUCTURAL_SPLIT_OPS,
+        forbidden_successors=_ROUTING_OPS
+        | _CAUSAL_SENSITIVE_OPS
+        | frozenset(
+            {
+                "output_head",
+                "identity",
+            }
+        ),
+        requires_residual_context=True,
+    ),
+    "hybrid_token_gate": ContextRule(
+        search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=_ROUTING_OPS | frozenset({"output_head"}),
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "sparse_span_builder": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head", "add"}),
+        requires_residual_context=True,
+    ),
+    "hybrid_sparse_router": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "lane_conditioned_block": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "default_path": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
+        requires_residual_context=True,
+    ),
+    "calibrated_branch_merge": ContextRule(
+        search_mode=SearchMode.GENERAL,
+        forbidden_predecessors=_REDUCE_OPS,
+        forbidden_successors=frozenset({"output_head"}),
         requires_residual_context=True,
     ),
     # 2-input routing/compression ops
@@ -852,7 +910,8 @@ CONTEXT_RULES: Dict[str, ContextRule] = {
     "hyp_distance": ContextRule(
         search_mode=SearchMode.GENERAL,
         forbidden_predecessors=_REDUCE_OPS,
-        forbidden_successors=frozenset({"output_head"}) | _STRUCTURAL_SPLIT_OPS,
+        forbidden_successors=frozenset({"output_head", "linear_proj"})
+        | _STRUCTURAL_SPLIT_OPS,
     ),
     "hyperbolic_norm": ContextRule(
         search_mode=SearchMode.GENERAL,

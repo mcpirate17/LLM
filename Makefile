@@ -3,7 +3,7 @@
 
 PYTHON ?= python
 
-.PHONY: all aria_core test test-aria_core test-designer test-research test-integration clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths
+.PHONY: all aria_core test test-aria_core test-designer test-research test-integration clean clean-junk clean-docs clean-all help guardrails-dry guardrails-dry-report perf-summary governance-check governance-audit profile-hotpaths profile-screening-hotpaths profile-screening-hotpaths-quick
 
 all: aria_core  ## Build everything
 
@@ -57,6 +57,12 @@ governance-audit:  ## Generate the full A-G audit report artifact
 
 profile-hotpaths:  ## Run lightweight benchmark/profiling hooks for CI
 	$(PYTHON) conductor/profile_hotpaths.py --json-out tasks/audit/profile_hotpaths.json
+
+profile-screening-hotpaths:  ## Run standard targeted experiment-screening hotpath benchmark
+	$(PYTHON) -m research.tools.profile_screening_hotpaths --fixture standard --json-out tasks/audit/screening_hotpaths.json
+
+profile-screening-hotpaths-quick:  ## Run quick targeted experiment-screening hotpath benchmark
+	$(PYTHON) -m research.tools.profile_screening_hotpaths --fixture quick --json-out tasks/audit/screening_hotpaths_quick.json
 
 dead: ## Standing dead-code detector
 	@mkdir -p tasks/audit

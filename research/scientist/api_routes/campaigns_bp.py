@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import time
 from flask import jsonify, request
 from ..persona import get_aria
@@ -14,60 +13,35 @@ from .deps import ApiRouteContext
 logger = logging.getLogger(__name__)
 
 
-def _is_malformed_db_error(exc: Exception) -> bool:
-    return "malformed" in str(exc).lower()
-
-
 def _safe_campaigns_list(nb):
     rows = nb.conn.execute(
         """
-        SELECT *
+        SELECT
+            c.*,
+            COALESCE(e.n_experiments, 0) AS n_experiments,
+            COALESCE(h.n_hypotheses, 0) AS n_hypotheses,
+            COALESCE(d.n_decisions, 0) AS n_decisions
         FROM campaigns
-        ORDER BY timestamp DESC
+        AS c
+        LEFT JOIN (
+            SELECT campaign_id, COUNT(DISTINCT experiment_id) AS n_experiments
+            FROM experiments
+            GROUP BY campaign_id
+        ) AS e ON e.campaign_id = c.campaign_id
+        LEFT JOIN (
+            SELECT campaign_id, COUNT(DISTINCT hypothesis_id) AS n_hypotheses
+            FROM hypotheses
+            GROUP BY campaign_id
+        ) AS h ON h.campaign_id = c.campaign_id
+        LEFT JOIN (
+            SELECT campaign_id, COUNT(DISTINCT decision_id) AS n_decisions
+            FROM decisions
+            GROUP BY campaign_id
+        ) AS d ON d.campaign_id = c.campaign_id
+        ORDER BY c.timestamp DESC
         """
     ).fetchall()
-    campaigns = []
-    for row in rows:
-        campaign = dict(row)
-        campaign_id = campaign.get("campaign_id")
-        try:
-            campaign["n_experiments"] = int(
-                nb.conn.execute(
-                    "SELECT COUNT(DISTINCT experiment_id) FROM experiments WHERE campaign_id = ?",
-                    (campaign_id,),
-                ).fetchone()[0]
-                or 0
-            )
-        except sqlite3.OperationalError as exc:
-            if not _is_malformed_db_error(exc):
-                raise
-            campaign["n_experiments"] = 0
-        try:
-            campaign["n_hypotheses"] = int(
-                nb.conn.execute(
-                    "SELECT COUNT(DISTINCT hypothesis_id) FROM hypotheses WHERE campaign_id = ?",
-                    (campaign_id,),
-                ).fetchone()[0]
-                or 0
-            )
-        except sqlite3.OperationalError as exc:
-            if not _is_malformed_db_error(exc):
-                raise
-            campaign["n_hypotheses"] = 0
-        try:
-            campaign["n_decisions"] = int(
-                nb.conn.execute(
-                    "SELECT COUNT(DISTINCT decision_id) FROM decisions WHERE campaign_id = ?",
-                    (campaign_id,),
-                ).fetchone()[0]
-                or 0
-            )
-        except sqlite3.OperationalError as exc:
-            if not _is_malformed_db_error(exc):
-                raise
-            campaign["n_decisions"] = 0
-        campaigns.append(campaign)
-    return campaigns
+    return [dict(row) for row in rows]
 
 
 def _safe_campaign_detail_payload(nb, campaign_id: str):

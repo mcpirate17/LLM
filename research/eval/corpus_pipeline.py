@@ -21,7 +21,7 @@ class TextSplitSpec:
 
 
 _BATCH_CACHE_MAX_ENTRIES = 16
-_batch_cache: "collections.OrderedDict[tuple, List[torch.Tensor]]" = (
+_batch_cache: "collections.OrderedDict[tuple, tuple[List[torch.Tensor], int]]" = (
     collections.OrderedDict()
 )
 _TOKEN_CACHE_MAX_ENTRIES = 8
@@ -141,18 +141,30 @@ def _cache_key(
     )
 
 
+def _get_cached_batch_entry(
+    cache_key: tuple, device: str | torch.device
+) -> Optional[tuple[List[torch.Tensor], int]]:
+    cached = _batch_cache.get(cache_key)
+    if cached is None:
+        return None
+    _batch_cache.move_to_end(cache_key)
+    batches, token_count = cached
+    return move_batches_to_device(batches, device), token_count
+
+
 def _get_cached_batches(
     cache_key: tuple, device: str | torch.device
 ) -> Optional[List[torch.Tensor]]:
-    batches = _batch_cache.get(cache_key)
-    if batches is None:
+    cached = _get_cached_batch_entry(cache_key, device)
+    if cached is None:
         return None
-    _batch_cache.move_to_end(cache_key)
-    return move_batches_to_device(batches, device)
+    return cached[0]
 
 
-def _put_cached_batches(cache_key: tuple, batches: List[torch.Tensor]) -> None:
-    _batch_cache[cache_key] = batches
+def _put_cached_batches(
+    cache_key: tuple, batches: List[torch.Tensor], token_count: int = -1
+) -> None:
+    _batch_cache[cache_key] = (batches, int(token_count))
     while len(_batch_cache) > _BATCH_CACHE_MAX_ENTRIES:
         _batch_cache.popitem(last=False)
 
@@ -214,10 +226,14 @@ def prepare_text_split_batches(
         "validation",
         val_seed,
     )
-    train = _get_cached_batches(train_key, device)
-    val = _get_cached_batches(val_key, device)
-    if train is not None and val is not None:
-        return train, val, -1, -1
+    train_cached = _get_cached_batch_entry(train_key, device)
+    val_cached = _get_cached_batch_entry(val_key, device)
+    train = train_cached[0] if train_cached is not None else None
+    val = val_cached[0] if val_cached is not None else None
+    if train_cached is not None and val_cached is not None:
+        train, train_token_count = train_cached
+        val, val_token_count = val_cached
+        return train, val, train_token_count, val_token_count
 
     train_tokens = _get_cached_tokens(train_path, vocab_size)
     val_tokens = _get_cached_tokens(val_path, vocab_size)
@@ -234,7 +250,7 @@ def prepare_text_split_batches(
             seed=train_seed,
         )
         if train_cpu:
-            _put_cached_batches(train_key, train_cpu)
+            _put_cached_batches(train_key, train_cpu, len(train_tokens))
             train = move_batches_to_device(train_cpu, device)
     if val is None:
         val_cpu = make_batches(
@@ -246,7 +262,7 @@ def prepare_text_split_batches(
             seed=val_seed,
         )
         if val_cpu:
-            _put_cached_batches(val_key, val_cpu)
+            _put_cached_batches(val_key, val_cpu, len(val_tokens))
             val = move_batches_to_device(val_cpu, device)
 
     return train, val, len(train_tokens), len(val_tokens)
@@ -287,10 +303,14 @@ def prepare_text_corpus_split_batches(
         "validation_fractional",
         val_seed,
     ) + (float(train_fraction),)
-    train = _get_cached_batches(train_key, device)
-    val = _get_cached_batches(val_key, device)
-    if train is not None and val is not None:
-        return train, val, -1
+    train_cached = _get_cached_batch_entry(train_key, device)
+    val_cached = _get_cached_batch_entry(val_key, device)
+    train = train_cached[0] if train_cached is not None else None
+    val = val_cached[0] if val_cached is not None else None
+    if train_cached is not None and val_cached is not None:
+        train, token_count = train_cached
+        val, _ = val_cached
+        return train, val, token_count
 
     tokens = _get_cached_tokens(path, vocab_size)
     if len(tokens) < seq_len + 1:
@@ -310,7 +330,7 @@ def prepare_text_corpus_split_batches(
             seed=train_seed,
         )
         if train_cpu:
-            _put_cached_batches(train_key, train_cpu)
+            _put_cached_batches(train_key, train_cpu, len(tokens))
             train = move_batches_to_device(train_cpu, device)
     if val is None:
         val_cpu = make_batches(
@@ -322,7 +342,7 @@ def prepare_text_corpus_split_batches(
             seed=val_seed,
         )
         if val_cpu:
-            _put_cached_batches(val_key, val_cpu)
+            _put_cached_batches(val_key, val_cpu, len(tokens))
             val = move_batches_to_device(val_cpu, device)
 
     return train, val, len(tokens)

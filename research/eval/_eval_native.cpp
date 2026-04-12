@@ -1,5 +1,10 @@
 #include <cmath>
 #include <cstring>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <c10/core/InferenceMode.h>
 #include <torch/extension.h>
@@ -60,6 +65,270 @@ torch::Tensor routing_metrics_f64(
       torch::kFloat64);
 }
 
+namespace {
+
+py::object mean_or_none(const std::vector<double>& values) {
+  if (values.empty()) {
+    return py::none();
+  }
+  double total = 0.0;
+  for (double value : values) {
+    total += value;
+  }
+  return py::float_(total / static_cast<double>(values.size()));
+}
+
+py::object min_or_none(const std::vector<double>& values) {
+  if (values.empty()) {
+    return py::none();
+  }
+  double best = values.front();
+  for (double value : values) {
+    if (value < best) {
+      best = value;
+    }
+  }
+  return py::float_(best);
+}
+
+std::string evidence_level_from_count(int64_t n_used) {
+  if (n_used < 3) {
+    return "insufficient";
+  }
+  if (n_used < 10) {
+    return "sparse";
+  }
+  if (n_used < 30) {
+    return "building";
+  }
+  return "established";
+}
+
+}  // namespace
+
+py::dict screening_graph_analysis_native(
+    const std::vector<int64_t>& node_ids,
+    const std::vector<std::string>& op_names,
+    const std::vector<std::vector<int64_t>>& input_ids,
+    const std::vector<uint8_t>& is_input,
+    const std::vector<uint8_t>& is_output,
+    const std::vector<uint8_t>& has_params) {
+  const auto n = node_ids.size();
+  TORCH_CHECK(
+      op_names.size() == n && input_ids.size() == n && is_input.size() == n
+          && is_output.size() == n && has_params.size() == n,
+      "screening_graph_analysis_native inputs must have matching lengths");
+
+  std::unordered_map<int64_t, size_t> node_index;
+  node_index.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    node_index[node_ids[i]] = i;
+  }
+
+  std::vector<std::string> counted_ops;
+  counted_ops.reserve(n);
+  std::unordered_set<std::string> op_name_set;
+  std::set<std::string> toxic_bigrams;
+  bool has_parameterized_op = false;
+
+  for (size_t i = 0; i < n; ++i) {
+    if (is_input[i]) {
+      continue;
+    }
+    const auto& op_name = op_names[i];
+    if (!op_name.empty()) {
+      counted_ops.push_back(op_name);
+    }
+    if (is_output[i]) {
+      continue;
+    }
+    op_name_set.insert(op_name);
+    has_parameterized_op = has_parameterized_op || (has_params[i] != 0);
+    for (int64_t parent_id : input_ids[i]) {
+      auto it = node_index.find(parent_id);
+      if (it == node_index.end()) {
+        continue;
+      }
+      const size_t parent_idx = it->second;
+      if (is_input[parent_idx] || is_output[parent_idx]) {
+        continue;
+      }
+      toxic_bigrams.insert(op_names[parent_idx] + "->" + op_name);
+    }
+  }
+
+  py::list counted_ops_py;
+  for (const auto& op_name : counted_ops) {
+    counted_ops_py.append(py::str(op_name));
+  }
+  py::list op_names_py;
+  for (const auto& op_name : op_name_set) {
+    op_names_py.append(py::str(op_name));
+  }
+  py::list toxic_bigrams_py;
+  for (const auto& bigram : toxic_bigrams) {
+    toxic_bigrams_py.append(py::str(bigram));
+  }
+
+  py::dict out;
+  out["counted_ops"] = counted_ops_py;
+  out["op_names"] = op_names_py;
+  out["toxic_bigrams"] = toxic_bigrams_py;
+  out["has_parameterized_op"] = has_parameterized_op;
+  return out;
+}
+
+py::dict summarize_template_stat_core(
+    int64_t n_used,
+    int64_t n_stage0,
+    int64_t n_stage05,
+    int64_t n_stage1,
+    const std::vector<double>& losses,
+    const std::vector<double>& validation_losses,
+    const std::vector<double>& discovery_losses,
+    const std::vector<double>& novelties,
+    const std::vector<double>& novelty_confidences,
+    const std::vector<double>& induction_aucs,
+    const std::vector<double>& binding_aucs,
+    const std::vector<double>& ar_aucs,
+    const std::vector<double>& hellaswag_accs,
+    const std::vector<double>& screening_hellaswag_accs,
+    int64_t screening_wikitext_ok,
+    int64_t screening_wikitext_runs,
+    int64_t slot_count,
+    int64_t routing_fast_lane_runs,
+    int64_t routing_fast_lane_ok,
+    int64_t routing_fast_lane_positive,
+    const std::vector<double>& routing_fast_lane_scores,
+    const std::vector<double>& routing_fast_lane_improvements,
+    const std::vector<double>& routing_fast_lane_slopes) {
+  const double denom = static_cast<double>(std::max<int64_t>(n_used, 1));
+  py::dict out;
+  out["n_used"] = n_used;
+  out["s0_rate"] = static_cast<double>(n_stage0) / denom;
+  out["s05_rate"] = static_cast<double>(n_stage05) / denom;
+  out["s1_rate"] = static_cast<double>(n_stage1) / denom;
+  out["avg_loss_ratio"] = mean_or_none(losses);
+  out["best_loss_ratio"] = min_or_none(losses);
+  out["avg_validation_loss_ratio"] = mean_or_none(validation_losses);
+  out["avg_discovery_loss_ratio"] = mean_or_none(discovery_losses);
+  out["avg_novelty"] = mean_or_none(novelties);
+  out["avg_novelty_confidence"] = mean_or_none(novelty_confidences);
+  out["avg_induction_auc"] = mean_or_none(induction_aucs);
+  out["avg_binding_auc"] = mean_or_none(binding_aucs);
+  out["avg_ar_auc"] = mean_or_none(ar_aucs);
+  out["avg_hellaswag_acc"] = mean_or_none(hellaswag_accs);
+  out["avg_screening_hellaswag_acc"] = mean_or_none(screening_hellaswag_accs);
+  out["screening_wikitext_ok_rate"] =
+      screening_wikitext_runs > 0
+      ? py::object(py::float_(
+            static_cast<double>(screening_wikitext_ok)
+            / static_cast<double>(std::max<int64_t>(screening_wikitext_runs, 1))))
+      : py::object(py::none());
+  py::dict coverage;
+  coverage["induction"] = static_cast<int64_t>(induction_aucs.size());
+  coverage["binding"] = static_cast<int64_t>(binding_aucs.size());
+  coverage["associative_recall"] = static_cast<int64_t>(ar_aucs.size());
+  coverage["hellaswag"] = static_cast<int64_t>(
+      hellaswag_accs.size() + screening_hellaswag_accs.size());
+  coverage["wikitext"] = screening_wikitext_runs;
+  out["screening_metric_coverage"] = coverage;
+  out["slot_count"] = slot_count;
+  out["routing_fast_lane_runs"] = routing_fast_lane_runs;
+  out["routing_fast_lane_ok_rate"] =
+      routing_fast_lane_runs > 0
+      ? py::object(py::float_(
+            static_cast<double>(routing_fast_lane_ok)
+            / static_cast<double>(std::max<int64_t>(routing_fast_lane_runs, 1))))
+      : py::object(py::none());
+  out["routing_fast_lane_positive_rate"] =
+      routing_fast_lane_runs > 0
+      ? py::object(py::float_(
+            static_cast<double>(routing_fast_lane_positive)
+            / static_cast<double>(std::max<int64_t>(routing_fast_lane_runs, 1))))
+      : py::object(py::none());
+  out["routing_fast_lane_avg_score"] = mean_or_none(routing_fast_lane_scores);
+  out["routing_fast_lane_avg_improvement"] =
+      mean_or_none(routing_fast_lane_improvements);
+  out["routing_fast_lane_avg_slope"] = mean_or_none(routing_fast_lane_slopes);
+  out["evidence_level"] = evidence_level_from_count(n_used);
+  return out;
+}
+
+std::tuple<torch::Tensor, torch::Tensor, int64_t> pad_sequences_native(
+    const std::vector<std::vector<int64_t>>& sequences,
+    const std::string& device_str) {
+  const int64_t n_seq = static_cast<int64_t>(sequences.size());
+  if (n_seq == 0) {
+    auto opts = torch::TensorOptions().dtype(torch::kInt64);
+    return {torch::empty({0, 0}, opts), torch::empty({0}, opts), 0};
+  }
+
+  int64_t max_len = 0;
+  std::vector<int64_t> lengths_host(static_cast<size_t>(n_seq));
+  for (int64_t i = 0; i < n_seq; ++i) {
+    const auto slen = static_cast<int64_t>(sequences[i].size());
+    lengths_host[i] = slen;
+    if (slen > max_len) max_len = slen;
+  }
+  if (max_len == 0) {
+    auto opts = torch::TensorOptions().dtype(torch::kInt64);
+    return {torch::zeros({n_seq, 1}, opts), torch::zeros({n_seq}, opts), 0};
+  }
+
+  std::vector<int64_t> padded_host(
+      static_cast<size_t>(n_seq) * static_cast<size_t>(max_len), 0);
+  for (int64_t i = 0; i < n_seq; ++i) {
+    const auto& seq = sequences[i];
+    if (!seq.empty()) {
+      std::memcpy(
+          padded_host.data() + static_cast<size_t>(i) * static_cast<size_t>(max_len),
+          seq.data(),
+          seq.size() * sizeof(int64_t));
+    }
+  }
+
+  auto opts = torch::TensorOptions().dtype(torch::kInt64);
+  torch::Tensor padded = torch::from_blob(
+      padded_host.data(), {n_seq, max_len}, opts).clone();
+  torch::Tensor lengths = torch::from_blob(
+      lengths_host.data(), {n_seq}, opts).clone();
+
+  torch::Device device(device_str);
+  if (device.is_cuda()) {
+    padded = padded.pin_memory().to(device, /*non_blocking=*/true);
+    lengths = lengths.to(device, /*non_blocking=*/true);
+  } else if (device != torch::kCPU) {
+    padded = padded.to(device);
+    lengths = lengths.to(device);
+  }
+  return {padded, lengths, max_len};
+}
+
+torch::Tensor span_mean_log_probs_native(
+    const torch::Tensor& token_log_probs,
+    const torch::Tensor& start_positions,
+    const torch::Tensor& lengths,
+    int64_t max_len) {
+  const auto device = token_log_probs.device();
+  const int64_t n_seq = token_log_probs.size(0);
+
+  auto positions = torch::arange(
+      max_len - 1, torch::TensorOptions().device(device)).unsqueeze(0);
+  auto span_mask = (positions >= start_positions.unsqueeze(1)).logical_and(
+      positions < (lengths - 1).unsqueeze(1));
+  auto token_counts = span_mask.sum(1);
+  auto valid_spans = token_counts > 0;
+  auto mean_lps = torch::full(
+      {n_seq}, -std::numeric_limits<float>::infinity(),
+      torch::TensorOptions().dtype(torch::kFloat32).device(device));
+  auto sums = (token_log_probs * span_mask).sum(1);
+  auto denom = token_counts.clamp_min(1).to(torch::kFloat32);
+  auto candidate_means = sums / denom;
+  mean_lps = torch::where(valid_spans, candidate_means, mean_lps);
+  return mean_lps;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def(
       "zero_count_last_dim",
@@ -77,6 +346,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "hellaswag_score_batch_native",
       &hellaswag_score_batch_native,
       "Score a batch of HellaSwag examples natively");
+  m.def(
+      "screening_graph_analysis_native",
+      &screening_graph_analysis_native,
+      "Analyze graph screening facts in native code");
+  m.def(
+      "summarize_template_stat_core",
+      &summarize_template_stat_core,
+      "Summarize template-stat arithmetic in native code");
+  m.def(
+      "pad_sequences_native",
+      &pad_sequences_native,
+      "Pad variable-length int64 sequences into (batch, max_len) tensor");
+  m.def(
+      "span_mean_log_probs_native",
+      &span_mean_log_probs_native,
+      "Compute span-masked mean token log-probs from gathered log-probs");
 }
 
 std::tuple<int, int> hellaswag_score_batch_native(

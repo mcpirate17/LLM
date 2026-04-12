@@ -20,6 +20,7 @@ import random
 import sqlite3
 import time
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,8 @@ DB_PATH = Path(__file__).resolve().parents[1] / "lab_notebook.db"
 _VALID_TARGET_METRICS = ("eval", "s0", "s1")
 _VALID_WEIGHT_MODES = ("uniform", "random", "default", "scaffold_guided")
 _VALID_PHASES = ("isolation", "stack")
+_VALID_POLICY_MODES = ("off", "auto")
+_VALID_TEMPLATE_MODES = ("rehab", "coverage", "harvest", "frozen")
 
 _NON_ROUTING_TEMPLATES = {
     "gpt2_reference",
@@ -87,9 +90,13 @@ _NON_ROUTING_TEMPLATES = {
     "attn_spectral_filter",
     "attn_normalized_matmul",
     "attn_softmax_normalized_matmul",
-    "attn_linear_normalized_matmul_control",
+    "attn_softmax_normalized_matmul_v2",
+    "attn_softmax_normalized_matmul_compact_ffn",
+    "attn_softmax_normalized_matmul_fixed_tail_norm",
     "attn_linear_no_matmul_ffn",
-    "attn_linear_matmul_sparse_tail",
+    "attn_linear_no_matmul_ffn_v2",
+    "attn_linear_no_matmul_ffn_dense_tail",
+    "attn_linear_no_matmul_ffn_direct_recovery",
     "latent_attn_conv_hybrid",
     "diff_attn_conv_hybrid",
     "attn_safe_division",
@@ -113,12 +120,140 @@ _STACK_PHASE_OVERRIDES: dict[str, dict[str, Any]] = {
     "multiscale_difficulty_router": {
         "composition_depth": 1,
     },
+    # Even one attn_safe_division block is already fairly dense. Stacking two
+    # copies in stack mode breaches the screening op budget instead of yielding
+    # useful evidence about the division scaffold itself.
+    "attn_safe_division": {
+        "composition_depth": 1,
+    },
     "multiscale_rich_lane_router": {
         "composition_depth": 1,
     },
     "intelligent_multilane_router": {
         "composition_depth": 1,
     },
+}
+
+
+@dataclass(frozen=True)
+class TemplateBackfillPolicy:
+    mode: str = "coverage"
+    min_batch: int = 15
+    max_batch: int | None = None
+    max_retries: int = 5
+    preferred_weight_mode: str | None = None
+    structural_stop_error: str | None = None
+    zero_s1_stop_after_s0: int | None = None
+    notes: str = ""
+
+
+_DEFAULT_TEMPLATE_POLICY = TemplateBackfillPolicy()
+
+_TEMPLATE_BACKFILL_POLICIES: dict[str, TemplateBackfillPolicy] = {
+    "intelligent_multilane_router": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=10,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        structural_stop_error="causality_violation",
+        zero_s1_stop_after_s0=8,
+        notes="Structural causality fix landed; continue coverage with neutral sampling and stop quickly if conversion regresses.",
+    ),
+    "hybrid_sparse_triplet_router": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=12,
+        max_batch=24,
+        max_retries=4,
+        notes="Search-space widening landed; gather coverage with moderate batches.",
+    ),
+    "recursive_depth_router": TemplateBackfillPolicy(
+        mode="harvest",
+        min_batch=12,
+        max_batch=20,
+        max_retries=3,
+        preferred_weight_mode="scaffold_guided",
+        zero_s1_stop_after_s0=10,
+        notes="Stable production winner; bias toward high-yield harvest runs.",
+    ),
+    "multiscale_rich_lane_router": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=8,
+        max_batch=12,
+        max_retries=2,
+        notes="Secondary family: allow low-priority coverage backfill, but do not prioritize harvest budget here.",
+    ),
+    "multiscale_difficulty_router": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=8,
+        max_batch=12,
+        max_retries=2,
+        notes="Secondary family: allow low-priority coverage backfill, but keep batches capped.",
+    ),
+    "depth_gated_block_matmul_norm": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=8,
+        max_batch=16,
+        max_retries=3,
+        preferred_weight_mode="scaffold_guided",
+        notes="Promoted experimental family: gather coverage carefully after the matmul+rmsnorm variant showed repeated low-loss survivors.",
+    ),
+    "attn_safe_division": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=10,
+        max_batch=20,
+        max_retries=3,
+        preferred_weight_mode="scaffold_guided",
+        notes="Sparse but clean early evidence; gather more coverage before changing weights.",
+    ),
+    "latent_attn_ssm_hybrid": TemplateBackfillPolicy(
+        mode="harvest",
+        min_batch=16,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        notes="High-yield frontier family; use neutral sampling for trusted low-loss harvest.",
+    ),
+    "local_attn_ssm_hybrid": TemplateBackfillPolicy(
+        mode="harvest",
+        min_batch=16,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        notes="High-yield frontier family; use neutral sampling for trusted low-loss harvest.",
+    ),
+    "attn_routing_block": TemplateBackfillPolicy(
+        mode="harvest",
+        min_batch=16,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        notes="Promoted routing winner; preserve neutral sampling while chasing frontier loss.",
+    ),
+    "linear_attn_ffn_block": TemplateBackfillPolicy(
+        mode="harvest",
+        min_batch=16,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        notes="Low-loss linear attention family; preserve neutral sampling while chasing frontier loss.",
+    ),
+    "diff_attn_conv_hybrid": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=16,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        notes="Frontier-adjacent hybrid family; keep neutral sampling until stronger conversion is established.",
+    ),
+    "attn_softmax_normalized_matmul_compact_ffn": TemplateBackfillPolicy(
+        mode="coverage",
+        min_batch=16,
+        max_batch=24,
+        max_retries=3,
+        preferred_weight_mode="uniform",
+        notes="Seed-sensitive attention-tail family; keep neutral sampling while validating frontier behavior.",
+    ),
 }
 
 
@@ -201,7 +336,7 @@ def _make_category_weights(mode: str) -> dict[str, float] | None:
 def _scaffold_guided_priors(
     db_path: str,
     *,
-    min_support: int = 2,
+    min_support: int = 5,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Build op/category priors from scaffold profiling evidence."""
     from research.scientist.notebook import LabNotebook
@@ -254,21 +389,179 @@ def _phase_settings(phase: str, template_name: str | None = None) -> dict[str, A
     }
 
 
-def run_template_batch(
+def get_template_backfill_policy(template_name: str) -> TemplateBackfillPolicy:
+    """Return the resolved per-template backfill policy."""
+    policy = _TEMPLATE_BACKFILL_POLICIES.get(template_name, _DEFAULT_TEMPLATE_POLICY)
+    if policy.mode not in _VALID_TEMPLATE_MODES:
+        raise ValueError(f"Unsupported template backfill mode: {policy.mode}")
+    return policy
+
+
+def resolve_weight_mode(
+    template_name: str,
+    requested_weight_mode: str,
+    policy_mode: str = "auto",
+) -> str:
+    """Resolve the effective weight mode after policy overrides."""
+    if policy_mode not in _VALID_POLICY_MODES:
+        raise ValueError(f"Unsupported backfill policy mode: {policy_mode}")
+    if requested_weight_mode not in _VALID_WEIGHT_MODES:
+        raise ValueError(f"Unsupported weight mode: {requested_weight_mode}")
+    if policy_mode == "off":
+        return requested_weight_mode
+    preferred = get_template_backfill_policy(template_name).preferred_weight_mode
+    return preferred or requested_weight_mode
+
+
+def plan_batch_size(
+    *,
+    template_name: str,
+    requested_batch_size: int,
+    metric_deficit: int,
+    s1_deficit: int,
+    policy_mode: str = "auto",
+) -> int:
+    """Compute the next batch size under the template policy."""
+    if policy_mode not in _VALID_POLICY_MODES:
+        raise ValueError(f"Unsupported backfill policy mode: {policy_mode}")
+    if policy_mode == "off":
+        return max(requested_batch_size, metric_deficit, s1_deficit)
+    policy = get_template_backfill_policy(template_name)
+    if policy.mode == "frozen":
+        return 0
+    batch = max(requested_batch_size, metric_deficit, s1_deficit, policy.min_batch)
+    if policy.max_batch is not None:
+        batch = min(batch, policy.max_batch)
+    return batch
+
+
+def summarize_experiment_batch(db_path: str, experiment_id: str) -> dict[str, Any]:
+    """Return compact persisted-row outcomes for a completed or partial batch."""
+    db = sqlite3.connect(db_path)
+    try:
+        row = db.execute(
+            """
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN rapid_screening_passed THEN 1 ELSE 0 END), 0)
+            FROM program_results
+            WHERE experiment_id = ?
+            """,
+            (experiment_id,),
+        ).fetchone()
+        rows, s0, s1, rapid = (int(v or 0) for v in (row or (0, 0, 0, 0)))
+        error_counts = {
+            str(name): int(count)
+            for name, count in db.execute(
+                """
+                SELECT COALESCE(error_type, 'none'), COUNT(*)
+                FROM program_results
+                WHERE experiment_id = ?
+                GROUP BY COALESCE(error_type, 'none')
+                """,
+                (experiment_id,),
+            ).fetchall()
+        }
+        return {
+            "rows": rows,
+            "s0": s0,
+            "s1": s1,
+            "rapid": rapid,
+            "error_counts": error_counts,
+        }
+    finally:
+        db.close()
+
+
+def should_stop_backfill_attempt(
+    *,
+    template_name: str,
+    batch_summary: dict[str, Any],
+    policy_mode: str = "auto",
+) -> tuple[bool, str | None]:
+    """Return whether the template should stop further backfill attempts."""
+    if policy_mode == "off":
+        return False, None
+    policy = get_template_backfill_policy(template_name)
+    if policy.mode == "frozen":
+        return True, "template_frozen"
+    rows = int(batch_summary.get("rows", 0) or 0)
+    s0 = int(batch_summary.get("s0", 0) or 0)
+    s1 = int(batch_summary.get("s1", 0) or 0)
+    error_counts = batch_summary.get("error_counts") or {}
+    if (
+        policy.structural_stop_error
+        and rows > 0
+        and int(error_counts.get(policy.structural_stop_error, 0) or 0) * 2 >= rows
+    ):
+        return True, f"structural_stop:{policy.structural_stop_error}"
+    if (
+        policy.zero_s1_stop_after_s0 is not None
+        and s0 >= policy.zero_s1_stop_after_s0
+        and s1 == 0
+    ):
+        return True, "zero_s1_conversion"
+    return False, None
+
+
+def _start_backfill_experiment_with_retry(
+    runner: Any,
+    *,
+    experiment_type: str,
+    config: dict[str, Any],
+    hypothesis: str,
+    hypothesis_metadata: dict[str, Any],
+    created_by: str,
+    max_attempts: int = 6,
+) -> tuple[str, Any]:
+    """Start a preregistered experiment, retrying transient SQLite lock contention."""
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(1, max_attempts + 1):
+        nb = runner._make_notebook()
+        try:
+            runner._populate_refuted_cache(nb)
+            exp_id = runner._start_preregistered_experiment(
+                nb=nb,
+                experiment_type=experiment_type,
+                config=config,
+                hypothesis=hypothesis,
+                hypothesis_metadata=hypothesis_metadata,
+                created_by=created_by,
+            )
+            return exp_id, nb
+        except sqlite3.OperationalError as exc:
+            nb.close()
+            if "locked" not in str(exc).lower() or attempt >= max_attempts:
+                raise
+            last_error = exc
+            sleep_s = min(0.5 * (2 ** (attempt - 1)), 8.0)
+            logger.warning(
+                "Backfill experiment start hit db lock on attempt %d/%d; retrying in %.1fs",
+                attempt,
+                max_attempts,
+                sleep_s,
+            )
+            time.sleep(sleep_s)
+    raise last_error or sqlite3.OperationalError("database is locked")
+
+
+def run_template_batch_detailed(
     template_name: str,
     n_programs: int,
     device: str,
     db_path: str,
     weight_mode: str = "uniform",
     phase: str = "isolation",
-) -> int:
+) -> dict[str, Any]:
     """Run the full screening pipeline biased toward a single template."""
     from research.scientist.runner import ExperimentRunner, RunConfig
-    from research.synthesis.templates import DEFAULT_TEMPLATE_WEIGHTS
+    from research.synthesis.templates import TEMPLATES
 
-    # Fully specify template weights so pick_template does not fall back to
-    # default priors for every other template.
-    tpl_weights = {t: 0.0 for t in DEFAULT_TEMPLATE_WEIGHTS}
+    # Fully specify every registered template so pick_template cannot fall back
+    # to default priors for omitted names.
+    tpl_weights = {t: 0.0 for t in TEMPLATES}
     tpl_weights[template_name] = 1.0
 
     cat_weights = _make_category_weights(weight_mode)
@@ -316,14 +609,20 @@ def run_template_batch(
     )
     runner._ensure_math_spaces()
 
-    nb = runner._make_notebook()
-    runner._populate_refuted_cache(nb)
-
     hypothesis = f"Backfill ({phase}): gather data on template '{template_name}'"
-    exp_id = runner._start_preregistered_experiment(
-        nb=nb,
+    config_payload = config.to_dict()
+    config_payload.update(
+        {
+            "backfill_template": template_name,
+            "backfill_phase": phase,
+            "backfill_weight_mode": weight_mode,
+            "backfill_n_programs": int(n_programs),
+        }
+    )
+    exp_id, nb = _start_backfill_experiment_with_retry(
+        runner,
         experiment_type="backfill",
-        config=config.to_dict(),
+        config=config_payload,
         hypothesis=hypothesis,
         hypothesis_metadata={"source": "backfill_tool", "phase": phase},
         created_by="backfill_templates",
@@ -361,6 +660,7 @@ def run_template_batch(
             ((results.get("funnel_counts") or {}).get("persisted_rows", 0) or 0)
         )
         s1 = results.get("stage1_passed", 0)
+        batch_summary = summarize_experiment_batch(db_path, exp_id)
         logger.info(f"Experiment {exp_id} done: {s1}/{total} S1 passed")
         if persisted_rows <= 0 and total > 0:
             logger.info(
@@ -369,7 +669,13 @@ def run_template_batch(
                 exp_id,
                 total,
             )
-        return persisted_rows
+        return {
+            "experiment_id": exp_id,
+            "persisted_rows": persisted_rows,
+            "results": results,
+            "batch_summary": batch_summary,
+            "status": "completed",
+        }
 
     except KeyboardInterrupt:
         logger.info(f"Experiment {exp_id} interrupted — saving partial results")
@@ -378,9 +684,31 @@ def run_template_batch(
     except Exception as e:
         logger.error(f"Experiment {exp_id} failed: {e}")
         nb.fail_experiment(exp_id, error=str(e))
-        return 0
+        return {
+            "experiment_id": exp_id,
+            "persisted_rows": 0,
+            "results": {},
+            "batch_summary": summarize_experiment_batch(db_path, exp_id),
+            "status": "failed",
+            "error": str(e),
+        }
     finally:
         nb.close()
+
+
+def run_template_batch(
+    template_name: str,
+    n_programs: int,
+    device: str,
+    db_path: str,
+    weight_mode: str = "uniform",
+    phase: str = "isolation",
+) -> int:
+    """Compatibility wrapper returning only persisted rows."""
+    result = run_template_batch_detailed(
+        template_name, n_programs, device, db_path, weight_mode, phase
+    )
+    return int(result.get("persisted_rows", 0) or 0)
 
 
 def main():
@@ -435,6 +763,12 @@ def main():
         help="Skip ML model refresh after backfill (stats + Bayesian + graph predictor)",
     )
     parser.add_argument(
+        "--policy",
+        default="auto",
+        choices=list(_VALID_POLICY_MODES),
+        help="Template policy layer: auto applies rehab/coverage/harvest/frozen rules; off preserves legacy behavior.",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         dest="list_all",
@@ -453,19 +787,22 @@ def main():
     )
 
     if args.list_all:
-        print(f"{'Template':<35s} {'Eval':>5s} {'S0':>5s} {'S1':>5s} {'Target':>7s}")
-        print("-" * 66)
+        print(
+            f"{'Template':<35s} {'Eval':>5s} {'S0':>5s} {'S1':>5s} {'Target':>7s} {'Mode':>10s}"
+        )
+        print("-" * 78)
         for name in sorted(TEMPLATES.keys(), key=lambda n: counts.get(n, 0)):
             tpl_stats = stats.get(name, {})
             current = counts.get(name, 0)
             s1 = int(tpl_stats.get("s1", 0))
             missing_target = current < args.target
             missing_s1 = args.min_s1 > 0 and s1 < args.min_s1
+            policy = get_template_backfill_policy(name)
             flag = " <--" if (missing_target or missing_s1) else ""
             print(
                 f"  {name:<35s} {int(tpl_stats.get('eval', 0)):5d} "
                 f"{int(tpl_stats.get('s0', 0)):5d} {s1:5d} "
-                f"{current:7d}{flag}"
+                f"{current:7d} {policy.mode:>10s}{flag}"
             )
         total = sum(counts.get(n, 0) for n in TEMPLATES)
         print(
@@ -488,6 +825,7 @@ def main():
         metric_deficit = max(args.target - current, 0)
         s1_deficit = max(args.min_s1 - s1, 0)
         if metric_deficit > 0 or s1_deficit > 0:
+            policy = get_template_backfill_policy(name)
             needs_data[name] = {
                 "metric_deficit": metric_deficit,
                 "s1_deficit": s1_deficit,
@@ -497,6 +835,7 @@ def main():
                     "s0": int(tpl_stats.get("s0", 0)),
                     "s1": s1,
                 },
+                "policy": policy,
             }
 
     if not needs_data:
@@ -507,8 +846,14 @@ def main():
         return
 
     total_programs = sum(
-        max(args.batch_size, data["metric_deficit"], data["s1_deficit"])
-        for data in needs_data.values()
+        plan_batch_size(
+            template_name=name,
+            requested_batch_size=args.batch_size,
+            metric_deficit=data["metric_deficit"],
+            s1_deficit=data["s1_deficit"],
+            policy_mode=args.policy,
+        )
+        for name, data in needs_data.items()
     )
     print(
         f"Templates below target ({args.target_metric}>={args.target}"
@@ -520,11 +865,17 @@ def main():
         key=lambda x: (x[1]["metric_deficit"], x[1]["s1_deficit"]),
         reverse=True,
     ):
-        batch = max(args.batch_size, data["metric_deficit"], data["s1_deficit"])
+        batch = plan_batch_size(
+            template_name=name,
+            requested_batch_size=args.batch_size,
+            metric_deficit=data["metric_deficit"],
+            s1_deficit=data["s1_deficit"],
+            policy_mode=args.policy,
+        )
         print(
             f"  {name:<35s}  {_fmt_stats(data['current_stats'])}  "
             f"need_{args.target_metric}={data['metric_deficit']:3d}  "
-            f"need_s1={data['s1_deficit']:3d}  batch={batch}"
+            f"need_s1={data['s1_deficit']:3d}  batch={batch:3d}  mode={data['policy'].mode}"
         )
     print()
 
@@ -539,32 +890,81 @@ def main():
             key=lambda x: (x[1]["metric_deficit"], x[1]["s1_deficit"]),
             reverse=True,
         ):
-            n_programs = max(
-                args.batch_size, data["metric_deficit"], data["s1_deficit"]
-            )
+            policy = data["policy"]
+            if args.policy == "auto" and policy.mode == "frozen":
+                print(
+                    f"\n=== {name} skipped (mode=frozen) "
+                    f"stats: {_fmt_stats(data['current_stats'])} ==="
+                )
+                if policy.notes:
+                    print(f"  policy note: {policy.notes}")
+                continue
+
             current = data["current_metric"]
+            current_s1 = int(data["current_stats"].get("s1", 0))
 
             print(
                 f"\n=== {name} ({args.target_metric} {current} → {args.target}, "
-                f"phase={args.phase}, stats: {_fmt_stats(data['current_stats'])}) ==="
+                f"phase={args.phase}, policy={policy.mode}, stats: {_fmt_stats(data['current_stats'])}) ==="
             )
             t0 = time.time()
             recorded = 0
             updated_stats = data["current_stats"]
             new_count = current
             attempts = 0
-            while attempts < max_retries_per_template and new_count <= current:
+            new_s1 = current_s1
+            max_retries = (
+                policy.max_retries
+                if args.policy == "auto"
+                else max_retries_per_template
+            )
+            while attempts < max_retries and (
+                new_count < args.target or new_s1 < args.min_s1
+            ):
                 attempts += 1
-                recorded = run_template_batch(
-                    name, n_programs, args.device, args.db, args.weights, args.phase
+                n_programs = plan_batch_size(
+                    template_name=name,
+                    requested_batch_size=args.batch_size,
+                    metric_deficit=max(args.target - new_count, 0),
+                    s1_deficit=max(args.min_s1 - new_s1, 0),
+                    policy_mode=args.policy,
                 )
+                if n_programs <= 0:
+                    print("  Policy skipped batch generation for this template.")
+                    break
+                effective_weight_mode = resolve_weight_mode(
+                    name, args.weights, args.policy
+                )
+                batch_result = run_template_batch_detailed(
+                    name,
+                    n_programs,
+                    args.device,
+                    args.db,
+                    effective_weight_mode,
+                    args.phase,
+                )
+                recorded = int(batch_result.get("persisted_rows", 0) or 0)
                 updated_stats = get_template_stats(Path(args.db)).get(name, {})
                 new_count = int(updated_stats.get(args.target_metric, 0))
-                if new_count > current:
+                new_s1 = int(updated_stats.get("s1", 0))
+                batch_summary = batch_result.get("batch_summary") or {}
+                stop_now, stop_reason = should_stop_backfill_attempt(
+                    template_name=name,
+                    batch_summary=batch_summary,
+                    policy_mode=args.policy,
+                )
+                if stop_now:
+                    print(
+                        f"  Stopping early after attempt {attempts}: {stop_reason} "
+                        f"(rows={batch_summary.get('rows', 0)} s0={batch_summary.get('s0', 0)} s1={batch_summary.get('s1', 0)})"
+                    )
                     break
+                if new_count > current:
+                    current = new_count
+                    current_s1 = new_s1
                 if recorded == 0:
                     print(
-                        f"  Attempt {attempts}/{max_retries_per_template}: "
+                        f"  Attempt {attempts}/{max_retries}: "
                         f"0 persisted rows after runtime dedup. Retrying..."
                     )
             elapsed = time.time() - t0

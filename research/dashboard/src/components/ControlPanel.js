@@ -254,7 +254,7 @@ function ControlPanel({
     if (mode === 'validation') {
       if (investUseTop) {
         try {
-          const r = await apiCall(`/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}`);
+          const r = await apiCall(`/api/leaderboard?tier=investigation&sort=composite_score&limit=${investTopN}&trusted_only=1`);
           const data = await r.json();
           const ids = (data.entries || [])
             .filter(e => e.investigation_passed)

@@ -19,6 +19,7 @@ class CompiledLayer(nn.Module):
         super().__init__()
         self.graph = graph
         self.topo_order = graph.topological_order()
+        self._node_slot_count = (max(graph.nodes.keys()) + 1) if graph.nodes else 0
 
         counts_dict: Dict[int, int] = {}
         for nid in self.topo_order:
@@ -31,6 +32,7 @@ class CompiledLayer(nn.Module):
         for nid, cnt in counts_dict.items():
             self._counts_original[nid] = cnt
         self._counts_buf = list(self._counts_original)
+        self._outputs_buf: list[torch.Tensor | None] = [None] * self._node_slot_count
 
         self.ops = nn.ModuleDict()
         for nid in self.topo_order:
@@ -72,12 +74,14 @@ class CompiledLayer(nn.Module):
         for nid in self.topo_order:
             node = graph.nodes[nid]
             if node.is_input:
-                self._fwd_plan.append((nid, True, None, node.input_ids, False))
+                self._fwd_plan.append((nid, True, None, tuple(node.input_ids), False))
             else:
                 nid_str = str(nid)
                 op = self.ops[nid_str]
                 is_boundary = nid_str in self._mathspace_boundary_nids
-                self._fwd_plan.append((nid, False, op, node.input_ids, is_boundary))
+                self._fwd_plan.append(
+                    (nid, False, op, tuple(node.input_ids), is_boundary)
+                )
         self._routing_progress = 1.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -87,7 +91,7 @@ class CompiledLayer(nn.Module):
             if result is not None:
                 return result
 
-        node_outputs: Dict[int, torch.Tensor] = {}
+        outputs = self._outputs_buf
         counts = self._counts_buf
         counts[:] = self._counts_original
         output_id = self.graph._output_node_id
@@ -97,10 +101,14 @@ class CompiledLayer(nn.Module):
         is_cuda = x.is_cuda
         for nid, is_input, op, input_ids, is_boundary in self._fwd_plan:
             if is_input:
-                node_outputs[nid] = x
+                outputs[nid] = x
             else:
-                inputs = tuple(node_outputs[iid] for iid in input_ids)
-                out = op(*inputs)
+                if len(input_ids) == 1:
+                    out = op(outputs[input_ids[0]])
+                elif len(input_ids) == 2:
+                    out = op(outputs[input_ids[0]], outputs[input_ids[1]])
+                else:
+                    out = op(*(outputs[iid] for iid in input_ids))
                 if is_boundary:
                     out_f = out if out.dtype == torch.float32 else out.float()
                     rms = out_f.pow(2).mean(dim=-1, keepdim=True).add_(1e-6).rsqrt_()
@@ -109,17 +117,18 @@ class CompiledLayer(nn.Module):
                         if out.dtype == torch.float32
                         else out * rms.to(out.dtype)
                     )
-                node_outputs[nid] = out
+                outputs[nid] = out
 
             for iid in input_ids:
                 counts[iid] -= 1
-                if counts[iid] <= 0 and iid != output_id and iid in node_outputs:
-                    out_to_del = node_outputs.pop(iid)
+                if counts[iid] <= 0 and iid != output_id and outputs[iid] is not None:
+                    out_to_del = outputs[iid]
+                    outputs[iid] = None
                     if is_cuda:
                         del out_to_del
 
-        out = node_outputs.pop(output_id)
-        node_outputs.clear()
+        out = outputs[output_id]
+        outputs[output_id] = None
         return out
 
     def set_routing_progress(self, progress: float) -> None:

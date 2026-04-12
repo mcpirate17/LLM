@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
+import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +44,112 @@ class CheckpointManager:
         """Save state dict atomically via tmp file + rename."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".tmp")
-        torch.save(state, str(tmp_path))
+        with tmp_path.open("wb") as handle:
+            torch.save(state, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(str(tmp_path), str(path))
         logger.debug("Checkpoint saved: %s", path)
 
     @staticmethod
-    def _cpu_state_dict(model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
-        cpu_state: Dict[str, Any] = {}
-        for key, value in model_state_dict.items():
-            if torch.is_tensor(value):
-                cpu_state[key] = value.detach().cpu()
-            else:
-                cpu_state[key] = value
-        return cpu_state
+    def _cpu_tree(value: Any) -> Any:
+        if torch.is_tensor(value):
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            return {
+                key: CheckpointManager._cpu_tree(item) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [CheckpointManager._cpu_tree(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(CheckpointManager._cpu_tree(item) for item in value)
+        return value
+
+    @classmethod
+    def _cpu_state_dict(cls, model_state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        return cls._cpu_tree(model_state_dict)
+
+    @staticmethod
+    def _move_tree_to_device(value: Any, device: torch.device) -> Any:
+        if torch.is_tensor(value):
+            return value.to(device=device)
+        if isinstance(value, dict):
+            return {
+                key: CheckpointManager._move_tree_to_device(item, device)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                CheckpointManager._move_tree_to_device(item, device) for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                CheckpointManager._move_tree_to_device(item, device) for item in value
+            )
+        return value
+
+    @staticmethod
+    def _validate_phase_state(state: Dict[str, Any], path: Path) -> Dict[str, Any]:
+        required = {
+            "phase",
+            "candidate_idx",
+            "seed_idx",
+            "model_state_dict",
+            "optimizer_state_dict",
+            "step",
+        }
+        missing = sorted(required.difference(state))
+        if missing:
+            raise ValueError(
+                f"Checkpoint {path} is missing required fields: {', '.join(missing)}"
+            )
+        return state
+
+    @classmethod
+    def restore_phase_state(
+        cls,
+        checkpoint_state: Dict[str, Any],
+        *,
+        model: nn.Module,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        device: Optional[str | torch.device] = None,
+        strict: bool = True,
+    ) -> Dict[str, Any]:
+        """Restore model/optimizer objects from a loaded phase checkpoint."""
+        target_device = (
+            torch.device(device)
+            if device is not None
+            else next(model.parameters(), torch.empty(0)).device
+        )
+        model_state = cls._move_tree_to_device(
+            checkpoint_state["model_state_dict"], target_device
+        )
+        model.load_state_dict(model_state, strict=strict)
+
+        if optimizer is not None:
+            optimizer_state = cls._move_tree_to_device(
+                checkpoint_state["optimizer_state_dict"], target_device
+            )
+            optimizer.load_state_dict(optimizer_state)
+
+        return {
+            "step": int(checkpoint_state.get("step", 0)),
+            "phase": checkpoint_state.get("phase"),
+            "candidate_idx": int(checkpoint_state.get("candidate_idx", 0)),
+            "seed_idx": int(checkpoint_state.get("seed_idx", 0)),
+            "metrics": checkpoint_state.get("metrics") or {},
+        }
+
+    @staticmethod
+    def phase_resume_candidate_idx(checkpoint_state: Dict[str, Any] | None) -> int:
+        """Return the resume candidate index from a phase checkpoint payload."""
+        if not checkpoint_state:
+            return 0
+        metrics = checkpoint_state.get("metrics") or {}
+        candidate_idx = metrics.get(
+            "candidate_idx", checkpoint_state.get("candidate_idx", 0)
+        )
+        return int(candidate_idx or 0)
 
     # ── Continuous loop checkpoints ──
 
@@ -110,11 +204,12 @@ class CheckpointManager:
     ) -> None:
         """Save mid-phase training state for a specific candidate/seed."""
         state = {
+            "schema_version": 2,
             "phase": phase,
             "candidate_idx": candidate_idx,
             "seed_idx": seed_idx,
-            "model_state_dict": model_state_dict,
-            "optimizer_state_dict": optimizer_state_dict,
+            "model_state_dict": self._cpu_state_dict(model_state_dict),
+            "optimizer_state_dict": self._cpu_state_dict(optimizer_state_dict),
             "step": step,
         }
         if metrics:
@@ -137,6 +232,7 @@ class CheckpointManager:
             return None
         try:
             state = torch.load(str(path), map_location="cpu", weights_only=False)
+            state = self._validate_phase_state(state, path)
             logger.info(
                 "Loaded phase checkpoint: %s (step=%d)", path, state.get("step", 0)
             )
@@ -144,6 +240,30 @@ class CheckpointManager:
         except Exception as e:
             logger.error("Failed to load phase checkpoint %s: %s", path, e)
             raise e
+
+    def load_phase_into(
+        self,
+        experiment_id: str,
+        phase: str,
+        candidate_idx: int,
+        seed_idx: int,
+        *,
+        model: nn.Module,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        device: Optional[str | torch.device] = None,
+        strict: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """Load a phase checkpoint and restore it into live objects."""
+        state = self.load_phase(experiment_id, phase, candidate_idx, seed_idx)
+        if state is None:
+            return None
+        return self.restore_phase_state(
+            state,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+            strict=strict,
+        )
 
     def save_investigation_artifact(
         self,

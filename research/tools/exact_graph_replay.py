@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
@@ -64,7 +65,8 @@ def _fetch_source_rows(
             FROM program_results
             WHERE result_id IN ({placeholders})
               AND TRIM(COALESCE(graph_json, '')) <> ''
-              AND graph_json <> '{{}}'""",
+              AND graph_json <> '{{}}'
+              AND json_valid(graph_json) = 1""",
         tuple(ids),
     ).fetchall()
     conn.close()
@@ -464,6 +466,80 @@ def run_exact_replay(
         raise
     finally:
         nb.close()
+    return exp_id
+
+
+def start_exact_replay_async(
+    *,
+    db_path: Path,
+    result_ids: Sequence[str],
+    repeat_per_source: int,
+    device: str,
+    hypothesis: str,
+    fast: bool = False,
+    verbose: bool = False,
+) -> str:
+    """Launch exact replay in a background thread and return the experiment id."""
+    rows = _fetch_source_rows(db_path, result_ids)
+    if not rows:
+        raise ValueError("No replayable source rows found for the requested result_ids")
+    replay_rows = _expand_replays(rows, repeat_per_source)
+
+    runner = ExperimentRunner(str(db_path))
+    config = _build_config(device=device, repeat_count=len(replay_rows))
+    if fast:
+        _apply_fast_replay_budget(config)
+    config, _ = runner.prescreen_run_config(config, mode="single", auto_harden=True)
+    runner._ensure_math_spaces()
+
+    init_nb = LabNotebook(str(db_path))
+    exp_id = init_nb.start_experiment(
+        "exact_graph_replay",
+        config.to_dict(),
+        hypothesis=hypothesis,
+    )
+    init_nb.close()
+
+    def _worker() -> None:
+        nb = LabNotebook(str(db_path))
+        try:
+            results = _evaluate_exact_replay(
+                runner,
+                nb,
+                exp_id,
+                config,
+                replay_rows,
+                verbose=verbose,
+            )
+            results["elapsed_seconds"] = float(results.get("elapsed_seconds") or 0.0)
+            nb.complete_experiment(
+                experiment_id=exp_id,
+                results=results,
+                aria_summary=(
+                    "Exact graph replay complete: "
+                    f"{results.get('stage1_passed', 0)}/{results.get('total', 0)} S1"
+                ),
+            )
+            s0_op_counts = results.pop("_s0_op_counts", None)
+            with nb.batch():
+                if s0_op_counts:
+                    nb.merge_op_failure_counts(s0_op_counts)
+                else:
+                    nb.update_op_success_rates(exp_id)
+                nb.strip_graph_json_for_failures(exp_id)
+                nb.update_failure_signatures(exp_id)
+        except Exception:
+            nb.fail_experiment(exp_id, "exact_graph_replay_failed")
+            raise
+        finally:
+            nb.close()
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"exact_graph_replay:{exp_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
     return exp_id
 
 

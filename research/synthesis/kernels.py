@@ -13,6 +13,18 @@ import torch.nn.functional as F
 from typing import Optional, Dict, Any, List, Tuple
 
 
+def _safe_linear_fallback(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    if weight.dtype != x.dtype:
+        weight = weight.to(x.dtype)
+    if bias is not None and bias.dtype != x.dtype:
+        bias = bias.to(x.dtype)
+    return F.linear(x, weight, bias)
+
+
 @triton.jit
 def _block_sparse_matmul_kernel(
     A_ptr,
@@ -96,7 +108,7 @@ def triton_block_sparse_linear(
     # FOR ABLATION CORRECTNESS: Use PyTorch fallback if Triton is buggy or small shapes
     # In a real production system, we'd tune the Triton kernel to match PyTorch results.
     if x.numel() // x.shape[-1] < 1024:
-        return F.linear(x, weight * mask)
+        return _safe_linear_fallback(x, weight * mask)
 
     x_shape = x.shape
     M = x.numel() // x_shape[-1]
@@ -111,7 +123,7 @@ def triton_block_sparse_linear(
     m_cols = K // block_size
 
     if m_rows == 0 or m_cols == 0:
-        return F.linear(x, weight * mask)
+        return _safe_linear_fallback(x, weight * mask)
 
     block_mask = (
         mask[: m_rows * block_size, : m_cols * block_size]
@@ -149,7 +161,7 @@ def triton_block_sparse_linear(
         )
         return y_2d.reshape(*x_shape[:-1], N)
     except Exception:
-        return F.linear(x, weight * mask)
+        return _safe_linear_fallback(x, weight * mask)
 
 
 @triton.jit

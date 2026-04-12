@@ -286,13 +286,12 @@ def _op_outer_product(_, inputs, __):
 
 
 def _op_transpose_sd(_, inputs, __):
-    # Causal feature permutation: interleave even/odd channels
-    # No sequence interaction — each position processed independently
-    # reshape-based: 1.7x faster fwd+bwd than slice+cat (avoids strided grad scatter)
     x = inputs[0]
     *lead, D = x.shape
     if D % 2 != 0:
-        raise ValueError(f"transpose_sd requires even feature dim, got {D}")
+        return x
+    if _c(x) and x.dim() == 3:
+        return aria_core.transpose_sd_f32(x.float()).to(x.dtype)
     return x.view(*lead, D // 2, 2).transpose(-1, -2).contiguous().view(*lead, D)
 
 

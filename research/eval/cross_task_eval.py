@@ -13,7 +13,7 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 import torch
 
@@ -26,11 +26,79 @@ from .utils import (
     micro_train_loop,
     compute_perplexity,
 )
+from .stateless_training import (
+    clone_module_state,
+    functional_compute_perplexity,
+    functional_micro_train_loop,
+)
 
 logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path.home() / ".cache" / "aria" / "cross_task"
 _DEFAULT_MAX_CHARS = 200_000
+
+
+def _clone_functional_state(
+    template_params: Dict[str, torch.Tensor],
+    template_buffers: Dict[str, torch.Tensor],
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    return (
+        {
+            name: tensor.detach().clone().requires_grad_(tensor.requires_grad)
+            for name, tensor in template_params.items()
+        },
+        {name: tensor.detach().clone() for name, tensor in template_buffers.items()},
+    )
+
+
+def _evaluate_domain_stateful(
+    make_model_fn,
+    *,
+    train_batches,
+    val_batches,
+    vocab_size: int,
+    device: torch.device,
+    n_train_steps: int,
+    lr: float,
+) -> tuple[float, float | None]:
+    model = make_model_fn().to(device)
+    train_loss = micro_train_loop(
+        model,
+        train_batches,
+        vocab_size,
+        n_train_steps,
+        lr,
+    )
+    ppl = compute_perplexity(model, val_batches, vocab_size)
+    del model
+    return train_loss, ppl
+
+
+def _evaluate_domain_stateless(
+    model,
+    template_params: Dict[str, torch.Tensor],
+    template_buffers: Dict[str, torch.Tensor],
+    *,
+    train_batches,
+    val_batches,
+    vocab_size: int,
+    n_train_steps: int,
+    lr: float,
+) -> tuple[float, float | None]:
+    params, buffers = _clone_functional_state(template_params, template_buffers)
+    model.train()
+    train_loss = functional_micro_train_loop(
+        model,
+        params,
+        buffers,
+        train_batches,
+        vocab_size=vocab_size,
+        n_steps=n_train_steps,
+        lr=lr,
+    )
+    model.eval()
+    ppl = functional_compute_perplexity(model, params, buffers, val_batches, vocab_size)
+    return train_loss, ppl
 
 
 def _download_code_corpus(max_chars: int = _DEFAULT_MAX_CHARS) -> Path:
@@ -142,21 +210,50 @@ def evaluate_cross_task_robustness(
     ):
         return {"cross_task_score": None, "error": "batch_generation_failed"}
 
-    # Train fresh model on code
-    code_model = make_model_fn().to(device)
-    code_loss = micro_train_loop(
-        code_model, code_train_batches, vocab_size, n_train_steps, lr
-    )
-    code_ppl = compute_perplexity(code_model, code_val_batches, vocab_size)
-    del code_model
-
-    # Train fresh model on NL
-    nl_model = make_model_fn().to(device)
-    nl_loss = micro_train_loop(
-        nl_model, nl_train_batches, vocab_size, n_train_steps, lr
-    )
-    nl_ppl = compute_perplexity(nl_model, nl_val_batches, vocab_size)
-    del nl_model
+    try:
+        base_model = make_model_fn().to(device)
+        template_params, template_buffers = clone_module_state(base_model)
+        code_loss, code_ppl = _evaluate_domain_stateless(
+            base_model,
+            template_params,
+            template_buffers,
+            train_batches=code_train_batches,
+            val_batches=code_val_batches,
+            vocab_size=vocab_size,
+            n_train_steps=n_train_steps,
+            lr=lr,
+        )
+        nl_loss, nl_ppl = _evaluate_domain_stateless(
+            base_model,
+            template_params,
+            template_buffers,
+            train_batches=nl_train_batches,
+            val_batches=nl_val_batches,
+            vocab_size=vocab_size,
+            n_train_steps=n_train_steps,
+            lr=lr,
+        )
+        del base_model
+    except (RuntimeError, TypeError, ValueError) as exc:
+        logger.debug("Stateless cross-task path failed, falling back: %s", exc)
+        code_loss, code_ppl = _evaluate_domain_stateful(
+            make_model_fn,
+            train_batches=code_train_batches,
+            val_batches=code_val_batches,
+            vocab_size=vocab_size,
+            device=device,
+            n_train_steps=n_train_steps,
+            lr=lr,
+        )
+        nl_loss, nl_ppl = _evaluate_domain_stateful(
+            make_model_fn,
+            train_batches=nl_train_batches,
+            val_batches=nl_val_batches,
+            vocab_size=vocab_size,
+            device=device,
+            n_train_steps=n_train_steps,
+            lr=lr,
+        )
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 

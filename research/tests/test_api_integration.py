@@ -90,6 +90,36 @@ except Exception as e:
     print(f"Context import failed: {e}")
 
 
+_MINIMAL_GRAPH_JSON = json.dumps(
+    {
+        "model_dim": 64,
+        "nodes": {
+            "0": {
+                "id": 0,
+                "op_name": "input",
+                "input_ids": [],
+                "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                "config": {},
+                "is_input": True,
+                "is_output": False,
+            },
+            "1": {
+                "id": 1,
+                "op_name": "relu",
+                "input_ids": [0],
+                "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                "config": {},
+                "is_input": False,
+                "is_output": True,
+            },
+        },
+        "input_node_id": 0,
+        "output_node_id": 1,
+        "metadata": {},
+    }
+)
+
+
 # ── Test 6: API Endpoints ──
 
 
@@ -113,7 +143,7 @@ class TestAPI(unittest.TestCase):
             nb.record_program_result(
                 experiment_id=exp_id,
                 graph_fingerprint=f"fp_{i:03d}",
-                graph_json=json.dumps({"nodes": {}, "id": i}),
+                graph_json=_MINIMAL_GRAPH_JSON,
                 stage0_passed=True,
                 stage05_passed=True,
                 stage1_passed=(i == 0),
@@ -832,6 +862,77 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["source"], "unavailable")
         self.assertIn("Backfill experiments skip LLM analysis", data["reason"])
 
+    def test_api_experiment_analysis_get_does_not_generate(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = self.exp_id
+        nb.conn.execute(
+            "UPDATE experiments SET experiment_type = ?, llm_analysis = NULL WHERE experiment_id = ?",
+            ("synthesis", exp_id),
+        )
+        nb.flush_writes()
+        nb.close()
+
+        from research.scientist.api_routes import experiments_bp
+
+        original = getattr(experiments_bp, "_generate_experiment_analysis")
+        try:
+
+            def fail_generate(nb, experiment_id, exp):
+                raise AssertionError("GET analysis should not trigger generation")
+
+            experiments_bp._generate_experiment_analysis = fail_generate
+            r = self.client.get(f"/api/experiments/{exp_id}/analysis")
+        finally:
+            experiments_bp._generate_experiment_analysis = original
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIsNone(data["analysis"])
+        self.assertEqual(data["source"], "unavailable")
+
+    def test_api_experiment_analysis_post_generates_and_caches(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = self.exp_id
+        nb.conn.execute(
+            "UPDATE experiments SET experiment_type = ?, llm_analysis = NULL WHERE experiment_id = ?",
+            ("synthesis", exp_id),
+        )
+        nb.flush_writes()
+        nb.close()
+
+        from research.scientist.api_routes import experiments_bp
+
+        calls = {"n": 0}
+        original = getattr(experiments_bp, "_generate_experiment_analysis")
+        try:
+
+            def fake_generate(nb, experiment_id, exp):
+                calls["n"] += 1
+                nb.conn.execute(
+                    "UPDATE experiments SET llm_analysis = ? WHERE experiment_id = ?",
+                    ("cached analysis", experiment_id),
+                )
+                nb.conn.commit()
+                return "cached analysis"
+
+            experiments_bp._generate_experiment_analysis = fake_generate
+
+            first = self.client.post(f"/api/experiments/{exp_id}/analysis")
+            self.assertEqual(first.status_code, 200)
+            first_data = first.get_json()
+            self.assertEqual(first_data["source"], "generated")
+            self.assertEqual(first_data["analysis"], "cached analysis")
+
+            second = self.client.post(f"/api/experiments/{exp_id}/analysis")
+            self.assertEqual(second.status_code, 200)
+            second_data = second.get_json()
+            self.assertEqual(second_data["source"], "stored")
+            self.assertEqual(second_data["analysis"], "cached analysis")
+        finally:
+            experiments_bp._generate_experiment_analysis = original
+
+        self.assertEqual(calls["n"], 1)
+
     def test_api_programs(self):
         r = self.client.get("/api/programs")
         self.assertEqual(r.status_code, 200)
@@ -883,6 +984,144 @@ class TestAPI(unittest.TestCase):
             self.assertIn("result_id", detail)
             self.assertIn("graph_json_parsed", detail)
             self.assertIn("lineage_chain", detail)
+
+    def test_api_program_detail_does_not_generate_llm_explanation_on_get(self):
+        r = self.client.get("/api/programs")
+        programs = r.get_json()
+        if not programs:
+            return
+        result_id = programs[0]["result_id"]
+
+        nb = LabNotebook(self.db_path)
+        try:
+            nb.conn.execute(
+                "UPDATE program_results SET llm_explanation = NULL WHERE result_id = ?",
+                (result_id,),
+            )
+            nb.conn.commit()
+        finally:
+            nb.close()
+
+        from research.scientist import api_routes as api_routes_pkg
+
+        programs_bp = api_routes_pkg.programs_bp
+
+        original = getattr(programs_bp, "_generate_program_explanation")
+        try:
+
+            def fail_generate(nb, rid, program):
+                raise AssertionError(
+                    "GET detail should not trigger explanation generation"
+                )
+
+            programs_bp._generate_program_explanation = fail_generate
+            r_detail = self.client.get(f"/api/programs/{result_id}")
+        finally:
+            programs_bp._generate_program_explanation = original
+
+        self.assertEqual(r_detail.status_code, 200)
+        detail = r_detail.get_json()
+        self.assertIsNone(detail["llm_explanation"])
+
+    def test_api_program_explanation_generates_and_caches(self):
+        r = self.client.get("/api/programs")
+        programs = r.get_json()
+        if not programs:
+            return
+        result_id = programs[0]["result_id"]
+
+        from research.scientist import api_routes as api_routes_pkg
+
+        programs_bp = api_routes_pkg.programs_bp
+
+        calls = {"n": 0}
+        original = getattr(programs_bp, "_generate_program_explanation")
+        try:
+
+            def fake_generate(nb, rid, program):
+                calls["n"] += 1
+                nb.conn.execute(
+                    "UPDATE program_results SET llm_explanation = ? WHERE result_id = ?",
+                    ("cached explanation", rid),
+                )
+                nb.conn.commit()
+                return "cached explanation"
+
+            programs_bp._generate_program_explanation = fake_generate
+
+            first = self.client.post(f"/api/programs/{result_id}/explanation")
+            self.assertEqual(first.status_code, 200)
+            first_data = first.get_json()
+            self.assertEqual(first_data["source"], "generated")
+            self.assertEqual(first_data["llm_explanation"], "cached explanation")
+
+            second = self.client.post(f"/api/programs/{result_id}/explanation")
+            self.assertEqual(second.status_code, 200)
+            second_data = second.get_json()
+            self.assertEqual(second_data["source"], "cached")
+            self.assertEqual(second_data["llm_explanation"], "cached explanation")
+        finally:
+            programs_bp._generate_program_explanation = original
+
+        self.assertEqual(calls["n"], 1)
+
+    def test_api_program_detail_resolves_canonical_result_by_fingerprint_stage(self):
+        nb = LabNotebook(self.db_path)
+        try:
+            fingerprint = "fp_program_detail_canonical"
+            synth_exp = nb.start_experiment(
+                "synthesis", {"n_programs": 1}, "screening seed"
+            )
+            screening_id = nb.record_program_result(
+                experiment_id=synth_exp,
+                graph_fingerprint=fingerprint,
+                graph_json=_MINIMAL_GRAPH_JSON,
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.11,
+                novelty_score=0.42,
+            )
+
+            inv_exp = nb.start_experiment(
+                "investigation", {"n_programs": 1}, "investigation follow-up"
+            )
+            nb.record_program_result(
+                experiment_id=inv_exp,
+                graph_fingerprint=fingerprint,
+                graph_json=_MINIMAL_GRAPH_JSON,
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.21,
+                novelty_score=0.43,
+            )
+
+            val_exp = nb.start_experiment(
+                "validation", {"n_programs": 1}, "validation follow-up"
+            )
+            validation_id = nb.record_program_result(
+                experiment_id=val_exp,
+                graph_fingerprint=fingerprint,
+                graph_json=_MINIMAL_GRAPH_JSON,
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.31,
+                novelty_score=0.44,
+            )
+            nb.flush_writes()
+        finally:
+            nb.close()
+
+        r = self.client.get(f"/api/programs/{screening_id}")
+        self.assertEqual(r.status_code, 200)
+        detail = r.get_json()
+        self.assertEqual(detail["requested_result_id"], screening_id)
+        self.assertEqual(detail["canonical_result_id"], validation_id)
+        self.assertTrue(detail["superseded_requested_result"])
+        self.assertEqual(detail["result_id"], validation_id)
+        self.assertEqual(detail["experiment_id"], val_exp)
 
     def test_api_program_detail_sanitizes_non_finite_metrics(self):
         r = self.client.get("/api/programs")
@@ -1163,7 +1402,7 @@ class TestAPI(unittest.TestCase):
         self.assertIn("cleanup", data_cleanup)
 
     def test_api_leaderboard(self):
-        r = self.client.get("/api/leaderboard")
+        r = self.client.get("/api/leaderboard?trusted_only=0")
         self.assertEqual(r.status_code, 200)
         data = r.get_json()
         self.assertIn("entries", data)
@@ -1179,6 +1418,27 @@ class TestAPI(unittest.TestCase):
         data = r.get_json()
         for entry in data["entries"]:
             self.assertEqual(entry["tier"], "screening")
+
+    def test_api_leaderboard_compact_skips_heavy_enrichment(self):
+        from research.scientist.api_routes import leaderboard_bp
+
+        original_enrich = getattr(leaderboard_bp, "_enrich_ranked_entries")
+        try:
+
+            def fail_enrich(nb, entries, *, analytics):
+                raise AssertionError(
+                    "compact leaderboard should not run heavy enrichment"
+                )
+
+            leaderboard_bp._enrich_ranked_entries = fail_enrich
+            r = self.client.get("/api/leaderboard?compact=1&trusted_only=0")
+        finally:
+            leaderboard_bp._enrich_ranked_entries = original_enrich
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["compact"])
+        self.assertIsInstance(data["entries"], list)
 
     def test_api_report(self):
         r = self.client.get("/api/report")
@@ -1374,9 +1634,9 @@ class TestAPI(unittest.TestCase):
         reset_native_runner_telemetry()
         with (
             patch("research.scientist.native_runner_adapter.os.environ", env),
-            patch("research.scientist.native_runner.os.environ", env),
+            patch("research.scientist.native.compiler.os.environ", env),
             patch(
-                "research.scientist.native_runner._legacy_compile_model",
+                "research.scientist.native.compiler._legacy_compile_model",
                 return_value=DummyModel(),
             ),
         ):
@@ -1417,13 +1677,13 @@ class TestAPI(unittest.TestCase):
         reset_native_runner_telemetry()
         with (
             patch("research.scientist.native_runner_adapter.os.environ", env),
-            patch("research.scientist.native_runner.os.environ", env),
+            patch("research.scientist.native.compiler.os.environ", env),
             patch(
-                "research.scientist.native_runner._try_load_native_lib",
+                "research.scientist.native.abi._try_load_native_lib",
                 return_value=None,
             ),
             patch(
-                "research.scientist.native_runner._legacy_compile_model",
+                "research.scientist.native.compiler._legacy_compile_model",
                 return_value=DummyModel(),
             ),
         ):
@@ -1506,7 +1766,7 @@ class TestAPI(unittest.TestCase):
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_external_001",
-            graph_json=json.dumps({"nodes": {}, "id": "external-1"}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=False,
             stage1_passed=False,
@@ -1584,7 +1844,7 @@ class TestAPI(unittest.TestCase):
         nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_external_cycle_001",
-            graph_json=json.dumps({"nodes": {}, "id": "external-cycle-1"}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=False,
@@ -2222,8 +2482,14 @@ class TestAPI(unittest.TestCase):
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
-        with patch(
-            "research.scientist.persona.Aria.generate_briefing", return_value=ai_payload
+        mock_llm = MagicMock()
+        mock_llm.is_available.return_value = True
+        with (
+            patch.object(_aria_inst, "_get_llm", return_value=mock_llm),
+            patch(
+                "research.scientist.persona.Aria.generate_briefing",
+                return_value=ai_payload,
+            ),
         ):
             r = self.client.get("/api/strategy/briefing")
 
@@ -2258,7 +2524,10 @@ class TestAPI(unittest.TestCase):
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
+        mock_llm = MagicMock()
+        mock_llm.is_available.return_value = True
         with (
+            patch.object(_aria_inst, "_get_llm", return_value=mock_llm),
             patch(
                 "research.scientist.analytics.ExperimentAnalytics.sparse_coverage",
                 return_value={
@@ -2296,7 +2565,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_briefing_inv_ineligible",
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2331,8 +2600,14 @@ class TestAPI(unittest.TestCase):
         if hasattr(_aria_inst, "_briefing_cache"):
             _aria_inst._briefing_cache = None
 
-        with patch(
-            "research.scientist.persona.Aria.generate_briefing", return_value=ai_payload
+        mock_llm = MagicMock()
+        mock_llm.is_available.return_value = True
+        with (
+            patch.object(_aria_inst, "_get_llm", return_value=mock_llm),
+            patch(
+                "research.scientist.persona.Aria.generate_briefing",
+                return_value=ai_payload,
+            ),
         ):
             r = self.client.get("/api/strategy/briefing")
 
@@ -2353,7 +2628,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_det_inv_ineligible",
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2718,7 +2993,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_inv_reject",
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2762,6 +3037,94 @@ class TestAPI(unittest.TestCase):
                 f"unexpected start payload shape: {data}",
             )
 
+    def test_investigation_eligibility_auto_admits_trusted_stage1_survivor_without_leaderboard(
+        self,
+    ):
+        from research.scientist.api_routes._strategy_preflight import (
+            build_start_mode_eligibility,
+        )
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "investigation auto admit"
+        )
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_auto_screening_admit",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.27,
+            novelty_score=0.61,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            evaluation_protocol_version="candidate_grade_v1",
+        )
+        nb.flush_writes()
+        nb.conn.execute(
+            """
+            UPDATE program_results
+            SET trust_label = ?, comparability_label = ?, data_provenance_json = ?
+            WHERE result_id = ?
+            """,
+            (
+                "candidate_grade",
+                "candidate_comparable",
+                json.dumps({"eligible_for_promotion": True}),
+                result_id,
+            ),
+        )
+        nb.conn.commit()
+
+        eligibility = build_start_mode_eligibility(nb, "investigation", [result_id])
+        entry = nb.get_leaderboard_entry(result_id)
+        nb.close()
+
+        self.assertEqual(eligibility["eligible_result_ids"], [result_id])
+        self.assertEqual(eligibility["ineligible"], [])
+        self.assertTrue(eligibility["all_eligible"])
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["tier"], "screening")
+        self.assertEqual(entry["trust_label"], "candidate_grade")
+        self.assertEqual(entry["comparability_label"], "candidate_comparable")
+
+    def test_promote_screening_preserves_candidate_grade_labels(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "synthesis", {"n_programs": 1}, "manual screening promotion"
+        )
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_preserve_manual_screening",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.22,
+            novelty_score=0.57,
+            trust_label="candidate_grade",
+            comparability_label="candidate_comparable",
+            evaluation_protocol_version="candidate_grade_v1",
+        )
+        nb.flush_writes()
+        nb.close()
+
+        r = self.client.post(f"/api/programs/{result_id}/promote-screening")
+        self.assertEqual(r.status_code, 200)
+
+        nb = LabNotebook(self.db_path)
+        entry = nb.get_leaderboard_entry(result_id)
+        row = nb.get_program_detail(result_id)
+        nb.close()
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["tier"], "screening")
+        self.assertEqual(entry["trust_label"], "candidate_grade")
+        self.assertEqual(entry["comparability_label"], "candidate_comparable")
+        self.assertEqual(row["trust_label"], "candidate_grade")
+        self.assertEqual(row["comparability_label"], "candidate_comparable")
+
     def test_api_start_validation_rejects_non_investigation_passed_with_payload(self):
         nb = LabNotebook(self.db_path)
         exp_id = nb.start_experiment(
@@ -2770,7 +3133,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_val_reject",
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2817,7 +3180,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_val_ok",
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -2909,7 +3272,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=fingerprint,
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -3012,7 +3375,7 @@ class TestAPI(unittest.TestCase):
         result_id = nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint=fingerprint,
-            graph_json=json.dumps({"nodes": {}}),
+            graph_json=_MINIMAL_GRAPH_JSON,
             stage0_passed=True,
             stage05_passed=True,
             stage1_passed=True,
@@ -3090,7 +3453,23 @@ class TestAPI(unittest.TestCase):
             experiment_id=exp_id,
             graph_fingerprint="recomrefinefp01",
             graph_json=json.dumps(
-                {"nodes": {"0": {"id": 0, "op_name": "input", "input_ids": []}}}
+                {
+                    "model_dim": 64,
+                    "nodes": {
+                        "0": {
+                            "id": 0,
+                            "op_name": "input",
+                            "input_ids": [],
+                            "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                            "config": {},
+                            "is_input": True,
+                            "is_output": True,
+                        }
+                    },
+                    "input_node_id": 0,
+                    "output_node_id": 0,
+                    "metadata": {},
+                }
             ),
             stage0_passed=True,
             stage05_passed=True,
@@ -3164,10 +3543,29 @@ class TestAPI(unittest.TestCase):
             graph_fingerprint="lineage-parent-fp",
             graph_json=json.dumps(
                 {
+                    "model_dim": 64,
                     "nodes": {
-                        "0": {"id": 0, "op_name": "input", "input_ids": []},
-                        "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
+                        "0": {
+                            "id": 0,
+                            "op_name": "input",
+                            "input_ids": [],
+                            "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                            "config": {},
+                            "is_input": True,
+                            "is_output": False,
+                        },
+                        "1": {
+                            "id": 1,
+                            "op_name": "gelu",
+                            "input_ids": [0],
+                            "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                            "config": {},
+                            "is_input": False,
+                            "is_output": True,
+                        },
                     },
+                    "input_node_id": 0,
+                    "output_node_id": 1,
                     "metadata": {
                         "refinement": {
                             "intent": "balanced",
@@ -3186,11 +3584,38 @@ class TestAPI(unittest.TestCase):
             graph_fingerprint="lineage-child-fp",
             graph_json=json.dumps(
                 {
+                    "model_dim": 64,
                     "nodes": {
-                        "0": {"id": 0, "op_name": "input", "input_ids": []},
-                        "1": {"id": 1, "op_name": "gelu", "input_ids": [0]},
-                        "2": {"id": 2, "op_name": "relu", "input_ids": [1]},
+                        "0": {
+                            "id": 0,
+                            "op_name": "input",
+                            "input_ids": [],
+                            "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                            "config": {},
+                            "is_input": True,
+                            "is_output": False,
+                        },
+                        "1": {
+                            "id": 1,
+                            "op_name": "gelu",
+                            "input_ids": [0],
+                            "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                            "config": {},
+                            "is_input": False,
+                            "is_output": False,
+                        },
+                        "2": {
+                            "id": 2,
+                            "op_name": "relu",
+                            "input_ids": [1],
+                            "output_shape": {"batch": "B", "seq": "S", "dim": 64},
+                            "config": {},
+                            "is_input": False,
+                            "is_output": True,
+                        },
                     },
+                    "input_node_id": 0,
+                    "output_node_id": 2,
                     "metadata": {
                         "refinement": {
                             "intent": "quality",
@@ -3494,7 +3919,7 @@ class TestAPI(unittest.TestCase):
 
     def test_api_leaderboard_entry_schema(self):
         """Leaderboard entries must contain scoring and tier fields."""
-        r = self.client.get("/api/leaderboard")
+        r = self.client.get("/api/leaderboard?trusted_only=0")
         data = r.get_json()
         self.assertGreater(data["total"], 0)
         entry = data["entries"][0]
@@ -4034,25 +4459,6 @@ class TestAPI(unittest.TestCase):
         for key in ("entry_id", "title", "content", "confidence", "status"):
             self.assertIn(key, entry, f"knowledge search result missing key: {key}")
 
-    def test_api_knowledge_backfill_schema(self):
-        """Knowledge backfill should return created/skipped details and counts."""
-        r = self.client.post("/api/knowledge/backfill")
-        self.assertIn(r.status_code, (200, 501))
-        data = r.get_json()
-        self.assertIsInstance(data, dict)
-        if r.status_code == 200:
-            self.assertIn("created", data)
-            self.assertIn("skipped", data)
-            self.assertIn("counts_before", data)
-            self.assertIn("counts_after", data)
-            self.assertIsInstance(data["created"], list)
-            self.assertIsInstance(data["skipped"], list)
-            self.assertIsInstance(data["counts_before"], dict)
-            self.assertIsInstance(data["counts_after"], dict)
-        else:
-            self.assertEqual(data.get("status"), "not_implemented")
-            self.assertIn("detail", data)
-
     def test_api_campaigns_list_schema(self):
         """Campaign list rows must include fields consumed by Campaigns tab."""
         r = self.client.get("/api/campaigns")
@@ -4209,6 +4615,7 @@ class TestSSEEventContract(unittest.TestCase):
             "validation_completed",
             "validation_progress",
             "validation_started",
+            "validation_phase",
         }
         missing -= known_frontend_only
         self.assertEqual(

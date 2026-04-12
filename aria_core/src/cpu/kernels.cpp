@@ -29,6 +29,7 @@
 #include "io.cpp"
 #include "adaptive_routing.cpp"
 #include "routing.c"
+#include "routing_ops.c"
 #include "dispatch.c"
 #include "binding_stubs.cpp"
 #include "fp16.cpp"

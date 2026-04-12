@@ -5,6 +5,8 @@ import { apiCall } from '../services/apiService';
 const AriaDataContext = createContext(null);
 const ANALYTICS_STALE_MS = 15000;
 const SLOW_TICK_DIVISOR = 3; // slowPollTick increments every Nth core poll (~9-30s)
+const CORE_RETRY_BASE_MS = 15000;
+const CORE_RETRY_MAX_MS = 120000;
 
 /**
  * Provider that owns the shared analytics and dashboard endpoints.
@@ -43,8 +45,11 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const abortRef = useRef(null);
   const analyticsAbortRef = useRef(null);
   const analyticsLoadedAtRef = useRef(0);
+  const coreRetryDelayRef = useRef(0);
+  const coreRetryAfterRef = useRef(0);
 
-  const fetchCoreData = useCallback(async () => {
+  const fetchCoreData = useCallback(async ({ force = false } = {}) => {
+    if (!force && coreRetryAfterRef.current > Date.now()) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     const controller = new AbortController();
@@ -68,6 +73,8 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       if (cycleData && !cycleData.error) setAriaCycle(cycleData);
       if (Array.isArray(historyData)) setCycleHistory(historyData);
 
+      coreRetryDelayRef.current = 0;
+      coreRetryAfterRef.current = 0;
       setLastUpdated(Date.now());
       setError(null);
       // Increment coordinated poll ticks so subscribers refresh in sync
@@ -78,6 +85,12 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
+        const nextDelay = Math.min(
+          coreRetryDelayRef.current ? coreRetryDelayRef.current * 2 : CORE_RETRY_BASE_MS,
+          CORE_RETRY_MAX_MS,
+        );
+        coreRetryDelayRef.current = nextDelay;
+        coreRetryAfterRef.current = Date.now() + nextDelay;
         setError(err.message);
       }
     } finally {
@@ -102,7 +115,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     try {
       const [ltRes, lbRes, mcRes, fpRes] = await Promise.all([
         apiCall(`/api/analytics/learning-trajectory`, { signal: controller.signal }),
-        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1`, { signal: controller.signal }),
+        apiCall(`/api/leaderboard?sort=composite_score&limit=80&quality=promotable&include_references=0&compact=1&trusted_only=1`, { signal: controller.signal }),
         apiCall(`/api/analytics/math-family-coverage`, { signal: controller.signal }),
         apiCall(`/api/diagnostics/fingerprint`, { signal: controller.signal }),
       ]);
@@ -196,6 +209,20 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       analyticsAbortRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const resumePolling = () => {
+      coreRetryAfterRef.current = 0;
+      fetchCoreData({ force: true });
+    };
+    window.addEventListener('online', resumePolling);
+    window.addEventListener('focus', resumePolling);
+    return () => {
+      window.removeEventListener('online', resumePolling);
+      window.removeEventListener('focus', resumePolling);
+    };
+  }, [fetchCoreData]);
 
   const invalidateTabCache = useCallback((tab) => {
     if (tab) {

@@ -25,16 +25,24 @@ import math
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..native.core import _try_import_rust_scheduler
 from research.synthesis.primitives import PRIMITIVE_REGISTRY
-from .metrics_utils import binary_classification_metrics, operating_point_profiles
+from .metrics_utils import (
+    binary_classification_metrics,
+    operating_point_profiles,
+    safe_binary_roc_auc,
+)
 from .ml_corpus import (
     CorpusIntegrityError,
-    load_deduped_graph_training_rows,
+    build_dense_feature_matrix,
+    grouped_stratified_split,
+    load_screening_predictor_corpus_rows,
     rerun_confidence_weight,
 )
 
@@ -62,6 +70,13 @@ _POLY_FEATURE_BASES = (
     "topo_n_ops",
     "topo_edge_density",
 )
+
+
+@dataclass(slots=True)
+class _NativeTopologyContext:
+    op_profiles_json: str
+    pair_stability_json: str
+    op_metadata_json: str
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -119,48 +134,37 @@ def _graph_imodel_path(path: Path) -> Path:
     return path.with_suffix(".imodel.npz")
 
 
-def _grouped_stratified_split(
-    signatures: List[str], labels: np.ndarray, seed: int = 42
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
-    """Split rows by exact-graph signature to avoid duplicate leakage."""
-    groups: Dict[str, List[int]] = defaultdict(list)
-    for idx, sig in enumerate(signatures):
-        groups[sig].append(idx)
+@lru_cache(maxsize=1)
+def _primitive_feature_metadata_json() -> str:
+    payload: Dict[str, Dict[str, Any]] = {}
+    for op_name, primitive in PRIMITIVE_REGISTRY.items():
+        category = getattr(primitive, "category", "")
+        payload[op_name] = {
+            "category": str(getattr(category, "value", category)).lower(),
+            "has_params": bool(getattr(primitive, "has_params", False)),
+        }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
-    rng = np.random.RandomState(seed)
-    pos_groups: List[str] = []
-    neg_groups: List[str] = []
-    ambiguous_groups = 0
-    for sig, idxs in groups.items():
-        rate = float(np.mean(labels[idxs]))
-        if 0.0 < rate < 1.0:
-            ambiguous_groups += 1
-        if rate >= 0.5:
-            pos_groups.append(sig)
-        else:
-            neg_groups.append(sig)
 
-    rng.shuffle(pos_groups)
-    rng.shuffle(neg_groups)
-    pos_split = int(len(pos_groups) * 0.8)
-    neg_split = int(len(neg_groups) * 0.8)
-    train_groups = set(pos_groups[:pos_split]) | set(neg_groups[:neg_split])
-    val_groups = set(pos_groups[pos_split:]) | set(neg_groups[neg_split:])
-
-    train_idx = np.array(
-        [idx for sig, idxs in groups.items() if sig in train_groups for idx in idxs],
-        dtype=np.int32,
-    )
-    val_idx = np.array(
-        [idx for sig, idxs in groups.items() if sig in val_groups for idx in idxs],
-        dtype=np.int32,
-    )
-    stats = {
-        "n_unique_graphs": len(groups),
-        "n_duplicate_groups": int(sum(1 for idxs in groups.values() if len(idxs) > 1)),
-        "n_ambiguous_duplicate_groups": int(ambiguous_groups),
+def _native_pair_stability_payload(
+    pair_stability: Dict[Tuple[str, str], float],
+) -> str:
+    payload = {
+        f"{left}\t{right}": float(value)
+        for (left, right), value in pair_stability.items()
     }
-    return train_idx, val_idx, stats
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _make_native_topology_context(
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+) -> _NativeTopologyContext:
+    return _NativeTopologyContext(
+        op_profiles_json=json.dumps(op_profiles, sort_keys=True, separators=(",", ":")),
+        pair_stability_json=_native_pair_stability_payload(pair_stability),
+        op_metadata_json=_primitive_feature_metadata_json(),
+    )
 
 
 def _load_op_profiles(profiling_db: Path) -> Dict[str, Dict[str, float]]:
@@ -211,7 +215,7 @@ def _load_pair_stability(profiling_db: Path) -> Dict[Tuple[str, str], float]:
     return pairs
 
 
-def extract_topology_features(
+def _extract_topology_features_python(
     graph_json: Any,
     op_profiles: Dict[str, Dict[str, float]],
     pair_stability: Dict[Tuple[str, str], float],
@@ -515,6 +519,105 @@ def extract_topology_features(
     return features
 
 
+def extract_topology_features(
+    graph_json: Any,
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    imodel: Optional[Any] = None,
+    native_ctx: Optional[_NativeTopologyContext] = None,
+) -> Optional[Dict[str, float]]:
+    rust = _try_import_rust_scheduler()
+    graph_payload: str
+    if isinstance(graph_json, str):
+        graph_payload = graph_json
+    else:
+        try:
+            graph_payload = json.dumps(
+                graph_json, sort_keys=True, separators=(",", ":")
+            )
+        except (TypeError, ValueError):
+            return None
+
+    base_features: Optional[Dict[str, float]] = None
+    if rust is not None and hasattr(rust, "extract_topology_features_native"):
+        try:
+            ctx = native_ctx or _make_native_topology_context(
+                op_profiles, pair_stability
+            )
+            payload = rust.extract_topology_features_native(
+                graph_payload,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+            )
+            loaded = json.loads(payload)
+            if isinstance(loaded, dict):
+                base_features = {
+                    str(key): float(value) for key, value in loaded.items()
+                }
+        except Exception as exc:
+            logger.warning(
+                "Native topology extraction failed; falling back to Python: %s", exc
+            )
+
+    if base_features is None:
+        return _extract_topology_features_python(
+            graph_payload, op_profiles, pair_stability, imodel=imodel
+        )
+
+    parsed_graph = None
+    if imodel is not None and hasattr(imodel, "_trained") and imodel._trained:
+        try:
+            parsed_graph = (
+                json.loads(graph_payload)
+                if isinstance(graph_payload, str)
+                else graph_payload
+            )
+        except (json.JSONDecodeError, TypeError):
+            parsed_graph = None
+
+    if parsed_graph is None or not (
+        imodel is not None and hasattr(imodel, "_trained") and imodel._trained
+    ):
+        base_features["imodel_min_stability"] = 0.5
+        base_features["imodel_mean_stability"] = 0.5
+        base_features["imodel_mean_loss"] = 0.7
+        return base_features
+
+    nodes = parsed_graph.get("nodes") or {}
+    node_ids = list(nodes.keys())
+    id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
+    children: Dict[int, List[int]] = defaultdict(list)
+    for nid in node_ids:
+        node = nodes[nid]
+        idx = id_to_idx[nid]
+        for inp in node.get("input_ids") or []:
+            parent_idx = id_to_idx.get(str(inp))
+            if parent_idx is not None:
+                children[parent_idx].append(idx)
+
+    imodel_stabilities: List[float] = []
+    imodel_losses: List[float] = []
+    op_names = [nodes[nid].get("op_name", "") for nid in node_ids]
+    for idx in range(len(node_ids)):
+        for child_idx in children[idx]:
+            left = op_names[idx]
+            right = op_names[child_idx]
+            if left and right and left != "input" and right != "input":
+                imodel_stabilities.append(imodel.predict_stability(left, right))
+                imodel_losses.append(imodel.predict_loss(left, right))
+
+    if imodel_stabilities:
+        base_features["imodel_min_stability"] = float(min(imodel_stabilities))
+        base_features["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
+        base_features["imodel_mean_loss"] = float(np.mean(imodel_losses))
+    else:
+        base_features["imodel_min_stability"] = 0.5
+        base_features["imodel_mean_stability"] = 0.5
+        base_features["imodel_mean_loss"] = 0.7
+    return base_features
+
+
 @dataclass(slots=True)
 class GraphPredictor:
     """Topology-aware graph predictor using Ridge regression on structural features."""
@@ -539,6 +642,9 @@ class GraphPredictor:
     op_profiles: Dict[str, Dict[str, float]] = field(default_factory=dict)
     pair_stability: Dict[Tuple[str, str], float] = field(default_factory=dict)
     imodel: Optional[Any] = None  # InteractionModel, cached for feature extraction
+    _native_topology_ctx: Optional[_NativeTopologyContext] = field(
+        default=None, repr=False
+    )
     # Metadata
     gate_threshold: float = 0.5
     gate_calibration_a: float = 1.0
@@ -552,7 +658,11 @@ class GraphPredictor:
 
     def _extract_and_normalize(self, graph_json: Any) -> Optional[np.ndarray]:
         feats = extract_topology_features(
-            graph_json, self.op_profiles, self.pair_stability, imodel=self.imodel
+            graph_json,
+            self.op_profiles,
+            self.pair_stability,
+            imodel=self.imodel,
+            native_ctx=self._native_topology_ctx,
         )
         if feats is None:
             return None
@@ -617,6 +727,7 @@ class GraphPredictor:
         """
         op_profiles = _load_op_profiles(profiling_db)
         pair_stability = _load_pair_stability(profiling_db)
+        native_ctx = _make_native_topology_context(op_profiles, pair_stability)
 
         # Train interaction model for learned pair features
         trained_imodel = None
@@ -630,8 +741,10 @@ class GraphPredictor:
             )
             if not trained_imodel._trained:
                 trained_imodel = None
-        except Exception as exc:
-            logger.debug("Suppressed error: %s", exc)
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "GraphPredictor interaction-model features disabled: %s", exc
+            )
 
         _empty_kwargs = dict(
             w_gate=np.zeros(0),
@@ -648,13 +761,14 @@ class GraphPredictor:
             op_profiles=op_profiles,
             pair_stability=pair_stability,
             imodel=trained_imodel,
+            _native_topology_ctx=native_ctx,
         )
 
         if not notebook_db.exists():
             return cls(**_empty_kwargs)
 
         try:
-            rows = load_deduped_graph_training_rows(notebook_db, validate=True)
+            rows = load_screening_predictor_corpus_rows(notebook_db, validate=True)
         except CorpusIntegrityError:
             raise
         except Exception as e:
@@ -683,7 +797,11 @@ class GraphPredictor:
             if not signature:
                 continue
             feats = extract_topology_features(
-                gj, op_profiles, pair_stability, imodel=trained_imodel
+                gj,
+                op_profiles,
+                pair_stability,
+                imodel=trained_imodel,
+                native_ctx=native_ctx,
             )
             if feats is None:
                 continue
@@ -728,30 +846,38 @@ class GraphPredictor:
                 b_induction=0.0,
                 op_profiles=op_profiles,
                 pair_stability=pair_stability,
+                imodel=trained_imodel,
+                _native_topology_ctx=native_ctx,
             )
 
         # Build feature matrix
-        feature_names = sorted(feat_dicts[0].keys())
-        X = np.zeros((n_total, len(feature_names)), dtype=np.float64)
-        for i, d in enumerate(feat_dicts):
-            for j, k in enumerate(feature_names):
-                X[i, j] = d.get(k, 0.0)
+        X, feature_names = build_dense_feature_matrix(feat_dicts, dtype=np.float64)
         feature_names, X = _augment_feature_space(feature_names, X)
 
         y_gate = np.array(gate_labels, dtype=np.float64)
         y_rank = np.array(rank_labels, dtype=np.float64)
         y_induction = np.array(induction_labels, dtype=np.float64)
         sample_weights = np.array(gate_sample_weights, dtype=np.float64)
+        rng = np.random.RandomState(seed)
+
+        n_pos_total = int(np.sum(y_gate))
+        n_neg_total = int(len(y_gate) - n_pos_total)
+        if n_pos_total < 5 or n_neg_total < 5:
+            logger.info(
+                "GraphPredictor: insufficient class balance (pos=%d, neg=%d)",
+                n_pos_total,
+                n_neg_total,
+            )
+            return cls(**_empty_kwargs)
 
         # Train/val split grouped by exact graph to avoid duplicate leakage.
-        train_idx, val_idx, split_stats = _grouped_stratified_split(
+        train_idx, val_idx, split_stats = grouped_stratified_split(
             graph_signatures, y_gate.astype(np.int32), seed=seed
         )
         if len(train_idx) == 0 or len(val_idx) == 0:
             logger.warning(
                 "GraphPredictor grouped split failed; falling back to row split"
             )
-            rng = np.random.RandomState(seed)
             pos_idx = np.where(y_gate == 1)[0]
             neg_idx = np.where(y_gate == 0)[0]
             rng.shuffle(pos_idx)
@@ -775,6 +901,13 @@ class GraphPredictor:
         X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
         y_gate_tr, y_gate_va = y_gate[train_idx], y_gate[val_idx]
         gate_w_tr = sample_weights[train_idx]
+        if np.unique(y_gate_tr).size < 2 or np.unique(y_gate_va).size < 2:
+            logger.info(
+                "GraphPredictor: split lost class diversity (train=%d classes, val=%d classes)",
+                np.unique(y_gate_tr).size,
+                np.unique(y_gate_va).size,
+            )
+            return cls(**_empty_kwargs)
 
         n_features = X_tr.shape[1]
         logger.info(
@@ -791,7 +924,6 @@ class GraphPredictor:
         gate_threshold = 0.5
         try:
             from sklearn.linear_model import LogisticRegression
-            from sklearn.metrics import roc_auc_score
 
             clf = LogisticRegression(
                 C=float(1.0 / max(alpha, 1e-6)),
@@ -803,9 +935,10 @@ class GraphPredictor:
             w_gate = clf.coef_[0].astype(np.float64)
             b_gate = float(clf.intercept_[0])
             val_preds = clf.predict_proba(X_va)[:, 1]
-            val_auc = float(roc_auc_score(y_gate_va, val_preds))
-        except Exception:
+            val_auc = safe_binary_roc_auc(y_gate_va, val_preds)
+        except (ImportError, ValueError, RuntimeError) as exc:
             # Fallback: unweighted logistic SGD if sklearn is unavailable.
+            logger.warning("GraphPredictor logistic fit fell back to SGD: %s", exc)
             w_gate = rng.randn(n_features).astype(np.float64) * 0.01
             b_gate = 0.0
             gate_lr = 0.01
@@ -841,8 +974,8 @@ class GraphPredictor:
             cal.fit(raw_val_logits.reshape(-1, 1), y_gate_va.astype(np.int32))
             gate_calibration_a = float(cal.coef_[0][0])
             gate_calibration_b = float(cal.intercept_[0])
-        except Exception:
-            pass
+        except (ImportError, ValueError, RuntimeError) as exc:
+            logger.warning("GraphPredictor calibration skipped: %s", exc)
 
         # Val metrics
         val_preds = _sigmoid(raw_val_logits * gate_calibration_a + gate_calibration_b)
@@ -854,18 +987,15 @@ class GraphPredictor:
             )
         )
         try:
-            from sklearn.metrics import (
-                roc_auc_score,
-            )
-
-            val_auc = float(roc_auc_score(y_gate_va, val_preds))
+            val_auc = safe_binary_roc_auc(y_gate_va, val_preds)
             operating_points = operating_point_profiles(y_gate_va, val_preds)
             gate_threshold = float(operating_points["f1"]["threshold"])
             selected_metrics = operating_points["f1"]
             val_acc = float(selected_metrics["accuracy"])
             val_precision = float(selected_metrics["precision_ppv"])
             val_recall = float(selected_metrics["recall_tpr_sensitivity"])
-        except Exception:
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("GraphPredictor operating-point metrics degraded: %s", exc)
             operating_points = {}
             val_acc = float(np.mean((val_preds > gate_threshold) == y_gate_va))
             val_auc = 0.0
@@ -888,8 +1018,8 @@ class GraphPredictor:
             try:
                 w_rank = np.linalg.solve(XtX, Xty)
                 b_rank = float(np.mean(y_log_ppl - X_rank @ w_rank))
-            except np.linalg.LinAlgError:
-                pass
+            except np.linalg.LinAlgError as exc:
+                logger.warning("GraphPredictor rank head solve failed: %s", exc)
 
         # ── Loss: Ridge regression on loss_ratio (S1-passing only) ──
         y_loss = np.array(loss_labels, dtype=np.float64)
@@ -904,8 +1034,8 @@ class GraphPredictor:
             try:
                 w_loss = np.linalg.solve(XtX_l, Xty_l)
                 b_loss = float(np.mean(y_lr - X_loss @ w_loss))
-            except np.linalg.LinAlgError:
-                pass
+            except np.linalg.LinAlgError as exc:
+                logger.warning("GraphPredictor loss head solve failed: %s", exc)
 
         # ── Induction: Ridge regression on canonical induction AUC ──
         induction_mask = np.isfinite(y_induction[train_idx])
@@ -923,8 +1053,8 @@ class GraphPredictor:
             try:
                 w_induction = np.linalg.solve(XtX_i, Xty_i)
                 b_induction = float(np.mean(y_auc - X_induction @ w_induction))
-            except np.linalg.LinAlgError:
-                pass
+            except np.linalg.LinAlgError as exc:
+                logger.warning("GraphPredictor induction head solve failed: %s", exc)
             if induction_val_mask.sum() >= 10:
                 y_auc_val = y_induction[val_idx][induction_val_mask]
                 pred_auc_val = np.clip(
@@ -936,7 +1066,10 @@ class GraphPredictor:
 
                     rho, _ = spearmanr(y_auc_val, pred_auc_val)
                     induction_spearman = float(rho) if np.isfinite(rho) else 0.0
-                except Exception:
+                except (ImportError, ValueError, RuntimeError) as exc:
+                    logger.warning(
+                        "GraphPredictor induction Spearman computation skipped: %s", exc
+                    )
                     induction_spearman = 0.0
                 y_bucket_val = (y_auc_val >= 0.02).astype(np.int32)
                 pred_bucket_val = (pred_auc_val >= 0.02).astype(np.int32)
@@ -970,6 +1103,7 @@ class GraphPredictor:
             op_profiles=op_profiles,
             pair_stability=pair_stability,
             imodel=trained_imodel,
+            _native_topology_ctx=native_ctx,
             n_train=len(X_tr),
             _trained=True,
             _train_metrics={
@@ -1050,9 +1184,15 @@ class GraphPredictor:
                 imodel_path = path.parent / imodel_relpath
                 if imodel_path.exists():
                     trained_imodel = InteractionModel.load(imodel_path)
-            except Exception as exc:
-                logger.debug("GraphPredictor interaction sidecar load skipped: %s", exc)
+            except (ImportError, OSError, ValueError, RuntimeError) as exc:
+                logger.warning(
+                    "GraphPredictor interaction sidecar load skipped: %s", exc
+                )
         return cls(
+            _native_topology_ctx=_make_native_topology_context(
+                _load_op_profiles(profiling_db),
+                _load_pair_stability(profiling_db),
+            ),
             w_gate=data["w_gate"],
             b_gate=float(meta.get("b_gate", 0.0)),
             gate_threshold=float(meta.get("gate_threshold", 0.5)),

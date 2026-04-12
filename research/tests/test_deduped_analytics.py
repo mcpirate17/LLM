@@ -121,8 +121,13 @@ def test_template_weights_ignore_metadata_only_reruns(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     conn.executemany(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -138,6 +143,8 @@ def test_template_weights_ignore_metadata_only_reruns(tmp_path: Path) -> None:
                 0,
                 0,
                 1.0,
+                "candidate_screening",
+                "screening_only",
             ),
             (
                 "a_pass",
@@ -154,6 +161,8 @@ def test_template_weights_ignore_metadata_only_reruns(tmp_path: Path) -> None:
                 1,
                 1,
                 2.0,
+                "candidate_grade",
+                "candidate_comparable",
             ),
             (
                 "b_pass",
@@ -168,6 +177,8 @@ def test_template_weights_ignore_metadata_only_reruns(tmp_path: Path) -> None:
                 1,
                 1,
                 3.0,
+                "candidate_grade",
+                "candidate_comparable",
             ),
         ],
     )
@@ -189,8 +200,13 @@ def test_architecture_family_clustering_requires_unique_s1_graphs(
     conn = sqlite3.connect(db_path)
     conn.executemany(
         """
-        INSERT INTO program_results
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO program_results (
+            result_id, graph_json, graph_fingerprint, fingerprint_json,
+            novelty_score, structural_novelty, loss_ratio, wikitext_perplexity,
+            stage0_passed, stage05_passed, stage1_passed, timestamp,
+            trust_label, comparability_label
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -206,6 +222,8 @@ def test_architecture_family_clustering_requires_unique_s1_graphs(
                 1,
                 1,
                 1.0,
+                "candidate_grade",
+                "candidate_comparable",
             ),
             (
                 "dup_2",
@@ -222,6 +240,8 @@ def test_architecture_family_clustering_requires_unique_s1_graphs(
                 1,
                 1,
                 2.0,
+                "candidate_grade",
+                "candidate_comparable",
             ),
             (
                 "unique_pass",
@@ -236,6 +256,8 @@ def test_architecture_family_clustering_requires_unique_s1_graphs(
                 1,
                 1,
                 3.0,
+                "candidate_grade",
+                "candidate_comparable",
             ),
         ],
     )

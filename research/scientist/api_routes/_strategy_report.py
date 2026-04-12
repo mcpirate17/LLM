@@ -242,7 +242,10 @@ def build_full_report_data(
     recent_limit = 100 if include_heavy else 30
 
     data = {
-        "summary": nb.get_dashboard_summary(),
+        "summary": nb.get_dashboard_summary(
+            include_data_accounting=include_heavy,
+            include_template_observability=False,
+        ),
         "top_programs": nb.get_report_top_programs_grouped_by_fingerprint(
             top_limit, sort_by="loss_ratio"
         ),
@@ -300,7 +303,7 @@ def build_scoped_report_query(
 
     return {
         "summary": build_filtered_report_summary(
-            nb.get_dashboard_summary(), filtered_exps
+            nb.get_dashboard_headline_summary(), filtered_exps
         ),
         "top_programs": grouped,
         "top_programs_expanded": filtered_progs[: max(limit * 2, 40)],

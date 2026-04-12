@@ -26,6 +26,11 @@ from pathlib import Path
 from typing import Any
 
 from research.tools.backfill_templates import DB_PATH, get_template_stats
+from research.tools._script_audit import (
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
 
 
 _TIER_TEMPLATES: "OrderedDict[str, list[str]]" = OrderedDict(
@@ -78,7 +83,12 @@ _TIER_TEMPLATES: "OrderedDict[str, list[str]]" = OrderedDict(
             "attn_gated_maximum",
             "attn_hyperbolic",
             "attn_normalized_matmul",
-            "attn_linear_normalized_matmul_control",
+            "attn_softmax_normalized_matmul",
+            "attn_softmax_normalized_matmul_compact_ffn",
+            "attn_softmax_normalized_matmul_fixed_tail_norm",
+            "attn_linear_no_matmul_ffn",
+            "attn_linear_no_matmul_ffn_dense_tail",
+            "attn_linear_no_matmul_ffn_direct_recovery",
             "attn_safe_division",
             "attn_spiking_hybrid",
             "linear_attn_ffn_block",
@@ -365,6 +375,28 @@ def main() -> None:
         "round_idx": None,
         "command": [],
     }
+    audit_nb, exp_id = start_script_experiment(
+        db_path=args.db,
+        experiment_type="attention_template_backfill",
+        config={
+            "tiers": tiers,
+            "target": args.target,
+            "target_metric": args.target_metric,
+            "min_s1": args.min_s1,
+            "batch_size": args.batch_size,
+            "max_rounds": args.max_rounds,
+            "phase": args.phase,
+            "device": args.device,
+            "weights": args.weights,
+            "refresh": args.refresh,
+            "stop_on_error": bool(args.stop_on_error),
+            "resume": bool(args.resume),
+            "log_file": log_path,
+            "state_file": state_path,
+        },
+        source_script="attention_template_backfill",
+        hypothesis="Managed attention template backfill campaign",
+    )
 
     def _handle_sigint(_signum: int, _frame: Any) -> None:
         if not interrupt_state.soft_requested:
@@ -640,6 +672,12 @@ def main() -> None:
             campaign["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             _write_json(state_path, campaign)
     except KeyboardInterrupt:
+        fail_script_experiment(
+            audit_nb,
+            exp_id,
+            error="KeyboardInterrupt",
+            results={"templates": len(templates)},
+        )
         _checkpoint_active(
             campaign,
             template=None,
@@ -650,11 +688,26 @@ def main() -> None:
             last_line="Campaign interrupted by operator",
         )
         raise
+    except Exception as exc:
+        fail_script_experiment(
+            audit_nb,
+            exp_id,
+            error=str(exc),
+            results={"templates": len(templates)},
+        )
+        raise
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
 
     if interrupt_state.soft_requested:
         print("Campaign stopped after current template. Refresh skipped.")
+        fail_script_experiment(
+            audit_nb,
+            exp_id,
+            error="Soft stop requested by operator",
+            results={"templates": len(templates)},
+        )
+        audit_nb.close()
         return
 
     _refresh_models(args.db, args.refresh, log_path)
@@ -675,6 +728,22 @@ def main() -> None:
     print(
         f"Campaign complete: complete={n_complete} incomplete={n_incomplete} error={n_error}"
     )
+    complete_script_experiment(
+        audit_nb,
+        exp_id,
+        results={
+            "templates": len(templates),
+            "complete": n_complete,
+            "incomplete": n_incomplete,
+            "error": n_error,
+            "refresh": args.refresh,
+        },
+        summary=(
+            f"Attention backfill campaign complete: complete={n_complete} "
+            f"incomplete={n_incomplete} error={n_error}"
+        ),
+    )
+    audit_nb.close()
 
 
 if __name__ == "__main__":

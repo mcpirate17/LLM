@@ -614,11 +614,12 @@ _register(
     PrimitiveOp(
         "calibrated_branch_merge",
         OpCategory.PARAMETERIZED,
-        5,
+        2,
         "identity",
         has_params=True,
-        param_formula="D*5+D*5+10",
-        description="Calibrated five-branch merge with bounded routed-share protection",
+        param_formula="D*2+D*2+4",
+        standalone=False,
+        description="Calibrated two-branch merge with bounded secondary-share protection",
     )
 )
 _register(

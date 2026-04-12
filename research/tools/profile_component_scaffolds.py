@@ -30,13 +30,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from research.scientist.native_runner import compile_model_native_first
-from research.scientist.notebook import LabNotebook
 from research.scientist.runner import ExperimentRunner, RunConfig
 from research.scientist.shared_utils import resolve_device
 from research.synthesis.compiler import compile_model
 from research.synthesis.graph import ComputationGraph
 from research.synthesis.primitives import OP_NAME_ALIASES, PRIMITIVE_REGISTRY
 from research.synthesis.serializer import graph_to_json
+from research.tools._script_audit import (
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
 
 
 _DEFAULT_MODEL_DIM = 128
@@ -734,14 +738,41 @@ def main() -> None:
     run_id = f"scaffold_{uuid.uuid4().hex[:10]}"
     log_path = args.log_file
     notebook = None
+    audit_nb = None
+    exp_id = None
     try:
         if args.persist:
-            notebook = LabNotebook(args.db)
+            audit_nb, exp_id = start_script_experiment(
+                db_path=args.db,
+                experiment_type="scaffold_profiling",
+                config={
+                    "families": list(args.family),
+                    "ops": requested_ops,
+                    "allow_arbitrary_ops": bool(args.allow_arbitrary_ops),
+                    "include_unprofiled_catalog": bool(args.include_unprofiled_catalog),
+                    "device": args.device,
+                    "data_mode": args.data_mode,
+                    "optimizer": args.optimizer,
+                    "model_dim": args.model_dim,
+                    "n_layers": args.n_layers,
+                    "seq_len": args.seq_len,
+                    "vocab_size": args.vocab_size,
+                    "batch_size": args.batch_size,
+                    "stage1_steps": args.stage1_steps,
+                    "max_pairs": args.max_pairs,
+                    "top": args.top,
+                    "persist": bool(args.persist),
+                },
+                source_script="profile_component_scaffolds",
+                hypothesis="Profile controlled component scaffolds",
+            )
+            notebook = audit_nb
             notebook.save_scaffold_profile_run(
                 run_id=run_id,
                 config=config.to_dict(),
                 device=args.device,
                 metadata={
+                    "experiment_id": exp_id,
                     "families": list(args.family),
                     "ops": requested_ops,
                     "allow_arbitrary_ops": bool(args.allow_arbitrary_ops),
@@ -810,8 +841,47 @@ def main() -> None:
             args.json_out.write_text(
                 json.dumps(results, indent=2) + "\n", encoding="utf-8"
             )
+        if audit_nb is not None and exp_id is not None:
+            ok = sum(1 for item in results if item.get("status") == "ok")
+            errors = sum(1 for item in results if item.get("status") == "error")
+            screen_fail = sum(
+                1 for item in results if item.get("status") == "screen_fail"
+            )
+            complete_script_experiment(
+                audit_nb,
+                exp_id,
+                results={
+                    "cases": len(results),
+                    "ok": ok,
+                    "errors": errors,
+                    "screen_fail": screen_fail,
+                    "families": list(args.family),
+                },
+                summary=(
+                    f"Scaffold profiling complete: ok={ok} "
+                    f"errors={errors} screen_fail={screen_fail}"
+                ),
+            )
+    except KeyboardInterrupt:
+        if audit_nb is not None and exp_id is not None:
+            fail_script_experiment(
+                audit_nb,
+                exp_id,
+                error="KeyboardInterrupt",
+            )
+        raise
+    except Exception as exc:
+        if audit_nb is not None and exp_id is not None:
+            fail_script_experiment(
+                audit_nb,
+                exp_id,
+                error=str(exc),
+            )
+        raise
     finally:
-        if notebook is not None:
+        if audit_nb is not None:
+            audit_nb.close()
+        elif notebook is not None:
             notebook.close()
 
 

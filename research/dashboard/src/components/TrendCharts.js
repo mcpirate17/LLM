@@ -40,7 +40,7 @@ function TrendCharts({ onSelectExperiment }) {
         apiService.getTrends(),
         apiService.getEfficiencyFrontier(),
         apiService.getPrograms(50),
-        apiCall('/api/leaderboard?include_references=1&limit=100').then(r => r.json()).catch(() => ({ entries: [] })),
+        apiCall('/api/leaderboard?include_references=1&limit=100&trusted_only=1').then(r => r.json()).catch(() => ({ entries: [] })),
       ]);
       setTrends(Array.isArray(tData?.trends) ? tData.trends : []);
       setWeightEvents(Array.isArray(tData?.adaptation_events) ? tData.adaptation_events : []);

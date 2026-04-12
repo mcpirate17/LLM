@@ -136,7 +136,9 @@ class _ExecutionCandidatesMixin:
             return candidates
 
         # Default: graph_synthesis — optionally blend notebook-derived weights.
-        if getattr(config, "use_learned_candidate_weights", True):
+        from ..ml_influence_policy import component_is_allowed
+
+        if component_is_allowed("learned_candidate_weights", config):
             op_weights, template_weights, motif_weights, category_weights = (
                 self._load_learned_weights(nb=nb)
             )
@@ -147,7 +149,9 @@ class _ExecutionCandidatesMixin:
                 {},
                 {},
             )
-            logger.info("Candidate generation learned weights disabled for this run")
+            logger.info(
+                "Candidate generation learned weights disabled or blocked for this run"
+            )
         grammar = self._build_grammar_config(
             config,
             op_weights=op_weights,
@@ -340,44 +344,9 @@ class _ExecutionCandidatesMixin:
             except Exception as exc:
                 logger.debug("Bayesian tracker unavailable: %s", exc)
 
-            # ── Interaction model: penalize motifs with unstable consecutive pairs ──
-            try:
-                from ..intelligence.interaction_model import InteractionModel
-
-                db_path = (
-                    str(nb.db_path)
-                    if hasattr(nb, "db_path")
-                    else "research/lab_notebook.db"
-                )
-                profiling_db = "research/profiling/component_profiles.db"
-                from pathlib import Path
-
-                imodel = InteractionModel.train(
-                    notebook_db=Path(db_path),
-                    profiling_db=Path(profiling_db),
-                    n_epochs=30,
-                )
-                if imodel._trained:
-                    # Adjust motif weights by viability score
-                    try:
-                        from ...synthesis.motifs import MOTIF_LIBRARY
-
-                        for motif_name, motif in MOTIF_LIBRARY.items():
-                            steps = [s.op_name for s in motif.steps]
-                            viability = imodel.motif_viability(steps)
-                            # Viability [0,1] → multiplier [0.3, 1.5]
-                            mult = 0.3 + 1.2 * viability
-                            motif_weights[motif_name] = (
-                                motif_weights.get(motif_name, 1.0) * mult
-                            )
-                    except (ImportError, KeyError, ValueError) as e:
-                        logger.debug("Motif viability adjustment failed: %s", e)
-                    logger.debug(
-                        "Interaction model: adjusted motif weights (%d ops)",
-                        imodel.n_ops,
-                    )
-            except Exception as exc:
-                logger.debug("Interaction model unavailable: %s", exc)
+            # InteractionModel motif adjustment DISABLED — no holdout evidence.
+            # Ensemble calibration gave it weight -0.06 (harmful).  Re-enable
+            # only after adding holdout ROC/PPV evaluation to the model.
 
             # Penalize ops with 0% S1 pass rate and sufficient sample size
             try:

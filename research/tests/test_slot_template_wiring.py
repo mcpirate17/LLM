@@ -12,8 +12,11 @@ import random
 import torch
 
 from research.synthesis.compiler import CompiledLayer
+from research.synthesis.validator import validate_graph
 from research.synthesis.graph import ComputationGraph
+from research.synthesis._context_motifs import motif_allowed_in_template
 from research.synthesis.motifs import VALIDATED_MOTIFS, resolve_step
+from research.synthesis._template_helpers import get_slot_rule_summary
 from research.synthesis.templates import (
     TEMPLATES,
     apply_template,
@@ -108,7 +111,10 @@ def _build_motif_graph(motif_name: str) -> ComputationGraph:
     return g
 
 
-def _build_template_graph(template_name: str) -> ComputationGraph:
+def _build_template_graph(
+    template_name: str,
+    motif_weights: dict[str, float] | None = None,
+) -> ComputationGraph:
     """Build a graph by applying a named template."""
     # Use dim divisible by 3 for split3 template
     dim = 96 if "three_way" in template_name else D
@@ -116,9 +122,20 @@ def _build_template_graph(template_name: str) -> ComputationGraph:
     inp = g.add_input()
     rng = random.Random(42)
 
-    out = apply_template(g, inp, rng, template_name=template_name)
+    out = apply_template(
+        g,
+        inp,
+        rng,
+        template_name=template_name,
+        motif_weights=motif_weights,
+    )
     g.set_output(out)
     return g
+
+
+def _template_op_names(template_name: str) -> list[str]:
+    g = _build_template_graph(template_name)
+    return [node.op_name for node in g.nodes.values() if not node.is_input]
 
 
 # ── A. Motif-based ops (new motifs) ──────────────────────────────────
@@ -194,10 +211,11 @@ TEMPLATE_TEST_CASES = [
 BACKFILL_TEMPLATE_CASES = [
     ("attn_normalized_matmul", "matmul"),
     ("attn_softmax_normalized_matmul", "softmax_attention"),
-    ("attn_linear_normalized_matmul_control", "linear_attention"),
+    ("attn_softmax_normalized_matmul_compact_ffn", "softmax_attention"),
+    ("attn_softmax_normalized_matmul_fixed_tail_norm", "softmax_attention"),
     ("attn_linear_no_matmul_ffn", "linear_attention"),
-    ("attn_linear_matmul_sparse_tail", "nm_sparse_linear"),
-    ("attn_linear_matmul_router_sidecar", "difficulty_blend_3way"),
+    ("attn_linear_no_matmul_ffn_dense_tail", "fused_linear_gelu"),
+    ("attn_linear_no_matmul_ffn_direct_recovery", "linear_attention"),
     ("attn_decay_sequence", "cumprod_safe"),
     ("attn_safe_division", "div_safe"),
     ("attn_routing_block", "difficulty_blend_3way"),
@@ -240,6 +258,44 @@ def test_template_compile_and_forward(template_name, target_op):
     assert not result["has_inf"], f"{template_name}: Inf in output"
     assert result["output_shape"][0] == B, f"{template_name}: bad batch dim"
     assert result["output_shape"][1] == S, f"{template_name}: bad seq dim"
+
+
+def test_token_merge_templates_keep_post_merge_processing_local():
+    for template_name in ("token_merge_block", "token_merge_conv"):
+        op_names = _template_op_names(template_name)
+        merge_idx = op_names.index("adjacent_token_merge")
+        post_merge_ops = op_names[merge_idx + 1 :]
+
+        assert "softmax_attention" not in post_merge_ops
+        assert "linear_attention" not in post_merge_ops
+        assert "local_window_attn" not in post_merge_ops
+        assert "latent_attention_compressor" not in post_merge_ops
+        assert "selective_scan" not in post_merge_ops
+        assert "state_space" not in post_merge_ops
+
+
+def test_adaptive_ssm_chain_uses_safe_scan_path():
+    op_names = _template_op_names("adaptive_ssm_chain")
+
+    assert "conv1d_seq" in op_names
+    assert "silu" in op_names
+    assert "selective_scan" in op_names
+    assert "ternary_projection" not in op_names
+
+
+def test_high_risk_motifs_are_restricted_to_safe_templates():
+    merge_scan = VALIDATED_MOTIFS["merge_scan"]
+    scan = VALIDATED_MOTIFS["ssm_selective_scan"]
+    scan_gelu = VALIDATED_MOTIFS["ssm_scan_gelu"]
+
+    assert motif_allowed_in_template(merge_scan, "token_merge_block")
+    assert not motif_allowed_in_template(merge_scan, "sequential")
+
+    assert motif_allowed_in_template(scan, "adaptive_ssm_chain")
+    assert not motif_allowed_in_template(scan, "residual_block")
+
+    assert motif_allowed_in_template(scan_gelu, "adaptive_ssm_chain")
+    assert not motif_allowed_in_template(scan_gelu, "mixed_recursion")
 
 
 @pytest.mark.parametrize(
@@ -345,29 +401,36 @@ def test_reference_templates_use_fixed_high_signal_paths(template_name, required
             {"softmax_attention", "matmul", "swiglu_mlp"},
         ),
         (
-            "attn_linear_normalized_matmul_control",
-            {"linear_attention", "matmul", "swiglu_mlp"},
+            "attn_softmax_normalized_matmul_compact_ffn",
+            {"softmax_attention", "matmul", "swiglu_mlp"},
+        ),
+        (
+            "attn_softmax_normalized_matmul_fixed_tail_norm",
+            {"softmax_attention", "matmul", "swiglu_mlp"},
         ),
         (
             "attn_linear_no_matmul_ffn",
-            {"linear_attention", "swiglu_mlp"},
+            {"linear_attention", "softmax_attention", "swiglu_mlp"},
         ),
         (
-            "attn_linear_matmul_sparse_tail",
-            {"linear_attention", "matmul", "nm_sparse_linear"},
+            "attn_linear_no_matmul_ffn_dense_tail",
+            {"linear_attention", "softmax_attention", "fused_linear_gelu"},
         ),
         (
-            "attn_linear_matmul_router_sidecar",
+            "attn_linear_no_matmul_ffn_direct_recovery",
+            {"linear_attention", "softmax_attention", "swiglu_mlp"},
+        ),
+        (
+            "attn_routing_block",
             {
-                "linear_attention",
-                "matmul",
+                "softmax_attention",
                 "difficulty_blend_3way",
                 "depth_weighted_proj",
                 "swiglu_mlp",
             },
         ),
         (
-            "attn_routing_block",
+            "attn_softmax_router_sidecar",
             {
                 "softmax_attention",
                 "difficulty_blend_3way",
@@ -417,30 +480,29 @@ def test_rehab_templates_keep_stabilizing_scaffolds(template_name, required_ops)
             {"linear_attention", "nm_sparse_linear", "difficulty_blend_3way"},
         ),
         (
-            "attn_linear_normalized_matmul_control",
-            {"linear_attention", "matmul", "swiglu_mlp"},
-            {"softmax_attention", "nm_sparse_linear", "difficulty_blend_3way"},
+            "attn_softmax_normalized_matmul_compact_ffn",
+            {"softmax_attention", "matmul", "swiglu_mlp"},
+            {"linear_attention", "nm_sparse_linear", "difficulty_blend_3way"},
+        ),
+        (
+            "attn_softmax_normalized_matmul_fixed_tail_norm",
+            {"softmax_attention", "matmul", "swiglu_mlp"},
+            {"linear_attention", "nm_sparse_linear", "difficulty_blend_3way"},
         ),
         (
             "attn_linear_no_matmul_ffn",
-            {"linear_attention", "swiglu_mlp"},
+            {"linear_attention", "softmax_attention", "swiglu_mlp"},
             {"matmul", "nm_sparse_linear", "difficulty_blend_3way"},
         ),
         (
-            "attn_linear_matmul_sparse_tail",
-            {"linear_attention", "matmul", "nm_sparse_linear"},
-            {"difficulty_blend_3way"},
+            "attn_linear_no_matmul_ffn_dense_tail",
+            {"linear_attention", "softmax_attention", "fused_linear_gelu"},
+            {"matmul", "nm_sparse_linear", "difficulty_blend_3way"},
         ),
         (
-            "attn_linear_matmul_router_sidecar",
-            {
-                "linear_attention",
-                "matmul",
-                "difficulty_blend_3way",
-                "depth_weighted_proj",
-                "swiglu_mlp",
-            },
-            {"nm_sparse_linear"},
+            "attn_linear_no_matmul_ffn_direct_recovery",
+            {"linear_attention", "softmax_attention", "swiglu_mlp"},
+            {"matmul", "nm_sparse_linear", "difficulty_blend_3way"},
         ),
     ),
 )
@@ -472,14 +534,14 @@ def test_controlled_attention_ablations_change_one_major_component(
             },
         ),
         (
-            "attn_linear_normalized_matmul_control",
+            "attn_linear_no_matmul_ffn_direct_recovery",
             {
                 0: ("norm_wrap", False),
                 1: ("norm_wrap", False),
             },
         ),
         (
-            "attn_linear_matmul_router_sidecar",
+            "attn_softmax_router_sidecar",
             {
                 0: ("norm_wrap", False),
                 1: ("norm_wrap", False),
@@ -519,3 +581,112 @@ def test_rehab_templates_keep_mandatory_slots_constrained(
         entry = by_idx[slot_index]
         assert entry["wildcard"] is expected_wildcard
         assert entry["selected_motif_class"] == expected_class
+
+
+def test_winner_mutations_change_only_targeted_tail_settings():
+    compact = _build_template_graph("attn_softmax_normalized_matmul_compact_ffn")
+    dense = _build_template_graph("attn_linear_no_matmul_ffn_dense_tail")
+
+    compact_ffn = [
+        node for node in compact.nodes.values() if node.op_name == "swiglu_mlp"
+    ]
+    assert compact_ffn
+    assert any(node.config.get("mlp_ratio") == 2.0 for node in compact_ffn)
+
+    dense_ffn = [
+        node for node in dense.nodes.values() if node.op_name == "fused_linear_gelu"
+    ]
+    assert dense_ffn
+    assert dense_ffn[0].config.get("out_dim") == dense.model_dim
+
+
+def test_direct_recovery_variant_removes_explicit_refine_norm():
+    baseline = _build_template_graph("attn_linear_no_matmul_ffn")
+    direct = _build_template_graph("attn_linear_no_matmul_ffn_direct_recovery")
+    baseline_rmsnorms = sum(
+        1
+        for node in baseline.nodes.values()
+        if not node.is_input and node.op_name == "rmsnorm"
+    )
+    direct_rmsnorms = sum(
+        1
+        for node in direct.nodes.values()
+        if not node.is_input and node.op_name == "rmsnorm"
+    )
+    assert direct_rmsnorms == baseline_rmsnorms - 1
+
+
+@pytest.mark.parametrize(
+    "template_name,slot_index,toxic_motifs",
+    (
+        ("routed_bottleneck", 0, {"norm_layer", "norm_rms"}),
+        ("routed_bottleneck", 1, {"gate_progressive", "route_topk_gate"}),
+        (
+            "routed_bottleneck",
+            2,
+            {"sparse_block", "sparse_nm", "sparse_semi_structured", "sparse_ternary"},
+        ),
+        ("conditional_compute", 0, {"norm_layer", "norm_rms"}),
+        ("conditional_compute", 1, {"sparse_block", "sparse_ternary"}),
+    ),
+)
+def test_toxic_slot_motifs_are_blocked_by_slot_constraints(
+    template_name, slot_index, toxic_motifs
+):
+    motif_weights = {name: 1_000_000.0 for name in toxic_motifs}
+    g = _build_template_graph(template_name, motif_weights=motif_weights)
+    slot_usage = g.metadata.get("template_slot_usage") or []
+    by_idx = {entry["slot_index"]: entry for entry in slot_usage}
+
+    entry = by_idx[slot_index]
+    assert entry["selected_motif"] not in toxic_motifs
+
+
+def test_slot_usage_records_canonical_keys_for_motif_slots():
+    g = _build_template_graph("routed_bottleneck")
+    slot_usage = g.metadata.get("template_slot_usage") or []
+    assert slot_usage
+
+    for entry in slot_usage:
+        assert "slot_key_canonical" in entry
+        assert entry["slot_key_canonical"].startswith("routed_bottleneck.slot")
+
+
+@pytest.mark.parametrize(
+    "template_name,seeds",
+    (
+        ("attn_bottleneck_hybrid", range(25)),
+        ("attn_hyperbolic", range(25)),
+        ("attn_decay_sequence", range(25)),
+        ("hybrid_sparse_triplet_router", range(25)),
+        ("sequential", range(25)),
+    ),
+)
+def test_audited_templates_validate_across_seed_slice(template_name, seeds):
+    failures = []
+    for seed in seeds:
+        g = ComputationGraph(model_dim=64)
+        inp = g.add_input()
+        out = apply_template(g, inp, random.Random(seed), template_name=template_name)
+        g.set_output(out)
+        result = validate_graph(g)
+        if not result.valid:
+            failures.append((seed, result.errors[:3]))
+
+    assert not failures, failures
+
+
+def test_slot_rule_summary_exports_current_template_constraints():
+    rules = {row["slot_key"]: row for row in get_slot_rule_summary()}
+
+    assert "routed_bottleneck.slot2" in rules
+    assert rules["routed_bottleneck.slot2"]["allowed_motifs"] == ["bottleneck_sparse"]
+    assert "attn_bottleneck_hybrid.slot2" in rules
+    assert rules["attn_bottleneck_hybrid.slot2"]["allowed_motifs"] == [
+        "bottleneck_sparse"
+    ]
+    assert "sparse_block" in rules["conditional_compute.slot1"]["blocked_motifs"]
+    assert (
+        rules["conditional_compute.slot1"]["weight_multipliers"]["bottleneck_sparse"]
+        == 1.35
+    )

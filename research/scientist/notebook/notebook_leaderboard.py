@@ -9,8 +9,9 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ._shared import LOGGER, sanitize_for_db
-from ..leaderboard_scoring import build_score_kwargs, compute_composite
+from ..leaderboard_scoring import SCORING_VERSION, build_score_kwargs, compute_composite
 from ..thresholds import TIER_RANK
+from ..trust_policy import is_promotable_entry, sql_trusted_clause
 
 _LEADERBOARD_MANAGED_COLUMNS = frozenset(
     {
@@ -134,6 +135,50 @@ class _LeaderboardMixin:
             update_items.append((col, int(val) if isinstance(val, bool) else val))
         return update_items
 
+    @staticmethod
+    def _provenance_complete(pr_row: Any) -> bool:
+        if not pr_row:
+            return False
+        raw = (
+            pr_row["data_provenance_json"]
+            if "data_provenance_json" in pr_row.keys()
+            else None
+        )
+        if not raw or not isinstance(raw, str):
+            return False
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return False
+        return bool(payload.get("provenance_complete"))
+
+    def _resolve_allowed_tier(
+        self,
+        *,
+        requested_tier: str,
+        existing_tier: str,
+        pr_row: Any,
+        is_reference: bool,
+    ) -> str:
+        requested_rank = TIER_RANK.get(requested_tier, 0)
+        existing_rank = TIER_RANK.get(existing_tier, 0)
+        if requested_rank <= 0 or requested_rank <= existing_rank:
+            return requested_tier if requested_rank >= existing_rank else existing_tier
+        if is_reference:
+            return requested_tier
+        trust_entry = dict(pr_row) if pr_row else {}
+        if is_promotable_entry(trust_entry) and self._provenance_complete(pr_row):
+            return requested_tier
+        LOGGER.warning(
+            "Blocked promotion above screening for %s: tier=%s trust=%s comparability=%s provenance_complete=%s",
+            trust_entry.get("result_id") or "<missing>",
+            requested_tier,
+            trust_entry.get("trust_label"),
+            trust_entry.get("comparability_label"),
+            self._provenance_complete(pr_row),
+        )
+        return existing_tier or "screening"
+
     def upsert_leaderboard(
         self,
         result_id: str,
@@ -155,7 +200,9 @@ class _LeaderboardMixin:
         resolved_result_id = result_id
         pr_row = self.conn.execute(
             "SELECT result_id, novelty_confidence, loss_ratio, param_count, flops_forward, "
-            "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint "
+            "throughput_tok_s, peak_memory_mb, forward_time_ms, graph_json, graph_fingerprint, "
+            "result_cohort, trust_label, comparability_label, evaluation_protocol_version, "
+            "data_provenance_json "
             "FROM program_results WHERE result_id = ? "
             "OR graph_fingerprint = ? "
             "ORDER BY CASE WHEN result_id = ? THEN 0 ELSE 1 END, timestamp DESC "
@@ -182,10 +229,26 @@ class _LeaderboardMixin:
             d["tags"] = tags
         if notes is not None:
             d["notes"] = notes
+        if pr_row:
+            for key in (
+                "result_cohort",
+                "trust_label",
+                "comparability_label",
+                "evaluation_protocol_version",
+            ):
+                if pr_row[key] is not None and not d.get(key):
+                    d[key] = pr_row[key]
+                    kwargs.setdefault(key, pr_row[key])
         # Never downgrade tier — only allow promotion or same-tier updates
-        existing_tier = d.get("tier") or "screening"
-        if TIER_RANK.get(tier, 0) >= TIER_RANK.get(existing_tier, 0):
-            d["tier"] = tier
+        existing_tier = str(d.get("tier") or "screening")
+        allowed_tier = self._resolve_allowed_tier(
+            requested_tier=tier,
+            existing_tier=existing_tier,
+            pr_row=pr_row,
+            is_reference=bool(is_reference),
+        )
+        if TIER_RANK.get(allowed_tier, 0) >= TIER_RANK.get(existing_tier, 0):
+            d["tier"] = allowed_tier
         else:
             import logging as _log
 
@@ -193,11 +256,14 @@ class _LeaderboardMixin:
                 "Blocked tier downgrade for %s: %s -> %s",
                 resolved_result_id,
                 existing_tier,
-                tier,
+                allowed_tier,
             )
-            tier = existing_tier  # preserve existing tier for SQL write below
+            allowed_tier = existing_tier  # preserve existing tier for SQL write below
             d["tier"] = existing_tier
+        tier = allowed_tier
         d["model_source"] = model_source
+        d["scoring_version"] = SCORING_VERSION
+        kwargs.setdefault("scoring_version", SCORING_VERSION)
         if architecture_desc:
             d["architecture_desc"] = architecture_desc
         d["is_reference"] = int(is_reference)
@@ -374,6 +440,7 @@ class _LeaderboardMixin:
         sort_by: str = "composite_score",
         include_family: bool = True,
         include_references: bool = True,
+        trusted_only: bool = False,
     ) -> List[Dict]:
         """Get leaderboard entries, optionally filtered by tier."""
         valid_sorts = {
@@ -450,6 +517,8 @@ class _LeaderboardMixin:
             "WHERE 1=1"
         )
         params: List[Any] = []
+        if trusted_only:
+            query += f" AND {sql_trusted_clause(table_alias='l')}"
         # Stage-based filtering: show entries that *reached* a stage, not just
         # entries whose tier column is that exact value.  Entries move through
         # tiers quickly (screening → investigation → validation in one run) so
@@ -547,6 +616,7 @@ class _LeaderboardMixin:
                     d["novelty_score"] = self._reference_novelty_for_display(
                         d.get("novelty_score")
                     )
+            d["trusted_candidate"] = bool(is_promotable_entry(d))
             results.append(d)
 
         # Separate reference entries so they survive dedup and limit
@@ -619,10 +689,36 @@ class _LeaderboardMixin:
 
     def promote_to_tier(self, entry_id: str, tier: str, **kwargs) -> None:
         """Update a leaderboard entry's tier and phase-specific results."""
-        sets = ["tier = ?"]
-        params: List[Any] = [tier]
+        row = self.conn.execute(
+            "SELECT * FROM leaderboard WHERE entry_id = ?",
+            (entry_id,),
+        ).fetchone()
+        if not row:
+            return
 
-        # Sanitize all incoming values
+        from ..leaderboard_scoring import (
+            _PR_SELECT_COLS,
+            _pr_dict_to_score_kwargs,
+            compute_composite,
+        )
+
+        pr = None
+        if row["result_id"]:
+            pr = self.conn.execute(
+                f"SELECT {_PR_SELECT_COLS}, data_provenance_json, trust_label, comparability_label "
+                "FROM program_results WHERE result_id = ?",
+                (row["result_id"],),
+            ).fetchone()
+
+        allowed_tier = self._resolve_allowed_tier(
+            requested_tier=tier,
+            existing_tier=str(row["tier"] or "screening"),
+            pr_row=pr,
+            is_reference=bool(row["is_reference"]),
+        )
+        sets = ["tier = ?"]
+        params: List[Any] = [allowed_tier]
+
         kwargs = sanitize_for_db(kwargs)
         update_items = self._leaderboard_update_items(kwargs)
 
@@ -630,41 +726,19 @@ class _LeaderboardMixin:
             sets.append(f"{col} = ?")
             params.append(val)
 
-        # Recompute composite score using active scoring version
-        from ..leaderboard_scoring import (
-            _PR_SELECT_COLS,
-            _pr_dict_to_score_kwargs,
-            compute_composite,
+        d = dict(row)
+        d.update(dict(update_items))
+        d["tier"] = allowed_tier
+
+        pr_d: Dict[str, Any] = dict(pr) if pr else {}
+        score_kw = _pr_dict_to_score_kwargs(
+            pr_d, d, is_reference=bool(d.get("is_reference"))
         )
-
-        row = self.conn.execute(
-            "SELECT * FROM leaderboard WHERE entry_id = ?",
-            (entry_id,),
-        ).fetchone()
-        if row:
-            d = dict(row)
-            # Apply pending updates so score reflects new tier + metrics
-            d.update(dict(update_items))
-            d["tier"] = tier
-
-            # Fetch program_results with full column set needed for v7
-            pr_d: Dict[str, Any] = {}
-            if d.get("result_id"):
-                pr = self.conn.execute(
-                    f"SELECT {_PR_SELECT_COLS} FROM program_results WHERE result_id = ?",
-                    (d["result_id"],),
-                ).fetchone()
-                if pr:
-                    pr_d = dict(pr)
-
-            score_kw = _pr_dict_to_score_kwargs(
-                pr_d, d, is_reference=bool(d.get("is_reference"))
-            )
-            composite = compute_composite(**score_kw)
-            if isinstance(composite, dict):
-                composite = composite["composite_score"]
-            sets.append("composite_score = ?")
-            params.append(composite)
+        composite = compute_composite(**score_kw)
+        if isinstance(composite, dict):
+            composite = composite["composite_score"]
+        sets.append("composite_score = ?")
+        params.append(composite)
 
         # Handle 'notes' explicitly (it's in _LEADERBOARD_MANAGED_COLUMNS
         # so _leaderboard_update_items filters it out, but promote_to_tier

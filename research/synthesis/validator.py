@@ -21,6 +21,7 @@ from typing import List
 import numpy as np
 
 from .context_rules import find_graph_context_violations
+from .graph_validator import validate_dim_flow
 from .primitives import get_primitive, REVERSE_OPCODE_MAP
 from .graph import ComputationGraph, ComputationGraphIR
 from .native_validation import summarize_validation
@@ -208,6 +209,14 @@ def validate_graph(
 
     for violation in find_graph_context_violations(graph):
         result.add_error(violation)
+
+    dim_flow = validate_dim_flow(graph)
+    for error in dim_flow.errors:
+        if error not in result.errors:
+            result.add_error(error)
+    for warning in dim_flow.warnings:
+        if warning not in result.warnings:
+            result.add_warning(warning)
 
     # Warnings for risky patterns
     if result.n_risky_ops > 3:

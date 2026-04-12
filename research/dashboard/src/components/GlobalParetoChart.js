@@ -345,6 +345,14 @@ function GlobalParetoChart({
     }));
   }, []);
 
+  useEffect(() => {
+    const node = wrapRef.current;
+    if (!node) return undefined;
+    const handleWheel = (e) => onWheel(e);
+    node.addEventListener('wheel', handleWheel, { passive: false });
+    return () => node.removeEventListener('wheel', handleWheel);
+  }, [onWheel]);
+
   const actions = useMemo(() => {
     if (!frontierPoints.length) return [];
     const sortedAcc = [...frontierPoints].sort((a, b) => b.accuracy - a.accuracy);
@@ -443,7 +451,6 @@ function GlobalParetoChart({
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
         onMouseLeave={() => { dragRef.current = null; setHover(null); setSelectionRect(null); }}
-        onWheel={onWheel}
         style={{ position: 'relative', width: '100%', maxWidth: '100%', height: 360, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(0,0,0,0.15)', overflow: 'hidden', cursor: dragRef.current ? 'grabbing' : 'grab' }}
       >
         <svg width="100%" height="100%" style={{ display: 'block', overflow: 'hidden' }}>

@@ -356,7 +356,9 @@ def _run_hellaswag(
 
     if total == 0:
         result = {
-            "hellaswag_acc": 0.0,
+            "hellaswag_acc": None,
+            "hellaswag_correct": 0,
+            "hellaswag_total": 0,
             "hellaswag_status": "all_failed",
             "hellaswag_n_examples": 0,
             "elapsed_ms": elapsed_ms,

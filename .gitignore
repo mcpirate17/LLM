@@ -93,3 +93,5 @@ research/runtime/backfill/*_state.json
 
 # Induction probe generated datasets/results
 tasks/induction_native_probe/*.csv
+# Added by code-review-graph
+.code-review-graph/

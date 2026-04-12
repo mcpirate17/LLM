@@ -104,7 +104,10 @@ def create_app(
         return body, 503, {"Content-Type": "text/html; charset=utf-8"}
 
     def _is_asset_path(path: str) -> bool:
-        name = Path(path or "").name
+        normalized = (path or "").lstrip("/")
+        if normalized == "@react-refresh" or normalized.startswith("@vite/"):
+            return True
+        name = Path(normalized).name
         return "." in name
 
     # Auto-load persisted LLM config
@@ -195,10 +198,6 @@ def create_app(
     from .api_routes.designer_bp import register_designer_routes
     from .api_routes.observability_bp import register_observability_routes
     from .api_routes.misc_bp import register_misc_routes
-
-    from .api_routes.deps import register_notebook_teardown
-
-    register_notebook_teardown(app)
 
     register_analytics_routes(app, context)
     register_experiments_routes(app, context)

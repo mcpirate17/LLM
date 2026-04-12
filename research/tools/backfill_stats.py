@@ -3,9 +3,10 @@
 Usage:
     python -m research.tools.backfill_stats [--db research/lab_notebook.db]
 
-Reads the shared deduped ML corpus, extracts templates_used/motifs_used/op
-names, and populates the analytics tables with structural-unique statistics.
-Idempotent and safe to re-run.
+Reads the shared deduped ML corpus, supplements it with any canonical graphs
+present in the notebook but missing from the corpus snapshot, then extracts
+templates_used/motifs_used/op names and populates the analytics tables with
+structural-unique statistics. Idempotent and safe to re-run.
 """
 
 from __future__ import annotations
@@ -19,7 +20,15 @@ import time
 from collections import Counter
 from typing import Dict, List, Tuple
 
-from research.scientist.intelligence.ml_corpus import load_deduped_graph_training_rows
+from research.scientist.intelligence.ml_corpus import (
+    _fallback_graph_analysis_rows,
+    load_deduped_graph_training_rows,
+)
+from research.tools._script_audit import (
+    complete_script_experiment,
+    fail_script_experiment,
+    start_script_experiment,
+)
 
 
 def _unique_strings(values: object) -> List[str]:
@@ -86,6 +95,37 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(NOTEBOOK_SCHEMA)
 
 
+def _load_stats_source_rows(db_path: str) -> List[Dict]:
+    """Combine corpus-backed rows with notebook-backed rows for missing canonicals.
+
+    The deduped ML corpus is the preferred source because it applies training
+    eligibility filters, but it can lag behind active notebook families. For
+    analytics observability we union in canonical graphs present in
+    ``program_results`` but absent from the corpus snapshot.
+    """
+    corpus_rows = load_deduped_graph_training_rows(db_path)
+    rows_by_canonical: Dict[str, Dict] = {}
+    for row in corpus_rows:
+        canonical = str(row.get("canonical_fingerprint") or "")
+        if canonical:
+            rows_by_canonical[canonical] = dict(row)
+
+    for row in _fallback_graph_analysis_rows(db_path):
+        canonical = str(row.get("canonical_fingerprint") or "")
+        if not canonical or canonical in rows_by_canonical:
+            continue
+        rows_by_canonical[canonical] = {
+            "canonical_fingerprint": canonical,
+            "graph_json": row.get("graph_json"),
+            "stage0_any_passed": row.get("stage0_any_passed"),
+            "stage1_any_passed": row.get("stage1_any_passed"),
+            "loss_ratio_best": row.get("loss_ratio"),
+            "n_rows": row.get("n_rows", 1),
+        }
+
+    return list(rows_by_canonical.values())
+
+
 def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
     """Backfill analytics tables. Returns row counts inserted."""
     conn = sqlite3.connect(db_path, timeout=15.0)
@@ -104,7 +144,7 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
     # Slot stats: slot_key → {eval, s1, [losses], class_outcomes, wc_count, wc_s1, wc_class_outcomes, template_name, slot_index, slot_classes}
     slot_data: Dict[str, dict] = {}
 
-    rows = load_deduped_graph_training_rows(db_path)
+    rows = _load_stats_source_rows(db_path)
 
     for row in rows:
         graph_json = str(row.get("graph_json") or "")
@@ -326,7 +366,7 @@ def backfill(db_path: str = "research/lab_notebook.db") -> Dict[str, int]:
     return counts
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill analytics stats tables")
     parser.add_argument("--db", default="research/lab_notebook.db")
     parser.add_argument(
@@ -335,19 +375,51 @@ if __name__ == "__main__":
         help="Also retrain ML predictors (Bayesian tracker, graph predictor) after stats backfill",
     )
     args = parser.parse_args()
-    backfill(args.db)
+    nb, exp_id = start_script_experiment(
+        db_path=args.db,
+        experiment_type="analytics_backfill",
+        config={"db": args.db, "refresh_models": bool(args.refresh_models)},
+        source_script="backfill_stats",
+        hypothesis="Backfill analytics stats tables",
+    )
+    try:
+        counts = backfill(args.db)
 
-    if args.refresh_models:
-        print("\nRefreshing ML models...")
-        try:
-            from research.tools.train_predictors import (
-                train_bayesian,
-                train_graph_predictor,
-            )
+        if args.refresh_models:
+            print("\nRefreshing ML models...")
+            try:
+                from research.tools.train_predictors import (
+                    train_bayesian,
+                    train_graph_predictor,
+                )
 
-            train_bayesian(save=True)
-            print("  Bayesian tracker refreshed")
-            train_graph_predictor()
-            print("  Graph predictor refreshed")
-        except Exception as e:
-            print(f"  ML model refresh failed: {e}")
+                train_bayesian(save=True)
+                print("  Bayesian tracker refreshed")
+                train_graph_predictor()
+                print("  Graph predictor refreshed")
+            except Exception as e:
+                print(f"  ML model refresh failed: {e}")
+                counts["model_refresh_error"] = str(e)
+
+        complete_script_experiment(
+            nb,
+            exp_id,
+            results={**counts, "refresh_models": bool(args.refresh_models)},
+            summary=(
+                f"Analytics backfill complete: templates={counts['template_stats']} "
+                f"ops={counts['op_stats']}"
+            ),
+        )
+    except KeyboardInterrupt:
+        fail_script_experiment(nb, exp_id, error="KeyboardInterrupt")
+        nb.close()
+        raise
+    except Exception as exc:
+        fail_script_experiment(nb, exp_id, error=str(exc))
+        nb.close()
+        raise
+    nb.close()
+
+
+if __name__ == "__main__":
+    main()

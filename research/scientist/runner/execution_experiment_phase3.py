@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import time
+import json
 from typing import Any, Dict, List, Set, Tuple
 
 import torch
@@ -89,6 +90,7 @@ class _ExecutionExperimentPhase3Mixin:
                 seed=self._stable_seed(exp_id, i, "morphology"),
             )
             s1_passed = bool(s1_result.get("passed", False))
+            training_curve = s1_result.get("training_curve")
             if s1_passed:
                 results["stage1_passed"] += 1
                 with self._lock:
@@ -149,6 +151,13 @@ class _ExecutionExperimentPhase3Mixin:
                     nb.set_external_benchmarks(result_id, payload)
             except Exception as exc:
                 logger.debug("Suppressed error: %s", exc)
+            if training_curve and result_id:
+                try:
+                    nb.store_training_curve(result_id, training_curve)
+                except Exception as exc:
+                    logger.debug(
+                        "store_training_curve failed for %s: %s", result_id, exc
+                    )
 
     def _prepare_screening_orchestrator(
         self,
@@ -191,6 +200,129 @@ class _ExecutionExperimentPhase3Mixin:
         )
         results["candidate_batch_size"] = candidate_batch_size
         return dev, dev_str, orchestrator, candidate_batch_size
+
+    def _run_gbm_prescreener(
+        self,
+        *,
+        nb: LabNotebook,
+        graphs: List[Any],
+        config: RunConfig,
+        exp_id: str,
+        results: Dict[str, Any],
+    ) -> List[Any]:
+        """Rank graphs by the runtime predictor and drop only clear losers."""
+
+        if not config.gbm_prescreener_enabled or not graphs:
+            return graphs
+        from ..ml_influence_policy import component_is_allowed
+
+        if not component_is_allowed("screening_ensemble", config):
+            logger.info(
+                "Ensemble pre-screener requested but blocked by ML trust policy"
+            )
+            return graphs
+
+        try:
+            from ..intelligence.predictor import load_runtime_ensemble
+            from ...synthesis.graph_features import (
+                extract_graph_features,
+                enrich_with_op_stats,
+                load_op_stats,
+            )
+
+            db_path = (
+                str(nb.db_path)
+                if hasattr(nb, "db_path")
+                else "research/lab_notebook.db"
+            )
+            profiling_db = "research/profiling/component_profiles.db"
+            ensemble = load_runtime_ensemble(profiling_db=profiling_db)
+            if ensemble is None or not ensemble.is_fitted():
+                logger.debug(
+                    "Ensemble pre-screener disabled: no persisted predictor artifacts loaded"
+                )
+                return graphs
+
+            op_stats_cache = load_op_stats(db_path)
+            scored: List[tuple[float, float, float, float, Any, Dict[str, Any]]] = []
+            for graph in graphs:
+                graph_dict = graph.to_dict()
+                features = extract_graph_features(graph_dict)
+                if features:
+                    nodes = graph_dict.get("nodes") or {}
+                    ops = [
+                        node.get("op_name", "")
+                        for node in nodes.values()
+                        if node.get("op_name", "") != "input"
+                    ]
+                    enrich_with_op_stats(features, ops, preloaded=op_stats_cache)
+                planning = ensemble.predict_planning_score(
+                    graph_json=graph_dict,
+                    graph_features=features if features else None,
+                )
+                scored.append(
+                    (
+                        float(planning.get("planning_score", 0.0)),
+                        float(planning.get("p_pass", 0.0)),
+                        float(planning.get("p_induction_learner", 0.0)),
+                        float(planning.get("predicted_induction_auc", 0.0)),
+                        graph,
+                        graph_dict,
+                    )
+                )
+
+            scored.sort(key=lambda row: -row[0])
+            kept: List[Any] = []
+            skipped = 0
+            for planning_score, p_pass, p_ind, pred_auc, graph, graph_dict in scored:
+                if p_pass < config.gbm_gate_threshold:
+                    skipped += 1
+                    try:
+                        nb.record_program_result(
+                            experiment_id=exp_id,
+                            graph=graph,
+                            graph_json=json.dumps(graph_dict, separators=(",", ":")),
+                            status="predictor_skip",
+                            metrics={
+                                "predicted_p_s1": p_pass,
+                                "predicted_induction_auc": pred_auc,
+                                "predicted_p_induction_learner": p_ind,
+                                "predictor_planning_score": planning_score,
+                            },
+                        )
+                    except (TypeError, ValueError) as exc:
+                        logger.debug("Failed recording predictor_skip result: %s", exc)
+                    continue
+                kept.append(graph)
+
+            results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
+            results["funnel_counts"]["post_gbm_prescreener"] = len(kept)
+            diagnostics = (
+                ensemble.diagnostics() if hasattr(ensemble, "diagnostics") else {}
+            )
+            planning_scores = [row[0] for row in scored]
+            pass_scores = [row[1] for row in scored]
+            induction_scores = [row[2] for row in scored]
+            logger.info(
+                "Ensemble ranker: %d graphs scored plan=[%.3f-%.3f] "
+                "pass=[%.3f-%.3f] induction=[%.3f-%.3f], "
+                "%d below P(pass_s1) floor (%.2f), %d kept, components=%d",
+                len(scored),
+                min(planning_scores) if planning_scores else 0.0,
+                max(planning_scores) if planning_scores else 0.0,
+                min(pass_scores) if pass_scores else 0.0,
+                max(pass_scores) if pass_scores else 0.0,
+                min(induction_scores) if induction_scores else 0.0,
+                max(induction_scores) if induction_scores else 0.0,
+                skipped,
+                config.gbm_gate_threshold,
+                len(kept),
+                diagnostics.get("n_components", 1),
+            )
+            return kept
+        except Exception as exc:
+            logger.debug("Ensemble pre-screener unavailable: %s", exc)
+            return graphs
 
     def _dedup_graph_candidates(
         self,

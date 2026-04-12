@@ -308,7 +308,10 @@ def analyze_config_effects(nb) -> List[ConfigEffect]:
             SELECT config_json, n_stage1_passed, best_loss_ratio,
                    n_programs_generated
             FROM experiments
-            WHERE status = 'completed'
+            WHERE (status = 'completed'
+               OR (status = 'failed'
+                   AND n_programs_generated > 0
+                   AND aria_summary LIKE 'REPAIRED FROM INTERRUPTED:%'))
               AND config_json IS NOT NULL
               AND n_programs_generated > 0
             ORDER BY timestamp DESC
@@ -521,7 +524,14 @@ def close_hypotheses(nb) -> List[HypothesisOutcome]:
             FROM experiments e
             WHERE e.hypothesis IS NOT NULL
               AND e.hypothesis != ''
-              AND e.status = 'completed'
+              AND (
+                    e.status = 'completed'
+                 OR (
+                        e.status = 'failed'
+                    AND e.n_programs_generated > 0
+                    AND e.aria_summary LIKE 'REPAIRED FROM INTERRUPTED:%'
+                 )
+              )
             ORDER BY e.timestamp DESC
             LIMIT 50
             """

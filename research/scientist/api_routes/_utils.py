@@ -14,6 +14,14 @@ from .deps import get_notebook
 logger = logging.getLogger(__name__)
 
 
+def bind_view(handler, *bound_args):
+    return functools.partial(handler, *bound_args) if bound_args else handler
+
+
+def bind_notebook_view(wnb, handler, *bound_args):
+    return wnb(bind_view(handler, *bound_args))
+
+
 def is_malformed_db_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(

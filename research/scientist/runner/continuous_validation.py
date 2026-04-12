@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from ...eval.perf_budget import evaluate_perf_budget_gate
+from ...training.checkpointing import CheckpointManager
 from ...training.training_program import synthesize_training_program
 from ._helpers import (
     clear_gpu_memory,
@@ -246,8 +247,12 @@ class _ContinuousValidationMixin:
         model_source: str,
         arch_spec_json_str: str,
         graph_json_str: str,
+        checkpoint_manager: CheckpointManager | None = None,
     ):
         seed_results = []
+        checkpoint_interval = int(
+            getattr(config, "phase_checkpoint_step_interval", 0) or 0
+        )
         for seed in range(config.validation_n_seeds):
             if self._stop_event.is_set():
                 break
@@ -290,6 +295,24 @@ class _ContinuousValidationMixin:
             )
 
             # Train (use best training program if available)
+            resume_state = None
+            if checkpoint_manager is not None:
+                loaded_state = checkpoint_manager.load_phase(
+                    exp_id, "validation", prog_idx, seed
+                )
+                if loaded_state and int(loaded_state.get("step", 0) or 0) > 0:
+                    resume_state = loaded_state
+            base_ctx = {"exp_id": exp_id, "phase": "validation"}
+            self._live_training_context = {
+                **base_ctx,
+                "source_result_id": source_result_id,
+                "checkpoint_manager": checkpoint_manager,
+                "checkpoint_phase": "validation",
+                "checkpoint_candidate_idx": prog_idx,
+                "checkpoint_seed_idx": seed,
+                "checkpoint_interval_steps": checkpoint_interval,
+                "checkpoint_resume_state": resume_state,
+            }
             if best_tp_json:
                 try:
                     tp_data = self._cached_json_load(best_tp_json)
@@ -298,16 +321,42 @@ class _ContinuousValidationMixin:
                         max_seq_len=config.validation_seq_len,
                         seed=tp_data.get("seed", seed),
                     )
-                    s1_result = self._train_with_program(
-                        model,
-                        tp,
-                        val_config,
-                        dev,
-                        seed=self._stable_seed(
-                            exp_id, source_result_id, seed, "validation_tp"
-                        ),
-                    )
+                    try:
+                        s1_result = self._train_with_program(
+                            model,
+                            tp,
+                            val_config,
+                            dev,
+                            seed=self._stable_seed(
+                                exp_id, source_result_id, seed, "validation_tp"
+                            ),
+                        )
+                    finally:
+                        self._live_training_context = base_ctx
                 except Exception:  # noqa: BLE001 — fallback from TP training to basic
+                    self._live_training_context = {
+                        **base_ctx,
+                        "source_result_id": source_result_id,
+                        "checkpoint_manager": checkpoint_manager,
+                        "checkpoint_phase": "validation",
+                        "checkpoint_candidate_idx": prog_idx,
+                        "checkpoint_seed_idx": seed,
+                        "checkpoint_interval_steps": checkpoint_interval,
+                        "checkpoint_resume_state": resume_state,
+                    }
+                    try:
+                        s1_result = self._micro_train(
+                            model,
+                            val_config,
+                            dev,
+                            seed=self._stable_seed(
+                                exp_id, source_result_id, seed, "validation_micro"
+                            ),
+                        )
+                    finally:
+                        self._live_training_context = base_ctx
+            else:
+                try:
                     s1_result = self._micro_train(
                         model,
                         val_config,
@@ -316,15 +365,8 @@ class _ContinuousValidationMixin:
                             exp_id, source_result_id, seed, "validation_micro"
                         ),
                     )
-            else:
-                s1_result = self._micro_train(
-                    model,
-                    val_config,
-                    dev,
-                    seed=self._stable_seed(
-                        exp_id, source_result_id, seed, "validation_micro"
-                    ),
-                )
+                finally:
+                    self._live_training_context = base_ctx
 
             seed_results.append(
                 {
@@ -442,9 +484,20 @@ class _ContinuousValidationMixin:
             result_ids=result_ids,
             limit_str=limit_str,
         )
+        ckpt = CheckpointManager(config.checkpoint_dir)
 
         self._live_training_context = {"exp_id": exp_id, "phase": "validation"}
         try:
+            resume_from_candidate = 0
+            ckpt_state = ckpt.load_phase(exp_id, "validation", -1, 0)
+            if ckpt_state:
+                resume_from_candidate = CheckpointManager.phase_resume_candidate_idx(
+                    ckpt_state
+                )
+                logger.info(
+                    "Resuming continuous validation from candidate %d",
+                    resume_from_candidate,
+                )
             results, dev, dev_str, val_config, source_map = (
                 self._inline_validation_prepare_runtime(
                     config=config,
@@ -454,6 +507,8 @@ class _ContinuousValidationMixin:
             )
 
             for prog_idx, source_result_id in enumerate(result_ids):
+                if prog_idx < resume_from_candidate:
+                    continue
                 if self._stop_event.is_set():
                     break
                 if (
@@ -510,6 +565,7 @@ class _ContinuousValidationMixin:
                     model_source,
                     arch_spec_json_str,
                     graph_json_str,
+                    checkpoint_manager=ckpt,
                 )
                 if not seed_results:
                     logger.warning(
@@ -629,6 +685,34 @@ class _ContinuousValidationMixin:
                     multi_seed_std=metrics.multi_seed_std,
                     emit_event=self._emit_event,
                 )
+
+                try:
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="validation",
+                        candidate_idx=prog_idx + 1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"completed_candidate": prog_idx},
+                    )
+                    ckpt.save_phase(
+                        experiment_id=exp_id,
+                        phase="validation",
+                        candidate_idx=-1,
+                        seed_idx=0,
+                        model_state_dict={},
+                        optimizer_state_dict={},
+                        step=0,
+                        metrics={"candidate_idx": prog_idx + 1},
+                    )
+                except (OSError, RuntimeError) as e:
+                    logger.warning(
+                        "Continuous validation checkpoint save failed for candidate %d: %s",
+                        prog_idx + 1,
+                        e,
+                    )
 
             # Complete experiment with LLM analysis
             results["perf_report"] = self._build_experiment_perf_report(results)

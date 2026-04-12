@@ -44,6 +44,23 @@ class TestLocalWindowAttnSharedMemory:
         out = _op_local_window_attn(None, (x,), config)
         assert out.shape == x.shape
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_narrow_feature_dim_skips_triton_and_uses_fallback(self, monkeypatch):
+        """D<=8 should bypass Triton to avoid tl.dot K>=16 compilation errors."""
+
+        def _unexpected_triton_call(*args, **kwargs):
+            raise AssertionError("triton_local_attn should not be called for D<=8")
+
+        monkeypatch.setattr(
+            "research.synthesis.compiler_ops_attention.kernels.triton_local_attn",
+            _unexpected_triton_call,
+        )
+
+        x = torch.randn(2, 32, 8, device="cuda")
+        out = _op_local_window_attn(None, (x,), {"window_size": 16})
+        assert out.shape == x.shape
+        assert torch.isfinite(out).all()
+
 
 @pytest.mark.unit
 class TestLocalWindowAttnFallback:

@@ -6,9 +6,13 @@ Tests for compiler-level stability fixes:
 """
 
 import torch
-from research.synthesis.compiler import _build_block_sparse_mask
+from research.synthesis.compiler_op_utils import _build_block_sparse_mask
+from research.synthesis.compiled_op import CompiledOp
 from research.synthesis.compiler_ops_routing import _op_feature_sparsity
+from research.synthesis.compiler_ops_sequence import _op_conv1d_seq
 from research.synthesis.compiler_ops_mathspaces import _op_spectral_filter
+from research.synthesis.graph import ShapeInfo
+from research.synthesis.kernels import triton_block_sparse_linear
 
 
 class TestSpectralFilterClamp:
@@ -110,3 +114,67 @@ class TestBlockSparseDensityFloor:
         w = torch.randn(128, 64)
         mask = _build_block_sparse_mask(w, block_size=16, block_density=0.3)
         assert mask.shape == w.shape
+
+
+class TestBFloat16FallbackStability:
+    def test_triton_block_sparse_linear_small_shape_casts_weight(self):
+        x = torch.randn(8, 64, dtype=torch.bfloat16)
+        weight = torch.randn(64, 64, dtype=torch.float32)
+        mask = torch.ones_like(weight)
+
+        out = triton_block_sparse_linear(x, weight, mask, block_size=16)
+
+        assert out.dtype == torch.bfloat16
+        assert out.shape == (8, 64)
+
+    def test_conv1d_seq_casts_kernel_to_input_dtype(self):
+        module = type("M", (), {})()
+        module.conv_weight = torch.randn(64, 1, 3, dtype=torch.float32)
+        x = torch.randn(2, 8, 64, dtype=torch.bfloat16)
+
+        out = _op_conv1d_seq(module, [x], {})
+
+        assert out.dtype == torch.bfloat16
+        assert out.shape == (2, 8, 64)
+
+    def test_attention_stack_runs_in_bfloat16(self):
+        for op_name in (
+            "softmax_attention",
+            "linear_attention",
+            "graph_attention",
+            "diff_attention",
+        ):
+            op = CompiledOp(
+                op_name,
+                {},
+                ShapeInfo(dim=64),
+                ShapeInfo(dim=64),
+                64,
+            )
+            x = torch.randn(2, 8, 64, dtype=torch.bfloat16)
+
+            out = op(x)
+
+            assert out.dtype == torch.bfloat16
+            assert out.shape == (2, 8, 64)
+            assert torch.isfinite(out).all(), (
+                f"{op_name} produced non-finite values in bf16"
+            )
+
+    def test_latent_attention_compressor_runs_in_bfloat16(self):
+        op = CompiledOp(
+            "latent_attention_compressor",
+            {},
+            ShapeInfo(dim=64),
+            ShapeInfo(dim=64),
+            64,
+        )
+        x = torch.randn(2, 8, 64, dtype=torch.bfloat16)
+
+        out = op(x)
+
+        assert out.dtype == torch.bfloat16
+        assert out.shape == (2, 8, 64)
+        assert torch.isfinite(out).all(), (
+            "latent_attention_compressor produced non-finite values in bf16"
+        )
