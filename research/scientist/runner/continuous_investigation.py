@@ -10,6 +10,7 @@ from ..json_utils import json_safe
 
 
 from ...eval.perf_budget import evaluate_perf_budget_gate
+from ...training.checkpointing import CheckpointManager
 from ...training.training_program import synthesize_training_program_batch
 from ..notebook import LabNotebook
 from ._helpers import (
@@ -93,6 +94,13 @@ class _ContinuousInvestigationMixin:
             train as train_predictor,
             predict as predict_lr,
         )
+        from ..ml_influence_policy import component_is_allowed
+
+        if not component_is_allowed("investigation_predictor", config):
+            logger.info(
+                "Investigation predictor requested but blocked by ML trust policy"
+            )
+            return eligible
 
         try:
             model = train_predictor(nb)
@@ -579,6 +587,600 @@ class _ContinuousInvestigationMixin:
         margin = max(0.1, float(config.pre_inv_reference_margin or 1.0))
         return float(best_ref_lr) * margin
 
+    def _inline_investigate_candidate_training(
+        self,
+        config: RunConfig,
+        inv_config: RunConfig,
+        source_result_id: str,
+        source: dict,
+        exp_id: str,
+        prog_idx: int,
+        result_ids: list,
+        ckpt,
+        dev,
+        results: dict,
+    ) -> tuple:
+        """Train all programs for one investigation candidate.
+
+        Returns (tp_results, best_inv_model, training_programs, tp_sched).
+        """
+        graph_json_str = source.get("graph_json")
+        arch_spec_json_str = source.get("arch_spec_json")
+        model_source = source.get("model_source") or "graph_synthesis"
+
+        # Generate training programs (queue-level scheduling telemetry)
+        training_programs, tp_sched = synthesize_training_program_batch(
+            n_programs=config.n_training_programs,
+            n_steps=config.investigation_steps,
+            max_seq_len=config.max_seq_len,
+            seed_offset=prog_idx * 1000,
+        )
+        results.setdefault("training_program_scheduling", []).append(
+            {
+                "result_id": source_result_id,
+                **tp_sched,
+            }
+        )
+
+        # Test each (model x training_program) pair
+        tp_results = []
+        _best_inv_model = None
+        _best_inv_model_lr = float("inf")
+        for tp_i, tp in enumerate(training_programs):
+            if self._stop_event.is_set():
+                break
+
+            # Reconstruct model fresh for each training program
+            try:
+                model = self._build_model_from_source(
+                    model_source,
+                    arch_spec_json_str,
+                    graph_json_str,
+                    config,
+                    seq_len_override=config.max_seq_len,
+                )
+                if model is None:
+                    raise RuntimeError(f"No model built for {source_result_id[:8]}")
+            except (RuntimeError, ValueError, TypeError) as e:
+                _fail_loud(
+                    "continuous_investigation",
+                    f"model reconstruction failed for {source_result_id[:8]} "
+                    f"training program {tp_i + 1}/{len(training_programs)}",
+                    e,
+                )
+
+            self._emit_event(
+                "investigation_progress",
+                {
+                    "experiment_id": exp_id,
+                    "current": prog_idx + 1,
+                    "total": len(result_ids),
+                    "source_result_id": source_result_id,
+                    "training_program": tp_i + 1,
+                    "total_programs": len(training_programs),
+                    "status": f"training with {tp.name}",
+                },
+            )
+
+            resume_state = ckpt.load_phase(exp_id, "investigation", prog_idx, tp_i)
+            base_ctx = {"exp_id": exp_id, "phase": "investigation"}
+            self._live_training_context = {
+                **base_ctx,
+                "source_result_id": source_result_id,
+                "checkpoint_manager": ckpt,
+                "checkpoint_phase": "investigation",
+                "checkpoint_candidate_idx": prog_idx,
+                "checkpoint_seed_idx": tp_i,
+                "checkpoint_interval_steps": int(
+                    getattr(config, "phase_checkpoint_step_interval", 0) or 0
+                ),
+                "checkpoint_resume_state": (
+                    resume_state
+                    if resume_state and int(resume_state.get("step", 0) or 0) > 0
+                    else None
+                ),
+            }
+            try:
+                tp_result = self._train_with_program(
+                    model,
+                    tp,
+                    inv_config,
+                    dev,
+                    seed=self._stable_seed(
+                        exp_id, source_result_id, tp_i, "investigation"
+                    ),
+                )
+            finally:
+                self._live_training_context = base_ctx
+            tp_results.append(
+                {
+                    "training_program": tp.name,
+                    "passed": tp_result.get("passed", False),
+                    "loss_ratio": tp_result.get("loss_ratio"),
+                    "final_loss": tp_result.get("final_loss"),
+                }
+            )
+
+            # Retain the best-performing model for post-investigation
+            # fingerprint completion (needs converged representations).
+            _this_lr = tp_result.get("loss_ratio")
+            if _this_lr is not None and (
+                _best_inv_model is None or _this_lr < _best_inv_model_lr
+            ):
+                if _best_inv_model is not None:
+                    del _best_inv_model
+                _best_inv_model = model
+                _best_inv_model_lr = _this_lr
+            else:
+                del model
+            clear_gpu_memory()
+
+        # Skip candidates where no training program could reconstruct the model
+        if not tp_results:
+            raise RuntimeError(
+                f"Continuous investigation aborted for {source_result_id[:8]}: "
+                f"model failed to reconstruct for all {len(training_programs)} "
+                "training programs"
+            )
+
+        return tp_results, _best_inv_model, training_programs, tp_sched
+
+    def _inline_investigate_fingerprint_completion(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        source: dict,
+        source_result_id: str,
+        best_inv_model,
+        dev,
+    ) -> tuple:
+        """Run post-investigation fingerprint completion for one candidate.
+
+        Returns (fingerprint_attempted, fingerprint_completed, investigation_passed_override).
+        investigation_passed_override is True if fingerprint failure should downgrade
+        the investigation_passed flag to False, False otherwise.
+        """
+        _fingerprint_completed = False
+        _fingerprint_attempted = False
+        _fp_dict = source.get("_behavioral_fingerprint")
+        if best_inv_model is None or _fp_dict is None:
+            return _fingerprint_attempted, _fingerprint_completed, False
+
+        _fingerprint_attempted = True
+        from ...eval.fingerprint import (
+            BehavioralFingerprint,
+        )
+        from ...eval.fingerprint_runtime import (
+            complete_fingerprint_post_investigation,
+        )
+
+        _fp = BehavioralFingerprint(
+            **{
+                k: v
+                for k, v in _fp_dict.items()
+                if k
+                in {f.name for f in BehavioralFingerprint.__dataclass_fields__.values()}
+            }
+        )
+        if _fp.fingerprint_completed_post_investigation:
+            _fingerprint_completed = True
+        else:
+            # Attempt fingerprint completion with one retry
+            for _attempt in range(2):
+                try:
+                    _fp = complete_fingerprint_post_investigation(
+                        _fp,
+                        best_inv_model,
+                        seq_len=min(64, config.max_seq_len),
+                        model_dim=config.model_dim,
+                        vocab_size=config.vocab_size,
+                        device=str(dev),
+                    )
+                    if _fp.fingerprint_completed_post_investigation:
+                        _fingerprint_completed = True
+                        _fp_dict_updated = _fp.to_dict()
+                        source["_behavioral_fingerprint"] = _fp_dict_updated
+                        source["novelty_confidence"] = (
+                            0.9
+                            if _fp.quality == "full"
+                            else 0.4 + (_fp.analyses_succeeded * 0.1)
+                            if _fp.quality == "partial"
+                            else 0.3
+                        )
+                        # Persist to DB so escalation gate can read it.
+                        # Use _submit_write to avoid "database is locked"
+                        # from competing with the async writer thread.
+                        nb._submit_write(
+                            "UPDATE program_results "
+                            "SET fingerprint_json = ?, "
+                            "    novelty_valid_for_promotion = ? "
+                            "WHERE result_id = ?",
+                            (
+                                json.dumps(_fp_dict_updated),
+                                int(_fp.novelty_valid_for_promotion),
+                                source_result_id,
+                            ),
+                        )
+                        logger.info(
+                            "post_investigation_fingerprint_completed: "
+                            "result_id=%s novelty_score=%.4f "
+                            "novelty_valid=%s cka_source=%s attempt=%d",
+                            source_result_id[:12],
+                            _fp.novelty_score,
+                            _fp.novelty_valid_for_promotion,
+                            _fp.cka_source,
+                            _attempt + 1,
+                        )
+                        break
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logger.error(
+                        "post_investigation_fingerprint_failed: "
+                        "result_id=%s attempt=%d error=%s",
+                        source_result_id[:12],
+                        _attempt + 1,
+                        str(e),
+                    )
+
+        _should_downgrade = False
+        if not _fingerprint_completed:
+            _should_downgrade = True
+            logger.warning(
+                "investigation_fingerprint_incomplete: "
+                "result_id=%s — downgrading investigation_passed to False",
+                source_result_id[:12],
+            )
+
+        return _fingerprint_attempted, _fingerprint_completed, _should_downgrade
+
+    def _record_inline_investigation_candidate(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        source: dict,
+        source_result_id: str,
+        exp_id: str,
+        prog_idx: int,
+        results: dict,
+        tp_results: list,
+        training_programs: list,
+        tp_sched: dict,
+        n_passed: int,
+        robustness: float,
+        best_tp: Optional[dict],
+        best_lr: Optional[float],
+        screening_lr,
+        lr_multiplier,
+        brittle_risk: bool,
+        investigation_passed: bool,
+        fingerprint_attempted: bool,
+        fingerprint_completed: bool,
+        dev,
+        ckpt,
+    ) -> None:
+        """Record investigation results, submit benchmarks, save checkpoint."""
+        graph_json_str = source.get("graph_json")
+        arch_spec_json_str = source.get("arch_spec_json")
+        model_source = source.get("model_source") or "graph_synthesis"
+
+        _fp_incomplete = fingerprint_attempted and not fingerprint_completed
+        investigation_entry = {
+            "result_id": source_result_id,
+            "robustness": robustness,
+            "best_loss_ratio": best_lr,
+            "screening_loss_ratio": screening_lr,
+            "baseline_loss_ratio": source.get("baseline_loss_ratio"),
+            "novelty_confidence": source.get("novelty_confidence"),
+            "loss_ratio_multiplier": lr_multiplier,
+            "brittle_risk": brittle_risk,
+            "investigation_passed": investigation_passed,
+            "fingerprint_incomplete": _fp_incomplete,
+            "n_programs_passed": n_passed,
+            "n_programs_tested": len(tp_results),
+            "best_training_program": best_tp.get("training_program")
+            if best_tp
+            else None,
+            "training_program_scheduling_avg_ms": tp_sched.get("scheduling_avg_ms"),
+            "training_program_scheduling_max_ms": tp_sched.get("scheduling_max_ms"),
+        }
+        results["investigation_results"].append(investigation_entry)
+
+        if best_lr and (
+            results["best_loss_ratio"] is None or best_lr < results["best_loss_ratio"]
+        ):
+            results["best_loss_ratio"] = best_lr
+        source_novelty = source.get("novelty_score")
+        if source_novelty is not None and (
+            results["best_novelty_score"] is None
+            or source_novelty > results["best_novelty_score"]
+        ):
+            results["best_novelty_score"] = source_novelty
+
+        # Update leaderboard
+        best_tp_json = None
+        if best_tp and best_tp.get("training_program"):
+            for tp in training_programs:
+                if tp.name == best_tp["training_program"]:
+                    best_tp_json = json.dumps(json_safe(tp.to_dict()))
+                    break
+
+        # Submit benchmark evals to background thread so the
+        # investigation loop can proceed to the next candidate.
+        if n_passed > 0:
+            _submit_benchmark_eval(
+                nb=nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                config=config,
+                dev=dev,
+                cached_json_load=self._cached_json_load,
+                fingerprint_incomplete=_fp_incomplete,
+            )
+        else:
+            _record_investigation_result(
+                nb=nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                benchmark_result={},
+                fingerprint_incomplete=_fp_incomplete,
+            )
+
+        try:
+            ckpt.save_phase(
+                experiment_id=exp_id,
+                phase="investigation",
+                candidate_idx=prog_idx + 1,
+                seed_idx=0,
+                model_state_dict={},
+                optimizer_state_dict={},
+                step=0,
+                metrics={"completed_candidate": prog_idx},
+            )
+            ckpt.save_phase(
+                experiment_id=exp_id,
+                phase="investigation",
+                candidate_idx=-1,
+                seed_idx=0,
+                model_state_dict={},
+                optimizer_state_dict={},
+                step=0,
+                metrics={"candidate_idx": prog_idx + 1},
+            )
+        except (OSError, RuntimeError) as e:
+            logger.warning(
+                "Continuous investigation checkpoint save failed for candidate %d: %s",
+                prog_idx + 1,
+                e,
+            )
+
+    def _inline_investigate_one_candidate(
+        self,
+        config: RunConfig,
+        inv_config: RunConfig,
+        nb: LabNotebook,
+        source_result_id: str,
+        source: dict,
+        exp_id: str,
+        prog_idx: int,
+        result_ids: list,
+        ckpt,
+        dev,
+        results: dict,
+    ) -> None:
+        """Run training, fingerprint, and recording for one investigation candidate."""
+        # Phase 1: Train all programs for this candidate
+        tp_results, _best_inv_model, training_programs, tp_sched = (
+            self._inline_investigate_candidate_training(
+                config=config,
+                inv_config=inv_config,
+                source_result_id=source_result_id,
+                source=source,
+                exp_id=exp_id,
+                prog_idx=prog_idx,
+                result_ids=result_ids,
+                ckpt=ckpt,
+                dev=dev,
+                results=results,
+            )
+        )
+
+        # Compute robustness
+        n_passed = sum(1 for r in tp_results if r.get("passed"))
+        robustness = n_passed / max(len(tp_results), 1)
+        best_tp = min(
+            (r for r in tp_results if r.get("loss_ratio") is not None),
+            key=lambda r: r["loss_ratio"],
+            default=None,
+        )
+        best_lr = best_tp["loss_ratio"] if best_tp else None
+        screening_lr = source.get("loss_ratio")
+        lr_multiplier = self._investigation_loss_multiplier(screening_lr, best_lr)
+        brittle_risk = lr_multiplier is not None and lr_multiplier > float(
+            config.investigation_max_loss_ratio_multiplier
+        )
+
+        if n_passed > 0:
+            results["stage1_passed"] += 1
+        results["stage0_passed"] += 1
+        results["stage05_passed"] += 1
+
+        # Gate: pass investigation if loss quality is good enough.
+        investigation_passed_early = (best_lr or 1.0) < 0.5 and (
+            not brittle_risk or (best_lr is not None and best_lr < 0.3)
+        )
+
+        # Phase 2: Post-investigation fingerprint completion
+        fp_attempted, fp_completed, fp_downgrade = (
+            self._inline_investigate_fingerprint_completion(
+                config=config,
+                nb=nb,
+                source=source,
+                source_result_id=source_result_id,
+                best_inv_model=_best_inv_model,
+                dev=dev,
+            )
+        )
+        if fp_downgrade:
+            investigation_passed_early = False
+
+        if _best_inv_model is not None:
+            del _best_inv_model
+            _best_inv_model = None
+            clear_gpu_memory()
+
+        # Brittle risk override: if the investigation LR is good on
+        # its own merits (< 0.3), don't let the screening->investigation
+        investigation_passed = investigation_passed_early
+
+        # Phase 3: Record results, submit benchmarks, save checkpoint
+        self._record_inline_investigation_candidate(
+            config=config,
+            nb=nb,
+            source=source,
+            source_result_id=source_result_id,
+            exp_id=exp_id,
+            prog_idx=prog_idx,
+            results=results,
+            tp_results=tp_results,
+            training_programs=training_programs,
+            tp_sched=tp_sched,
+            n_passed=n_passed,
+            robustness=robustness,
+            best_tp=best_tp,
+            best_lr=best_lr,
+            screening_lr=screening_lr,
+            lr_multiplier=lr_multiplier,
+            brittle_risk=brittle_risk,
+            investigation_passed=investigation_passed,
+            fingerprint_attempted=fp_attempted,
+            fingerprint_completed=fp_completed,
+            dev=dev,
+            ckpt=ckpt,
+        )
+
+    def _inline_investigation_loop(
+        self,
+        config: RunConfig,
+        nb: LabNotebook,
+        result_ids: list,
+        inv_map: dict,
+        exp_id: str,
+        ckpt,
+    ) -> dict:
+        """Run the candidate loop for inline investigation.
+
+        Returns the aggregated results dict.
+        """
+        resume_from_candidate = 0
+        ckpt_state = ckpt.load_phase(exp_id, "investigation", -1, 0)
+        if ckpt_state:
+            resume_from_candidate = CheckpointManager.phase_resume_candidate_idx(
+                ckpt_state
+            )
+            logger.info(
+                "Resuming continuous investigation from candidate %d",
+                resume_from_candidate,
+            )
+
+        results = {
+            "total": len(result_ids),
+            "stage0_passed": 0,
+            "stage05_passed": 0,
+            "stage1_passed": 0,
+            "novel_count": 0,
+            "best_loss_ratio": None,
+            "best_novelty_score": None,
+            "survivors": [],
+            "investigation_results": [],
+        }
+
+        dev = resolve_device(config.device)
+        str(dev)
+
+        inv_config = config.copy()
+        inv_config.stage1_steps = config.investigation_steps
+        inv_config.stage1_batch_size = config.investigation_batch_size
+        # Scale early stopping for longer investigation runs.
+        step_ratio = config.investigation_steps / max(config.stage1_steps, 1)
+        inv_config.early_stop_patience = int(config.early_stop_patience * step_ratio)
+        inv_config.early_stop_min_steps = int(config.early_stop_min_steps * step_ratio)
+
+        # Fetch all sources at once to avoid N+1 queries
+        _build_source_map(nb, result_ids)
+
+        for prog_idx, source_result_id in enumerate(result_ids):
+            if prog_idx < resume_from_candidate:
+                continue
+            if self._stop_event.is_set():
+                break
+
+            # Cost check mid-investigation
+            if (
+                config.max_cost_dollars > 0
+                and self.aria.total_cost >= config.max_cost_dollars
+            ):
+                logger.info("Cost limit reached during investigation")
+                break
+
+            self._update_progress(
+                current_program=prog_idx + 1,
+                status="investigating",
+                aria_message=(
+                    f"Investigating {prog_idx + 1}/{len(result_ids)}: "
+                    f"{source_result_id[:8]}... "
+                    f"({config.n_training_programs} training programs)"
+                ),
+            )
+
+            self._emit_event(
+                "investigation_progress",
+                {
+                    "experiment_id": exp_id,
+                    "current": prog_idx + 1,
+                    "total": len(result_ids),
+                    "source_result_id": source_result_id,
+                    "status": "starting",
+                },
+            )
+
+            # Fetch source program
+            source = inv_map.get(source_result_id)
+            if source is None:
+                continue
+
+            self._inline_investigate_one_candidate(
+                config=config,
+                inv_config=inv_config,
+                nb=nb,
+                source_result_id=source_result_id,
+                source=source,
+                exp_id=exp_id,
+                prog_idx=prog_idx,
+                result_ids=result_ids,
+                ckpt=ckpt,
+                dev=dev,
+                results=results,
+            )
+
+        return results
+
     def _run_inline_investigation(
         self,
         config: RunConfig,
@@ -634,391 +1236,18 @@ class _ContinuousInvestigationMixin:
                 "n_candidates": len(result_ids),
             },
         )
+        ckpt = CheckpointManager(config.checkpoint_dir)
 
         self._live_training_context = {"exp_id": exp_id, "phase": "investigation"}
         try:
-            # ── Inline investigation logic (from _run_investigation_thread) ──
-            results = {
-                "total": len(result_ids),
-                "stage0_passed": 0,
-                "stage05_passed": 0,
-                "stage1_passed": 0,
-                "novel_count": 0,
-                "best_loss_ratio": None,
-                "best_novelty_score": None,
-                "survivors": [],
-                "investigation_results": [],
-            }
-
-            dev = resolve_device(config.device)
-            str(dev)
-
-            inv_config = config.copy()
-            inv_config.stage1_steps = config.investigation_steps
-            inv_config.stage1_batch_size = config.investigation_batch_size
-            # Scale early stopping for longer investigation runs.
-            step_ratio = config.investigation_steps / max(config.stage1_steps, 1)
-            inv_config.early_stop_patience = int(
-                config.early_stop_patience * step_ratio
+            results = self._inline_investigation_loop(
+                config,
+                nb,
+                result_ids,
+                inv_map,
+                exp_id,
+                ckpt,
             )
-            inv_config.early_stop_min_steps = int(
-                config.early_stop_min_steps * step_ratio
-            )
-
-            # Fetch all sources at once to avoid N+1 queries
-            _build_source_map(nb, result_ids)
-
-            for prog_idx, source_result_id in enumerate(result_ids):
-                if self._stop_event.is_set():
-                    break
-
-                # Cost check mid-investigation
-                if (
-                    config.max_cost_dollars > 0
-                    and self.aria.total_cost >= config.max_cost_dollars
-                ):
-                    logger.info("Cost limit reached during investigation")
-                    break
-
-                self._update_progress(
-                    current_program=prog_idx + 1,
-                    status="investigating",
-                    aria_message=(
-                        f"Investigating {prog_idx + 1}/{len(result_ids)}: "
-                        f"{source_result_id[:8]}... "
-                        f"({config.n_training_programs} training programs)"
-                    ),
-                )
-
-                self._emit_event(
-                    "investigation_progress",
-                    {
-                        "experiment_id": exp_id,
-                        "current": prog_idx + 1,
-                        "total": len(result_ids),
-                        "source_result_id": source_result_id,
-                        "status": "starting",
-                    },
-                )
-
-                # Fetch source program
-                source = inv_map.get(source_result_id)
-                if source is None:
-                    continue
-
-                graph_json_str = source.get("graph_json")
-                arch_spec_json_str = source.get("arch_spec_json")
-                model_source = source.get("model_source") or "graph_synthesis"
-
-                # Generate training programs (queue-level scheduling telemetry)
-                training_programs, tp_sched = synthesize_training_program_batch(
-                    n_programs=config.n_training_programs,
-                    n_steps=config.investigation_steps,
-                    max_seq_len=config.max_seq_len,
-                    seed_offset=prog_idx * 1000,
-                )
-                results.setdefault("training_program_scheduling", []).append(
-                    {
-                        "result_id": source_result_id,
-                        **tp_sched,
-                    }
-                )
-
-                # Test each (model x training_program) pair
-                tp_results = []
-                _best_inv_model = None
-                _best_inv_model_lr = float("inf")
-                for tp_i, tp in enumerate(training_programs):
-                    if self._stop_event.is_set():
-                        break
-
-                    # Reconstruct model fresh for each training program
-                    try:
-                        model = self._build_model_from_source(
-                            model_source,
-                            arch_spec_json_str,
-                            graph_json_str,
-                            config,
-                            seq_len_override=config.max_seq_len,
-                        )
-                        if model is None:
-                            raise RuntimeError(
-                                f"No model built for {source_result_id[:8]}"
-                            )
-                    except (RuntimeError, ValueError, TypeError) as e:
-                        _fail_loud(
-                            "continuous_investigation",
-                            f"model reconstruction failed for {source_result_id[:8]} "
-                            f"training program {tp_i + 1}/{len(training_programs)}",
-                            e,
-                        )
-
-                    self._emit_event(
-                        "investigation_progress",
-                        {
-                            "experiment_id": exp_id,
-                            "current": prog_idx + 1,
-                            "total": len(result_ids),
-                            "source_result_id": source_result_id,
-                            "training_program": tp_i + 1,
-                            "total_programs": len(training_programs),
-                            "status": f"training with {tp.name}",
-                        },
-                    )
-
-                    tp_result = self._train_with_program(
-                        model,
-                        tp,
-                        inv_config,
-                        dev,
-                        seed=self._stable_seed(
-                            exp_id, source_result_id, tp_i, "investigation"
-                        ),
-                    )
-                    tp_results.append(
-                        {
-                            "training_program": tp.name,
-                            "passed": tp_result.get("passed", False),
-                            "loss_ratio": tp_result.get("loss_ratio"),
-                            "final_loss": tp_result.get("final_loss"),
-                        }
-                    )
-
-                    # Retain the best-performing model for post-investigation
-                    # fingerprint completion (needs converged representations).
-                    _this_lr = tp_result.get("loss_ratio")
-                    if _this_lr is not None and (
-                        _best_inv_model is None or _this_lr < _best_inv_model_lr
-                    ):
-                        if _best_inv_model is not None:
-                            del _best_inv_model
-                        _best_inv_model = model
-                        _best_inv_model_lr = _this_lr
-                    else:
-                        del model
-                    clear_gpu_memory()
-
-                # Skip candidates where no training program could reconstruct the model
-                if not tp_results:
-                    raise RuntimeError(
-                        f"Continuous investigation aborted for {source_result_id[:8]}: "
-                        f"model failed to reconstruct for all {len(training_programs)} "
-                        "training programs"
-                    )
-
-                # Compute robustness
-                n_passed = sum(1 for r in tp_results if r.get("passed"))
-                robustness = n_passed / max(len(tp_results), 1)
-                best_tp = min(
-                    (r for r in tp_results if r.get("loss_ratio") is not None),
-                    key=lambda r: r["loss_ratio"],
-                    default=None,
-                )
-                best_lr = best_tp["loss_ratio"] if best_tp else None
-                screening_lr = source.get("loss_ratio")
-                lr_multiplier = self._investigation_loss_multiplier(
-                    screening_lr, best_lr
-                )
-                brittle_risk = lr_multiplier is not None and lr_multiplier > float(
-                    config.investigation_max_loss_ratio_multiplier
-                )
-
-                if n_passed > 0:
-                    results["stage1_passed"] += 1
-                results["stage0_passed"] += 1
-                results["stage05_passed"] += 1
-
-                # Gate: pass investigation if loss quality is good enough.
-                investigation_passed_early = (best_lr or 1.0) < 0.5 and (
-                    not brittle_risk or (best_lr is not None and best_lr < 0.3)
-                )
-
-                # Post-investigation fingerprint completion
-                # Fingerprint must complete for escalation to validation
-                # (B1 gate in _auto_escalate_investigation blocks without it).
-                _fingerprint_completed = False
-                _fingerprint_attempted = False
-                _fp_dict = source.get("_behavioral_fingerprint")
-                if _best_inv_model is not None and _fp_dict is not None:
-                    _fingerprint_attempted = True
-                    from ...eval.fingerprint import (
-                        BehavioralFingerprint,
-                    )
-                    from ...eval.fingerprint_runtime import (
-                        complete_fingerprint_post_investigation,
-                    )
-
-                    _fp = BehavioralFingerprint(
-                        **{
-                            k: v
-                            for k, v in _fp_dict.items()
-                            if k
-                            in {
-                                f.name
-                                for f in BehavioralFingerprint.__dataclass_fields__.values()
-                            }
-                        }
-                    )
-                    if _fp.fingerprint_completed_post_investigation:
-                        _fingerprint_completed = True
-                    else:
-                        # Attempt fingerprint completion with one retry
-                        for _attempt in range(2):
-                            try:
-                                _fp = complete_fingerprint_post_investigation(
-                                    _fp,
-                                    _best_inv_model,
-                                    seq_len=min(64, config.max_seq_len),
-                                    model_dim=config.model_dim,
-                                    vocab_size=config.vocab_size,
-                                    device=str(dev),
-                                )
-                                if _fp.fingerprint_completed_post_investigation:
-                                    _fingerprint_completed = True
-                                    _fp_dict_updated = _fp.to_dict()
-                                    source["_behavioral_fingerprint"] = _fp_dict_updated
-                                    source["novelty_confidence"] = (
-                                        0.9
-                                        if _fp.quality == "full"
-                                        else 0.4 + (_fp.analyses_succeeded * 0.1)
-                                        if _fp.quality == "partial"
-                                        else 0.3
-                                    )
-                                    # Persist to DB so escalation gate can read it.
-                                    # Use _submit_write to avoid "database is locked"
-                                    # from competing with the async writer thread.
-                                    nb._submit_write(
-                                        "UPDATE program_results "
-                                        "SET fingerprint_json = ?, "
-                                        "    novelty_valid_for_promotion = ? "
-                                        "WHERE result_id = ?",
-                                        (
-                                            json.dumps(_fp_dict_updated),
-                                            int(_fp.novelty_valid_for_promotion),
-                                            source_result_id,
-                                        ),
-                                    )
-                                    logger.info(
-                                        "post_investigation_fingerprint_completed: "
-                                        "result_id=%s novelty_score=%.4f "
-                                        "novelty_valid=%s cka_source=%s attempt=%d",
-                                        source_result_id[:12],
-                                        _fp.novelty_score,
-                                        _fp.novelty_valid_for_promotion,
-                                        _fp.cka_source,
-                                        _attempt + 1,
-                                    )
-                                    break
-                            except (RuntimeError, ValueError, TypeError) as e:
-                                logger.error(
-                                    "post_investigation_fingerprint_failed: "
-                                    "result_id=%s attempt=%d error=%s",
-                                    source_result_id[:12],
-                                    _attempt + 1,
-                                    str(e),
-                                )
-
-                    if not _fingerprint_completed:
-                        investigation_passed_early = False
-                        logger.warning(
-                            "investigation_fingerprint_incomplete: "
-                            "result_id=%s — downgrading investigation_passed to False",
-                            source_result_id[:12],
-                        )
-
-                if _best_inv_model is not None:
-                    del _best_inv_model
-                    _best_inv_model = None
-                    clear_gpu_memory()
-
-                _fp_incomplete = _fingerprint_attempted and not _fingerprint_completed
-                investigation_entry = {
-                    "result_id": source_result_id,
-                    "robustness": robustness,
-                    "best_loss_ratio": best_lr,
-                    "screening_loss_ratio": screening_lr,
-                    "baseline_loss_ratio": source.get("baseline_loss_ratio"),
-                    "novelty_confidence": source.get("novelty_confidence"),
-                    "loss_ratio_multiplier": lr_multiplier,
-                    "brittle_risk": brittle_risk,
-                    "investigation_passed": investigation_passed_early,
-                    "fingerprint_incomplete": _fp_incomplete,
-                    "n_programs_passed": n_passed,
-                    "n_programs_tested": len(tp_results),
-                    "best_training_program": best_tp.get("training_program")
-                    if best_tp
-                    else None,
-                    "training_program_scheduling_avg_ms": tp_sched.get(
-                        "scheduling_avg_ms"
-                    ),
-                    "training_program_scheduling_max_ms": tp_sched.get(
-                        "scheduling_max_ms"
-                    ),
-                }
-                results["investigation_results"].append(investigation_entry)
-
-                if best_lr and (
-                    results["best_loss_ratio"] is None
-                    or best_lr < results["best_loss_ratio"]
-                ):
-                    results["best_loss_ratio"] = best_lr
-                source_novelty = source.get("novelty_score")
-                if source_novelty is not None and (
-                    results["best_novelty_score"] is None
-                    or source_novelty > results["best_novelty_score"]
-                ):
-                    results["best_novelty_score"] = source_novelty
-
-                # Update leaderboard
-                best_tp_json = None
-                if best_tp and best_tp.get("training_program"):
-                    for tp in training_programs:
-                        if tp.name == best_tp["training_program"]:
-                            best_tp_json = json.dumps(json_safe(tp.to_dict()))
-                            break
-
-                # Brittle risk override: if the investigation LR is good on
-                # its own merits (< 0.3), don't let the screening→investigation
-                investigation_passed = investigation_passed_early
-
-                # Submit benchmark evals to background thread so the
-                # investigation loop can proceed to the next candidate.
-                if n_passed > 0:
-                    _submit_benchmark_eval(
-                        nb=nb,
-                        exp_id=exp_id,
-                        source_result_id=source_result_id,
-                        source=source,
-                        model_source=model_source,
-                        graph_json_str=graph_json_str,
-                        arch_spec_json_str=arch_spec_json_str,
-                        n_passed=n_passed,
-                        best_lr=best_lr,
-                        best_tp_json=best_tp_json,
-                        robustness=robustness,
-                        investigation_passed=investigation_passed,
-                        config=config,
-                        dev=dev,
-                        cached_json_load=self._cached_json_load,
-                        fingerprint_incomplete=_fp_incomplete,
-                    )
-                else:
-                    _record_investigation_result(
-                        nb=nb,
-                        exp_id=exp_id,
-                        source_result_id=source_result_id,
-                        source=source,
-                        model_source=model_source,
-                        graph_json_str=graph_json_str,
-                        arch_spec_json_str=arch_spec_json_str,
-                        n_passed=n_passed,
-                        best_lr=best_lr,
-                        best_tp_json=best_tp_json,
-                        robustness=robustness,
-                        investigation_passed=investigation_passed,
-                        benchmark_result={},
-                        fingerprint_incomplete=_fp_incomplete,
-                    )
 
             # Complete experiment with LLM analysis
             results["perf_report"] = self._build_experiment_perf_report(results)
