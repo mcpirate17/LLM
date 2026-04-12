@@ -151,6 +151,22 @@ class _ContinuousLoopMixin:
         except (RuntimeError, sqlite3.OperationalError) as e:
             logger.warning("Stale experiment cleanup failed: %s", e)
 
+        # Sweep accumulated backfill candidates into investigation queue.
+        # Template backfills may produce screening entries with composite
+        # scores above the investigation threshold while no continuous run
+        # is active.  Pick them up now so the first cycles can investigate.
+        try:
+            sweep_nb = self._make_notebook()
+            n_queued = self.sweep_backfill_candidates(config, sweep_nb)
+            if n_queued:
+                logger.info(
+                    "Startup backfill sweep: queued %d candidates for investigation",
+                    n_queued,
+                )
+            sweep_nb.close()
+        except (RuntimeError, sqlite3.OperationalError) as e:
+            logger.warning("Startup backfill sweep failed: %s", e)
+
         # Initialize campaign
         try:
             init_nb = self._make_notebook()
@@ -247,6 +263,19 @@ class _ContinuousLoopMixin:
                         logger.warning(
                             "Failed to generate gate performance summary: %s", e
                         )
+
+                    # Periodic backfill sweep — pick up template backfill
+                    # survivors that accumulated since last sweep.
+                    try:
+                        n_queued = self.sweep_backfill_candidates(config, nb)
+                        if n_queued:
+                            logger.info(
+                                "Periodic backfill sweep (cycle %d): queued %d for investigation",
+                                n_experiments,
+                                n_queued,
+                            )
+                    except (RuntimeError, sqlite3.OperationalError) as e:
+                        logger.warning("Periodic backfill sweep failed: %s", e)
             finally:
                 nb.close()
 

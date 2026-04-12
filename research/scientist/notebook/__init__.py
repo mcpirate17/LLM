@@ -26,6 +26,7 @@ from .notebook_knowledge import _KnowledgeMixin
 from .notebook_healer import _HealerMixin
 from .notebook_chat import _ChatMixin
 from .notebook_analytics import _AnalyticsMixin
+from .notebook_advanced_analytics import _AdvancedAnalyticsMixin
 from .notebook_misc import _MiscMixin
 
 
@@ -39,6 +40,7 @@ class LabNotebook(
     _HealerMixin,
     _ChatMixin,
     _AnalyticsMixin,
+    _AdvancedAnalyticsMixin,
     _MiscMixin,
 ):
     """Electronic lab notebook for the AI scientist.

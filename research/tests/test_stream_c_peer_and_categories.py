@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Any, Dict, List
-
-from research.scientist.notebook.graph_features import build_graph_feature_rows
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +29,54 @@ def _make_graph_json(ops: List[str], template: str = "") -> str:
     if template:
         data["metadata"] = {"template": template}
     return json.dumps(data)
+
+
+def _build_graph_feature_rows(
+    *, result_id: str, graph_fingerprint: str, graph_json: str
+) -> dict[str, Any]:
+    graph = json.loads(graph_json)
+    metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
+    nodes = graph.get("nodes", {}) if isinstance(graph, dict) else {}
+    node_map = {
+        str(key): value for key, value in nodes.items() if isinstance(value, dict)
+    }
+    op_names: set[str] = set()
+    pair_signatures: set[str] = set()
+    for _, node in node_map.items():
+        op_name = str(node.get("op_name") or "").strip()
+        if not op_name or op_name == "input":
+            continue
+        op_names.add(op_name)
+        for raw_parent in node.get("input_ids", ()):
+            parent = node_map.get(str(raw_parent))
+            if not isinstance(parent, dict):
+                continue
+            parent_op = str(parent.get("op_name") or "").strip()
+            if parent_op and parent_op != "input":
+                pair_signatures.add(f"{parent_op}->{op_name}")
+    template_name = str(
+        metadata.get("template") or metadata.get("template_name") or ""
+    ).strip()
+    return {
+        "feature_row": (
+            result_id,
+            graph_fingerprint,
+            template_name,
+            "[]",
+            "[]",
+            "[]",
+            len(op_names),
+            len(pair_signatures),
+            time.time(),
+        ),
+        "op_rows": [
+            (result_id, graph_fingerprint, op_name) for op_name in sorted(op_names)
+        ],
+        "pair_rows": [
+            (result_id, graph_fingerprint, signature)
+            for signature in sorted(pair_signatures)
+        ],
+    }
 
 
 def _create_test_db() -> sqlite3.Connection:
@@ -136,7 +183,7 @@ def _insert_result(
             len(ops),
         ),
     )
-    feature_rows = build_graph_feature_rows(
+    feature_rows = _build_graph_feature_rows(
         result_id=result_id,
         graph_fingerprint=fingerprint,
         graph_json=graph_json,

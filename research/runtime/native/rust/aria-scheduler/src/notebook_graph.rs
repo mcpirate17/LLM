@@ -9,6 +9,7 @@ use crate::error::AriaError;
 
 #[derive(Debug, Deserialize)]
 pub struct NotebookGraph {
+    #[serde(default)]
     pub model_dim: u32,
     pub nodes: HashMap<String, NotebookNode>,
     #[serde(default)]

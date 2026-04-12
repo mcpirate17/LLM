@@ -99,6 +99,65 @@ class _ResultsAutoEscalatePhase7Mixin:
             return False
         return True
 
+    def sweep_backfill_candidates(self, config: RunConfig, nb: LabNotebook) -> int:
+        """Standalone global sweep for accumulated backfill survivors.
+
+        Runs independently of any experiment.  Finds screening-tier entries
+        above the composite-score threshold and queues them for investigation.
+        Called at continuous-mode startup and periodically between cycles.
+
+        Returns number of candidates queued for investigation.
+        """
+        if not config.auto_investigate:
+            return 0
+
+        top = trusted_global_screening_candidates(
+            nb,
+            limit=config.auto_investigate_top_n * 3,  # wider net
+        )
+        if not top:
+            return 0
+
+        investigated_fps = nb.get_investigated_fingerprints()
+        if investigated_fps:
+            top, _skipped = filter_uninvestigated_rows(top, investigated_fps)
+
+        _screening_threshold = V7_SCREENING_THRESHOLD
+        if config.adaptive_thresholds_enabled:
+            _screening_threshold = self._adaptive_screening_threshold(
+                nb, config, _screening_threshold
+            )
+
+        _cs_map = composite_score_map(nb, (p.get("result_id") for p in top))
+        qualified = screening_candidates_above_threshold(
+            top, _cs_map, _screening_threshold
+        )
+        if not qualified:
+            return 0
+
+        top_by_id = {row["result_id"]: row for row in qualified if row.get("result_id")}
+        selected_ids = build_selected_screening_ids(
+            qualified, top_by_id, limit=config.auto_investigate_top_n
+        )
+        if not selected_ids:
+            return 0
+
+        logger.info(
+            "Backfill sweep: %d candidates above %.1f — queuing %d for investigation",
+            len(qualified),
+            _screening_threshold,
+            len(selected_ids),
+        )
+        self._queue_pending_followup(
+            nb=nb,
+            stage="investigation",
+            result_ids=selected_ids,
+            config=config,
+            survivor_count=len(qualified),
+            qualifying_count=len(selected_ids),
+        )
+        return len(selected_ids)
+
     def _auto_escalate(
         self,
         results: Dict,
@@ -329,22 +388,22 @@ class _ResultsAutoEscalatePhase7Mixin:
     ) -> None:
         if not config.auto_investigate:
             return
-        s1_count = results.get("stage1_passed", 0)
-        if s1_count < config.auto_investigate_min_survivors:
-            return
 
         exp_id = results.get("experiment_id")
-        top = trusted_screening_candidates(
-            nb,
-            experiment_id=exp_id,
-            limit=config.auto_investigate_top_n,
-        )
-        if not top:
-            logger.info(
-                "Auto-escalate: no trusted screening candidates available in the initial pool"
-            )
-            return
+        s1_count = results.get("stage1_passed", 0)
 
+        # Gather experiment-local candidates (if enough S1 passers)
+        top: list = []
+        if s1_count >= config.auto_investigate_min_survivors:
+            top = trusted_screening_candidates(
+                nb,
+                experiment_id=exp_id,
+                limit=config.auto_investigate_top_n,
+            )
+
+        # Always run global sweep — backfill experiments may produce
+        # fewer than min_survivors but still push prior entries above
+        # the composite threshold.
         try:
             global_rows = trusted_global_screening_candidates(
                 nb, limit=config.auto_investigate_top_n
@@ -357,6 +416,10 @@ class _ResultsAutoEscalatePhase7Mixin:
                 )
         except sqlite3.OperationalError as e:
             logger.warning("Auto-escalate global sweep failed: %s", e)
+
+        if not top:
+            logger.info("Auto-escalate: no candidates from experiment or global sweep")
+            return
 
         investigated_fps = nb.get_investigated_fingerprints()
         if investigated_fps:

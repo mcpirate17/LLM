@@ -73,7 +73,9 @@ def test_transpose_sd_preserves_values():
 
 
 def _ref_gated_lane_blend(
-    x: torch.Tensor, scorer: torch.Tensor, projs: torch.Tensor,
+    x: torch.Tensor,
+    scorer: torch.Tensor,
+    projs: torch.Tensor,
 ) -> torch.Tensor:
     """Reference: soft-routed multi-lane transform.
 
@@ -196,11 +198,14 @@ def _sigmoid(x: float) -> float:
 
 
 def _ref_calibrated_branch_merge(
-    a: torch.Tensor, b: torch.Tensor,
+    a: torch.Tensor,
+    b: torch.Tensor,
     score_proj: torch.Tensor | None,
     branch_bias: torch.Tensor | None,
     branch_gain: torch.Tensor | None,
-    temperature: float, min_secondary: float, max_secondary: float,
+    temperature: float,
+    min_secondary: float,
+    max_secondary: float,
 ) -> torch.Tensor:
     """Python reference for calibrated_branch_merge."""
     B, S, D = a.shape
@@ -271,10 +276,24 @@ def test_calibrated_branch_merge_parity_full_params():
     temp, min_s, max_s = 1.0, 0.1, 0.9
 
     native = aria_core.calibrated_branch_merge_f32(
-        a, b, score_proj, branch_bias, branch_gain, temp, min_s, max_s,
+        a,
+        b,
+        score_proj,
+        branch_bias,
+        branch_gain,
+        temp,
+        min_s,
+        max_s,
     )
     ref = _ref_calibrated_branch_merge(
-        a, b, score_proj, branch_bias, branch_gain, temp, min_s, max_s,
+        a,
+        b,
+        score_proj,
+        branch_bias,
+        branch_gain,
+        temp,
+        min_s,
+        max_s,
     )
     torch.testing.assert_close(native, ref, atol=1e-4, rtol=1e-3)
 
@@ -288,10 +307,24 @@ def test_calibrated_branch_merge_min_max_clamp():
     bias = torch.tensor([10.0, -10.0])
     # But min_secondary=0.3 forces w1 >= 0.3
     y_clamped = aria_core.calibrated_branch_merge_f32(
-        a, b, None, bias, None, 1.0, 0.3, 0.7,
+        a,
+        b,
+        None,
+        bias,
+        None,
+        1.0,
+        0.3,
+        0.7,
     )
     y_unclamped = aria_core.calibrated_branch_merge_f32(
-        a, b, None, bias, None, 1.0, 0.0, 1.0,
+        a,
+        b,
+        None,
+        bias,
+        None,
+        1.0,
+        0.0,
+        1.0,
     )
     # Clamped version should differ from unclamped (secondary gets forced up)
     assert not torch.allclose(y_clamped, y_unclamped, atol=1e-4)
@@ -305,10 +338,24 @@ def test_calibrated_branch_merge_temperature():
     bias = torch.tensor([1.0, -1.0])
 
     y_high_t = aria_core.calibrated_branch_merge_f32(
-        a, b, None, bias, None, 100.0, 0.0, 1.0,
+        a,
+        b,
+        None,
+        bias,
+        None,
+        100.0,
+        0.0,
+        1.0,
     )
     y_low_t = aria_core.calibrated_branch_merge_f32(
-        a, b, None, bias, None, 0.01, 0.0, 1.0,
+        a,
+        b,
+        None,
+        bias,
+        None,
+        0.01,
+        0.0,
+        1.0,
     )
     # High temp: roughly equal weights → output is blend
     # Low temp: branch 0 dominates → output ≈ normalized a * rms_a = a
@@ -324,7 +371,14 @@ def test_calibrated_branch_merge_finite_output():
     branch_bias = torch.randn(2) * 0.1
     branch_gain = torch.randn(2)
     y = aria_core.calibrated_branch_merge_f32(
-        a, b, score_proj, branch_bias, branch_gain, 1.0, 0.05, 0.95,
+        a,
+        b,
+        score_proj,
+        branch_bias,
+        branch_gain,
+        1.0,
+        0.05,
+        0.95,
     )
     assert torch.isfinite(y).all()
 
