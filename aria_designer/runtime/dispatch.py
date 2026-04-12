@@ -381,7 +381,7 @@ class KernelDispatcher:
         self,
         file_path: str,
         _max_rows: int = 4096,
-        max_cols: int = 1024,
+        _max_cols: int = 1024,
         delimiter: str = ",",
         has_header: bool = True,
     ) -> np.ndarray:

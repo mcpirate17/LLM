@@ -233,7 +233,6 @@ def _graph_features(graph_json: Any) -> dict[str, Any]:
         if not op or op in {"input", "output"}:
             continue
         ops.append(op)
-        depth_bucket = depths.get(node_id, 0)
         depth_ops.append((node_id, op))
         inputs = node.get("input_ids") or []
         if isinstance(inputs, list):
@@ -571,10 +570,9 @@ def _fit_feature_effect_from_base(
     x = np.column_stack([base_x, feature])
     y = work["target"].to_numpy(dtype=float)
     try:
-        beta, _resid, rank, _singular = np.linalg.lstsq(x, y, rcond=None)
+        beta, _resid, _rank, _singular = np.linalg.lstsq(x, y, rcond=None)
     except Exception:
         beta = None
-        rank = 0
     if beta is None:
         pos = work.loc[feature > 0.5, "target"]
         neg = work.loc[feature <= 0.5, "target"]
@@ -846,11 +844,6 @@ def _metric_rankings(
 ) -> dict[str, Any]:
     trusted = datasets.dedup_trusted
     promotable = datasets.dedup_promotable
-    components = _counter_feature_map(trusted["ops"])
-    pairs = _counter_feature_map(trusted["op_pairs"])
-    slot_components = _counter_feature_map(promotable["slot_components"])
-    templates = _counter_feature_map(trusted["templates_used"])
-    structural = _structural_feature_map(trusted)
 
     output: dict[str, Any] = {}
     for metric_name, spec in ANALYSIS_METRICS.items():

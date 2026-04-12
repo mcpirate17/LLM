@@ -378,7 +378,6 @@ class InteractionModel:
                 graph_payloads = [row["graph_json"] for row in rows]
                 extracted_ops = extract_unique_graph_ops_batch(graph_payloads)
                 for row, ops in zip(rows, extracted_ops):
-                    gj = row["graph_json"]
                     s1 = bool(row["stage1_any_passed"])
                     loss_ratio = row.get("loss_ratio_best")
                     ts = row.get("latest_timestamp", None)

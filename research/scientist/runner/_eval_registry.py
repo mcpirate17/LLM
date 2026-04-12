@@ -212,7 +212,6 @@ def _run_cross_task(ctx: EvalContext) -> dict[str, Any]:
 def _run_long_range_ar(ctx: EvalContext) -> dict[str, Any]:
     from ...eval.long_range_ar import long_range_ar_score
 
-    seq_len = min(128, ctx.config.validation_seq_len)
     ar = long_range_ar_score(
         ctx.model,
         seq_lens=(128, 256, 512, 1024),

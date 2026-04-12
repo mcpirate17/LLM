@@ -89,7 +89,6 @@ def _api_status(notebook_path: str, nb=None):
     runner = get_runner(notebook_path)
     aria = get_aria()
     runner_state = resolve_runner_status(nb, runner)
-    trusted_only = _trusted_report_mode()
     try:
         summary = nb.get_dashboard_headline_summary()
         summary["leaderboard_consistency"] = nb.get_leaderboard_consistency_report()

@@ -71,7 +71,9 @@ class TestNoveltySearchScaling(unittest.TestCase):
 
         native_mean = archive_mean_k_nearest(feature_matrix, target, 2)
         self.assertIsNotNone(native_mean)
-        self.assertAlmostEqual(native_mean, float(np.mean(np.partition(distances, 1)[:2])))
+        self.assertAlmostEqual(
+            native_mean, float(np.mean(np.partition(distances, 1)[:2]))
+        )
 
         native_neighbors = topk_nearest_indices(feature_matrix, target, 4)
         self.assertIsNotNone(native_neighbors)

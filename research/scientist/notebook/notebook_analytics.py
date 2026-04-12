@@ -147,61 +147,17 @@ class _AnalyticsMixin:
             f"AND json_valid({column}) = 1"
         )
 
-    def _json1_available(self) -> bool:
-        try:
-            return bool(
-                self.conn.execute("SELECT json_valid('{\"ok\":1}')").fetchone()[0]
-            )
-        except Exception:
-            return False
-
     def _query_op_stats_sql(
         self, where_sql: str, params: tuple[Any, ...]
     ) -> Optional[List[Dict[str, Any]]]:
-        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
-            self.flush_writes()
-            self._ensure_graph_features()
-            rows = self.conn.execute(
-                f"""
-                WITH op_rows AS (
-                    SELECT DISTINCT
-                        pr.result_id AS result_id,
-                        gpo.op_name AS op_name,
-                        pr.stage0_passed AS stage0_passed,
-                        pr.stage05_passed AS stage05_passed,
-                        pr.stage1_passed AS stage1_passed,
-                        pr.loss_ratio AS loss_ratio,
-                        pr.novelty_score AS novelty_score,
-                        pr.novelty_confidence AS novelty_confidence
-                    FROM program_results pr
-                    JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
-                    WHERE {where_sql}
-                )
-                SELECT
-                    op_name,
-                    COUNT(*) AS n_used,
-                    SUM(CASE WHEN stage0_passed THEN 1 ELSE 0 END) AS n_stage0_passed,
-                    SUM(CASE WHEN stage05_passed THEN 1 ELSE 0 END) AS n_stage05_passed,
-                    SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
-                    AVG(loss_ratio) AS avg_loss_ratio,
-                    AVG(novelty_score) AS avg_novelty,
-                    AVG(novelty_confidence) AS avg_novelty_confidence
-                FROM op_rows
-                WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
-                GROUP BY op_name
-                ORDER BY n_stage1_passed DESC, n_used DESC
-                """,
-                params,
-            ).fetchall()
-            return [dict(row) for row in rows]
-        if not self._json1_available():
-            return None
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
             f"""
-            WITH node_ops AS (
+            WITH op_rows AS (
                 SELECT DISTINCT
                     pr.result_id AS result_id,
-                    json_extract(node.value, '$.op_name') AS op_name,
+                    gpo.op_name AS op_name,
                     pr.stage0_passed AS stage0_passed,
                     pr.stage05_passed AS stage05_passed,
                     pr.stage1_passed AS stage1_passed,
@@ -209,9 +165,8 @@ class _AnalyticsMixin:
                     pr.novelty_score AS novelty_score,
                     pr.novelty_confidence AS novelty_confidence
                 FROM program_results pr
-                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
+                JOIN program_graph_ops gpo ON gpo.result_id = pr.result_id
                 WHERE {where_sql}
-                  AND {self._valid_graph_json_where()}
             )
             SELECT
                 op_name,
@@ -222,7 +177,7 @@ class _AnalyticsMixin:
                 AVG(loss_ratio) AS avg_loss_ratio,
                 AVG(novelty_score) AS avg_novelty,
                 AVG(novelty_confidence) AS avg_novelty_confidence
-            FROM node_ops
+            FROM op_rows
             WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
             GROUP BY op_name
             ORDER BY n_stage1_passed DESC, n_used DESC
@@ -245,76 +200,21 @@ class _AnalyticsMixin:
             if include_error_types
             else ""
         )
-        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
-            self.flush_writes()
-            self._ensure_graph_features()
-            rows = self.conn.execute(
-                f"""
-                WITH signatures AS (
-                    SELECT DISTINCT
-                        pr.result_id AS result_id,
-                        gpp.signature AS signature,
-                        pr.stage1_passed AS stage1_passed,
-                        pr.loss_ratio AS loss_ratio,
-                        pr.novelty_score AS novelty_score,
-                        pr.error_type AS error_type
-                    FROM program_results pr
-                    JOIN program_graph_pairs gpp ON gpp.result_id = pr.result_id
-                    WHERE {where_sql}
-                )
-                SELECT
-                    signature,
-                    COUNT(*) AS support,
-                    SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_stage1_passed,
-                    SUM(CASE WHEN stage1_passed THEN 0 ELSE 1 END) AS n_failures,
-                    SUM(CASE WHEN stage1_passed THEN 1 ELSE 0 END) AS n_successes,
-                    AVG(loss_ratio) AS avg_loss_ratio,
-                    AVG(novelty_score) AS avg_novelty
-                    {error_select}
-                FROM signatures
-                GROUP BY signature
-                """,
-                params,
-            ).fetchall()
-            return [dict(row) for row in rows]
-        if not self._json1_available():
-            return None
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
             f"""
-            WITH nodes AS (
-                SELECT
+            signatures AS (
+                SELECT DISTINCT
                     pr.result_id AS result_id,
-                    node.value AS node_json,
-                    CAST(COALESCE(json_extract(node.value, '$.id'), node.key) AS TEXT) AS node_id,
-                    json_extract(node.value, '$.op_name') AS op_name,
+                    gpp.signature AS signature,
                     pr.stage1_passed AS stage1_passed,
                     pr.loss_ratio AS loss_ratio,
                     pr.novelty_score AS novelty_score,
                     pr.error_type AS error_type
                 FROM program_results pr
-                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
+                JOIN program_graph_pairs gpp ON gpp.result_id = pr.result_id
                 WHERE {where_sql}
-                  AND {self._valid_graph_json_where()}
-            ),
-            signatures AS (
-                SELECT DISTINCT
-                    child.result_id AS result_id,
-                    parent.op_name || '->' || child.op_name AS signature,
-                    child.stage1_passed AS stage1_passed,
-                    child.loss_ratio AS loss_ratio,
-                    child.novelty_score AS novelty_score,
-                    child.error_type AS error_type
-                FROM nodes child
-                JOIN json_each(child.node_json, '$.input_ids') AS inp
-                JOIN nodes parent
-                  ON parent.result_id = child.result_id
-                 AND parent.node_id = CAST(inp.value AS TEXT)
-                WHERE child.op_name IS NOT NULL
-                  AND child.op_name <> ''
-                  AND child.op_name <> 'input'
-                  AND parent.op_name IS NOT NULL
-                  AND parent.op_name <> ''
-                  AND parent.op_name <> 'input'
             )
             SELECT
                 signature,
@@ -333,123 +233,40 @@ class _AnalyticsMixin:
         return [dict(row) for row in rows]
 
     def _query_graph_feature_rows_sql(self) -> Optional[List[Dict[str, Any]]]:
-        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
-            self.flush_writes()
-            self._ensure_graph_features()
-            rows = self.conn.execute(
-                """
-                SELECT
-                    pr.result_id,
-                    pr.stage1_passed,
-                    pr.novelty_score,
-                    pr.graph_category_histogram,
-                    pr.fp_interaction_sparsity,
-                    pr.fp_cka_vs_transformer,
-                    pr.fp_cka_vs_ssm,
-                    pr.fp_cka_vs_conv,
-                    COALESCE(gf.template_name, '') AS template_name,
-                    COALESCE(
-                        (SELECT group_concat(op_name, char(31)) FROM (
-                            SELECT op_name
-                            FROM program_graph_ops
-                            WHERE result_id = pr.result_id
-                            ORDER BY op_name
-                        )),
-                        ''
-                    ) AS ops_blob,
-                    COALESCE(
-                        (SELECT group_concat(signature, char(31)) FROM (
-                            SELECT signature
-                            FROM program_graph_pairs
-                            WHERE result_id = pr.result_id
-                            ORDER BY signature
-                        )),
-                        ''
-                    ) AS pairs_blob
-                FROM program_results pr
-                JOIN program_graph_features gf ON gf.result_id = pr.result_id
-                """
-            ).fetchall()
-            return [dict(row) for row in rows]
-        if not self._json1_available():
-            return None
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
-            f"""
-            WITH nodes AS (
-                SELECT
-                    pr.result_id AS result_id,
-                    pr.graph_json AS graph_json,
-                    pr.stage1_passed AS stage1_passed,
-                    pr.novelty_score AS novelty_score,
-                    pr.graph_category_histogram AS graph_category_histogram,
-                    pr.fp_interaction_sparsity AS fp_interaction_sparsity,
-                    pr.fp_cka_vs_transformer AS fp_cka_vs_transformer,
-                    pr.fp_cka_vs_ssm AS fp_cka_vs_ssm,
-                    pr.fp_cka_vs_conv AS fp_cka_vs_conv,
-                    json_extract(node.value, '$.op_name') AS op_name,
-                    node.value AS node_json,
-                    CAST(COALESCE(json_extract(node.value, '$.id'), node.key) AS TEXT) AS node_id,
-                    json_extract(pr.graph_json, '$.metadata.template') AS template_a,
-                    json_extract(pr.graph_json, '$.metadata.template_name') AS template_b
-                FROM program_results pr
-                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
-                WHERE {self._valid_graph_json_where()}
-            ),
-            op_rows AS (
-                SELECT DISTINCT result_id, op_name
-                FROM nodes
-                WHERE op_name IS NOT NULL AND op_name <> '' AND op_name <> 'input'
-            ),
-            pair_rows AS (
-                SELECT DISTINCT
-                    child.result_id AS result_id,
-                    parent.op_name || '->' || child.op_name AS signature
-                FROM nodes child
-                JOIN json_each(child.node_json, '$.input_ids') AS inp
-                JOIN nodes parent
-                  ON parent.result_id = child.result_id
-                 AND parent.node_id = CAST(inp.value AS TEXT)
-                WHERE child.op_name IS NOT NULL AND child.op_name <> '' AND child.op_name <> 'input'
-                  AND parent.op_name IS NOT NULL AND parent.op_name <> '' AND parent.op_name <> 'input'
-            )
+            """
             SELECT
-                base.result_id,
-                base.graph_json,
-                base.stage1_passed,
-                base.novelty_score,
-                base.graph_category_histogram,
-                base.fp_interaction_sparsity,
-                base.fp_cka_vs_transformer,
-                base.fp_cka_vs_ssm,
-                base.fp_cka_vs_conv,
-                COALESCE(base.template_a, base.template_b, '') AS template_name,
+                pr.result_id,
+                pr.stage1_passed,
+                pr.novelty_score,
+                pr.graph_category_histogram,
+                pr.fp_interaction_sparsity,
+                pr.fp_cka_vs_transformer,
+                pr.fp_cka_vs_ssm,
+                pr.fp_cka_vs_conv,
+                COALESCE(gf.template_name, '') AS template_name,
                 COALESCE(
                     (SELECT group_concat(op_name, char(31)) FROM (
-                        SELECT op_name FROM op_rows WHERE result_id = base.result_id ORDER BY op_name
+                        SELECT op_name
+                        FROM program_graph_ops
+                        WHERE result_id = pr.result_id
+                        ORDER BY op_name
                     )),
                     ''
                 ) AS ops_blob,
                 COALESCE(
                     (SELECT group_concat(signature, char(31)) FROM (
-                        SELECT signature FROM pair_rows WHERE result_id = base.result_id ORDER BY signature
+                        SELECT signature
+                        FROM program_graph_pairs
+                        WHERE result_id = pr.result_id
+                        ORDER BY signature
                     )),
                     ''
                 ) AS pairs_blob
-            FROM (
-                SELECT DISTINCT
-                    result_id,
-                    graph_json,
-                    stage1_passed,
-                    novelty_score,
-                    graph_category_histogram,
-                    fp_interaction_sparsity,
-                    fp_cka_vs_transformer,
-                    fp_cka_vs_ssm,
-                    fp_cka_vs_conv,
-                    template_a,
-                    template_b
-                FROM nodes
-            ) AS base
+            FROM program_results pr
+            JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
         ).fetchall()
         return [dict(row) for row in rows]
@@ -457,96 +274,10 @@ class _AnalyticsMixin:
     def _query_nearest_peers_sql(
         self, graph_fingerprint: str, limit: int = 500
     ) -> Optional[List[Dict[str, Any]]]:
-        if hasattr(self, "flush_writes") and hasattr(self, "_ensure_graph_features"):
-            self.flush_writes()
-            self._ensure_graph_features()
-            rows = self.conn.execute(
-                """
-                WITH fingerprint_rows AS (
-                    SELECT
-                        pr.result_id,
-                        pr.graph_fingerprint,
-                        pr.loss_ratio,
-                        pr.novelty_score,
-                        pr.stage1_passed,
-                        pr.timestamp,
-                        l.tier,
-                        l.composite_score
-                    FROM program_results pr
-                    LEFT JOIN leaderboard l ON l.result_id = pr.result_id
-                    WHERE pr.graph_fingerprint IS NOT NULL
-                      AND EXISTS (
-                          SELECT 1 FROM program_graph_features gf WHERE gf.result_id = pr.result_id
-                      )
-                ),
-                latest_rows AS (
-                    SELECT fr.*
-                    FROM fingerprint_rows fr
-                    WHERE fr.result_id = (
-                        SELECT fr2.result_id
-                        FROM fingerprint_rows fr2
-                        WHERE fr2.graph_fingerprint = fr.graph_fingerprint
-                        ORDER BY fr2.timestamp DESC, fr2.result_id DESC
-                        LIMIT 1
-                    )
-                ),
-                node_ops AS (
-                    SELECT DISTINCT graph_fingerprint, op_name
-                    FROM program_graph_ops
-                    WHERE graph_fingerprint IS NOT NULL
-                ),
-                target_ops AS (
-                    SELECT op_name
-                    FROM node_ops
-                    WHERE graph_fingerprint = ?
-                ),
-                target_count AS (
-                    SELECT COUNT(*) AS n FROM target_ops
-                ),
-                peer_counts AS (
-                    SELECT graph_fingerprint, COUNT(*) AS peer_op_count
-                    FROM node_ops
-                    WHERE graph_fingerprint <> ?
-                    GROUP BY graph_fingerprint
-                ),
-                intersections AS (
-                    SELECT
-                        n.graph_fingerprint AS graph_fingerprint,
-                        COUNT(*) AS overlap
-                    FROM node_ops n
-                    JOIN target_ops t ON t.op_name = n.op_name
-                    WHERE n.graph_fingerprint <> ?
-                    GROUP BY n.graph_fingerprint
-                )
-                SELECT
-                    lr.graph_fingerprint AS fingerprint,
-                    ROUND(
-                        CAST(i.overlap AS FLOAT) /
-                        CAST((pc.peer_op_count + tc.n - i.overlap) AS FLOAT),
-                        4
-                    ) AS jaccard_similarity,
-                    lr.loss_ratio,
-                    lr.novelty_score,
-                    lr.stage1_passed,
-                    COALESCE(lr.tier, '') AS tier,
-                    lr.composite_score
-                FROM intersections i
-                JOIN peer_counts pc ON pc.graph_fingerprint = i.graph_fingerprint
-                JOIN target_count tc
-                JOIN latest_rows lr ON lr.graph_fingerprint = i.graph_fingerprint
-                WHERE tc.n > 0
-                  AND (pc.peer_op_count + tc.n - i.overlap) > 0
-                  AND CAST(i.overlap AS FLOAT) / CAST((pc.peer_op_count + tc.n - i.overlap) AS FLOAT) >= 0.1
-                ORDER BY jaccard_similarity DESC, lr.timestamp DESC
-                LIMIT ?
-                """,
-                (graph_fingerprint, graph_fingerprint, graph_fingerprint, int(limit)),
-            ).fetchall()
-            return [dict(row) for row in rows]
-        if not self._json1_available():
-            return None
+        self.flush_writes()
+        self._ensure_graph_features()
         rows = self.conn.execute(
-            f"""
+            """
             WITH fingerprint_rows AS (
                 SELECT
                     pr.result_id,
@@ -560,7 +291,9 @@ class _AnalyticsMixin:
                 FROM program_results pr
                 LEFT JOIN leaderboard l ON l.result_id = pr.result_id
                 WHERE pr.graph_fingerprint IS NOT NULL
-                  AND {self._valid_graph_json_where()}
+                  AND EXISTS (
+                      SELECT 1 FROM program_graph_features gf WHERE gf.result_id = pr.result_id
+                  )
             ),
             latest_rows AS (
                 SELECT fr.*
@@ -575,15 +308,10 @@ class _AnalyticsMixin:
             ),
             node_ops AS (
                 SELECT DISTINCT
-                    pr.graph_fingerprint AS graph_fingerprint,
-                    json_extract(node.value, '$.op_name') AS op_name
-                FROM program_results pr
-                JOIN json_each({self._GRAPH_NODES_JSON_EXPR}) AS node
-                WHERE pr.graph_fingerprint IS NOT NULL
-                  AND {self._valid_graph_json_where()}
-                  AND json_extract(node.value, '$.op_name') IS NOT NULL
-                  AND json_extract(node.value, '$.op_name') <> ''
-                  AND json_extract(node.value, '$.op_name') <> 'input'
+                    graph_fingerprint,
+                    op_name
+                FROM program_graph_ops
+                WHERE graph_fingerprint IS NOT NULL
             ),
             target_ops AS (
                 SELECT op_name

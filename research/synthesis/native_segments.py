@@ -104,7 +104,9 @@ def _seed_segment_nodes(
         if node_id in reachable_node_ids
         and node_id not in visited
         and _is_segment_eligible_node(graph, node_id, supported_ops=supported_ops)
-        and all(parent_id == boundary_id for parent_id in graph.nodes[node_id].input_ids)
+        and all(
+            parent_id == boundary_id for parent_id in graph.nodes[node_id].input_ids
+        )
     ]
 
 
@@ -138,7 +140,9 @@ def _collect_single_input_segment(
                 node_id in segment_set
                 or node_id not in reachable_node_ids
                 or node_id in visited
-                or not _is_segment_eligible_node(graph, node_id, supported_ops=supported_ops)
+                or not _is_segment_eligible_node(
+                    graph, node_id, supported_ops=supported_ops
+                )
             ):
                 continue
             parents = graph.nodes[node_id].input_ids
@@ -331,7 +335,9 @@ def _unary_chain_segment_from_node(
     if len(chain_node_ids) < 2:
         return None
 
-    plan_indices = [node_id_to_plan_idx[current_node_id] for current_node_id in chain_node_ids]
+    plan_indices = [
+        node_id_to_plan_idx[current_node_id] for current_node_id in chain_node_ids
+    ]
     if plan_indices != list(range(plan_indices[0], plan_indices[-1] + 1)):
         return None
 
@@ -352,7 +358,8 @@ def _unary_chain_segment_from_node(
         input_consume_count=1,
         output_ir_idx=node_id_to_ir_idx[chain_node_ids[-1]],
         release_ir_counts=tuple(
-            (node_id_to_ir_idx[current_node_id], 1) for current_node_id in chain_node_ids[:-1]
+            (node_id_to_ir_idx[current_node_id], 1)
+            for current_node_id in chain_node_ids[:-1]
         ),
         dispatcher=dispatcher,
     )

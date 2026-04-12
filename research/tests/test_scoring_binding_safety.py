@@ -604,8 +604,6 @@ class TestCompositeEndToEnd:
             "blimp",
         ]
         raw_sum = sum(bd.get(k, 0) for k in component_keys)
-        penalty = bd.get("binding_local_only_penalty", 0)
-        param_penalty = bd.get("param_size_penalty", 0)
 
         # The composite should be raw_sum * binding_penalty * param_penalty
         # (or just raw_sum if no penalties)

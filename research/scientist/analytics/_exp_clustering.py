@@ -67,9 +67,7 @@ def _vectorized_silhouette(
             sil.append(0.0)
             continue
         a_i = dist_matrix[i, mask_same].mean()
-        b_i = min(
-            dist_matrix[i, assignments == c].mean() for c in unique if c != c_i
-        )
+        b_i = min(dist_matrix[i, assignments == c].mean() for c in unique if c != c_i)
         sil.append((b_i - a_i) / max(a_i, b_i, 1e-9))
     return np.mean(sil)
 
@@ -135,9 +133,7 @@ def _compute_transitions(e: Dict, seq: np.ndarray, proxy: np.ndarray) -> None:
         n_deltas = len(deltas)
         seg = max(1, n_deltas // 3)
         window_means = [
-            np.mean(deltas[i * seg : (i + 1) * seg])
-            if i * seg < n_deltas
-            else 0.0
+            np.mean(deltas[i * seg : (i + 1) * seg]) if i * seg < n_deltas else 0.0
             for i in range(3)
         ]
         e["windowed_change_dispersion"] = np.std(window_means)
@@ -158,7 +154,9 @@ def _compute_transitions(e: Dict, seq: np.ndarray, proxy: np.ndarray) -> None:
         )
 
 
-def _compute_recovery_lag(e: Dict, seq: np.ndarray, proxy: np.ndarray, window: int) -> None:
+def _compute_recovery_lag(
+    e: Dict, seq: np.ndarray, proxy: np.ndarray, window: int
+) -> None:
     """Compute recovery lag feature."""
     early_baseline = np.mean(proxy[:window])
     trough_idx = np.argmin(proxy)
@@ -335,9 +333,7 @@ class _ClusteringMixin:
         exp_ids = [e["experiment_id"] for e in experiments]
         return experiments, exp_ids
 
-    def _enrich_failure_data(
-        self, experiments: List[Dict], exp_ids: List[str]
-    ) -> None:
+    def _enrich_failure_data(self, experiments: List[Dict], exp_ids: List[str]) -> None:
         """Attach failure rates and error diversity to experiments in-place."""
         placeholders = ",".join("?" * len(exp_ids))
 

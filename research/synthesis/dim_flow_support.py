@@ -5,8 +5,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from .dim_flow_opcode_tables import (
-    FULL_DIM_OPS,
-    KV_CACHE_BREAKING_OPS,
     build_dim_flow_opcode_tables,
 )
 from .graph import ComputationGraph
@@ -78,12 +76,15 @@ def build_dim_flow_inputs(
         opcode_full_dim=opcode_tables["opcode_full_dim"],
     )
     if native_flags is None:
-        has_params_flags = (
-            opcode_tables["opcode_has_params"][analysis_ir.op_codes]
-            * (param_estimates > 0).astype(np.int32, copy=False)
-        )
-        nontrivial_flags = opcode_tables["opcode_nontrivial"][analysis_ir.op_codes].copy()
-        kv_breaking_flags = opcode_tables["opcode_kv_breaking"][analysis_ir.op_codes].copy()
+        has_params_flags = opcode_tables["opcode_has_params"][analysis_ir.op_codes] * (
+            param_estimates > 0
+        ).astype(np.int32, copy=False)
+        nontrivial_flags = opcode_tables["opcode_nontrivial"][
+            analysis_ir.op_codes
+        ].copy()
+        kv_breaking_flags = opcode_tables["opcode_kv_breaking"][
+            analysis_ir.op_codes
+        ].copy()
         op_kind_flags = opcode_tables["opcode_kind"][analysis_ir.op_codes].copy()
         full_dim_flags = opcode_tables["opcode_full_dim"][analysis_ir.op_codes].copy()
     else:

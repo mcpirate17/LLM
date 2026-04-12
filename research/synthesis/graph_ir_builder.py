@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING, Iterable, List
 
 import numpy as np
 
-from .primitives import OPCODE_MAP, PRIMITIVE_REGISTRY, estimate_op_params, get_primitive
+from .primitives import (
+    OPCODE_MAP,
+    PRIMITIVE_REGISTRY,
+    estimate_op_params,
+    get_primitive,
+)
 
 if TYPE_CHECKING:
     from .graph import ComputationGraph, ComputationGraphIR

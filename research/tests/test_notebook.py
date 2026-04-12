@@ -217,8 +217,6 @@ class TestNotebook(unittest.TestCase):
             aria_mood="excited",
         )
 
-        exp = self.nb.get_experiment(exp_id)
-
     def test_purge_empty_experiments_deletes_attribution_reports_before_hypotheses(
         self,
     ):
@@ -339,7 +337,7 @@ class TestNotebook(unittest.TestCase):
             comparability_label="partial",
             evaluation_protocol_version="runtime_observation_v1",
         )
-        rid_pre_s0 = self.nb.record_program_result(
+        self.nb.record_program_result(
             experiment_id=exp_id,
             graph_fingerprint="fp_b",
             graph_json='{"nodes": {"0": {"op_name": "gelu"}}}',

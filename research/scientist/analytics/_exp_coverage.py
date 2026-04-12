@@ -9,20 +9,40 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Op-to-family mappings (shared between coverage methods)
-_HYPERBOLIC_OPS = frozenset({
-    "poincare_add", "exp_map", "log_map",
-    "hyp_linear", "hyp_distance", "hyp_tangent_nonlinear",
-})
-_TROPICAL_OPS = frozenset({
-    "tropical_matmul", "tropical_add", "tropical_attention", "tropical_center",
-})
+_HYPERBOLIC_OPS = frozenset(
+    {
+        "poincare_add",
+        "exp_map",
+        "log_map",
+        "hyp_linear",
+        "hyp_distance",
+        "hyp_tangent_nonlinear",
+    }
+)
+_TROPICAL_OPS = frozenset(
+    {
+        "tropical_matmul",
+        "tropical_add",
+        "tropical_attention",
+        "tropical_center",
+    }
+)
 _PADIC_OPS = frozenset({"padic_expand", "ultrametric_attention", "padic_gate"})
-_CLIFFORD_OPS = frozenset({
-    "geometric_product", "rotor_transform", "grade_select", "grade_mix",
-})
-_FUNCTIONAL_OPS = frozenset({
-    "basis_expansion", "integral_kernel", "fixed_point_iter",
-})
+_CLIFFORD_OPS = frozenset(
+    {
+        "geometric_product",
+        "rotor_transform",
+        "grade_select",
+        "grade_mix",
+    }
+)
+_FUNCTIONAL_OPS = frozenset(
+    {
+        "basis_expansion",
+        "integral_kernel",
+        "fixed_point_iter",
+    }
+)
 
 _OP_FAMILY_MAP = {
     **{op: "hyperbolic" for op in _HYPERBOLIC_OPS},
@@ -32,7 +52,12 @@ _OP_FAMILY_MAP = {
 }
 
 _FAMILY_ORDER = [
-    "euclidean", "hyperbolic", "tropical", "p-adic", "clifford", "functional",
+    "euclidean",
+    "hyperbolic",
+    "tropical",
+    "p-adic",
+    "clifford",
+    "functional",
 ]
 
 
@@ -61,9 +86,7 @@ def _extract_op_names(graph_json: Optional[str]) -> set[str]:
         return set()
 
 
-def _family_from_row(
-    graph_json: Optional[str], arch_spec_json: Optional[str]
-) -> str:
+def _family_from_row(graph_json: Optional[str], arch_spec_json: Optional[str]) -> str:
     """Determine math family from graph/arch-spec JSON."""
     op_names = _extract_op_names(graph_json)
 
@@ -96,9 +119,7 @@ def _family_from_row(
     return "euclidean"
 
 
-def _ensure_bucket(
-    store: Dict[str, Dict[str, float]], key: str
-) -> Dict[str, float]:
+def _ensure_bucket(store: Dict[str, Dict[str, float]], key: str) -> Dict[str, float]:
     """Get or create a metric bucket in a store dict."""
     if key not in store:
         store[key] = {
@@ -277,7 +298,10 @@ class _CoverageMixin:
             baseline_ratio = self._as_float(row["validation_baseline_ratio"])
             baseline_win = baseline_ratio is not None and baseline_ratio < 1.0
 
-            for target_key, store in [(used_ops, by_operator), (used_families, by_family)]:
+            for target_key, store in [
+                (used_ops, by_operator),
+                (used_families, by_family),
+            ]:
                 for name in target_key:
                     bucket = _ensure_bucket(store, name)
                     bucket["n_tested"] += 1

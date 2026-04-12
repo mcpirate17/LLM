@@ -26,7 +26,6 @@ from .primitives import (
     PrimitiveOp,
     get_primitive,
     PRIMITIVE_REGISTRY,
-    OPCODE_MAP,
 )
 
 

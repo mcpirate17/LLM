@@ -10,6 +10,8 @@ import json
 import sqlite3
 from typing import Any, Dict, List
 
+from research.scientist.notebook.graph_features import build_graph_feature_rows
+
 
 # ---------------------------------------------------------------------------
 # Helpers — in-memory notebook with program_results + leaderboard
@@ -31,7 +33,7 @@ def _make_graph_json(ops: List[str], template: str = "") -> str:
 
 
 def _create_test_db() -> sqlite3.Connection:
-    """Create an in-memory SQLite DB with program_results and leaderboard tables."""
+    """Create an in-memory SQLite DB with normalized graph-feature tables."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute(
@@ -55,6 +57,35 @@ def _create_test_db() -> sqlite3.Connection:
             fingerprint_json TEXT,
             error_type TEXT,
             timestamp REAL DEFAULT 0
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE program_graph_features (
+            result_id TEXT PRIMARY KEY,
+            graph_fingerprint TEXT,
+            template_name TEXT,
+            templates_json TEXT,
+            motifs_json TEXT,
+            slot_usage_json TEXT,
+            op_count INTEGER NOT NULL DEFAULT 0,
+            pair_count INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE program_graph_ops (
+            result_id TEXT NOT NULL,
+            graph_fingerprint TEXT,
+            op_name TEXT NOT NULL,
+            PRIMARY KEY (result_id, op_name)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE program_graph_pairs (
+            result_id TEXT NOT NULL,
+            graph_fingerprint TEXT,
+            signature TEXT NOT NULL,
+            PRIMARY KEY (result_id, signature)
         )"""
     )
     conn.execute(
@@ -105,6 +136,32 @@ def _insert_result(
             len(ops),
         ),
     )
+    feature_rows = build_graph_feature_rows(
+        result_id=result_id,
+        graph_fingerprint=fingerprint,
+        graph_json=graph_json,
+    )
+    conn.execute(
+        """INSERT INTO program_graph_features
+           (result_id, graph_fingerprint, template_name, templates_json, motifs_json,
+            slot_usage_json, op_count, pair_count, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        feature_rows["feature_row"],
+    )
+    if feature_rows["op_rows"]:
+        conn.executemany(
+            """INSERT INTO program_graph_ops
+               (result_id, graph_fingerprint, op_name)
+               VALUES (?, ?, ?)""",
+            feature_rows["op_rows"],
+        )
+    if feature_rows["pair_rows"]:
+        conn.executemany(
+            """INSERT INTO program_graph_pairs
+               (result_id, graph_fingerprint, signature)
+               VALUES (?, ?, ?)""",
+            feature_rows["pair_rows"],
+        )
     if tier:
         conn.execute(
             """INSERT INTO leaderboard (entry_id, result_id, tier, composite_score)
@@ -134,6 +191,8 @@ class TestGetNearestPeers:
         nb = _TestNotebook()
         nb.conn = conn
         nb._maybe_commit = lambda: None
+        nb.flush_writes = lambda timeout=5.0: None
+        nb._ensure_graph_features = lambda **kwargs: None
         return nb
 
     def test_returns_peers_sorted_by_jaccard(self):
@@ -343,6 +402,8 @@ class TestBucketCategoryDistribution:
         nb = _TestNotebook()
         nb.conn = conn
         nb._maybe_commit = lambda: None
+        nb.flush_writes = lambda timeout=5.0: None
+        nb._ensure_graph_features = lambda **kwargs: None
         return nb
 
     def test_bucket_has_new_fields(self):
