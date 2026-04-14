@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from typing import Any, Dict, List, Optional
 
-
+from ..runtime_events import publish_lifecycle_event
 from ..native_runner import compile_model_native_first as compile_model
 from ...eval.metrics import novelty_score
 from ...eval.fingerprint import compute_fingerprint
@@ -28,6 +29,43 @@ class _ContinuousModesMixin:
     """Synthesis, evolution, novelty, refinement mode runners."""
 
     __slots__ = ()
+
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
+    def _publish_continuous_modes_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.continuous_modes",
+            run_id=exp_id,
+            payload=payload,
+        )
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights,
+        llm_analysis: str | None,
+    ) -> None:
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            aria_mood=self.aria.state.mood,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
 
     def _run_continuous_synthesis(
         self,
@@ -185,7 +223,8 @@ class _ContinuousModesMixin:
         )
 
         if is_control:
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "grammar_control_experiment",
                 f"Experiment {exp_id} is a control run using default grammar weights",
                 evidence=f"interval={config.control_experiment_interval}, experiment_number={n_experiments}",
@@ -312,11 +351,24 @@ class _ContinuousModesMixin:
             except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning("Hypothesis validation logging failed: %s", e)
 
-        nb.complete_experiment(
+        self._publish_continuous_modes_terminal_event(
+            event_type="experiment_completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": results,
+                "aria_summary": summary,
+                "aria_mood": self.aria.state.mood,
+                "insights": insights,
+                "llm_analysis": llm_analysis,
+                "mode": "synthesis",
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
             experiment_id=exp_id,
             results=results,
             aria_summary=summary,
-            aria_mood=self.aria.state.mood,
             insights=insights,
             llm_analysis=llm_analysis,
         )
@@ -480,12 +532,26 @@ class _ContinuousModesMixin:
         )
         summary = self.aria.experiment_summary(results, context=context)
         llm_analysis = self.aria.analyze_results(results, context=context)
-        nb.complete_experiment(
+        insights = self._analyze_results(results, exp_id, nb, context=context)
+        self._publish_continuous_modes_terminal_event(
+            event_type="experiment_completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": results,
+                "aria_summary": summary,
+                "aria_mood": self.aria.state.mood,
+                "insights": insights,
+                "llm_analysis": llm_analysis,
+                "mode": "evolution",
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
             experiment_id=exp_id,
             results=results,
             aria_summary=summary,
-            aria_mood=self.aria.state.mood,
-            insights=self._analyze_results(results, exp_id, nb, context=context),
+            insights=insights,
             llm_analysis=llm_analysis,
         )
 
@@ -711,12 +777,26 @@ class _ContinuousModesMixin:
         )
         summary = self.aria.experiment_summary(results, context=context)
         llm_analysis = self.aria.analyze_results(results, context=context)
-        nb.complete_experiment(
+        insights = self._analyze_results(results, exp_id, nb, context=context)
+        self._publish_continuous_modes_terminal_event(
+            event_type="experiment_completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": results,
+                "aria_summary": summary,
+                "aria_mood": self.aria.state.mood,
+                "insights": insights,
+                "llm_analysis": llm_analysis,
+                "mode": "novelty",
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
             experiment_id=exp_id,
             results=results,
             aria_summary=summary,
-            aria_mood=self.aria.state.mood,
-            insights=self._analyze_results(results, exp_id, nb, context=context),
+            insights=insights,
             llm_analysis=llm_analysis,
         )
 

@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from ...training.checkpointing import CheckpointManager
 from ..notebook import LabNotebook, ExperimentEntry
+from ..runtime_events import publish_runtime_event
 from ..evidence import (
     build_evidence_pack,
     validate_selection_decision_log,
@@ -30,6 +31,24 @@ class _ContinuousLoopMixin:
 
     __slots__ = ()
 
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
+    def _publish_continuous_session_event(
+        self,
+        *,
+        event_type: str,
+        run_id: str | None,
+        payload: dict,
+    ) -> None:
+        publish_runtime_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.continuous_loop",
+            run_id=run_id,
+            payload=payload,
+        )
+
     def _run_continuous_thread(self, config: RunConfig):
         """Execute continuous experiments in background."""
         try:
@@ -42,11 +61,26 @@ class _ContinuousLoopMixin:
                 e,
                 traceback.format_exc(),
             )
+            session_run_id = str(getattr(config, "resume_experiment_id", "") or "continuous")
+            self._publish_continuous_session_event(
+                event_type="continuous_session_failed",
+                run_id=session_run_id,
+                payload={
+                    "error": f"FATAL: {e}",
+                    "mode": "continuous",
+                    "failed_at": time.time(),
+                },
+            )
             try:
                 self._update_progress(status="failed", error=f"FATAL: {e}")
+                self._set_aria_cycle_phase(
+                    "failed",
+                    continuous_active=False,
+                    note=f"Continuous session failed: {e}",
+                )
                 self._emit_event(
-                    "experiment_failed",
-                    {"experiment_id": "continuous", "error": f"FATAL: {e}"},
+                    "continuous_session_failed",
+                    {"session_id": session_run_id, "error": f"FATAL: {e}"},
                 )
             except RuntimeError:
                 logger.error(
@@ -161,13 +195,21 @@ class _ContinuousLoopMixin:
         logger.info("Retrying after successful heal: %s", retry.get("scope", "")[:100])
         try:
             retry_nb = self._make_notebook()
-            retry_nb.log_learning_event(
+            self._log_learning_event_compat(
+                retry_nb,
                 "heal_retry",
                 f"Retrying after heal: {retry['scope'][:200]}",
             )
             retry_nb.close()
         except (RuntimeError, sqlite3.OperationalError) as e:
             logger.warning("Heal retry logging failed: %s", e)
+
+    def _try_make_notebook(self, *, purpose: str) -> LabNotebook | None:
+        try:
+            return self._make_notebook()
+        except (RuntimeError, sqlite3.OperationalError) as e:
+            logger.warning("%s skipped: %s", purpose, e)
+            return None
 
     def _handle_continuous_limit_reached(
         self,
@@ -199,6 +241,18 @@ class _ContinuousLoopMixin:
                 "experiments_completed": n_experiments,
                 "elapsed_minutes": (time.time() - t_start) / 60,
                 "estimated_cost": self.aria.total_cost,
+            },
+        )
+        self._publish_continuous_session_event(
+            event_type="continuous_session_completed",
+            run_id=str(getattr(config, "resume_experiment_id", "") or "continuous"),
+            payload={
+                "reason": stop_reason,
+                "experiments_completed": n_experiments,
+                "elapsed_minutes": (time.time() - t_start) / 60,
+                "estimated_cost": self.aria.total_cost,
+                "mode": "continuous",
+                "completed_at": time.time(),
             },
         )
         if distiller is not None:
@@ -295,15 +349,18 @@ class _ContinuousLoopMixin:
                 logger.warning("Checkpoint save failed: %s", e)
 
         try:
-            cleanup_nb = self._make_notebook()
-            try:
-                cleanup_nb.purge_empty_experiments()
-                cleanup_nb.compact_old_chat()
-                cleanup_nb.backfill_failure_signatures()
-            finally:
-                cleanup_nb.close()
-        except (RuntimeError, sqlite3.OperationalError) as e:
-            logger.warning("Inter-cycle cleanup failed: %s", e)
+            cleanup_nb = self._try_make_notebook(purpose="Inter-cycle cleanup")
+            if cleanup_nb is not None:
+                try:
+                    cleanup_nb.purge_empty_experiments()
+                    cleanup_nb.compact_old_chat()
+                    cleanup_nb.backfill_failure_signatures()
+                except (RuntimeError, sqlite3.OperationalError) as e:
+                    logger.warning("Inter-cycle cleanup failed: %s", e)
+                finally:
+                    cleanup_nb.close()
+        except Exception as e:
+            logger.warning("Inter-cycle cleanup failed unexpectedly: %s", e)
 
     def _finish_continuous_run(
         self,
@@ -354,6 +411,18 @@ class _ContinuousLoopMixin:
                 else "Continuous run stopped by user."
             ),
         )
+        if self._stop_event.is_set():
+            self._publish_continuous_session_event(
+                event_type="continuous_session_stopped",
+                run_id=str(resume_id or "continuous"),
+                payload={
+                    "experiments_completed": n_experiments,
+                    "elapsed_minutes": elapsed_min,
+                    "estimated_cost": self.aria.total_cost,
+                    "mode": "continuous",
+                    "stopped_at": time.time(),
+                },
+            )
 
         if not self._stop_event.is_set() and not config.keep_checkpoints:
             try:
@@ -918,7 +987,9 @@ class _ContinuousLoopMixin:
 
     def _end_of_session_automation(self, config: RunConfig, reason: str):
         """Run end-of-session report and scale-up. Used by both limit-reached and user-stop paths."""
-        nb = self._make_notebook()
+        nb = self._try_make_notebook(purpose="End-of-session automation")
+        if nb is None:
+            return
         try:
             self._maybe_auto_report(config, nb, reason=reason)
             top = nb.get_top_programs(config.auto_scale_up_top_n, sort_by="loss_ratio")

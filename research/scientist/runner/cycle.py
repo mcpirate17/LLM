@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..notebook import LabNotebook, ExperimentEntry
 from ..json_utils import json_safe
+from ..runtime_events import publish_lifecycle_event
 from ...healer.core import HealerTaskSpec
 
 import logging
@@ -34,6 +35,18 @@ from ._types import RunConfig
 
 class _CycleMixin:
     """Main experiment cycle, proactive repair, healer integration."""
+
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
+    def _fail_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        error: str,
+    ) -> None:
+        getattr(nb, "fail_experiment")(experiment_id, error)
 
     def run_aria_cycle(
         self,
@@ -391,7 +404,8 @@ class _CycleMixin:
         if switch_guardrails.get("should_switch_epic"):
             self._emit_event("switch_epic_recommended", switch_guardrails)
             try:
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "switch_epic_recommended",
                     f"Switch-epic criteria met at cycle {n_experiments}",
                     evidence=json.dumps(json_safe(switch_guardrails), sort_keys=True),
@@ -494,7 +508,8 @@ class _CycleMixin:
                 task_id,
                 cycle_index,
             )
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "proactive_repair",
                 f"Auto-spawned repair agent {task_id} for cycle {cycle_index} failure: {error[:200]}",
                 task_id=task_id,
@@ -566,7 +581,8 @@ class _CycleMixin:
                 if isinstance(v, (int, float)) and (v > 6.0 or v < 0.3):
                     self._grammar_weight_overrides[k] = 1.0
 
-        nb.log_learning_event(
+        self._log_learning_event_compat(
+            nb,
             "anti_stagnation",
             f"3 consecutive zero-S1 cycles detected at cycle {cycle_index}. "
             f"Auto-reduced depth/ops ({adjustments}), reset extreme grammar weights.",
@@ -632,7 +648,8 @@ class _CycleMixin:
             task_id = task.get("task_id", "unknown")
             self._last_stagnation_agent_cycle = cycle_index
 
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "proactive_stagnation_agent",
                 f"Spawned agent {task_id} for S1 stagnation ({window} flat cycles)",
                 task_id=task_id,
@@ -718,7 +735,8 @@ class _CycleMixin:
                 allow_write=True,
             )
             task_id = task.get("task_id", "unknown")
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "proactive_recurring_error_fix",
                 f"Spawned agent {task_id} for recurring error ({worst_error[1]}x): "
                 f"{worst_error[0][:200]}",
@@ -804,7 +822,8 @@ class _CycleMixin:
                     command_timeout_seconds=command_timeout_seconds,
                 )
             )
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "code_healer_invoked",
                 f"CodeHealer handled trigger={trigger_type} state={result.get('state')}",
                 trigger_type=trigger_type,
@@ -819,7 +838,8 @@ class _CycleMixin:
                 }
             return result
         except (RuntimeError, OSError, ValueError) as e:
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "code_healer_failed",
                 f"CodeHealer failed for trigger={trigger_type}: {e}",
                 trigger_type=trigger_type,
@@ -1018,7 +1038,24 @@ class _CycleMixin:
             if not row or row["status"] != "running":
                 return None
 
-            nb.fail_experiment(active_exp_id, error)
+            publish_lifecycle_event(
+                notebook_path=self.notebook_path,
+                event_type="experiment_failed",
+                producer="runner.cycle",
+                run_id=active_exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": error,
+                    "results": None,
+                    "mode": row["experiment_type"],
+                    "reason": "cycle_abort_compensation",
+                },
+            )
+            self._fail_experiment_compat(
+                nb=nb,
+                experiment_id=active_exp_id,
+                error=error,
+            )
             with self._lock:
                 if self._progress.experiment_id == active_exp_id:
                     self._progress.status = "failed"

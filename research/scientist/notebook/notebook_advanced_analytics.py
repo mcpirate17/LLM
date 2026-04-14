@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 import uuid
 from collections import defaultdict
@@ -11,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..runtime_events import publish_runtime_event
 from ._shared import LOGGER
 from .notebook_analytics import (
     _ALL_CATEGORIES,
@@ -633,21 +635,46 @@ class _AdvancedAnalyticsMixin:
             else:
                 evidence = serialized_extra
 
-        self.conn.execute(
-            """INSERT INTO learning_log
-               (timestamp, event_type, description, old_weights,
-                new_weights, evidence)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                time.time(),
+        try:
+            publish_runtime_event(
+                notebook_path=self.db_path,
+                event_type="learning_event_logged",
+                producer="notebook.advanced_analytics",
+                run_id=str(event_data.get("experiment_id") or "").strip() or None,
+                payload={
+                    "log_event_type": event_type,
+                    "description": description,
+                    "old_weights": old_weights,
+                    "new_weights": new_weights,
+                    "evidence": evidence,
+                    "event_data": event_data,
+                },
+            )
+        except Exception as exc:
+            LOGGER.warning("Runtime telemetry publish failed for %s: %s", event_type, exc)
+
+        try:
+            self.conn.execute(
+                """INSERT INTO learning_log
+                   (timestamp, event_type, description, old_weights,
+                    new_weights, evidence)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    time.time(),
+                    event_type,
+                    description,
+                    json.dumps(old_weights) if old_weights else None,
+                    json.dumps(new_weights) if new_weights else None,
+                    evidence,
+                ),
+            )
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Learning log write failed for %s; continuing without SQLite persistence: %s",
                 event_type,
-                description,
-                json.dumps(old_weights) if old_weights else None,
-                json.dumps(new_weights) if new_weights else None,
-                evidence,
-            ),
-        )
-        self._maybe_commit()
+                exc,
+            )
 
     def get_learning_log(self, limit: int = 100) -> List[Dict]:
         """Get recent learning log entries."""

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 import time
 import uuid
 import zlib
 from typing import Any, Dict, List, Optional
 
+from ..runtime_events import get_runtime_event_services, publish_lifecycle_event
 from ._shared import ExperimentEntry, LOGGER, sanitize_for_db
 
 try:
@@ -34,6 +36,146 @@ class _ExperimentsMixin:
     """Experiments operations for the Lab Notebook."""
 
     __slots__ = ()
+
+    def _direct_db_conn(self) -> sqlite3.Connection:
+        """Open a one-off SQLite connection for critical lifecycle writes.
+
+        This bypasses any degraded long-lived connection state when the main
+        notebook connection has already hit intermittent disk I/O errors.
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        for pragma in (
+            "PRAGMA foreign_keys=ON",
+            "PRAGMA busy_timeout=15000",
+        ):
+            try:
+                conn.execute(pragma)
+            except sqlite3.OperationalError as exc:
+                LOGGER.warning("Direct DB pragma failed (%s): %s", pragma, exc)
+        return conn
+
+    def _experiment_exists_direct(self, experiment_id: str) -> bool:
+        try:
+            conn = self._direct_db_conn()
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM experiments WHERE experiment_id = ?",
+                    (experiment_id,),
+                ).fetchone()
+                return row is not None
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Direct experiment existence check failed for %s: %s",
+                experiment_id,
+                exc,
+            )
+            return False
+
+    def _experiment_exists_primary(self, experiment_id: str) -> bool:
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            return row is not None
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary experiment existence check failed for %s: %s",
+                experiment_id,
+                exc,
+            )
+            return False
+
+    def _experiment_status_direct(self, experiment_id: str) -> Optional[str]:
+        try:
+            conn = self._direct_db_conn()
+            try:
+                row = conn.execute(
+                    "SELECT status FROM experiments WHERE experiment_id = ?",
+                    (experiment_id,),
+                ).fetchone()
+                return str(row[0]) if row and row[0] is not None else None
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Direct experiment status check failed for %s: %s",
+                experiment_id,
+                exc,
+            )
+            return None
+
+    def _execute_direct_write(self, sql: str, params: tuple[Any, ...]) -> None:
+        conn = self._direct_db_conn()
+        try:
+            conn.execute(sql, params)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _preregistration_exists_direct(self, preregistration_id: str) -> bool:
+        try:
+            conn = self._direct_db_conn()
+            try:
+                row = conn.execute(
+                    """SELECT 1 FROM hypothesis_preregistrations
+                       WHERE preregistration_id = ?""",
+                    (preregistration_id,),
+                ).fetchone()
+                return row is not None
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Direct preregistration existence check failed for %s: %s",
+                preregistration_id,
+                exc,
+            )
+            return False
+
+    def _preregistration_exists_primary(self, preregistration_id: str) -> bool:
+        try:
+            row = self.conn.execute(
+                """SELECT 1 FROM hypothesis_preregistrations
+                   WHERE preregistration_id = ?""",
+                (preregistration_id,),
+            ).fetchone()
+            return row is not None
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary preregistration existence check failed for %s: %s",
+                preregistration_id,
+                exc,
+            )
+            return False
+
+    def _publish_lifecycle_event_safe(
+        self,
+        *,
+        event_type: str,
+        run_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            current = get_runtime_event_services(self.db_path).registry.get(run_id)
+            if current is not None and current.last_event.event_type == event_type:
+                return
+            publish_lifecycle_event(
+                notebook_path=self.db_path,
+                event_type=event_type,
+                producer="notebook.experiments",
+                run_id=run_id,
+                payload=payload,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Runtime lifecycle publish failed for %s (%s): %s",
+                event_type,
+                run_id,
+                exc,
+            )
 
     def cleanup_stale_experiments(
         self,
@@ -102,10 +244,21 @@ class _ExperimentsMixin:
             updates,
         )
         self._maybe_commit()
+        for reason, experiment_id in updates:
+            self._publish_lifecycle_event_safe(
+                event_type="experiment_failed",
+                run_id=experiment_id,
+                payload={
+                    "completed_at": now,
+                    "error": reason,
+                    "results": None,
+                    "reason": "stale_recovery_cleanup",
+                },
+            )
         return len(all_ids)
 
     def get_resumable_experiment(self, experiment_id: str) -> Optional[Dict]:
-        """Get experiment data for resume if status is 'running' or 'failed'.
+        """Get experiment data for resume if status is 'running', 'failed', or 'interrupted'.
 
         Returns dict with config_json, experiment_type, hypothesis, started_at,
         or None if the experiment doesn't exist or isn't resumable.
@@ -113,7 +266,7 @@ class _ExperimentsMixin:
         row = self.conn.execute(
             "SELECT experiment_id, experiment_type, status, config_json, "
             "hypothesis, started_at FROM experiments "
-            "WHERE experiment_id = ? AND status IN ('running', 'failed')",
+            "WHERE experiment_id = ? AND status IN ('running', 'failed', 'interrupted')",
             (experiment_id,),
         ).fetchone()
         if row is None:
@@ -126,6 +279,60 @@ class _ExperimentsMixin:
             "hypothesis": row["hypothesis"],
             "started_at": row["started_at"],
         }
+
+    def resume_experiment(self, experiment_id: str) -> None:
+        """Mark an experiment as running again for resume compatibility."""
+        resume_sql = "UPDATE experiments SET status = 'running' WHERE experiment_id = ?"
+        resume_params = (experiment_id,)
+        try:
+            self.conn.execute(resume_sql, resume_params)
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary resume_experiment write failed for %s; retrying direct: %s",
+                experiment_id,
+                exc,
+            )
+            self._execute_direct_write(resume_sql, resume_params)
+        status = self._experiment_status_direct(experiment_id)
+        if status != "running":
+            LOGGER.warning(
+                "Experiment %s status is %r after resume_experiment; retrying direct write",
+                experiment_id,
+                status,
+            )
+            self._execute_direct_write(resume_sql, resume_params)
+
+    def interrupt_experiment(self, experiment_id: str, aria_summary: str) -> None:
+        """Mark an experiment as interrupted for shutdown compatibility."""
+        interrupt_sql = """UPDATE experiments SET
+               status = 'interrupted',
+               completed_at = ?,
+               aria_summary = ?
+               WHERE experiment_id = ?"""
+        interrupt_params = (
+            time.time(),
+            aria_summary,
+            experiment_id,
+        )
+        try:
+            self.conn.execute(interrupt_sql, interrupt_params)
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary interrupt_experiment write failed for %s; retrying direct: %s",
+                experiment_id,
+                exc,
+            )
+            self._execute_direct_write(interrupt_sql, interrupt_params)
+        status = self._experiment_status_direct(experiment_id)
+        if status != "interrupted":
+            LOGGER.warning(
+                "Experiment %s status is %r after interrupt_experiment; retrying direct write",
+                experiment_id,
+                status,
+            )
+            self._execute_direct_write(interrupt_sql, interrupt_params)
 
     # ── Hypothesis Preregistration ──
 
@@ -140,26 +347,54 @@ class _ExperimentsMixin:
         validate_preregistration(preregistration)
         prereg_id = str(uuid.uuid4())[:12]
         now = time.time()
-        self.conn.execute(
-            """INSERT INTO hypothesis_preregistrations
+        insert_sql = """INSERT INTO hypothesis_preregistrations
             (preregistration_id, timestamp, experiment_type, status,
              hypothesis_json, analysis_plan_json, falsification_json,
              confounders_json, exploratory, created_by, notes)
-            VALUES (?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                prereg_id,
-                now,
-                experiment_type,
-                json.dumps(preregistration.get("hypothesis") or {}),
-                json.dumps(preregistration.get("analysis_plan") or {}),
-                json.dumps(preregistration.get("falsification_conditions") or []),
-                json.dumps(preregistration.get("confounders_checklist") or []),
-                int(bool(preregistration.get("exploratory"))),
-                created_by,
-                notes,
-            ),
+            VALUES (?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?, ?)"""
+        insert_params = (
+            prereg_id,
+            now,
+            experiment_type,
+            json.dumps(preregistration.get("hypothesis") or {}),
+            json.dumps(preregistration.get("analysis_plan") or {}),
+            json.dumps(preregistration.get("falsification_conditions") or []),
+            json.dumps(preregistration.get("confounders_checklist") or []),
+            int(bool(preregistration.get("exploratory"))),
+            created_by,
+            notes,
         )
-        self._maybe_commit()
+        try:
+            self.conn.execute(insert_sql, insert_params)
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary create_preregistration write failed for %s; retrying direct: %s",
+                prereg_id,
+                exc,
+            )
+            self._execute_direct_write(insert_sql, insert_params)
+
+        direct_visible = self._preregistration_exists_direct(prereg_id)
+        primary_visible = self._preregistration_exists_primary(prereg_id)
+        if not direct_visible:
+            LOGGER.warning(
+                "Preregistration %s missing after primary commit; retrying via direct connection",
+                prereg_id,
+            )
+            if not primary_visible:
+                self._execute_direct_write(insert_sql, insert_params)
+                direct_visible = self._preregistration_exists_direct(prereg_id)
+                primary_visible = self._preregistration_exists_primary(prereg_id)
+                if not direct_visible and not primary_visible:
+                    raise sqlite3.OperationalError(
+                        f"Preregistration {prereg_id} was not durably persisted"
+                    )
+            else:
+                LOGGER.warning(
+                    "Preregistration %s is visible on primary connection but direct verification failed; continuing",
+                    prereg_id,
+                )
         return prereg_id
 
     def get_preregistration(self, preregistration_id: str) -> Optional[Dict[str, Any]]:
@@ -266,22 +501,23 @@ class _ExperimentsMixin:
         now = time.time()
         config_payload = dict(config)
         config_payload.setdefault("code_version", self._detect_code_version())
+        insert_params = (
+            exp_id,
+            now,
+            experiment_type,
+            hypothesis,
+            research_question,
+            preregistration_id,
+            json.dumps(config_payload),
+            now,
+        )
 
         self.conn.execute(
             """INSERT INTO experiments
             (experiment_id, timestamp, experiment_type, status, hypothesis,
              research_question, preregistration_id, config_json, started_at)
             VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)""",
-            (
-                exp_id,
-                now,
-                experiment_type,
-                hypothesis,
-                research_question,
-                preregistration_id,
-                json.dumps(config_payload),
-                now,
-            ),
+            insert_params,
         )
         if preregistration_id:
             self.conn.execute(
@@ -291,6 +527,50 @@ class _ExperimentsMixin:
                 (exp_id, preregistration_id),
             )
         self._maybe_commit()
+
+        direct_visible = self._experiment_exists_direct(exp_id)
+        primary_visible = self._experiment_exists_primary(exp_id)
+        if not direct_visible:
+            LOGGER.warning(
+                "Experiment %s missing after primary commit; retrying via direct connection",
+                exp_id,
+            )
+            if not primary_visible:
+                conn = self._direct_db_conn()
+                try:
+                    row = conn.execute(
+                        "SELECT 1 FROM experiments WHERE experiment_id = ?",
+                        (exp_id,),
+                    ).fetchone()
+                    if row is None:
+                        conn.execute(
+                            """INSERT INTO experiments
+                            (experiment_id, timestamp, experiment_type, status, hypothesis,
+                             research_question, preregistration_id, config_json, started_at)
+                            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)""",
+                            insert_params,
+                        )
+                    if preregistration_id:
+                        conn.execute(
+                            """UPDATE hypothesis_preregistrations
+                               SET experiment_id = ?, status = 'linked'
+                               WHERE preregistration_id = ?""",
+                            (exp_id, preregistration_id),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+                direct_visible = self._experiment_exists_direct(exp_id)
+                primary_visible = self._experiment_exists_primary(exp_id)
+                if not direct_visible and not primary_visible:
+                    raise sqlite3.OperationalError(
+                        f"Experiment {exp_id} was not durably persisted"
+                    )
+            else:
+                LOGGER.warning(
+                    "Experiment %s is visible on primary connection but direct verification failed; continuing",
+                    exp_id,
+                )
 
         # Log entry
         source = (hypothesis_metadata or {}).get("source", "unknown")
@@ -328,6 +608,20 @@ class _ExperimentsMixin:
             )
         )
 
+        self._publish_lifecycle_event_safe(
+            event_type="experiment_started",
+            run_id=exp_id,
+            payload={
+                "timestamp": now,
+                "started_at": now,
+                "experiment_type": experiment_type,
+                "hypothesis": hypothesis,
+                "research_question": research_question,
+                "preregistration_id": preregistration_id,
+                "config": config_payload,
+            },
+        )
+
         return exp_id
 
     def complete_experiment(
@@ -350,14 +644,21 @@ class _ExperimentsMixin:
             )
 
         now = time.time()
-        started = self.conn.execute(
-            "SELECT started_at FROM experiments WHERE experiment_id = ?",
-            (experiment_id,),
-        ).fetchone()
+        try:
+            started = self.conn.execute(
+                "SELECT started_at FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary complete_experiment read failed for %s; using zero duration: %s",
+                experiment_id,
+                exc,
+            )
+            started = None
         duration = now - started["started_at"] if started else 0
 
-        self.conn.execute(
-            """UPDATE experiments SET
+        update_sql = """UPDATE experiments SET
                 status = 'completed',
                 results_json = ?,
                 n_programs_generated = ?,
@@ -372,60 +673,114 @@ class _ExperimentsMixin:
                 llm_analysis = ?,
                 completed_at = ?,
                 duration_seconds = ?
-            WHERE experiment_id = ?""",
-            (
-                self._compress(results),
-                results.get("total", 0),
-                results.get("stage0_passed", 0),
-                results.get("stage05_passed", 0),
-                results.get("stage1_passed", 0),
-                float(results["best_loss_ratio"])
-                if results.get("best_loss_ratio") is not None
-                else None,
-                float(results["best_novelty_score"])
-                if results.get("best_novelty_score") is not None
-                else None,
-                aria_summary,
-                aria_mood,
-                self._compress(insights or []),
-                llm_analysis,
-                now,
-                duration,
-                experiment_id,
-            ),
+            WHERE experiment_id = ?"""
+        update_params = (
+            self._compress(results),
+            results.get("total", 0),
+            results.get("stage0_passed", 0),
+            results.get("stage05_passed", 0),
+            results.get("stage1_passed", 0),
+            float(results["best_loss_ratio"])
+            if results.get("best_loss_ratio") is not None
+            else None,
+            float(results["best_novelty_score"])
+            if results.get("best_novelty_score") is not None
+            else None,
+            aria_summary,
+            aria_mood,
+            self._compress(insights or []),
+            llm_analysis,
+            now,
+            duration,
+            experiment_id,
         )
-        self._maybe_commit()
-
-        prereg = self.get_preregistration_for_experiment(experiment_id)
-        is_exploratory = bool(exploratory_deviation_reason)
-        if is_exploratory:
-            self.log_preregistration_deviation(
+        complete_persisted = False
+        try:
+            self.conn.execute(update_sql, update_params)
+            self._maybe_commit()
+            complete_persisted = True
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary complete_experiment write failed for %s; retrying direct: %s",
                 experiment_id,
-                rationale=exploratory_deviation_reason
-                or "Post-hoc exploratory deviation.",
-                details={"source": "complete_experiment"},
+                exc,
             )
-        self.add_entry(
-            ExperimentEntry(
-                entry_type="analysis",
-                title="Post-hoc Analysis Link",
-                content=(
-                    "Analysis linked to preregistration."
-                    if prereg
-                    else "Analysis has no preregistration link and is exploratory."
-                ),
-                experiment_id=experiment_id,
-                tags=["analysis_traceability"],
-                metadata={
-                    "preregistration_id": prereg.get("preregistration_id")
-                    if prereg
-                    else None,
-                    "analysis_mode": "exploratory"
-                    if is_exploratory or not prereg
-                    else "confirmatory",
-                    "deviation_reason": exploratory_deviation_reason,
-                },
+            try:
+                self._execute_direct_write(update_sql, update_params)
+                complete_persisted = True
+            except sqlite3.OperationalError as direct_exc:
+                LOGGER.warning(
+                    "Direct complete_experiment write failed for %s; continuing without notebook persistence: %s",
+                    experiment_id,
+                    direct_exc,
+                )
+        if complete_persisted:
+            status = self._experiment_status_direct(experiment_id)
+            if status != "completed":
+                LOGGER.warning(
+                    "Experiment %s status is %r after complete_experiment; retrying direct write",
+                    experiment_id,
+                    status,
+                )
+                try:
+                    self._execute_direct_write(update_sql, update_params)
+                except sqlite3.OperationalError as exc:
+                    LOGGER.warning(
+                        "Final complete_experiment retry failed for %s; continuing without notebook persistence: %s",
+                        experiment_id,
+                        exc,
+                    )
+
+        prereg = None
+        is_exploratory = bool(exploratory_deviation_reason)
+        try:
+            prereg = self.get_preregistration_for_experiment(experiment_id)
+            if is_exploratory:
+                self.log_preregistration_deviation(
+                    experiment_id,
+                    rationale=exploratory_deviation_reason
+                    or "Post-hoc exploratory deviation.",
+                    details={"source": "complete_experiment"},
+                )
+            self.add_entry(
+                ExperimentEntry(
+                    entry_type="analysis",
+                    title="Post-hoc Analysis Link",
+                    content=(
+                        "Analysis linked to preregistration."
+                        if prereg
+                        else "Analysis has no preregistration link and is exploratory."
+                    ),
+                    experiment_id=experiment_id,
+                    tags=["analysis_traceability"],
+                    metadata={
+                        "preregistration_id": prereg.get("preregistration_id")
+                        if prereg
+                        else None,
+                        "analysis_mode": "exploratory"
+                        if is_exploratory or not prereg
+                        else "confirmatory",
+                        "deviation_reason": exploratory_deviation_reason,
+                    },
+                )
             )
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Post-completion notebook follow-up failed for %s; continuing without notebook persistence: %s",
+                experiment_id,
+                exc,
+            )
+        self._publish_lifecycle_event_safe(
+            event_type="experiment_completed",
+            run_id=experiment_id,
+            payload={
+                "completed_at": now,
+                "results": results,
+                "aria_summary": aria_summary,
+                "aria_mood": aria_mood,
+                "insights": insights or [],
+                "llm_analysis": llm_analysis,
+            },
         )
 
     def fail_experiment(
@@ -437,28 +792,76 @@ class _ExperimentsMixin:
         n_prog = results.get("total", 0) if results else 0
 
         # First update so we have the state
-        self.conn.execute(
-            """UPDATE experiments SET 
+        fail_sql = """UPDATE experiments SET 
                status = 'failed', 
                completed_at = ?,
                aria_summary = ?,
                results_json = ?,
                n_programs_generated = ?
-               WHERE experiment_id = ?""",
-            (time.time(), f"FAILED: {error}", results_blob, n_prog, experiment_id),
+               WHERE experiment_id = ?"""
+        fail_params = (
+            time.time(),
+            f"FAILED: {error}",
+            results_blob,
+            n_prog,
+            experiment_id,
         )
-        self._maybe_commit()
+        fail_persisted = False
+        try:
+            self.conn.execute(fail_sql, fail_params)
+            self._maybe_commit()
+            fail_persisted = True
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary fail_experiment write failed for %s; retrying direct: %s",
+                experiment_id,
+                exc,
+            )
+            try:
+                self._execute_direct_write(fail_sql, fail_params)
+                fail_persisted = True
+            except sqlite3.OperationalError as direct_exc:
+                LOGGER.warning(
+                    "Direct fail_experiment write failed for %s; continuing without notebook persistence: %s",
+                    experiment_id,
+                    direct_exc,
+                )
+        if fail_persisted:
+            status = self._experiment_status_direct(experiment_id)
+            if status != "failed":
+                LOGGER.warning(
+                    "Experiment %s status is %r after fail_experiment; retrying direct write",
+                    experiment_id,
+                    status,
+                )
+                try:
+                    self._execute_direct_write(fail_sql, fail_params)
+                except sqlite3.OperationalError as exc:
+                    LOGGER.warning(
+                        "Final fail_experiment retry failed for %s; continuing without notebook persistence: %s",
+                        experiment_id,
+                        exc,
+                    )
 
         # Delete if it's total junk (no programs AND no LLM insights AND no results)
-        row = self.conn.execute(
-            "SELECT llm_analysis, experiment_type, hypothesis, research_question "
-            "FROM experiments WHERE experiment_id = ?",
-            (experiment_id,),
-        ).fetchone()
-        has_results = self.conn.execute(
-            "SELECT 1 FROM program_results WHERE experiment_id = ? LIMIT 1",
-            (experiment_id,),
-        ).fetchone()
+        try:
+            row = self.conn.execute(
+                "SELECT llm_analysis, experiment_type, hypothesis, research_question "
+                "FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            has_results = self.conn.execute(
+                "SELECT 1 FROM program_results WHERE experiment_id = ? LIMIT 1",
+                (experiment_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Post-failure notebook follow-up failed for %s; continuing without notebook persistence: %s",
+                experiment_id,
+                exc,
+            )
+            row = None
+            has_results = True
 
         # Preserve expensive or user-driven failed runs. Investigation/validation
         # jobs may do substantial work without creating new program_results rows,
@@ -480,6 +883,16 @@ class _ExperimentsMixin:
         ):
             self._delete_experiment_cascade(experiment_id)
             LOGGER.info("Deleted zero-value failed experiment %s", experiment_id)
+
+        self._publish_lifecycle_event_safe(
+            event_type="experiment_failed",
+            run_id=experiment_id,
+            payload={
+                "completed_at": fail_params[0],
+                "error": error,
+                "results": results,
+            },
+        )
 
     def _delete_experiment_cascade(self, experiment_id: str) -> None:
         """Delete an experiment and all FK-dependent child rows.
@@ -578,6 +991,35 @@ class _ExperimentsMixin:
             (time.time(), experiment_id),
         )
         self._maybe_commit()
+        if self._experiment_exists_direct(experiment_id):
+            try:
+                conn = self._direct_db_conn()
+                try:
+                    conn.execute(
+                        """UPDATE experiments SET status = 'failed', completed_at = ?,
+                           aria_summary = 'Cancelled by user'
+                           WHERE experiment_id = ?""",
+                        (time.time(), experiment_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except sqlite3.OperationalError as exc:
+                LOGGER.warning(
+                    "Direct cancel persistence failed for %s: %s",
+                    experiment_id,
+                    exc,
+                )
+        self._publish_lifecycle_event_safe(
+            event_type="experiment_failed",
+            run_id=experiment_id,
+            payload={
+                "completed_at": time.time(),
+                "error": "Cancelled by user",
+                "results": None,
+                "cancelled": True,
+            },
+        )
         return True
 
     # ── Queries ──
@@ -672,17 +1114,24 @@ class _ExperimentsMixin:
     def get_recent_experiments(self, n: int = 20, offset: int = 0) -> List[Dict]:
         n = max(1, int(n))
         offset = max(0, int(offset))
-        rows = self.conn.execute(
-            """SELECT experiment_id, timestamp, experiment_type, status,
-                      hypothesis, research_question,
-                      n_programs_generated, n_stage0_passed, n_stage05_passed,
-                      n_stage1_passed,
-                      best_loss_ratio, best_novelty_score, aria_mood,
-                      aria_summary, duration_seconds
-               FROM experiments ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
-            (n, offset),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        try:
+            rows = self.conn.execute(
+                """SELECT experiment_id, timestamp, experiment_type, status,
+                          hypothesis, research_question,
+                          n_programs_generated, n_stage0_passed, n_stage05_passed,
+                          n_stage1_passed,
+                          best_loss_ratio, best_novelty_score, aria_mood,
+                          aria_summary, duration_seconds
+                   FROM experiments ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+                (n, offset),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Recent experiment query failed; returning empty history: %s",
+                exc,
+            )
+            return []
 
     def get_latest_completed_experiment_timestamp(self) -> float:
         row = self.conn.execute(

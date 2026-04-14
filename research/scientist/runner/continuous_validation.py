@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from ..runtime_events import publish_lifecycle_event
 from ...eval.perf_budget import evaluate_perf_budget_gate
 from ...training.checkpointing import CheckpointManager
 from ...training.training_program import synthesize_training_program
@@ -36,6 +37,49 @@ class _ContinuousValidationMixin:
     """Validation seed runs, metrics computation, external evals, and inline validation."""
 
     __slots__ = ()
+
+    def _publish_continuous_validation_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.continuous_validation",
+            run_id=exp_id,
+            payload=payload,
+        )
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights,
+        llm_analysis: str | None,
+    ) -> None:
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            aria_mood=self.aria.state.mood,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+
+    def _fail_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        error: str,
+    ) -> None:
+        getattr(nb, "fail_experiment")(experiment_id, error)
 
     def _scaling_reference_families(self, config: RunConfig) -> tuple[str, ...]:
         raw = str(getattr(config, "scaling_reference_families", "gpt2") or "gpt2")
@@ -725,12 +769,26 @@ class _ContinuousValidationMixin:
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
 
-            nb.complete_experiment(
+            insights = self._analyze_results(results, exp_id, nb, context=context)
+            self._publish_continuous_validation_terminal_event(
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                    "mode": "continuous_validation",
+                },
+            )
+            self._complete_experiment_compat(
+                nb=nb,
                 experiment_id=exp_id,
                 results=results,
                 aria_summary=summary,
-                aria_mood=self.aria.state.mood,
-                insights=self._analyze_results(results, exp_id, nb, context=context),
+                insights=insights,
                 llm_analysis=llm_analysis,
             )
             self._maybe_extract_knowledge(config, nb, n_experiments)
@@ -745,7 +803,21 @@ class _ContinuousValidationMixin:
 
         except Exception as e:
             logger.warning(f"Inline validation failed: {e}")
-            nb.fail_experiment(exp_id, str(e))
+            self._publish_continuous_validation_terminal_event(
+                event_type="experiment_failed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": str(e),
+                    "results": None,
+                    "mode": "continuous_validation",
+                },
+            )
+            self._fail_experiment_compat(
+                nb=nb,
+                experiment_id=exp_id,
+                error=str(e),
+            )
             self._emit_event(
                 "validation_completed",
                 {

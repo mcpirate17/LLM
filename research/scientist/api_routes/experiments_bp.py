@@ -15,10 +15,13 @@ from ..runner import RunConfig
 from ._experiment_launch import (
     build_start_error_response,
     build_start_success_response,
+    create_launch_lifecycle_context,
     launch_experiment_mode,
     load_rerun_source,
     maybe_block_preflight,
     parse_start_request,
+    publish_launch_failed,
+    publish_launch_requested,
     start_batch_rerun,
     start_rerun_from_source,
 )
@@ -293,7 +296,13 @@ def register_experiments_routes(app, context: ApiRouteContext):
         if blocked is not None:
             return blocked
 
+        launch_context = create_launch_lifecycle_context()
         try:
+            publish_launch_requested(
+                start,
+                notebook_path=notebook_path,
+                context=launch_context,
+            )
             exp_id, eligibility, scale_up_resolution, refine_resolution, error = (
                 launch_experiment_mode(start, nb=nb, runner=runner)
             )
@@ -313,10 +322,17 @@ def register_experiments_routes(app, context: ApiRouteContext):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
+            publish_launch_failed(
+                e,
+                mode=start.mode,
+                notebook_path=notebook_path,
+                context=launch_context,
+            )
             return build_start_error_response(
                 e,
                 mode=start.mode,
                 notebook_path=notebook_path,
+                runner=runner,
                 should_autospawn_self_repair=_should_autospawn_self_repair,
                 spawn_code_agent_task=_spawn_code_agent_task,
             )

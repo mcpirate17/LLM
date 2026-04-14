@@ -48,6 +48,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..json_utils import fast_dumps, json_safe
+from ..runtime_events import publish_lifecycle_event
 
 import torch
 
@@ -70,6 +71,10 @@ from ..notebook import LabNotebook, ExperimentEntry
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _log_learning_event_compat(nb: LabNotebook, *args, **kwargs) -> None:
+    getattr(nb, "log_learning_event")(*args, **kwargs)
 
 # Gate 5 constant: routing/MoE/sparse/compression ops required for efficiency scoring.
 # Module-level to avoid re-instantiation per graph in the screening loop.
@@ -817,7 +822,8 @@ def _judgment_rerank(
     # Decision trace: log judgment summary for observability
     try:
         scores = [t[1] for t in scored]
-        nb.log_learning_event(
+        _log_learning_event_compat(
+            nb,
             "judgment_rerank",
             f"Reranked {n} candidates ({skipped} filtered)",
             n_candidates=n,
@@ -837,6 +843,52 @@ class _ExecutionScreeningMixin:
     """Screening experiment thread and core experiment execution."""
 
     __slots__ = ()
+
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
+    def _publish_screening_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.execution_screening",
+            run_id=exp_id,
+            payload=payload,
+        )
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights,
+        llm_analysis: str | None,
+    ) -> None:
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            aria_mood=self.aria.state.mood,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+
+    def _fail_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        error: str,
+    ) -> None:
+        getattr(nb, "fail_experiment")(experiment_id, error)
 
     def _run_experiment_thread(self, exp_id: str, config: RunConfig, hypothesis: str):
         """Execute a single experiment in background."""
@@ -880,11 +932,24 @@ class _ExecutionScreeningMixin:
             except Exception as e:
                 logger.warning("Hypothesis validation logging failed: %s", e)
 
-            nb.complete_experiment(
+            self._publish_screening_terminal_event(
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                    "mode": "screening",
+                },
+            )
+            self._complete_experiment_compat(
+                nb=nb,
                 experiment_id=exp_id,
                 results=results,
                 aria_summary=summary,
-                aria_mood=self.aria.state.mood,
                 insights=insights,
                 llm_analysis=llm_analysis,
             )
@@ -980,7 +1045,21 @@ class _ExecutionScreeningMixin:
                 logger.warning(
                     "code_healer failed during experiment error handling", exc_info=True
                 )
-            nb.fail_experiment(exp_id, str(e))
+            self._publish_screening_terminal_event(
+                event_type="experiment_failed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": str(e),
+                    "results": None,
+                    "mode": "screening",
+                },
+            )
+            self._fail_experiment_compat(
+                nb=nb,
+                experiment_id=exp_id,
+                error=str(e),
+            )
             self._update_progress(
                 status="failed",
                 error=str(e),
@@ -1001,7 +1080,22 @@ class _ExecutionScreeningMixin:
                 traceback.format_exc(),
             )
             try:
-                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._publish_screening_terminal_event(
+                    event_type="experiment_failed",
+                    exp_id=exp_id,
+                    payload={
+                        "completed_at": time.time(),
+                        "error": f"FATAL: {e}",
+                        "results": None,
+                        "mode": "screening",
+                        "fatal": True,
+                    },
+                )
+                self._fail_experiment_compat(
+                    nb=nb,
+                    experiment_id=exp_id,
+                    error=f"FATAL: {e}",
+                )
                 self._update_progress(status="failed", error=f"FATAL: {e}")
                 self._emit_event(
                     "experiment_failed",
@@ -1063,7 +1157,8 @@ class _ExecutionScreeningMixin:
                         config=config,
                     )
                     if not grammar_gate.get("gate_pass"):
-                        nb.log_learning_event(
+                        self._log_learning_event_compat(
+                            nb,
                             "grammar_weights_blocked",
                             f"Blocked grammar weight update for {exp_id}: weak attribution evidence",
                             evidence=fast_dumps(json_safe(grammar_gate), safe=True),
@@ -1109,7 +1204,8 @@ class _ExecutionScreeningMixin:
                         if op_name:
                             op_weights[op_name] = penalty
                     if op_weights:
-                        nb.log_learning_event(
+                        self._log_learning_event_compat(
+                            nb,
                             "weak_ops_penalized",
                             f"Soft-penalized {len(op_weights)} weak ops: "
                             f"{', '.join(f'{k}={v:.2f}' for k, v in sorted(op_weights.items()))}",
@@ -1123,7 +1219,8 @@ class _ExecutionScreeningMixin:
             try:
                 failure_blocklist = nb.get_failure_signature_blocklist()
                 if failure_blocklist:
-                    nb.log_learning_event(
+                    self._log_learning_event_compat(
+                        nb,
                         "failure_signatures_loaded",
                         f"Loaded {len(failure_blocklist)} toxic op-pair patterns",
                         signatures=sorted(failure_blocklist.keys())[:10],
@@ -1301,7 +1398,8 @@ class _ExecutionScreeningMixin:
                 grammar.category_weights[category] = round(
                     max(0.5, min(8.0, base * multiplier)), 2
                 )
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "champion_bias_applied",
                 f"Applied champion grammar bias for {exp_id}",
                 multipliers=champion_bias,
@@ -1313,7 +1411,8 @@ class _ExecutionScreeningMixin:
         # Apply chat-driven grammar weight overrides (from Aria actions)
         if self._grammar_weight_overrides:
             grammar.category_weights.update(self._grammar_weight_overrides)
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "chat_grammar_overrides_applied",
                 f"Applied chat-driven grammar overrides for {exp_id}",
                 overrides=dict(self._grammar_weight_overrides),
@@ -1403,7 +1502,8 @@ class _ExecutionScreeningMixin:
 
                         prior = EfficiencyPrior(frontier)
                         use_adaptive = True
-                        nb.log_learning_event(
+                        self._log_learning_event_compat(
+                            nb,
                             "adaptive_synthesis_enabled",
                             f"Enabling budget-aware adaptive synthesis for {exp_id}",
                             frontier_size=len(frontier),
@@ -1449,13 +1549,15 @@ class _ExecutionScreeningMixin:
             )
             if shift:
                 results["generation_distribution_shift"] = shift
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "architecture_distribution_shift",
                     f"Generated-op distribution shift recorded for synthesis experiment {exp_id}",
                     evidence=fast_dumps(json_safe(shift), safe=True),
                 )
             else:
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "architecture_distribution_snapshot",
                     f"Captured generated-op distribution for synthesis experiment {exp_id}",
                     evidence=fast_dumps(

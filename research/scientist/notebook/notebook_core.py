@@ -94,6 +94,63 @@ class _NotebookCore:
 
     _cached_code_version: Optional[str] = None
     _last_report_snapshot_cleanup_at: float = 0.0
+    _schema_bootstrapped_paths: set[str] = set()
+
+    @staticmethod
+    def _configure_sqlite_connection(
+        conn: sqlite3.Connection,
+        *,
+        db_path: Path,
+        role: str,
+    ) -> None:
+        """Apply connection pragmas.
+
+        WAL mode is deliberately not used.  With 30+ code paths opening raw
+        ``sqlite3.connect()`` calls (intelligence, analytics, runner helpers),
+        any connection closing as the last WAL reader triggers an auto-checkpoint
+        that deletes the ``-shm`` file.  This corrupts the process-wide SQLite
+        mmap state, causing ``SQLITE_IOERR_SHORT_READ`` (ext 522) on every
+        subsequent connection for the rest of the process lifetime.  DELETE
+        journal mode avoids SHM/mmap entirely.
+        """
+
+        def _run_pragma(sql: str, *, desc: str, required: bool = False) -> None:
+            last_error: Optional[sqlite3.OperationalError] = None
+            for delay_s in (0.0, 0.2, 0.5):
+                if delay_s:
+                    time.sleep(delay_s)
+                try:
+                    conn.execute(sql)
+                    last_error = None
+                    return
+                except sqlite3.OperationalError as exc:
+                    last_error = exc
+                    ext_code = getattr(exc, "sqlite_errorcode", None)
+                    LOGGER.warning(
+                        "Pragma %s failed: %s (extended_errcode=%s, db=%s, role=%s)",
+                        desc,
+                        exc,
+                        ext_code,
+                        db_path,
+                        role,
+                    )
+                    if "disk i/o error" not in str(exc).lower():
+                        raise
+            if last_error is None:
+                return
+            if required:
+                raise last_error
+            LOGGER.warning(
+                "Failed to apply %s for %s connection to %s; continuing: %s",
+                desc,
+                role,
+                db_path,
+                last_error,
+            )
+
+        _run_pragma("PRAGMA foreign_keys=ON", desc="foreign_keys")
+        _run_pragma("PRAGMA synchronous=NORMAL", desc="synchronous mode")
+        _run_pragma("PRAGMA busy_timeout=15000", desc="busy timeout")
 
     @staticmethod
     def resolve_db_path(db_path: str | Path) -> Path:
@@ -133,11 +190,11 @@ class _NotebookCore:
             timeout=10.0,
             check_same_thread=check_same_thread,
         )
-        raw_conn.execute("PRAGMA foreign_keys=ON")
-        if not self._is_memory:
-            raw_conn.execute("PRAGMA journal_mode=WAL")
-        raw_conn.execute("PRAGMA synchronous=NORMAL")
-        raw_conn.execute("PRAGMA busy_timeout=15000")
+        self._configure_sqlite_connection(
+            raw_conn,
+            db_path=self.db_path,
+            role="primary",
+        )
         raw_conn.row_factory = sqlite3.Row
         self.conn = _ThreadSafeConnectionWrapper(raw_conn)
         self._batch_depth = 0
@@ -147,29 +204,65 @@ class _NotebookCore:
         self._dashboard_summary_cache_expires_at: float = 0.0
         self._template_observability_cache: Dict[int, Dict[str, Any]] = {}
         self._template_observability_cache_expires_at: float = 0.0
-        self.conn.executescript(NOTEBOOK_SCHEMA)
-        self._maybe_commit()
-
+        self._writer_thread_started = False
         db_key = str(self.db_path)
         cls = type(self)
+        self._ensure_schema_bootstrap(db_key=db_key)
         if not skip_migrate and db_key not in cls._migrated_paths:
             self._migrate()
             cls._migrated_paths.add(db_key)
 
         self._write_queue = queue.Queue()
         self._stop_event = threading.Event()
-        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
-        self._writer_thread.start()
+        self._writer_thread: Optional[threading.Thread] = None
+
+    def _has_core_schema(self) -> bool:
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'experiments'"
+            ).fetchone()
+            return row is not None
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning("Core schema probe failed for %s: %s", self.db_path, exc)
+            return False
+
+    def _ensure_schema_bootstrap(self, *, db_key: str) -> None:
+        cls = type(self)
+        if self._is_memory:
+            self.conn.executescript(NOTEBOOK_SCHEMA)
+            self._maybe_commit()
+            cls._schema_bootstrapped_paths.add(db_key)
+            return
+        if db_key in cls._schema_bootstrapped_paths:
+            return
+        if self._has_core_schema():
+            cls._schema_bootstrapped_paths.add(db_key)
+            return
+        try:
+            self.conn.executescript(NOTEBOOK_SCHEMA)
+            self._maybe_commit()
+            cls._schema_bootstrapped_paths.add(db_key)
+        except sqlite3.OperationalError as exc:
+            if self._has_core_schema():
+                LOGGER.warning(
+                    "Schema bootstrap failed for %s but core schema exists; continuing: %s",
+                    self.db_path,
+                    exc,
+                )
+                cls._schema_bootstrapped_paths.add(db_key)
+                return
+            raise
 
     def _writer_loop(self):
         """Background thread that handles all database writes."""
         # Use a separate connection for the writer thread
         writer_conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        writer_conn.execute("PRAGMA foreign_keys=ON")
-        if not self._is_memory:
-            writer_conn.execute("PRAGMA journal_mode=WAL")
-        writer_conn.execute("PRAGMA synchronous=NORMAL")
-        writer_conn.execute("PRAGMA busy_timeout=15000")
+        self._configure_sqlite_connection(
+            writer_conn,
+            db_path=self.db_path,
+            role="writer",
+        )
 
         batch = []
         last_commit = time.time()
@@ -253,9 +346,17 @@ class _NotebookCore:
             writer_conn.commit()
         writer_conn.close()
 
+    def _ensure_writer_thread(self) -> None:
+        if self._writer_thread_started:
+            return
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._writer_thread.start()
+        self._writer_thread_started = True
+
     def _submit_write(self, sql: str, params: Any):
         """Submit a write task to the background queue."""
         self._invalidate_dashboard_summary_cache()
+        self._ensure_writer_thread()
         self._write_queue.put((sql, params))
 
     def _store_graph_features_async(
@@ -953,9 +1054,13 @@ class _NotebookCore:
     def close(self):
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
-        if hasattr(self, "_write_queue"):
+        if hasattr(self, "_write_queue") and self._writer_thread_started:
             self._write_queue.put(None)  # Sentinel
-        if hasattr(self, "_writer_thread") and self._writer_thread.is_alive():
+        if (
+            hasattr(self, "_writer_thread")
+            and self._writer_thread is not None
+            and self._writer_thread.is_alive()
+        ):
             self._writer_thread.join(timeout=2.0)
         self.conn.close()
 

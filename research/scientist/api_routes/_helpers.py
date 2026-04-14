@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 
 from ..notebook import LabNotebook
 from ..runner import ExperimentRunner
+from ..runner._types import LiveProgress
+from ..runtime_events import get_runtime_event_services, start_runtime_event_projector
 from .deps import get_notebook
 from ..native.telemetry import native_runner_capability_report
 from ..persona import get_aria
@@ -35,7 +37,38 @@ def get_runner(notebook_path: str) -> ExperimentRunner:
     global _runner
     if _runner is None:
         _runner = ExperimentRunner(notebook_path)
+        try:
+            start_runtime_event_projector(notebook_path)
+        except Exception:
+            logger.warning(
+                "Runtime event projector bootstrap failed for %s",
+                notebook_path,
+                exc_info=True,
+            )
     return _runner
+
+
+def reset_runner_launch_state(runner: ExperimentRunner, *, error: Optional[str] = None) -> None:
+    """Clear phantom in-memory launch state after a failed start attempt."""
+    with runner._lock:
+        if runner._thread is not None and not runner._thread.is_alive():
+            runner._thread = None
+        runner._progress = LiveProgress(
+            status="failed" if error else "idle",
+            error=error,
+            aria_message=error or "",
+        )
+    try:
+        runner._set_aria_cycle_phase(
+            "idle",
+            continuous_active=False,
+            cycle_index=0,
+            selected_mode=None,
+            note="Launch failed; runner state reset.",
+            emit_event=False,
+        )
+    except Exception:
+        logger.debug("Failed to reset cycle phase after launch error", exc_info=True)
 
 
 def _json_dict_or_empty(raw: Any) -> Dict[str, Any]:
@@ -169,7 +202,31 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
             "external_snapshot": None,
         }
 
+    lifecycle_snapshot = get_registry_running_experiment_snapshot(nb)
+    if lifecycle_snapshot is not None:
+        return {
+            "is_running": True,
+            "progress": with_native_runner_progress(
+                _build_registry_progress(lifecycle_snapshot)
+            ),
+            "external_snapshot": lifecycle_snapshot,
+        }
+
     try:
+        projected = get_projected_running_experiment_snapshot(nb)
+        if projected is not None:
+            return {
+                "is_running": True,
+                "progress": with_native_runner_progress(
+                    _build_external_progress(
+                        projected,
+                        current_stage="runtime_projector",
+                        default_message_prefix="Projected",
+                    )
+                ),
+                "external_snapshot": projected,
+            }
+
         external = get_external_running_experiment_snapshot(nb)
     except sqlite3.DatabaseError as exc:
         if not is_malformed_db_error(exc):
@@ -232,6 +289,205 @@ def resolve_runner_status(nb: LabNotebook, runner: ExperimentRunner) -> Dict[str
         "is_running": True,
         "progress": with_native_runner_progress(progress),
         "external_snapshot": external,
+    }
+
+
+def get_registry_running_experiment_snapshot(
+    nb: LabNotebook,
+) -> Optional[Dict[str, Any]]:
+    services = get_runtime_event_services(nb.db_path)
+    registry = services.registry
+    registry.spool_unhealthy = bool(services.bus_health().last_spool_error)
+    registry.projector_unhealthy = bool(services.projector_health().degraded)
+    run_id = registry.active_run_id()
+    if not run_id:
+        return None
+    state = registry.get(run_id)
+    if state is None or state.status != "running":
+        return None
+    payload = dict(state.last_event.payload or {})
+    config = _json_dict_or_empty(payload.get("config"))
+    mode = str(
+        config.get("mode")
+        or config.get("run_mode")
+        or config.get("experiment_mode")
+        or payload.get("experiment_type")
+        or "runtime_event"
+    )
+    return {
+        "experiment_id": run_id,
+        "status": state.status,
+        "mode": mode,
+        "hypothesis": str(payload.get("hypothesis") or "").strip(),
+        "current_program": 0,
+        "total_programs": 0,
+        "stage0_passed": 0,
+        "stage05_passed": 0,
+        "stage1_passed": 0,
+        "started_at": float(payload.get("started_at", state.last_event.created_at)),
+        "last_activity_ts": float(state.last_event.created_at),
+        "elapsed_seconds": max(0.0, time.time() - float(state.last_event.created_at)),
+        "source": "runtime_lifecycle_registry",
+    }
+
+
+def get_projected_running_experiment_snapshot(
+    nb: LabNotebook,
+) -> Optional[Dict[str, Any]]:
+    start_runtime_event_projector(nb.db_path)
+    row = nb.conn.execute(
+        """
+        SELECT
+            e.experiment_id,
+            e.timestamp,
+            e.started_at,
+            e.experiment_type,
+            e.status,
+            e.hypothesis,
+            e.config_json,
+            e.n_programs_generated,
+            e.n_stage0_passed,
+            e.n_stage05_passed,
+            e.n_stage1_passed,
+            MAX(arev.applied_at) AS last_projected_at
+        FROM experiments e
+        JOIN applied_runtime_events arev
+          ON arev.run_id = e.experiment_id
+        WHERE e.status = 'running'
+        GROUP BY
+            e.experiment_id,
+            e.timestamp,
+            e.started_at,
+            e.experiment_type,
+            e.status,
+            e.hypothesis,
+            e.config_json,
+            e.n_programs_generated,
+            e.n_stage0_passed,
+            e.n_stage05_passed,
+            e.n_stage1_passed
+        ORDER BY COALESCE(e.started_at, e.timestamp) DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+
+    config = _json_dict_or_empty(row["config_json"])
+    total_programs = (
+        config.get("n_programs")
+        or config.get("num_programs")
+        or row["n_programs_generated"]
+        or 0
+    )
+    try:
+        total_programs = int(total_programs or 0)
+    except (TypeError, ValueError):
+        total_programs = 0
+
+    current_program = int(row["n_programs_generated"] or 0)
+    started_at = float(row["started_at"] or row["timestamp"] or time.time())
+    last_projected_at = float(row["last_projected_at"] or started_at)
+    return {
+        "experiment_id": str(row["experiment_id"] or ""),
+        "status": "running",
+        "mode": str(
+            config.get("mode")
+            or config.get("run_mode")
+            or config.get("experiment_mode")
+            or row["experiment_type"]
+            or "projected"
+        ),
+        "hypothesis": str(row["hypothesis"] or "").strip(),
+        "current_program": current_program,
+        "total_programs": max(total_programs, current_program),
+        "stage0_passed": int(row["n_stage0_passed"] or 0),
+        "stage05_passed": int(row["n_stage05_passed"] or 0),
+        "stage1_passed": int(row["n_stage1_passed"] or 0),
+        "started_at": started_at,
+        "last_activity_ts": last_projected_at,
+        "elapsed_seconds": max(0.0, time.time() - started_at),
+        "source": "projected_runtime_lifecycle",
+    }
+
+
+def _build_registry_progress(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    hypothesis = str(snapshot.get("hypothesis") or "").strip()
+    mode = str(snapshot.get("mode") or "runtime_event")
+    return {
+        "experiment_id": snapshot["experiment_id"],
+        "status": "running",
+        "current_program": 0,
+        "total_programs": 0,
+        "stage0_passed": 0,
+        "stage05_passed": 0,
+        "stage1_passed": 0,
+        "novel_count": 0,
+        "current_stage": "runtime_events",
+        "current_fingerprint": "",
+        "best_loss_ratio": None,
+        "best_novelty": None,
+        "elapsed_seconds": snapshot["elapsed_seconds"],
+        "aria_message": (
+            f"Runtime lifecycle registry reports active {mode} experiment"
+            if not hypothesis
+            else f"Runtime lifecycle registry: {hypothesis[:160]}"
+        ),
+        "error": None,
+        "estimated_cost": 0.0,
+        "total_tokens": 0,
+        "current_generation": 0,
+        "total_generations": 0,
+        "best_fitness": None,
+        "avg_fitness": None,
+        "archive_size": 0,
+        "hypothesis_critique": None,
+        "run_source": snapshot["source"],
+        "last_activity_ts": snapshot["last_activity_ts"],
+        "external_process": True,
+    }
+
+
+def _build_external_progress(
+    snapshot: Dict[str, Any],
+    *,
+    current_stage: str,
+    default_message_prefix: str,
+) -> Dict[str, Any]:
+    mode = str(snapshot.get("mode") or "external")
+    hypothesis = str(snapshot.get("hypothesis") or "").strip()
+    source = str(snapshot.get("source") or "external")
+    return {
+        "experiment_id": snapshot["experiment_id"],
+        "status": "running",
+        "current_program": int(snapshot.get("current_program") or 0),
+        "total_programs": int(snapshot.get("total_programs") or 0),
+        "stage0_passed": int(snapshot.get("stage0_passed") or 0),
+        "stage05_passed": int(snapshot.get("stage05_passed") or 0),
+        "stage1_passed": int(snapshot.get("stage1_passed") or 0),
+        "novel_count": 0,
+        "current_stage": current_stage,
+        "current_fingerprint": "",
+        "best_loss_ratio": None,
+        "best_novelty": None,
+        "elapsed_seconds": snapshot["elapsed_seconds"],
+        "aria_message": (
+            f"{default_message_prefix} {mode} experiment detected via notebook"
+            if not hypothesis
+            else f"{default_message_prefix} {mode} experiment: {hypothesis[:160]}"
+        ),
+        "error": None,
+        "estimated_cost": 0.0,
+        "total_tokens": 0,
+        "current_generation": 0,
+        "total_generations": 0,
+        "best_fitness": None,
+        "avg_fitness": None,
+        "archive_size": 0,
+        "hypothesis_critique": None,
+        "run_source": source,
+        "last_activity_ts": snapshot["last_activity_ts"],
+        "external_process": True,
     }
 
 

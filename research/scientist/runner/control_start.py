@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..json_utils import json_safe
+from ..runtime_events import publish_lifecycle_event, publish_runtime_event
 
 from ..notebook import LabNotebook
 from ..llm.context_experiment import (
@@ -24,6 +26,24 @@ class _ControlStartMixin:
     """Start-experiment family of methods for ExperimentRunner."""
 
     __slots__ = ()
+
+    def _emit_canonical_experiment_started(
+        self,
+        *,
+        experiment_id: str,
+        hypothesis: Optional[str],
+        config: Dict[str, Any],
+        mode: str,
+        **extra: Any,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "experiment_id": experiment_id,
+            "hypothesis": hypothesis,
+            "config": config,
+            "mode": mode,
+        }
+        payload.update(extra)
+        self._emit_event("experiment_started", payload)
 
     def start_experiment(
         self,
@@ -141,16 +161,14 @@ class _ControlStartMixin:
                 hypothesis_critique=critique,
             )
 
-        self._emit_event(
-            "experiment_started",
-            {
-                "experiment_id": exp_id,
-                "hypothesis": hypothesis,
-                "config": config.to_dict(),
-                "prescreen": prescreen,
-                "aria_greeting": self.aria.greet(),
-                "hypothesis_critique": critique,
-            },
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="synthesis",
+            prescreen=prescreen,
+            aria_greeting=self.aria.greet(),
+            hypothesis_critique=critique,
         )
 
         self._thread = threading.Thread(
@@ -242,6 +260,17 @@ class _ControlStartMixin:
                 status="generating",
                 aria_message=f"{self.aria.NAME} entering continuous research mode...",
             )
+
+        publish_runtime_event(
+            notebook_path=self.notebook_path,
+            event_type="continuous_session_started",
+            producer="runner.control_start",
+            run_id=None,
+            payload={
+                "mode": "continuous",
+                "config": config.to_dict(),
+            },
+        )
 
         self._thread = threading.Thread(
             target=self._run_continuous_thread,
@@ -594,6 +623,13 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting investigation of {len(result_ids)} candidate(s)...",
             )
 
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="investigation",
+            result_ids=result_ids,
+        )
         self._emit_event(
             "investigation_started",
             {
@@ -693,6 +729,13 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting validation of {len(result_ids)} candidate(s)...",
             )
 
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="validation",
+            result_ids=result_ids,
+        )
         self._emit_event(
             "validation_started",
             {
@@ -758,6 +801,13 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting scale-up validation of {len(result_ids)} program(s)...",
             )
 
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="scale_up",
+            result_ids=result_ids,
+        )
         self._emit_event(
             "scale_up_started",
             {
@@ -830,6 +880,12 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting evolutionary search...",
             )
 
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="evolution",
+        )
         self._emit_event(
             "evolution_started",
             {
@@ -897,6 +953,12 @@ class _ControlStartMixin:
                 aria_message=f"{self.aria.NAME}: Starting novelty search...",
             )
 
+        self._emit_canonical_experiment_started(
+            experiment_id=exp_id,
+            hypothesis=hypothesis,
+            config=config.to_dict(),
+            mode="novelty",
+        )
         self._emit_event(
             "novelty_started",
             {
@@ -934,7 +996,7 @@ class _ControlStartMixin:
             nb.close()
             raise ValueError(
                 f"Experiment {experiment_id} not found or not resumable "
-                "(must be 'running' or 'failed')"
+                "(must be 'running', 'failed', or 'interrupted')"
             )
 
         exp_type = exp_data["experiment_type"]
@@ -953,13 +1015,10 @@ class _ControlStartMixin:
 
         config.resume_experiment_id = experiment_id
 
-        # Mark experiment as running again if it was failed
-        if exp_data["status"] == "failed":
-            nb.conn.execute(
-                "UPDATE experiments SET status = 'running' WHERE experiment_id = ?",
-                (experiment_id,),
-            )
-            nb.conn.commit()
+        # Compatibility sink until resume lifecycle persistence is projector-only.
+        # Mark experiment as running again if it was terminal but resumable.
+        if exp_data["status"] in {"failed", "interrupted"}:
+            getattr(nb, "resume_experiment")(experiment_id)
         nb.close()
 
         with self._lock:
@@ -968,6 +1027,21 @@ class _ControlStartMixin:
                 status="resuming",
                 aria_message=f"Resuming {exp_type} experiment {experiment_id}...",
             )
+
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type="experiment_started",
+            producer="runner.control_start.resume",
+            run_id=experiment_id,
+            payload={
+                "experiment_type": exp_type,
+                "hypothesis": exp_data.get("hypothesis"),
+                "config": config.to_dict(),
+                "resume": True,
+                "resumed_from_status": exp_data["status"],
+                "started_at": time.time(),
+            },
+        )
 
         self._emit_event(
             "experiment_resuming",

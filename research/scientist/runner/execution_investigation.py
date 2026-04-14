@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
+from ..runtime_events import publish_lifecycle_event
 from ...synthesis.serializer import graph_from_json
 from ...training.training_program import synthesize_training_program_batch
 from ...training.checkpointing import CheckpointManager
@@ -46,6 +47,50 @@ class _ExecutionInvestigationMixin:
     """Investigation phase execution."""
 
     __slots__ = ()
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights,
+        llm_analysis: str | None,
+    ) -> None:
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            aria_mood=self.aria.state.mood,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+
+    def _fail_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        error: str,
+        results: dict | None = None,
+    ) -> None:
+        getattr(nb, "fail_experiment")(experiment_id, error, results=results)
+
+    def _publish_investigation_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.execution_investigation",
+            run_id=exp_id,
+            payload=payload,
+        )
 
     # ------------------------------------------------------------------
     # Orchestrator
@@ -125,7 +170,21 @@ class _ExecutionInvestigationMixin:
                     "code_healer failed during investigation error handling",
                     exc_info=True,
                 )
-            nb.fail_experiment(exp_id, str(e))
+            self._publish_investigation_terminal_event(
+                event_type="experiment_failed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": str(e),
+                    "results": None,
+                    "mode": "investigation",
+                },
+            )
+            self._fail_experiment_compat(
+                nb=nb,
+                experiment_id=exp_id,
+                error=str(e),
+            )
             self._update_progress(
                 status="failed",
                 error=str(e),
@@ -143,7 +202,22 @@ class _ExecutionInvestigationMixin:
                 traceback.format_exc(),
             )
             try:
-                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._publish_investigation_terminal_event(
+                    event_type="experiment_failed",
+                    exp_id=exp_id,
+                    payload={
+                        "completed_at": time.time(),
+                        "error": f"FATAL: {e}",
+                        "results": None,
+                        "mode": "investigation",
+                        "fatal": True,
+                    },
+                )
+                self._fail_experiment_compat(
+                    nb=nb,
+                    experiment_id=exp_id,
+                    error=f"FATAL: {e}",
+                )
                 self._update_progress(status="failed", error=f"FATAL: {e}")
                 self._emit_event(
                     "experiment_failed",
@@ -485,13 +559,27 @@ class _ExecutionInvestigationMixin:
         )
         summary = self.aria.experiment_summary(results, context=context)
         llm_analysis = self.aria.analyze_results(results, context=context)
+        insights = self._analyze_results(results, exp_id, nb, context=context)
 
-        nb.complete_experiment(
+        self._publish_investigation_terminal_event(
+            event_type="experiment_completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": results,
+                "aria_summary": summary,
+                "aria_mood": self.aria.state.mood,
+                "insights": insights,
+                "llm_analysis": llm_analysis,
+                "mode": "investigation",
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
             experiment_id=exp_id,
             results=results,
             aria_summary=summary,
-            aria_mood=self.aria.state.mood,
-            insights=self._analyze_results(results, exp_id, nb, context=context),
+            insights=insights,
             llm_analysis=llm_analysis,
         )
 
@@ -1167,10 +1255,25 @@ class _ExecutionInvestigationMixin:
             exp_id[:8],
             n_infra,
         )
-        nb.fail_experiment(
-            exp_id,
-            error=f"All {n_infra} candidate(s) failed with infrastructure "
-            f"errors (CUDA/OOM): {err_summary}",
+        error = (
+            f"All {n_infra} candidate(s) failed with infrastructure "
+            f"errors (CUDA/OOM): {err_summary}"
+        )
+        self._publish_investigation_terminal_event(
+            event_type="experiment_failed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "error": error,
+                "results": results,
+                "mode": "investigation",
+                "infra_error": True,
+            },
+        )
+        self._fail_experiment_compat(
+            nb=nb,
+            experiment_id=exp_id,
+            error=error,
             results=results,
         )
         nb.flush_writes()

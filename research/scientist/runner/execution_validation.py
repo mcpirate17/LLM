@@ -9,6 +9,7 @@ import traceback
 from typing import List
 
 from ..json_utils import json_safe
+from ..runtime_events import publish_lifecycle_event
 
 
 from ..native_runner import compile_model_native_first as compile_model
@@ -46,6 +47,51 @@ class _ExecutionValidationMixin:
     """Validation and scale-up thread execution."""
 
     __slots__ = ()
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights,
+        llm_analysis: str | None,
+    ) -> None:
+        # Compatibility sink until notebook lifecycle persistence is projector-only.
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            aria_mood=self.aria.state.mood,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+
+    def _fail_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        error: str,
+    ) -> None:
+        # Compatibility sink until notebook lifecycle persistence is projector-only.
+        getattr(nb, "fail_experiment")(experiment_id, error)
+
+    def _publish_validation_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.execution_validation",
+            run_id=exp_id,
+            payload=payload,
+        )
 
     def _run_validation_thread(
         self, exp_id: str, result_ids: List[str], config: RunConfig, hypothesis: str
@@ -130,13 +176,27 @@ class _ExecutionValidationMixin:
             )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
+            insights = self._analyze_results(results, exp_id, nb, context=context)
 
-            nb.complete_experiment(
+            self._publish_validation_terminal_event(
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                },
+            )
+
+            self._complete_experiment_compat(
+                nb=nb,
                 experiment_id=exp_id,
                 results=results,
                 aria_summary=summary,
-                aria_mood=self.aria.state.mood,
-                insights=self._analyze_results(results, exp_id, nb, context=context),
+                insights=insights,
                 llm_analysis=llm_analysis,
             )
 
@@ -254,7 +314,20 @@ class _ExecutionValidationMixin:
                     f"Result IDs: {', '.join(r[:12] for r in result_ids)}"
                 )
                 logger.warning("Scale-up produced no results: %s", reason)
-                nb.fail_experiment(exp_id, reason)
+                self._publish_validation_terminal_event(
+                    event_type="experiment_failed",
+                    exp_id=exp_id,
+                    payload={
+                        "completed_at": time.time(),
+                        "error": reason,
+                        "results": None,
+                    },
+                )
+                self._fail_experiment_compat(
+                    nb=nb,
+                    experiment_id=exp_id,
+                    error=reason,
+                )
                 self._update_progress(
                     status="failed",
                     error=reason,
@@ -277,11 +350,24 @@ class _ExecutionValidationMixin:
             llm_analysis = self.aria.analyze_results(results, context=context)
             insights = self._analyze_results(results, exp_id, nb, context=context)
 
-            nb.complete_experiment(
+            self._publish_validation_terminal_event(
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                },
+            )
+
+            self._complete_experiment_compat(
+                nb=nb,
                 experiment_id=exp_id,
                 results=results,
                 aria_summary=summary,
-                aria_mood=self.aria.state.mood,
                 insights=insights,
                 llm_analysis=llm_analysis,
             )
@@ -340,7 +426,21 @@ class _ExecutionValidationMixin:
                 heal_err,
                 exc_info=True,
             )
-        nb.fail_experiment(exp_id, str(exc))
+        self._publish_validation_terminal_event(
+            event_type="experiment_failed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "error": str(exc),
+                "results": None,
+                "phase": phase,
+            },
+        )
+        self._fail_experiment_compat(
+            nb=nb,
+            experiment_id=exp_id,
+            error=str(exc),
+        )
         self._update_progress(
             status="failed",
             error=str(exc),
@@ -363,7 +463,22 @@ class _ExecutionValidationMixin:
             traceback.format_exc(),
         )
         try:
-            nb.fail_experiment(exp_id, f"FATAL: {exc}")
+            self._publish_validation_terminal_event(
+                event_type="experiment_failed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": f"FATAL: {exc}",
+                    "results": None,
+                    "phase": phase,
+                    "fatal": True,
+                },
+            )
+            self._fail_experiment_compat(
+                nb=nb,
+                experiment_id=exp_id,
+                error=f"FATAL: {exc}",
+            )
             self._update_progress(status="failed", error=f"FATAL: {exc}")
             self._emit_event(
                 "experiment_failed",

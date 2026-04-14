@@ -6,6 +6,7 @@ import sqlite3
 import time
 import traceback
 
+from ..runtime_events import publish_lifecycle_event
 
 from ..native_runner import compile_model_native_first as compile_model
 from ...eval.metrics import novelty_score
@@ -25,6 +26,49 @@ class _ExecutionSearchMixin:
     """Evolution and novelty search execution."""
 
     __slots__ = ()
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights,
+        llm_analysis: str | None,
+    ) -> None:
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            aria_mood=self.aria.state.mood,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
+
+    def _fail_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        error: str,
+    ) -> None:
+        getattr(nb, "fail_experiment")(experiment_id, error)
+
+    def _publish_search_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.execution_search",
+            run_id=exp_id,
+            payload=payload,
+        )
 
     # Ops considered "routing" for dashboard template stats
     _ROUTING_OPS = frozenset(
@@ -223,6 +267,7 @@ class _ExecutionSearchMixin:
             )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
+            insights = self._analyze_results(results, exp_id, nb, context=context)
 
             # Validate hypothesis
             try:
@@ -240,12 +285,25 @@ class _ExecutionSearchMixin:
             except (RuntimeError, ValueError, KeyError) as e:
                 logger.warning("Hypothesis validation failed for %s: %s", exp_id, e)
 
-            nb.complete_experiment(
+            self._publish_search_terminal_event(
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                    "mode": "evolution",
+                },
+            )
+            self._complete_experiment_compat(
+                nb=nb,
                 experiment_id=exp_id,
                 results=results,
                 aria_summary=summary,
-                aria_mood=self.aria.state.mood,
-                insights=self._analyze_results(results, exp_id, nb, context=context),
+                insights=insights,
                 llm_analysis=llm_analysis,
             )
 
@@ -296,7 +354,17 @@ class _ExecutionSearchMixin:
                     heal_err,
                     exc_info=True,
                 )
-            nb.fail_experiment(exp_id, str(e))
+            self._publish_search_terminal_event(
+                event_type="experiment_failed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": str(e),
+                    "results": None,
+                    "mode": "evolution",
+                },
+            )
+            self._fail_experiment_compat(nb=nb, experiment_id=exp_id, error=str(e))
             self._update_progress(
                 status="failed",
                 error=str(e),
@@ -317,7 +385,22 @@ class _ExecutionSearchMixin:
                 traceback.format_exc(),
             )
             try:
-                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._publish_search_terminal_event(
+                    event_type="experiment_failed",
+                    exp_id=exp_id,
+                    payload={
+                        "completed_at": time.time(),
+                        "error": f"FATAL: {e}",
+                        "results": None,
+                        "mode": "evolution",
+                        "fatal": True,
+                    },
+                )
+                self._fail_experiment_compat(
+                    nb=nb,
+                    experiment_id=exp_id,
+                    error=f"FATAL: {e}",
+                )
                 self._update_progress(status="failed", error=f"FATAL: {e}")
                 self._emit_event(
                     "experiment_failed",
@@ -592,6 +675,7 @@ class _ExecutionSearchMixin:
             )
             summary = self.aria.experiment_summary(results, context=context)
             llm_analysis = self.aria.analyze_results(results, context=context)
+            insights = self._analyze_results(results, exp_id, nb, context=context)
 
             try:
                 validation = self.aria.validate_hypothesis(hypothesis, results, context)
@@ -608,12 +692,25 @@ class _ExecutionSearchMixin:
             except (RuntimeError, ValueError, KeyError) as e:
                 logger.debug("Hypothesis validation failed in novelty search: %s", e)
 
-            nb.complete_experiment(
+            self._publish_search_terminal_event(
+                event_type="experiment_completed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "results": results,
+                    "aria_summary": summary,
+                    "aria_mood": self.aria.state.mood,
+                    "insights": insights,
+                    "llm_analysis": llm_analysis,
+                    "mode": "novelty",
+                },
+            )
+            self._complete_experiment_compat(
+                nb=nb,
                 experiment_id=exp_id,
                 results=results,
                 aria_summary=summary,
-                aria_mood=self.aria.state.mood,
-                insights=self._analyze_results(results, exp_id, nb, context=context),
+                insights=insights,
                 llm_analysis=llm_analysis,
             )
 
@@ -665,7 +762,17 @@ class _ExecutionSearchMixin:
                     heal_err,
                     exc_info=True,
                 )
-            nb.fail_experiment(exp_id, str(e))
+            self._publish_search_terminal_event(
+                event_type="experiment_failed",
+                exp_id=exp_id,
+                payload={
+                    "completed_at": time.time(),
+                    "error": str(e),
+                    "results": None,
+                    "mode": "novelty",
+                },
+            )
+            self._fail_experiment_compat(nb=nb, experiment_id=exp_id, error=str(e))
             self._update_progress(
                 status="failed",
                 error=str(e),
@@ -686,7 +793,22 @@ class _ExecutionSearchMixin:
                 traceback.format_exc(),
             )
             try:
-                nb.fail_experiment(exp_id, f"FATAL: {e}")
+                self._publish_search_terminal_event(
+                    event_type="experiment_failed",
+                    exp_id=exp_id,
+                    payload={
+                        "completed_at": time.time(),
+                        "error": f"FATAL: {e}",
+                        "results": None,
+                        "mode": "novelty",
+                        "fatal": True,
+                    },
+                )
+                self._fail_experiment_compat(
+                    nb=nb,
+                    experiment_id=exp_id,
+                    error=f"FATAL: {e}",
+                )
                 self._update_progress(status="failed", error=f"FATAL: {e}")
                 self._emit_event(
                     "experiment_failed",

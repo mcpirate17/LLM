@@ -5,17 +5,20 @@ import logging
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from flask import jsonify
 
 from ..runner import RunConfig
+from ..runtime_events import publish_lifecycle_event
 from ._helpers import (
     _BATCH_RERUN_STATE,
     get_runner,
     normalize_result_ids,
     record_run_trigger,
+    reset_runner_launch_state,
 )
 from ._strategy_preflight import (
     apply_compact_synthesis_bias,
@@ -46,6 +49,65 @@ class StartExperimentRequest:
     compact_changes: Dict[str, Any]
     live_screening_changes: Dict[str, Any]
     sparse_morph_changes: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LaunchLifecycleContext:
+    launch_id: str
+
+
+def create_launch_lifecycle_context() -> LaunchLifecycleContext:
+    return LaunchLifecycleContext(launch_id=f"launch-{uuid.uuid4().hex}")
+
+
+def publish_launch_requested(
+    start: StartExperimentRequest,
+    *,
+    notebook_path: str,
+    context: LaunchLifecycleContext,
+) -> None:
+    publish_lifecycle_event(
+        notebook_path=notebook_path,
+        event_type="experiment_start_requested",
+        producer="api.experiment_launch",
+        run_id=context.launch_id,
+        payload={
+            "mode": start.mode,
+            "config": start.config.to_dict(),
+            "hypothesis": start.hypothesis,
+            "exploratory": start.exploratory,
+        },
+        sequence=1,
+    )
+
+
+def publish_launch_failed(
+    error: Exception,
+    *,
+    mode: str,
+    notebook_path: str,
+    context: Optional[LaunchLifecycleContext],
+) -> None:
+    if context is None:
+        return
+    try:
+        publish_lifecycle_event(
+            notebook_path=notebook_path,
+            event_type="experiment_start_failed",
+            producer="api.experiment_launch",
+            run_id=context.launch_id,
+            payload={
+                "mode": mode,
+                "error": str(error),
+            },
+            sequence=2,
+        )
+    except Exception:
+        logger.warning(
+            "Runtime lifecycle publish failed for launch failure %s",
+            context.launch_id,
+            exc_info=True,
+        )
 
 
 def parse_start_request(body: Dict[str, Any]) -> StartExperimentRequest:
@@ -362,11 +424,13 @@ def build_start_error_response(
     *,
     mode: str,
     notebook_path: str,
+    runner,
     should_autospawn_self_repair,
     spawn_code_agent_task,
 ):
     logger.error("Error starting experiment: %s\n%s", error, traceback.format_exc())
     error_text = str(error)
+    reset_runner_launch_state(runner, error=error_text)
     auto_repair_task: Optional[Dict[str, Any]] = None
     if should_autospawn_self_repair(error_text):
         try:

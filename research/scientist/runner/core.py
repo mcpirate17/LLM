@@ -32,6 +32,7 @@ from ...eval.baseline import TransformerBaseline
 from ...training.data_pipeline import CorpusConfig, CorpusTokenBatcher
 from ..persona import get_aria
 from ..notebook import LabNotebook
+from ..runtime_events import publish_lifecycle_event
 from ...healer import CodeHealer
 
 import logging
@@ -243,12 +244,22 @@ class _CoreMixin:
                     (owned_exp_id,),
                 ).fetchone()
                 if row and str(row["status"] or "") == "running":
-                    nb.conn.execute(
-                        "UPDATE experiments SET status = 'interrupted' "
-                        "WHERE experiment_id = ?",
-                        (owned_exp_id,),
+                    getattr(nb, "interrupt_experiment")(
+                        owned_exp_id,
+                        "FAILED: Interrupted by shutdown",
                     )
-                    nb.conn.commit()
+                    publish_lifecycle_event(
+                        notebook_path=self.notebook_path,
+                        event_type="experiment_failed",
+                        producer="runner.core.shutdown",
+                        run_id=owned_exp_id,
+                        payload={
+                            "completed_at": time.time(),
+                            "error": "Interrupted by shutdown",
+                            "results": None,
+                            "interrupted": True,
+                        },
+                    )
                     logger.info(
                         "Shutdown: marked owned running experiment %s as interrupted",
                         owned_exp_id,

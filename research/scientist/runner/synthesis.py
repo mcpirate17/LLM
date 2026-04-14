@@ -17,6 +17,7 @@ import json
 import copy
 import random
 import sqlite3
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
@@ -29,6 +30,7 @@ from ...eval.flops import estimate_flops
 from ..notebook import LabNotebook
 from ..refinement_scoring import oscillation_risk_score
 from ..json_utils import json_safe
+from ..runtime_events import publish_lifecycle_event
 
 import logging
 
@@ -51,6 +53,42 @@ def _graph_is_moe(graph) -> bool:
 
 class _SynthesisMixin:
     """Grammar config, ablation, weight management, diversity."""
+
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
+    def _publish_synthesis_terminal_event(
+        self,
+        *,
+        event_type: str,
+        exp_id: str,
+        payload: dict,
+    ) -> None:
+        publish_lifecycle_event(
+            notebook_path=self.notebook_path,
+            event_type=event_type,
+            producer="runner.synthesis",
+            run_id=exp_id,
+            payload=payload,
+        )
+
+    def _complete_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_id: str,
+        results: dict,
+        aria_summary: str,
+        insights=None,
+        llm_analysis: str | None = None,
+    ) -> None:
+        getattr(nb, "complete_experiment")(
+            experiment_id=experiment_id,
+            results=results,
+            aria_summary=aria_summary,
+            insights=insights,
+            llm_analysis=llm_analysis,
+        )
 
     @staticmethod
     def _diversify_grammar_config(config: RunConfig, n_experiments: int) -> RunConfig:
@@ -185,7 +223,8 @@ class _SynthesisMixin:
         except (RuntimeError, AttributeError) as e:
             logger.debug("Grammar weight audit info failed: %s", e)
             audit_info = {}
-        nb.log_learning_event(
+        self._log_learning_event_compat(
+            nb,
             "grammar_weights_applied",
             f"Applied learned grammar weights for experiment {exp_id}",
             old_weights=old_weights,
@@ -238,7 +277,8 @@ class _SynthesisMixin:
                 "dropped_invalid": dropped_invalid,
                 "dropped_compile": dropped_compile,
             }
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "ablation_skipped_no_evaluable_graphs",
                 f"Skipped ablation run: no evaluable graphs for {hypothesis}",
                 evidence=json.dumps(json_safe(evidence), sort_keys=True),
@@ -398,15 +438,28 @@ class _SynthesisMixin:
         if ablation_delta is not None:
             experiment_results["ablation_delta"] = ablation_delta
             experiment_results["original_loss_ratio"] = original_loss_ratio
-        nb.complete_experiment(
+        aria_summary = f"Ablation outcome: {outcome}"
+        self._publish_synthesis_terminal_event(
+            event_type="completed",
+            exp_id=exp_id,
+            payload={
+                "completed_at": time.time(),
+                "results": experiment_results,
+                "aria_summary": aria_summary,
+                "mode": "ablation",
+            },
+        )
+        self._complete_experiment_compat(
+            nb=nb,
             experiment_id=exp_id,
             results=experiment_results,
-            aria_summary=f"Ablation outcome: {outcome}",
+            aria_summary=aria_summary,
         )
 
         # Log ablation delta as learning event for grammar feedback
         if ablation_delta is not None:
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "ablation_delta_measured",
                 f"Ablation for '{hypothesis}': delta={ablation_delta:.4f} "
                 f"(original={original_loss_ratio:.4f}, ablated={ablation_best_lr:.4f})",

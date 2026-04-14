@@ -10,6 +10,12 @@ from typing import Any, Dict, Optional
 
 from ..native.telemetry import reset_native_runner_telemetry
 from ..notebook import ExperimentEntry, LabNotebook
+from ..runtime_events import (
+    LIFECYCLE_EVENT_TYPES,
+    get_runtime_event_services,
+    publish_lifecycle_event,
+    publish_runtime_event,
+)
 
 from ._types import RunConfig
 
@@ -45,6 +51,9 @@ class _ControlActionsMixin:
     """Stop/events/chat-action methods for ExperimentRunner."""
 
     __slots__ = ()
+
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
 
     def _persist_live_feed_event(self, event_type: str, data: Dict[str, Any]):
         """Persist selected lifecycle events for feed replay in the dashboard."""
@@ -100,6 +109,25 @@ class _ControlActionsMixin:
             # Z17: Clear global native-runner counters immediately on stop
             reset_native_runner_telemetry()
 
+        if bool(self._aria_cycle_status.get("continuous_active")):
+            try:
+                publish_runtime_event(
+                    notebook_path=self.notebook_path,
+                    event_type="continuous_session_stopping",
+                    producer="runner.control_actions",
+                    run_id=str(getattr(self.progress, "experiment_id", "") or "").strip()
+                    or None,
+                    payload={
+                        "mode": "continuous",
+                        "status": "stopping",
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Runtime continuous session stop publish failed",
+                    exc_info=True,
+                )
+
         self._emit_event("experiment_stopping", {})
 
     # ── Routing Benchmark Harness (Track C) ──
@@ -151,6 +179,7 @@ class _ControlActionsMixin:
                 except Exception as exc:
                     logger.debug("Suppressed error: %s", exc)
         self._persist_live_feed_event(event_type, data)
+        self._publish_runtime_lifecycle_event(event_type, data)
         # Buffer training_step events for REST retrieval (dashboard chart restore).
         # Keep a deep enough history so the dashboard can reconstruct near-full
         # curves for long validation/investigation runs.
@@ -162,6 +191,41 @@ class _ControlActionsMixin:
             curve.append(data)
             if len(curve) > _LIVE_LOSS_CURVE_MAX_POINTS:
                 del curve[: len(curve) - _LIVE_LOSS_CURVE_MAX_POINTS]
+
+    def _publish_runtime_lifecycle_event(
+        self, event_type: str, data: Dict[str, Any]
+    ) -> None:
+        if event_type not in LIFECYCLE_EVENT_TYPES:
+            return
+        run_id = str(data.get("experiment_id") or "").strip() or None
+        if run_id is None:
+            return
+        try:
+            current = get_runtime_event_services(self.notebook_path).registry.get(run_id)
+            if current is not None and current.last_event.event_type == event_type:
+                return
+        except Exception:
+            logger.debug(
+                "Runtime lifecycle dedupe probe failed for %s (%s)",
+                event_type,
+                run_id,
+                exc_info=True,
+            )
+        try:
+            publish_lifecycle_event(
+                notebook_path=self.notebook_path,
+                event_type=event_type,
+                producer="runner.control_actions",
+                run_id=run_id,
+                payload=data,
+            )
+        except Exception:
+            logger.warning(
+                "Runtime lifecycle publish failed for %s (%s)",
+                event_type,
+                run_id,
+                exc_info=True,
+            )
 
     def execute_chat_action(self, action: Dict[str, Any], nb) -> Dict[str, Any]:
         """Execute an action dispatched from Aria's chat response.
@@ -179,7 +243,8 @@ class _ControlActionsMixin:
             effective, report = self._config_with_overrides(base, changes)
             # Store as the new defaults for future experiments
             self._last_chat_config_overrides = changes
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "chat_config_adjusted",
                 f"Aria adjusted config: {report.get('applied', {})}",
                 changes=report.get("applied", {}),
@@ -205,7 +270,8 @@ class _ControlActionsMixin:
             if not clean_weights:
                 return {"status": "error", "error": "No valid numeric weights"}
             self._grammar_weight_overrides.update(clean_weights)
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "chat_grammar_adjusted",
                 f"Aria adjusted grammar weights: {clean_weights}",
                 weights=clean_weights,
@@ -353,7 +419,8 @@ class _ControlActionsMixin:
                 }
 
         # Log to notebook
-        nb.log_learning_event(
+        self._log_learning_event_compat(
+            nb,
             "chat_file_edited",
             f"Aria edited {path}: {description}",
             path=path,
@@ -396,7 +463,8 @@ class _ControlActionsMixin:
         try:
             if operation == "purge_empty_experiments":
                 n = nb.purge_empty_experiments()
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "maintenance_purge_experiments",
                     f"Aria purged {n} empty failed experiments",
                 )
@@ -406,7 +474,8 @@ class _ControlActionsMixin:
                 # Route through notebook helper so dependent rows are cleaned too.
                 result = nb.purge_junk_programs(dry_run=False)
                 n = int(result.get("deleted", 0) or 0)
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "maintenance_purge_junk",
                     f"Aria purged {n} junk S0 failure records",
                 )
@@ -429,7 +498,8 @@ class _ControlActionsMixin:
                 )
                 n = cur.rowcount
                 nb._maybe_commit()
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "maintenance_reset_op_stats",
                     f"Aria reset op stats for {op_names} ({n} rows)",
                     ops=op_names,
@@ -454,7 +524,8 @@ class _ControlActionsMixin:
                     )
                     total += cur.rowcount
                 nb._maybe_commit()
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "maintenance_clear_toxic",
                     f"Aria cleared {total} toxic signatures for {ops}",
                     ops=[str(o).strip() for o in ops],
@@ -473,7 +544,8 @@ class _ControlActionsMixin:
                 vac_conn = sqlite3.connect(nb.db_path, isolation_level=None)
                 vac_conn.execute("VACUUM")
                 vac_conn.close()
-                nb.log_learning_event(
+                self._log_learning_event_compat(
+                    nb,
                     "maintenance_vacuum",
                     "Aria ran VACUUM to reclaim disk space",
                 )
