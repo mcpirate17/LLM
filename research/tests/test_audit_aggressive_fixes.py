@@ -161,6 +161,57 @@ def test_template_registry_and_weights_align():
     assert not missing_weights, f"Templates without weights: {missing_weights}"
 
 
+# ── routing_mandatory first-slot bias ────────────────────────────────
+
+
+def test_routing_mandatory_first_slot_bias_improves_yield():
+    """Prior to the 2026-04-17 audit fix, default-config graph generation
+    succeeded only ~20% of the time under routing_mandatory=True because
+    100/175 templates emit no routing op and a random 3-template composition
+    has ~(100/175)^3 ≈ 19% chance of missing routing entirely. The fix
+    biases the FIRST (small, budget-safe) template to a routing-capable
+    pool. Yield should jump meaningfully above the 20% baseline."""
+    import collections
+
+    from research.synthesis.grammar import GrammarConfig, generate_layer_graph
+
+    config = GrammarConfig(model_dim=64, max_ops=20)
+    errs = collections.Counter()
+    n = 50
+    for s in range(n):
+        try:
+            generate_layer_graph(config, seed=s)
+            errs["OK"] += 1
+        except ValueError as e:
+            msg = str(e)
+            if "routing_mandatory" in msg:
+                errs["routing_mandatory"] += 1
+            else:
+                errs["other_reject"] += 1
+
+    # Before the fix: ~20% OK, ~35% routing_mandatory rejects.
+    # After: routing_mandatory rejects should be a small minority.
+    assert errs["OK"] >= 14, f"Yield too low: {errs['OK']}/{n} (see {dict(errs)})"
+    assert errs["routing_mandatory"] <= 5, (
+        f"routing_mandatory rejects still too frequent: "
+        f"{errs['routing_mandatory']}/{n} — first-slot bias not working. "
+        f"Full breakdown: {dict(errs)}"
+    )
+
+
+def test_routing_capable_templates_cache_populated():
+    """The routing-capable probe must find a meaningful subset."""
+    import research.synthesis.grammar as g
+
+    g._ROUTING_CAPABLE_TEMPLATES_CACHE = None  # force re-probe
+    rc = g._get_routing_capable_templates()
+    assert 30 <= len(rc) <= 100, (
+        f"Expected 30-100 routing-capable templates, got {len(rc)}. "
+        "If the probe is returning ~170, it's too permissive; if <30, "
+        "the probe threshold is too strict or routing ops have been renamed."
+    )
+
+
 # ── P1.7: motif lift floor ───────────────────────────────────────────
 
 
