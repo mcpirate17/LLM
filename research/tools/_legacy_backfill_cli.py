@@ -21,7 +21,9 @@ def add_common_backfill_args(
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
         "--device",
-        default="auto" if allow_device_auto else ("cuda" if torch.cuda.is_available() else "cpu"),
+        default="auto"
+        if allow_device_auto
+        else ("cuda" if torch.cuda.is_available() else "cpu"),
     )
     if include_timeout:
         parser.add_argument("--timeout", type=int, default=30)

@@ -60,15 +60,16 @@ def _apply_grad_scale(tensor: torch.Tensor, module: nn.Module | None) -> torch.T
     return tensor
 
 
-@torch.jit.script
 def _lif_membrane_loop(
     x: torch.Tensor, threshold: torch.Tensor, decay: float
 ) -> torch.Tensor:
-    """JIT-compiled LIF membrane dynamics with STE surrogate gradient.
+    """LIF membrane dynamics with STE surrogate gradient.
 
     Runs the sequential recurrence (membrane accumulation, spike, reset)
-    without Python-loop overhead.  The straight-through estimator uses
-    sigmoid(5·(membrane − threshold)) as surrogate gradient.
+    using standard eager PyTorch. The old TorchScript wrapper was only here
+    to trim Python overhead, but `torch.jit.script` is deprecated in the
+    current stack and was polluting the designer test suite with warnings.
+    The native `aria_core` path still handles the non-grad CPU fast path.
 
     Args:
         x: (B, S, D) input current.

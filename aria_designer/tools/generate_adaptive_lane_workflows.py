@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
 
 
-ROOT = Path("/home/tim/Projects/LLM/aria_designer")
-OUT_DIR = ROOT / "workflows" / "generated"
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUT_DIR = ROOT / "workflows" / "generated"
 
 
 def node(
@@ -184,7 +185,12 @@ def variant_specs() -> list[dict]:
 
 
 def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    args = parser.parse_args()
+
+    out_dir = args.out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
     for spec in variant_specs():
         workflow = base_workflow(
@@ -194,7 +200,7 @@ def main() -> None:
             hard_lane_edges=deepcopy(spec["hard_lane_edges"]),
             metadata=deepcopy(spec["metadata"]),
         )
-        path = OUT_DIR / f"{spec['workflow_id']}.json"
+        path = out_dir / f"{spec['workflow_id']}.json"
         path.write_text(json.dumps(workflow, indent=2) + "\n", encoding="utf-8")
         manifest.append(
             {
@@ -204,10 +210,10 @@ def main() -> None:
                 "variant": spec["metadata"]["variant"],
             }
         )
-    (OUT_DIR / "adaptive_lane_manifest.json").write_text(
+    (out_dir / "adaptive_lane_manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"Wrote {len(manifest)} workflows to {OUT_DIR}")
+    print(f"Wrote {len(manifest)} workflows to {out_dir}")
 
 
 if __name__ == "__main__":

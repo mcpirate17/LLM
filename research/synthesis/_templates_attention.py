@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
-    _BOTTLENECK_CLASSES,
     MOTIF_CLASS_CONV,
     MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_GATE,
@@ -25,7 +24,6 @@ from ._template_helpers import (
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SPARSE,
-    MOTIF_CLASS_SSM,
     MotifWeights,
     TemplateBuildError,
     _FFN_CLASSES,
@@ -34,7 +32,6 @@ from ._template_helpers import (
     _instantiate_motif,
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
-    _shuffle_wrap,
     _tpl_attention_ffn_block,
     template_add_op as _add,
     template_add_residual as _residual,
@@ -167,7 +164,9 @@ def tpl_attn_three_way_split(
         {"out_dim": graph.model_dim},
         context="attn_three_way_split.attn_up",
     )
-    lane0 = _add(graph, "softmax_attention", [lane0], context="attn_three_way_split.attn_lane")
+    lane0 = _add(
+        graph, "softmax_attention", [lane0], context="attn_three_way_split.attn_lane"
+    )
     lane0 = _add(graph, "rmsnorm", [lane0], context="attn_three_way_split.attn_norm")
     p0 = _add(
         graph,

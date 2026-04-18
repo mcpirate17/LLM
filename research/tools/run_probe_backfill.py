@@ -88,7 +88,9 @@ def _read_row_status(report_path: str) -> str:
         return "read_error"
 
 
-def main_with_args(*, run_dir: str | Path, probe: str, concurrency: int, device: str) -> int:
+def main_with_args(
+    *, run_dir: str | Path, probe: str, concurrency: int, device: str
+) -> int:
     run_dir = Path(run_dir)
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.exists():

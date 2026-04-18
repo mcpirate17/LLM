@@ -17,7 +17,9 @@ from research.tools.backfill_templates import _NON_ROUTING_TEMPLATES
 
 DEFAULT_NOTEBOOK_DB = Path("research/lab_notebook.db")
 DEFAULT_PROFILING_DB = Path("research/profiling/component_profiles.db")
-DEFAULT_OUT = Path("research/reports/template_component_priors/template_component_priors.csv")
+DEFAULT_OUT = Path(
+    "research/reports/template_component_priors/template_component_priors.csv"
+)
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -31,7 +33,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _extract_graph_paths(graph: ComputationGraph) -> tuple[list[str], list[tuple[str, str]], list[tuple[str, str, str]]]:
+def _extract_graph_paths(
+    graph: ComputationGraph,
+) -> tuple[list[str], list[tuple[str, str]], list[tuple[str, str, str]]]:
     op_names: list[str] = []
     pairs: set[tuple[str, str]] = set()
     triplets: set[tuple[str, str, str]] = set()
@@ -111,7 +115,9 @@ def _load_pair_profiles(profiling_db: Path) -> dict[tuple[str, str], dict[str, f
     }
 
 
-def _load_triplet_profiles(profiling_db: Path) -> dict[tuple[str, str, str], dict[str, float]]:
+def _load_triplet_profiles(
+    profiling_db: Path,
+) -> dict[tuple[str, str, str], dict[str, float]]:
     if not profiling_db.exists():
         return {}
     conn = sqlite3.connect(str(profiling_db), timeout=5)
@@ -181,9 +187,13 @@ def _build_template_row(
     op_forward = [op_profiles[op]["forward_time_us"] for op in covered_ops]
     op_exploding = [op_profiles[op]["grad_exploding"] for op in covered_ops]
     pair_stability = [pair_profiles[pair]["stable"] for pair in covered_pairs]
-    triplet_stability = [triplet_profiles[triplet]["stable"] for triplet in covered_triplets]
+    triplet_stability = [
+        triplet_profiles[triplet]["stable"] for triplet in covered_triplets
+    ]
 
-    unstable_ops = sorted({op for op in covered_ops if op_profiles[op]["grad_exploding"] > 0})
+    unstable_ops = sorted(
+        {op for op in covered_ops if op_profiles[op]["grad_exploding"] > 0}
+    )
     unstable_pairs = sorted(
         f"{a}->{b}" for (a, b) in covered_pairs if pair_profiles[(a, b)]["stable"] < 1.0
     )
@@ -209,7 +219,9 @@ def _build_template_row(
         "registered": True,
         "non_routing_backfill": name in _NON_ROUTING_TEMPLATES,
         "persisted_graph_feature_rows": int(persisted_counts.get(name, 0)),
-        "slot_count_declared": int(_MiscMixin._infer_template_slot_counts().get(name, 0) or 0),
+        "slot_count_declared": int(
+            _MiscMixin._infer_template_slot_counts().get(name, 0) or 0
+        ),
         "slot_count_emitted": len(slot_usage),
         "valid_screening_graph": bool(validation.valid),
         "validator_errors": "|".join(validation.errors or []),
@@ -220,7 +232,9 @@ def _build_template_row(
         "n_triplets": len(triplets),
         "op_profile_coverage": round(len(covered_ops) / max(1, len(ops)), 3),
         "pair_profile_coverage": round(len(covered_pairs) / max(1, len(pairs)), 3),
-        "triplet_profile_coverage": round(len(covered_triplets) / max(1, len(triplets)), 3),
+        "triplet_profile_coverage": round(
+            len(covered_triplets) / max(1, len(triplets)), 3
+        ),
         "mean_op_forward_time_us": _mean(op_forward),
         "mean_op_grad_exploding": _mean(op_exploding),
         "mean_pair_stability": _mean(pair_stability),
@@ -244,15 +258,21 @@ def build_template_component_prior_rows(
     triplet_profiles = _load_triplet_profiles(profiling_db)
     persisted_counts = _persisted_template_counts(notebook_db)
     return [
-        _build_template_row(name, op_profiles, pair_profiles, triplet_profiles, persisted_counts)
+        _build_template_row(
+            name, op_profiles, pair_profiles, triplet_profiles, persisted_counts
+        )
         for name in template_names
         if name in TEMPLATES
     ]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Report template scaffold priors from component observability data")
-    parser.add_argument("--templates", nargs="*", help="Specific template names to score")
+    parser = argparse.ArgumentParser(
+        description="Report template scaffold priors from component observability data"
+    )
+    parser.add_argument(
+        "--templates", nargs="*", help="Specific template names to score"
+    )
     parser.add_argument("--notebook-db", default=str(DEFAULT_NOTEBOOK_DB))
     parser.add_argument("--profiling-db", default=str(DEFAULT_PROFILING_DB))
     parser.add_argument("--out", default=str(DEFAULT_OUT))

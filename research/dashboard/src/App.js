@@ -20,6 +20,28 @@ import {
   ProgramDetailOverlay,
   SettingsOverlay,
 } from './components/app/AppOverlays';
+import { NAV_CATEGORIES, TAB_LABELS, TAB_TIPS } from './components/app/appConfig';
+import {
+  AriaChatPanel,
+  ArchitectureDrawer,
+  CampaignView,
+  CompareView,
+  ComponentAnalyticsDashboard,
+  ControlPanel,
+  DecisionTraces,
+  Discoveries,
+  ExperimentDetail,
+  ExperimentList,
+  InfrastructureDashboard,
+  KnowledgeBase,
+  Leaderboard,
+  LearningPanel,
+  NativeProfilePanel,
+  PerfDashboard,
+  ProgramDetail,
+  ReferenceArchitectures,
+  ResearchReport,
+} from './components/app/lazyComponents';
 import { EventBusProvider } from './hooks/useEventBus';
 import { AriaDataProvider, useAriaData } from './hooks/useAriaData';
 import apiService, { apiCall } from './services/apiService';
@@ -27,80 +49,14 @@ import useLocalStorage from './hooks/useLocalStorage';
 import useInvestigationQueue from './hooks/useInvestigationQueue';
 import useAutoRepair from './hooks/useAutoRepair';
 import useKeyboardShortcuts from './hooks/useKeyboardShortcuts';
+import { buildEligibilityByResultId } from './utils/candidateState';
 import './App.css';
 
 const LONG_ACTION_TIMEOUT_MS = 120000;
 
-// Lazy-loaded components (only fetched when their tab/drawer is opened)
-const ExperimentList = React.lazy(() => import('./components/ExperimentList'));
-const ExperimentDetail = React.lazy(() => import('./components/ExperimentDetail'));
-const ProgramDetail = React.lazy(() => import('./components/ProgramDetail'));
-const PerfDashboard = React.lazy(() => import('./components/PerfDashboard'));
-const ResearchReport = React.lazy(() => import('./components/ResearchReport'));
-const Leaderboard = React.lazy(() => import('./components/Leaderboard'));
-const Discoveries = React.lazy(() => import('./components/Discoveries'));
-const CampaignView = React.lazy(() => import('./components/CampaignView'));
-const KnowledgeBase = React.lazy(() => import('./components/KnowledgeBase'));
-const CompareView = React.lazy(() => import('./components/CompareView'));
-const NativeProfilePanel = React.lazy(() => import('./components/NativeProfilePanel'));
-const InfrastructureDashboard = React.lazy(() => import('./components/InfrastructureDashboard'));
-const ComponentAnalyticsDashboard = React.lazy(() => import('./components/ComponentAnalyticsDashboard'));
-const ReferenceArchitectures = React.lazy(() => import('./components/ReferenceArchitectures'));
-const DecisionTraces = React.lazy(() => import('./components/DecisionTraces'));
-const AriaChatPanel = React.lazy(() => import('./components/AriaChatPanel'));
-const ArchitectureDrawer = React.lazy(() => import('./components/ArchitectureDrawer'));
-const ControlPanel = React.lazy(() => import('./components/ControlPanel'));
-const LearningPanel = React.lazy(() => import('./components/LearningPanel'));
-
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const DEFAULT_EXPERIMENTS_PAGE_SIZE = 200;
 const OVERRIDE_INELIGIBLE_ALWAYS_KEY = 'aria_override_ineligible_always_v1';
-
-function buildCandidateEligibility(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return {
-      investigationEligible: false,
-      validationEligible: false,
-      queueEligible: false,
-      queueReason: 'missing_candidate_data',
-    };
-  }
-
-  const tier = typeof entry.tier === 'string' ? entry.tier.toLowerCase() : '';
-  const hasInvestigationEvidence = entry.investigation_loss_ratio != null || entry.investigation_robustness != null;
-  const investigationEligible = tier === 'screening';
-  const validationEligible = tier === 'investigation' && Boolean(entry.investigation_passed);
-
-  let queueReason = null;
-  if (!investigationEligible && !validationEligible) {
-    if (tier === 'screening' && hasInvestigationEvidence) {
-      queueReason = 'already_investigated_unchanged';
-    } else if (tier === 'investigation' && !entry.investigation_passed) {
-      queueReason = 'not_investigation_passed';
-    } else if (tier === 'validation' || tier === 'breakthrough') {
-      queueReason = 'already_promoted';
-    } else {
-      queueReason = 'not_progression_eligible';
-    }
-  }
-
-  return {
-    investigationEligible,
-    validationEligible,
-    queueEligible: investigationEligible || validationEligible,
-    queueReason,
-  };
-}
-
-function buildEligibilityByResultId(entries) {
-  const map = {};
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    const resultId = entry?.result_id;
-    if (!resultId) continue;
-    map[resultId] = buildCandidateEligibility(entry);
-  }
-  return map;
-}
 
 function App() {
   const [isRunning, setIsRunning] = useState(false);
@@ -113,53 +69,7 @@ function App() {
   );
 }
 
-const NAV_CATEGORIES = {
-  workbench: {
-    label: 'Workbench',
-    tabs: ['command', 'experiments', 'discoveries', 'comparison'],
-  },
-  knowledge: {
-    label: 'Knowledge',
-    tabs: ['reports', 'trends', 'decisions', 'log'],
-  },
-  diagnostics: {
-    label: 'Diagnostics',
-    tabs: ['templates', 'components', 'infrastructure', 'perf', 'references'],
-  }
-};
-
 function AppContent({ onRunningChange }) {
-  const TAB_LABELS = {
-    command: 'Command',
-    trends: 'Analytics',
-    experiments: 'Experiments',
-    discoveries: 'Discoveries',
-    comparison: 'Comparison',
-    templates: 'Template & Slots',
-    infrastructure: 'Infrastructure',
-    components: 'Components',
-    perf: 'Optimization',
-    reports: 'Reports',
-    references: 'References',
-    decisions: 'Decisions',
-    log: 'Log',
-  };
-  const TAB_TIPS = {
-    command: 'Control center — start/stop experiments, see live status (1)',
-    trends: 'Analytics: trends, learning signals, and diagnostic charts (2)',
-    experiments: 'Browse all experiments and their results (3)',
-    discoveries: 'Best architectures found so far, ranked by tier (4)',
-    comparison: 'Side-by-side architecture comparison (5)',
-    templates: 'Dedicated page for template success, weak slots, fast-lane fairness, and structural trends',
-    infrastructure: 'Pipeline health, alerts, live stream, throughput, resources',
-    components: 'Component health, op analytics, grammar evolution, insights',
-    perf: 'System performance and optimization metrics (6)',
-    reports: 'Publishable findings, campaigns, and knowledge base (7)',
-    references: 'Reference models (GPT-2, Mamba, etc.) baselines (8)',
-    decisions: 'Recent automated research decision traces (9)',
-    log: 'Raw notebook entries and cycle timeline (0)',
-  };
-
   // Centralized data from AriaDataProvider
   const {
     learningTrajectory,

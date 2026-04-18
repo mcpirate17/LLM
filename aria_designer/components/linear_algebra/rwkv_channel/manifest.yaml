@@ -23,7 +23,7 @@ outputs:
   - D
 params:
   dim:
-    type: int
+    type: integer
     default: 64
     description: Hidden dimension
 implementation:

@@ -769,23 +769,23 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "attn_normalized_matmul_pinned": 6.0,  # Fully optimized: softmax_attn || padic + swiglu
     # Novel mixing templates: new primitive ops with proven hybrid pattern
     "difficulty_routed_attention_block": 5.0,  # Hard tokens attend, easy tokens skip
-    "strided_attention_block": 5.0,            # Multi-scale dilated attention
+    "strided_attention_block": 5.0,  # Multi-scale dilated attention
     "gated_progressive_attention_block": 5.0,  # Attention learns to engage
-    "gated_linear_attention_block": 5.5,       # GLA: O(nd²), Qwen3-Next core
-    "long_conv_hyena_block": 4.5,              # Hyena FFT conv + GLA
-    "associative_memory_block": 4.5,           # Modern Hopfield retrieval
-    "mixture_of_recursions_block": 5.0,        # Per-token adaptive depth
-    "codex_ssm_retention_block": 4.5,          # Retention-style GLA + SSM + compression
-    "codex_ssm_delta_memory_block": 4.5,       # Delta-rule memory + linear read path
-    "codex_ssm_mla_gated_block": 4.5,          # MLA-style compression + gated retention
-    "codex_ssm_local_recall_block": 4.0,       # Sparse local attention + recurrent memory
-    "typed_slot_memory_block": 4.5,            # Typed memory write/read over compact trunk
-    "sparse_relation_graph_block": 4.0,        # Sparse relation proposal + algebraic retrieval
-    "token_program_interpreter_block": 4.25,   # Routed token programs with explicit memory path
+    "gated_linear_attention_block": 5.5,  # GLA: O(nd²), Qwen3-Next core
+    "long_conv_hyena_block": 4.5,  # Hyena FFT conv + GLA
+    "associative_memory_block": 4.5,  # Modern Hopfield retrieval
+    "mixture_of_recursions_block": 5.0,  # Per-token adaptive depth
+    "codex_ssm_retention_block": 4.5,  # Retention-style GLA + SSM + compression
+    "codex_ssm_delta_memory_block": 4.5,  # Delta-rule memory + linear read path
+    "codex_ssm_mla_gated_block": 4.5,  # MLA-style compression + gated retention
+    "codex_ssm_local_recall_block": 4.0,  # Sparse local attention + recurrent memory
+    "typed_slot_memory_block": 4.5,  # Typed memory write/read over compact trunk
+    "sparse_relation_graph_block": 4.0,  # Sparse relation proposal + algebraic retrieval
+    "token_program_interpreter_block": 4.25,  # Routed token programs with explicit memory path
     # Role-slot v2: proven trunks + retrieval sidecar (2026-04-16)
-    "conv_residual_retrieval_v2": 4.25,        # conv trunk + matmul/gather_topk sidecar
-    "state_space_retrieval_v2": 4.25,          # SSM trunk + matmul/gather_topk sidecar
-    "latent_attn_retrieval_v2": 4.0,           # latent_attn trunk + complementary retrieval lane
+    "conv_residual_retrieval_v2": 4.25,  # conv trunk + matmul/gather_topk sidecar
+    "state_space_retrieval_v2": 4.25,  # SSM trunk + matmul/gather_topk sidecar
+    "latent_attn_retrieval_v2": 4.0,  # latent_attn trunk + complementary retrieval lane
     # New high-performance templates: proven parallel attn+X + FFN pattern
     "recursive_attn_ssm_depth": 5.5,  # latent_attn||SSM + adaptive_recursion + FFN
     "latent_attn_padic_hybrid": 5.0,  # latent_attn||padic_expand + FFN
@@ -814,7 +814,8 @@ def pick_template(
     weighted_pool = [
         name
         for name in names
-        if float((weights or {}).get(name, DEFAULT_TEMPLATE_WEIGHTS.get(name, 1.0))) > 0.0
+        if float((weights or {}).get(name, DEFAULT_TEMPLATE_WEIGHTS.get(name, 1.0)))
+        > 0.0
     ]
     if not weighted_pool:
         weighted_pool = names
@@ -824,8 +825,7 @@ def pick_template(
         name = rng.choice(weighted_pool)
         return name, TEMPLATES[name], True
     template_weights = [
-        (weights or {}).get(n, DEFAULT_TEMPLATE_WEIGHTS.get(n, 1.0))
-        for n in names
+        (weights or {}).get(n, DEFAULT_TEMPLATE_WEIGHTS.get(n, 1.0)) for n in names
     ]
     name = rng.choices(names, weights=template_weights, k=1)[0]
     return name, TEMPLATES[name], False
@@ -852,7 +852,9 @@ def apply_template(
         name = template_name
         fn = TEMPLATES[name]
     else:
-        name, fn, was_exploration = pick_template(rng, template_weights, exploration_budget)
+        name, fn, was_exploration = pick_template(
+            rng, template_weights, exploration_budget
+        )
     if was_exploration:
         graph.metadata["_template_exploration_used"] = True
     if op_weights:

@@ -16,6 +16,7 @@ Usage:
         --templates latent_attn_padic_hybrid,gpt2_reference \
         --steps 20000 --checkpoint-every 1000 --optimizer muon
 """
+
 from __future__ import annotations
 
 import argparse
@@ -123,8 +124,12 @@ def train_template(
     run_probes: bool = True,
 ) -> Dict[str, Any]:
     """Train a template on WikiText-103 and report checkpointed losses."""
-    logger.info("Building model: %s (%d layers, dim=%d)", template_name, n_layers, model_dim)
-    model = _build_model(template_name, n_layers, model_dim, vocab_size, seed).to(device)
+    logger.info(
+        "Building model: %s (%d layers, dim=%d)", template_name, n_layers, model_dim
+    )
+    model = _build_model(template_name, n_layers, model_dim, vocab_size, seed).to(
+        device
+    )
     n_params = sum(p.numel() for p in model.parameters())
     logger.info("Parameters: %d", n_params)
 
@@ -244,8 +249,12 @@ def train_template(
             from research.eval.associative_recall import associative_recall_score
 
             ar = associative_recall_score(
-                model, n_pairs=10, n_eval=100, n_train_steps=300,
-                batch_size=8, device=device,
+                model,
+                n_pairs=10,
+                n_eval=100,
+                n_train_steps=300,
+                batch_size=8,
+                device=device,
             )
             result["ar_auc"] = ar.auc
             result["ar_final_acc"] = ar.final_acc
@@ -256,7 +265,9 @@ def train_template(
         try:
             from research.eval.hellaswag_eval import evaluate_hellaswag
 
-            hella = evaluate_hellaswag(model, vocab_size=vocab_size, device=device, n_examples=200)
+            hella = evaluate_hellaswag(
+                model, vocab_size=vocab_size, device=device, n_examples=200
+            )
             result["hellaswag_acc"] = hella.get("hellaswag_acc")
             logger.info("  HellaSwag: acc=%s", result["hellaswag_acc"])
         except Exception as e:
@@ -266,8 +277,11 @@ def train_template(
             from research.eval.blimp_eval import evaluate_blimp
 
             blimp = evaluate_blimp(
-                model, vocab_size=vocab_size, device=device,
-                n_per_subtask=50, timeout_s=120,
+                model,
+                vocab_size=vocab_size,
+                device=device,
+                n_per_subtask=50,
+                timeout_s=120,
             )
             result["blimp_accuracy"] = blimp.overall_accuracy
             logger.info("  BLiMP: acc=%.4f", blimp.overall_accuracy)
@@ -289,13 +303,24 @@ def main():
         description="Train templates on WikiText-103 with loss checkpoints"
     )
     parser.add_argument(
-        "--templates", type=str, required=True,
+        "--templates",
+        type=str,
+        required=True,
         help="Comma-separated template names",
     )
     parser.add_argument("--steps", type=int, default=20000, help="Training steps")
-    parser.add_argument("--checkpoint-every", type=int, default=1000, help="Steps between checkpoints")
-    parser.add_argument("--optimizer", type=str, default="muon", choices=["muon", "adamw"])
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate (default: 0.02 muon, 3e-4 adamw)")
+    parser.add_argument(
+        "--checkpoint-every", type=int, default=1000, help="Steps between checkpoints"
+    )
+    parser.add_argument(
+        "--optimizer", type=str, default="muon", choices=["muon", "adamw"]
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Learning rate (default: 0.02 muon, 3e-4 adamw)",
+    )
     parser.add_argument("--wd", type=float, default=0.01, help="Weight decay")
     parser.add_argument("--layers", type=int, default=4, help="Number of layers")
     parser.add_argument("--dim", type=int, default=256, help="Model dimension")
@@ -314,7 +339,9 @@ def main():
     templates = [t.strip() for t in args.templates.split(",")]
 
     print(f"WikiText-103 training: {args.steps} steps, {args.optimizer} lr={args.lr}")
-    print(f"Model: {args.layers} layers, dim={args.dim}, batch={args.batch_size}x{args.seq_len}")
+    print(
+        f"Model: {args.layers} layers, dim={args.dim}, batch={args.batch_size}x{args.seq_len}"
+    )
     print(f"Templates: {', '.join(templates)}")
     print(f"Checkpoints every {args.checkpoint_every} steps")
     print("=" * 80)
@@ -348,7 +375,13 @@ def main():
         last_cp = r["checkpoints"][-1] if r["checkpoints"] else {}
         probes = " ".join(
             f"{k}={r[k]:.4f}"
-            for k in ["induction_auc", "binding_auc", "ar_auc", "hellaswag_acc", "blimp_accuracy"]
+            for k in [
+                "induction_auc",
+                "binding_auc",
+                "ar_auc",
+                "hellaswag_acc",
+                "blimp_accuracy",
+            ]
             if k in r and r[k] is not None
         )
         print(

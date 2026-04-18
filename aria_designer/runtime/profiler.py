@@ -21,8 +21,10 @@ import torch
 from .bridge import workflow_to_graph
 
 from research.defaults import MODEL_DIM, VOCAB_SIZE
-from research.eval.perf_budget import evaluate_perf_budget_gate
-from research.perf_contract import build_duplicate_work_report, build_perf_contract
+from research.perf_contract import (
+    build_duplicate_work_report,
+    build_perf_contract_with_gate,
+)
 from research.synthesis.primitives import PRIMITIVE_REGISTRY, safe_eval_formula
 
 
@@ -88,26 +90,17 @@ class ProfileReport:
             "total_time_ms": _scalar(self.total_time_ms),
         }
         duplicate_work = build_duplicate_work_report(
-            repeated_keys={},
             avoided_keys={
                 "workflow_to_graph": int(self.avoided_duplicate_conversions or 0)
             },
         )
-        contract = build_perf_contract(
+        contract, _ = build_perf_contract_with_gate(
             component="aria_designer",
             workload="workflow_profile_runtime"
             if metrics["forward_time_ms"]
             else "workflow_profile_static",
-            identity={},
             metrics=metrics,
             budget_profile="designer_interactive",
-            budget_verdict=evaluate_perf_budget_gate(
-                {
-                    "metrics": metrics,
-                    "duplicate_work": duplicate_work,
-                },
-                budget_profile="designer_interactive",
-            ),
             duplicate_work=duplicate_work,
             warnings=self.bottleneck_ops,
         )

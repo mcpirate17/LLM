@@ -119,9 +119,7 @@ def _breed_from_donor(
         except Exception as exc:  # noqa: BLE001
             # Fail loudly but keep breeding — a single bad mutation shouldn't
             # kill the batch.
-            log.warning(
-                "donor %s mutation %d failed (%s): %s", donor_id, i, kind, exc
-            )
+            log.warning("donor %s mutation %d failed (%s): %s", donor_id, i, kind, exc)
             continue
 
         mutants.append(

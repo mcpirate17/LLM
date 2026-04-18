@@ -293,7 +293,9 @@ def test_dispatch_graph_native_cached_updates_profiling_module_cache(monkeypatch
         def execute_graph_with_stats_arrays(ir_json, input_array):
             return {
                 "output": np.ones((8,), dtype=np.float32),
-                "node_profiles": [{"node_id": 1, "op_name": "relu", "duration_us": 1.0}],
+                "node_profiles": [
+                    {"node_id": 1, "op_name": "relu", "duration_us": 1.0}
+                ],
                 "peak_memory_bytes": 64,
                 "arena_bytes_used": 32,
                 "arena_capacity": 64,

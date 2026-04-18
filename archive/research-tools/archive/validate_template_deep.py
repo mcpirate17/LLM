@@ -8,6 +8,7 @@ Usage:
         --template gated_linear_attention_block \
         --steps 20000 --checkpoint-every 2500 --seeds 3 --device cuda
 """
+
 from __future__ import annotations
 
 import argparse
@@ -60,11 +61,17 @@ def _load_wikitext(batch_size, seq_len, device):
     )
     enc = tiktoken.get_encoding("gpt2")
     train_tok = torch.tensor(
-        enc.encode(train_path.read_text(encoding="utf-8", errors="replace"), allowed_special=set()),
+        enc.encode(
+            train_path.read_text(encoding="utf-8", errors="replace"),
+            allowed_special=set(),
+        ),
         dtype=torch.long,
     )
     val_tok = torch.tensor(
-        enc.encode(val_path.read_text(encoding="utf-8", errors="replace"), allowed_special=set()),
+        enc.encode(
+            val_path.read_text(encoding="utf-8", errors="replace"),
+            allowed_special=set(),
+        ),
         dtype=torch.long,
     )
     stride = batch_size * seq_len
@@ -99,6 +106,7 @@ def _run_probes(model, vocab_size, device):
 
     try:
         from research.eval.binding_pipeline import run_screening_binding_probes
+
         bp = run_screening_binding_probes(model, device=device)
         probes["induction_auc"] = bp.get("induction_auc", 0)
         probes["binding_auc"] = bp.get("binding_auc", 0)
@@ -108,9 +116,14 @@ def _run_probes(model, vocab_size, device):
 
     try:
         from research.eval.associative_recall import associative_recall_score
+
         ar = associative_recall_score(
-            model, n_pairs=10, n_eval=100, n_train_steps=300,
-            batch_size=8, device=device,
+            model,
+            n_pairs=10,
+            n_eval=100,
+            n_train_steps=300,
+            batch_size=8,
+            device=device,
         )
         probes["ar_auc"] = ar.auc
         probes["ar_final_acc"] = ar.final_acc
@@ -119,15 +132,20 @@ def _run_probes(model, vocab_size, device):
 
     try:
         from research.eval.hellaswag_eval import evaluate_hellaswag
-        h = evaluate_hellaswag(model, vocab_size=vocab_size, device=device, n_examples=200)
+
+        h = evaluate_hellaswag(
+            model, vocab_size=vocab_size, device=device, n_examples=200
+        )
         probes["hellaswag_acc"] = h.get("hellaswag_acc")
     except Exception as e:
         logger.warning("HellaSwag failed: %s", e)
 
     try:
         from research.eval.blimp_eval import evaluate_blimp
-        bl = evaluate_blimp(model, vocab_size=vocab_size, device=device,
-                           n_per_subtask=50, timeout_s=120)
+
+        bl = evaluate_blimp(
+            model, vocab_size=vocab_size, device=device, n_per_subtask=50, timeout_s=120
+        )
         probes["blimp_accuracy"] = bl.overall_accuracy
     except Exception as e:
         logger.warning("BLiMP failed: %s", e)
@@ -161,10 +179,19 @@ def validate_template(
 
     for seed in seeds:
         logger.info("=" * 70)
-        logger.info("  %s  seed=%d  %dL dim=%d  %d steps", template_name, seed, n_layers, model_dim, n_steps)
+        logger.info(
+            "  %s  seed=%d  %dL dim=%d  %d steps",
+            template_name,
+            seed,
+            n_layers,
+            model_dim,
+            n_steps,
+        )
         logger.info("=" * 70)
 
-        model = _build_model(template_name, n_layers, model_dim, vocab_size, seed).to(device)
+        model = _build_model(template_name, n_layers, model_dim, vocab_size, seed).to(
+            device
+        )
         n_params = sum(p.numel() for p in model.parameters())
         opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
         rg = torch.Generator().manual_seed(seed)
@@ -217,22 +244,35 @@ def validate_template(
                 }
 
                 # Run probes at checkpoints if requested
-                if run_probes_at_checkpoints and (step == n_steps or step % (checkpoint_every * 2) == 0):
+                if run_probes_at_checkpoints and (
+                    step == n_steps or step % (checkpoint_every * 2) == 0
+                ):
                     logger.info("  Running probes at step %d...", step)
                     probes = _run_probes(model, vocab_size, device)
                     cp["probes"] = probes
                     probe_str = " ".join(
-                        f"{k}={v:.4f}" for k, v in probes.items()
+                        f"{k}={v:.4f}"
+                        for k, v in probes.items()
                         if v is not None and isinstance(v, (int, float))
                     )
                     logger.info(
                         "  step %d: train=%.4f val=%.4f ppl=%.1f gap=%.4f | %s",
-                        step, avg_train, val_loss, ppl, gen_gap, probe_str,
+                        step,
+                        avg_train,
+                        val_loss,
+                        ppl,
+                        gen_gap,
+                        probe_str,
                     )
                 else:
                     logger.info(
                         "  step %d: train=%.4f val=%.4f ppl=%.1f gap=%.4f (%.0fs)",
-                        step, avg_train, val_loss, ppl, gen_gap, elapsed,
+                        step,
+                        avg_train,
+                        val_loss,
+                        ppl,
+                        gen_gap,
+                        elapsed,
                     )
 
                 checkpoints.append(cp)
@@ -243,7 +283,9 @@ def validate_template(
             last_gap = checkpoints[-1]["gen_gap"]
             gap_trend = last_gap - first_gap
             val_improving = checkpoints[-1]["val_loss"] < checkpoints[-2]["val_loss"]
-            train_val_ratio = checkpoints[-1]["train_loss"] / max(checkpoints[-1]["val_loss"], 1e-6)
+            train_val_ratio = checkpoints[-1]["train_loss"] / max(
+                checkpoints[-1]["val_loss"], 1e-6
+            )
         else:
             gap_trend = 0
             val_improving = False
@@ -260,7 +302,11 @@ def validate_template(
             "gen_gap_trend": round(gap_trend, 4),
             "val_still_improving": val_improving,
             "train_val_ratio": round(train_val_ratio, 4),
-            "overfitting_risk": "HIGH" if gap_trend > 1.0 else "MODERATE" if gap_trend > 0.3 else "LOW",
+            "overfitting_risk": "HIGH"
+            if gap_trend > 1.0
+            else "MODERATE"
+            if gap_trend > 0.3
+            else "LOW",
         }
         all_seed_results.append(seed_result)
 
@@ -277,8 +323,12 @@ def validate_template(
         torch.cuda.empty_cache()
 
     # Cross-seed analysis
-    final_vals = [r["final_val"] for r in all_seed_results if r["final_val"] is not None]
-    final_ppls = [r["final_ppl"] for r in all_seed_results if r["final_ppl"] is not None]
+    final_vals = [
+        r["final_val"] for r in all_seed_results if r["final_val"] is not None
+    ]
+    final_ppls = [
+        r["final_ppl"] for r in all_seed_results if r["final_ppl"] is not None
+    ]
 
     report = {
         "template": template_name,
@@ -291,13 +341,30 @@ def validate_template(
         },
         "seed_results": all_seed_results,
         "summary": {
-            "mean_val": round(sum(final_vals) / len(final_vals), 4) if final_vals else None,
+            "mean_val": round(sum(final_vals) / len(final_vals), 4)
+            if final_vals
+            else None,
             "std_val": round(
-                (sum((v - sum(final_vals) / len(final_vals)) ** 2 for v in final_vals) / len(final_vals)) ** 0.5, 4
-            ) if len(final_vals) > 1 else 0,
-            "mean_ppl": round(sum(final_ppls) / len(final_ppls), 1) if final_ppls else None,
-            "consistent": all(r["overfitting_risk"] != "HIGH" for r in all_seed_results),
-            "all_seeds_improving": all(r["val_still_improving"] for r in all_seed_results),
+                (
+                    sum(
+                        (v - sum(final_vals) / len(final_vals)) ** 2 for v in final_vals
+                    )
+                    / len(final_vals)
+                )
+                ** 0.5,
+                4,
+            )
+            if len(final_vals) > 1
+            else 0,
+            "mean_ppl": round(sum(final_ppls) / len(final_ppls), 1)
+            if final_ppls
+            else None,
+            "consistent": all(
+                r["overfitting_risk"] != "HIGH" for r in all_seed_results
+            ),
+            "all_seeds_improving": all(
+                r["val_still_improving"] for r in all_seed_results
+            ),
         },
     }
 
@@ -315,13 +382,16 @@ def validate_template(
         last_cp = r["checkpoints"][-1] if r["checkpoints"] else {}
         if "probes" in last_cp:
             probe_str = " ".join(
-                f"{k}={v:.4f}" for k, v in last_cp["probes"].items()
+                f"{k}={v:.4f}"
+                for k, v in last_cp["probes"].items()
                 if v is not None and isinstance(v, (int, float))
             )
             print(f"         probes: {probe_str}")
 
     s = report["summary"]
-    print(f"\n  Mean val: {s['mean_val']}  Std: {s['std_val']}  Mean PPL: {s['mean_ppl']}")
+    print(
+        f"\n  Mean val: {s['mean_val']}  Std: {s['std_val']}  Mean PPL: {s['mean_ppl']}"
+    )
     print(f"  Consistent: {s['consistent']}  All improving: {s['all_seeds_improving']}")
 
     # Verdict
@@ -335,7 +405,10 @@ def validate_template(
         print("\n  VERDICT: INCONCLUSIVE — needs longer training")
 
     # Save
-    out = Path("research/reports") / f"deep_validate_{template_name}_{int(time.time())}.json"
+    out = (
+        Path("research/reports")
+        / f"deep_validate_{template_name}_{int(time.time())}.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, default=str))
     print(f"\n  Report saved: {out}")
@@ -355,8 +428,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--no-probe-checkpoints", action="store_true",
-                       help="Only run probes at final step")
+    parser.add_argument(
+        "--no-probe-checkpoints",
+        action="store_true",
+        help="Only run probes at final step",
+    )
     args = parser.parse_args()
 
     seeds = [int(s) for s in args.seeds.split(",")]

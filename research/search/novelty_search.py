@@ -11,9 +11,6 @@ from ..synthesis.grammar import GrammarConfig
 from ..eval.fingerprint import BehavioralFingerprint
 from ._behavior_archive import (
     BehaviorArchive,
-    _behavior_distance,
-    _behavior_vector,
-    _sanitize_scaled_feature,
 )
 from .evolution import Individual, EvolutionConfig, evolutionary_search
 

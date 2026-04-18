@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
-    MOTIF_CLASS_CONV,
     MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_NORM,
@@ -978,8 +977,12 @@ def tpl_dual_axis_block(
 
     normed = _add(graph, "rmsnorm", [input_id], context="dual_axis_block.norm")
 
-    split_a = _add(graph, "split2", [normed], {"part": 0}, context="dual_axis_block.split_a")
-    split_b = _add(graph, "split2", [normed], {"part": 1}, context="dual_axis_block.split_b")
+    split_a = _add(
+        graph, "split2", [normed], {"part": 0}, context="dual_axis_block.split_a"
+    )
+    split_b = _add(
+        graph, "split2", [normed], {"part": 1}, context="dual_axis_block.split_b"
+    )
     path_a = _add(graph, "rmsnorm", [split_a], context="dual_axis_block.path_a_norm")
     path_a = _add(graph, "conv1d_seq", [path_a], context="dual_axis_block.path_a")
     path_b = _add(

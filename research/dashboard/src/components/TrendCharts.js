@@ -177,8 +177,8 @@ function TrendCharts({ onSelectExperiment }) {
           <div className="card">
             <div className="card-title">Similarity Heatmap (CKA)</div>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-              Top 10 candidates vs 10 recent references.
-              Purple intensity = high behavioral similarity.
+              This panel renders only measured candidate-vs-reference CKA data.
+              It stays disabled until the backend exposes a real pairwise matrix.
             </p>
             <SimilarityHeatmap leaderboardEntries={leaderboardEntries} />
           </div>

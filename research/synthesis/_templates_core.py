@@ -14,14 +14,12 @@ from ._template_helpers import (
     MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_FFN,
     MOTIF_CLASS_GATE,
-    MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SPARSE,
     MOTIF_CLASS_SSM,
     MotifWeights,
     TemplateBuildError,
-    _ALL_CLASSES,
     _BOTTLENECK_CLASSES,
     _FFN_CLASSES,
     _MIXER_CLASSES,
@@ -263,9 +261,15 @@ def tpl_three_way_split(
             context="three_way_split.reproject",
         )
 
-    part0 = _add(graph, "split3", [routed], {"part": 0}, context="three_way_split.part0")
-    part1 = _add(graph, "split3", [routed], {"part": 1}, context="three_way_split.part1")
-    part2 = _add(graph, "split3", [routed], {"part": 2}, context="three_way_split.part2")
+    part0 = _add(
+        graph, "split3", [routed], {"part": 0}, context="three_way_split.part0"
+    )
+    part1 = _add(
+        graph, "split3", [routed], {"part": 1}, context="three_way_split.part1"
+    )
+    part2 = _add(
+        graph, "split3", [routed], {"part": 2}, context="three_way_split.part2"
+    )
 
     p0 = _add(graph, "conv1d_seq", [part0], context="three_way_split.lane0")
     p1 = _add(
@@ -765,26 +769,34 @@ def tpl_recursive_attn_ssm_hybrid(
 
     # Pre-norm (satisfies LAC must_precede)
     normed = _add(
-        graph, norm_op, [input_id],
+        graph,
+        norm_op,
+        [input_id],
         context="recursive_attn_ssm_hybrid.pre_norm",
     )
 
     # Latent attention compressor — best attention op
     compressed = _add(
-        graph, "latent_attention_compressor", [normed],
+        graph,
+        "latent_attention_compressor",
+        [normed],
         context="recursive_attn_ssm_hybrid.lac",
     )
 
     # Norm before state_space (satisfies must_precede={rmsnorm, layernorm})
     mid_norm_op = rng.choice(["rmsnorm", "layernorm"])
     mid_norm = _add(
-        graph, mid_norm_op, [compressed],
+        graph,
+        mid_norm_op,
+        [compressed],
         context="recursive_attn_ssm_hybrid.mid_norm",
     )
 
     # State space — sequential state tracking
     ssm_out = _add(
-        graph, "state_space", [mid_norm],
+        graph,
+        "state_space",
+        [mid_norm],
         context="recursive_attn_ssm_hybrid.ssm",
     )
 
@@ -792,7 +804,9 @@ def tpl_recursive_attn_ssm_hybrid(
     # Must come after SSM; cannot be followed by mixing/attention ops
     max_depth = rng.choice([2, 3, 4])
     recursed = _add(
-        graph, "depth_weighted_proj", [ssm_out],
+        graph,
+        "depth_weighted_proj",
+        [ssm_out],
         {"max_depth": max_depth},
         context="recursive_attn_ssm_hybrid.recursion",
     )
@@ -800,24 +814,34 @@ def tpl_recursive_attn_ssm_hybrid(
     # Optional sparse linear after recursion (50% chance)
     current = recursed
     if rng.random() < 0.5:
-        sparse_op = rng.choice([
-            "nm_sparse_linear", "low_rank_proj", "ternary_projection",
-        ])
+        sparse_op = rng.choice(
+            [
+                "nm_sparse_linear",
+                "low_rank_proj",
+                "ternary_projection",
+            ]
+        )
         current = _add(
-            graph, sparse_op, [current],
+            graph,
+            sparse_op,
+            [current],
             context="recursive_attn_ssm_hybrid.sparse",
         )
 
     # Activation for nonlinearity
     act_op = rng.choice(["gelu", "silu", "relu"])
     current = _add(
-        graph, act_op, [current],
+        graph,
+        act_op,
+        [current],
         context="recursive_attn_ssm_hybrid.activation",
     )
 
     # Final projection
     proj = _add(
-        graph, "linear_proj", [current],
+        graph,
+        "linear_proj",
+        [current],
         {"out_dim": D},
         context="recursive_attn_ssm_hybrid.proj",
     )
@@ -846,13 +870,17 @@ def tpl_induction_matmul_block(
 
     # Pre-norm
     normed = _add(
-        graph, norm_op, [input_id],
+        graph,
+        norm_op,
+        [input_id],
         context="induction_matmul_block.pre_norm",
     )
 
     # Cumulative sum — accumulation for positional/temporal signal
     accumulated = _add(
-        graph, "cumsum", [normed],
+        graph,
+        "cumsum",
+        [normed],
         context="induction_matmul_block.cumsum",
     )
     stabilized = _add(
@@ -872,33 +900,43 @@ def tpl_induction_matmul_block(
     # Matmul — explicit matrix ops for induction
     # matmul requires 2 inputs of same shape and prefers projection input.
     matmul_out = _add(
-        graph, "matmul", [projected, projected],
+        graph,
+        "matmul",
+        [projected, projected],
         context="induction_matmul_block.matmul",
     )
 
     # Norm before kronecker_linear (satisfies must_precede={rmsnorm, layernorm})
     mid_norm_op = rng.choice(["rmsnorm", "layernorm"])
     mid_norm = _add(
-        graph, mid_norm_op, [matmul_out],
+        graph,
+        mid_norm_op,
+        [matmul_out],
         context="induction_matmul_block.mid_norm",
     )
 
     # Kronecker-structured linear — efficient structured projection
     kron = _add(
-        graph, "kronecker_linear", [mid_norm],
+        graph,
+        "kronecker_linear",
+        [mid_norm],
         context="induction_matmul_block.kronecker",
     )
 
     # Activation for nonlinearity
     act_op = rng.choice(["gelu", "silu", "relu"])
     activated = _add(
-        graph, act_op, [kron],
+        graph,
+        act_op,
+        [kron],
         context="induction_matmul_block.activation",
     )
 
     # Final projection
     proj = _add(
-        graph, "linear_proj", [activated],
+        graph,
+        "linear_proj",
+        [activated],
         {"out_dim": D},
         context="induction_matmul_block.proj",
     )
@@ -927,20 +965,26 @@ def tpl_recursive_moe_attn(
 
     # Pre-norm (satisfies LAC must_precede)
     normed = _add(
-        graph, norm_op, [input_id],
+        graph,
+        norm_op,
+        [input_id],
         context="recursive_moe_attn.pre_norm",
     )
 
     # Latent attention compressor — pattern recognition
     compressed = _add(
-        graph, "latent_attention_compressor", [normed],
+        graph,
+        "latent_attention_compressor",
+        [normed],
         context="recursive_moe_attn.lac",
     )
 
     # Linear proj — bridge between attention and MoE
     # moe_2expert/moe_topk forbid rmsnorm/layernorm as predecessor
     bridge = _add(
-        graph, "linear_proj", [compressed],
+        graph,
+        "linear_proj",
+        [compressed],
         {"out_dim": D},
         context="recursive_moe_attn.bridge",
     )
@@ -951,7 +995,9 @@ def tpl_recursive_moe_attn(
     if moe_op == "moe_topk":
         moe_config = {"num_experts": rng.choice([2, 4]), "top_k": 1}
     expert = _add(
-        graph, moe_op, [bridge],
+        graph,
+        moe_op,
+        [bridge],
         moe_config,
         context="recursive_moe_attn.moe",
     )
@@ -959,7 +1005,9 @@ def tpl_recursive_moe_attn(
     # Adaptive recursion (depth_weighted_proj) — depth refinement
     max_depth = rng.choice([2, 3, 4])
     recursed = _add(
-        graph, "depth_weighted_proj", [expert],
+        graph,
+        "depth_weighted_proj",
+        [expert],
         {"max_depth": max_depth},
         context="recursive_moe_attn.recursion",
     )
@@ -967,24 +1015,34 @@ def tpl_recursive_moe_attn(
     # Optional sparse linear after recursion (50% chance)
     current = recursed
     if rng.random() < 0.5:
-        sparse_op = rng.choice([
-            "nm_sparse_linear", "low_rank_proj", "ternary_projection",
-        ])
+        sparse_op = rng.choice(
+            [
+                "nm_sparse_linear",
+                "low_rank_proj",
+                "ternary_projection",
+            ]
+        )
         current = _add(
-            graph, sparse_op, [current],
+            graph,
+            sparse_op,
+            [current],
             context="recursive_moe_attn.sparse",
         )
 
     # Activation for nonlinearity
     act_op = rng.choice(["gelu", "silu", "relu"])
     current = _add(
-        graph, act_op, [current],
+        graph,
+        act_op,
+        [current],
         context="recursive_moe_attn.activation",
     )
 
     # Final projection
     proj = _add(
-        graph, "linear_proj", [current],
+        graph,
+        "linear_proj",
+        [current],
         {"out_dim": D},
         context="recursive_moe_attn.proj",
     )

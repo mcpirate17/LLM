@@ -22,10 +22,9 @@ _ARIA_DESIGNER_ROOT = _PROJECT_ROOT / "aria_designer"
 _ARIA_CORE_ROOT = _PROJECT_ROOT / "aria_core"
 _RESEARCH_ROOT = _PROJECT_ROOT / "research"
 
-from research.eval.perf_budget import evaluate_perf_budget_gate
 from research.perf_contract import (
     build_duplicate_work_report,
-    build_perf_contract,
+    build_perf_contract_with_gate,
     emit_perf_artifact,
     list_recent_perf_artifacts,
     summarize_perf_artifacts,
@@ -265,18 +264,14 @@ def _stage_elapsed_metrics(stages: Dict[str, Any]) -> Dict[str, float]:
     return metrics
 
 
-# ── Perf Bundle Builder ──────────────────────────────────────────────
-
-
-def _build_designer_perf_bundle(
-    *,
-    run_id: Optional[str],
-    workflow_id: Optional[str],
+def designer_metrics_from_stages(
     stages: Dict[str, Any],
     total_time_ms: Optional[float],
     status: str,
-    duplicate_work: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Flatten a staged designer-eval result into the `designer_interactive`
+    metric shape. Shared by the streaming eval orchestrator and any caller
+    that wants to reconstruct designer perf metrics from stage output."""
     profiling = dig(stages, "profiling", "metrics", default={})
     compilation = dig(stages, "compilation", "metrics", default={})
     sandbox = dig(stages, "sandbox", "metrics", default={})
@@ -292,25 +287,35 @@ def _build_designer_perf_bundle(
         "status_code": 1.0 if status == "success" else 0.0,
     }
     metrics.update(_stage_elapsed_metrics(stages))
-    dup = duplicate_work or build_duplicate_work_report()
-    report = {
-        "metrics": metrics,
-        "duplicate_work": dup,
-    }
-    budget_verdict = evaluate_perf_budget_gate(
-        report, budget_profile="designer_interactive"
-    )
-    contract = build_perf_contract(
+    return metrics
+
+
+# ── Perf Bundle Builder ──────────────────────────────────────────────
+
+
+def _build_designer_perf_bundle(
+    *,
+    run_id: Optional[str],
+    workflow_id: Optional[str],
+    metrics: Dict[str, Any],
+    status: str = "unknown",
+    workload: str = "workflow_evaluation",
+    duplicate_work: Optional[Dict[str, Any]] = None,
+    slug: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Single aria_designer perf-contract emitter. Callers supply the metric
+    dict; we run the `designer_interactive` budget gate, build the contract,
+    and emit the artifact."""
+    contract, budget_verdict = build_perf_contract_with_gate(
         component="aria_designer",
-        workload="workflow_evaluation",
-        identity={"run_id": run_id, "workflow_id": workflow_id, "status": status},
+        workload=workload,
         metrics=metrics,
         budget_profile="designer_interactive",
-        budget_verdict=budget_verdict,
-        duplicate_work=dup,
+        identity={"run_id": run_id, "workflow_id": workflow_id, "status": status},
+        duplicate_work=duplicate_work,
     )
     artifact_path = emit_perf_artifact(
-        contract, slug=(run_id or workflow_id or "designer_eval")
+        contract, slug=(slug or run_id or workflow_id or "designer_eval")
     )
     contract["artifact_path"] = artifact_path
     return {
@@ -651,7 +656,11 @@ def _auto_promote_workflow_locally(
         return None
     _graph, fingerprint, graph_json, loss_ratio, novelty_score, param_count = converted
 
-    nb = LabNotebook(str(notebook_path))
+    try:
+        nb = LabNotebook(str(notebook_path))
+    except Exception as exc:
+        logger.warning("Local auto-promotion unavailable (notebook open failed): %s", exc)
+        return None
     try:
         return _insert_into_notebook(
             nb,
@@ -767,6 +776,7 @@ __all__ = [
     "_get_run",
     "_list_runs",
     "_stage_elapsed_metrics",
+    "designer_metrics_from_stages",
     # Perf bundle
     "_build_designer_perf_bundle",
     # Helpers
@@ -789,9 +799,8 @@ __all__ = [
     # Semantic warnings
     "_collect_workflow_semantic_warnings",
     # Re-exports from research
-    "evaluate_perf_budget_gate",
     "build_duplicate_work_report",
-    "build_perf_contract",
+    "build_perf_contract_with_gate",
     "emit_perf_artifact",
     "list_recent_perf_artifacts",
     "summarize_perf_artifacts",

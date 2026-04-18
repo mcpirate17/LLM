@@ -893,10 +893,12 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _set_last_profile_data({
-                    "node_profiles": list(result["node_profiles"]),
-                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                })
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
             else:
                 _set_last_profile_data(None)
         elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
@@ -912,10 +914,12 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
             )
             # Cache profiling data if present.
             if "node_profiles" in result:
-                _set_last_profile_data({
-                    "node_profiles": list(result["node_profiles"]),
-                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                })
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
                 logger.debug(
                     "Profiling: %d node events, peak memory %d bytes",
                     len(_last_profile_data["node_profiles"]),
@@ -1149,10 +1153,12 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _set_last_profile_data({
-                    "node_profiles": list(result["node_profiles"]),
-                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                })
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
             else:
                 _set_last_profile_data(None)
         elif profiling_enabled and hasattr(rust, "execute_graph_with_stats_arrays"):
@@ -1166,10 +1172,12 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _set_last_profile_data({
-                    "node_profiles": list(result["node_profiles"]),
-                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                })
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
             else:
                 _set_last_profile_data(None)
         elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
@@ -1184,10 +1192,12 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _set_last_profile_data({
-                    "node_profiles": list(result["node_profiles"]),
-                    "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                })
+                _set_last_profile_data(
+                    {
+                        "node_profiles": list(result["node_profiles"]),
+                        "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
+                    }
+                )
             else:
                 _set_last_profile_data(None)
         elif hasattr(rust, "execute_graph_arrays"):
@@ -1251,7 +1261,9 @@ def dispatch_graph_native_multi_input_cached(
                 result.get("heap_fallback_count", 0),
             )
             _set_last_profile_data(None)
-        elif profiling_enabled and hasattr(rust, "execute_graph_multi_input_arrays_with_stats"):
+        elif profiling_enabled and hasattr(
+            rust, "execute_graph_multi_input_arrays_with_stats"
+        ):
             result = rust.execute_graph_multi_input_arrays_with_stats(
                 ir_json,
                 native_inputs,
@@ -1265,7 +1277,9 @@ def dispatch_graph_native_multi_input_cached(
                 result.get("heap_fallback_count", 0),
             )
             _set_last_profile_data(None)
-        elif profiling_enabled and hasattr(rust, "execute_graph_multi_input_with_stats"):
+        elif profiling_enabled and hasattr(
+            rust, "execute_graph_multi_input_with_stats"
+        ):
             flat_inputs = [value.ravel().tolist() for value in native_inputs]
             result = rust.execute_graph_multi_input_with_stats(ir_json, flat_inputs)
             y_flat = result["output"]

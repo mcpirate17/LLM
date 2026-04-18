@@ -63,9 +63,8 @@ def get_runtime_event_services(
         _replay_registry_from_spool(registry, spool)
         bus.subscribe(registry.consume)
         from ..notebook.native_conn import NativeConnectionWrapper
-        projector_conn = NativeConnectionWrapper(
-            str(Path(notebook_path).resolve())
-        )
+
+        projector_conn = NativeConnectionWrapper(str(Path(notebook_path).resolve()))
         lifecycle_projector = LifecycleProjector(projector_conn, spool=spool)
         projector_worker = ProjectorWorker(lifecycle_projector.replay_once)
         services = RuntimeEventServices(

@@ -33,9 +33,10 @@ from ..shared_api import (
     bridge_analyze_compression,
     bridge_analyze_routing,
     bridge_evaluate,
+    designer_metrics_from_stages,
 )
 from research.defaults import MODEL_DIM, VOCAB_SIZE
-from research.perf_contract import build_duplicate_work_report, emit_perf_artifact
+from research.perf_contract import build_duplicate_work_report
 from ..type_utils import dig, safe_float
 
 logger = logging.getLogger(__name__)
@@ -449,11 +450,11 @@ class _EvalRunContext:
         error_stage: str | None = None,
         total_ms: float | None = None,
     ) -> None:
+        stages = (_get_run(self.run_id) or {}).get("stages", {})
         perf_bundle = _build_designer_perf_bundle(
             run_id=self.run_id,
             workflow_id=self.wf.get("workflow_id"),
-            stages=(_get_run(self.run_id) or {}).get("stages", {}),
-            total_time_ms=total_ms,
+            metrics=designer_metrics_from_stages(stages, total_ms, status),
             status=status,
             duplicate_work=build_duplicate_work_report(
                 avoided_keys=self.duplicate_work_avoided,
@@ -539,14 +540,9 @@ class _EvalRunContext:
         )
 
 
-def _build_direct_perf_contract(
-    run_id: str,
-    wf: dict,
-    result_dict: dict,
-) -> Dict[str, Any]:
-    """Build perf contract, budget gate, and artifact for a direct eval run."""
-    duplicate_work = build_duplicate_work_report()
-    metrics = {
+def _direct_eval_metrics(result_dict: dict) -> Dict[str, Any]:
+    """Flatten bridge_evaluate() output into `designer_interactive` metrics."""
+    return {
         "total_time_ms": safe_float(result_dict.get("total_time_ms")),
         "compile_time_ms": safe_float(result_dict.get("compile_time_ms")),
         "forward_time_ms": safe_float(result_dict.get("forward_ms")),
@@ -555,34 +551,6 @@ def _build_direct_perf_contract(
         "native_coverage": safe_float(result_dict.get("native_coverage")),
         "total_flops_per_token": safe_float(result_dict.get("total_flops_per_token")),
         "total_params": safe_float(result_dict.get("param_count")),
-    }
-
-    from research.eval.perf_budget import evaluate_perf_budget_gate
-    from research.perf_contract import build_perf_contract
-
-    budget_gate = evaluate_perf_budget_gate(
-        {"metrics": metrics, "duplicate_work": duplicate_work},
-        budget_profile="designer_interactive",
-    )
-    contract = build_perf_contract(
-        component="aria_designer",
-        workload="workflow_evaluation_direct",
-        identity={
-            "run_id": run_id,
-            "workflow_id": wf.get("workflow_id"),
-            "status": result_dict.get("status", "unknown"),
-        },
-        metrics=metrics,
-        budget_profile="designer_interactive",
-        budget_verdict=budget_gate,
-        duplicate_work=duplicate_work,
-    )
-    artifact_path = emit_perf_artifact(contract, slug=run_id)
-    contract["artifact_path"] = artifact_path
-    return {
-        "perf_contract": contract,
-        "perf_artifact_path": artifact_path,
-        "perf_budget_gate": budget_gate,
     }
 
 
@@ -631,7 +599,14 @@ def evaluate_workflow_via_bridge(req: RunWorkflowRequest) -> Dict[str, Any]:
             error_type=result_dict.get("status"),
             semantic_warnings=semantic_warnings,
         )
-    perf = _build_direct_perf_contract(run_id, wf, result_dict)
+    perf = _build_designer_perf_bundle(
+        run_id=run_id,
+        workflow_id=wf.get("workflow_id"),
+        metrics=_direct_eval_metrics(result_dict),
+        status=result_dict.get("status", "unknown"),
+        workload="workflow_evaluation_direct",
+        slug=run_id,
+    )
     result_dict["perf_contract"] = perf["perf_contract"]
     result_dict["perf_artifact_path"] = perf["perf_artifact_path"]
     result_dict["perf_budget_gate"] = perf["perf_budget_gate"]

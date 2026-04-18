@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -127,7 +127,7 @@ def analyze_manifest(manifest: Dict[str, Any], source_path: str = "") -> Dict[st
         "property_count": len(params),
         "has_help": bool(manifest.get("help_md")),
         "status": status,
-        "issues": [i.__dict__ for i in issues],
+        "issues": [asdict(i) for i in issues],
     }
 
 

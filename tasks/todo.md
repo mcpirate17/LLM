@@ -1,5 +1,28 @@
 # Task Plan
 
+## 2026-04-17 — Tomorrow pickup: isolated `IRExecutorV2` bake-off and cutover decision
+
+- Continue only on the isolated `ir_v2` executor path; do not change the default executor unless the bake-off data is clearly better.
+- Current landed state:
+  - `compile_graph(..., executor="ir_v2")` selects the isolated executor without touching the default path.
+  - `IRExecutorV2` now uses bound-native whole-graph dispatch for parameterized graphs via `BoundNativeSubgraphDispatcher`.
+  - Non-parameterized graphs now lazily build the Python fallback plan only if native dispatch refuses; constructor cost dropped sharply there.
+  - `IRExecutorV2` no longer constructs a duplicate fallback `IRExecutor`; it owns its own execution plan and Python fallback loop.
+  - Benchmark smoke exists in `research/tests/test_ir_executor_v2_benchmark.py`.
+- Measured today:
+  - Non-parameterized native ReLU chain ctor: default `0.776 ms`, `ir_v2` `0.032 ms`.
+  - Bound linear graph ctor: default `0.161 ms`, `ir_v2` `0.153 ms`.
+  - Benchmark smoke sample: ReLU runtime default `0.9375 ms`, `ir_v2` `0.9234 ms`; bound runtime default `5.9993 ms`, `ir_v2` `5.9986 ms`.
+- Tomorrow’s work:
+  - Run a broader bake-off on representative real synthesis graphs, not just toy relu/linear cases.
+  - Compare `executor="default"` vs `executor="ir_v2"` on constructor cost, steady-state runtime, and native dispatch hit rate.
+  - Identify whether real wins come from native-subgraph coverage, reduced init overhead, or both.
+  - Only consider cutover if `ir_v2` is consistently faster and not regressing behavior on representative graphs.
+- Minimum verification before any cutover discussion:
+  - `pytest -q research/tests/test_ir_executor_v2_benchmark.py`
+  - `pytest -q research/tests/test_ir_executor_v2.py research/tests/test_synthesis_audit_fixes.py -k "ir_executor_v2 or compile_graph_can_select_ir_executor_v2"`
+  - Re-run the cached native-dispatch tests to make sure the shared Rust/Python bridge path still holds.
+
 ## 2026-04-17 — Open-depth audit for rule design
 
 - Run the controlled `open_depth` audit described in [tasks/open_depth_audit_tomorrow.md](/home/tim/Projects/LLM/tasks/open_depth_audit_tomorrow.md).

@@ -80,9 +80,7 @@ def test_template_rule_violations_are_fatal_during_generation_validation():
     graph.set_output(mid)
 
     try:
-        _validate_graph(
-            graph, GrammarConfig(model_dim=64, routing_mandatory=False)
-        )
+        _validate_graph(graph, GrammarConfig(model_dim=64, routing_mandatory=False))
     except ValueError as exc:
         assert "Template rule violations" in str(exc)
         assert graph.metadata["template_rule_warnings"]

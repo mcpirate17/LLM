@@ -62,9 +62,7 @@ def get_notebook(notebook_path: str) -> LabNotebook:
                 logger.warning(
                     "Writer lock held by another process — opening read-only: %s", e
                 )
-                nb = LabNotebook(
-                    notebook_path, check_same_thread=False, read_only=True
-                )
+                nb = LabNotebook(notebook_path, check_same_thread=False, read_only=True)
             else:
                 raise
         except sqlite3.OperationalError:

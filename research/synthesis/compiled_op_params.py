@@ -230,9 +230,13 @@ class CompiledOpParamInitMixin:
             "hetero_moe": lambda: self._init_hetero_moe(d_in),
             "arch_router": lambda: self._init_arch_router(d_in),
             "compute_budget_router": lambda: self._init_compute_budget_router(d_in),
-            "difficulty_routed_attention": lambda: self._init_difficulty_routed_attention(d_in),
+            "difficulty_routed_attention": lambda: (
+                self._init_difficulty_routed_attention(d_in)
+            ),
             "strided_attention": lambda: self._init_strided_attention(d_in),
-            "gated_progressive_attention": lambda: self._init_gated_progressive_attention(d_in),
+            "gated_progressive_attention": lambda: (
+                self._init_gated_progressive_attention(d_in)
+            ),
             "gated_linear_attention": lambda: self._init_gated_linear_attention(d_in),
             "long_conv_hyena": lambda: self._init_long_conv_hyena(d_in),
             "associative_memory": lambda: self._init_associative_memory(d_in),

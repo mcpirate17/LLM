@@ -19,7 +19,9 @@ def _native_loss_available() -> bool:
             native, "clip_grad_norm_"
         )
     except Exception as exc:
-        logger.warning("Native loss extension unavailable; using torch fallback (%s)", exc)
+        logger.warning(
+            "Native loss extension unavailable; using torch fallback (%s)", exc
+        )
         return False
 
 

@@ -30,7 +30,6 @@ from ._template_helpers import (
     MOTIF_CLASS_SPARSE,
     Motif,
     MotifWeights,
-    _ALL_CLASSES,
     _compatible_from_classes,
     _filter_slot_candidates,
     _record_slot_usage,

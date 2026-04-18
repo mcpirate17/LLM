@@ -107,19 +107,35 @@ def _estimate_mixing_flops(
 ) -> int:
     del config
     if op_name == "difficulty_routed_attention":
-        return 4 * seq_len * seq_len * width + 10 * seq_len * width * width + 3 * seq_len * width
+        return (
+            4 * seq_len * seq_len * width
+            + 10 * seq_len * width * width
+            + 3 * seq_len * width
+        )
     if op_name == "strided_attention":
         stride_factor = 15.0 / 32.0
-        return int(4 * stride_factor * seq_len * seq_len * width + 8 * seq_len * width * width)
+        return int(
+            4 * stride_factor * seq_len * seq_len * width + 8 * seq_len * width * width
+        )
     if op_name == "gated_progressive_attention":
-        return 4 * seq_len * seq_len * width + 10 * seq_len * width * width + 2 * seq_len * width
+        return (
+            4 * seq_len * seq_len * width
+            + 10 * seq_len * width * width
+            + 2 * seq_len * width
+        )
     if op_name == "gated_linear_attention":
         return 12 * seq_len * width * width + 4 * seq_len * width
     if op_name == "long_conv_hyena":
         fft_term = max(1, int(math.log2(max(seq_len, 2))))
-        return 6 * seq_len * width * width + 8 * seq_len * fft_term * width + 64 * seq_len
+        return (
+            6 * seq_len * width * width + 8 * seq_len * fft_term * width + 64 * seq_len
+        )
     if op_name == "associative_memory":
-        return 4 * seq_len * seq_len * width + 8 * seq_len * width * width + seq_len * width
+        return (
+            4 * seq_len * seq_len * width
+            + 8 * seq_len * width * width
+            + seq_len * width
+        )
     if op_name == "mixture_of_recursions":
         return 48 * seq_len * width * width + 12 * seq_len * width
     if op_name == "softmax_attention":

@@ -1,0 +1,128 @@
+export const LIVE_LOSS_CURVE_MAX_POINTS = 20000;
+export const LIVE_FEED_MAX_EVENTS = 100;
+export const LIVE_FEED_MAX_GRAPHS = 5;
+
+export const RESULT_COLORS = {
+  'S1 PASS': 'var(--accent-green)',
+  'S0': 'var(--accent-blue)',
+  'FAIL': 'var(--accent-red)',
+  'invalid': 'var(--accent-red)',
+  'compile_error': 'var(--accent-orange)',
+};
+
+export const EVENT_TYPE_ALIASES = {
+  program_evaluated: 'program',
+  experiment_started: 'start',
+  experiment_completed: 'complete',
+  experiment_failed: 'failed',
+  experiment_stopping: 'stopping',
+  evolution_started: 'evo_start',
+  evolution_generation: 'evo_gen',
+  evolution_completed: 'evo_complete',
+  novelty_started: 'nov_start',
+  novelty_generation: 'nov_gen',
+  novelty_completed: 'nov_complete',
+  scale_up_started: 'scaleup_start',
+  scale_up_progress: 'scaleup_progress',
+  scale_up_completed: 'scaleup_complete',
+  auto_scale_up_queued: 'auto_scaleup',
+  investigation_started: 'invest_start',
+  investigation_progress: 'invest_progress',
+  investigation_completed: 'invest_complete',
+  validation_started: 'validate_start',
+  validation_progress: 'validate_progress',
+  validation_phase: 'validate_phase',
+  validation_completed: 'validate_complete',
+  breakthrough_detected: 'breakthrough',
+  auto_investigate_queued: 'auto_investigate',
+  auto_validate_queued: 'auto_validate',
+  auto_report_generated: 'auto_report',
+  aria_recommendation: 'recommendation',
+  hypothesis_recorded: 'hyp_recorded',
+  hypothesis_resolved: 'hyp_resolved',
+  decision_recorded: 'decision',
+  knowledge_extracted: 'knowledge',
+  campaign_created: 'campaign_created',
+  campaign_completed: 'campaign_completed',
+  aria_cycle_phase: 'aria_phase',
+  continuous_limit_reached: 'limit_reached',
+  learning_event: 'learning',
+  training_step: 'training_step',
+  log_message: 'log',
+};
+
+export const RENDERABLE_EVENT_TYPES = new Set([
+  'program',
+  'start',
+  'complete',
+  'failed',
+  'stopping',
+  'evo_start',
+  'evo_gen',
+  'evo_complete',
+  'nov_start',
+  'nov_gen',
+  'nov_complete',
+  'scaleup_start',
+  'scaleup_progress',
+  'scaleup_complete',
+  'auto_scaleup',
+  'mode_selected',
+  'invest_start',
+  'invest_progress',
+  'invest_complete',
+  'validate_start',
+  'validate_progress',
+  'validate_phase',
+  'validate_complete',
+  'breakthrough',
+  'auto_investigate',
+  'auto_validate',
+  'auto_report',
+  'recommendation',
+  'hyp_recorded',
+  'hyp_resolved',
+  'decision',
+  'knowledge',
+  'campaign_created',
+  'campaign_completed',
+  'aria_phase',
+  'limit_reached',
+  'learning',
+  'log',
+]);
+
+export const GENERATION_EVENT_TYPES = new Set(['evo_gen', 'nov_gen']);
+export const RUN_START_EVENT_TYPES = new Set(['start', 'evo_start', 'nov_start', 'invest_start', 'validate_start', 'scaleup_start']);
+export const CONTEXT_SWITCH_EVENT_TYPES = new Set([
+  ...RUN_START_EVENT_TYPES,
+  'invest_progress',
+  'validate_progress',
+  'scaleup_progress',
+  'evo_gen',
+  'nov_gen',
+]);
+
+export const TERMINAL_EVENT_TYPES = new Set(['complete', 'failed']);
+export const PROGRESSION_EVENT_TYPES = new Set([
+  'scaleup_start',
+  'scaleup_progress',
+  'scaleup_complete',
+  'auto_scaleup',
+  'invest_start',
+  'invest_progress',
+  'invest_complete',
+  'validate_start',
+  'validate_progress',
+  'validate_phase',
+  'validate_complete',
+  'auto_investigate',
+  'auto_validate',
+]);
+
+export const RUN_BOUNDARY_STYLE = {
+  marginTop: 12,
+  paddingTop: 12,
+  borderTop: '1px solid var(--border)',
+};
+

@@ -54,9 +54,7 @@ def tpl_typed_slot_memory_block(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    trunk = _add(
-        graph, "conv1d_seq", [normed], context="typed_slot_memory_block.trunk"
-    )
+    trunk = _add(graph, "conv1d_seq", [normed], context="typed_slot_memory_block.trunk")
     record_role_slot_binding(
         graph,
         role_name="trunk_compression",
@@ -152,7 +150,12 @@ def tpl_typed_slot_memory_block(
         {"k": 4},
         context="typed_slot_memory_block.retrieve",
     )
-    retrieved = _add(graph, "mul", [retrieved, controller_gate], context="typed_slot_memory_block.retrieve_gate")
+    retrieved = _add(
+        graph,
+        "mul",
+        [retrieved, controller_gate],
+        context="typed_slot_memory_block.retrieve_gate",
+    )
     retrieved = _add(
         graph,
         "add",
@@ -230,9 +233,26 @@ def tpl_sparse_relation_graph_block(
         selected_name="route_topk_relation_controller",
         input_node_id=anchor,
     )
-    relation_basis = _add(graph, "linear_proj", [relation_seed], {"out_dim": graph.model_dim}, context="sparse_relation_graph_block.relation_basis")
-    relation_scores = _add(graph, "matmul", [relation_basis, relation_basis], context="sparse_relation_graph_block.relation_scores")
-    relation_scores = _add(graph, "linear_proj", [relation_scores], {"out_dim": graph.model_dim}, context="sparse_relation_graph_block.score_proj")
+    relation_basis = _add(
+        graph,
+        "linear_proj",
+        [relation_seed],
+        {"out_dim": graph.model_dim},
+        context="sparse_relation_graph_block.relation_basis",
+    )
+    relation_scores = _add(
+        graph,
+        "matmul",
+        [relation_basis, relation_basis],
+        context="sparse_relation_graph_block.relation_scores",
+    )
+    relation_scores = _add(
+        graph,
+        "linear_proj",
+        [relation_scores],
+        {"out_dim": graph.model_dim},
+        context="sparse_relation_graph_block.score_proj",
+    )
     record_role_slot_binding(
         graph,
         role_name="global_retrieval",
@@ -246,7 +266,13 @@ def tpl_sparse_relation_graph_block(
         {"k": 4},
         context="sparse_relation_graph_block.sparse_edges",
     )
-    messages = _add(graph, "linear_proj", [sparse_edges], {"out_dim": graph.model_dim}, context="sparse_relation_graph_block.message_proj")
+    messages = _add(
+        graph,
+        "linear_proj",
+        [sparse_edges],
+        {"out_dim": graph.model_dim},
+        context="sparse_relation_graph_block.message_proj",
+    )
     merge_gate = _typed_entropy_gate(
         graph, trunk, context="sparse_relation_graph_block.merge_gate"
     )

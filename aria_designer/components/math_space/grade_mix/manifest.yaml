@@ -26,7 +26,6 @@ implementation:
   rust: null
   cython: null
   python: null
-standalone: false
 performance:
   has_params: false
   param_formula: '0'

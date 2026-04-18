@@ -188,7 +188,9 @@ def test_targeted_backfill_graphs_fit_screening_validator(template_name, seed):
         ("token_program_interpreter_block", 7),
     ),
 )
-def test_codex_fast_attention_templates_emit_slot_usage(template_name, expected_min_slots):
+def test_codex_fast_attention_templates_emit_slot_usage(
+    template_name, expected_min_slots
+):
     result = batch_generate(1, _backfill_like_config(template_name), base_seed=42)
     assert len(result.graphs) == 1
     slot_usage = result.graphs[0].metadata.get("template_slot_usage", [])

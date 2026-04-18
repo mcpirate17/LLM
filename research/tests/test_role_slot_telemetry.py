@@ -88,9 +88,7 @@ def test_role_slot_templates_contain_retrieval_ops() -> None:
         graph.set_output(out_id)
 
         op_names = {
-            graph.nodes[n].op_name
-            for n in graph.nodes
-            if not graph.nodes[n].is_input
+            graph.nodes[n].op_name for n in graph.nodes if not graph.nodes[n].is_input
         }
         assert op_names & retrieval_ops, (
             f"{name} contains no retrieval op ({sorted(retrieval_ops)}); "

@@ -588,7 +588,10 @@ def _instantiate_motif(
             config.setdefault("k", rng.choice([4, 8, 16]))
         elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
             config.setdefault("mlp_ratio", rng.choice([2.0, 3.0, 4.0]))
-        if op_name in ("linear_proj_up", "linear_proj") and prev_op == "linear_proj_down":
+        if (
+            op_name in ("linear_proj_up", "linear_proj")
+            and prev_op == "linear_proj_down"
+        ):
             try:
                 current = graph.add_op("rmsnorm", [current])
                 prev_op = "rmsnorm"

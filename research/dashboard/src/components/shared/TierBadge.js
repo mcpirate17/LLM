@@ -1,28 +1,9 @@
 import React from 'react';
 import { TIER_COLORS, TIER_LABELS } from '../../utils/scoringEngine';
+import { decisionGate as sharedDecisionGate } from '../../utils/candidateState';
 
 export function decisionGate(entry) {
-  const checks = {
-    screeningEvidence: entry.screening_loss_ratio != null && entry.screening_novelty != null,
-    investigationEvidence: entry.investigation_loss_ratio != null && entry.investigation_robustness != null,
-    robustnessFloor: entry.investigation_robustness != null && entry.investigation_robustness >= 0.5,
-    validationEvidence: entry.validation_loss_ratio != null
-      && entry.validation_baseline_ratio != null
-      && entry.validation_multi_seed_std != null,
-    baselineBeatsReference: entry.validation_baseline_ratio != null && entry.validation_baseline_ratio < 1.0,
-    consistencyBounded: entry.validation_multi_seed_std != null && entry.validation_multi_seed_std <= 0.12,
-  };
-  const decisionReady = Object.values(checks).every(Boolean);
-  const missing = Object.entries(checks)
-    .filter(([, ok]) => !ok)
-    .map(([name]) => name);
-  return {
-    decisionReady,
-    label: decisionReady ? 'Decision-Ready' : 'Exploratory',
-    color: decisionReady ? 'var(--accent-green)' : 'var(--accent-yellow)',
-    missing,
-    checks,
-  };
+  return sharedDecisionGate(entry);
 }
 
 const CHECK_LABELS = {
@@ -32,6 +13,7 @@ const CHECK_LABELS = {
   validationEvidence: 'Validation evidence',
   baselineBeatsReference: 'Baseline < 1.0',
   consistencyBounded: 'Multi-seed std \u2264 0.12',
+  ckaArtifactBacked: 'CKA artifact-backed',
 };
 
 export default function TierBadge({ tier, entry }) {

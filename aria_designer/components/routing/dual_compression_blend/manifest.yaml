@@ -22,7 +22,7 @@ inputs:
   shape:
   - B
   - S
-  - 2
+  - "2"
 outputs:
 - name: y
   dtype: tensor

@@ -65,12 +65,22 @@ def test_get_hybrid_sparse_router_component_exposes_slots_and_templates(client):
     data = r.json()
     assert data["id"] == "hybrid_sparse_router"
     assert {slot["name"] for slot in data.get("slots", [])} == {
+        "pre_router",
         "default_path",
+        "easy_router",
+        "medium_router",
         "routed_lane",
         "sparse_spans",
+        "difficulty_signal",
+        "compression_router",
+        "hard_router",
+        "token_merge",
+        "post_merge",
     }
     template_ids = {template["id"] for template in data.get("templates", [])}
     assert "hybrid_sparse_triplet_router" in template_ids
+    assert "multiscale_rich_lane_router" in template_ids
+    assert "intelligent_multilane_router" in template_ids
 
 
 def test_get_component_not_found(client):

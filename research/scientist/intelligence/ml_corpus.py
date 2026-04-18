@@ -354,6 +354,7 @@ def _attach_induction_metrics(
     if not fingerprints:
         return rows
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     tables = {
         str(r["name"])
@@ -479,12 +480,14 @@ def _sql_membership_clause(column: str, values: tuple[str, ...]) -> str:
 
 def _db_has_trust_columns(db_path: str, table: str) -> bool:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     return _has_trust_columns(conn, table)
 
 
 def _program_results_columns(db_path: str) -> set[str]:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     return _table_columns(conn, "program_results")
 
@@ -521,6 +524,7 @@ def _load_rust_corpus_rows(
 
 def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     where = [
         "TRIM(COALESCE(graph_json, '')) <> ''",
@@ -607,6 +611,7 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
 def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     where = [
         "TRIM(COALESCE(pr.graph_json, '')) <> ''",
@@ -677,6 +682,7 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
 def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     pr_cols = _table_columns(conn, "program_results")
     use_explicit_flags = "data_provenance_json" in pr_cols
@@ -862,6 +868,7 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
 
 def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     rows = conn.execute(
         """

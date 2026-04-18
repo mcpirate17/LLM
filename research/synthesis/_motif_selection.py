@@ -143,8 +143,7 @@ def resolve_step(
             candidates = [
                 c
                 for c in safe_defaults
-                if context_pair_allowed(prev_op, c)
-                and context_pair_allowed(c, next_op)
+                if context_pair_allowed(prev_op, c) and context_pair_allowed(c, next_op)
             ]
             if not candidates:
                 candidates = ["gelu"]

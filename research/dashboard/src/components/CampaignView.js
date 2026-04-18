@@ -1,6 +1,7 @@
 import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
+import { hypothesisProvenanceLabel } from '../utils/hypothesisProvenance';
 
 const TIMELINE_INITIAL_ROWS = 40;
 const TIMELINE_PAGE_ROWS = 40;
@@ -37,16 +38,6 @@ const SUCCESS_STATUS = {
   at_risk: { label: 'At Risk', color: 'var(--accent-yellow)' },
   not_yet: { label: 'Not Yet', color: 'var(--text-muted)' },
 };
-
-function hypothesisProvenanceLabel(metadata) {
-  const source = metadata?.source;
-  if (source === 'llm_context') return 'LLM + Context';
-  if (source === 'structured_hypothesis') return 'LLM Structured';
-  if (source === 'rule_based_fallback') return 'Rule Fallback';
-  if (source === 'rule_based') return 'Rule-Based';
-  if (source === 'user_input') return 'User Input';
-  return null;
-}
 
 function parseMetadata(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;

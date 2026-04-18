@@ -93,7 +93,7 @@ export function useEventBus(eventName, callback) {
     if (!ctx || !eventName || typeof callback !== 'function') return;
     const stable = (data, e) => cbRef.current(data, e);
     return ctx.subscribe(eventName, stable);
-  }, [ctx, eventName, callback]);
+  }, [ctx, eventName]);
 
   return {
     connected: ctx?.connected ?? false,

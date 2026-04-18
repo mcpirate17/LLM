@@ -24,7 +24,7 @@ params:
     type: integer
     default: 3
   confidence_threshold:
-    type: number
+    type: float
     default: 0.45
 implementation:
   native: null
@@ -38,7 +38,7 @@ performance:
   numerically_risky: false
 slots:
 - name: pre_router
-  kind: stem
+  kind: path
   required: false
   description: Lightweight stem before routing to shape token features.
   compatible_components:
@@ -59,7 +59,7 @@ slots:
   - mixing/conv_only
   - linear_algebra/conv1d_seq
 - name: medium_router
-  kind: route
+  kind: path
   required: false
   description: Sparse pair, triplet, or quartet router used for medium-difficulty token groups.
   compatible_components:
@@ -87,19 +87,19 @@ slots:
   compatible_components:
   - routing/sparse_span_builder
 - name: difficulty_signal
-  kind: signal
+  kind: path
   required: false
   description: Difficulty features that separate medium and hard traffic.
   compatible_components:
   - routing/token_class_proj
 - name: compression_router
-  kind: route
+  kind: path
   required: false
   description: Difficulty-conditioned compression before the hard expert branch.
   compatible_components:
   - routing/signal_conditioned_compression
 - name: hard_router
-  kind: expert
+  kind: lane
   required: false
   description: Heavy expert path for the hardest tokens.
   compatible_components:
@@ -121,7 +121,7 @@ slots:
   - routing/adjacent_token_merge
   - functional/token_merge
 - name: post_merge
-  kind: stem
+  kind: path
   required: false
   description: Stabilizing post-merge compute before the output residual.
   compatible_components:

@@ -9,7 +9,10 @@ Run: cd /path/to/LLM && python -m unittest research.tests.test_integration -v
 """
 
 import pytest
-from research.scientist.runtime_events import get_runtime_event_services, stop_runtime_event_services
+from research.scientist.runtime_events import (
+    get_runtime_event_services,
+    stop_runtime_event_services,
+)
 from research.scientist.notebook.notebook_core import _ThreadSafeConnectionWrapper
 import importlib
 import json
@@ -1123,7 +1126,9 @@ class TestNotebook(unittest.TestCase):
                 "baseline_comparison": "pre-fallback behavior",
             },
             "falsification_conditions": ["insert does not persist"],
-            "confounders_checklist": [{"name": "sqlite_primary_connection", "checked": True}],
+            "confounders_checklist": [
+                {"name": "sqlite_primary_connection", "checked": True}
+            ],
             "exploratory": False,
         }
 

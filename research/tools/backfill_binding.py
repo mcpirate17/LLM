@@ -39,7 +39,9 @@ def _requested_metric_is_missing(row, metrics: tuple[str, ...]) -> bool:
     return False
 
 
-def _query_candidates(nb, tiers: list[str], top: int, force: bool, metrics: tuple[str, ...]):
+def _query_candidates(
+    nb, tiers: list[str], top: int, force: bool, metrics: tuple[str, ...]
+):
     tier_ph = ",".join("?" for _ in tiers)
     rows = nb.conn.execute(
         f"SELECT l.entry_id, l.result_id, l.tier, l.composite_score, "

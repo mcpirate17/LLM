@@ -25,7 +25,7 @@ outputs:
   - D
 params:
   chebyshev_order:
-    type: int
+    type: integer
     default: 6
 implementation:
   native: null

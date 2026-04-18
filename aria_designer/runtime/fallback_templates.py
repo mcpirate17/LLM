@@ -39,23 +39,6 @@ def make_identity_handler(component_type: str):
     return ComponentHandler
 
 
-def make_native_temperature_handler(component_type: str, native_op_name: str):
-    """Create NativeComponentHandler subclass for (x, temperature) kernels."""
-    from aria_designer.components.base import NativeComponentHandler
-
-    class ComponentHandler(NativeComponentHandler):  # noqa: D401
-        def _get_native_args(self, inputs, config):
-            x = inputs["x"].detach().contiguous().float()
-            temperature = config.get("temperature", 0.1)
-            return (x, temperature)
-
-        def _fallback(self, inputs, config):
-            return {"y": inputs["x"]}
-
-    ComponentHandler.native_op_name = native_op_name
-    return ComponentHandler
-
-
 class _StubModule(nn.Module):
     """Bare module stub for mathspace execute functions.
 

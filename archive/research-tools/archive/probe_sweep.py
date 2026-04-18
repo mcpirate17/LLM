@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import logging
 import math
@@ -284,7 +283,9 @@ def sweep_fingerprint(
 
     # Print summary table
     print()
-    print(f"{'Steps':>7} {'PPL':>7} {'Hella':>7} {'Ind':>7} {'AR':>7} {'Bind':>7} {'BLiMP':>7} {'Loss':>7} {'Time':>6}")
+    print(
+        f"{'Steps':>7} {'PPL':>7} {'Hella':>7} {'Ind':>7} {'AR':>7} {'Bind':>7} {'BLiMP':>7} {'Loss':>7} {'Time':>6}"
+    )
     print("-" * 70)
     for steps in sorted(all_results["checkpoints"].keys()):
         r = all_results["checkpoints"][steps]

@@ -121,13 +121,15 @@ def test_capability_first_mode_fires_gate8_at_screening() -> None:
     # Default (binding_capable_required=False): must pass gates 1-7.
     # Capability-first (binding_capable_required=True): must be rejected
     # by gate8_retrieval_dead.
-    ssm_only = _Analysis({
-        "selective_scan",
-        "rmsnorm",
-        "swiglu_mlp",
-        "linear_proj",
-        "add",
-    })
+    ssm_only = _Analysis(
+        {
+            "selective_scan",
+            "rmsnorm",
+            "swiglu_mlp",
+            "linear_proj",
+            "add",
+        }
+    )
     assert "selective_scan" in SEQUENCE_MIXING_OPS
     assert not (ssm_only.op_names & CONTENT_ADDRESSED_OPS)
 

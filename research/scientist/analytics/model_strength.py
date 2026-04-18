@@ -440,6 +440,7 @@ def _compose_score(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(str(db_path))
     df = pd.read_sql_query(BASE_ANALYSIS_QUERY, conn)
 

@@ -212,6 +212,7 @@ def main() -> int:
     audits = _load_manifests()
     report = _build_report(audits)
 
+    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2), encoding="utf-8")
     OUT_MD.write_text(_write_markdown(report), encoding="utf-8")
 

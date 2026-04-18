@@ -1,7 +1,6 @@
 import { apiCall } from "../services/apiService";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useEventBus } from '../hooks/useEventBus';
-import { computeStrategy } from './StrategyAdvisor';
 import { useAriaData } from '../hooks/useAriaData';
 
 const BORDER_COLORS = {
@@ -194,7 +193,6 @@ function ActionQueue({
   onNavigateTab,
   onSelectProgram,
   onStrategyChange,
-  dashboardData,
 }) {
   const [actions, setActions] = useState([]);
   const [autonomyConfig, setAutonomyConfig] = useState(null);
@@ -204,9 +202,10 @@ function ActionQueue({
   const [approving, setApproving] = useState(null);
   const [startingAutonomous, setStartingAutonomous] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
+  const [actionsError, setActionsError] = useState(null);
   const eventBus = useEventBus();
   const subscribe = eventBus?.subscribe;
-  const { leaderboardEntries, learningTrajectory, mathFamilyCoverage, slowPollTick } = useAriaData() || {};
+  const { slowPollTick } = useAriaData() || {};
   const fetchRef = useRef(0);
 
   // Fetch computed action queue
@@ -218,28 +217,14 @@ function ActionQueue({
       const data = await res.json();
       if (id === fetchRef.current) {
         setActions(Array.isArray(data) ? data : []);
+        setActionsError(null);
       }
-    } catch {
+    } catch (err) {
       if (id !== fetchRef.current) return;
-      const strategy = computeStrategy(dashboardData, leaderboardEntries, mathFamilyCoverage);
-      if (strategy) {
-        setActions([{
-          id: `strategy_${strategy.id}`,
-          type: 'strategy',
-          priority: 5,
-          icon: 'lightbulb',
-          title: strategy.title,
-          summary: strategy.rationale,
-          detail: { tierSummary: strategy.tierSummary },
-          actions: strategy.action
-            ? [{ label: 'Execute', action: 'start', payload: strategy.action }]
-            : [{ label: 'View Details', action: 'navigate', payload: { tab: 'discoveries' } }],
-          dismissable: false,
-          source: 'client_fallback',
-        }]);
-      }
+      setActions([]);
+      setActionsError(err?.message || 'Failed to load action queue');
     }
-  }, [dashboardData, leaderboardEntries, mathFamilyCoverage]);
+  }, []);
 
   // Fetch autonomy config
   const fetchAutonomyConfig = useCallback(async () => {
@@ -354,7 +339,7 @@ function ActionQueue({
       {displayed.length === 0 ? (
         <div className="card action-queue-empty" style={{ padding: '12px 16px' }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-            No actions needed — pipeline is healthy
+            {actionsError || 'No actions needed — pipeline is healthy'}
           </div>
         </div>
       ) : (

@@ -344,6 +344,7 @@ class InteractionModel:
         if notebook_db.exists():
             try:
                 from ..notebook.shared_conn import get_notebook_conn
+
                 conn = get_notebook_conn(str(notebook_db))
                 rows = conn.execute(
                     "SELECT signature, n_failures, n_successes, last_updated "

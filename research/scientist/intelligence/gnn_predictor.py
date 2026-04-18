@@ -42,7 +42,6 @@ from .ml_corpus import (
     CorpusIntegrityError,
     build_dense_feature_matrix,
     grouped_stratified_split,
-    load_deduped_graph_training_rows,
     load_screening_predictor_corpus_rows,
     rerun_confidence_weight,
 )
@@ -548,7 +547,7 @@ def _extract_edge_op_pairs_python(graph_json: Any) -> Optional[List[Tuple[str, s
         child_op = op_names[child_idx]
         if not child_op or child_op == "input":
             continue
-        for inp in (nodes[nid].get("input_ids") or []):
+        for inp in nodes[nid].get("input_ids") or []:
             parent_idx = id_to_idx.get(str(inp))
             if parent_idx is None:
                 continue
@@ -559,7 +558,9 @@ def _extract_edge_op_pairs_python(graph_json: Any) -> Optional[List[Tuple[str, s
     return pairs
 
 
-def _extract_edge_op_pairs_native(graph_payload: str) -> Optional[List[Tuple[str, str]]]:
+def _extract_edge_op_pairs_native(
+    graph_payload: str,
+) -> Optional[List[Tuple[str, str]]]:
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_edge_op_pairs_native"):
         return None
@@ -567,7 +568,9 @@ def _extract_edge_op_pairs_native(graph_payload: str) -> Optional[List[Tuple[str
         payload = rust.extract_edge_op_pairs_native(graph_payload)
         loaded = json.loads(payload)
     except Exception as exc:
-        logger.warning("Native edge-pair extraction failed; falling back to Python: %s", exc)
+        logger.warning(
+            "Native edge-pair extraction failed; falling back to Python: %s", exc
+        )
         return None
     if not isinstance(loaded, list):
         return None
@@ -608,7 +611,9 @@ def _extract_topology_features_batch(
     rust = _try_import_rust_scheduler()
     if rust is not None and hasattr(rust, "extract_topology_features_batch_native"):
         try:
-            ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+            ctx = native_ctx or _make_native_topology_context(
+                op_profiles, pair_stability
+            )
             raw_result = rust.extract_topology_features_batch_native(
                 serialized,
                 ctx.op_profiles_json,
@@ -629,10 +634,16 @@ def _extract_topology_features_batch(
                     else:
                         base_features.append(None)
                 if len(base_features) == len(serialized):
-                    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
+                    if not (
+                        imodel is not None
+                        and hasattr(imodel, "_trained")
+                        and imodel._trained
+                    ):
                         return base_features
                     enriched: List[Optional[Dict[str, float]]] = []
-                    for graph_payload, feats in zip(serialized, base_features, strict=False):
+                    for graph_payload, feats in zip(
+                        serialized, base_features, strict=False
+                    ):
                         if feats is None:
                             enriched.append(None)
                             continue
@@ -648,8 +659,12 @@ def _extract_topology_features_batch(
                                 imodel.predict_loss(left, right)
                                 for left, right in edge_pairs
                             ]
-                            feats["imodel_min_stability"] = float(min(imodel_stabilities))
-                            feats["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
+                            feats["imodel_min_stability"] = float(
+                                min(imodel_stabilities)
+                            )
+                            feats["imodel_mean_stability"] = float(
+                                np.mean(imodel_stabilities)
+                            )
                             feats["imodel_mean_loss"] = float(np.mean(imodel_losses))
                         else:
                             feats["imodel_min_stability"] = 0.5
@@ -736,7 +751,9 @@ def extract_topology_features(
         base_features["imodel_mean_loss"] = 0.7
         return base_features
 
-    imodel_stabilities = [imodel.predict_stability(left, right) for left, right in edge_pairs]
+    imodel_stabilities = [
+        imodel.predict_stability(left, right) for left, right in edge_pairs
+    ]
     imodel_losses = [imodel.predict_loss(left, right) for left, right in edge_pairs]
 
     if imodel_stabilities:

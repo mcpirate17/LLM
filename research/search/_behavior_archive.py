@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random as _random_module
 from heapq import nlargest
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -100,7 +100,9 @@ class BehaviorArchive:
 
         diff = fm - target
         distances = np.sqrt(np.mean(np.square(diff), axis=1))
-        k_nearest = np.partition(distances, k - 1)[:k] if len(distances) > k else distances
+        k_nearest = (
+            np.partition(distances, k - 1)[:k] if len(distances) > k else distances
+        )
         return float(np.mean(k_nearest))
 
     def update_individuals(self, population: List[Individual]) -> None:
@@ -124,11 +126,15 @@ class BehaviorArchive:
         if target is None:
             return []
         valid_positions = [
-            i for i, ind in enumerate(self._individuals[: self._size]) if ind is not None
+            i
+            for i, ind in enumerate(self._individuals[: self._size])
+            if ind is not None
         ]
         if not valid_positions:
             return []
-        candidate_matrix = fm if len(valid_positions) == self._size else fm[valid_positions]
+        candidate_matrix = (
+            fm if len(valid_positions) == self._size else fm[valid_positions]
+        )
         index_lookup = None if len(valid_positions) == self._size else valid_positions
 
         native_neighbors = topk_nearest_indices(candidate_matrix, target, k)

@@ -26,7 +26,7 @@ outputs:
   shape:
   - B
   - S
-  - 1
+  - "1"
 params: {}
 implementation:
   native: aria_cosine_similarity_f32

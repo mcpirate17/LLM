@@ -1,5 +1,5 @@
 import { apiCall } from "../services/apiService";
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import FailureAnalysis from './FailureAnalysis';
 import ProgramDetail from './ProgramDetail';
 import { formatTime, formatDuration } from '../utils/format';
@@ -7,6 +7,7 @@ import { lossColor, noveltyColor } from '../utils/colors';
 import { candidateScore } from '../utils/scoringEngine';
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
+import useResizableColumns from './shared/useResizableColumns';
 
 
 /**
@@ -169,29 +170,15 @@ function getProgSortValue(row, key) {
 }
 
 function ProgramsTable({ programs, onSelectProgram }) {
-  const [colWidths, setColWidths] = useState(() =>
-    Object.fromEntries(PROG_COLUMNS.map(c => [c.key, c.initWidth]))
+  const defaultColWidths = useMemo(
+    () => Object.fromEntries(PROG_COLUMNS.map((c) => [c.key, c.initWidth])),
+    []
   );
-  const dragRef = useRef(null);
-
-  const onResizeStart = useCallback((e, colKey) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startW = colWidths[colKey];
-    const onMove = (ev) => {
-      const delta = ev.clientX - startX;
-      setColWidths(prev => ({ ...prev, [colKey]: Math.max(28, startW + delta) }));
-    };
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      dragRef.current = null;
-    };
-    dragRef.current = colKey;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }, [colWidths]);
+  const { columnWidths: storedColWidths, onResizeStart } = useResizableColumns(EXPERIMENT_DETAIL_PROGRAM_SORT_PREFS_KEY + '.widths');
+  const colWidths = useMemo(
+    () => ({ ...defaultColWidths, ...storedColWidths }),
+    [defaultColWidths, storedColWidths]
+  );
 
   // Pre-compute architecture summaries so they're available for filtering
   const augmented = useMemo(() =>

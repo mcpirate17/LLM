@@ -67,7 +67,7 @@ def _grad_norm(model: torch.nn.Module) -> float | None:
         total += float(torch.sum(grad.detach().float() ** 2).item())
     if not seen:
         return None
-    return total ** 0.5
+    return total**0.5
 
 
 def run_case(
@@ -151,7 +151,9 @@ def _parse_int_list(raw: str) -> list[int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="CPU survivability sweep for templates")
+    parser = argparse.ArgumentParser(
+        description="CPU survivability sweep for templates"
+    )
     parser.add_argument("--templates", nargs="+", required=True)
     parser.add_argument("--dims", default="64,128")
     parser.add_argument("--seeds", default="0,1,2,3")

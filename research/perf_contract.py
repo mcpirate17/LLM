@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from research.eval.perf_budget import evaluate_perf_budget_gate
 from research.scientist.json_utils import json_safe
 from research.scientist.shared_utils import safe_float
 
@@ -84,6 +85,49 @@ def build_perf_contract(
     return contract
 
 
+def build_perf_contract_with_gate(
+    *,
+    component: str,
+    workload: str,
+    metrics: Dict[str, Any],
+    budget_profile: str,
+    identity: Optional[Dict[str, Any]] = None,
+    duplicate_work: Optional[Dict[str, Any]] = None,
+    warnings: Optional[Iterable[str]] = None,
+    gate_payload: Optional[Dict[str, Any]] = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Run the budget gate and build the perf contract in one step.
+
+    Returns ``(contract, budget_verdict)``. Does not write to disk — callers
+    that want to persist call :func:`emit_perf_artifact` with the returned
+    contract. Single source of truth for the gate+build pattern; used by the
+    research runner, the designer API, and the aria_designer profiler.
+
+    Profiles that gate on flat ``metrics.*`` keys (``designer_interactive``)
+    need no ``gate_payload``; the default wraps ``metrics``/``duplicate_work``.
+    Profiles that gate on nested report keys (``research_default`` reaches
+    ``trace_avg_ms.compile``, ``gpu_starvation.max_stall_ms``, etc.) must pass
+    an explicit ``gate_payload``.
+    """
+    dup = duplicate_work or build_duplicate_work_report()
+    payload = gate_payload if gate_payload is not None else {
+        "metrics": metrics,
+        "duplicate_work": dup,
+    }
+    verdict = evaluate_perf_budget_gate(payload, budget_profile=budget_profile)
+    contract = build_perf_contract(
+        component=component,
+        workload=workload,
+        identity=identity or {},
+        metrics=metrics,
+        budget_profile=budget_profile,
+        budget_verdict=verdict,
+        duplicate_work=dup,
+        warnings=warnings,
+    )
+    return contract, verdict
+
+
 def emit_perf_artifact(
     contract: Dict[str, Any],
     *,
@@ -106,7 +150,7 @@ def emit_perf_artifact(
     payload = dict(contract)
     payload["artifact_path"] = str(artifact_path)
     with artifact_path.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True)
+        json.dump(payload, fh, separators=(",", ":"))
         fh.write("\n")
     return str(artifact_path)
 
@@ -126,14 +170,32 @@ def list_recent_perf_artifacts(
     artifact_root = Path(root) if root else _DEFAULT_ARTIFACT_ROOT
     if not artifact_root.exists():
         return []
-    search_root = artifact_root / component if component else artifact_root
-    if not search_root.exists():
-        return []
-    items: List[Path] = sorted(
-        search_root.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-    )
+    if component:
+        comp_roots = [artifact_root / component]
+    else:
+        comp_roots = [p for p in artifact_root.iterdir() if p.is_dir()]
+
+    n = max(1, int(limit))
+    # Date dirs are YYYY-MM-DD — lexical sort == chronological. Walk newest
+    # date dirs across components first, stat only files we might return,
+    # and stop once we have enough candidates.
+    date_dirs: List[Path] = []
+    for comp_root in comp_roots:
+        if not comp_root.exists():
+            continue
+        date_dirs.extend(d for d in comp_root.iterdir() if d.is_dir())
+    date_dirs.sort(key=lambda d: d.name, reverse=True)
+
+    candidates: List[Path] = []
+    for d in date_dirs:
+        files = [f for f in d.iterdir() if f.suffix == ".json"]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates.extend(files)
+        if len(candidates) >= n:
+            break
+
     results: List[Dict[str, Any]] = []
-    for path in items[: max(1, int(limit))]:
+    for path in candidates[:n]:
         try:
             payload = load_perf_artifact(str(path))
         except Exception:

@@ -42,9 +42,7 @@ def configure_native_execution(
 
         ir = source_graph.lower_to_ir()
         ir_node_ids = (
-            ir.node_ids.tolist()
-            if ir.node_ids is not None
-            else list(range(n_nodes))
+            ir.node_ids.tolist() if ir.node_ids is not None else list(range(n_nodes))
         )
         bound_dispatcher = BoundNativeSubgraphDispatcher(
             source_graph,

@@ -171,6 +171,7 @@ def load_stage05_native_segment_corpus(
 ) -> List[SegmentCorpusRow]:
     db_path = str(Path(db_path))
     from ..notebook.shared_conn import get_notebook_conn
+
     conn = get_notebook_conn(db_path)
     rows = conn.execute(
         """

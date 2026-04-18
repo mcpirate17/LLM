@@ -1,3 +1,9 @@
+import {
+  decisionGate as sharedDecisionGate,
+  reproducibilityPacketStatus as sharedReproducibilityPacketStatus,
+  resolveLossRatio as sharedResolveLossRatio,
+} from '../../utils/candidateState';
+
 export const COMPRESSION_FACTORS = {
   low_rank: 0.55,
   shared_basis: 0.5,
@@ -20,11 +26,7 @@ export function parseArchSpec(value) {
 }
 
 export function resolveLossRatio(program) {
-  if (!program) return null;
-  const val = program.validation_loss_ratio;
-  if (val != null && Number.isFinite(Number(val))) return Number(val);
-  const lr = program.loss_ratio;
-  return (lr != null && Number.isFinite(Number(lr))) ? Number(lr) : null;
+  return sharedResolveLossRatio(program);
 }
 
 export function compressionSummary(program) {
@@ -161,43 +163,11 @@ export function wilsonInterval(successes, total, z = 1.96) {
 }
 
 export function reproducibilityPacketStatus(program) {
-  const spec = parseArchSpec(program?.arch_spec_json);
-  const checks = [
-    { label: 'result_id', ok: !!program?.result_id },
-    { label: 'graph_fingerprint', ok: !!program?.graph_fingerprint },
-    { label: 'arch_spec', ok: !!spec },
-    { label: 'loss_ratio', ok: resolveLossRatio(program) != null },
-    { label: 'baseline_ratio', ok: program?.baseline_loss_ratio != null },
-    { label: 'cka_artifact', ok: program?.cka_source === 'artifact' },
-  ];
-  const readyCount = checks.filter(check => check.ok).length;
-  const totalChecks = checks.length;
-  const label = readyCount === totalChecks ? 'Ready' : readyCount >= 4 ? 'Partial' : 'Sparse';
-  const color = readyCount === totalChecks
-    ? 'var(--accent-green)'
-    : readyCount >= 4
-      ? 'var(--accent-yellow)'
-      : 'var(--accent-red)';
-  return { label, color, readyCount, totalChecks };
+  return sharedReproducibilityPacketStatus(program);
 }
 
 export function decisionGate(program) {
-  const checks = {
-    screeningEvidence: resolveLossRatio(program) != null && program.novelty_score != null,
-    baselineEvidence: program.baseline_loss_ratio != null,
-    baselineBeatsReference: program.baseline_loss_ratio != null && program.baseline_loss_ratio < 1.0,
-    ckaArtifactBacked: program.cka_source === 'artifact',
-  };
-  const decisionReady = Object.values(checks).every(Boolean);
-  const missing = Object.entries(checks)
-    .filter(([, ok]) => !ok)
-    .map(([name]) => name);
-  return {
-    decisionReady,
-    label: decisionReady ? 'Decision-Ready' : 'Exploratory',
-    color: decisionReady ? 'var(--accent-green)' : 'var(--accent-yellow)',
-    missing,
-  };
+  return sharedDecisionGate(program);
 }
 
 export const DISC_COLUMNS = [

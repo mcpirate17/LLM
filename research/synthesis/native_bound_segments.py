@@ -341,7 +341,7 @@ class BoundNativeChainDispatcher:
                     ),
                 },
                 current_dim,
-        )
+            )
         raise ValueError(f"Unsupported bound native op: {op_name}")
 
     def _build_plan(self, x: torch.Tensor) -> _BoundIrPlan:
@@ -451,6 +451,7 @@ class BoundNativeChainDispatcher:
             payloads,
             output_shape=plan.output_shape,
         )
+
 
 def _bound_eligible_node(
     graph: ComputationGraph,

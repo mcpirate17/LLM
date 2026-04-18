@@ -42,6 +42,7 @@ def register_general_routes(app, context: ApiRouteContext):
     def api_template_names():
         """Return sorted list of all available template names."""
         from ...synthesis.templates import TEMPLATES
+
         return jsonify({"names": sorted(TEMPLATES.keys())})
 
     @app.route("/api/aria/cycle-status")

@@ -363,7 +363,9 @@ class _ExperimentsMixin:
             experiment_type,
             json.dumps(preregistration.get("hypothesis") or {}, default=str),
             json.dumps(preregistration.get("analysis_plan") or {}, default=str),
-            json.dumps(preregistration.get("falsification_conditions") or [], default=str),
+            json.dumps(
+                preregistration.get("falsification_conditions") or [], default=str
+            ),
             json.dumps(preregistration.get("confounders_checklist") or [], default=str),
             int(bool(preregistration.get("exploratory"))),
             created_by,

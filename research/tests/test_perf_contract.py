@@ -3,6 +3,7 @@ from __future__ import annotations
 from research.perf_contract import (
     build_duplicate_work_report,
     build_perf_contract,
+    build_perf_contract_with_gate,
     emit_perf_artifact,
     list_recent_perf_artifacts,
     summarize_perf_artifacts,
@@ -40,3 +41,46 @@ def test_perf_contract_artifact_roundtrip(tmp_path):
     assert artifacts[0]["duplicate_work"]["detected_count"] == 2
     assert summary["count"] == 1
     assert summary["failed_budget_runs"] == 1
+
+
+def test_build_perf_contract_with_gate_designer_flat_metrics():
+    """designer_interactive gates on flat ``metrics.*`` keys — no gate_payload
+    override should be needed."""
+    contract, verdict = build_perf_contract_with_gate(
+        component="aria_designer",
+        workload="workflow_evaluation",
+        metrics={
+            "total_time_ms": 50.0,
+            "compile_time_ms": 10.0,
+            "native_coverage": 0.9,
+        },
+        budget_profile="designer_interactive",
+    )
+    reasons = [c.get("reason") for c in verdict["checks"]]
+    assert "missing_metric" not in reasons
+    assert verdict["passed"] is True
+    assert contract["component"] == "aria_designer"
+    assert contract["budget_profile"] == "designer_interactive"
+
+
+def test_build_perf_contract_with_gate_research_nested_payload():
+    """research_default gates on nested keys (``trace_avg_ms.*``,
+    ``gpu_starvation.*``). Passing ``gate_payload`` lets the nested lookups
+    resolve even when the contract's own metrics dict is flat."""
+    report = {
+        "trace_avg_ms": {"compile": 30.0, "forward_pass": 5.0, "backward_pass": 8.0},
+        "queue_telemetry": {"scheduling_wait_avg_ms": 2.0},
+        "gpu_starvation": {"max_stall_ms": 1.0},
+        "duplicate_work": {"detected_count": 0},
+    }
+    contract, verdict = build_perf_contract_with_gate(
+        component="research",
+        workload="experiment_screening",
+        metrics={"total_time_ms": 100.0, "compile_time_ms": 30.0},
+        budget_profile="research_default",
+        gate_payload=report,
+    )
+    reasons = [c.get("reason") for c in verdict["checks"]]
+    assert "missing_metric" not in reasons
+    assert verdict["passed"] is True
+    assert contract["metrics"]["compile_time_ms"] == 30.0

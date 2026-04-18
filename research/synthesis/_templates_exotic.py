@@ -676,7 +676,6 @@ def tpl_causal_mix_block(
     Causal cumulative average as a lightweight O(S*D) causal mixer.
     50% chance of attention after the causal mask for richer mixing.
     """
-    from ._template_helpers import MOTIF_CLASS_ATTENTION
 
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)

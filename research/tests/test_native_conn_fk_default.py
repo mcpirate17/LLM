@@ -87,8 +87,7 @@ def test_program_result_insert_lands_without_matching_experiment(
     temp_notebook.flush_writes(timeout=10.0)
 
     row = temp_notebook.conn.execute(
-        "SELECT result_id, experiment_id FROM program_results "
-        "WHERE result_id = ?",
+        "SELECT result_id, experiment_id FROM program_results WHERE result_id = ?",
         (tid,),
     ).fetchone()
     assert row is not None, (

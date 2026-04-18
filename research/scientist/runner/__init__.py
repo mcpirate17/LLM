@@ -48,6 +48,7 @@ from .continuous_inline_validation_phase7 import _ContinuousInlineValidationPhas
 
 # Execution — split mixins replace monolith execution.py
 from .execution_screening import _ExecutionScreeningMixin
+from .execution_screening_pipeline import _ExecutionScreeningPipelineMixin
 from .execution_investigation import _ExecutionInvestigationMixin
 from .execution_validation import _ExecutionValidationMixin
 from .execution_search import _ExecutionSearchMixin
@@ -68,7 +69,10 @@ from .results_auto_escalate_phase7 import _ResultsAutoEscalatePhase7Mixin
 
 # Selection & Dashboard
 from .selection import _SelectionMixin
-from .dashboard import _DashboardMixin
+from .dashboard_panel import _DashboardPanelMixin
+from .dashboard_perf import _DashboardPerfMixin
+from .dashboard_hypothesis import _DashboardHypothesisMixin
+from .dashboard_orchestrator import _DashboardOrchestratorMixin
 
 
 class ExperimentRunner(
@@ -88,6 +92,7 @@ class ExperimentRunner(
     _ContinuousInlineValidationPhase7Mixin,
     # Execution splits
     _ExecutionScreeningMixin,
+    _ExecutionScreeningPipelineMixin,
     _ExecutionInvestigationMixin,
     _ExecutionValidationMixin,
     _ExecutionSearchMixin,
@@ -103,9 +108,12 @@ class ExperimentRunner(
     _ResultsAutomationMixin,
     _ResultsKnowledgeMixin,
     _ResultsAutoEscalatePhase7Mixin,
-    # Selection & Dashboard
+    # Selection & Dashboard splits
     _SelectionMixin,
-    _DashboardMixin,
+    _DashboardPanelMixin,
+    _DashboardPerfMixin,
+    _DashboardHypothesisMixin,
+    _DashboardOrchestratorMixin,
 ):
     """Autonomous experiment execution engine with background support.
 

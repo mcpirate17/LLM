@@ -1,18 +1,15 @@
-import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { apiCall } from '../services/apiService';
 import { formatTime, formatDuration } from '../utils/format';
 import { noveltyColor } from '../utils/colors';
 import { MetricChipList } from './shared/MetricChipBadge';
+import { metricText } from '../utils/metricText';
 
 import useInteractiveTable from './shared/useInteractiveTable';
 import SortIndicator from './shared/SortIndicator';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import useVirtualRows from '../hooks/useVirtualRows';
-
-function metricText(value, fallbackReason, formatter) {
-  if (value == null) return fallbackReason;
-  return formatter(value);
-}
+import useResizableColumns from './shared/useResizableColumns';
 
 function parseExperimentTime(exp) {
   const raw = exp?.timestamp || exp?.created_at || '';
@@ -215,13 +212,7 @@ function ExperimentList({
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchRerunActive, setBatchRerunActive] = useState(false);
   const [batchRerunStatus, setBatchRerunStatus] = useState(null);
-  const [columnWidths, setColumnWidths] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem('aria_experiments_col_widths');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  });
-  const resizingRef = useRef(null);
+  const { columnWidths, onResizeStart } = useResizableColumns('aria_experiments_col_widths');
   const rowStyle = {
     height: 64,
     maxHeight: 64,
@@ -233,39 +224,6 @@ function ExperimentList({
     overflow: 'hidden',
     verticalAlign: 'middle',
   };
-
-  // Persist column widths
-  useEffect(() => {
-    try {
-      window.localStorage.setItem('aria_experiments_col_widths', JSON.stringify(columnWidths));
-    } catch { /* ignore */ }
-  }, [columnWidths]);
-
-  const onResizeStart = useCallback((e, colKey) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const th = e.target.parentElement;
-    const startWidth = th.offsetWidth;
-    resizingRef.current = colKey;
-
-    const onMouseMove = (moveE) => {
-      const diff = moveE.clientX - startX;
-      const newWidth = Math.max(40, startWidth + diff);
-      setColumnWidths(prev => ({ ...prev, [colKey]: newWidth }));
-    };
-    const onMouseUp = () => {
-      resizingRef.current = null;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }, []);
 
   const handleCancel = async (e, experimentId) => {
     e.stopPropagation();

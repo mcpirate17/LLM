@@ -8,13 +8,13 @@ Usage:
 This integrates template optimization data into the existing ML pipeline so
 the system can learn from it.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -56,20 +56,29 @@ def store_single_result(
         nb.start_experiment(
             experiment_id=exp_id,
             experiment_type=experiment_type,
-            config_json=json.dumps({
-                "template": template_name,
-                "n_train_steps": n_train_steps,
-                "source": "tools/store_template_eval.py",
-            }),
+            config_json=json.dumps(
+                {
+                    "template": template_name,
+                    "n_train_steps": n_train_steps,
+                    "source": "tools/store_template_eval.py",
+                }
+            ),
         )
     except Exception:
         # Experiment creation may not exist as a method; create inline
         nb.conn.execute(
             "INSERT OR IGNORE INTO experiments (experiment_id, timestamp, experiment_type, config_json) VALUES (?, ?, ?, ?)",
-            (exp_id, time.time(), experiment_type, json.dumps({
-                "template": template_name,
-                "n_train_steps": n_train_steps,
-            })),
+            (
+                exp_id,
+                time.time(),
+                experiment_type,
+                json.dumps(
+                    {
+                        "template": template_name,
+                        "n_train_steps": n_train_steps,
+                    }
+                ),
+            ),
         )
 
     # Build kwargs for record_program_result
@@ -107,12 +116,14 @@ def store_single_result(
         kwargs["blimp_overall_accuracy"] = blimp_overall_accuracy
 
     # Add provenance
-    kwargs["data_provenance_json"] = json.dumps({
-        "source": "template_optimization_eval",
-        "template": template_name,
-        "timestamp": time.time(),
-        "n_train_steps": n_train_steps,
-    })
+    kwargs["data_provenance_json"] = json.dumps(
+        {
+            "source": "template_optimization_eval",
+            "template": template_name,
+            "timestamp": time.time(),
+            "n_train_steps": n_train_steps,
+        }
+    )
 
     if extra_kwargs:
         kwargs.update(extra_kwargs)
@@ -160,8 +171,17 @@ def update_template_stats(
             mean_novelty = excluded.mean_novelty,
             last_updated = excluded.last_updated
         """,
-        (template_name, eval_count, eval_count, s1_pass_count,
-         mean_loss, min_loss, std_loss, mean_novelty, time.time()),
+        (
+            template_name,
+            eval_count,
+            eval_count,
+            s1_pass_count,
+            mean_loss,
+            min_loss,
+            std_loss,
+            mean_novelty,
+            time.time(),
+        ),
     )
     nb.conn.commit()
     logger.info("Updated template_stats for %s", template_name)

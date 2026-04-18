@@ -314,13 +314,17 @@ def _op_difficulty_routed_attention(module, inputs, _):
         q = module.q_proj(x_h).reshape(1, n_hard, H, d).transpose(1, 2)
         k = module.k_proj(x_h).reshape(1, n_hard, H, d).transpose(1, 2)
         v = module.v_proj(x_h).reshape(1, n_hard, H, d).transpose(1, 2)
-        hard_out = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout_p=0.0,
-            is_causal=True,
-        ).transpose(1, 2).reshape(1, n_hard, D)
+        hard_out = (
+            F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=0.0,
+                is_causal=True,
+            )
+            .transpose(1, 2)
+            .reshape(1, n_hard, D)
+        )
         hard_out = module.o_proj(hard_out).squeeze(0)
         if n_hard == S:
             blend = diff_gate[b].unsqueeze(-1)
@@ -348,7 +352,7 @@ def _op_strided_attention(module, inputs, _):
     k = k.reshape(B, S, H, d).permute(0, 2, 1, 3)
     v = v.reshape(B, S, H, d).permute(0, 2, 1, 3)
 
-    scale = d ** -0.5
+    scale = d**-0.5
     out_heads = []
     for h in range(H):
         stride = max(1, 2 ** (h % 4))  # strides: 1, 2, 4, 8, 1, 2, 4, 8
@@ -403,13 +407,17 @@ def _op_gated_progressive_attention(module, inputs, _):
         q = module.q_proj(x_a).reshape(1, n_active, H, d).transpose(1, 2)
         k = module.k_proj(x_a).reshape(1, n_active, H, d).transpose(1, 2)
         v = module.v_proj(x_a).reshape(1, n_active, H, d).transpose(1, 2)
-        attn_out = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout_p=0.0,
-            is_causal=True,
-        ).transpose(1, 2).reshape(1, n_active, D)
+        attn_out = (
+            F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=0.0,
+                is_causal=True,
+            )
+            .transpose(1, 2)
+            .reshape(1, n_active, D)
+        )
         attn_out = module.o_proj(attn_out).squeeze(0)
         if n_active == S:
             output[b] = gate[b] * attn_out + (1 - gate[b]) * x[b]
@@ -512,14 +520,14 @@ def _op_associative_memory(module, inputs, _):
         return x
     B, S, D = x.shape
 
-    queries = module.query_proj(x)    # (B, S, D)
-    keys = module.memory_proj(x)      # (B, S, D) -- stored patterns
-    values = module.value_proj(x)     # (B, S, D)
+    queries = module.query_proj(x)  # (B, S, D)
+    keys = module.memory_proj(x)  # (B, S, D) -- stored patterns
+    values = module.value_proj(x)  # (B, S, D)
     beta = torch.clamp(module.beta, min=0.1, max=10.0)
 
     # Hopfield energy: softmax(beta * Q . K^T) . V
     # Same as attention but with learnable temperature
-    energy = torch.matmul(queries, keys.transpose(-2, -1)) * beta / (D ** 0.5)
+    energy = torch.matmul(queries, keys.transpose(-2, -1)) * beta / (D**0.5)
 
     # Causal mask
     causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
@@ -555,7 +563,7 @@ def _op_mixture_of_recursions(module, inputs, _):
         h_new = module.block_ffn_down(g * F.silu(up))
         h = x + h_new  # residual from input, not previous step
         # Weight this depth's output by its routing probability
-        accumulated = accumulated + depth_weights[:, :, d:d+1] * h
+        accumulated = accumulated + depth_weights[:, :, d : d + 1] * h
 
     return accumulated
 

@@ -144,7 +144,9 @@ def _gbm_metrics_report(db_path: str, state_dir: Path) -> dict[str, Any]:
         return {"error": "gbm_not_fitted"}
 
     gate_names = gbm.gate_feature_names or gbm.feature_names
-    gate_col_idx = [feature_names.index(name) for name in gate_names if name in feature_names]
+    gate_col_idx = [
+        feature_names.index(name) for name in gate_names if name in feature_names
+    ]
     X_gate = X[:, gate_col_idx] if gate_col_idx else X
 
     if gbm.train_metrics:
@@ -234,7 +236,9 @@ def _component_scores(
         if not signature:
             continue
         try:
-            graph = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+            graph = (
+                json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+            )
         except (json.JSONDecodeError, TypeError):
             continue
 

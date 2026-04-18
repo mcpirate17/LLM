@@ -236,11 +236,11 @@ class NativeComponentHandler(BaseComponentHandler):
         raise NotImplementedError
 
     def _fallback(self, inputs, config):
-        """Pure PyTorch fallback. Override in subclass."""
-        x = inputs.get("x")
-        if x is None:
-            x = next(iter(inputs.values()))
-        return {"y": x}
+        """Pure PyTorch fallback. Subclasses must provide an honest fallback."""
+        unsupported_fallback(
+            self.native_op_name or self.__class__.__name__,
+            reason="no Python parity implementation",
+        )
 
     def forward(self, inputs, config):
         # Lazy weight init on first call

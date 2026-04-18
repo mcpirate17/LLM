@@ -20,7 +20,7 @@ outputs:
   shape:
   - B
   - S
-  - 1
+  - "1"
 params: {}
 implementation:
   native: null

@@ -29,7 +29,11 @@ def test_new_mixing_op_flop_estimates_reflect_actual_kernel_shapes():
     seq_len = 128
     d_model = 32
     estimates = {
-        op_name: estimate_flops(_single_op_graph(op_name, model_dim=d_model), seq_len=seq_len, d_model=d_model).flops_forward
+        op_name: estimate_flops(
+            _single_op_graph(op_name, model_dim=d_model),
+            seq_len=seq_len,
+            d_model=d_model,
+        ).flops_forward
         for op_name in (
             "difficulty_routed_attention",
             "strided_attention",
@@ -41,8 +45,12 @@ def test_new_mixing_op_flop_estimates_reflect_actual_kernel_shapes():
         )
     }
 
-    assert estimates["difficulty_routed_attention"] > estimates["gated_linear_attention"]
-    assert estimates["gated_progressive_attention"] > estimates["gated_linear_attention"]
+    assert (
+        estimates["difficulty_routed_attention"] > estimates["gated_linear_attention"]
+    )
+    assert (
+        estimates["gated_progressive_attention"] > estimates["gated_linear_attention"]
+    )
     assert estimates["associative_memory"] > estimates["gated_linear_attention"]
     assert estimates["strided_attention"] < estimates["difficulty_routed_attention"]
     assert estimates["long_conv_hyena"] > 0

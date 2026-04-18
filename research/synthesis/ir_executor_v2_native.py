@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from .graph import ComputationGraph
 from .native_compile import get_supported_native_ops

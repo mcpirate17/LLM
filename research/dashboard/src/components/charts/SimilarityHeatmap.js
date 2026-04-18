@@ -32,21 +32,21 @@ export function SimilarityHeatmap({ leaderboardEntries }) {
     );
   }
 
-  // Generate a mock similarity matrix based on existing CKA fields if 
-  // full NxM matrix isn't available in the API yet.
-  const matrix = top10.map(cand => {
-    return refs10.map(ref => {
-      // If we have a direct CKA match in the data, use it.
-      // Otherwise, use the general fp_cka_vs_* fields as a proxy.
-      const family = (ref.architecture_family || '').toLowerCase();
-      if (family.includes('transformer')) return cand.fp_cka_vs_transformer ?? 0.8;
-      if (family.includes('ssm') || family.includes('mamba')) return cand.fp_cka_vs_ssm ?? 0.4;
-      if (family.includes('conv')) return cand.fp_cka_vs_conv ?? 0.3;
-      
-      // Default fallback: use novelty as inverse similarity
-      return Math.max(0.1, 1.0 - (cand.screening_novelty || 0.5));
-    });
-  });
+  const hasMeasuredMatrix = false;
+
+  if (!hasMeasuredMatrix) {
+    return (
+      <div className="empty-state" style={{ padding: 20 }}>
+        <div style={{ color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+          Similarity matrix unavailable
+        </div>
+        <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5 }}>
+          The dashboard has candidate and reference rows, but no measured candidate-vs-reference CKA matrix.
+          Rendering heuristic similarity here would be fake analytics, so this view stays disabled until the API exposes real pairwise data.
+        </div>
+      </div>
+    );
+  }
 
   const CELL_SIZE = 30;
   const LABEL_WIDTH = 100;

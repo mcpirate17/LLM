@@ -3950,7 +3950,9 @@ class TestAPI(unittest.TestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state.status, "failed")
 
-    def test_api_continuous_start_emits_failed_session_event_on_io_error_end_to_end(self):
+    def test_api_continuous_start_emits_failed_session_event_on_io_error_end_to_end(
+        self,
+    ):
         from research.scientist.api_routes import _helpers as _helpers_mod
         from research.scientist.runtime_events import get_runtime_event_services
         from research.scientist.runner import ExperimentRunner
@@ -3988,7 +3990,9 @@ class TestAPI(unittest.TestCase):
                     runner._thread.join(timeout=0.1)
                 session_events = [
                     record.event
-                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    for record in get_runtime_event_services(
+                        self.db_path
+                    ).spool.replay()
                     if record.event.event_type == "continuous_session_failed"
                 ]
                 if session_events:
@@ -4052,7 +4056,9 @@ class TestAPI(unittest.TestCase):
                     runner._thread.join(timeout=0.1)
                 failed_events = [
                     record.event
-                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    for record in get_runtime_event_services(
+                        self.db_path
+                    ).spool.replay()
                     if record.event.run_id == exp_id
                     and record.event.event_type == "experiment_failed"
                 ]
@@ -4117,7 +4123,9 @@ class TestAPI(unittest.TestCase):
                     runner._thread.join(timeout=0.1)
                 failed_events = [
                     record.event
-                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    for record in get_runtime_event_services(
+                        self.db_path
+                    ).spool.replay()
                     if record.event.run_id == exp_id
                     and record.event.event_type == "experiment_failed"
                 ]
@@ -4182,7 +4190,9 @@ class TestAPI(unittest.TestCase):
                     runner._thread.join(timeout=0.1)
                 failed_events = [
                     record.event
-                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    for record in get_runtime_event_services(
+                        self.db_path
+                    ).spool.replay()
                     if record.event.run_id == exp_id
                     and record.event.event_type == "experiment_failed"
                 ]

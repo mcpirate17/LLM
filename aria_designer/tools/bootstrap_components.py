@@ -3,21 +3,25 @@
 
 Reads PRIMITIVE_REGISTRY from research/synthesis/primitives.py and morphological
 box dimensions from research/morphological_box.py, then generates manifest.yaml
-+ kernel_fallback.py for each component under aria_designer/components/.
+for each component under aria_designer/components/.
 
 Usage:
-    python -m tools.bootstrap_components [--dry-run]
+    python -m tools.bootstrap_components [--dry-run] [--emit-scaffolding]
 """
 
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Tuple
 
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 COMPONENTS_DIR = Path(__file__).resolve().parent.parent / "components"
 
@@ -319,15 +323,15 @@ def build_morph_manifest(dim_name: str, option) -> Dict[str, Any]:
 
 
 def generate_kernel_fallback(manifest: Dict[str, Any]) -> str:
-    """Generate a minimal Python fallback kernel for a component."""
+    """Generate a minimal Python fallback kernel for a component.
+
+    This exists only for opt-in scaffolding generation. Production bootstrap
+    should not stamp placeholder handlers into the repo by default.
+    """
     comp_id = manifest["id"]
-    n_inputs = len(manifest["inputs"])
-    has_params = manifest.get("performance", {}).get("has_params", False)
 
     lines = [
         '"""Auto-generated Python fallback kernel for %s."""' % comp_id,
-        "import torch",
-        "import torch.nn as nn",
         "",
         "",
         "class ComponentHandler:",
@@ -337,54 +341,27 @@ def generate_kernel_fallback(manifest: Dict[str, Any]) -> str:
         "        return []",
         "",
         "    def build(self, config):",
-    ]
-
-    if has_params:
-        lines += [
-            "        # TODO: implement parameterized module",
-            "        return nn.Identity()",
-        ]
-    else:
-        lines += [
-            "        return nn.Identity()",
-        ]
-
-    lines += [
+        '        raise NotImplementedError("Scaffold-only component: %s")' % comp_id,
+        "",
         "",
         "    def forward(self, inputs, config):",
+        '        raise NotImplementedError("Scaffold-only component: %s")' % comp_id,
     ]
-
-    if n_inputs == 1:
-        lines += [
-            '        x = inputs["x"]',
-            "        # TODO: implement %s" % comp_id,
-            '        return {"y": x}',
-        ]
-    elif n_inputs == 2:
-        input_names = [p["name"] for p in manifest["inputs"]]
-        lines += [
-            '        a = inputs["%s"]' % input_names[0],
-            '        b = inputs["%s"]' % input_names[1],
-            "        # TODO: implement %s" % comp_id,
-            '        return {"y": a}',
-        ]
-    else:
-        lines += [
-            "        # TODO: implement %s" % comp_id,
-            '        return {"y": list(inputs.values())[0]}',
-        ]
 
     return "\n".join(lines) + "\n"
 
 
 def generate_kernel_stub(component_id: str) -> str:
-    """Generate a minimal C kernel stub for mathspace components."""
+    """Generate a minimal C kernel stub for mathspace components.
+
+    This exists only for opt-in scaffolding generation.
+    """
     return """
 #include <stdint.h>
 #include <string.h>
 
 // Minimal kernel stub for {component_id}
-// TODO: Implement high-performance kernel in aria_core.
+// Exploratory scaffold only. Production execution must be implemented natively.
 
 typedef struct {{
     float* data;
@@ -419,8 +396,14 @@ void component_cleanup(void) {{
 """.lstrip().format(component_id=component_id)
 
 
-def write_component(manifest: Dict[str, Any], dry_run: bool = False) -> Path:
-    """Write a component folder with manifest.yaml + kernels."""
+def write_component(
+    manifest: Dict[str, Any], dry_run: bool = False, emit_scaffolding: bool = False
+) -> Path:
+    """Write a component folder.
+
+    By default this only writes the manifest. Placeholder runtime code and tests
+    are opt-in because they add dead scaffolding to the production tree.
+    """
     comp_dir = COMPONENTS_DIR / manifest["category"] / manifest["id"]
     manifest_path = comp_dir / "manifest.yaml"
     fallback_path = comp_dir / "kernel_fallback.py"
@@ -432,22 +415,32 @@ def write_component(manifest: Dict[str, Any], dry_run: bool = False) -> Path:
         return comp_dir
 
     comp_dir.mkdir(parents=True, exist_ok=True)
-    test_dir.mkdir(parents=True, exist_ok=True)
+    manifest_to_write = deepcopy(manifest)
+    implementation = dict(manifest_to_write.get("implementation") or {})
+    if not emit_scaffolding:
+        implementation["native"] = None
+        implementation["python"] = None
+    manifest_to_write["implementation"] = implementation
 
     # Write manifest
     with open(manifest_path, "w") as f:
-        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, width=120)
+        yaml.dump(
+            manifest_to_write, f, default_flow_style=False, sort_keys=False, width=120
+        )
 
-    # Write Python fallback
+    if not emit_scaffolding:
+        return comp_dir
+
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    # Explicit opt-in for placeholder scaffolding during exploratory bootstraps.
     with open(fallback_path, "w") as f:
         f.write(generate_kernel_fallback(manifest))
 
-    # Write C stub for mathspaces
     if manifest["category"] == "math_space":
         with open(native_path, "w") as f:
             f.write(generate_kernel_stub(manifest["id"]))
 
-    # Write minimal contract test
     test_path = test_dir / f"test_{manifest['id']}.py"
     with open(test_path, "w") as f:
         f.write(f'"""Contract tests for {manifest["id"]}."""\n')
@@ -471,12 +464,17 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="Print what would be created"
     )
+    parser.add_argument(
+        "--emit-scaffolding",
+        action="store_true",
+        help="Also emit placeholder fallback/native/test scaffolding",
+    )
     args = parser.parse_args()
 
     # Import research modules
-    from synthesis.primitives import PRIMITIVE_REGISTRY
-    from morphological_box import DIMENSIONS
-    from mathspaces.registry import register_all_mathspaces
+    from research.synthesis.primitives import PRIMITIVE_REGISTRY
+    from research.morphological_box import DIMENSIONS
+    from research.mathspaces.registry import register_all_mathspaces
 
     print("=" * 60)
     print("Bootstrapping components from research/")
@@ -492,7 +490,11 @@ def main():
         if name == "input":
             continue
         manifest = build_primitive_manifest(op)
-        write_component(manifest, dry_run=args.dry_run)
+        write_component(
+            manifest,
+            dry_run=args.dry_run,
+            emit_scaffolding=args.emit_scaffolding,
+        )
         prim_count += 1
         print(f"  [{manifest['category']:>16s}] {name}")
 
@@ -508,7 +510,11 @@ def main():
                 continue
             seen_ids.add(option.name)
             manifest = build_morph_manifest(dim.name, option)
-            write_component(manifest, dry_run=args.dry_run)
+            write_component(
+                manifest,
+                dry_run=args.dry_run,
+                emit_scaffolding=args.emit_scaffolding,
+            )
             morph_count += 1
             print(f"    [{manifest['category']:>16s}] {option.name}")
 
@@ -569,7 +575,11 @@ def main():
     io_count = 0
     for manifest in io_components:
         if manifest["id"] not in seen_ids:
-            write_component(manifest, dry_run=args.dry_run)
+            write_component(
+                manifest,
+                dry_run=args.dry_run,
+                emit_scaffolding=args.emit_scaffolding,
+            )
             seen_ids.add(manifest["id"])
             io_count += 1
             print(f"  [{manifest['category']:>16s}] {manifest['id']}")

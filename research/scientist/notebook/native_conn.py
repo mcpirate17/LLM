@@ -184,7 +184,9 @@ class NativeConnectionWrapper:
         except RuntimeError as exc:
             raise _translate_error(exc) from exc
 
-    def executemany(self, sql: str, seq_of_parameters: Sequence[Sequence[Any]]) -> _CursorResult:
+    def executemany(
+        self, sql: str, seq_of_parameters: Sequence[Sequence[Any]]
+    ) -> _CursorResult:
         params_list = [tuple(p) for p in seq_of_parameters]
         try:
             changed = self._mgr.executemany(sql, params_list)

@@ -14,6 +14,7 @@ Usage:
         --template attn_normalized_matmul_pinned \
         --layers 4 --dim 256 --investigate --device cuda
 """
+
 from __future__ import annotations
 
 import argparse
@@ -100,8 +101,7 @@ def screen_and_investigate(
     )
     loss.backward()
     grads_with_values = [
-        p.grad for p in model.parameters()
-        if p.requires_grad and p.grad is not None
+        p.grad for p in model.parameters() if p.requires_grad and p.grad is not None
     ]
     n_grads = len(grads_with_values)
     n_finite = sum(1 for g in grads_with_values if torch.isfinite(g).all())
@@ -110,7 +110,9 @@ def screen_and_investigate(
     logger.info(
         "S0.5: %s (grads: %d/%d finite, %d total params)",
         "PASSED" if s05_passed else "FAILED",
-        n_finite, n_grads, sum(1 for p in model.parameters() if p.requires_grad),
+        n_finite,
+        n_grads,
+        sum(1 for p in model.parameters() if p.requires_grad),
     )
     if not s05_passed:
         return {"stage": "s05_failed", "template": template_name}
@@ -144,7 +146,9 @@ def screen_and_investigate(
         return total / max(n, 1)
 
     pre_val = _eval_val()
-    logger.info("Pre-training val loss: %.4f (PPL %.1f)", pre_val, math.exp(min(pre_val, 20)))
+    logger.info(
+        "Pre-training val loss: %.4f (PPL %.1f)", pre_val, math.exp(min(pre_val, 20))
+    )
 
     logger.info("S1: Training %d steps (screening)...", screening_steps)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
@@ -171,7 +175,11 @@ def screen_and_investigate(
             avg_train = sum(losses[-250:]) / 250
             logger.info(
                 "  step %d: train=%.4f val=%.4f ppl=%.1f (%.0fs)",
-                step, avg_train, vl, math.exp(min(vl, 20)), time.time() - t0
+                step,
+                avg_train,
+                vl,
+                math.exp(min(vl, 20)),
+                time.time() - t0,
             )
 
     screening_val = _eval_val()
@@ -183,7 +191,10 @@ def screen_and_investigate(
     logger.info(
         "S1: %s — val=%.4f ppl=%.1f loss_ratio=%.4f (%.0fs)",
         "PASSED" if s1_passed else "FAILED",
-        screening_val, screening_ppl, screening_lr, elapsed_s1,
+        screening_val,
+        screening_ppl,
+        screening_lr,
+        elapsed_s1,
     )
 
     # ── Run probes ──────────────────────────────────────────────────
@@ -192,19 +203,34 @@ def screen_and_investigate(
 
     try:
         from research.eval.binding_pipeline import run_screening_binding_probes
+
         bp = run_screening_binding_probes(model, device=device)
-        probe_results.update({
-            "induction_auc": bp.get("induction_auc"),
-            "binding_auc": bp.get("binding_auc"),
-            "binding_composite": bp.get("binding_composite"),
-        })
-        logger.info("Binding: ind=%.4f bind=%.4f", probe_results.get("induction_auc", 0), probe_results.get("binding_auc", 0))
+        probe_results.update(
+            {
+                "induction_auc": bp.get("induction_auc"),
+                "binding_auc": bp.get("binding_auc"),
+                "binding_composite": bp.get("binding_composite"),
+            }
+        )
+        logger.info(
+            "Binding: ind=%.4f bind=%.4f",
+            probe_results.get("induction_auc", 0),
+            probe_results.get("binding_auc", 0),
+        )
     except Exception as e:
         logger.warning("Binding failed: %s", e)
 
     try:
         from research.eval.associative_recall import associative_recall_score
-        ar = associative_recall_score(model, n_pairs=10, n_eval=100, n_train_steps=300, batch_size=8, device=device)
+
+        ar = associative_recall_score(
+            model,
+            n_pairs=10,
+            n_eval=100,
+            n_train_steps=300,
+            batch_size=8,
+            device=device,
+        )
         probe_results["ar_auc"] = ar.auc
         probe_results["ar_final_acc"] = ar.final_acc
         logger.info("AR: auc=%.4f acc=%.4f", ar.auc, ar.final_acc)
@@ -213,7 +239,10 @@ def screen_and_investigate(
 
     try:
         from research.eval.hellaswag_eval import evaluate_hellaswag
-        hella = evaluate_hellaswag(model, vocab_size=vocab_size, device=device, n_examples=200)
+
+        hella = evaluate_hellaswag(
+            model, vocab_size=vocab_size, device=device, n_examples=200
+        )
         probe_results["hellaswag_acc"] = hella.get("hellaswag_acc")
         logger.info("HellaSwag: acc=%s", probe_results["hellaswag_acc"])
     except Exception as e:
@@ -221,7 +250,10 @@ def screen_and_investigate(
 
     try:
         from research.eval.blimp_eval import evaluate_blimp
-        blimp = evaluate_blimp(model, vocab_size=vocab_size, device=device, n_per_subtask=50, timeout_s=120)
+
+        blimp = evaluate_blimp(
+            model, vocab_size=vocab_size, device=device, n_per_subtask=50, timeout_s=120
+        )
         probe_results["blimp_overall_accuracy"] = blimp.overall_accuracy
         logger.info("BLiMP: acc=%.4f", blimp.overall_accuracy)
     except Exception as e:
@@ -234,10 +266,20 @@ def screen_and_investigate(
     exp_id = f"manual_screen_{template_name}_{int(time.time())}"
     nb.conn.execute(
         "INSERT OR IGNORE INTO experiments (experiment_id, timestamp, experiment_type, config_json) VALUES (?, ?, ?, ?)",
-        (exp_id, time.time(), "manual_template_screen", json.dumps({
-            "template": template_name, "n_layers": n_layers, "model_dim": model_dim,
-            "screening_steps": screening_steps, "lr": lr,
-        })),
+        (
+            exp_id,
+            time.time(),
+            "manual_template_screen",
+            json.dumps(
+                {
+                    "template": template_name,
+                    "n_layers": n_layers,
+                    "model_dim": model_dim,
+                    "screening_steps": screening_steps,
+                    "lr": lr,
+                }
+            ),
+        ),
     )
 
     result_kwargs = {
@@ -313,7 +355,9 @@ def screen_and_investigate(
     if do_investigate and s1_passed:
         logger.info("Starting investigation (%d steps)...", investigation_steps)
         # Reset optimizer for longer training
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr * 0.5, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=lr * 0.5, weight_decay=0.01
+        )
         model.train()
         inv_losses = []
         t_inv = time.time()
@@ -338,8 +382,11 @@ def screen_and_investigate(
                 vl = _eval_val()
                 logger.info(
                     "  inv step %d: train=%.4f val=%.4f ppl=%.1f (%.0fs)",
-                    step, sum(inv_losses[-500:]) / 500, vl,
-                    math.exp(min(vl, 20)), time.time() - t_inv
+                    step,
+                    sum(inv_losses[-500:]) / 500,
+                    vl,
+                    math.exp(min(vl, 20)),
+                    time.time() - t_inv,
                 )
 
         inv_val = _eval_val()
@@ -347,7 +394,10 @@ def screen_and_investigate(
         inv_lr = inv_val / pre_val if pre_val > 0 else 1.0
         logger.info(
             "Investigation: val=%.4f ppl=%.1f loss_ratio=%.4f (%.0fs)",
-            inv_val, inv_ppl, inv_lr, time.time() - t_inv,
+            inv_val,
+            inv_ppl,
+            inv_lr,
+            time.time() - t_inv,
         )
 
         # Re-run probes after investigation
@@ -356,7 +406,11 @@ def screen_and_investigate(
             bp2 = run_screening_binding_probes(model, device=device)
             result["inv_induction_auc"] = bp2.get("induction_auc")
             result["inv_binding_auc"] = bp2.get("binding_auc")
-            logger.info("Inv binding: ind=%.4f bind=%.4f", result.get("inv_induction_auc", 0), result.get("inv_binding_auc", 0))
+            logger.info(
+                "Inv binding: ind=%.4f bind=%.4f",
+                result.get("inv_induction_auc", 0),
+                result.get("inv_binding_auc", 0),
+            )
         except Exception as exc:
             logger.warning("Investigation binding probes failed: %s", exc)
 
@@ -396,17 +450,29 @@ def screen_and_investigate(
     print(f"  Params:       {n_params:,}")
     print(f"  S0/S0.5/S1:   {s0_passed}/{s05_passed}/{s1_passed}")
     print(f"  Pre-train:    val={pre_val:.4f} ppl={math.exp(min(pre_val, 20)):.1f}")
-    print(f"  Screening:    val={screening_val:.4f} ppl={screening_ppl:.1f} LR={screening_lr:.4f}")
+    print(
+        f"  Screening:    val={screening_val:.4f} ppl={screening_ppl:.1f} LR={screening_lr:.4f}"
+    )
     if "investigation_val_loss" in result:
-        print(f"  Investigation: val={result['investigation_val_loss']:.4f} ppl={result['investigation_ppl']:.1f} LR={result['investigation_loss_ratio']:.4f}")
-    for k in ["induction_auc", "binding_auc", "ar_auc", "hellaswag_acc", "blimp_overall_accuracy"]:
+        print(
+            f"  Investigation: val={result['investigation_val_loss']:.4f} ppl={result['investigation_ppl']:.1f} LR={result['investigation_loss_ratio']:.4f}"
+        )
+    for k in [
+        "induction_auc",
+        "binding_auc",
+        "ar_auc",
+        "hellaswag_acc",
+        "blimp_overall_accuracy",
+    ]:
         if k in probe_results and probe_results[k] is not None:
             print(f"  {k}: {probe_results[k]:.4f}")
     print(f"  result_id:    {result_id}")
     print(f"  fingerprint:  {graph_fp}")
 
     # Save JSON
-    out_path = Path("research/reports") / f"screen_{template_name}_{int(time.time())}.json"
+    out_path = (
+        Path("research/reports") / f"screen_{template_name}_{int(time.time())}.json"
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, indent=2, default=str))
     print(f"  Saved: {out_path}")
@@ -418,7 +484,9 @@ def screen_and_investigate(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Screen a template through the real pipeline")
+    parser = argparse.ArgumentParser(
+        description="Screen a template through the real pipeline"
+    )
     parser.add_argument("--template", type=str, required=True)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--dim", type=int, default=256)
@@ -429,7 +497,9 @@ def main():
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--investigate", action="store_true", help="Also run investigation tier")
+    parser.add_argument(
+        "--investigate", action="store_true", help="Also run investigation tier"
+    )
     args = parser.parse_args()
 
     screen_and_investigate(

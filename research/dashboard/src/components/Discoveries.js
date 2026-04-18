@@ -214,6 +214,30 @@ function Discoveries({
     () => COLUMNS.filter((col) => visibleColumns.includes(col.key)),
     [visibleColumns]
   );
+  const referenceLossIndex = useMemo(() => {
+    const refs = Array.isArray(data?.references) ? data.references : [];
+    const byFamily = new Map();
+    let gpt2Loss = null;
+
+    for (const ref of refs) {
+      const loss = bestLoss(ref);
+      if (loss == null) continue;
+
+      const family = ref?.architecture_family;
+      if (family) {
+        const previous = byFamily.get(family);
+        if (previous == null || loss < previous) {
+          byFamily.set(family, loss);
+        }
+      }
+
+      if (ref?.reference_name === 'GPT-2 Small' || ref?.reference_name === 'GPT-2') {
+        gpt2Loss = gpt2Loss == null ? loss : Math.min(gpt2Loss, loss);
+      }
+    }
+
+    return { byFamily, gpt2Loss };
+  }, [data?.references]);
   const applyColumnPreset = useCallback((keys) => {
     const valid = new Set(COLUMNS.map((col) => col.key));
     setVisibleColumns(keys.filter((key) => valid.has(key)));
@@ -370,7 +394,6 @@ function Discoveries({
   // Sort & augment discovery entries
   const sorted = useMemo(() => {
     const entries = data?.entries || [];
-    const refs = data?.references || [];
     
     const augmented = entries.map(e => {
       const entryBestLoss = bestLoss(e);
@@ -378,17 +401,7 @@ function Discoveries({
       // Find best reference in same family or paradigm for comparison
       let vsRef = null;
       if (entryBestLoss != null && !e.is_reference) {
-        // 1. Try same family
-        let bestRefLoss = null;
-        const familyRefs = refs.filter(r => r.architecture_family === e.architecture_family && bestLoss(r) != null);
-        if (familyRefs.length > 0) {
-          bestRefLoss = Math.min(...familyRefs.map(r => bestLoss(r)));
-        } else {
-          // 2. Fallback to GPT-2 Small as the "universal" baseline
-          const gpt2 = refs.find(r => r.reference_name === 'GPT-2 Small' || r.reference_name === 'GPT-2');
-          bestRefLoss = bestLoss(gpt2);
-        }
-        
+        const bestRefLoss = referenceLossIndex.byFamily.get(e.architecture_family) ?? referenceLossIndex.gpt2Loss;
         if (bestRefLoss != null) {
           vsRef = percentOfReference(entryBestLoss, bestRefLoss);
         }
@@ -423,7 +436,7 @@ function Discoveries({
       return sortDesc ? vb - va : va - vb;
     });
     return augmented;
-  }, [data?.entries, sortKey, sortDesc]);
+  }, [data?.entries, sortKey, sortDesc, referenceLossIndex]);
 
   const references = useMemo(() => {
     const refs = (data?.references || []).map((e) => ({

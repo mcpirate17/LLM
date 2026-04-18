@@ -55,7 +55,10 @@ def spawn_mutation_individual(
         mutation_type = "local"
     else:
         child_graph = mutate_graph(
-            parent.graph, grammar, rng, generate_context_valid_graph=generate_context_valid_graph
+            parent.graph,
+            grammar,
+            rng,
+            generate_context_valid_graph=generate_context_valid_graph,
         )
         mutation_type = "standard"
 
@@ -95,7 +98,11 @@ def spawn_crossover_individual(
         config.novelty_weight,
     )
     child_graph = crossover_graphs(
-        p1.graph, p2.graph, grammar, rng, generate_context_valid_graph=generate_context_valid_graph
+        p1.graph,
+        p2.graph,
+        grammar,
+        rng,
+        generate_context_valid_graph=generate_context_valid_graph,
     )
     parents = sorted([p1.fingerprint, p2.fingerprint])
     return individual_cls(
@@ -136,7 +143,9 @@ def local_mutate_graph(
     native_plan = _native_local_mutation_plan(graph, rng)
     if native_plan is not None:
         node_ids, candidate_opcodes = native_plan
-        for target_id, candidate_opcode in zip(node_ids, candidate_opcodes, strict=True):
+        for target_id, candidate_opcode in zip(
+            node_ids, candidate_opcodes, strict=True
+        ):
             candidate_name = REVERSE_OPCODE_MAP[int(candidate_opcode)]
             target_node = new_graph.nodes[int(target_id)]
             original_op = target_node.op_name
@@ -283,5 +292,7 @@ def _python_local_mutation_trials(
         if not same_cat_ops:
             continue
         rng.shuffle(same_cat_ops)
-        planned_trials.extend((target_id, candidate_name) for candidate_name in same_cat_ops)
+        planned_trials.extend(
+            (target_id, candidate_name) for candidate_name in same_cat_ops
+        )
     return tuple(planned_trials)

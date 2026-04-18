@@ -173,6 +173,7 @@ def _run_full_post_train(
             # (these are zero-shot / lightweight and don't need S1 pass)
             try:
                 from research.eval.blimp_eval import evaluate_blimp
+
                 blimp = evaluate_blimp(
                     model,
                     vocab_size=int(config.vocab_size),
@@ -186,6 +187,7 @@ def _run_full_post_train(
                 pass
             try:
                 from research.eval.binding_pipeline import run_screening_binding_probes
+
                 bp = run_screening_binding_probes(model, device=str(dev))
                 updates.update(screening_probe_fields(bp))
             except Exception:

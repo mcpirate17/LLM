@@ -97,7 +97,10 @@ def compile_model(
 
 
 def _compile_layer_module(
-    graph: ComputationGraph, *, prefer_fast_path: bool, executor_variant: str = "default"
+    graph: ComputationGraph,
+    *,
+    prefer_fast_path: bool,
+    executor_variant: str = "default",
 ) -> nn.Module:
     if not prefer_fast_path:
         layer = CompiledLayer(graph)

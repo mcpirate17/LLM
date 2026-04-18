@@ -8,6 +8,7 @@ metrics throughout.
 Usage:
     python -m research.tools.chinchilla_headtohead --device cuda
 """
+
 from __future__ import annotations
 
 import json
@@ -63,17 +64,23 @@ def _load_full_wikitext(batch_size, seq_len, device):
     val_path = full_cache / "validation.txt"
 
     if not train_path.exists():
-        raise FileNotFoundError(f"Full WikiText not cached. Run download first: {train_path}")
+        raise FileNotFoundError(
+            f"Full WikiText not cached. Run download first: {train_path}"
+        )
 
     enc = tiktoken.get_encoding("gpt2")
     logger.info("Tokenizing full WikiText-103 (may take a minute)...")
 
     train_text = train_path.read_text(encoding="utf-8", errors="replace")
-    train_tokens = torch.tensor(enc.encode(train_text, allowed_special=set()), dtype=torch.long)
+    train_tokens = torch.tensor(
+        enc.encode(train_text, allowed_special=set()), dtype=torch.long
+    )
     del train_text
 
     val_text = val_path.read_text(encoding="utf-8", errors="replace")
-    val_tokens = torch.tensor(enc.encode(val_text, allowed_special=set()), dtype=torch.long)
+    val_tokens = torch.tensor(
+        enc.encode(val_text, allowed_special=set()), dtype=torch.long
+    )
     del val_text
 
     stride = batch_size * seq_len
@@ -129,28 +136,43 @@ def _run_probes(model, device):
     probes = {}
     try:
         from research.eval.binding_pipeline import run_screening_binding_probes
+
         bp = run_screening_binding_probes(model, device=device)
-        probes.update({
-            "induction_auc": bp.get("induction_auc", 0),
-            "binding_auc": bp.get("binding_auc", 0),
-        })
+        probes.update(
+            {
+                "induction_auc": bp.get("induction_auc", 0),
+                "binding_auc": bp.get("binding_auc", 0),
+            }
+        )
     except Exception as e:
         logger.warning("Binding: %s", e)
     try:
         from research.eval.associative_recall import associative_recall_score
-        ar = associative_recall_score(model, n_pairs=10, n_eval=100, n_train_steps=300, batch_size=8, device=device)
+
+        ar = associative_recall_score(
+            model,
+            n_pairs=10,
+            n_eval=100,
+            n_train_steps=300,
+            batch_size=8,
+            device=device,
+        )
         probes["ar_auc"] = ar.auc
     except Exception as e:
         logger.warning("AR: %s", e)
     try:
         from research.eval.hellaswag_eval import evaluate_hellaswag
+
         h = evaluate_hellaswag(model, vocab_size=VOCAB, device=device, n_examples=200)
         probes["hellaswag_acc"] = h.get("hellaswag_acc")
     except Exception as e:
         logger.warning("HellaSwag: %s", e)
     try:
         from research.eval.blimp_eval import evaluate_blimp
-        bl = evaluate_blimp(model, vocab_size=VOCAB, device=device, n_per_subtask=50, timeout_s=120)
+
+        bl = evaluate_blimp(
+            model, vocab_size=VOCAB, device=device, n_per_subtask=50, timeout_s=120
+        )
         probes["blimp_accuracy"] = bl.overall_accuracy
     except Exception as e:
         logger.warning("BLiMP: %s", e)
@@ -175,7 +197,13 @@ def train_chinchilla(
     seq_len: int = 256,
 ):
     logger.info("=" * 70)
-    logger.info("  %s  %dL dim=%d  %d steps  cosine LR", template_name, n_layers, model_dim, n_steps)
+    logger.info(
+        "  %s  %dL dim=%d  %d steps  cosine LR",
+        template_name,
+        n_layers,
+        model_dim,
+        n_steps,
+    )
     logger.info("=" * 70)
 
     model, graphs = _build_model_bundle(template_name, n_layers, model_dim, seed)
@@ -203,7 +231,9 @@ def train_chinchilla(
     t0 = time.time()
 
     for step in range(1, n_steps + 1):
-        batch = train_w[torch.randint(len(train_w), (1,), generator=rg).item()].to(device)
+        batch = train_w[torch.randint(len(train_w), (1,), generator=rg).item()].to(
+            device
+        )
         logits = model(batch)
         loss = nn.functional.cross_entropy(
             logits[:, :-1].reshape(-1, VOCAB), batch[:, 1:].reshape(-1)
@@ -239,15 +269,29 @@ def train_chinchilla(
                 logger.info("  Running probes at step %d...", step)
                 probes = _run_probes(model, device)
                 cp["probes"] = probes
-                probe_str = " ".join(f"{k}={v:.4f}" for k, v in probes.items() if v is not None)
+                probe_str = " ".join(
+                    f"{k}={v:.4f}" for k, v in probes.items() if v is not None
+                )
                 logger.info(
                     "  [%s] step=%d val=%.4f ppl=%.1f tok=%.0fM | %s (%.0fs)",
-                    template_name, step, val_loss, ppl, tokens_seen / 1e6, probe_str, elapsed,
+                    template_name,
+                    step,
+                    val_loss,
+                    ppl,
+                    tokens_seen / 1e6,
+                    probe_str,
+                    elapsed,
                 )
             else:
                 logger.info(
                     "  [%s] step=%d val=%.4f ppl=%.1f lr=%.1e tok=%.0fM (%.0fs)",
-                    template_name, step, val_loss, ppl, current_lr, tokens_seen / 1e6, elapsed,
+                    template_name,
+                    step,
+                    val_loss,
+                    ppl,
+                    current_lr,
+                    tokens_seen / 1e6,
+                    elapsed,
                 )
 
             checkpoints.append(cp)
@@ -287,9 +331,15 @@ def train_chinchilla(
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--steps", type=int, default=None, help="Override step count (default: chinchilla-optimal)")
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Override step count (default: chinchilla-optimal)",
+    )
     parser.add_argument("--checkpoint-every", type=int, default=5000)
     parser.add_argument("--probe-every", type=int, default=20000)
     parser.add_argument("--layers", type=int, default=4)
@@ -309,15 +359,19 @@ def main():
         n_steps = args.steps
     else:
         # Build a quick model to count params
-        model_tmp, _ = _build_model_bundle("gated_linear_attention_block", args.layers, args.dim, 42)
+        model_tmp, _ = _build_model_bundle(
+            "gated_linear_attention_block", args.layers, args.dim, 42
+        )
         n_params = sum(p.numel() for p in model_tmp.parameters())
         chinchilla_tokens = 20 * n_params
         n_steps = chinchilla_tokens // tokens_per_step
         del model_tmp
         logger.info(
             "Chinchilla optimal: %dM tokens, %d steps (%.1f epochs of %dM)",
-            chinchilla_tokens // 1_000_000, n_steps,
-            chinchilla_tokens / n_train_tokens, n_train_tokens // 1_000_000,
+            chinchilla_tokens // 1_000_000,
+            n_steps,
+            chinchilla_tokens / n_train_tokens,
+            n_train_tokens // 1_000_000,
         )
 
     templates = ["gated_linear_attention_block", "gpt2_reference"]
@@ -325,12 +379,19 @@ def main():
 
     for name in templates:
         r = train_chinchilla(
-            name, n_steps, train_w, val_w,
+            name,
+            n_steps,
+            train_w,
+            val_w,
             corpus_info,
-            n_layers=args.layers, model_dim=args.dim,
-            lr=args.lr, checkpoint_every=args.checkpoint_every,
-            probe_every=args.probe_every, device=args.device,
-            batch_size=args.batch_size, seq_len=args.seq_len,
+            n_layers=args.layers,
+            model_dim=args.dim,
+            lr=args.lr,
+            checkpoint_every=args.checkpoint_every,
+            probe_every=args.probe_every,
+            device=args.device,
+            batch_size=args.batch_size,
+            seq_len=args.seq_len,
         )
         results.append(r)
 
@@ -342,7 +403,9 @@ def main():
         last = r["checkpoints"][-1] if r["checkpoints"] else {}
         probes = last.get("probes", {})
         probe_str = " ".join(f"{k}={v:.4f}" for k, v in probes.items() if v is not None)
-        print(f"  {r['template']:40s} PPL={last.get('ppl', '?'):>8} val={last.get('val_loss', '?'):>7} params={r['n_params']:>10,}")
+        print(
+            f"  {r['template']:40s} PPL={last.get('ppl', '?'):>8} val={last.get('val_loss', '?'):>7} params={r['n_params']:>10,}"
+        )
         if probe_str:
             print(f"  {'':40s} {probe_str}")
 

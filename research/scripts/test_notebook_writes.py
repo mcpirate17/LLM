@@ -84,10 +84,14 @@ def _lab_notebook_probe(db_path: str, iterations: int) -> None:
                 {"probe_iteration": i},
                 hypothesis="lab notebook probe",
             )
-            row = sqlite3.connect(db_path, timeout=10.0).execute(
-                "SELECT status FROM experiments WHERE experiment_id = ?",
-                (exp_id,),
-            ).fetchone()
+            row = (
+                sqlite3.connect(db_path, timeout=10.0)
+                .execute(
+                    "SELECT status FROM experiments WHERE experiment_id = ?",
+                    (exp_id,),
+                )
+                .fetchone()
+            )
             if not row or row[0] != "running":
                 failures.append(f"iter {i}: start not visible: {row!r}")
                 continue
@@ -104,10 +108,14 @@ def _lab_notebook_probe(db_path: str, iterations: int) -> None:
                 },
                 aria_summary="lab notebook probe complete",
             )
-            row = sqlite3.connect(db_path, timeout=10.0).execute(
-                "SELECT status, n_programs_generated FROM experiments WHERE experiment_id = ?",
-                (exp_id,),
-            ).fetchone()
+            row = (
+                sqlite3.connect(db_path, timeout=10.0)
+                .execute(
+                    "SELECT status, n_programs_generated FROM experiments WHERE experiment_id = ?",
+                    (exp_id,),
+                )
+                .fetchone()
+            )
             if not row or row[0] != "completed" or row[1] != 1:
                 failures.append(f"iter {i}: completion not visible: {row!r}")
         finally:

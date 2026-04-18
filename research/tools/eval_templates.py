@@ -11,6 +11,7 @@ Evaluates each template by:
 4. Running wikitext perplexity eval
 5. Comparing to GPT-2 reference baseline
 """
+
 from __future__ import annotations
 
 import argparse
@@ -186,9 +187,9 @@ def evaluate_template(
     device: str = DEVICE,
 ):
     """Full evaluation of a single template."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Evaluating: {template_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Build
     t0 = time.time()
@@ -203,7 +204,9 @@ def evaluate_template(
     print(f"  Params: {n_params:,}  Build: {build_time:.1f}s")
 
     # Train
-    checkpoints = tuple(s for s in (200, 500, 750, 1000, 2000, 5000, 10000) if s <= n_steps)
+    checkpoints = tuple(
+        s for s in (200, 500, 750, 1000, 2000, 5000, 10000) if s <= n_steps
+    )
     result = train_and_eval(
         model,
         n_steps=n_steps,
@@ -212,8 +215,10 @@ def evaluate_template(
     )
 
     print(f"  Training: {result['n_steps']} steps in {result['elapsed_s']:.1f}s")
-    print(f"  Loss: {result['init_loss']:.4f} → {result['final_loss']:.4f} "
-          f"(Δ={result['improvement']:+.1%}, ratio={result['loss_ratio']:.3f})")
+    print(
+        f"  Loss: {result['init_loss']:.4f} → {result['final_loss']:.4f} "
+        f"(Δ={result['improvement']:+.1%}, ratio={result['loss_ratio']:.3f})"
+    )
     print(f"  PPL: {result['perplexity']:.1f}")
 
     for step, loss in sorted(result["checkpoints"].items()):
@@ -250,15 +255,21 @@ def evaluate_template(
 def main():
     parser = argparse.ArgumentParser(description="Extended template evaluation")
     parser.add_argument("--steps", type=int, default=1000, help="Training steps")
-    parser.add_argument("--templates", type=str, default=None, help="Comma-separated template names")
-    parser.add_argument("--no-probes", action="store_true", help="Skip binding/wikitext probes")
+    parser.add_argument(
+        "--templates", type=str, default=None, help="Comma-separated template names"
+    )
+    parser.add_argument(
+        "--no-probes", action="store_true", help="Skip binding/wikitext probes"
+    )
     parser.add_argument("--device", type=str, default=DEVICE, help="Device")
     parser.add_argument("--output", type=str, default=None, help="JSON output path")
     args = parser.parse_args()
 
     templates = args.templates.split(",") if args.templates else DEFAULT_TEMPLATES
 
-    print(f"Evaluating {len(templates)} templates for {args.steps} steps on {args.device}")
+    print(
+        f"Evaluating {len(templates)} templates for {args.steps} steps on {args.device}"
+    )
     print(f"Templates: {', '.join(templates)}")
 
     results = []
@@ -273,10 +284,12 @@ def main():
             results.append(result)
 
     # Summary table
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("SUMMARY")
-    print(f"{'='*80}")
-    print(f"{'Template':45s} {'Loss':>7s} {'Ratio':>6s} {'PPL':>8s} {'Imp%':>6s} {'Ind':>6s} {'AR':>6s} {'Bind':>6s}")
+    print(f"{'=' * 80}")
+    print(
+        f"{'Template':45s} {'Loss':>7s} {'Ratio':>6s} {'PPL':>8s} {'Imp%':>6s} {'Ind':>6s} {'AR':>6s} {'Bind':>6s}"
+    )
     print("-" * 80)
 
     gpt2_loss = None
@@ -297,9 +310,11 @@ def main():
             margin = (gpt2_loss - r["final_loss"]) / gpt2_loss * 100
             marker = f" ✓ ({margin:.0f}% better)"
 
-        print(f"{r['template']:45s} {r['final_loss']:>7.4f} {r['loss_ratio']:>6.3f} "
-              f"{r['perplexity']:>8.1f} {r['improvement']:>+5.1%} "
-              f"{ind_s:>6s} {ar_s:>6s} {bind_s:>6s}{marker}")
+        print(
+            f"{r['template']:45s} {r['final_loss']:>7.4f} {r['loss_ratio']:>6.3f} "
+            f"{r['perplexity']:>8.1f} {r['improvement']:>+5.1%} "
+            f"{ind_s:>6s} {ar_s:>6s} {bind_s:>6s}{marker}"
+        )
 
     # Save results
     if args.output:

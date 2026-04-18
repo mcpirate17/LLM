@@ -18,7 +18,7 @@ outputs:
   shape: [B, S, D]
 params:
   threshold:
-    type: number
+    type: float
     default: 0.5
 implementation:
   native: null

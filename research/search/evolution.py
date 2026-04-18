@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import random
-from heapq import nlargest
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -30,14 +29,10 @@ from ._mutation import (
 )
 from ._nsga import (
     PARETO_FRONT_RANK as _PARETO_FRONT_RANK,
-    _assign_crowding_distance_in_python,
-    assign_crowding_distance,
-    fast_non_dominated_sort,
     nsga2_rank,
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 @dataclass(slots=True)
@@ -546,6 +541,7 @@ def _tournament_select(
 
     return max(candidates, key=_cmp_key)
 
+
 def pareto_front_op_weights(
     population: List[Individual],
     baseline_weight: float = 1.0,
@@ -573,9 +569,7 @@ def pareto_front_op_weights(
     dominated_ops: Dict[str, int] = {}
 
     for ind in population:
-        counter = (
-            front_ops if ind.pareto_rank == _PARETO_FRONT_RANK else dominated_ops
-        )
+        counter = front_ops if ind.pareto_rank == _PARETO_FRONT_RANK else dominated_ops
         for node in ind.graph.nodes.values():
             if node.is_input:
                 continue

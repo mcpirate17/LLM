@@ -59,12 +59,16 @@ def derive_mutation_grammar(
             parent_depth, base.max_depth, hard_max_depth, 2, 4, 3
         ),
         max_width=base.max_width,
-        max_ops=_bounded_target(parent_ops, base.max_ops, hard_max_ops, 2, 8, parent_ops + 2),
+        max_ops=_bounded_target(
+            parent_ops, base.max_ops, hard_max_ops, 2, 8, parent_ops + 2
+        ),
         residual_prob=clamp(base.residual_prob + rng.uniform(-0.1, 0.1), 0.0, 1.0),
         split_prob=clamp(base.split_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
         merge_prob=clamp(base.merge_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
         risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
-        freq_domain_prob=clamp(base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
+        freq_domain_prob=clamp(
+            base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0
+        ),
         category_weights=category_weights,
         op_weights=op_weights,
         template_weights=template_weights,
@@ -82,8 +86,23 @@ def derive_crossover_grammar(
 ) -> GrammarConfig:
     hard_max_depth = 18
     hard_max_ops = 28
-    target_depth = max(2, int(round((max(1, g1.depth()) + max(1, g2.depth())) / 2 + rng.choice([-1, 0, 1]))))
-    target_ops = max(3, int(round((max(1, g1.n_ops()) + max(1, g2.n_ops())) / 2 + rng.choice([-2, -1, 0, 1, 2]))))
+    target_depth = max(
+        2,
+        int(
+            round(
+                (max(1, g1.depth()) + max(1, g2.depth())) / 2 + rng.choice([-1, 0, 1])
+            )
+        ),
+    )
+    target_ops = max(
+        3,
+        int(
+            round(
+                (max(1, g1.n_ops()) + max(1, g2.n_ops())) / 2
+                + rng.choice([-2, -1, 0, 1, 2])
+            )
+        ),
+    )
     category_weights = _crossover_category_weights(
         base.category_weights, category_histogram(g1), category_histogram(g2), rng
     )
@@ -93,14 +112,26 @@ def derive_crossover_grammar(
     )
     return GrammarConfig(
         model_dim=g1.model_dim,
-        max_depth=_bounded_target(target_depth, base.max_depth, hard_max_depth, 2, 4, 3),
+        max_depth=_bounded_target(
+            target_depth, base.max_depth, hard_max_depth, 2, 4, 3
+        ),
         max_width=max(base.max_width, 2),
-        max_ops=_bounded_target(target_ops, base.max_ops, hard_max_ops, 2, 10, target_ops + 2),
-        residual_prob=clamp((base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        split_prob=clamp((base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
-        merge_prob=clamp((base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0),
+        max_ops=_bounded_target(
+            target_ops, base.max_ops, hard_max_ops, 2, 10, target_ops + 2
+        ),
+        residual_prob=clamp(
+            (base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0
+        ),
+        split_prob=clamp(
+            (base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0
+        ),
+        merge_prob=clamp(
+            (base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0
+        ),
         risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
-        freq_domain_prob=clamp(base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
+        freq_domain_prob=clamp(
+            base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0
+        ),
         category_weights=category_weights,
         op_weights=op_weights,
         template_weights=template_weights,

@@ -1,0 +1,6979 @@
+[
+  {
+    "template": "adaptive_conv_ffn",
+    "weight": 5.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      7,
+      9,
+      7
+    ],
+    "depth": [
+      7,
+      9,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "depth_weighted_proj",
+      "layernorm",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "adaptive_lane_recursion",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      7,
+      9,
+      7
+    ],
+    "depth": [
+      7,
+      9,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "difficulty_blend_3way",
+      "fused_linear_gelu",
+      "gated_linear",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "adaptive_sparse",
+    "weight": 6.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      6,
+      6,
+      6
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "gelu",
+      "layernorm",
+      "low_rank_proj",
+      "nm_sparse_linear",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "adaptive_ssm_chain",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "depth_weighted_proj",
+      "gelu",
+      "layernorm",
+      "rmsnorm",
+      "selective_scan",
+      "silu"
+    ]
+  },
+  {
+    "template": "arch_router_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "arch_router",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "gelu",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "associative_memory_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "associative_memory",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_bottleneck_hybrid",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_chebyshev_hybrid",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "chebyshev_spectral_mix",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_conditional_compute",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      8,
+      11
+    ],
+    "depth": [
+      12,
+      8,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "cheap_verify_blend",
+      "gelu",
+      "graph_attention",
+      "layernorm",
+      "learnable_bias",
+      "learned_token_gate",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "swiglu_mlp",
+      "token_entropy"
+    ]
+  },
+  {
+    "template": "attn_conv_hybrid",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      11,
+      11,
+      14
+    ],
+    "depth": [
+      9,
+      9,
+      12
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "cumprod_safe",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "sigmoid",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_cross_dim",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      9,
+      10
+    ],
+    "depth": [
+      10,
+      9,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "hybrid_token_gate",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "sparse_bottleneck_moe",
+      "transpose_sd"
+    ]
+  },
+  {
+    "template": "attn_decay_sequence",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      12,
+      12
+    ],
+    "depth": [
+      11,
+      11,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cumprod_safe",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "mul",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "attn_exp_gated",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "exp",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_gated_maximum",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "maximum",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_gated_product",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "mul",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "attn_gated_residual",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      7,
+      6,
+      9
+    ],
+    "depth": [
+      7,
+      6,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cheap_verify_blend",
+      "graph_attention",
+      "layernorm",
+      "learned_token_gate",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "token_entropy"
+    ]
+  },
+  {
+    "template": "attn_hyperbolic",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      12,
+      12
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "exp_map",
+      "graph_attention",
+      "hyp_distance",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_up",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_kronecker_hybrid",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "kronecker_linear",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_linear_no_matmul_ffn",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      14,
+      14,
+      14
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_linear_no_matmul_ffn_dense_tail",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      14,
+      14,
+      14
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "fused_linear_gelu",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention"
+    ]
+  },
+  {
+    "template": "attn_linear_no_matmul_ffn_direct_recovery",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      13,
+      13
+    ],
+    "depth": [
+      13,
+      13,
+      13
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_linear_no_matmul_ffn_v2",
+    "weight": 0.25,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      15,
+      15
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_linear_softmax_recovery_control",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      13,
+      12
+    ],
+    "depth": [
+      10,
+      11,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_log_gated",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "log",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_multi_head_mix",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      6,
+      6
+    ],
+    "depth": [
+      7,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_linear_attention",
+      "gated_progressive_attention",
+      "layernorm",
+      "linear_proj",
+      "multi_head_mix",
+      "rmsnorm",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "attn_normalized_matmul",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      15,
+      18
+    ],
+    "depth": [
+      12,
+      12,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "cumprod_safe",
+      "exp_map",
+      "graph_attention",
+      "hyp_linear",
+      "hyp_tangent_nonlinear",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "log_map",
+      "rmsnorm",
+      "selective_scan",
+      "sigmoid",
+      "silu",
+      "sin",
+      "swiglu_mlp",
+      "tanh",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "attn_normalized_matmul_pinned",
+    "weight": 6.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      12,
+      12
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "linear_proj",
+      "padic_expand",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_reciprocal_gated",
+    "weight": 0.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "reciprocal",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_residual_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      5,
+      5,
+      5
+    ],
+    "depth": [
+      5,
+      5,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "attn_routing_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      14,
+      14,
+      14
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "difficulty_blend_3way",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_rwkv_hybrid",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      18,
+      14,
+      16
+    ],
+    "depth": [
+      17,
+      13,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "compute_budget_router",
+      "conv1d_seq",
+      "exp_map",
+      "hyp_linear",
+      "hyp_tangent_nonlinear",
+      "latent_attention_compressor",
+      "layernorm",
+      "lif_neuron",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "log_map",
+      "reciprocal",
+      "rmsnorm",
+      "rwkv_channel",
+      "silu",
+      "sparse_threshold",
+      "stdp_attention",
+      "strided_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_safe_division",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      12,
+      12
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "div_safe",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_last"
+    ]
+  },
+  {
+    "template": "attn_softmax_matmul_sparse_tail",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      16,
+      15,
+      13
+    ],
+    "depth": [
+      13,
+      12,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "softmax_attention",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_softmax_normalized_matmul",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      16,
+      16,
+      16
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_softmax_normalized_matmul_compact_ffn",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      16,
+      16,
+      16
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_softmax_normalized_matmul_fixed_tail_norm",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      16,
+      16,
+      16
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_softmax_normalized_matmul_v2",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      14,
+      13
+    ],
+    "depth": [
+      10,
+      11,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "softmax_attention",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_softmax_router_sidecar",
+    "weight": 0.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      14,
+      14,
+      14
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "difficulty_blend_3way",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_sparse_moe",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      12
+    ],
+    "depth": [
+      10,
+      10,
+      12
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "gelu",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "moe_topk",
+      "neg",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "softmax_last"
+    ]
+  },
+  {
+    "template": "attn_spectral_filter",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      18,
+      18,
+      17
+    ],
+    "depth": [
+      18,
+      18,
+      17
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "gelu",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "max_last",
+      "nm_sparse_linear",
+      "relu_gated_moe",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "spectral_filter",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_spiking_hybrid",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "lif_neuron",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "spike_rate_code"
+    ]
+  },
+  {
+    "template": "attn_ssm_hybrid",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 2,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      20,
+      14
+    ],
+    "depth": [
+      11,
+      18,
+      12
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "fused_linear_gelu",
+      "graph_attention",
+      "hybrid_sparse_router",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "sparse_span_builder",
+      "state_space",
+      "sum_last",
+      "transpose_sd"
+    ]
+  },
+  {
+    "template": "attn_state_space_hybrid",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      14,
+      12,
+      11
+    ],
+    "depth": [
+      12,
+      10,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "adjacent_token_merge",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "attn_three_way_split",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 2,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      21,
+      18,
+      20
+    ],
+    "depth": [
+      11,
+      11,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "compute_budget_router",
+      "depth_token_mask",
+      "gated_lane_blend",
+      "graph_attention",
+      "hybrid_token_gate",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_up",
+      "rmsnorm",
+      "semi_structured_2_4_linear",
+      "silu",
+      "sparse_bottleneck_moe",
+      "split3",
+      "square"
+    ]
+  },
+  {
+    "template": "bottleneck",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "confidence_token_gate",
+      "conv_only",
+      "layernorm",
+      "learnable_scale",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "cascaded_attn_ffn",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 2,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      15,
+      14
+    ],
+    "depth": [
+      13,
+      15,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "fused_linear_gelu",
+      "graph_attention",
+      "hybrid_sparse_router",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "local_window_attn",
+      "rmsnorm",
+      "sparse_span_builder",
+      "sqrt",
+      "square"
+    ]
+  },
+  {
+    "template": "cascaded_early_exit",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      10,
+      12,
+      10
+    ],
+    "depth": [
+      9,
+      11,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "confidence_token_gate",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "mul",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "token_class_proj",
+      "token_entropy",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "causal_mix_block",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      11,
+      10
+    ],
+    "depth": [
+      12,
+      11,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "causal_mask",
+      "gated_linear",
+      "hybrid_sparse_router",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "sparse_span_builder",
+      "strided_attention",
+      "swiglu_mlp",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "chebyshev_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "chebyshev_spectral_mix",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "codex_ssm_delta_memory_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 3,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      12,
+      12
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      2,
+      2,
+      2
+    ],
+    "ops_union": [
+      "add",
+      "bottleneck_proj",
+      "gated_delta",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "shared_basis_proj",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "codex_ssm_local_recall_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      17,
+      16,
+      14
+    ],
+    "depth": [
+      14,
+      13,
+      11
+    ],
+    "slot_usage": [
+      1,
+      1,
+      1
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "layernorm",
+      "linear_proj",
+      "local_window_attn",
+      "rmsnorm",
+      "selective_scan",
+      "shared_basis_proj",
+      "silu",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "codex_ssm_mla_gated_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 2,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      12,
+      14
+    ],
+    "depth": [
+      11,
+      10,
+      12
+    ],
+    "slot_usage": [
+      2,
+      2,
+      2
+    ],
+    "ops_union": [
+      "abs",
+      "add",
+      "bottleneck_proj",
+      "gated_linear",
+      "gated_linear_attention",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "reciprocal",
+      "rmsnorm",
+      "sigmoid",
+      "sin",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "codex_ssm_retention_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 3,
+    "gate_fail": {},
+    "n_ops": [
+      19,
+      17,
+      16
+    ],
+    "depth": [
+      16,
+      14,
+      13
+    ],
+    "slot_usage": [
+      1,
+      1,
+      1
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "bottleneck_proj",
+      "conv1d_seq",
+      "gated_linear",
+      "gated_linear_attention",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "shared_basis_proj",
+      "silu",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "compute_budget_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "compute_budget_router",
+      "depth_token_mask",
+      "gelu",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "conditional_compute",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "abs",
+      "add",
+      "block_sparse_linear",
+      "layernorm",
+      "mul",
+      "neg",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "sin",
+      "token_class_proj",
+      "token_entropy"
+    ]
+  },
+  {
+    "template": "conv_residual_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      5,
+      7,
+      5
+    ],
+    "depth": [
+      5,
+      7,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv_only",
+      "layernorm",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "conv_residual_retrieval_v2",
+    "weight": 4.25,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      7,
+      7,
+      7
+    ],
+    "ops_union": [
+      "add",
+      "conv_only",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "cosine_scoring",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cosine_similarity",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "cross_dim_mixer",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      10,
+      13
+    ],
+    "depth": [
+      13,
+      10,
+      13
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "neg",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "state_space",
+      "transpose_sd"
+    ]
+  },
+  {
+    "template": "cumulative_sequence",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      5,
+      5,
+      5
+    ],
+    "depth": [
+      5,
+      5,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cumsum",
+      "layernorm",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "decay_sequence",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      12,
+      10
+    ],
+    "depth": [
+      9,
+      11,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cumprod_safe",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "mul",
+      "relu",
+      "rmsnorm",
+      "sigmoid",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "dense_cascade",
+    "weight": 0.8,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      16,
+      16
+    ],
+    "depth": [
+      13,
+      16,
+      16
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "difficulty_routed_attention",
+      "fused_linear_gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "local_window_attn",
+      "low_rank_proj",
+      "neg",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "softmax_attention",
+      "ternary_projection",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "depth_gated_block",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      1,
+      1,
+      1
+    ],
+    "ops_union": [
+      "add",
+      "depth_gated_transform",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "depth_gated_block_matmul",
+    "weight": 0.25,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      1,
+      1,
+      1
+    ],
+    "ops_union": [
+      "add",
+      "depth_gated_transform",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "depth_gated_block_matmul_norm",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      1,
+      1,
+      1
+    ],
+    "ops_union": [
+      "add",
+      "depth_gated_transform",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "depth_gated_block_matmul_stable",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      12,
+      12
+    ],
+    "depth": [
+      11,
+      11,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_gated_transform",
+      "depth_token_mask",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm",
+      "state_space"
+    ]
+  },
+  {
+    "template": "depth_token_mask_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      14,
+      12,
+      13
+    ],
+    "depth": [
+      14,
+      12,
+      13
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "bottleneck_proj",
+      "confidence_token_gate",
+      "conv_only",
+      "cos",
+      "depth_token_mask",
+      "gelu",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "score_depth_blend",
+      "sigmoid",
+      "tied_proj",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "diff_attention_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "diff_attention",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "diff_attn_conv_hybrid",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      14,
+      13
+    ],
+    "depth": [
+      11,
+      12,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "conv1d_seq",
+      "cos",
+      "diff_attention",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "sign_ste",
+      "silu",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "diff_attn_ffn_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "diff_attention",
+      "gelu",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "diff_attn_gated_ffn",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "depth_weighted_proj",
+      "diff_attention",
+      "layernorm",
+      "linear_proj",
+      "log",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "diff_attn_moe",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      8
+    ],
+    "depth": [
+      9,
+      9,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "diff_attention",
+      "gated_linear",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "diff_attn_routing",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_weighted_proj",
+      "diff_attention",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "semi_structured_2_4_linear",
+      "sin"
+    ]
+  },
+  {
+    "template": "difficulty_routed_attention_block",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "difficulty_routed_attention",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "difficulty_routed_block",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "diff_attention",
+      "gated_linear_attention",
+      "graph_attention",
+      "layernorm",
+      "linear_proj",
+      "mul",
+      "rmsnorm",
+      "token_class_proj",
+      "token_entropy"
+    ]
+  },
+  {
+    "template": "dual_attn_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "local_window_attn",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "dual_axis_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 1,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      13,
+      14,
+      13
+    ],
+    "depth": [
+      11,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cheap_verify_blend",
+      "concat",
+      "conv_only",
+      "depth_weighted_proj",
+      "gated_linear",
+      "layernorm",
+      "learnable_scale",
+      "linear_proj",
+      "linear_proj_down",
+      "reciprocal",
+      "rmsnorm",
+      "split2",
+      "transpose_sd"
+    ]
+  },
+  {
+    "template": "dual_routing_deep",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      10,
+      9,
+      9
+    ],
+    "depth": [
+      10,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_token_mask",
+      "depth_weighted_proj",
+      "dual_compression_blend",
+      "layernorm",
+      "linear_proj",
+      "moe_topk",
+      "rmsnorm",
+      "semi_structured_2_4_linear",
+      "silu",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "dual_routing_stack",
+    "weight": 6.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 1,
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      8,
+      7,
+      10
+    ],
+    "depth": [
+      8,
+      7,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "compute_budget_router",
+      "cumprod_safe",
+      "dual_compression_blend",
+      "grouped_linear",
+      "layernorm",
+      "linear_proj",
+      "moe_topk",
+      "rmsnorm",
+      "sigmoid",
+      "sin",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "exp_gated_residual",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "exp",
+      "layernorm",
+      "linear_proj",
+      "mul",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "feature_sparse_block",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "abs",
+      "add",
+      "feature_sparsity",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "sqrt",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "fused_gelu_ffn",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "fused_linear_gelu",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "mul",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "gated_lane_blend_block",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "abs",
+      "add",
+      "gated_lane_blend",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "sqrt",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "gated_linear_attention_block",
+    "weight": 5.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "gated_maximum",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "maximum",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "gated_minimum",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      10,
+      8
+    ],
+    "depth": [
+      7,
+      9,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "minimum",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "gated_product",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "outer_product",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "gated_progressive_attention_block",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_progressive_attention",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "gated_residual",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      7,
+      6,
+      9
+    ],
+    "depth": [
+      7,
+      6,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cheap_verify_blend",
+      "diff_attention",
+      "gated_linear_attention",
+      "graph_attention",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "token_entropy"
+    ]
+  },
+  {
+    "template": "geometric_product_block",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      11,
+      13,
+      11
+    ],
+    "depth": [
+      9,
+      11,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "geometric_product",
+      "grade_select",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "rotor_transform",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "gpt2_reference",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "graph_attention_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "graph_attn_ffn_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "gelu",
+      "graph_attention",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "graph_attn_moe",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      8
+    ],
+    "depth": [
+      9,
+      9,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_linear",
+      "graph_attention",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "graph_attn_sparse_ffn",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      16,
+      16,
+      16
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "graph_attention",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "graph_attn_ssm_recursive",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      14,
+      12
+    ],
+    "depth": [
+      13,
+      12,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "graph_attention",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "hetero_moe_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "gelu",
+      "hetero_moe",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "hybrid_parallel",
+    "weight": 1.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      14,
+      9
+    ],
+    "depth": [
+      7,
+      12,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "state_space",
+      "transpose_sd"
+    ]
+  },
+  {
+    "template": "hybrid_sparse_triplet_router",
+    "weight": 6.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate3_no_residual": 3
+    },
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      3,
+      3,
+      3
+    ],
+    "ops_union": [
+      "add",
+      "default_path",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "lane_conditioned_block",
+      "layernorm",
+      "rmsnorm",
+      "sparse_span_builder"
+    ]
+  },
+  {
+    "template": "hyp_distance_scoring",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "exp_map",
+      "hyp_distance",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_up",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "hyperbolic_bridge_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "exp_map",
+      "hyp_linear",
+      "hyp_tangent_nonlinear",
+      "layernorm",
+      "log_map",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "induction_matmul_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cumsum",
+      "gelu",
+      "kronecker_linear",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "relu",
+      "rmsnorm",
+      "silu"
+    ]
+  },
+  {
+    "template": "integral_kernel_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      11,
+      11
+    ],
+    "depth": [
+      11,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "gated_linear",
+      "integral_kernel",
+      "latent_attention_compressor",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "strided_attention",
+      "swiglu_mlp",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "intelligent_multilane_router",
+    "weight": 5.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 2
+    },
+    "n_ops": [
+      22,
+      22,
+      22
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      10,
+      10,
+      10
+    ],
+    "ops_union": [
+      "adaptive_lane_mixer",
+      "add",
+      "conv1d_seq",
+      "conv_only",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "layernorm",
+      "linear_proj",
+      "moe_2expert",
+      "moe_topk",
+      "rmsnorm",
+      "route_lanes",
+      "route_recursion",
+      "signal_conditioned_compression",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "iterative_refinement",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      7,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "fixed_point_iter",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "strided_attention",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "kronecker_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "kronecker_linear",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "latent_attn_conv_hybrid",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      13,
+      14,
+      13
+    ],
+    "depth": [
+      11,
+      12,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "conv1d_seq",
+      "cos",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "sign_ste",
+      "silu",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "latent_attn_ffn_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "latent_attn_moe",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      8
+    ],
+    "depth": [
+      9,
+      9,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_linear",
+      "latent_attention_compressor",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "rmsnorm",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "latent_attn_padic_hybrid",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      11,
+      11,
+      11
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "depth_token_mask",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "padic_expand",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "latent_attn_retrieval_v2",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      7,
+      7,
+      7
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "latent_attn_sparse_ffn",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      9,
+      9
+    ],
+    "depth": [
+      8,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "latent_attention_compressor",
+      "layernorm",
+      "learnable_scale",
+      "linear_proj",
+      "rmsnorm",
+      "shared_basis_proj",
+      "silu",
+      "tanh",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "latent_attn_ssm_hybrid",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      14,
+      12
+    ],
+    "depth": [
+      13,
+      12,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "latent_compress_block",
+    "weight": 0.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "nm_sparse_linear",
+      "relu",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "latent_compress_rwkv",
+    "weight": 0.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "add",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "rwkv_channel"
+    ]
+  },
+  {
+    "template": "linear_attn_ffn_block",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      15,
+      15
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "linear_attn_sparse_ffn",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      15,
+      15
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "matmul",
+      "nm_sparse_linear",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "local_attention_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      7,
+      9,
+      8
+    ],
+    "depth": [
+      7,
+      9,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "local_window_attn",
+      "log",
+      "rmsnorm",
+      "semi_structured_2_4_linear",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "local_attn_ffn_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      8,
+      9
+    ],
+    "depth": [
+      10,
+      8,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "confidence_token_gate",
+      "fused_linear_gelu",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "linear_proj_down",
+      "local_window_attn",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "local_attn_moe",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_token_mask",
+      "gated_linear",
+      "layernorm",
+      "linear_proj",
+      "local_window_attn",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "local_attn_routing",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      8,
+      7,
+      7
+    ],
+    "depth": [
+      8,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "bottleneck_proj",
+      "depth_weighted_proj",
+      "gelu",
+      "layernorm",
+      "learnable_scale",
+      "linear_proj",
+      "local_window_attn",
+      "rmsnorm",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "local_attn_ssm_hybrid",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      15,
+      12,
+      14
+    ],
+    "depth": [
+      13,
+      10,
+      12
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "gated_linear",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "local_window_attn",
+      "padic_expand",
+      "reciprocal",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "sin",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "local_attn_swiglu",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "local_window_attn",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "log_gated",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "log",
+      "mul",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "long_conv_hyena_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_linear_attention",
+      "linear_proj",
+      "long_conv_hyena",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "mamba_reference",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "mixed_recursion",
+    "weight": 5.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      8,
+      8,
+      7
+    ],
+    "depth": [
+      8,
+      8,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_linear_attention",
+      "layernorm",
+      "linear_proj",
+      "local_window_attn",
+      "rmsnorm",
+      "score_depth_blend",
+      "token_class_proj",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "mixture_of_recursions_block",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gated_delta",
+      "linear_proj",
+      "mixture_of_recursions",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "moe",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      5,
+      5,
+      5
+    ],
+    "depth": [
+      5,
+      5,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_token_mask",
+      "layernorm",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "multi_head_mix_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 1,
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      10,
+      8,
+      7
+    ],
+    "depth": [
+      10,
+      8,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "multi_head_mix",
+      "padic_expand",
+      "padic_residual",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "tropical_moe"
+    ]
+  },
+  {
+    "template": "multiscale_difficulty_router",
+    "weight": 5.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      24,
+      24,
+      24
+    ],
+    "depth": [
+      13,
+      13,
+      13
+    ],
+    "slot_usage": [
+      9,
+      9,
+      9
+    ],
+    "ops_union": [
+      "adaptive_lane_mixer",
+      "add",
+      "calibrated_branch_merge",
+      "default_path",
+      "graph_attention",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "lane_conditioned_block",
+      "linear_proj",
+      "rmsnorm",
+      "route_recursion",
+      "semi_structured_2_4_linear",
+      "signal_conditioned_compression",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "multiscale_difficulty_router_adaptive_attn_ssm",
+    "weight": 0.25,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      24,
+      24,
+      24
+    ],
+    "depth": [
+      11,
+      11,
+      11
+    ],
+    "slot_usage": [
+      5,
+      5,
+      5
+    ],
+    "ops_union": [
+      "adaptive_lane_mixer",
+      "add",
+      "calibrated_branch_merge",
+      "default_path",
+      "graph_attention",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "lane_conditioned_block",
+      "layernorm",
+      "rmsnorm",
+      "route_recursion",
+      "signal_conditioned_compression",
+      "state_space",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "multiscale_difficulty_router_blocksparse_attn_ssm",
+    "weight": 0.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      24,
+      24,
+      24
+    ],
+    "depth": [
+      11,
+      11,
+      11
+    ],
+    "slot_usage": [
+      5,
+      5,
+      5
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "calibrated_branch_merge",
+      "default_path",
+      "graph_attention",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "lane_conditioned_block",
+      "layernorm",
+      "rmsnorm",
+      "route_recursion",
+      "signal_conditioned_compression",
+      "state_space",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "multiscale_difficulty_router_easy_attn_ssm",
+    "weight": 0.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      24,
+      24,
+      24
+    ],
+    "depth": [
+      11,
+      11,
+      11
+    ],
+    "slot_usage": [
+      5,
+      5,
+      5
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "calibrated_branch_merge",
+      "default_path",
+      "graph_attention",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "lane_conditioned_block",
+      "layernorm",
+      "rmsnorm",
+      "route_recursion",
+      "semi_structured_2_4_linear",
+      "signal_conditioned_compression",
+      "state_space",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "multiscale_rich_lane_router",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate3_no_residual": 3
+    },
+    "n_ops": [
+      21,
+      21,
+      21
+    ],
+    "depth": [
+      13,
+      13,
+      13
+    ],
+    "slot_usage": [
+      6,
+      6,
+      6
+    ],
+    "ops_union": [
+      "adaptive_recursion",
+      "add",
+      "calibrated_branch_merge",
+      "conv1d_seq",
+      "default_path",
+      "hybrid_sparse_router",
+      "hybrid_token_gate",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "route_recursion",
+      "semi_structured_2_4_linear",
+      "signal_conditioned_compression",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "n_way_moe_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      9,
+      12
+    ],
+    "depth": [
+      8,
+      9,
+      12
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cumprod_safe",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "sigmoid",
+      "sparse_bottleneck_moe",
+      "strided_attention",
+      "swiglu_mlp",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "normalized_matmul",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      6,
+      6,
+      6
+    ],
+    "depth": [
+      5,
+      5,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "parallel_split",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 2
+    },
+    "n_ops": [
+      14,
+      12,
+      14
+    ],
+    "depth": [
+      10,
+      9,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "concat",
+      "conv1d_seq",
+      "cos",
+      "depth_weighted_proj",
+      "layernorm",
+      "learnable_scale",
+      "learned_token_gate",
+      "linear_proj",
+      "linear_proj_down",
+      "reciprocal",
+      "rmsnorm",
+      "sin",
+      "split2"
+    ]
+  },
+  {
+    "template": "poincare_add_bridge",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      12,
+      14,
+      12
+    ],
+    "depth": [
+      10,
+      12,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "exp_map",
+      "gated_linear",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "log_map",
+      "poincare_add",
+      "rmsnorm",
+      "tanh"
+    ]
+  },
+  {
+    "template": "reciprocal_gated",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "mul",
+      "reciprocal",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "recurrent_delta_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      12,
+      10,
+      10
+    ],
+    "depth": [
+      12,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "gated_delta",
+      "gated_linear",
+      "latent_attention_compressor",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "strided_attention",
+      "swiglu_mlp",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "recursive_attn_ssm_depth",
+    "weight": 5.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      16,
+      15,
+      13
+    ],
+    "depth": [
+      14,
+      13,
+      11
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "adaptive_rank_gate",
+      "adaptive_recursion",
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "selective_scan",
+      "silu",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "recursive_attn_ssm_hybrid",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      10,
+      9
+    ],
+    "depth": [
+      9,
+      10,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "silu",
+      "state_space"
+    ]
+  },
+  {
+    "template": "recursive_depth_router",
+    "weight": 6.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      6
+    ],
+    "depth": [
+      7,
+      7,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "sigmoid",
+      "ternary_projection",
+      "tropical_moe"
+    ]
+  },
+  {
+    "template": "recursive_moe_attn",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      10,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "depth_weighted_proj",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "moe_2expert",
+      "moe_topk",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "silu"
+    ]
+  },
+  {
+    "template": "reduce_attend",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gelu",
+      "layernorm",
+      "linear_proj_down",
+      "linear_proj_up",
+      "mean_last",
+      "mul",
+      "norm_last",
+      "rmsnorm",
+      "sigmoid"
+    ]
+  },
+  {
+    "template": "residual_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      5,
+      5,
+      5
+    ],
+    "depth": [
+      5,
+      5,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "diff_attention",
+      "gated_linear_attention",
+      "graph_attention",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm"
+    ]
+  },
+  {
+    "template": "residual_difference",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      10,
+      8
+    ],
+    "depth": [
+      7,
+      9,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "sub",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "rope_attention_block",
+    "weight": 1.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cos",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "rope_rotate",
+      "semi_structured_2_4_linear",
+      "sin",
+      "softmax_attention",
+      "ternary_projection"
+    ]
+  },
+  {
+    "template": "routed_bottleneck",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      10,
+      8,
+      8
+    ],
+    "depth": [
+      10,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "cheap_verify_blend",
+      "layernorm",
+      "learnable_scale",
+      "linear_proj_down",
+      "linear_proj_up",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "silu",
+      "ternary_projection",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "routing_conditioned_moe",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      6,
+      6,
+      6
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "moe_topk",
+      "rmsnorm",
+      "signal_conditioned_compression",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "rwkv_block",
+    "weight": 1.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      10,
+      7,
+      8
+    ],
+    "depth": [
+      10,
+      7,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "learned_token_gate",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "max_last",
+      "rmsnorm",
+      "rwkv_channel",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "rwkv_double_norm",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "rmsnorm",
+      "rwkv_channel",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "rwkv_sparse_chain",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 1,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      7,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "feature_sparsity",
+      "gelu",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "rwkv_channel",
+      "sin"
+    ]
+  },
+  {
+    "template": "safe_division",
+    "weight": 1.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "div_safe",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "softmax_last"
+    ]
+  },
+  {
+    "template": "sequential",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      11,
+      11,
+      10
+    ],
+    "depth": [
+      11,
+      11,
+      10
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "graph_attention",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "local_window_attn",
+      "rmsnorm",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "sign_ste_gated",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      8,
+      8
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "mul",
+      "rmsnorm",
+      "sigmoid",
+      "sign_ste"
+    ]
+  },
+  {
+    "template": "signal_routed_compression",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      8,
+      6,
+      6
+    ],
+    "depth": [
+      7,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "dual_compression_blend",
+      "layernorm",
+      "linear_attention",
+      "linear_proj",
+      "moe_topk",
+      "rmsnorm",
+      "signal_conditioned_compression",
+      "token_class_proj"
+    ]
+  },
+  {
+    "template": "sparse_ffn",
+    "weight": 2.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 1,
+    "gate_fail": {},
+    "n_ops": [
+      8,
+      9,
+      9
+    ],
+    "depth": [
+      8,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "block_sparse_linear",
+      "gelu",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "neg",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "softmax_last",
+      "strided_attention",
+      "tropical_attention"
+    ]
+  },
+  {
+    "template": "sparse_moe_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      6,
+      6,
+      6
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "abs",
+      "add",
+      "block_sparse_linear",
+      "layernorm",
+      "moe_2expert",
+      "moe_topk",
+      "neg",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "sin"
+    ]
+  },
+  {
+    "template": "sparse_relation_graph_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      19,
+      19,
+      19
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      6,
+      6,
+      6
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "entropy_score",
+      "gather_topk",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_up",
+      "matmul",
+      "mul",
+      "rmsnorm",
+      "route_topk",
+      "sigmoid",
+      "token_type_classifier"
+    ]
+  },
+  {
+    "template": "spiking_moe_block",
+    "weight": 4.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      6,
+      6,
+      6
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "lif_neuron",
+      "linear_proj",
+      "rmsnorm",
+      "tropical_gate"
+    ]
+  },
+  {
+    "template": "spiking_residual_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      6,
+      6
+    ],
+    "depth": [
+      7,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "lif_neuron",
+      "linear_proj",
+      "rmsnorm",
+      "sparse_threshold",
+      "spike_rate_code",
+      "stdp_attention"
+    ]
+  },
+  {
+    "template": "spiking_stdp_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      5,
+      5,
+      5
+    ],
+    "depth": [
+      5,
+      5,
+      5
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "lif_neuron",
+      "rmsnorm",
+      "stdp_attention"
+    ]
+  },
+  {
+    "template": "sqrt_gated_ffn",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      8,
+      8,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "abs",
+      "add",
+      "layernorm",
+      "linear_proj_down",
+      "linear_proj_up",
+      "mul",
+      "rmsnorm",
+      "sigmoid",
+      "sqrt"
+    ]
+  },
+  {
+    "template": "state_space_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp",
+      "topk_gate"
+    ]
+  },
+  {
+    "template": "state_space_retrieval_v2",
+    "weight": 4.25,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      10,
+      10,
+      10
+    ],
+    "slot_usage": [
+      7,
+      7,
+      7
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "matmul",
+      "rmsnorm",
+      "state_space",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "strided_attention_block",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      10,
+      10,
+      10
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "linear_proj",
+      "rmsnorm",
+      "state_space",
+      "strided_attention",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "three_lane_adaptive",
+    "weight": 5.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      4,
+      7,
+      9
+    ],
+    "depth": [
+      4,
+      7,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "difficulty_blend_3way",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "silu",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "three_way_split",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      24,
+      21,
+      23
+    ],
+    "depth": [
+      12,
+      12,
+      12
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "compute_budget_router",
+      "concat",
+      "depth_token_mask",
+      "diff_attention",
+      "gated_lane_blend",
+      "graph_attention",
+      "hybrid_token_gate",
+      "latent_attention_compressor",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "rmsnorm",
+      "semi_structured_2_4_linear",
+      "silu",
+      "sparse_bottleneck_moe",
+      "split3",
+      "square"
+    ]
+  },
+  {
+    "template": "token_merge_block",
+    "weight": 7.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2,
+      "gate3_no_residual": 1
+    },
+    "n_ops": [
+      7,
+      7,
+      8
+    ],
+    "depth": [
+      7,
+      7,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "gelu",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "silu",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "token_merge_conv",
+    "weight": 6.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate3_no_residual": 3
+    },
+    "n_ops": [
+      9,
+      9,
+      9
+    ],
+    "depth": [
+      9,
+      9,
+      9
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "adjacent_token_merge",
+      "conv1d_seq",
+      "gelu",
+      "nm_sparse_linear",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "token_program_interpreter_block",
+    "weight": 4.25,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      20,
+      20,
+      20
+    ],
+    "depth": [
+      14,
+      14,
+      14
+    ],
+    "slot_usage": [
+      7,
+      7,
+      7
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "entropy_score",
+      "gather_topk",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_up",
+      "matmul",
+      "mul",
+      "n_way_sparse_router",
+      "rmsnorm",
+      "sigmoid",
+      "token_merge",
+      "token_type_classifier"
+    ]
+  },
+  {
+    "template": "topk_retrieval",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "cosine_similarity",
+      "gather_topk",
+      "linear_proj",
+      "rmsnorm",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "transformer_block",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 1
+    },
+    "n_ops": [
+      10,
+      10,
+      13
+    ],
+    "depth": [
+      10,
+      10,
+      13
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "associative_memory",
+      "integral_kernel",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "log",
+      "rmsnorm",
+      "rope_rotate",
+      "rwkv_time_mixing",
+      "sum_last",
+      "swiglu_mlp"
+    ]
+  },
+  {
+    "template": "tropical_center_block",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 3,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      7,
+      7,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "tropical_attention",
+      "tropical_center",
+      "tropical_gate"
+    ]
+  },
+  {
+    "template": "tropical_matmul_block",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate6_no_mixing": 3
+    },
+    "n_ops": [
+      8,
+      10,
+      8
+    ],
+    "depth": [
+      7,
+      9,
+      7
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_down",
+      "linear_proj_up",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate",
+      "tropical_matmul"
+    ]
+  },
+  {
+    "template": "tropical_residual",
+    "weight": 2.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 3
+    },
+    "n_ops": [
+      7,
+      7,
+      7
+    ],
+    "depth": [
+      6,
+      6,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj",
+      "rmsnorm",
+      "tropical_add"
+    ]
+  },
+  {
+    "template": "typed_slot_memory_block",
+    "weight": 4.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {},
+    "n_ops": [
+      19,
+      19,
+      19
+    ],
+    "depth": [
+      15,
+      15,
+      15
+    ],
+    "slot_usage": [
+      7,
+      7,
+      7
+    ],
+    "ops_union": [
+      "add",
+      "conv1d_seq",
+      "entropy_score",
+      "gather_topk",
+      "layernorm",
+      "linear_proj",
+      "linear_proj_up",
+      "matmul",
+      "mul",
+      "rmsnorm",
+      "sigmoid",
+      "token_merge",
+      "token_type_classifier"
+    ]
+  },
+  {
+    "template": "ultrametric_attention_block",
+    "weight": 3.5,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 2
+    },
+    "n_ops": [
+      6,
+      8,
+      6
+    ],
+    "depth": [
+      6,
+      8,
+      6
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "layernorm",
+      "linear_proj_down",
+      "linear_proj_up",
+      "moe_2expert",
+      "relu",
+      "rmsnorm",
+      "swiglu_mlp",
+      "topk_gate",
+      "ultrametric_attention"
+    ]
+  },
+  {
+    "template": "windowed_attention",
+    "weight": 3.0,
+    "build_ok": 3,
+    "n_trials": 3,
+    "errors": [],
+    "validator_invalid": 0,
+    "dim_invalid": 0,
+    "template_warn": 0,
+    "gate_fail": {
+      "gate1_min_ops": 1
+    },
+    "n_ops": [
+      7,
+      9,
+      8
+    ],
+    "depth": [
+      7,
+      9,
+      8
+    ],
+    "slot_usage": [
+      0,
+      0,
+      0
+    ],
+    "ops_union": [
+      "add",
+      "gelu",
+      "layernorm",
+      "linear_proj",
+      "log",
+      "rmsnorm",
+      "semi_structured_2_4_linear",
+      "sigmoid",
+      "sliding_window_mask"
+    ]
+  }
+]

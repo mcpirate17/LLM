@@ -170,8 +170,10 @@ def screening_understanding_filter(
     bind_raw = understanding.get("binding_auc")
     hella_raw = understanding.get("hellaswag_acc")
 
-    if diag_raw is None or hella_raw is None or (
-        ar_raw is None and ind_raw is None and bind_raw is None
+    if (
+        diag_raw is None
+        or hella_raw is None
+        or (ar_raw is None and ind_raw is None and bind_raw is None)
     ):
         return True, "no_probe_data"
 

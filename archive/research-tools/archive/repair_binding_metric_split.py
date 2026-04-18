@@ -100,7 +100,9 @@ def main() -> None:
     try:
         before = _count_candidates(nb.conn)
         if args.dry_run:
-            print(json.dumps({"db": db_path, "before": before}, indent=2, sort_keys=True))
+            print(
+                json.dumps({"db": db_path, "before": before}, indent=2, sort_keys=True)
+            )
             return
 
         t0 = time.time()

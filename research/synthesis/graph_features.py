@@ -185,7 +185,9 @@ def _collect_canonical_ops(nodes: Dict[str, dict]) -> List[str]:
     return op_names
 
 
-def _extract_graph_features_python(graph_json: Dict[str, Any]) -> tuple[Dict[str, float], List[str]]:
+def _extract_graph_features_python(
+    graph_json: Dict[str, Any],
+) -> tuple[Dict[str, float], List[str]]:
     nodes = graph_json.get("nodes") or {}
     metadata = graph_json.get("metadata") or {}
 
@@ -251,7 +253,9 @@ def _extract_graph_features_python(graph_json: Dict[str, Any]) -> tuple[Dict[str
     return features, op_names
 
 
-def extract_graph_features_bundle(graph_json: Any) -> tuple[Dict[str, float], List[str]]:
+def extract_graph_features_bundle(
+    graph_json: Any,
+) -> tuple[Dict[str, float], List[str]]:
     if isinstance(graph_json, str):
         try:
             graph_json = loads_json(graph_json)

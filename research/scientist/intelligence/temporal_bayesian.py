@@ -371,6 +371,7 @@ class TemporalBayesianTracker:
 
         try:
             from ..notebook.shared_conn import get_notebook_conn
+
             conn = get_notebook_conn(str(db_path))
         except (sqlite3.Error, OSError) as e:
             logger.error("Failed to connect to DB: %s", e)
@@ -447,7 +448,6 @@ class TemporalBayesianTracker:
                     logger.info("Code-fix resets applied to: %s", resets)
             except Exception as e:
                 logger.warning("Failed to detect code fixes: %s", e)
-
 
         # ── Apply temporal decay ──
         if apply_decay:

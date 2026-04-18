@@ -208,7 +208,11 @@ def _apply_profiling_composition_rule(
         named_set = evidence.get(key)
         if isinstance(named_set, dict) and named_set:
             for op_name, stats in named_set.items():
-                rate = float(stats.get("rate", 0)) if isinstance(stats, dict) else float(stats or 0)
+                rate = (
+                    float(stats.get("rate", 0))
+                    if isinstance(stats, dict)
+                    else float(stats or 0)
+                )
                 if rate >= 0.7:
                     cur = grammar.op_weights.get(op_name, 1.0)
                     grammar.op_weights[op_name] = cur * (1.0 + conf * 0.2 * rate)
@@ -276,8 +280,16 @@ def apply_insight_adjustments(
             if isinstance(comp_rates, dict):
                 res_info = comp_rates.get("residual")
                 seq_info = comp_rates.get("sequential")
-                res_rate = float(res_info.get("rate", 0)) if isinstance(res_info, dict) else 0.0
-                seq_rate = float(seq_info.get("rate", 0)) if isinstance(seq_info, dict) else 0.0
+                res_rate = (
+                    float(res_info.get("rate", 0))
+                    if isinstance(res_info, dict)
+                    else 0.0
+                )
+                seq_rate = (
+                    float(seq_info.get("rate", 0))
+                    if isinstance(seq_info, dict)
+                    else 0.0
+                )
                 if res_rate > seq_rate:
                     grammar.residual_prob = min(
                         0.85, grammar.residual_prob + conf * 0.1
@@ -288,7 +300,11 @@ def apply_insight_adjustments(
             correctors = evidence.get("corrector_ops")
             if isinstance(correctors, dict):
                 for op_name, stats in correctors.items():
-                    rate = float(stats.get("correction_rate", 0)) if isinstance(stats, dict) else 0.0
+                    rate = (
+                        float(stats.get("correction_rate", 0))
+                        if isinstance(stats, dict)
+                        else 0.0
+                    )
                     if rate >= 0.5:
                         cur = grammar.op_weights.get(op_name, 1.0)
                         grammar.op_weights[op_name] = cur * (1.0 + conf * 0.15 * rate)
@@ -360,6 +376,6 @@ def apply_insight_adjustments(
         for motif_name, motif in VALIDATED_MOTIFS.items():
             motif_ops = {step.op_name for step in motif.steps}
             if subject_ops & motif_ops:
-                motif_weights[motif_name] = motif_weights.get(motif_name, motif.lift) * (
-                    1.0 + conf * 0.3
-                )
+                motif_weights[motif_name] = motif_weights.get(
+                    motif_name, motif.lift
+                ) * (1.0 + conf * 0.3)

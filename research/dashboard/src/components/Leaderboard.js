@@ -8,6 +8,7 @@ import { LEADERBOARD_PREFS_KEY, COLUMNS } from './leaderboard/leaderboardConfig'
 import { candidateEligibility, toRetentionPercent } from './leaderboard/leaderboardUtils';
 import LeaderboardRow from './leaderboard/LeaderboardRow';
 import SortIndicator from './shared/SortIndicator';
+import useResizableColumns from './shared/useResizableColumns';
 
 const thStyle = {
   padding: '6px 8px',
@@ -81,13 +82,7 @@ function Leaderboard({
   });
   const [highlightId, setHighlightId] = useState(null);
   const [showColumnPicker, setShowColumnPicker] = useState(false);
-  const [columnWidths, setColumnWidths] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem('aria_leaderboard_col_widths');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  });
-  const resizingRef = useRef(null);
+  const { columnWidths, onResizeStart } = useResizableColumns('aria_leaderboard_col_widths');
   const queuedSet = useMemo(() => new Set(queuedResultIds || []), [queuedResultIds]);
 
   useEffect(() => {
@@ -226,39 +221,6 @@ function Leaderboard({
   useEffect(() => {
     if (highlightId && highlightRef.current) highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, [highlightId, filtered]);
-
-  // Persist column widths
-  useEffect(() => {
-    try {
-      window.localStorage.setItem('aria_leaderboard_col_widths', JSON.stringify(columnWidths));
-    } catch { /* ignore */ }
-  }, [columnWidths]);
-
-  const onResizeStart = useCallback((e, colKey) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const th = e.target.parentElement;
-    const startWidth = th.offsetWidth;
-    resizingRef.current = colKey;
-
-    const onMouseMove = (moveE) => {
-      const diff = moveE.clientX - startX;
-      const newWidth = Math.max(40, startWidth + diff);
-      setColumnWidths(prev => ({ ...prev, [colKey]: newWidth }));
-    };
-    const onMouseUp = () => {
-      resizingRef.current = null;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }, []);
 
   // Derive sort direction label for aria-sort
   const ariaSortAttr = (colKey) => {

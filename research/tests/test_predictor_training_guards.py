@@ -136,8 +136,8 @@ def test_graph_predictor_rank_is_clipped_to_trained_log_bounds():
     )
     original = GraphPredictor._extract_and_normalize
     try:
-        GraphPredictor._extract_and_normalize = (
-            lambda self, _graph: np.array([10.0], dtype=np.float64)
+        GraphPredictor._extract_and_normalize = lambda self, _graph: np.array(
+            [10.0], dtype=np.float64
         )
         pred = model.predict_rank({"graph": "ood"})
     finally:

@@ -282,14 +282,21 @@ class _ContinuousInvestigationMixin:
         # 200 steps) but will never produce the binding/induction scores
         # we're targeting. See the 2026-04-17 diagnosis.
         if getattr(config, "_capability_first_mode", False) and eligible:
-            _RETRIEVAL_OPS = frozenset({
-                "matmul", "gather_topk", "outer_product",
-                "cosine_similarity", "graph_attention",
-                "softmax_attention", "diff_attention",
-                "latent_attention_compressor",
-                "linear_attention", "gated_linear_attention",
-                "associative_memory",
-            })
+            _RETRIEVAL_OPS = frozenset(
+                {
+                    "matmul",
+                    "gather_topk",
+                    "outer_product",
+                    "cosine_similarity",
+                    "graph_attention",
+                    "softmax_attention",
+                    "diff_attention",
+                    "latent_attention_compressor",
+                    "linear_attention",
+                    "gated_linear_attention",
+                    "associative_memory",
+                }
+            )
             before_capfirst = len(eligible)
             capfirst_eligible = []
             for e in eligible:
@@ -315,7 +322,8 @@ class _ContinuousInvestigationMixin:
                 eligible = capfirst_eligible
                 logger.info(
                     "Pre-inv gate: capability-first filter kept %d/%d candidates with retrieval ops",
-                    len(eligible), before_capfirst,
+                    len(eligible),
+                    before_capfirst,
                 )
             else:
                 logger.warning(

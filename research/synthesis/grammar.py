@@ -427,7 +427,7 @@ class GrammarConfig:
                 "elementwise_binary": 1.5,
                 "reduction": 0.5,
                 "linear_algebra": 2.5,  # matmul, outer_product, cosine_similarity
-                "structural": 2.0,      # gather_topk lives here
+                "structural": 2.0,  # gather_topk lives here
                 "parameterized": 2.5,
                 "mixing": 2.0,
                 "sequence": 1.0,
@@ -702,11 +702,7 @@ def generate_layer_graph(
         # to DEFAULT_TEMPLATE_WEIGHTS for any key not present in the passed
         # dict, so a drop-based filter gets silently re-expanded to the full
         # registry. An explicit zero weight does stick.
-        if (
-            config.routing_mandatory
-            and t_idx == 0
-            and not config.forced_template
-        ):
+        if config.routing_mandatory and t_idx == 0 and not config.forced_template:
             from .templates import TEMPLATES as _ALL_TEMPLATES
 
             _routing_tpls = _get_routing_capable_templates()
@@ -879,9 +875,8 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
 
     # Routing-mandatory check: every graph must have routing, compression, or MoE.
     # Skipped when forced_template is set or exploration budget selected the template.
-    _skip_routing_check = (
-        config.forced_template
-        or graph.metadata.get("_template_exploration_used")
+    _skip_routing_check = config.forced_template or graph.metadata.get(
+        "_template_exploration_used"
     )
     if config.routing_mandatory and not _skip_routing_check:
         op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
@@ -1154,9 +1149,7 @@ def batch_generate(
             composition_depth=max(1, config.composition_depth - 1),
             max_ops=config.max_ops + 6,
             max_depth=config.max_depth + 6,
-            template_exploration_budget=max(
-                config.template_exploration_budget, 0.25
-            ),
+            template_exploration_budget=max(config.template_exploration_budget, 0.25),
             forced_template=None,  # clear forced template on recovery
         )
         logger.info(

@@ -3,6 +3,7 @@ import { formatTime, scoreColor } from '../utils/format';
 import useCopyToClipboard from '../hooks/useCopyToClipboard';
 import { SortableHeader, TableFilterInput } from './shared/DataTableControls';
 import useInteractiveTable from './shared/useInteractiveTable';
+import { hypothesisProvenanceLabel } from '../utils/hypothesisProvenance';
 
 const TYPE_ORDER = {
   insight: 6,
@@ -31,16 +32,6 @@ const CRITIQUE_VERDICT_STYLES = {
   caution: { color: 'var(--accent-yellow)', label: 'Caution', icon: '\u26A0' },
   revise: { color: 'var(--accent-red)', label: 'Revise', icon: '\u2718' },
 };
-
-function hypothesisProvenanceLabel(source) {
-  if (source === 'llm_context') return 'LLM + Context';
-  if (source === 'structured_hypothesis') return 'LLM Structured';
-  if (source === 'rule_based_fallback') return 'Rule Fallback';
-  if (source === 'rule_based') return 'Rule-Based';
-  if (source === 'user_input') return 'User Input';
-  if (source === 'runner_template') return 'Runner Template';
-  return null;
-}
 
 function hypothesisConfidence(metadata) {
   if (metadata?.confidence != null) return metadata.confidence;

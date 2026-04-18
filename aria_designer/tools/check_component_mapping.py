@@ -19,7 +19,6 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT.parent
 COMPONENTS_ROOT = ROOT / "components"
 MAPPING_FILE = ROOT / "runtime" / "component_mapping.yaml"
 

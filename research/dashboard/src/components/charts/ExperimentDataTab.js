@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { formatTime, formatDuration, scoreColor } from '../../utils/format';
 import { lossColor, noveltyColor } from '../../utils/colors';
 import { trendScore, trendScoreBreakdown } from '../../utils/scoringEngine';
+import { metricText } from '../../utils/metricText';
 import useCopyToClipboard from '../../hooks/useCopyToClipboard';
 import apiService from '../../services/apiService';
 import useInteractiveTable from '../shared/useInteractiveTable';
@@ -52,11 +53,6 @@ const DATA_COLUMNS = [
 function hasGaps(d) {
   if (d.status === 'running') return false;
   return d.best_loss_ratio == null || d.best_novelty_score == null;
-}
-
-function metricText(value, fallbackReason, formatter) {
-  if (value == null) return fallbackReason;
-  return formatter(value);
 }
 
 export function ExperimentDataTab({ onSelectExperiment, onRerunExperiment, onFillGapsExperiment, onStartExperiment }) {

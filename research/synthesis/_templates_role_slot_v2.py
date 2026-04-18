@@ -84,9 +84,7 @@ def _retrieval_sidecar(
     # --- Global retrieval: bilinear self-relation via matmul(q, q) --------
     # Matches induction_matmul_block — the runtime treats matmul(x, x)
     # as a shape-preserving bilinear when x is (B, S, D).
-    scores = _add(
-        graph, "matmul", [query, query], context=f"{context}.retrieve.scores"
-    )
+    scores = _add(graph, "matmul", [query, query], context=f"{context}.retrieve.scores")
     record_role_slot_binding(
         graph,
         role_name="global_retrieval",
@@ -246,9 +244,7 @@ def tpl_state_space_retrieval_v2(
         input_node_id=projected,
     )
 
-    retrieved = _retrieval_sidecar(
-        graph, processed, context="state_space_retrieval_v2"
-    )
+    retrieved = _retrieval_sidecar(graph, processed, context="state_space_retrieval_v2")
 
     merged = _add(
         graph,
@@ -262,9 +258,7 @@ def tpl_state_space_retrieval_v2(
         selected_name="identity_stabilizer_v2",
         input_node_id=merged,
     )
-    return _residual(
-        graph, input_id, merged, context="state_space_retrieval_v2.output"
-    )
+    return _residual(graph, input_id, merged, context="state_space_retrieval_v2.output")
 
 
 def tpl_latent_attn_retrieval_v2(
@@ -284,9 +278,7 @@ def tpl_latent_attn_retrieval_v2(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    attn = _pick_compatible_motif(
-        graph, normed, rng, MOTIF_CLASS_ATTENTION, weights
-    )
+    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
     if attn is None:
         # Guaranteed fallback path — latent_attention_compressor is the strongest.
         attended = _add(
@@ -314,9 +306,7 @@ def tpl_latent_attn_retrieval_v2(
         input_node_id=attended,
     )
 
-    retrieved = _retrieval_sidecar(
-        graph, processed, context="latent_attn_retrieval_v2"
-    )
+    retrieved = _retrieval_sidecar(graph, processed, context="latent_attn_retrieval_v2")
 
     merged = _add(
         graph,
@@ -330,6 +320,4 @@ def tpl_latent_attn_retrieval_v2(
         selected_name="identity_stabilizer_v2",
         input_node_id=merged,
     )
-    return _residual(
-        graph, input_id, merged, context="latent_attn_retrieval_v2.output"
-    )
+    return _residual(graph, input_id, merged, context="latent_attn_retrieval_v2.output")

@@ -177,4 +177,6 @@ def test_attn_bottleneck_hybrid_validates():
         if not result.valid:
             failures.append((seed, result.errors[:3]))
 
-    assert not failures, f"attn_bottleneck_hybrid: {len(failures)}/25 failed: {failures}"
+    assert not failures, (
+        f"attn_bottleneck_hybrid: {len(failures)}/25 failed: {failures}"
+    )

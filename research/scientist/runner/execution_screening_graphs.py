@@ -144,40 +144,59 @@ def analyze_graph_for_screening(
 #   SEQUENCE_MIXING_OPS: Any cross-position information flow (attention +
 #       SSM + conv + accumulation). Required to pass screening.
 
-CONTENT_ADDRESSED_OPS: FrozenSet[str] = frozenset({
-    "softmax_attention", "latent_attention_compressor", "graph_attention",
-    "local_window_attn", "linear_attention", "diff_attention",
-    "tropical_attention", "ultrametric_attention", "stdp_attention",
-    "clifford_attention",
-    # Bilinear / retrieval-family ops that, when wired into a query-key-value
-    # style path, enable exact content-addressed retrieval. Not every use of
-    # these ops is retrieval-capable; gate8 treats their presence as a
-    # necessary (not sufficient) condition and the deeper binding probe does
-    # the final check.
-    "matmul",
-    "outer_product",
-    "gather_topk",
-    "cosine_similarity",
-    # New attention-class ops (2026-04-15)
-    "difficulty_routed_attention", "strided_attention",
-    "gated_progressive_attention", "gated_linear_attention",
-    "associative_memory",
-})
+CONTENT_ADDRESSED_OPS: FrozenSet[str] = frozenset(
+    {
+        "softmax_attention",
+        "latent_attention_compressor",
+        "graph_attention",
+        "local_window_attn",
+        "linear_attention",
+        "diff_attention",
+        "tropical_attention",
+        "ultrametric_attention",
+        "stdp_attention",
+        "clifford_attention",
+        # Bilinear / retrieval-family ops that, when wired into a query-key-value
+        # style path, enable exact content-addressed retrieval. Not every use of
+        # these ops is retrieval-capable; gate8 treats their presence as a
+        # necessary (not sufficient) condition and the deeper binding probe does
+        # the final check.
+        "matmul",
+        "outer_product",
+        "gather_topk",
+        "cosine_similarity",
+        # New attention-class ops (2026-04-15)
+        "difficulty_routed_attention",
+        "strided_attention",
+        "gated_progressive_attention",
+        "gated_linear_attention",
+        "associative_memory",
+    }
+)
 
-SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset({
-    # SSM / recurrent (long-range but lossy)
-    "state_space", "selective_scan", "rwkv_channel", "rwkv_time_mixing",
-    # Convolution (local mixing only)
-    "conv1d_seq",
-    # Accumulation (proto-attention)
-    "cumsum", "cumprod_safe",
-    # Token interaction (local)
-    "token_merge", "adjacent_token_merge",
-    "sliding_window_mask", "causal_mix",
-    # New mixing ops (2026-04-15) — long_conv_hyena and mixture_of_recursions
-    # are SSM-class (long-range mixing without content addressing)
-    "long_conv_hyena", "mixture_of_recursions",
-})
+SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset(
+    {
+        # SSM / recurrent (long-range but lossy)
+        "state_space",
+        "selective_scan",
+        "rwkv_channel",
+        "rwkv_time_mixing",
+        # Convolution (local mixing only)
+        "conv1d_seq",
+        # Accumulation (proto-attention)
+        "cumsum",
+        "cumprod_safe",
+        # Token interaction (local)
+        "token_merge",
+        "adjacent_token_merge",
+        "sliding_window_mask",
+        "causal_mix",
+        # New mixing ops (2026-04-15) — long_conv_hyena and mixture_of_recursions
+        # are SSM-class (long-range mixing without content addressing)
+        "long_conv_hyena",
+        "mixture_of_recursions",
+    }
+)
 
 
 def structural_gate_failure(
@@ -217,9 +236,7 @@ def structural_gate_failure(
     # score zero on binding/induction probes and waste investigation compute.
     # Keeping this gate opt-in preserves backward compatibility for presets
     # that deliberately explore retrieval-free trunks (e.g. exploration).
-    if binding_capable_required and not (
-        analysis.op_names & CONTENT_ADDRESSED_OPS
-    ):
+    if binding_capable_required and not (analysis.op_names & CONTENT_ADDRESSED_OPS):
         return "gate8_retrieval_dead"
     return None
 

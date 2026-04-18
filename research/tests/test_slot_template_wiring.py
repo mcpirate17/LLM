@@ -644,4 +644,6 @@ def test_slot_rule_summary_exports_current_template_constraints():
     rules = {row["slot_key"]: row for row in get_slot_rule_summary()}
 
     assert set(rules) == {"depth_token_mask_block.slot1"}
-    assert "route_lanes_block" in rules["depth_token_mask_block.slot1"]["blocked_motifs"]
+    assert (
+        "route_lanes_block" in rules["depth_token_mask_block.slot1"]["blocked_motifs"]
+    )

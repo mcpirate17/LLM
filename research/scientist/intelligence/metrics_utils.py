@@ -58,7 +58,11 @@ def expected_calibration_error(
     bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
     ece = 0.0
     for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
-        mask = (y_score > lo) & (y_score <= hi) if lo > 0 else (y_score >= lo) & (y_score <= hi)
+        mask = (
+            (y_score > lo) & (y_score <= hi)
+            if lo > 0
+            else (y_score >= lo) & (y_score <= hi)
+        )
         if mask.sum() == 0:
             continue
         bin_frac = mask.sum() / len(y_true)

@@ -21,10 +21,14 @@ def main() -> int:
     parser.add_argument("--md-out", default="docs/component_property_audit.md")
     args = parser.parse_args()
 
-    root = Path(args.components_root).resolve()
+    root = Path(args.components_root)
+    if not root.is_absolute():
+        root = (REPO_ROOT / root).resolve()
     report = audit_components(root)
 
     json_path = Path(args.json_out)
+    if not json_path.is_absolute():
+        json_path = REPO_ROOT / json_path
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
@@ -52,8 +56,12 @@ def main() -> int:
             )
         md_lines.append("")
 
-    Path(args.md_out).write_text("\n".join(md_lines), encoding="utf-8")
-    print(f"Wrote {json_path} and {args.md_out}")
+    md_path = Path(args.md_out)
+    if not md_path.is_absolute():
+        md_path = REPO_ROOT / md_path
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text("\n".join(md_lines), encoding="utf-8")
+    print(f"Wrote {json_path} and {md_path}")
     return 0
 
 

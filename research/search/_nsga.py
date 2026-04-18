@@ -24,7 +24,10 @@ def fast_non_dominated_sort(
     attr_names = [name for name, _ in objectives]
     vals = (
         np.array(
-            [[getattr(ind, attr_name) for attr_name in attr_names] for ind in population],
+            [
+                [getattr(ind, attr_name) for attr_name in attr_names]
+                for ind in population
+            ],
             dtype=np.float32,
         )
         * signs

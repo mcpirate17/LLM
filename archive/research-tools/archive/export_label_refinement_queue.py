@@ -77,7 +77,9 @@ def _load_triage_rows(db_path: Path) -> List[Dict[str, Any]]:
     for row in rows:
         graph_raw = row["graph_json"]
         try:
-            graph_json = json.loads(graph_raw) if isinstance(graph_raw, str) else graph_raw
+            graph_json = (
+                json.loads(graph_raw) if isinstance(graph_raw, str) else graph_raw
+            )
         except (json.JSONDecodeError, TypeError):
             continue
         signature = _graph_signature(graph_json)

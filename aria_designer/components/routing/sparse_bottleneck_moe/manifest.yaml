@@ -25,10 +25,10 @@ outputs:
   - D
 params:
   n_ways:
-    type: int
+    type: integer
     default: 4
   top_k:
-    type: int
+    type: integer
     default: 2
 implementation:
   native: null

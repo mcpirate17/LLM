@@ -64,7 +64,9 @@ def judgment_rerank(
         signals["failure_risk_signatures"] = risk.get("failure_risk_signatures", [])
         signals["critical_failures"] = risk.get("critical_failures", [])
     except Exception as exc:
-        log.debug("judgment_rerank: signals fetch failed (%s), using original order", exc)
+        log.debug(
+            "judgment_rerank: signals fetch failed (%s), using original order", exc
+        )
         return [(graph, 0.5) for graph in graphs]
 
     bucket_names = {
