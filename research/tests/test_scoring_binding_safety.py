@@ -711,3 +711,165 @@ class TestARBackfillSafety:
             assert without["breakdown"].get(key, 0) == pytest.approx(
                 with_ar["breakdown"].get(key, 0), abs=0.001
             ), f"Component {key} changed when it shouldn't have"
+
+
+# -----------------------------------------------------------------------
+# 10. v2 investigation probes — fallback behavior (2026-04-18)
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestV2InvestigationFallback:
+    """v2 probes replace v1 in the binding composite when present; when
+    None (pre-backfill rows) scoring falls back to v1. This guards the
+    staged rollout where Phase 3 merges before Phase 4 backfill completes
+    for some rows."""
+
+    def test_v2_none_is_identical_to_v1_only(self):
+        """Row without v2 values scores identically with or without the kwarg."""
+        v1_only = compute_composite_v8(
+            decompose=True, **_investigated_kwargs(induction_auc=0.20, binding_auc=0.25)
+        )
+        with_none_v2 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(
+                induction_auc=0.20,
+                binding_auc=0.25,
+                induction_v2_inv_auc=None,
+                binding_v2_inv_auc=None,
+            ),
+        )
+        assert with_none_v2["composite_score"] == pytest.approx(
+            v1_only["composite_score"], abs=0.001
+        )
+        assert with_none_v2["breakdown"]["binding"] == pytest.approx(
+            v1_only["breakdown"]["binding"], abs=0.001
+        )
+
+    def test_v2_overrides_v1_when_present(self):
+        """v2 value should be used even when v1 is also provided."""
+        low_v1 = _investigated_kwargs(induction_auc=0.02, binding_auc=0.02)
+        low_both = compute_composite_v8(decompose=True, **low_v1)
+        with_good_v2 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(
+                induction_auc=0.02,
+                binding_auc=0.02,
+                induction_v2_inv_auc=0.80,
+                binding_v2_inv_auc=0.85,
+            ),
+        )
+        assert with_good_v2["breakdown"]["binding"] > low_both["breakdown"]["binding"]
+
+    def test_v2_dominates_even_when_v1_is_good(self):
+        """Low v2 replaces high v1 — catches the case where the old screening
+        probe over-estimated capability and v2 reveals the truth."""
+        high_v1 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(induction_auc=0.80, binding_auc=0.85),
+        )
+        high_v1_low_v2 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(
+                induction_auc=0.80,
+                binding_auc=0.85,
+                induction_v2_inv_auc=0.02,
+                binding_v2_inv_auc=0.02,
+            ),
+        )
+        assert high_v1_low_v2["breakdown"]["binding"] < high_v1["breakdown"]["binding"]
+
+    def test_v2_induction_only_falls_back_for_binding(self):
+        """Partial v2 availability: v2 induction present, v2 binding missing.
+        Induction half uses v2, binding half falls back to v1."""
+        kw = _investigated_kwargs(
+            induction_auc=0.02,  # low v1
+            binding_auc=0.50,  # high v1
+            induction_v2_inv_auc=0.95,  # high v2 — should dominate
+            binding_v2_inv_auc=None,  # missing v2 — fall back to v1
+        )
+        result = compute_composite_v8(decompose=True, **kw)
+        all_low_v1 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(induction_auc=0.02, binding_auc=0.02, ar_auc=0.02),
+        )
+        # Binding component should exceed the all-low-v1 baseline because
+        # one of (induction, binding) got an excellent v2 override and the
+        # other fell back to a v1 of 0.50.
+        assert result["breakdown"]["binding"] > all_low_v1["breakdown"]["binding"]
+
+    def test_v2_fallback_does_not_affect_non_binding_components(self):
+        """Toggling v2 kwargs should only move the binding subscore,
+        not perplexity / novelty / robustness / understanding / etc."""
+        without_v2 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(induction_auc=0.10, binding_auc=0.10),
+        )
+        with_v2 = compute_composite_v8(
+            decompose=True,
+            **_investigated_kwargs(
+                induction_auc=0.10,
+                binding_auc=0.10,
+                induction_v2_inv_auc=0.90,
+                binding_v2_inv_auc=0.95,
+            ),
+        )
+        for key in [
+            "perf_short",
+            "perf_medium",
+            "param_efficiency",
+            "learning_efficiency",
+            "novelty",
+            "ncd",
+            "robustness",
+            "long_context",
+            "understanding",
+        ]:
+            assert without_v2["breakdown"].get(key, 0) == pytest.approx(
+                with_v2["breakdown"].get(key, 0), abs=0.001
+            ), f"Component {key} changed when only v2 binding toggled"
+
+    def test_v2_removes_local_only_penalty(self):
+        """An architecture with v1 binding below the soft gate but v2
+        binding above it should not get the local-only penalty."""
+        low_v1 = _investigated_kwargs(ar_auc=0.01, induction_auc=0.01, binding_auc=0.01)
+        low_v1_result = compute_composite_v8(decompose=True, **low_v1)
+        low_v1_good_v2 = _investigated_kwargs(
+            ar_auc=0.01,  # ar stays v1; v2 has no AR slot
+            induction_auc=0.01,
+            binding_auc=0.01,
+            induction_v2_inv_auc=0.85,
+            binding_v2_inv_auc=0.85,
+        )
+        rescued = compute_composite_v8(decompose=True, **low_v1_good_v2)
+        # Penalty multiplier reflected in binding_penalty breakdown
+        assert rescued["composite_score"] > low_v1_result["composite_score"]
+
+    def test_pr_dict_extracts_v2_columns(self):
+        """_pr_dict_to_score_kwargs pulls the v2 columns out of a pr_dict."""
+        pr_dict = {
+            "induction_v2_investigation_auc": 0.82,
+            "binding_v2_investigation_auc": 0.77,
+            "induction_auc": 0.10,
+            "binding_auc": 0.10,
+        }
+        kw = _pr_dict_to_score_kwargs(
+            pr_dict, d={"tier": "investigation"}, is_reference=False
+        )
+        assert kw["induction_v2_inv_auc"] == 0.82
+        assert kw["binding_v2_inv_auc"] == 0.77
+        # v1 still plumbed through (composite will prefer v2)
+        assert kw["induction_auc"] == 0.10
+        assert kw["binding_auc"] == 0.10
+
+    def test_pr_dict_v2_missing_gives_none(self):
+        """Pre-backfill row: no v2 column → kwarg is None, not raised."""
+        pr_dict = {
+            "induction_auc": 0.15,
+            "binding_auc": 0.20,
+        }
+        kw = _pr_dict_to_score_kwargs(
+            pr_dict, d={"tier": "investigation"}, is_reference=False
+        )
+        assert kw["induction_v2_inv_auc"] is None
+        assert kw["binding_v2_inv_auc"] is None

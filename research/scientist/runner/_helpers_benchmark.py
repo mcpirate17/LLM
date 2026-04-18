@@ -1,0 +1,1162 @@
+"""Runner helpers — split from _helpers. Re-exported via _helpers."""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import queue
+import time
+from pathlib import Path
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Dict, List, Optional
+
+from ..thresholds import TIER_RANK
+
+logger = logging.getLogger(__name__)
+_REFERENCE_TRAJECTORY_PATH = Path("research/eval/reference_trajectories.json")
+_ROUTING_FAST_LANE_OPS: frozenset[str] = frozenset(
+    {
+        "moe_topk",
+        "hetero_moe",
+        "arch_router",
+        "compute_budget_router",
+        "signal_conditioned_compression",
+    }
+)
+_ROUTING_OBSERVED_OPS: frozenset[str] = frozenset(
+    set(_ROUTING_FAST_LANE_OPS)
+    | {
+        "hybrid_token_gate",
+        "hybrid_sparse_router",
+        "sparse_span_builder",
+        "adjacent_token_merge",
+        "cheap_verify_blend",
+        "adaptive_lane_mixer",
+        "route_lanes",
+        "block_sparse_linear",
+        "semi_structured_2_4_linear",
+        "adaptive_recursion",
+        "route_recursion",
+        "moe_2expert",
+        "token_class_proj",
+    }
+)
+
+
+def _build_benchmark_model(
+    *,
+    config,
+    dev,
+    model_source: str,
+    arch_spec_json_str: str | None,
+    graph_json_str: str | None,
+    cached_json_load,
+) -> Any:
+    """Build a model for benchmark evaluation (shared across benchmarks)."""
+    if model_source == "morphological_box" and arch_spec_json_str:
+        from ...morphological_box import ArchSpec
+        from ...arch_builder import BuildConfig, build_model
+
+        spec = ArchSpec(**cached_json_load(arch_spec_json_str))
+        build_cfg = BuildConfig(
+            dim=config.model_dim,
+            n_layers=config.n_layers,
+            vocab_size=config.vocab_size,
+            max_seq_len=config.max_seq_len,
+        )
+        return build_model(spec, build_cfg).to(dev)
+    elif graph_json_str:
+        from ..native_runner import compile_model_native_first as compile_model
+        from ...synthesis.serializer import graph_from_json
+
+        return compile_model(
+            [graph_from_json(graph_json_str)] * config.n_layers,
+            vocab_size=config.vocab_size,
+            max_seq_len=config.max_seq_len,
+        ).to(dev)
+    return None
+
+
+def _evaluate_investigation_benchmarks(
+    *,
+    config,
+    dev,
+    model_source: str,
+    arch_spec_json_str: str | None,
+    graph_json_str: str | None,
+    cached_json_load,
+) -> Dict[str, Any]:
+    """Run lightweight benchmark evals for investigation survivors.
+
+    Compiles the model once and runs both WikiText and TinyStories evals
+    on the same instance to avoid redundant compilation.
+    """
+    result: Dict[str, Any] = {
+        "inv_wikitext_ppl": None,
+        "inv_wikitext_score": None,
+        "inv_tinystories_ppl": None,
+        "inv_tinystories_score": None,
+    }
+
+    try:
+        model = _build_benchmark_model(
+            config=config,
+            dev=dev,
+            model_source=model_source,
+            arch_spec_json_str=arch_spec_json_str,
+            graph_json_str=graph_json_str,
+            cached_json_load=cached_json_load,
+        )
+    except (ImportError, RuntimeError, ValueError, TypeError) as exc:
+        logger.debug("Benchmark model build failed: %s", exc)
+        return result
+
+    if model is None:
+        return result
+
+    eval_seq_len = min(128, config.max_seq_len)
+
+    try:
+        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
+
+        wt_result = evaluate_wikitext_trajectory(
+            model,
+            config.vocab_size,
+            dev,
+            checkpoints=(100, 500, 1000),
+            seq_len=eval_seq_len,
+        )
+        ckpts = wt_result.get("checkpoints") or {}
+        ckpt_100 = ckpts.get(100) or ckpts.get("100") or {}
+        ckpt_500 = ckpts.get(500) or ckpts.get("500") or {}
+        ckpt_1000 = ckpts.get(1000) or ckpts.get("1000") or {}
+        ppl_100 = ckpt_100.get("ppl")
+        ppl_500 = ckpt_500.get("ppl")
+        ppl_1000 = ckpt_1000.get("ppl")
+        improvement_ratio = wt_result.get("improvement_ratio")
+        result["wikitext_ppl_200"] = ppl_100  # legacy column, now stores @100
+        result["wikitext_ppl_500"] = ppl_500
+        result["wikitext_improvement_ratio"] = improvement_ratio
+        result["wikitext_eval_steps"] = 1000 if ppl_1000 else 500
+        result["eval_budget_steps"] = 1000 if ppl_1000 else 500
+        # Use ppl@1000 as the screening perplexity (matches v7 anchor)
+        result["wikitext_perplexity"] = ppl_1000 or ppl_500 or ppl_100
+        result["evaluation_stage"] = "PROBED"
+        result["capability_tier"] = _trajectory_probe_capability_tier(
+            ppl_1000 or ppl_500,
+            improvement_ratio,
+            float(
+                getattr(config, "improvement_ratio_escalation_threshold", 2.0) or 2.0
+            ),
+        )
+        result["inv_wikitext_ppl"] = (
+            wt_result.get("peak_ppl") or ppl_1000 or ppl_500 or ppl_100
+        )
+        result["inv_wikitext_score"] = (
+            ckpt_1000.get("score")
+            if ckpt_1000.get("score") is not None
+            else ckpt_500.get("score")
+            if ckpt_500.get("score") is not None
+            else ckpt_100.get("score")
+        )
+        result["wikitext_trajectory_payload"] = wt_result
+        if result["inv_wikitext_ppl"] is not None:
+            logger.info(
+                "Investigation WikiText-103 probe ppl100=%s ppl500=%s ppl1000=%s ratio=%s tier=%s",
+                f"{ppl_100:.1f}" if isinstance(ppl_100, (int, float)) else "n/a",
+                f"{ppl_500:.1f}" if isinstance(ppl_500, (int, float)) else "n/a",
+                f"{ppl_1000:.1f}" if isinstance(ppl_1000, (int, float)) else "n/a",
+                f"{improvement_ratio:.2f}"
+                if isinstance(improvement_ratio, (int, float))
+                else "n/a",
+                result["capability_tier"],
+            )
+    except (ImportError, RuntimeError, ValueError) as exc:
+        logger.debug("Investigation WikiText eval skipped: %s", exc)
+
+    try:
+        from ...eval.tinystories_eval import evaluate_tinystories
+
+        ts_result = evaluate_tinystories(
+            model,
+            config.vocab_size,
+            dev,
+            n_train_steps=200,
+            seq_len=eval_seq_len,
+        )
+        result["inv_tinystories_ppl"] = ts_result.get("tinystories_perplexity")
+        result["inv_tinystories_score"] = ts_result.get("tinystories_score")
+        if result["inv_tinystories_ppl"] is not None:
+            logger.info(
+                "Investigation TinyStories ppl=%.1f score=%.3f",
+                result["inv_tinystories_ppl"],
+                result["inv_tinystories_score"] or 0,
+            )
+    except (ImportError, RuntimeError, ValueError) as exc:
+        logger.debug("Investigation TinyStories eval skipped: %s", exc)
+
+    try:
+        from ...eval.hellaswag_eval import evaluate_hellaswag
+
+        hs_result = evaluate_hellaswag(
+            model,
+            config.vocab_size,
+            dev,
+            n_examples=100,
+        )
+        result["hellaswag_acc"] = hs_result.get("hellaswag_acc")
+        result["hellaswag_status"] = hs_result.get("hellaswag_status")
+        if result["hellaswag_acc"] is not None:
+            logger.info(
+                "Investigation HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
+                result["hellaswag_acc"] * 100,
+                hs_result.get("hellaswag_correct", 0),
+                hs_result.get("hellaswag_total", 0),
+                hs_result.get("elapsed_ms", 0),
+            )
+    except (ImportError, RuntimeError, ValueError) as exc:
+        logger.debug("Investigation HellaSwag eval skipped: %s", exc)
+
+    # BLiMP linguistic minimal pairs (investigation: 50 per subtask)
+    try:
+        from ...eval.blimp_eval import evaluate_blimp
+
+        blimp = evaluate_blimp(model, config.vocab_size, dev, n_per_subtask=50)
+        result["blimp_overall_accuracy"] = blimp.overall_accuracy
+        result["blimp_subtask_accuracies_json"] = json.dumps(blimp.subtask_accuracies)
+        result["blimp_n_subtasks"] = blimp.n_subtasks
+        result["blimp_status"] = blimp.status
+        if blimp.overall_accuracy > 0:
+            logger.info(
+                "Investigation BLiMP acc=%.1f%% (%d subtasks, %d examples, %.0fms)",
+                blimp.overall_accuracy * 100,
+                blimp.n_subtasks,
+                blimp.n_examples,
+                blimp.elapsed_ms,
+            )
+    except (ImportError, RuntimeError, ValueError) as exc:
+        logger.debug("Investigation BLiMP eval skipped: %s", exc)
+
+    # Binding probes: AR + induction + binding range (full suite at investigation)
+    try:
+        from ...eval.binding_pipeline import (
+            compute_binding_composite,
+            compute_local_only,
+            run_full_binding_probes,
+        )
+
+        probe = run_full_binding_probes(model, device=dev)
+        result.update(probe.to_result_dict())
+        bc = compute_binding_composite(
+            probe.ar_auc, probe.induction_auc, probe.binding_auc
+        )
+        result["binding_composite"] = bc
+        result["local_only"] = compute_local_only(
+            probe.ar_auc, probe.induction_auc, probe.binding_auc
+        )
+
+        logger.info(
+            "Investigation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local_only=%s "
+            "(%.0f+%.0f+%.0fms)",
+            probe.ar_auc,
+            probe.induction_auc,
+            probe.binding_auc,
+            bc,
+            bool(result["local_only"]),
+            probe.ar_elapsed_ms,
+            probe.induction_elapsed_ms,
+            probe.binding_elapsed_ms,
+        )
+
+        # Discovery: high AR without standard attention is a priority find
+        _attn_ops = {
+            "softmax_attention",
+            "linear_attention",
+            "diff_attention",
+            "graph_attention",
+            "local_window_attention",
+        }
+        _graph_str = graph_json_str or ""
+        _has_attn = any(op in _graph_str for op in _attn_ops)
+        if probe.ar_auc > 0.15 and not _has_attn:
+            logger.warning(
+                "DISCOVERY: High AR score without full attention — "
+                "ar_auc=%.3f, model_source=%s, graph=%s",
+                probe.ar_auc,
+                model_source,
+                _graph_str[:200],
+            )
+    except (ImportError, RuntimeError, ValueError) as exc:
+        logger.debug("Investigation binding probes skipped: %s", exc)
+
+    del model
+    return result
+
+
+# Single-threaded pool for background benchmark evals — avoids blocking the
+# investigation loop while still serialising GPU work.
+_benchmark_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bench")
+
+
+def _submit_benchmark_eval(
+    *,
+    nb,
+    exp_id: str,
+    source_result_id: str,
+    source: Dict[str, Any],
+    model_source: str,
+    graph_json_str: str | None,
+    arch_spec_json_str: str | None,
+    n_passed: int,
+    best_lr: Any,
+    best_tp_json: str | None,
+    robustness: float,
+    investigation_passed: bool,
+    config,
+    dev,
+    cached_json_load,
+    fingerprint_incomplete: bool = False,
+) -> Future:
+    """Submit benchmark evals + result recording to a background thread.
+
+    The investigation loop can continue to the next candidate immediately
+    instead of blocking on 400 training steps per benchmark.
+
+    Creates a fresh LabNotebook connection in the background thread because
+    SQLite connections cannot be shared across threads (check_same_thread).
+    """
+    db_path = str(nb.db_path)
+
+    def _run() -> None:
+        benchmark_result = _evaluate_investigation_benchmarks(
+            config=config,
+            dev=dev,
+            model_source=model_source,
+            arch_spec_json_str=arch_spec_json_str,
+            graph_json_str=graph_json_str,
+            cached_json_load=cached_json_load,
+        )
+        # Create a thread-local notebook for DB writes
+        from ..notebook import LabNotebook
+
+        thread_nb = LabNotebook(db_path)
+        try:
+            _record_investigation_result(
+                nb=thread_nb,
+                exp_id=exp_id,
+                source_result_id=source_result_id,
+                source=source,
+                model_source=model_source,
+                graph_json_str=graph_json_str,
+                arch_spec_json_str=arch_spec_json_str,
+                n_passed=n_passed,
+                best_lr=best_lr,
+                best_tp_json=best_tp_json,
+                robustness=robustness,
+                investigation_passed=investigation_passed,
+                benchmark_result=benchmark_result,
+                fingerprint_incomplete=fingerprint_incomplete,
+            )
+            thread_nb.flush_writes()
+        finally:
+            thread_nb.close()
+
+    return _benchmark_pool.submit(_run)
+
+
+def _safe_tier(nb, result_id: str, proposed: str) -> str:
+    """Return the higher of existing tier and proposed tier to prevent downgrades."""
+    try:
+        row = nb.conn.execute(
+            "SELECT tier FROM leaderboard WHERE result_id = ?", (result_id,)
+        ).fetchone()
+        if row:
+            existing = str(row["tier"] or "screening")
+            if TIER_RANK.get(existing, 0) > TIER_RANK.get(proposed, 0):
+                return existing
+    except (OSError, RuntimeError) as e:
+        logger.debug("_safe_tier lookup failed: %s", e)
+    return proposed
+
+
+def _record_investigation_result(
+    *,
+    nb,
+    exp_id: str,
+    source_result_id: str,
+    source: Dict[str, Any],
+    model_source: str,
+    graph_json_str: str | None,
+    arch_spec_json_str: str | None,
+    n_passed: int,
+    best_lr: Any,
+    best_tp_json: str | None,
+    robustness: float,
+    investigation_passed: bool,
+    benchmark_result: Dict[str, Any],
+    fingerprint_incomplete: bool = False,
+) -> None:
+    """Persist leaderboard and program-results updates for investigation.
+
+    Protects existing investigation data: if the entry already has better
+    investigation results (lower loss ratio, higher robustness), those are
+    preserved rather than overwritten by a weaker re-investigation.
+    """
+    # Check if existing investigation results are better — never overwrite with worse
+    existing_inv = nb.conn.execute(
+        "SELECT investigation_loss_ratio, investigation_robustness, investigation_passed, "
+        "investigation_best_training FROM leaderboard WHERE result_id = ?",
+        (source_result_id,),
+    ).fetchone()
+    if existing_inv and existing_inv["investigation_passed"]:
+        existing_lr = existing_inv["investigation_loss_ratio"]
+        # Never overwrite a passed investigation with a failed one or worse results
+        if best_lr is None or (existing_lr is not None and existing_lr <= best_lr):
+            best_lr = existing_lr
+            robustness = max(
+                robustness, float(existing_inv["investigation_robustness"] or 0)
+            )
+            best_tp_json = existing_inv["investigation_best_training"] or best_tp_json
+            investigation_passed = True
+
+    # HellaSwag hard gate: DISABLED — doesn't differentiate at nano scale.
+
+    # Binding probe: informational logging only. No hard gate — probes are
+    # too noisy at nano scale (Mamba fluctuates 0.01-0.13 across runs).
+    # The soft penalty in compute_composite_v7 handles score reduction.
+    _bp_ind = benchmark_result.get("induction_auc")
+    if _bp_ind is not None and _bp_ind < 0.03:
+        logger.info(
+            "Binding probe: %s ind=%.3f (local-only signal, soft penalty applied in scoring)",
+            source_result_id[:8],
+            _bp_ind,
+        )
+
+    trajectory_fields = trajectory_probe_fields(benchmark_result)
+    nb.upsert_leaderboard(
+        result_id=source_result_id,
+        model_source=model_source,
+        architecture_desc=source.get("graph_fingerprint", "")[:40],
+        screening_loss_ratio=source.get("loss_ratio"),
+        screening_novelty=source.get("novelty_score"),
+        screening_passed=True,
+        investigation_loss_ratio=best_lr,
+        investigation_robustness=robustness,
+        investigation_best_training=best_tp_json,
+        investigation_passed=investigation_passed,
+        tier=_safe_tier(
+            nb,
+            source_result_id,
+            "investigation"
+            if investigation_passed
+            else "investigation_fingerprint_incomplete"
+            if fingerprint_incomplete
+            else "investigation_failed",
+        ),
+        novelty_confidence=source.get("novelty_confidence"),
+        fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+        wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
+        wikitext_score=benchmark_result.get("inv_wikitext_score"),
+        tinystories_perplexity=benchmark_result.get("inv_tinystories_ppl"),
+        tinystories_score=benchmark_result.get("inv_tinystories_score"),
+        routing_savings_ratio=source.get("routing_savings_ratio"),
+        activation_sparsity_score=source.get("activation_sparsity_score"),
+        depth_savings_ratio=source.get("depth_savings_ratio"),
+        compression_ratio=source.get("compression_ratio"),
+        loss_improvement_rate=source.get("loss_improvement_rate"),
+        hellaswag_acc=benchmark_result.get("hellaswag_acc"),
+        ar_auc=benchmark_result.get("ar_auc"),
+        induction_auc=benchmark_result.get("induction_auc"),
+        binding_auc=benchmark_result.get("binding_auc"),
+        binding_composite=benchmark_result.get("binding_composite"),
+        local_only=benchmark_result.get("local_only"),
+        **trajectory_fields,
+    )
+
+    result_id = nb.record_program_result(
+        experiment_id=exp_id,
+        graph_fingerprint=source.get("graph_fingerprint", source_result_id),
+        graph_json=graph_json_str or "{}",
+        stage0_passed=True,
+        stage05_passed=True,
+        stage1_passed=n_passed > 0,
+        loss_ratio=best_lr,
+        novelty_score=source.get("novelty_score"),
+        novelty_confidence=source.get("novelty_confidence"),
+        novelty_raw_score=source.get("novelty_raw_score"),
+        novelty_z_score=source.get("novelty_z_score"),
+        novelty_reference_version=source.get("novelty_reference_version"),
+        novelty_valid_for_promotion=source.get("novelty_valid_for_promotion"),
+        novelty_validity_reason=source.get("novelty_validity_reason"),
+        novelty_requires_justification=source.get("novelty_requires_justification"),
+        training_program_json=best_tp_json,
+        model_source=model_source,
+        arch_spec_json=arch_spec_json_str,
+        wikitext_perplexity=benchmark_result.get("inv_wikitext_ppl"),
+        wikitext_score=benchmark_result.get("inv_wikitext_score"),
+        tinystories_perplexity=benchmark_result.get("inv_tinystories_ppl"),
+        tinystories_score=benchmark_result.get("inv_tinystories_score"),
+        wikitext_ppl_200=benchmark_result.get("wikitext_ppl_200"),
+        wikitext_ppl_500=benchmark_result.get("wikitext_ppl_500"),
+        wikitext_improvement_ratio=benchmark_result.get("wikitext_improvement_ratio"),
+        wikitext_eval_steps=benchmark_result.get("wikitext_eval_steps"),
+        hellaswag_acc=benchmark_result.get("hellaswag_acc"),
+        hellaswag_status=benchmark_result.get("hellaswag_status"),
+        hellaswag_n_examples=benchmark_result.get("hellaswag_total"),
+    )
+    source_updates = {
+        "wikitext_perplexity": benchmark_result.get("inv_wikitext_ppl"),
+        "wikitext_score": benchmark_result.get("inv_wikitext_score"),
+        "wikitext_ppl_200": benchmark_result.get("wikitext_ppl_200"),
+        "wikitext_ppl_500": benchmark_result.get("wikitext_ppl_500"),
+        "wikitext_improvement_ratio": benchmark_result.get(
+            "wikitext_improvement_ratio"
+        ),
+        "wikitext_eval_steps": benchmark_result.get("wikitext_eval_steps"),
+        "hellaswag_acc": benchmark_result.get("hellaswag_acc"),
+        "hellaswag_status": benchmark_result.get("hellaswag_status"),
+        "hellaswag_n_examples": benchmark_result.get("hellaswag_total"),
+        "ar_auc": benchmark_result.get("ar_auc"),
+        "ar_final_acc": benchmark_result.get("ar_final_acc"),
+        "ar_timed_out": benchmark_result.get("ar_timed_out"),
+        "ar_above_chance": benchmark_result.get("ar_above_chance"),
+        "induction_auc": benchmark_result.get("induction_auc"),
+        "binding_auc": benchmark_result.get("binding_auc"),
+        "binding_composite": benchmark_result.get("binding_composite"),
+        "local_only": benchmark_result.get("local_only"),
+    }
+    set_parts = []
+    set_params: List[Any] = []
+    for col, value in source_updates.items():
+        if value is None:
+            continue
+        set_parts.append(f"{col} = ?")
+        set_params.append(value)
+    if set_parts:
+        set_params.append(source_result_id)
+        nb.conn.execute(
+            f"UPDATE program_results SET {', '.join(set_parts)} WHERE result_id = ?",
+            set_params,
+        )
+        nb.upsert_induction_metric_v2(
+            graph_fingerprint=str(benchmark_result.get("graph_fingerprint") or ""),
+            result_id=str(source_result_id),
+            row=benchmark_result,
+            source_cohort="runtime",
+        )
+        nb._maybe_commit()
+    try:
+        from ...eval.wikitext_eval import trajectory_wikitext_payload
+
+        payload = trajectory_wikitext_payload(
+            benchmark_result.get("wikitext_trajectory_payload") or {}
+        )
+        if payload:
+            nb.set_external_benchmarks(result_id, payload)
+            if source_result_id != result_id:
+                nb.set_external_benchmarks(source_result_id, payload)
+    except (ImportError, OSError, ValueError) as e:
+        logger.debug("Trajectory wikitext payload persist failed: %s", e)
+
+
+def _upsert_screening_entry(nb, row: Dict[str, Any]) -> Optional[str]:
+    """Create or update a screening-tier leaderboard entry from a program_results row.
+
+    Single source of truth for screening leaderboard creation.
+    Returns entry_id on success, None on failure.
+    """
+    result_id = row.get("result_id")
+    if not result_id:
+        return None
+    wiki_fields = screening_wikitext_fields(row)
+    return nb.upsert_leaderboard(
+        result_id=result_id,
+        model_source=row.get("model_source") or "graph_synthesis",
+        architecture_desc=row.get("graph_fingerprint", "")[:40],
+        screening_loss_ratio=row.get("loss_ratio"),
+        screening_novelty=row.get("novelty_score"),
+        screening_passed=True,
+        tier="screening",
+        novelty_confidence=row.get("novelty_confidence"),
+        fp_jacobian_spectral_norm=row.get("fp_jacobian_spectral_norm"),
+        routing_savings_ratio=row.get("routing_savings_ratio"),
+        activation_sparsity_score=row.get("activation_sparsity_score"),
+        depth_savings_ratio=row.get("depth_savings_ratio"),
+        compression_ratio=row.get("compression_ratio"),
+        **wiki_fields,
+    )
+
+
+# ── SSE Log Bridge ──────────────────────────────────────────────────────
+# Bridges Python logging → SSE event queue so dashboard live feed shows
+# ── Baseline comparison helper ──
+# Replaces the 20-line recipe/compare block that was duplicated 6× across
+# execution_validation.py and continuous_validation.py.
+
+logger = logging.getLogger(__name__)
+
+
+def run_baseline_comparison(
+    *,
+    get_baseline,
+    resolve_recipe,
+    make_data_fn,
+    candidate_loss: float,
+    train_result: dict,
+    config,
+    dev_str: str,
+    split: str = "train",
+    normalized: bool = False,
+    program_params: int | None = None,
+) -> float | dict | None:
+    """Run a baseline comparison (raw or parameter-normalized).
+
+    Args:
+        get_baseline: callable returning the TransformerBaseline instance.
+        resolve_recipe: callable(train_result, default_lr) → recipe dict.
+        make_data_fn: callable(config, split) → (data_fn, data_tag, cache).
+        candidate_loss: the loss value to compare against baseline.
+        train_result: best seed dict with optimizer/lr/steps info.
+        config: RunConfig instance.
+        dev_str: device string ("cuda", "cpu").
+        split: data split ("train" or "val").
+        normalized: if True, call compare_normalized instead of compare.
+        program_params: required when normalized=True.
+
+    Returns:
+        float (loss ratio) for raw comparison, dict for normalized, or None on failure.
+    """
+    baseline = get_baseline()
+    steps = int(train_result.get("n_train_steps") or config.validation_steps)
+    recipe = resolve_recipe(train_result, default_lr=config.stage1_lr)
+    data_fn, data_tag, cache = make_data_fn(config, split)
+
+    kwargs = dict(
+        d_model=config.model_dim,
+        seq_len=min(128, config.validation_seq_len),
+        n_steps=max(1, steps),
+        vocab_size=config.vocab_size,
+        batch_size=config.validation_batch_size,
+        lr=recipe["lr"],
+        device=dev_str,
+        n_layers=config.n_layers,
+        optimizer_name=recipe["optimizer_name"],
+        weight_decay=recipe["weight_decay"],
+        momentum=recipe["momentum"],
+        betas=recipe["betas"],
+        data_fn=data_fn,
+        data_tag=data_tag,
+        cache_data_fn=cache,
+    )
+
+    if normalized:
+        return baseline.compare_normalized(
+            candidate_loss, program_params=int(program_params), **kwargs
+        )
+    return baseline.compare(candidate_loss, **kwargs)
+
+
+# ── Shared post-eval helpers ──
+# Deduplicate ~155 lines shared between _run_validation_thread
+# and _run_inline_validation.
+
+
+def build_validation_entry(
+    *,
+    source_result_id: str,
+    metrics,  # ValidationMetrics
+    ev_res,  # ExternalEvalResult
+    nov_conf: float,
+    config,  # RunConfig
+):
+    """Construct a ValidationEntry from metrics + eval result."""
+    from ._types import ValidationEntry
+
+    return ValidationEntry(
+        result_id=source_result_id,
+        val_loss_ratio=metrics.val_loss_ratio,
+        val_baseline_ratio=metrics.val_baseline_ratio,
+        val_normalized_ratio=metrics.val_normalized_ratio,
+        param_efficiency=metrics.val_param_efficiency,
+        multi_seed_std=metrics.multi_seed_std,
+        robustness_score=metrics.robustness_score,
+        is_unstable=metrics.is_unstable,
+        seeds_passed=len(metrics.passed_seeds),
+        total_seeds=int(getattr(config, "validation_n_seeds", 5) or 5),
+        is_breakthrough=ev_res.is_breakthrough,
+        flop_gated=ev_res.flop_gated,
+        quant_int8_retention=ev_res.quant_int8_retention,
+        quant_quality_per_byte=ev_res.quant_quality_per_byte,
+        long_context_score=ev_res.long_context_score,
+        noise_sensitivity_score=ev_res.noise_score,
+        init_sensitivity_std=metrics.init_sensitivity_std,
+        novelty_confidence=nov_conf,
+        ood_robustness=ev_res.ood_result,
+        sensitivity=ev_res.sensitivity_result,
+        activation_sparsity_score=ev_res.activation_sparsity_score,
+        dead_neuron_ratio=ev_res.dead_neuron_ratio,
+        routing_collapse_score=ev_res.routing_collapse_score,
+        wikitext_perplexity=ev_res.wikitext_perplexity,
+        wikitext_score=ev_res.wikitext_score,
+        tinystories_perplexity=ev_res.tinystories_perplexity,
+        tinystories_score=ev_res.tinystories_score,
+        cross_task_score=ev_res.cross_task_score,
+        efficiency_wall_score=ev_res.efficiency_wall_score,
+        max_viable_seq_len=ev_res.max_viable_seq_len,
+        scaling_regime=ev_res.scaling_regime,
+    )
+
+
+def promote_validation_candidate(
+    *,
+    nb,
+    source_result_id: str,
+    source: dict,
+    tier: str,
+    metrics,  # ValidationMetrics
+    ev_res,  # ExternalEvalResult
+    novelty_cap: float | None = None,
+) -> None:
+    """Promote candidate to tier on leaderboard + store benchmark payload.
+
+    Handles novelty capping (B3) and external benchmark storage.
+    """
+    from ..shared_utils import coerce_dict_payload
+
+    # B3: cap novelty if CKA was missing
+    if novelty_cap is not None:
+        _raw_novelty = source.get("novelty_score")
+        _raw_confidence = source.get("novelty_confidence")
+        if _raw_novelty is not None:
+            _raw_novelty = float(_raw_novelty) * novelty_cap
+        if _raw_confidence is not None:
+            _raw_confidence = float(_raw_confidence) * novelty_cap
+        logger.info(
+            "validation_novelty_capped: result_id=%s cap=%.2f novelty=%.4f confidence=%.4f",
+            source_result_id[:12],
+            novelty_cap,
+            _raw_novelty or 0.0,
+            _raw_confidence or 0.0,
+        )
+        cap_updates = []
+        if _raw_novelty is not None:
+            cap_updates.append(("novelty_score", _raw_novelty))
+        if _raw_confidence is not None:
+            cap_updates.append(("novelty_confidence", _raw_confidence))
+        if cap_updates:
+            try:
+                _set = ", ".join(f"{c} = ?" for c, _ in cap_updates)
+                _vals = [v for _, v in cap_updates] + [source_result_id]
+                nb._submit_write(
+                    f"UPDATE program_results SET {_set} WHERE result_id = ?",
+                    _vals,
+                )
+                nb.flush_writes()
+            except (OSError, RuntimeError) as e:
+                logger.debug(
+                    "B3 novelty cap DB update failed for %s: %s",
+                    source_result_id[:12],
+                    e,
+                )
+
+    entry = nb.get_leaderboard_entry(source_result_id)
+    if not entry:
+        return
+
+    promote_kwargs = dict(
+        entry_id=entry["entry_id"],
+        tier=tier,
+        validation_loss_ratio=metrics.val_loss_ratio,
+        validation_baseline_ratio=metrics.val_baseline_ratio,
+        validation_multi_seed_std=metrics.multi_seed_std,
+        validation_robustness_score=metrics.robustness_score,
+        validation_is_unstable=int(metrics.is_unstable),
+        validation_passed=len(metrics.passed_seeds) > 0,
+        normalized_baseline_ratio=metrics.val_normalized_ratio,
+        param_efficiency=metrics.val_param_efficiency,
+        quant_int8_retention=ev_res.quant_int8_retention,
+        quant_quality_per_byte=ev_res.quant_quality_per_byte,
+        robustness_long_ctx_score=ev_res.long_context_score,
+        robustness_long_ctx_scaling_score=ev_res.long_ctx_scaling_score,
+        robustness_long_ctx_assoc_score=ev_res.long_ctx_assoc_score,
+        robustness_long_ctx_passkey_score=ev_res.long_ctx_passkey_score,
+        robustness_long_ctx_multi_hop_score=ev_res.long_ctx_multi_hop_score,
+        robustness_long_ctx_retrieval_aggregate=ev_res.long_ctx_retrieval_aggregate,
+        robustness_long_ctx_combined_score=ev_res.long_ctx_combined_score,
+        induction_v2_investigation_auc=ev_res.induction_v2_investigation_auc,
+        induction_v2_investigation_max_gap_acc=ev_res.induction_v2_investigation_max_gap_acc,
+        induction_v2_investigation_protocol_version=ev_res.induction_v2_investigation_protocol_version,
+        binding_v2_investigation_auc=ev_res.binding_v2_investigation_auc,
+        binding_v2_investigation_max_distance_acc=ev_res.binding_v2_investigation_max_distance_acc,
+        binding_v2_investigation_protocol_version=ev_res.binding_v2_investigation_protocol_version,
+        robustness_noise_score=ev_res.noise_score,
+        init_sensitivity_std=metrics.init_sensitivity_std,
+        fp_jacobian_spectral_norm=source.get("fp_jacobian_spectral_norm"),
+        scaling_param_efficiency=ev_res.scaling_param_efficiency,
+        scaling_d512_param_efficiency=ev_res.scaling_d512_param_efficiency,
+        scaling_flop_efficiency=ev_res.scaling_flop_efficiency,
+        scaling_gate_passed=ev_res.scaling_gate_passed_val,
+        scaling_best_family=ev_res.scaling_best_family,
+        scaling_confidence=ev_res.scaling_confidence,
+        activation_sparsity_score=ev_res.activation_sparsity_score,
+        dead_neuron_ratio=ev_res.dead_neuron_ratio,
+        routing_collapse_score=ev_res.routing_collapse_score,
+        wikitext_perplexity=ev_res.wikitext_perplexity,
+        wikitext_score=ev_res.wikitext_score,
+        tinystories_perplexity=ev_res.tinystories_perplexity,
+        tinystories_score=ev_res.tinystories_score,
+        cross_task_score=ev_res.cross_task_score,
+        efficiency_wall_score=ev_res.efficiency_wall_score,
+        max_viable_seq_len=ev_res.max_viable_seq_len,
+        scaling_regime=ev_res.scaling_regime,
+    )
+    if novelty_cap is not None:
+        _raw = source.get("novelty_score")
+        if _raw is not None:
+            promote_kwargs["screening_novelty"] = float(_raw) * novelty_cap
+    nb.promote_to_tier(**promote_kwargs)
+
+    # Store external benchmark payload
+    external = {}
+    sp = coerce_dict_payload(ev_res.scaling_result)
+    if sp is not None:
+        external.update(sp)
+        external["scaling_comparison"] = sp
+    if ev_res.long_context_details is not None:
+        external["long_context"] = ev_res.long_context_details
+    if external:
+        nb.set_external_benchmarks(source_result_id, external)
+
+
+def run_trajectory_probe(
+    *,
+    graph_json_str: str | None,
+    config,  # RunConfig
+    dev,  # torch.device
+    dev_str: str,
+    nb,
+    source_result_id: str,
+    tier: str,
+    passed_seeds: list,
+) -> float | None:
+    """Run wikitext trajectory probe and update leaderboard.
+
+    Returns trajectory_composite or None.
+    """
+    if not graph_json_str or len(passed_seeds) == 0:
+        return None
+
+    try:
+        from ...eval.wikitext_eval import evaluate_wikitext_trajectory
+        from ...synthesis.serializer import graph_from_json
+        from ..native_runner import compile_model_native_first as _compile
+
+        traj_graph = graph_from_json(graph_json_str)
+        traj_layers = [traj_graph] * config.n_layers
+        traj_model = _compile(
+            traj_layers, vocab_size=config.vocab_size, max_seq_len=128
+        )
+        traj_model = traj_model.to(dev)
+        traj_result = evaluate_wikitext_trajectory(
+            traj_model,
+            config.vocab_size,
+            dev_str,
+            checkpoints=(200, 500, 1000, 2000, 4000),
+            seq_len=128,
+        )
+
+        # HellaSwag validation probe (200 examples)
+        _val_hellaswag_acc = None
+        try:
+            from ...eval.hellaswag_eval import evaluate_hellaswag
+
+            hs_val = evaluate_hellaswag(
+                traj_model, config.vocab_size, dev_str, n_examples=200
+            )
+            _val_hellaswag_acc = hs_val.get("hellaswag_acc")
+            if _val_hellaswag_acc is not None:
+                logger.info(
+                    "Validation HellaSwag acc=%.1f%% (%d/%d, %.0fms)",
+                    _val_hellaswag_acc * 100,
+                    hs_val.get("hellaswag_correct", 0),
+                    hs_val.get("hellaswag_total", 0),
+                    hs_val.get("elapsed_ms", 0),
+                )
+        except (ImportError, RuntimeError, ValueError) as exc_hs:
+            logger.debug("Validation HellaSwag eval skipped: %s", exc_hs)
+
+        # Validation binding probes (full suite, more examples than investigation)
+        _val_ar_auc = None
+        _val_ind_auc = None
+        _val_binding_auc = None
+        _val_local_only = None
+        _val_ind_meta = None
+        try:
+            from ...eval.binding_pipeline import (
+                compute_binding_composite,
+                compute_local_only,
+                run_full_binding_probes,
+            )
+
+            _probe = run_full_binding_probes(traj_model, device=dev_str)
+            _val_ar_auc = _probe.ar_auc
+            _val_ind_auc = _probe.induction_auc
+            _val_binding_auc = _probe.binding_auc
+            _val_ind_meta = _probe.induction_metadata
+            _val_local_only = compute_local_only(
+                _val_ar_auc, _val_ind_auc, _val_binding_auc
+            )
+            _val_bc = compute_binding_composite(
+                _val_ar_auc, _val_ind_auc, _val_binding_auc
+            )
+            logger.info(
+                "Validation binding probes: ar=%.3f ind=%.3f bind=%.3f bc=%.3f local=%s (%.0f+%.0f+%.0fms)",
+                _val_ar_auc,
+                _val_ind_auc,
+                _val_binding_auc,
+                _val_bc,
+                bool(_val_local_only),
+                _probe.ar_elapsed_ms,
+                _probe.induction_elapsed_ms,
+                _probe.binding_elapsed_ms,
+            )
+        except (ImportError, RuntimeError, ValueError) as exc_bp:
+            logger.debug("Validation binding probes skipped: %s", exc_bp)
+
+        del traj_model
+        clear_gpu_memory()
+
+        peak_ppl = traj_result.get("peak_ppl")
+        steps_div = traj_result.get("steps_to_divergence")
+        ckpts = traj_result.get("checkpoints", {})
+        ppl_500 = ckpts[500].get("ppl") if 500 in ckpts else None
+
+        entry = nb.get_leaderboard_entry(source_result_id)
+        trajectory_composite = None
+        if entry:
+            update = {}
+            if peak_ppl is not None:
+                update["peak_ppl"] = peak_ppl
+                vocab = config.vocab_size or 32000
+                ws = max(0.0, math.log(vocab / peak_ppl) / math.log(vocab))
+                update["wikitext_score"] = round(ws, 4)
+            if traj_result.get("peak_step") is not None:
+                update["peak_step"] = traj_result["peak_step"]
+            if steps_div is not None:
+                update["steps_to_divergence"] = steps_div
+            if ppl_500 is not None:
+                update["ppl_500"] = ppl_500
+            if _val_hellaswag_acc is not None:
+                update["hellaswag_acc"] = _val_hellaswag_acc
+            # Binding probe data
+            if _val_ar_auc is not None:
+                update["ar_auc"] = _val_ar_auc
+                update["ar_final_acc"] = _probe.ar_final_acc
+                update["ar_timed_out"] = int(_probe.ar_timed_out)
+                update["ar_above_chance"] = int(_probe.ar_above_chance)
+            if _val_ind_auc is not None:
+                update.update(_val_ind_meta or {"induction_auc": _val_ind_auc})
+            if _val_binding_auc is not None:
+                update["binding_auc"] = _val_binding_auc
+                update["binding_distance_accuracies"] = (
+                    _probe.binding_distance_accuracies
+                )
+                update["binding_probe_distances"] = [4, 8, 16, 32]
+                update["binding_probe_eval_examples"] = 200
+                update["binding_probe_elapsed_ms"] = _probe.binding_elapsed_ms
+                update["binding_auc_curriculum"] = _probe.binding_auc_curriculum
+                update["binding_distance_accuracies_curriculum"] = (
+                    _probe.binding_distance_accuracies_curriculum
+                )
+                update["binding_probe_curriculum_steps"] = (
+                    _probe.binding_curriculum_train_steps
+                )
+                update["binding_probe_curriculum_elapsed_ms"] = (
+                    _probe.binding_curriculum_elapsed_ms
+                )
+                update["binding_probe_curriculum_protocol_version"] = (
+                    "copy_curriculum_v1"
+                )
+            if _val_local_only is not None:
+                update["local_only"] = _val_local_only
+                update["binding_composite"] = round(
+                    0.4 * (_val_ar_auc or 0)
+                    + 0.3 * (_val_ind_auc or 0)
+                    + 0.3 * (_val_binding_auc or 0),
+                    4,
+                )
+            # No hard gate — soft penalty in scoring handles local-only models.
+            # Mamba (frontier SSM) fluctuates across the induction threshold,
+            # so a hard gate would produce false positives at nano scale.
+            if update:
+                nb.promote_to_tier(entry_id=entry["entry_id"], tier=tier, **update)
+                row = nb.conn.execute(
+                    "SELECT composite_score FROM leaderboard WHERE entry_id = ?",
+                    (entry["entry_id"],),
+                ).fetchone()
+                if row:
+                    trajectory_composite = row["composite_score"]
+
+        logger.info(
+            "Trajectory probe %s: peak_ppl=%.1f steps_to_div=%s ppl_500=%s composite=%.1f",
+            source_result_id[:8],
+            peak_ppl or 0,
+            steps_div,
+            ppl_500,
+            trajectory_composite or 0,
+        )
+        return trajectory_composite
+    except Exception as e:  # top-level error boundary: probe must not crash caller
+        logger.warning("Trajectory probe failed for %s: %s", source_result_id[:8], e)
+        return None
+
+
+def handle_breakthrough(
+    *,
+    is_breakthrough: bool,
+    trajectory_composite: float | None,
+    aria,
+    nb,
+    exp_id: str,
+    source_result_id: str,
+    source: dict,
+    validation_entry,  # ValidationEntry
+    val_loss_ratio: float | None,
+    val_baseline_ratio: float | None,
+    multi_seed_std: float,
+    emit_event,
+) -> bool:
+    """Check trajectory-aware breakthrough and emit announcement.
+
+    Returns final is_breakthrough value.
+    """
+    from ..llm.context_experiment import build_validation_context
+    from ..notebook import ExperimentEntry
+
+    # [CALIBRATION] source: judgment — 300.0 hardcoded; no config key
+    if not is_breakthrough and trajectory_composite is not None:
+        if trajectory_composite > 300.0:
+            is_breakthrough = True
+            logger.info(
+                "Trajectory-aware breakthrough: %s composite=%.1f",
+                source_result_id[:8],
+                trajectory_composite,
+            )
+
+    if is_breakthrough:
+        entry_dict = (
+            validation_entry.to_dict()
+            if hasattr(validation_entry, "to_dict")
+            else validation_entry
+        )
+        ctx = build_validation_context([source], [entry_dict])
+        announcement = aria.announce_breakthrough(ctx)
+        nb.add_entry(
+            ExperimentEntry(
+                entry_type="insight",
+                title="BREAKTHROUGH DETECTED",
+                content=announcement,
+                experiment_id=exp_id,
+                tags=["breakthrough"],
+            )
+        )
+        emit_event(
+            "breakthrough_detected",
+            {
+                "experiment_id": exp_id,
+                "result_id": source_result_id,
+                "val_loss_ratio": val_loss_ratio,
+                "val_baseline_ratio": val_baseline_ratio,
+                "multi_seed_std": multi_seed_std,
+                "announcement": announcement,
+            },
+        )
+
+    return is_breakthrough
+
+
+# ── SSE log handler ──
+# log messages without modifying every call site.
+
+_SSE_LOG_DEDUP_WINDOW: float = 5.0  # seconds to suppress identical messages
+_SSE_LOG_RATE_LIMIT: int = 10  # max events per second per logger name
+_SSE_LOG_RATE_WINDOW: float = 1.0  # sliding window for rate limit
+
+
+class SSELogHandler(logging.Handler):
+    """Logging handler that forwards records to the runner's SSE event queue.
+
+    Guardrails:
+    - Only captures ``research.*`` loggers at INFO+
+    - Deduplicates identical messages within a time window
+    - Rate-limits per logger name to prevent queue saturation
+    - Never persists to DB (avoids bloating the notebook)
+    """
+
+    __slots__ = (
+        "_queue",
+        "_dedup",
+        "_rate_counts",
+        "_rate_window_start",
+    )
+
+    def __init__(self, event_queue: queue.Queue):
+        super().__init__(level=logging.INFO)
+        self._queue = event_queue
+        # {message_text: last_emit_ts}
+        self._dedup: Dict[str, float] = {}
+        # {logger_name: count_in_current_window}
+        self._rate_counts: Dict[str, int] = {}
+        self._rate_window_start: float = time.monotonic()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Only research.* loggers, skip werkzeug/urllib3/etc.
+        return record.name.startswith("research.")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record) if self.formatter else record.getMessage()
+            now = time.monotonic()
+
+            # ── Dedup: skip identical messages within window ──
+            last_seen = self._dedup.get(msg)
+            if last_seen is not None and (now - last_seen) < _SSE_LOG_DEDUP_WINDOW:
+                return
+            self._dedup[msg] = now
+
+            # Prune stale dedup entries periodically (every ~50 messages)
+            if len(self._dedup) > 200:
+                cutoff = now - _SSE_LOG_DEDUP_WINDOW
+                self._dedup = {k: v for k, v in self._dedup.items() if v > cutoff}
+
+            # ── Rate limit per logger name ──
+            if (now - self._rate_window_start) >= _SSE_LOG_RATE_WINDOW:
+                self._rate_counts.clear()
+                self._rate_window_start = now
+            count = self._rate_counts.get(record.name, 0)
+            if count >= _SSE_LOG_RATE_LIMIT:
+                return
+            self._rate_counts[record.name] = count + 1
+
+            # ── Push to SSE queue ──
+            # Truncate short logger prefix for dashboard display
+            short_name = record.name
+            if short_name.startswith("research."):
+                short_name = short_name[len("research.") :]
+
+            payload = {
+                "type": "log_message",
+                "data": {
+                    "level": record.levelname,
+                    "logger": short_name,
+                    "message": msg[:500],
+                    "timestamp": time.time(),
+                },
+                "timestamp": time.time(),
+            }
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            pass  # drop log events silently when queue is saturated
+        except Exception:
+            pass  # top-level error boundary: never break the logging pipeline

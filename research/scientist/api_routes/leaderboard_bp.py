@@ -332,6 +332,21 @@ def _compact_leaderboard_entry(entry: dict) -> dict:
         "binding_auc": entry.get("binding_auc"),
         "binding_composite": entry.get("binding_composite"),
         "local_only": entry.get("local_only"),
+        # v2 investigation-tier probes
+        "induction_v2_investigation_auc": entry.get("induction_v2_investigation_auc"),
+        "induction_v2_investigation_max_gap_acc": entry.get(
+            "induction_v2_investigation_max_gap_acc"
+        ),
+        "induction_v2_investigation_protocol_version": entry.get(
+            "induction_v2_investigation_protocol_version"
+        ),
+        "binding_v2_investigation_auc": entry.get("binding_v2_investigation_auc"),
+        "binding_v2_investigation_max_distance_acc": entry.get(
+            "binding_v2_investigation_max_distance_acc"
+        ),
+        "binding_v2_investigation_protocol_version": entry.get(
+            "binding_v2_investigation_protocol_version"
+        ),
         # BLiMP linguistic minimal pairs
         "blimp_overall_accuracy": entry.get("blimp_overall_accuracy"),
     }

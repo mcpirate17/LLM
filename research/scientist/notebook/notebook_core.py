@@ -258,7 +258,11 @@ class _NotebookCore:
         cls = type(self)
         if not self._read_only:
             self._ensure_schema_bootstrap(db_key=db_key)
-        if not skip_migrate and not self._read_only and db_key not in cls._migrated_paths:
+        if (
+            not skip_migrate
+            and not self._read_only
+            and db_key not in cls._migrated_paths
+        ):
             self._migrate()
             cls._migrated_paths.add(db_key)
 
@@ -378,7 +382,6 @@ class _NotebookCore:
                             # Commit the pending batch
                             writer_conn.commit()
                             batch = []
-                            last_commit = time.time()
                             _recovered = True
                             break
                         except sqlite3.OperationalError:
@@ -990,6 +993,12 @@ class _NotebookCore:
             "induction_auc REAL",
             "binding_auc REAL",
             "binding_composite REAL",
+            "induction_v2_investigation_auc REAL",
+            "induction_v2_investigation_max_gap_acc REAL",
+            "induction_v2_investigation_protocol_version TEXT",
+            "binding_v2_investigation_auc REAL",
+            "binding_v2_investigation_max_distance_acc REAL",
+            "binding_v2_investigation_protocol_version TEXT",
             "local_only INTEGER DEFAULT 0",
             "result_cohort TEXT",
             "trust_label TEXT",

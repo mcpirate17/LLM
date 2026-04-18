@@ -557,6 +557,13 @@ class ExternalEvalResult:
     long_ctx_retrieval_aggregate: Optional[float] = None
     long_ctx_scaling_score: Optional[float] = None
     long_ctx_combined_score: Optional[float] = None
+    # v2 investigation-tier probes (2026-04-18)
+    induction_v2_investigation_auc: Optional[float] = None
+    induction_v2_investigation_max_gap_acc: Optional[float] = None
+    induction_v2_investigation_protocol_version: Optional[str] = None
+    binding_v2_investigation_auc: Optional[float] = None
+    binding_v2_investigation_max_distance_acc: Optional[float] = None
+    binding_v2_investigation_protocol_version: Optional[str] = None
     robustness_checks_attempted: int = 0
     robustness_checks_failed: int = 0
 

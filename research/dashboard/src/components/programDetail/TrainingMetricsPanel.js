@@ -42,8 +42,26 @@ export function CoreMetricsColumn({ program, leaderboardEntry, refineAnalysis, f
           </span> : null} />
         <MetricRow label="HellaSwag" value={program.hellaswag_acc != null ? fmt(program.hellaswag_acc, 3) : null} />
         <MetricRow label="Induction AUC" value={program.induction_auc != null ? fmt(program.induction_auc, 3) : null} />
+        <MetricRow label="Induction v2" value={program.induction_v2_investigation_auc != null ?
+          <span title="Investigation-tier mixed-gap probe (500 steps, median-of-3 seeds). Overrides v1 in the binding composite when present.">
+            {fmt(program.induction_v2_investigation_auc, 3)}
+            {program.induction_auc != null && (
+              <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                (Δ{(program.induction_v2_investigation_auc - program.induction_auc).toFixed(3)} vs v1)
+              </span>
+            )}
+          </span> : null} />
         <MetricRow label="AR AUC" value={program.ar_auc != null ? fmt(program.ar_auc, 3) : null} />
         <MetricRow label="Binding AUC" value={program.binding_auc != null ? fmt(program.binding_auc, 3) : null} />
+        <MetricRow label="Binding v2" value={program.binding_v2_investigation_auc != null ?
+          <span title="Investigation-tier extended-budget probe (2400 steps, 5 distances incl. 64, median-of-3 seeds). Overrides v1 in the binding composite when present.">
+            {fmt(program.binding_v2_investigation_auc, 3)}
+            {program.binding_auc != null && (
+              <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                (Δ{(program.binding_v2_investigation_auc - program.binding_auc).toFixed(3)} vs v1)
+              </span>
+            )}
+          </span> : null} />
         <MetricRow label="BLiMP" value={program.blimp_overall_accuracy != null ? fmt(program.blimp_overall_accuracy, 3) : null} />
         <MetricRow label="WikiText PPL" value={program.wikitext_perplexity != null ? fmt(program.wikitext_perplexity, 1) : null} />
         <MetricRow label="Composite" value={(program.composite_score ?? leaderboardEntry?.composite_score) != null ?

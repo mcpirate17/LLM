@@ -225,6 +225,28 @@ def _run_long_range_ar(ctx: EvalContext) -> dict[str, Any]:
     return {"long_ctx_assoc_score": ar.score}
 
 
+def _run_induction_v2(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.induction_probe_v2_investigation import run_induction_v2_investigation
+
+    r = run_induction_v2_investigation(ctx.model, device=ctx.dev_str)
+    return {
+        "induction_v2_investigation_auc": r.auc,
+        "induction_v2_investigation_max_gap_acc": r.max_gap_acc,
+        "induction_v2_investigation_protocol_version": r.protocol_version,
+    }
+
+
+def _run_binding_v2(ctx: EvalContext) -> dict[str, Any]:
+    from ...eval.binding_probe_v2_investigation import run_binding_v2_investigation
+
+    r = run_binding_v2_investigation(ctx.model, device=ctx.dev_str)
+    return {
+        "binding_v2_investigation_auc": r.auc,
+        "binding_v2_investigation_max_distance_acc": r.max_distance_acc,
+        "binding_v2_investigation_protocol_version": r.protocol_version,
+    }
+
+
 def _run_passkey(ctx: EvalContext) -> dict[str, Any]:
     from ...eval.passkey_retrieval import passkey_retrieval_score
 
@@ -503,6 +525,26 @@ EVAL_SPECS: tuple[EvalSpec, ...] = (
         result_keys=("scaling_d512_param_efficiency",),
         requires_scaling=True,
         run=_run_scaling_d512,
+    ),
+    EvalSpec(
+        name="induction v2 (investigation)",
+        result_keys=(
+            "induction_v2_investigation_auc",
+            "induction_v2_investigation_max_gap_acc",
+            "induction_v2_investigation_protocol_version",
+        ),
+        requires_model=True,
+        run=_run_induction_v2,
+    ),
+    EvalSpec(
+        name="binding v2 (investigation)",
+        result_keys=(
+            "binding_v2_investigation_auc",
+            "binding_v2_investigation_max_distance_acc",
+            "binding_v2_investigation_protocol_version",
+        ),
+        requires_model=True,
+        run=_run_binding_v2,
     ),
 )
 

@@ -160,11 +160,17 @@ const RENDERERS = {
   induction_auc: (e) => coloredMetric(e.induction_auc, [
     [null, 0.10, 'var(--accent-red)'], [0.35, null, 'var(--accent-green)'], [0.10, 0.35, 'var(--accent-yellow)'],
   ]),
+  induction_v2_investigation_auc: (e) => coloredMetric(e.induction_v2_investigation_auc, [
+    [null, 0.30, 'var(--accent-red)'], [0.70, null, 'var(--accent-green)'], [0.30, 0.70, 'var(--accent-yellow)'],
+  ]),
   ar_auc: (e) => coloredMetric(e.ar_auc, [
     [null, 0.05, 'var(--accent-red)'], [0.20, null, 'var(--accent-green)'], [0.05, 0.20, 'var(--accent-yellow)'],
   ]),
   binding_auc: (e) => coloredMetric(e.binding_auc, [
     [null, 0.10, 'var(--accent-red)'], [0.30, null, 'var(--accent-green)'], [0.10, 0.30, 'var(--accent-yellow)'],
+  ]),
+  binding_v2_investigation_auc: (e) => coloredMetric(e.binding_v2_investigation_auc, [
+    [null, 0.30, 'var(--accent-red)'], [0.70, null, 'var(--accent-green)'], [0.30, 0.70, 'var(--accent-yellow)'],
   ]),
   blimp_overall_accuracy: (e) => coloredMetric(e.blimp_overall_accuracy, [
     [null, 0.501, 'var(--accent-red)'], [0.60, null, 'var(--accent-green)'], [0.501, 0.60, 'var(--accent-yellow)'],

@@ -80,6 +80,7 @@ _PR_SELECT_COLS = (
     "ar_above_chance, induction_auc, binding_auc, blimp_overall_accuracy, "
     "tinystories_score, cross_task_score, diagnostic_score, "
     "fp_gromov_delta, fp_hierarchy_fitness, "
+    "induction_v2_investigation_auc, binding_v2_investigation_auc, "
     # routing_collapse_score is a misnomer: it is actually a routing-health
     # score in [0,1] (higher = healthier). Selected here so consumers can
     # build a routing-quality subscore. Not yet used by composite scoring.
@@ -169,6 +170,14 @@ def _pr_dict_to_score_kwargs(
         else None,
         "induction_auc": pr_dict.get("induction_auc") or d.get("induction_auc"),
         "binding_auc": pr_dict.get("binding_auc") or d.get("binding_auc"),
+        # v2 investigation-tier probes — overrides induction_auc/binding_auc
+        # in the composite when present. `or`-chained against `d` so we read
+        # the leaderboard row for rows where the program_results row is
+        # missing the column (pre-backfill).
+        "induction_v2_inv_auc": pr_dict.get("induction_v2_investigation_auc")
+        or d.get("induction_v2_investigation_auc"),
+        "binding_v2_inv_auc": pr_dict.get("binding_v2_investigation_auc")
+        or d.get("binding_v2_investigation_auc"),
         # BLiMP
         "blimp_accuracy": pr_dict.get("blimp_overall_accuracy")
         or d.get("blimp_overall_accuracy"),
@@ -930,6 +939,10 @@ def _compute_composite_generic(
     ar_above_chance: Optional[bool] = None,
     induction_auc: Optional[float] = None,
     binding_auc: Optional[float] = None,
+    # v2 investigation-tier probes (override induction_auc/binding_auc when
+    # present; pre-backfill rows leave these None and fall back to v1)
+    induction_v2_inv_auc: Optional[float] = None,
+    binding_v2_inv_auc: Optional[float] = None,
     # BLiMP
     blimp_accuracy: Optional[float] = None,
     # v8 understanding metrics (ignored when weights are 0)
@@ -966,6 +979,14 @@ def _compute_composite_generic(
         tier in ("validation", "breakthrough") if tier else (ppl_validation is not None)
     )
     _effective_ar_auc = None if ar_timed_out else ar_auc
+    # v2 investigation probes override v1 when present. Rows pre-backfill
+    # have None v2 values and keep scoring against v1 for continuity.
+    _effective_induction_auc = (
+        induction_v2_inv_auc if induction_v2_inv_auc is not None else induction_auc
+    )
+    _effective_binding_auc = (
+        binding_v2_inv_auc if binding_v2_inv_auc is not None else binding_auc
+    )
 
     # Score each component family
     perf_pts, perf_bd = _score_performance_curves(
@@ -1008,8 +1029,8 @@ def _compute_composite_generic(
         long_ctx_score=long_ctx_score,
         blimp_accuracy=blimp_accuracy,
         effective_ar_auc=_effective_ar_auc,
-        induction_auc=induction_auc,
-        binding_auc_val=binding_auc,
+        induction_auc=_effective_induction_auc,
+        binding_auc_val=_effective_binding_auc,
     )
     understand_pts, understand_bd = _score_understanding_v8(
         cfg,
@@ -1038,8 +1059,8 @@ def _compute_composite_generic(
         score,
         inv_failed=_inv_failed,
         param_count=param_count,
-        induction_auc=induction_auc,
-        binding_auc_val=binding_auc,
+        induction_auc=_effective_induction_auc,
+        binding_auc_val=_effective_binding_auc,
         effective_ar_auc=_effective_ar_auc,
         ar_above_chance=ar_above_chance,
         cfg=cfg,

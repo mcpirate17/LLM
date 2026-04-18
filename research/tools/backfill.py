@@ -60,9 +60,25 @@ _BACKFILL_CORPUS_WARNED = False
 
 _PROBE_NEEDS_TRAIN = frozenset({"binding", "hellaswag", "blimp"})
 _PROBE_NEEDS_MODEL = frozenset(
-    {"binding", "hellaswag", "blimp", "triage", "fingerprint"}
+    {
+        "binding",
+        "hellaswag",
+        "blimp",
+        "triage",
+        "fingerprint",
+        "induction_v2",
+        "binding_v2",
+    }
 )
-_ALL_PROBES = ("binding", "hellaswag", "blimp", "triage", "fingerprint")
+_ALL_PROBES = (
+    "binding",
+    "hellaswag",
+    "blimp",
+    "triage",
+    "fingerprint",
+    "induction_v2",
+    "binding_v2",
+)
 
 
 # ── Model lifecycle (shared, not duplicated per probe) ──────────────────
@@ -348,6 +364,40 @@ def run_blimp_probe(
     }
 
 
+def run_induction_v2_probe(model: nn.Module, device: str) -> Dict[str, Any]:
+    """Investigation-tier v2 induction probe (median-of-3-seeds)."""
+    from research.eval.induction_probe_v2_investigation import (
+        run_induction_v2_investigation,
+    )
+
+    r = run_induction_v2_investigation(model, device=device)
+    return {
+        "induction_v2_investigation_auc": r.auc,
+        "induction_v2_investigation_max_gap_acc": r.max_gap_acc,
+        "induction_v2_investigation_steps_trained": r.steps_trained,
+        "induction_v2_investigation_status": r.status,
+        "induction_v2_investigation_elapsed_ms": r.elapsed_ms,
+        "induction_v2_investigation_protocol_version": r.protocol_version,
+    }
+
+
+def run_binding_v2_probe(model: nn.Module, device: str) -> Dict[str, Any]:
+    """Investigation-tier v2 binding probe (median-of-3-seeds, 2400 steps)."""
+    from research.eval.binding_probe_v2_investigation import (
+        run_binding_v2_investigation,
+    )
+
+    r = run_binding_v2_investigation(model, device=device)
+    return {
+        "binding_v2_investigation_auc": r.auc,
+        "binding_v2_investigation_max_distance_acc": r.max_distance_acc,
+        "binding_v2_investigation_train_steps": r.train_steps,
+        "binding_v2_investigation_status": r.status,
+        "binding_v2_investigation_elapsed_ms": r.elapsed_ms,
+        "binding_v2_investigation_protocol_version": r.protocol_version,
+    }
+
+
 def run_triage_probe(
     model: nn.Module,
     graph: Any,
@@ -547,7 +597,10 @@ _PROBE_NULL_COLUMN: Dict[str, str] = {
     "blimp": "blimp_overall_accuracy",
     "triage": "activation_sparsity_score",
     "fingerprint": "fp_cka_vs_transformer",
+    "induction_v2": "induction_v2_investigation_auc",
+    "binding_v2": "binding_v2_investigation_auc",
 }
+
 
 def _prefetch_probe_state(
     nb: LabNotebook, result_ids: Sequence[str], probes: Sequence[str]
@@ -578,9 +631,7 @@ def _prefetch_probe_state(
         for row in rows
     }
     missing_default = {
-        probe_name: False
-        for probe_name in probes
-        if probe_name in _PROBE_NULL_COLUMN
+        probe_name: False for probe_name in probes if probe_name in _PROBE_NULL_COLUMN
     }
     for result_id in result_ids:
         by_result.setdefault(str(result_id), dict(missing_default))
@@ -869,6 +920,10 @@ def _run_single_probe(
         return run_blimp_probe(model, device, cand.tier)
     if name == "triage":
         return run_triage_probe(model, graph, device)
+    if name == "induction_v2":
+        return run_induction_v2_probe(model, device)
+    if name == "binding_v2":
+        return run_binding_v2_probe(model, device)
     if name == "fingerprint":
         return run_fingerprint_probe(
             cand.result_id,
