@@ -36,6 +36,17 @@ logger = logging.getLogger(__name__)
 _stop_requested = False
 
 
+def _register_mathspace_ops() -> None:
+    try:
+        from research.mathspaces.registry import register_all_mathspaces
+
+        register_all_mathspaces()
+    except ImportError:
+        logger.debug("mathspace registry not available; continuing without it")
+    except Exception as exc:
+        logger.warning("mathspace registration failed: %s", exc)
+
+
 def _handle_sigint(signum, frame):
     global _stop_requested
     if _stop_requested:
@@ -150,12 +161,7 @@ def discover_targets(
     (never appeared in op_success_rates at all).
     """
     # Ensure math-space ops are registered
-    try:
-        from research.mathspaces.registry import register_all_mathspaces
-
-        register_all_mathspaces()
-    except Exception:
-        pass
+    _register_mathspace_ops()
 
     all_ops = set(PRIMITIVE_REGISTRY.keys())
     # Remove pseudo-ops that can't be independently placed
@@ -1042,12 +1048,7 @@ def run_exploration(
     if force_ops:
         # Validate requested ops exist in the registry
         # Ensure math-space ops are registered
-        try:
-            from research.mathspaces.registry import register_all_mathspaces
-
-            register_all_mathspaces()
-        except Exception:
-            pass
+        _register_mathspace_ops()
         unknown = [op for op in force_ops if op not in PRIMITIVE_REGISTRY]
         if unknown:
             logger.error(

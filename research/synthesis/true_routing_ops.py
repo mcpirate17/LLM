@@ -16,6 +16,8 @@ expert → process each group through its expert type → unsort back.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Callable, Dict
 
 import torch
@@ -27,6 +29,18 @@ from .compiler_op_utils import (
     _safe_linear,
 )
 from .compiler_ops_routing import _apply_moe_load_balance
+
+logger = logging.getLogger(__name__)
+
+
+def _true_routing_flag(name: str) -> bool:
+    raw = str(os.environ.get(name, "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _maybe_true_routing_sync(x: torch.Tensor) -> None:
+    if x.is_cuda and _true_routing_flag("ARIA_TRUE_ROUTING_SYNC"):
+        torch.cuda.synchronize(x.device)
 
 
 # ── Gather-scatter dispatch helper ────────────────────────────────
@@ -50,55 +64,100 @@ def _dispatch_to_experts(
         (B, S, D) output with each token processed by its assigned expert.
     """
     B, S, D = x.shape
+    debug_enabled = _true_routing_flag("ARIA_TRUE_ROUTING_DEBUG")
 
     if not hasattr(module, "gate_weight"):
         raise RuntimeError(
             f"{type(module).__name__} missing gate_weight for true routing op"
         )
 
-    # 1. Gate: learned routing decision per token (pointwise — causal-safe)
-    logits = _safe_linear(x, module.gate_weight)  # (B, S, n_experts)
-    logits = _apply_moe_load_balance(module, logits, n_experts)
-    weights, indices = logits.topk(1, dim=-1)  # top-1 hard routing
-    weights = torch.sigmoid(weights)  # (B, S, 1) — gate confidence
+    try:
+        _maybe_true_routing_sync(x)
 
-    # Record telemetry
-    _record_routing_telemetry(module, n_experts, indices, logits=logits)
+        # 1. Gate: learned routing decision per token (pointwise — causal-safe)
+        logits = _safe_linear(x, module.gate_weight)  # (B, S, n_experts)
+        logits = _apply_moe_load_balance(module, logits, n_experts)
+        weights, indices = logits.topk(1, dim=-1)  # top-1 hard routing
+        weights = torch.sigmoid(weights)  # (B, S, 1) — gate confidence
 
-    # 2. Batched gather-scatter dispatch: flatten B*S tokens, sort by expert,
-    # run each expert on its contiguous chunk, unsort back.  O(E) Python
-    # iterations instead of O(B*E).
-    idx_flat = indices.reshape(-1)  # (B*S, 1) → (B*S,) after squeeze
-    if idx_flat.dim() > 1:
-        idx_flat = idx_flat.squeeze(-1)
-    w_flat = weights.reshape(-1, 1)  # (B*S, 1)
-    x_flat = x.reshape(-1, D)  # (B*S, D)
+        # Record telemetry
+        _record_routing_telemetry(module, n_experts, indices, logits=logits)
 
-    # Sort tokens by expert assignment for contiguous expert chunks
-    sort_order = idx_flat.argsort(stable=True)
-    x_sorted = x_flat[sort_order]  # (B*S, D)
-    w_sorted = w_flat[sort_order]  # (B*S, 1)
+        # 2. Batched gather-scatter dispatch: flatten B*S tokens, sort by expert,
+        # run each expert on its contiguous chunk, unsort back. O(E) Python
+        # iterations instead of O(B*E).
+        idx_flat = indices.reshape(-1)  # (B*S, 1) → (B*S,) after squeeze
+        if idx_flat.dim() > 1:
+            idx_flat = idx_flat.squeeze(-1)
+        w_flat = weights.reshape(-1, 1)  # (B*S, 1)
+        x_flat = x.reshape(-1, D)  # (B*S, D)
 
-    # Find per-expert chunk boundaries
-    expert_counts = torch.bincount(idx_flat, minlength=n_experts).tolist()
-    x_chunks = x_sorted.split(expert_counts, dim=0)
-    w_chunks = w_sorted.split(expert_counts, dim=0)
+        # Sort tokens by expert assignment for contiguous expert chunks
+        sort_order = idx_flat.argsort(stable=True)
+        x_sorted = x_flat[sort_order]  # (B*S, D)
+        w_sorted = w_flat[sort_order]  # (B*S, 1)
 
-    # Run each expert on its contiguous chunk (E iterations, not B*E)
-    result_chunks = []
-    for e_idx in range(n_experts):
-        if expert_counts[e_idx] == 0:
-            result_chunks.append(x_sorted.new_empty(0, D))
-            continue
-        out = expert_fns[e_idx](x_chunks[e_idx], module)
-        result_chunks.append(out.to(x.dtype) * w_chunks[e_idx].to(x.dtype))
+        # Find per-expert chunk boundaries. Avoid Tensor.split([..., 0, ...])
+        # because repeated zero-length views have been implicated in crashes.
+        expert_counts = torch.bincount(idx_flat, minlength=n_experts).tolist()
 
-    # Unsort back to original token order
-    result_sorted = torch.cat(result_chunks, dim=0)  # (B*S, D)
-    result_flat = torch.zeros_like(x_flat)
-    result_flat[sort_order] = result_sorted
+        # Run each expert on its contiguous chunk (E iterations, not B*E)
+        result_chunks = []
+        start = 0
+        for e_idx, count in enumerate(expert_counts):
+            if count == 0:
+                result_chunks.append(x_sorted.new_empty(0, D))
+                continue
+            x_chunk = x_sorted.narrow(0, start, count)
+            w_chunk = w_sorted.narrow(0, start, count)
+            start += count
+            out = expert_fns[e_idx](x_chunk, module)
+            if out.shape != x_chunk.shape:
+                raise RuntimeError(
+                    f"true routing expert {e_idx} returned shape {tuple(out.shape)} "
+                    f"for input chunk {tuple(x_chunk.shape)}"
+                )
+            result_chunks.append(out.to(x.dtype) * w_chunk.to(x.dtype))
 
-    return result_flat.reshape(B, S, D)
+        if start != x_sorted.shape[0]:
+            raise RuntimeError(
+                f"true routing chunk accounting mismatch: consumed={start} "
+                f"sorted_tokens={x_sorted.shape[0]}"
+            )
+
+        # Unsort back to original token order without indexed assignment.
+        result_sorted = torch.cat(result_chunks, dim=0)  # (B*S, D)
+        inverse_sort = sort_order.argsort(stable=True)
+        result_flat = result_sorted[inverse_sort]
+        _maybe_true_routing_sync(result_flat)
+        return result_flat.reshape(B, S, D)
+    except Exception:
+        logger.exception(
+            "true routing dispatch failed op=%s shape=%s device=%s dtype=%s sync=%s debug=%s",
+            getattr(module, "op_name", type(module).__name__),
+            tuple(x.shape),
+            x.device,
+            x.dtype,
+            _true_routing_flag("ARIA_TRUE_ROUTING_SYNC"),
+            debug_enabled,
+            extra={
+                "routing_n_experts": n_experts,
+                "routing_input_shape": tuple(x.shape),
+            },
+        )
+        if debug_enabled:
+            with torch.no_grad():
+                logger.error(
+                    "true routing failure context expert_counts=%s gate_shape=%s",
+                    torch.bincount(
+                        indices.reshape(-1).squeeze(-1)
+                        if "indices" in locals()
+                        else torch.zeros(0, device=x.device, dtype=torch.long),
+                        minlength=n_experts,
+                    ).tolist(),
+                    tuple(getattr(module, "gate_weight").shape),
+                )
+        raise
 
 
 # ── Mini-expert implementations ──────────────────────────────────

@@ -53,6 +53,20 @@ def get_notebook(notebook_path: str) -> LabNotebook:
             return nb
         try:
             nb = LabNotebook(notebook_path, check_same_thread=False)
+        except RuntimeError as e:
+            if "writer lock" in str(e):
+                # Another process (backfill, admin script) holds the
+                # writer flock. Open read-only so the dashboard can
+                # still serve queries — writes will fail but most API
+                # endpoints only read.
+                logger.warning(
+                    "Writer lock held by another process — opening read-only: %s", e
+                )
+                nb = LabNotebook(
+                    notebook_path, check_same_thread=False, read_only=True
+                )
+            else:
+                raise
         except sqlite3.OperationalError:
             # Migration may hit a lock from the runner — retry once
             import time

@@ -102,11 +102,36 @@ def _run_full_post_train(
         result_id, graph.fingerprint(), "program_detail_full_recompute_compile"
     )
     with _deterministic_compile_seed(device, compile_seed):
-        model = compile_model(
-            [graph] * int(config.n_layers),
-            vocab_size=int(config.vocab_size),
-            max_seq_len=config.max_seq_len,
-        )
+        try:
+            model = compile_model(
+                [graph] * int(config.n_layers),
+                vocab_size=int(config.vocab_size),
+                max_seq_len=config.max_seq_len,
+            )
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+            if "out of memory" in str(exc).lower() or isinstance(
+                exc, torch.cuda.OutOfMemoryError
+            ):
+                # Native compilation OOM — fall back to Python IR executor
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Native compile OOM for %s, falling back to IR executor: %s",
+                    result_id,
+                    exc,
+                )
+                torch.cuda.empty_cache()
+                from research.synthesis.compiler import (
+                    compile_model as compile_model_ir,
+                )
+
+                model = compile_model_ir(
+                    [graph] * int(config.n_layers),
+                    vocab_size=int(config.vocab_size),
+                    max_seq_len=config.max_seq_len,
+                )
+            else:
+                raise
 
     runner = ExperimentRunner(notebook_path=str(notebook_path))
     dev = resolve_device(device)
@@ -144,6 +169,27 @@ def _run_full_post_train(
                     device=str(dev),
                 )
             )
+            # Also recover BLiMP and binding probes on gate failure
+            # (these are zero-shot / lightweight and don't need S1 pass)
+            try:
+                from research.eval.blimp_eval import evaluate_blimp
+                blimp = evaluate_blimp(
+                    model,
+                    vocab_size=int(config.vocab_size),
+                    device=str(dev),
+                    n_per_subtask=50,
+                    timeout_s=120,
+                )
+                updates["blimp_overall_accuracy"] = blimp.overall_accuracy
+                updates["blimp_status"] = "ok"
+            except Exception:
+                pass
+            try:
+                from research.eval.binding_pipeline import run_screening_binding_probes
+                bp = run_screening_binding_probes(model, device=str(dev))
+                updates.update(screening_probe_fields(bp))
+            except Exception:
+                pass
         elif s1_result.get("error"):
             raise RuntimeError(
                 f"micro_train_failed: {s1_result.get('error')} "

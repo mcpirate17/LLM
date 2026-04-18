@@ -353,36 +353,33 @@ def _attach_induction_metrics(
     ]
     if not fingerprints:
         return rows
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        tables = {
-            str(r["name"])
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
+    tables = {
+        str(r["name"])
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "induction_metrics_v2" not in tables:
+        return rows
+    metric_rows = []
+    chunk_size = 500
+    for start in range(0, len(fingerprints), chunk_size):
+        chunk = fingerprints[start : start + chunk_size]
+        placeholders = ", ".join("?" for _ in chunk)
+        metric_rows.extend(
+            conn.execute(
+                f"""
+                SELECT graph_fingerprint, auc, gap_4, gap_8, gap_16, gap_32, gap_64,
+                       wall_ms, metric_version, speed_mode, train_steps, eval_examples,
+                       batch_size, pool_size, source_cohort
+                FROM induction_metrics_v2
+                WHERE graph_fingerprint IN ({placeholders})
+                """,
+                chunk,
             ).fetchall()
-        }
-        if "induction_metrics_v2" not in tables:
-            return rows
-        metric_rows = []
-        chunk_size = 500
-        for start in range(0, len(fingerprints), chunk_size):
-            chunk = fingerprints[start : start + chunk_size]
-            placeholders = ", ".join("?" for _ in chunk)
-            metric_rows.extend(
-                conn.execute(
-                    f"""
-                    SELECT graph_fingerprint, auc, gap_4, gap_8, gap_16, gap_32, gap_64,
-                           wall_ms, metric_version, speed_mode, train_steps, eval_examples,
-                           batch_size, pool_size, source_cohort
-                    FROM induction_metrics_v2
-                    WHERE graph_fingerprint IN ({placeholders})
-                    """,
-                    chunk,
-                ).fetchall()
-            )
-    finally:
-        conn.close()
+        )
 
     by_fp = {
         str(row["graph_fingerprint"]): {
@@ -481,21 +478,15 @@ def _sql_membership_clause(column: str, values: tuple[str, ...]) -> str:
 
 
 def _db_has_trust_columns(db_path: str, table: str) -> bool:
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        return _has_trust_columns(conn, table)
-    finally:
-        conn.close()
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
+    return _has_trust_columns(conn, table)
 
 
 def _program_results_columns(db_path: str) -> set[str]:
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        return _table_columns(conn, "program_results")
-    finally:
-        conn.close()
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
+    return _table_columns(conn, "program_results")
 
 
 def _load_rust_corpus_rows(
@@ -529,8 +520,8 @@ def _load_rust_corpus_rows(
 
 
 def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
     where = [
         "TRIM(COALESCE(graph_json, '')) <> ''",
         "graph_json <> '{}'",
@@ -615,8 +606,8 @@ def _fallback_graph_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
 
 def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
     where = [
         "TRIM(COALESCE(pr.graph_json, '')) <> ''",
         "pr.graph_json <> '{}'",
@@ -685,8 +676,8 @@ def _fallback_predictor_training_rows(db_path: str) -> List[Dict[str, Any]]:
 
 
 def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
     pr_cols = _table_columns(conn, "program_results")
     use_explicit_flags = "data_provenance_json" in pr_cols
     where = [
@@ -749,7 +740,6 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
         WHERE {" AND ".join(where)}
         """
     ).fetchall()
-    conn.close()
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -871,8 +861,8 @@ def _fallback_screening_predictor_rows(db_path: str) -> List[Dict[str, Any]]:
 
 
 def _fallback_graph_analysis_rows(db_path: str) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
     rows = conn.execute(
         """
         SELECT result_id, experiment_id, graph_json, novelty_score, loss_ratio,

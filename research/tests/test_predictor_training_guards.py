@@ -119,6 +119,32 @@ def test_planning_score_promotes_quality_when_pass_is_equal():
     assert good["planning_score"] > bad["planning_score"]
 
 
+def test_graph_predictor_rank_is_clipped_to_trained_log_bounds():
+    model = GraphPredictor(
+        w_gate=np.zeros(1, dtype=np.float32),
+        b_gate=0.0,
+        w_rank=np.array([-10.0], dtype=np.float32),
+        b_rank=0.0,
+        rank_log_min=float(np.log(6.0)),
+        rank_log_max=float(np.log(60.0)),
+        feature_names=["feat_a"],
+        feature_mean=np.zeros(1, dtype=np.float32),
+        feature_std=np.ones(1, dtype=np.float32),
+        op_profiles={},
+        pair_stability={},
+        _trained=True,
+    )
+    original = GraphPredictor._extract_and_normalize
+    try:
+        GraphPredictor._extract_and_normalize = (
+            lambda self, _graph: np.array([10.0], dtype=np.float64)
+        )
+        pred = model.predict_rank({"graph": "ood"})
+    finally:
+        GraphPredictor._extract_and_normalize = original
+    assert pred == np.float64(6.0)
+
+
 class _DummyPhase3Runner(_ExecutionExperimentPhase3Mixin):
     pass
 

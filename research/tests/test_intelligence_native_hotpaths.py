@@ -286,6 +286,46 @@ def test_native_topology_features_match_python_reference():
         assert native[key] == pytest.approx(python_ref[key], rel=1e-6, abs=1e-6)
 
 
+def test_native_edge_op_pairs_match_python_reference():
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_edge_op_pairs_native"):
+        pytest.skip("native edge-pair extractor unavailable")
+
+    graph = _sample_graph()
+    graph_str = gp.json.dumps(graph, sort_keys=True, separators=(",", ":"))
+
+    native = gp._extract_edge_op_pairs_native(graph_str)
+    python_ref = gp._extract_edge_op_pairs_python(graph)
+
+    assert native == python_ref
+
+
+def test_native_topology_feature_batch_matches_single_graph_reference():
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_topology_features_batch_native"):
+        pytest.skip("native topology batch extractor unavailable")
+
+    graph = _sample_graph()
+    op_profiles = _sample_profiles()
+    pair_stability = _sample_pair_stability()
+    native_ctx = gp._make_native_topology_context(op_profiles, pair_stability)
+
+    batch = gp._extract_topology_features_batch(
+        [graph, graph],
+        op_profiles,
+        pair_stability,
+        native_ctx=native_ctx,
+    )
+    single = gp.extract_topology_features(
+        graph,
+        op_profiles,
+        pair_stability,
+        native_ctx=native_ctx,
+    )
+
+    assert batch == [single, single]
+
+
 def test_native_graph_op_batch_matches_python_reference():
     rust = _try_import_rust_scheduler()
     if rust is None or not hasattr(rust, "extract_graph_ops_batch"):

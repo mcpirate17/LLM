@@ -176,52 +176,33 @@ def _count_skip_connections(nodes: Dict[str, dict], depth_map: Dict[str, int]) -
     return count
 
 
-def extract_graph_features(graph_json: Any) -> Dict[str, float]:
-    """Extract feature dict from graph structure for ML prediction.
-
-    Args:
-        graph_json: Either a dict (graph.to_dict()) or a JSON string.
-
-    Returns:
-        Dict of feature_name → float value. All values are numeric.
-        Returns empty dict on parse failure.
-    """
-    if isinstance(graph_json, str):
-        try:
-            graph_json = loads_json(graph_json)
-        except (TypeError, ValueError):
-            return {}
-
-    if not isinstance(graph_json, dict):
-        return {}
-
-    nodes = graph_json.get("nodes") or {}
-    metadata = graph_json.get("metadata") or {}
-
-    if not nodes:
-        return {}
-
-    # Collect all op names
-    _, top_ops = _primitive_metadata()
-
+def _collect_canonical_ops(nodes: Dict[str, dict]) -> List[str]:
     op_names: List[str] = []
     for node in nodes.values():
         op = _canonicalize_op_name(str(node.get("op_name", "")))
         if op and op != "input":
             op_names.append(op)
+    return op_names
 
+
+def _extract_graph_features_python(graph_json: Dict[str, Any]) -> tuple[Dict[str, float], List[str]]:
+    nodes = graph_json.get("nodes") or {}
+    metadata = graph_json.get("metadata") or {}
+
+    if not nodes:
+        return {}, []
+
+    _, top_ops = _primitive_metadata()
+    op_names = _collect_canonical_ops(nodes)
     op_counter = Counter(op_names)
     op_set = set(op_names)
     n_nodes = len(nodes)
     n_ops = len(op_names)
 
-    # Build adjacency for topology features
-    fwd, rev = _build_adjacency(nodes)
+    fwd, _rev = _build_adjacency(nodes)
     n_edges = sum(len(children) for children in fwd.values())
 
     features: Dict[str, float] = {}
-
-    # ── Topology ──
     features["n_nodes"] = float(n_nodes)
     features["n_edges"] = float(n_edges)
     features["n_ops"] = float(n_ops)
@@ -232,12 +213,9 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     features["n_skip_connections"] = float(_count_skip_connections(nodes, depth_map))
     features["edge_density"] = n_edges / max(n_nodes, 1)
 
-    # ── Op histogram (top ops as individual features) ──
     for op in top_ops:
         features[f"op_{op}"] = float(op_counter.get(op, 0))
 
-    # ── Category histogram ──
-    # Infer category from op name prefix or known mappings
     try:
         from .primitives import get_primitive
 
@@ -257,7 +235,6 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     for cat in category_names:
         features[f"cat_{cat}"] = float(cat_counter.get(cat, 0))
 
-    # ── Boolean sentinel features ──
     features["has_attention"] = float(bool(op_set & _ATTENTION_OPS))
     features["has_ssm"] = float(bool(op_set & _SSM_OPS))
     features["has_moe"] = float(bool(op_set & _MOE_OPS))
@@ -266,15 +243,29 @@ def extract_graph_features(graph_json: Any) -> Dict[str, float]:
     features["has_rope"] = float(bool(op_set & _ROPE_OPS))
     features["has_causal_mask"] = float(bool(op_set & _CAUSAL_OPS))
 
-    # ── Metadata features ──
     templates_used = metadata.get("templates_used") or []
     features["n_templates_used"] = float(len(templates_used))
 
-    # Model dim
     model_dim = graph_json.get("model_dim", 0)
     features["model_dim"] = float(model_dim) if model_dim else 0.0
+    return features, op_names
 
-    return features
+
+def extract_graph_features_bundle(graph_json: Any) -> tuple[Dict[str, float], List[str]]:
+    if isinstance(graph_json, str):
+        try:
+            graph_json = loads_json(graph_json)
+        except (TypeError, ValueError):
+            return {}, []
+
+    if not isinstance(graph_json, dict):
+        return {}, []
+
+    return _extract_graph_features_python(graph_json)
+
+
+def extract_graph_features(graph_json: Any) -> Dict[str, float]:
+    return extract_graph_features_bundle(graph_json)[0]
 
 
 _op_stats_cache: Dict[str, Tuple[Dict[str, Tuple[float, float]], float]] = {}

@@ -21,6 +21,9 @@ class _ResultsAutomationMixin:
 
     __slots__ = ()
 
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
     def _auto_recommend(
         self, results: Dict, config: RunConfig, hypothesis: str, nb: LabNotebook
     ):
@@ -204,7 +207,8 @@ class _ResultsAutomationMixin:
                 }
                 if new_op_weights:
                     self._op_weights_overrides.update(new_op_weights)
-                    nb.log_learning_event(
+                    self._log_learning_event_compat(
+                        nb,
                         "auto_op_weights",
                         f"Aria adjusted op weights: {new_op_weights}",
                         op_weights=new_op_weights,
@@ -218,7 +222,8 @@ class _ResultsAutomationMixin:
 
         if grammar_overrides:
             self._grammar_weight_overrides.update(grammar_overrides)
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "auto_grammar_adjusted",
                 f"Aria proactively adjusted grammar weights: {grammar_overrides}",
                 weights=grammar_overrides,
@@ -230,7 +235,8 @@ class _ResultsAutomationMixin:
                 **(self._last_chat_config_overrides or {}),
                 **config_overrides,
             }
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "auto_config_adjusted",
                 f"Aria proactively adjusted config: {config_overrides}",
                 changes=config_overrides,

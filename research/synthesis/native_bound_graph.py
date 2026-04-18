@@ -159,11 +159,12 @@ class BoundNativeSubgraphDispatcher:
                 continue
             if op_name not in BOUND_SUPPORTED_OPS:
                 return False
-            if op_name not in BOUND_STRUCTURAL_OPS:
-                if op_name == "conv_only":
-                    pass
-                elif op_name not in self._supported_ops:
-                    return False
+            if (
+                op_name not in BOUND_STRUCTURAL_OPS
+                and op_name != "conv_only"
+                and op_name not in self._supported_ops
+            ):
+                return False
             if op_name in BOUND_PARAM_OPS:
                 has_param_op = True
                 ir_idx = self._node_id_to_ir_idx.get(node.id)

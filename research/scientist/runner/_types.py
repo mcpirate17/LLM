@@ -163,7 +163,7 @@ class RunConfig:
     # original S1 semantics unless they opt in explicitly.
     enable_stage09_cheap_train_gate: bool = False
     # Synthesis grammar
-    max_depth: int = 16
+    max_depth: int = 18
     max_ops: int = 24
     math_space_weight: float = 2.0
     residual_prob: float = 0.7
@@ -171,6 +171,11 @@ class RunConfig:
     _efficiency_mode: bool = False
     _exotic_mode: bool = False
     _routing_first_mode: bool = False
+    # Capability-first: trunk+sidecar graphs with explicit retrieval path.
+    # Enables ``GrammarConfig.capability_first()`` preset AND flips
+    # ``binding_capable_required`` so screening rejects retrieval-dead
+    # graphs via gate8. Pairs well with ``ARIA_SCORING_VERSION=v8.1``.
+    _capability_first_mode: bool = False
     # Continuous mode
     continuous: bool = False
     max_experiments: int = 100
@@ -430,18 +435,35 @@ class RunConfig:
 
     # GBM pre-screener: LightGBM on graph-structure features, skips hopeless graphs
     # before expensive eval. Gate threshold: skip if P(pass_s1) < gbm_gate_threshold.
+    # F1-optimal operating point is 0.33 (PPV=0.54, recall=0.76, AUC=0.89).
+    # Previous 0.1 was the high-recall point (PPV=0.38) — barely filtered anything.
     gbm_prescreener_enabled: bool = True
-    gbm_gate_threshold: float = 0.1
+    gbm_gate_threshold: float = 0.33
 
-    # Thompson sampling for template selection (alternative to UCB1)
-    use_thompson_sampling: bool = False
+    # Thompson sampling for op/template/motif selection via Bayesian posteriors.
+    # When True, draws from Beta posterior (explore/exploit). When False, uses
+    # posterior mean (exploit-only). Thompson should be the default — it's the
+    # primary reason the Bayesian tracker exists.
+    use_thompson_sampling: bool = True
+
+    # Force all generated graphs to use this template (bypass pick_template).
+    # Set to a template name from TEMPLATES dict, e.g. "transformer_block".
+    forced_template: Optional[str] = None
 
     def copy(self) -> RunConfig:
         """Shallow copy via dataclasses.replace (no dict round-trip)."""
         return dataclasses.replace(self)
 
     def to_dict(self) -> Dict:
-        return {k: getattr(self, k) for k in self.__dataclass_fields__}
+        out = {}
+        for k in self.__dataclass_fields__:
+            v = getattr(self, k)
+            # Guard against member_descriptor leaking from slots-based
+            # nested dataclasses or class-level attribute access.
+            if type(v).__name__ == "member_descriptor":
+                v = str(v)
+            out[k] = v
+        return out
 
     @classmethod
     def from_dict(cls, d: Dict) -> RunConfig:

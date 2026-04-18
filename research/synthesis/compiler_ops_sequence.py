@@ -283,6 +283,283 @@ def _op_rwkv_time_mixing(module, inputs, _):
     return _safe_linear(out, module.W_o)
 
 
+def _op_difficulty_routed_attention(module, inputs, _):
+    """Route only hard tokens through attention; easy tokens stay on the cheap path."""
+    x = inputs[0]
+    if not hasattr(module, "difficulty_proj"):
+        return x
+    B, S, D = x.shape
+    diff_scores = module.difficulty_proj(x).squeeze(-1)
+    diff_gate = torch.sigmoid(diff_scores)
+    easy_out = module.easy_proj(x)
+    hard_mask = diff_gate >= 0.5
+    if not hard_mask.any():
+        return easy_out
+
+    H = min(8, D)
+    if D % H != 0:
+        H = 1
+    d = D // H
+    output = easy_out.clone()
+
+    for b in range(B):
+        hard_idx = torch.nonzero(hard_mask[b], as_tuple=False).squeeze(-1)
+        n_hard = int(hard_idx.numel())
+        if n_hard == 0:
+            continue
+        if n_hard == S:
+            x_h = x[b : b + 1]
+        else:
+            x_h = x[b : b + 1, hard_idx]
+        q = module.q_proj(x_h).reshape(1, n_hard, H, d).transpose(1, 2)
+        k = module.k_proj(x_h).reshape(1, n_hard, H, d).transpose(1, 2)
+        v = module.v_proj(x_h).reshape(1, n_hard, H, d).transpose(1, 2)
+        hard_out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=0.0,
+            is_causal=True,
+        ).transpose(1, 2).reshape(1, n_hard, D)
+        hard_out = module.o_proj(hard_out).squeeze(0)
+        if n_hard == S:
+            blend = diff_gate[b].unsqueeze(-1)
+            output[b] = blend * hard_out + (1 - blend) * easy_out[b]
+            continue
+        blend = diff_gate[b, hard_idx].unsqueeze(-1)
+        output[b, hard_idx] = blend * hard_out + (1 - blend) * easy_out[b, hard_idx]
+    return output
+
+
+def _op_strided_attention(module, inputs, _):
+    """Multi-head attention where each head uses a different stride."""
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    B, S, D = x.shape
+    q = module.q_proj(x)
+    k = module.k_proj(x)
+    v = module.v_proj(x)
+    H = min(8, D)
+    if D % H != 0:
+        H = 1
+    d = D // H
+    q = q.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    k = k.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    v = v.reshape(B, S, H, d).permute(0, 2, 1, 3)
+
+    scale = d ** -0.5
+    out_heads = []
+    for h in range(H):
+        stride = max(1, 2 ** (h % 4))  # strides: 1, 2, 4, 8, 1, 2, 4, 8
+        # Gather strided positions
+        indices = torch.arange(0, S, stride, device=x.device)
+        k_s = k[:, h, indices]  # (B, S//stride, d)
+        v_s = v[:, h, indices]
+        q_h = q[:, h]  # (B, S, d)
+
+        attn = torch.matmul(q_h, k_s.transpose(-2, -1)) * scale
+        # Causal: position i can only attend to strided positions <= i
+        pos_mask = indices.unsqueeze(0) > torch.arange(S, device=x.device).unsqueeze(1)
+        attn = attn.masked_fill(pos_mask.unsqueeze(0), float("-inf"))
+        attn = torch.softmax(attn, dim=-1)
+        out_h = torch.matmul(attn, v_s)  # (B, S, d)
+        out_heads.append(out_h)
+
+    out = torch.cat(out_heads, dim=-1)  # (B, S, D) if H*d == D
+    if out.shape[-1] != D:
+        out = out[..., :D]
+    return module.o_proj(out)
+
+
+def _op_gated_progressive_attention(module, inputs, _):
+    """Compute attention only for tokens whose gate is active enough to justify it."""
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    B, S, D = x.shape
+
+    gate = torch.sigmoid(module.gate_proj(x))
+    token_gate = gate.mean(dim=-1)
+    active_mask = token_gate >= 0.5
+    if not active_mask.any():
+        return x
+
+    H = min(8, D)
+    if D % H != 0:
+        H = 1
+    d = D // H
+    output = x.clone()
+
+    for b in range(B):
+        active_idx = torch.nonzero(active_mask[b], as_tuple=False).squeeze(-1)
+        n_active = int(active_idx.numel())
+        if n_active == 0:
+            continue
+        if n_active == S:
+            x_a = x[b : b + 1]
+        else:
+            x_a = x[b : b + 1, active_idx]
+        q = module.q_proj(x_a).reshape(1, n_active, H, d).transpose(1, 2)
+        k = module.k_proj(x_a).reshape(1, n_active, H, d).transpose(1, 2)
+        v = module.v_proj(x_a).reshape(1, n_active, H, d).transpose(1, 2)
+        attn_out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=0.0,
+            is_causal=True,
+        ).transpose(1, 2).reshape(1, n_active, D)
+        attn_out = module.o_proj(attn_out).squeeze(0)
+        if n_active == S:
+            output[b] = gate[b] * attn_out + (1 - gate[b]) * x[b]
+            continue
+        output[b, active_idx] = (
+            gate[b, active_idx] * attn_out
+            + (1 - gate[b, active_idx]) * x[b, active_idx]
+        )
+    return output
+
+
+def _op_gated_linear_attention(module, inputs, _):
+    """GLA: linear attention with data-dependent decay gates."""
+    x = inputs[0]
+    if not hasattr(module, "q_proj"):
+        return x
+    B, S, D = x.shape
+    q = module.q_proj(x)
+    k = module.k_proj(x)
+    v = module.v_proj(x)
+    g = torch.sigmoid(module.gate_proj(x))  # decay gate
+
+    H = min(8, D)
+    if D % H != 0:
+        H = 1
+    d = D // H
+    q = q.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    k = k.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    v = v.reshape(B, S, H, d).permute(0, 2, 1, 3)
+    g = g.reshape(B, S, H, d).permute(0, 2, 1, 3)
+
+    # Feature map for linear attention (ELU+1 kernel)
+    q = F.elu(q) + 1
+    k = F.elu(k) + 1
+
+    # Chunked GLA: accumulate KV state with gated decay
+    BH = B * H
+    q_f = q.reshape(BH, S, d)
+    k_f = k.reshape(BH, S, d)
+    v_f = v.reshape(BH, S, d)
+    g_f = g.reshape(BH, S, d)
+
+    CHUNK = min(32, S)
+    state = torch.zeros(BH, d, d, device=x.device, dtype=x.dtype)
+    out_chunks = []
+
+    for c_start in range(0, S, CHUNK):
+        c_end = min(c_start + CHUNK, S)
+        q_c = q_f[:, c_start:c_end]
+        k_c = k_f[:, c_start:c_end]
+        v_c = v_f[:, c_start:c_end]
+        g_c = g_f[:, c_start:c_end]
+
+        # Intra-chunk: causal linear attention
+        kv_c = torch.bmm(k_c.transpose(-2, -1), v_c)  # (BH, d, d)
+        # Apply gated decay to accumulated state
+        decay = g_c.mean(dim=1, keepdim=True).squeeze(1)  # avg gate per chunk
+        state = state * decay.unsqueeze(-1) + kv_c
+        # Query against accumulated state
+        out_c = torch.bmm(q_c, state)
+        out_chunks.append(out_c)
+
+    out = torch.cat(out_chunks, dim=1).reshape(B, H, S, d)
+    out = out.permute(0, 2, 1, 3).reshape(B, S, D)
+    return module.o_proj(out)
+
+
+def _op_long_conv_hyena(module, inputs, _):
+    """Hyena: implicit long convolution + multiplicative gating."""
+    x = inputs[0]
+    if not hasattr(module, "in_proj"):
+        return x
+    B, S, D = x.shape
+
+    # Project to gate and value
+    proj = module.in_proj(x)  # (B, S, 2D)
+    gate, val = proj.chunk(2, dim=-1)  # each (B, S, D)
+    gate = torch.sigmoid(gate)
+
+    # Generate implicit convolution kernel from positions
+    positions = torch.linspace(0, 1, S, device=x.device).unsqueeze(-1)  # (S, 1)
+    kernel = module.kernel_net(positions)  # (S, D)
+
+    # Apply convolution via FFT (O(S log S))
+    # Causal: zero out future kernel positions
+    kernel_fft = torch.fft.rfft(kernel, n=2 * S, dim=0)
+    val_fft = torch.fft.rfft(val, n=2 * S, dim=1)
+    conv_out = torch.fft.irfft(kernel_fft.unsqueeze(0) * val_fft, n=2 * S, dim=1)
+    conv_out = conv_out[:, :S, :]  # causal: take first S positions
+
+    # Multiplicative gating
+    out = gate * conv_out
+    return module.out_proj(out)
+
+
+def _op_associative_memory(module, inputs, _):
+    """Modern Hopfield: content-addressed retrieval with exponential capacity."""
+    x = inputs[0]
+    if not hasattr(module, "query_proj"):
+        return x
+    B, S, D = x.shape
+
+    queries = module.query_proj(x)    # (B, S, D)
+    keys = module.memory_proj(x)      # (B, S, D) -- stored patterns
+    values = module.value_proj(x)     # (B, S, D)
+    beta = torch.clamp(module.beta, min=0.1, max=10.0)
+
+    # Hopfield energy: softmax(beta * Q . K^T) . V
+    # Same as attention but with learnable temperature
+    energy = torch.matmul(queries, keys.transpose(-2, -1)) * beta / (D ** 0.5)
+
+    # Causal mask
+    causal = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
+    energy = energy.masked_fill(causal.unsqueeze(0), float("-inf"))
+
+    # Retrieve: softmax over stored patterns
+    retrieval_weights = torch.softmax(energy, dim=-1)
+    retrieved = torch.matmul(retrieval_weights, values)
+
+    return module.o_proj(retrieved)
+
+
+def _op_mixture_of_recursions(module, inputs, _):
+    """MoR: shared block applied variable times per token based on router."""
+    x = inputs[0]
+    if not hasattr(module, "depth_router"):
+        return x
+    B, S, D = x.shape
+    MAX_DEPTH = 4
+
+    # Route: predict depth per token
+    depth_logits = module.depth_router(x.detach())  # (B, S, 4)
+    # Soft routing: weighted combination of 1-4 recursion depths
+    depth_weights = torch.softmax(depth_logits, dim=-1)  # (B, S, 4)
+
+    # Apply shared block iteratively, accumulate weighted outputs
+    h = x
+    accumulated = torch.zeros_like(x)
+    for d in range(MAX_DEPTH):
+        h = module.block_norm(h)
+        g = torch.sigmoid(module.block_gate(h))
+        up = module.block_ffn_up(h)
+        h_new = module.block_ffn_down(g * F.silu(up))
+        h = x + h_new  # residual from input, not previous step
+        # Weight this depth's output by its routing probability
+        accumulated = accumulated + depth_weights[:, :, d:d+1] * h
+
+    return accumulated
+
+
 OP_IMPLS: Dict[str, Callable] = {
     "selective_scan": _op_selective_scan,
     "conv1d_seq": _op_conv1d_seq,
@@ -292,4 +569,11 @@ OP_IMPLS: Dict[str, Callable] = {
     "conv_only": _op_conv_only,
     "gated_delta": _op_gated_delta,
     "rwkv_time_mixing": _op_rwkv_time_mixing,
+    "difficulty_routed_attention": _op_difficulty_routed_attention,
+    "strided_attention": _op_strided_attention,
+    "gated_progressive_attention": _op_gated_progressive_attention,
+    "gated_linear_attention": _op_gated_linear_attention,
+    "long_conv_hyena": _op_long_conv_hyena,
+    "associative_memory": _op_associative_memory,
+    "mixture_of_recursions": _op_mixture_of_recursions,
 }

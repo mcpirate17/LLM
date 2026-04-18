@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import sqlite3
+from sqlite3 import connect as _original_sqlite3_connect
 import subprocess
 import threading
 import time
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from .graph_features import build_graph_feature_rows
+from .native_conn import NativeConnectionWrapper
 from ._shared import (
     LOGGER,
     NOTEBOOK_SCHEMA,
@@ -84,6 +86,34 @@ class _ThreadSafeConnectionWrapper:
 
     def __exit__(self, *args):
         self._conn.__exit__(*args)
+
+
+_WAL_AUTOCHECKPOINT_PATCHED = False
+
+
+def _install_wal_autocheckpoint_guard() -> None:
+    """Monkey-patch sqlite3.connect to set wal_autocheckpoint=0 on all connections.
+
+    When ANY connection to a WAL-mode database closes as the last reader, SQLite
+    auto-checkpoints and deletes the -shm file.  With 30+ call sites across
+    intelligence/, analytics/, and runner/ opening raw connections, we can't
+    patch them all individually.  This global guard ensures every connection
+    disables auto-checkpoint, preventing SHM teardown.
+    """
+    global _WAL_AUTOCHECKPOINT_PATCHED
+    if _WAL_AUTOCHECKPOINT_PATCHED:
+        return
+    _WAL_AUTOCHECKPOINT_PATCHED = True
+
+    def _guarded_connect(*args, **kwargs):
+        conn = _original_sqlite3_connect(*args, **kwargs)
+        try:
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+        except Exception:
+            pass  # non-WAL databases, :memory:, etc.
+        return conn
+
+    sqlite3.connect = _guarded_connect
 
 
 class _NotebookCore:
@@ -181,22 +211,41 @@ class _NotebookCore:
         *,
         skip_migrate: bool = False,
         check_same_thread: bool = False,
+        read_only: bool = False,
     ):
+        """Open the notebook.
+
+        ``read_only=True`` opens via the aria-db read-only manager. Use
+        this from tests, audit scripts, and admin tools that only query —
+        it skips the writer flock and cannot trigger the close-time WAL
+        teardown that previously stranded writer data on the long-running
+        dashboard process. Write attempts from a read-only notebook will
+        raise at the aria-db layer instead of silently dropping.
+        """
+        _install_wal_autocheckpoint_guard()
         self.db_path = self.resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._is_memory = ":memory:" in str(self.db_path)
-        raw_conn = sqlite3.connect(
-            str(self.db_path),
-            timeout=10.0,
-            check_same_thread=check_same_thread,
-        )
-        self._configure_sqlite_connection(
-            raw_conn,
-            db_path=self.db_path,
-            role="primary",
-        )
-        raw_conn.row_factory = sqlite3.Row
-        self.conn = _ThreadSafeConnectionWrapper(raw_conn)
+        self._read_only = bool(read_only)
+
+        if self._is_memory:
+            # In-memory DBs can't use the native manager (no file path).
+            # Fall back to the old Python wrapper for tests.
+            raw_conn = sqlite3.connect(
+                ":memory:",
+                timeout=10.0,
+                check_same_thread=False,
+            )
+            raw_conn.execute("PRAGMA foreign_keys=ON")
+            raw_conn.row_factory = sqlite3.Row
+            self.conn = _ThreadSafeConnectionWrapper(raw_conn)
+            self._use_native = False
+        else:
+            self.conn = NativeConnectionWrapper(
+                str(self.db_path), read_only=self._read_only
+            )
+            self._use_native = True
+
         self._batch_depth = 0
         self._program_results_columns: Optional[set[str]] = None
         self._leaderboard_columns: Optional[set[str]] = None
@@ -207,8 +256,9 @@ class _NotebookCore:
         self._writer_thread_started = False
         db_key = str(self.db_path)
         cls = type(self)
-        self._ensure_schema_bootstrap(db_key=db_key)
-        if not skip_migrate and db_key not in cls._migrated_paths:
+        if not self._read_only:
+            self._ensure_schema_bootstrap(db_key=db_key)
+        if not skip_migrate and not self._read_only and db_key not in cls._migrated_paths:
             self._migrate()
             cls._migrated_paths.add(db_key)
 
@@ -292,10 +342,13 @@ class _NotebookCore:
                     writer_conn.execute(sql, params)
                 batch.append(item)
 
-                if len(batch) >= 50 or (time.time() - last_commit > 1.0 and batch):
-                    writer_conn.commit()
-                    batch = []
-                    last_commit = time.time()
+                # Commit after every write to avoid holding the exclusive lock.
+                # In DELETE journal mode, an uncommitted transaction blocks all
+                # readers on other connections, causing deadlocks with the
+                # screening thread's concurrent notebook queries.
+                writer_conn.commit()
+                batch = []
+                last_commit = time.time()
 
             except queue.Empty:
                 if batch:
@@ -356,6 +409,18 @@ class _NotebookCore:
     def _submit_write(self, sql: str, params: Any):
         """Submit a write task to the background queue."""
         self._invalidate_dashboard_summary_cache()
+        if getattr(self, "_use_native", False):
+            # Delegate to the Rust writer thread.
+            mgr = self.conn._mgr
+            if (
+                isinstance(params, list)
+                and params
+                and isinstance(params[0], (list, tuple))
+            ):
+                mgr.submit_write_many(sql, params)
+            else:
+                mgr.submit_write(sql, tuple(params) if params else ())
+            return
         self._ensure_writer_thread()
         self._write_queue.put((sql, params))
 
@@ -504,6 +569,9 @@ class _NotebookCore:
         Useful in tests and any code that writes via ``_submit_write`` then
         immediately reads back via the main ``self.conn``.
         """
+        if getattr(self, "_use_native", False):
+            self.conn._mgr.flush_writes(timeout)
+            return
         # Put a sentinel-like marker and wait for drain
         flush_event = threading.Event()
         self._write_queue.put(("__flush__", flush_event))
@@ -1052,6 +1120,14 @@ class _NotebookCore:
         return None
 
     def close(self):
+        if getattr(self, "_use_native", False):
+            # Native mode: stop the Rust writer thread but do NOT close
+            # the connection — it must stay alive to prevent SHM teardown.
+            try:
+                self.conn._mgr.stop_writer()
+            except Exception:
+                pass
+            return
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
         if hasattr(self, "_write_queue") and self._writer_thread_started:

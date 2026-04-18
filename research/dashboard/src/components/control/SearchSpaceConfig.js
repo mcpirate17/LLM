@@ -1,11 +1,19 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import ConfigField from './ConfigField';
+import { apiCall } from '../../services/apiService';
 
 /**
  * Architecture search space, training parameters, and evolutionary strategy config grids.
  */
 function SearchSpaceConfig({ config, updateConfig, isEvolutionMode }) {
   const gridStyle = { background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' };
+  const [templateNames, setTemplateNames] = useState([]);
+
+  useEffect(() => {
+    apiCall('/api/template-names').then(r => r.ok ? r.json() : { names: [] })
+      .then(d => setTemplateNames(d.names || []))
+      .catch(() => {});
+  }, []);
 
   return (
     <>
@@ -23,6 +31,16 @@ function SearchSpaceConfig({ config, updateConfig, isEvolutionMode }) {
         </ConfigField>
         <ConfigField label="Layers">
           <input type="number" min="1" max="12" value={config.n_layers} onChange={(e) => updateConfig('n_layers', parseInt(e.target.value))} />
+        </ConfigField>
+        <ConfigField label="Force Template" title="Force all generated graphs to use this template. Leave blank for normal weighted selection.">
+          <select
+            value={config.forced_template || ''}
+            onChange={(e) => updateConfig('forced_template', e.target.value || null)}
+            style={{ maxWidth: 220 }}
+          >
+            <option value="">-- auto --</option>
+            {templateNames.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
         </ConfigField>
       </div>
 

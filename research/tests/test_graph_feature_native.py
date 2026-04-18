@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-aria_scheduler = pytest.importorskip(
-    "aria_scheduler",
-    reason="aria_scheduler Rust module not available",
-)
-
 
 def test_native_graph_feature_payload_extracts_expected_fields():
+    from research.scientist.native.core import _try_import_rust_scheduler
+
+    aria_scheduler = _try_import_rust_scheduler()
+    if aria_scheduler is None:
+        pytest.skip("aria_scheduler Rust module not available")
     if not hasattr(aria_scheduler, "extract_graph_feature_payload"):
         pytest.skip("graph feature payload extraction not exported by aria_scheduler")
 

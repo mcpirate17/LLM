@@ -11,6 +11,17 @@ function toneForEvidence(level) {
   return 'var(--accent-red)';
 }
 
+function toneForCategory(cat) {
+  if (cat === 'strong') return 'var(--accent-green)';
+  if (cat === 'decent') return 'var(--accent-blue)';
+  if (cat === 'data-sparse') return 'var(--accent-yellow)';
+  if (cat === 'untested') return 'var(--text-muted)';
+  if (cat === 'reference') return 'var(--accent-cyan, var(--accent-blue))';
+  if (cat === 'exotic') return 'var(--accent-purple, var(--accent-yellow))';
+  if (cat === 'weak') return 'var(--accent-red)';
+  return 'var(--text-muted)';
+}
+
 function metricText(value, digits = 3) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   return Number(value).toFixed(digits);
@@ -44,6 +55,7 @@ function TemplateRow({ row }) {
         <div style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>{row.name}</div>
+            {row.structural_category && <Badge label={row.structural_category} tone={toneForCategory(row.structural_category)} />}
             <Badge label={row.evidence_level || 'unknown'} tone={toneForEvidence(row.evidence_level)} />
           </div>
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
@@ -83,8 +95,19 @@ function TemplateRow({ row }) {
   );
 }
 
+const CATEGORY_ORDER = {
+  strong: 6,
+  decent: 5,
+  reference: 4,
+  exotic: 3,
+  'data-sparse': 2,
+  untested: 1,
+  weak: 0,
+};
+
 const TEMPLATE_COLUMNS = [
   { key: 'name', label: 'Template' },
+  { key: 'structural_category', label: 'Label' },
   { key: 'evidence_level', label: 'Evidence' },
   { key: 'n_used', label: 'Runs' },
   { key: 's0_rate', label: 'S0' },
@@ -113,6 +136,7 @@ const EVIDENCE_ORDER = { insufficient: 0, sparse: 1, building: 2, established: 3
 
 function getTemplateSortValue(row, key) {
   if (key === 'evidence_level') return EVIDENCE_ORDER[row.evidence_level] ?? -1;
+  if (key === 'structural_category') return CATEGORY_ORDER[row.structural_category] ?? -1;
   return row[key];
 }
 
@@ -128,6 +152,7 @@ function TemplateTable({ rows }) {
     return (rows || []).filter((row) => {
       const text = [
         row.name,
+        row.structural_category,
         row.evidence_level,
         row.top_failure_reason,
         ...(row.diagnosis || []),
@@ -188,6 +213,7 @@ function TemplateTable({ rows }) {
             {sortedRows.map((row) => (
               <tr key={row.name}>
                 <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{row.name}</td>
+                <td><Badge label={row.structural_category || '?'} tone={toneForCategory(row.structural_category)} /></td>
                 <td><Badge label={row.evidence_level || 'unknown'} tone={toneForEvidence(row.evidence_level)} /></td>
                 <td style={{ textAlign: 'right' }}>{fmtNumber(row.n_used)}</td>
                 <td style={{ textAlign: 'right' }}>{fmtPct(row.s0_rate, 0)}</td>
@@ -423,11 +449,108 @@ export default function TemplateSlotObservability() {
         {allTemplates.length > 0 ? <TemplateTable rows={allTemplates} /> : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No templates observed yet.</div>}
       </div>
 
+      <RoleSlotRollup rows={allSlots} />
+
       <div style={{ marginTop: 18 }}>
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
             All Slots
         </div>
         {allSlots.length > 0 ? <SlotTable rows={allSlots} /> : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No explicit slot telemetry yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Aggregates slot telemetry by capability role (``role:trunk_compression``,
+ * ``role:global_retrieval``, etc.). These role slots are emitted by the
+ * capability-first templates added 2026-04-16 and ride on the existing
+ * ``slot_classes`` channel. Summing across slot_keys for the same role
+ * gives a clearer "which slot is the bottleneck" signal than reading the
+ * All Slots table one-by-one.
+ */
+function RoleSlotRollup({ rows }) {
+  const roleAgg = useMemo(() => {
+    if (!rows || rows.length === 0) return [];
+    const byRole = new Map();
+    for (const row of rows) {
+      const classes = row.slot_classes || [];
+      const role = classes.find((c) => typeof c === 'string' && c.startsWith('role:'));
+      if (!role) continue;
+      const key = role.slice('role:'.length);
+      const bucket = byRole.get(key) || {
+        role: key,
+        n_used: 0,
+        n_s1: 0,
+        loss_sum: 0,
+        loss_n: 0,
+        motifs: {},
+        templates: new Set(),
+      };
+      const n = row.n_used || 0;
+      bucket.n_used += n;
+      bucket.n_s1 += (row.n_stage1 || Math.round((row.s1_rate || 0) * n)) || 0;
+      if (typeof row.avg_loss_ratio === 'number' && isFinite(row.avg_loss_ratio) && n > 0) {
+        bucket.loss_sum += row.avg_loss_ratio * n;
+        bucket.loss_n += n;
+      }
+      const motif = row.top_selected_motif;
+      if (motif) {
+        bucket.motifs[motif] = (bucket.motifs[motif] || 0) + n;
+      }
+      if (row.template_name) bucket.templates.add(row.template_name);
+      byRole.set(key, bucket);
+    }
+    return Array.from(byRole.values()).map((b) => {
+      const s1_rate = b.n_used > 0 ? b.n_s1 / b.n_used : 0;
+      const avg_loss = b.loss_n > 0 ? b.loss_sum / b.loss_n : null;
+      const topMotif = Object.entries(b.motifs).sort((a, z) => z[1] - a[1])[0];
+      return {
+        role: b.role,
+        n_used: b.n_used,
+        s1_rate,
+        avg_loss,
+        top_motif: topMotif ? `${topMotif[0]} (${topMotif[1]})` : 'n/a',
+        n_templates: b.templates.size,
+      };
+    }).sort((a, b) => b.n_used - a.n_used);
+  }, [rows]);
+
+  if (roleAgg.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>
+        Role Slots (capability-first)
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+        Aggregates <code>role:*</code> slot telemetry emitted by role-slot templates (<code>typed_slot_memory_block</code>, <code>*_retrieval_v2</code>, etc.). Each row sums across every template instance of the role. Use this to spot whether a specific capability slot (e.g. <code>global_retrieval</code>) is dragging the search down.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--text-secondary)', textTransform: 'uppercase', fontSize: 10 }}>
+              <th style={{ textAlign: 'left', padding: '4px 8px' }}>Role</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px' }}>Uses</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px' }}>S1 Rate</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px' }}>Avg Loss</th>
+              <th style={{ textAlign: 'left', padding: '4px 8px' }}>Top Motif</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px' }}>Templates</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roleAgg.map((row) => (
+              <tr key={row.role} style={{ borderTop: '1px solid var(--border)' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 600, color: 'var(--accent-green, var(--text-primary))' }}>{row.role}</td>
+                <td style={{ padding: '4px 8px', textAlign: 'right' }}>{row.n_used}</td>
+                <td style={{ padding: '4px 8px', textAlign: 'right', color: row.s1_rate < 0.15 ? 'var(--accent-red)' : 'var(--text-primary)' }}>{fmtPct(row.s1_rate, 1)}</td>
+                <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmtLoss(row.avg_loss)}</td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{row.top_motif}</td>
+                <td style={{ padding: '4px 8px', textAlign: 'right', color: 'var(--text-muted)' }}>{row.n_templates}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

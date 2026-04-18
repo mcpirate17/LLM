@@ -1,0 +1,21 @@
+[package]
+name = "aria-db"
+version = "0.1.0"
+edition = "2021"
+description = "Native SQLite connection manager — single WAL connection, never closes, prevents SHM teardown"
+
+[lib]
+name = "aria_db"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+rusqlite = { version = "0.31", features = ["bundled", "functions"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+# Advisory flock on a sidecar lockfile. Kernel auto-releases the lock on
+# process exit (including crashes) so stale locks never block restart.
+fs2 = "0.4"
+
+[package.metadata.maturin]
+bindings = "pyo3"

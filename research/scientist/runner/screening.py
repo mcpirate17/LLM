@@ -23,8 +23,9 @@ import torch
 import torch.nn as nn
 
 from ..native_runner import (
-    compile_model_native_first as compile_model,
+    compile_model_native_first as _compile_model_native,
 )
+from ...synthesis.compiler import compile_model as _compile_model_legacy
 from ..native.abi import record_native_abi_parity_result
 from ...synthesis.serializer import graph_from_json
 from ...eval.sandbox import safe_eval
@@ -167,7 +168,14 @@ class _ScreeningMixin:
         if graph_json_str:
             graph = graph_from_json(graph_json_str)
             layer_graphs = [graph] * config.n_layers
-            return compile_model(
+            # Capability-first graphs can segfault the native C/Rust
+            # dispatch path. Use PyTorch compilation for safety.
+            _compiler = (
+                _compile_model_legacy
+                if getattr(config, "_capability_first_mode", False)
+                else _compile_model_native
+            )
+            return _compiler(
                 layer_graphs,
                 vocab_size=config.vocab_size,
                 max_seq_len=seq_len,
@@ -472,16 +480,16 @@ class _ScreeningMixin:
 
             # Complexity-aware search caps: allow multi-lane architectures
             # (triple-lane split3 needs depth ~14, ops ~21).
-            if screened.max_depth > 16:
+            if screened.max_depth > 18:
                 old = screened.max_depth
                 if auto_harden:
-                    screened.max_depth = 16
+                    screened.max_depth = 18
                 _record_issue(
                     key="max_depth",
                     severity="medium",
-                    reason="Capping max_depth at 16 for evolve/novelty (triple-lane templates need ~14).",
+                    reason="Capping max_depth at 18 for evolve/novelty (triple-lane templates need ~14).",
                     old_value=old,
-                    suggested_value=16,
+                    suggested_value=18,
                     risk_points=8,
                     adjusted=auto_harden,
                 )

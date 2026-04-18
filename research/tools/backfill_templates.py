@@ -105,12 +105,24 @@ _NON_ROUTING_TEMPLATES = {
     "attn_spiking_hybrid",
     "linear_attn_sparse_ffn",
     "graph_attn_sparse_ffn",
+    # New attention-style blocks use mixing ops directly but no routing ops.
+    "difficulty_routed_attention_block",
+    "strided_attention_block",
+    "gated_progressive_attention_block",
+    "gated_linear_attention_block",
+    "long_conv_hyena_block",
+    "associative_memory_block",
+    "mixture_of_recursions_block",
+    "codex_ssm_retention_block",
+    "codex_ssm_delta_memory_block",
+    "codex_ssm_mla_gated_block",
+    "codex_ssm_local_recall_block",
 }
 
 _STACK_PHASE_OVERRIDES: dict[str, dict[str, Any]] = {
     # This template already consumes nearly the full screening depth budget
     # on its own; composing two copies in stack mode produces validator
-    # failures ("Too deep: 17/18 > 16") rather than useful backfill data.
+    # failures ("Too deep: 19/20 > 18") rather than useful backfill data.
     "hybrid_sparse_triplet_router": {
         "composition_depth": 1,
     },
@@ -276,8 +288,8 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
                     bucket["eval"] += 1
                     bucket["s0"] += 1 if s0 else 0
                     bucket["s1"] += 1 if s1 else 0
-            except Exception:
-                pass
+            except (json.JSONDecodeError, TypeError):
+                logger.debug("Skipping invalid graph_json while loading template stats")
     except sqlite3.OperationalError as exc:
         logger.warning("program_results scan failed: %s", exc)
         try:
@@ -292,7 +304,7 @@ def get_template_stats(db_path: Path) -> dict[str, dict[str, int]]:
                     "s1": int(s1 or 0),
                 }
         except sqlite3.OperationalError:
-            pass
+            logger.debug("template_stats fallback table unavailable")
     finally:
         db.close()
 
@@ -554,6 +566,11 @@ def run_template_batch_detailed(
     db_path: str,
     weight_mode: str = "uniform",
     phase: str = "isolation",
+    *,
+    model_dim_override: int | None = None,
+    n_layers_override: int | None = None,
+    stage1_steps_override: int | None = None,
+    composition_depth_override: int | None = None,
 ) -> dict[str, Any]:
     """Run the full screening pipeline biased toward a single template."""
     from research.scientist.runner import ExperimentRunner, RunConfig
@@ -570,11 +587,22 @@ def run_template_batch_detailed(
         op_weights, scaffold_cat_weights = _scaffold_guided_priors(db_path)
         cat_weights = scaffold_cat_weights or None
     phase_cfg = _phase_settings(phase, template_name)
+    if n_layers_override is not None:
+        phase_cfg["n_layers"] = int(n_layers_override)
+    if stage1_steps_override is not None:
+        phase_cfg["stage1_steps"] = int(stage1_steps_override)
+    if composition_depth_override is not None:
+        phase_cfg["composition_depth"] = int(composition_depth_override)
 
     config = RunConfig(
         n_programs=n_programs,
         device=device,
         mode="single",
+        model_dim=(
+            int(model_dim_override)
+            if model_dim_override is not None
+            else 256  # RunConfig default; can't use RunConfig.model_dim with slots=True
+        ),
         composition_depth=int(phase_cfg["composition_depth"]),
         n_layers=int(phase_cfg["n_layers"]),
         stage1_steps=int(phase_cfg["stage1_steps"]),
@@ -703,10 +731,24 @@ def run_template_batch(
     db_path: str,
     weight_mode: str = "uniform",
     phase: str = "isolation",
+    *,
+    model_dim_override: int | None = None,
+    n_layers_override: int | None = None,
+    stage1_steps_override: int | None = None,
+    composition_depth_override: int | None = None,
 ) -> int:
     """Compatibility wrapper returning only persisted rows."""
     result = run_template_batch_detailed(
-        template_name, n_programs, device, db_path, weight_mode, phase
+        template_name,
+        n_programs,
+        device,
+        db_path,
+        weight_mode,
+        phase,
+        model_dim_override=model_dim_override,
+        n_layers_override=n_layers_override,
+        stage1_steps_override=stage1_steps_override,
+        composition_depth_override=composition_depth_override,
     )
     return int(result.get("persisted_rows", 0) or 0)
 
@@ -756,6 +798,30 @@ def main():
         default="isolation",
         choices=list(_VALID_PHASES),
         help="Backfill phase: isolation = single-block evidence, stack = survivability under deeper composition",
+    )
+    parser.add_argument(
+        "--model-dim-override",
+        type=int,
+        default=None,
+        help="Override default model_dim for the backfill run.",
+    )
+    parser.add_argument(
+        "--n-layers-override",
+        type=int,
+        default=None,
+        help="Override phase default for n_layers.",
+    )
+    parser.add_argument(
+        "--stage1-steps-override",
+        type=int,
+        default=None,
+        help="Override phase default for stage1_steps.",
+    )
+    parser.add_argument(
+        "--composition-depth-override",
+        type=int,
+        default=None,
+        help="Override phase default for composition_depth.",
     )
     parser.add_argument(
         "--no-refresh",
@@ -942,6 +1008,10 @@ def main():
                     args.db,
                     effective_weight_mode,
                     args.phase,
+                    model_dim_override=args.model_dim_override,
+                    n_layers_override=args.n_layers_override,
+                    stage1_steps_override=args.stage1_steps_override,
+                    composition_depth_override=args.composition_depth_override,
                 )
                 recorded = int(batch_result.get("persisted_rows", 0) or 0)
                 updated_stats = get_template_stats(Path(args.db)).get(name, {})

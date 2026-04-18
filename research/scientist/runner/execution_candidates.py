@@ -399,6 +399,30 @@ class _ExecutionCandidatesMixin:
         """Create a GrammarConfig from a RunConfig with standardized defaults."""
         from ...synthesis.grammar import GrammarConfig
 
+        _forced = getattr(config, "forced_template", None)
+
+        # Capability-first mode: dispatch before routing_first so the stricter
+        # preset wins when both flags are set. Promotes role-slot templates
+        # (trunk+sidecar topology) and turns on gate8_retrieval_dead via
+        # binding_capable_required.
+        if getattr(config, "_capability_first_mode", False):
+            grammar = GrammarConfig.capability_first(model_dim=config.model_dim)
+            if getattr(config, "composition_depth", 0) > 0:
+                grammar.composition_depth = config.composition_depth
+            grammar.max_ops = getattr(config, "max_ops", 20)
+            if op_weights:
+                for op_name, w in op_weights.items():
+                    if w < 1.0:
+                        grammar.op_weights[op_name] = (
+                            grammar.op_weights.get(op_name, 1.0) * w
+                        )
+                    else:
+                        grammar.op_weights.setdefault(op_name, w)
+            if category_weights:
+                grammar.category_weights.update(category_weights)
+            grammar.forced_template = _forced
+            return grammar
+
         # exploit_mode implies routing-first: mandate routing/splits in every graph
         if getattr(config, "exploit_mode", False) or getattr(
             config, "_routing_first_mode", False
@@ -417,6 +441,7 @@ class _ExecutionCandidatesMixin:
                         grammar.op_weights.setdefault(op_name, w)
             if category_weights:
                 grammar.category_weights.update(category_weights)
+            grammar.forced_template = _forced
             return grammar
 
         # Exotic mode: use the exotic preset as base, then layer on learned op_weights
@@ -434,6 +459,7 @@ class _ExecutionCandidatesMixin:
                         grammar.op_weights.setdefault(op_name, w)
             if category_weights:
                 grammar.category_weights.update(category_weights)
+            grammar.forced_template = _forced
             return grammar
 
         # Efficiency mode: use the efficient preset as base
@@ -449,6 +475,7 @@ class _ExecutionCandidatesMixin:
                         grammar.op_weights.setdefault(op_name, w)
             if category_weights:
                 grammar.category_weights.update(category_weights)
+            grammar.forced_template = _forced
             return grammar
 
         # Pick up structured_sparsity_bias from mode recommendation or config
@@ -484,6 +511,7 @@ class _ExecutionCandidatesMixin:
             use_db_weights=config.template_weights
             is None,  # skip DB weights when explicit
             routing_mandatory=config.routing_mandatory,
+            forced_template=getattr(config, "forced_template", None),
         )
         if config.category_weights:
             grammar_kwargs["category_weights"] = dict(config.category_weights)

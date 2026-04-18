@@ -21,7 +21,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-BASE = Path("/home/tim/Projects/LLM")
+BASE = Path(__file__).resolve().parents[2]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -88,9 +88,8 @@ def _read_row_status(report_path: str) -> str:
         return "read_error"
 
 
-def main() -> int:
-    args = _parse_args()
-    run_dir = args.run_dir
+def main_with_args(*, run_dir: str | Path, probe: str, concurrency: int, device: str) -> int:
+    run_dir = Path(run_dir)
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.exists():
         print(f"No manifest at {manifest_path}")
@@ -99,7 +98,7 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text())["rows"]
     total = len(manifest)
     print(
-        f"{args.probe} backfill: {total} entries, concurrency={args.concurrency}, device={args.device}"
+        f"{probe} backfill: {total} entries, concurrency={concurrency}, device={device}"
     )
 
     results_path = run_dir / "results.tsv"
@@ -126,10 +125,10 @@ def main() -> int:
 
     try:
         while pending or active:
-            while len(active) < args.concurrency and pending:
+            while len(active) < concurrency and pending:
                 row = pending.popleft()
                 rid = row["result_id"]
-                info = _launch_worker(run_dir, rid, args.probe, args.device)
+                info = _launch_worker(run_dir, rid, probe, device)
                 info["graph_fingerprint"] = row.get("graph_fingerprint", "")
                 active[rid] = info
 
@@ -236,6 +235,16 @@ def main() -> int:
         for e in errors[:10]:
             print(f"  {e['result_id']}: {e['status']} ({e['elapsed_s']}s)")
     return 0
+
+
+def main() -> int:
+    args = _parse_args()
+    return main_with_args(
+        run_dir=args.run_dir,
+        probe=args.probe,
+        concurrency=int(args.concurrency),
+        device=str(args.device),
+    )
 
 
 if __name__ == "__main__":

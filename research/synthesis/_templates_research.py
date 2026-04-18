@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .graph import ComputationGraph
 from ._template_helpers import (
+    MOTIF_CLASS_CONV,
+    MOTIF_CLASS_EFFICIENT_PROJ,
+    MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_NORM,
     MOTIF_CLASS_SPARSE,
     MotifWeights,
@@ -286,6 +289,11 @@ def tpl_local_attention_block(
         weights,
         op_name="local_window_attn",
         op_config={"window_size": rng.choice(choices)},
+        motif_classes=(
+            MOTIF_CLASS_SPARSE,
+            MOTIF_CLASS_EFFICIENT_PROJ,
+            MOTIF_CLASS_GUARDED_ACT,
+        ),
     )
 
 
@@ -388,6 +396,14 @@ def tpl_rwkv_sparse_chain(
         graph, norm2, rng, [MOTIF_CLASS_SPARSE], weights
     )
     processed = _instantiate_motif(graph, norm2, sparse, rng) if sparse else norm2
+    if graph.nodes[processed].op_name == "feature_sparsity":
+        processed = _add(
+            graph,
+            "linear_proj",
+            [processed],
+            {"out_dim": graph.model_dim},
+            context="rwkv_sparse_chain.sparse_bridge",
+        )
     processed = _fix_dim(graph, processed)
 
     return _residual(graph, mid, processed, context="rwkv_sparse_chain.output")
@@ -769,14 +785,7 @@ def tpl_mamba_reference(
     scanned = _add(
         graph, "selective_scan", [conv_norm], context="mamba_reference.scanned"
     )
-    proj1 = _add(
-        graph,
-        "linear_proj",
-        [scanned],
-        {"out_dim": D},
-        context="mamba_reference.proj1",
-    )
-    mid = _residual(graph, input_id, proj1, context="mamba_reference.mid")
+    mid = _residual(graph, input_id, scanned, context="mamba_reference.mid")
 
     # FFN sub-block
     normed2 = _add(graph, "rmsnorm", [mid], context="mamba_reference.norm2")
@@ -967,27 +976,20 @@ def tpl_dual_axis_block(
     if graph.nodes[input_id].output_shape.dim < 16:
         raise TemplateBuildError("dual_axis_block: requires input dim >= 16")
 
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    normed = _add(graph, "rmsnorm", [input_id], context="dual_axis_block.norm")
 
-    split_a = _add(
-        graph, "split2", [normed], {"part": 0}, context="dual_axis_block.split_a"
+    split_a = _add(graph, "split2", [normed], {"part": 0}, context="dual_axis_block.split_a")
+    split_b = _add(graph, "split2", [normed], {"part": 1}, context="dual_axis_block.split_b")
+    path_a = _add(graph, "rmsnorm", [split_a], context="dual_axis_block.path_a_norm")
+    path_a = _add(graph, "conv1d_seq", [path_a], context="dual_axis_block.path_a")
+    path_b = _add(
+        graph,
+        "linear_proj",
+        [split_b],
+        {"out_dim": graph.nodes[split_b].output_shape.dim},
+        context="dual_axis_block.path_b",
     )
-    split_b = _add(
-        graph, "split2", [normed], {"part": 1}, context="dual_axis_block.split_b"
-    )
-
-    # Path A: sequence mixer on original feature order (half dim from split2).
-    # Must use _BOTTLENECK_CLASSES — ops that adapt to input dim, not model_dim.
-    from ._template_helpers import _BOTTLENECK_CLASSES
-
-    mixer = _pick_compatible_motif_from_classes(
-        graph, split_a, rng, list(_BOTTLENECK_CLASSES), weights
-    )
-    path_a = _instantiate_motif(graph, split_a, mixer, rng) if mixer else split_a
-
-    # Path B: channel shuffle → FFN → channel unshuffle (half dim from split2).
-    path_b = _shuffle_wrap(graph, split_b, rng, _BOTTLENECK_CLASSES, weights)
+    path_b = _add(graph, "gelu", [path_b], context="dual_axis_block.path_b_act")
 
     merged = _add(graph, "concat", [path_a, path_b], context="dual_axis_block.merged")
 

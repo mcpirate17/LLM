@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 from ...eval.fingerprint import compute_gated_fingerprint
+from ...eval.perf_budget import DEFAULT_PERF_BUDGETS, evaluate_perf_budget_gate
 from ...eval.pruning import apply_one_shot_pruning, estimate_lm_ce_loss
 from ...eval.utils import clip_grad_norm, language_model_loss
 from ...training.profiling import TrainingRunProfiler
@@ -42,6 +43,44 @@ from .execution_training_native_boundary import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _nested_metric_present(payload: Dict[str, Any], dotted_key: str) -> bool:
+    node: Any = payload
+    for part in dotted_key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return node is not None
+
+
+def _candidate_perf_budget_verdict(
+    perf_report: Dict[str, Any] | None,
+) -> Dict[str, Any] | None:
+    """Evaluate the screening perf budget against metrics this run produced.
+
+    Stage-1 micro-trains do not always emit the full experiment-level perf
+    report, so avoid failing candidates only because a metric family is absent.
+    When at least one screening_default budget metric is present, evaluate the
+    available subset and return the verdict.
+    """
+    report = perf_report or {}
+    screening_budgets = DEFAULT_PERF_BUDGETS.get("screening_default", {})
+    available = {
+        key: limit
+        for key, limit in screening_budgets.items()
+        if _nested_metric_present(report, key)
+    }
+    if not available:
+        return None
+    verdict = evaluate_perf_budget_gate(
+        report,
+        budget_profile="screening_default",
+        budgets=available,
+    )
+    verdict["partial"] = len(available) < len(screening_budgets)
+    verdict["checked_metrics"] = sorted(available)
+    return verdict
 
 
 class _EntropyGateSampler:
@@ -848,6 +887,7 @@ class _ExecutionTrainingMixin:
         if want_induction_probe or want_binding_probe:
             try:
                 from ...eval.binding_curriculum import (
+                    CURRICULUM_BINDING_PROTOCOL_VERSION,
                     CURRICULUM_BINDING_DISTANCES,
                     CURRICULUM_BINDING_EVAL_BATCH_SIZE,
                     CURRICULUM_BINDING_EVAL_SCREENING,
@@ -855,6 +895,7 @@ class _ExecutionTrainingMixin:
                     CURRICULUM_BINDING_TRAIN_BATCH_SIZE,
                     curriculum_binding_range_profile,
                 )
+                from ...eval.binding_range import binding_range_profile
                 from ...eval.native_induction import (
                     induction_result_metadata,
                     induction_score_gold,
@@ -871,6 +912,13 @@ class _ExecutionTrainingMixin:
 
                 br = None
                 if want_binding_probe:
+                    zero = binding_range_profile(
+                        model,
+                        distances=CURRICULUM_BINDING_DISTANCES,
+                        n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
+                        device=str(dev),
+                        seed=getattr(config, "screening_probe_seed", None),
+                    )
                     br = curriculum_binding_range_profile(
                         model,
                         distances=CURRICULUM_BINDING_DISTANCES,
@@ -904,15 +952,24 @@ class _ExecutionTrainingMixin:
                             getattr(config, "binding_probe_offload_source_model", False)
                         ),
                     )
-                    result["binding_auc"] = br.auc
-                    result["binding_distance_accuracies"] = br.distance_accuracies
+                    result["binding_auc"] = zero.auc
+                    result["binding_distance_accuracies"] = zero.distance_accuracies
                     result["binding_probe_eval_examples"] = (
                         CURRICULUM_BINDING_EVAL_SCREENING
                     )
                     result["binding_probe_distances"] = list(
                         CURRICULUM_BINDING_DISTANCES
                     )
-                    result["binding_probe_elapsed_ms"] = br.elapsed_ms
+                    result["binding_probe_elapsed_ms"] = zero.elapsed_ms
+                    result["binding_auc_curriculum"] = br.auc
+                    result["binding_distance_accuracies_curriculum"] = (
+                        br.distance_accuracies
+                    )
+                    result["binding_probe_curriculum_steps"] = br.train_steps
+                    result["binding_probe_curriculum_elapsed_ms"] = br.elapsed_ms
+                    result["binding_probe_curriculum_protocol_version"] = (
+                        CURRICULUM_BINDING_PROTOCOL_VERSION
+                    )
 
                 # AR probe (~60s, deepcopy + 500 train steps)
                 ar = None
@@ -941,15 +998,15 @@ class _ExecutionTrainingMixin:
                 # Binding composite: 0.4*AR + 0.3*induction + 0.3*binding
                 ar_val = result.get("ar_auc")
                 ind_val = ind.auc if ind is not None else None
-                br_val = br.auc if br is not None else None
-                if ind_val is not None and br_val is not None:
+                bind_val = result.get("binding_auc")
+                if ind_val is not None and bind_val is not None:
                     if ar_val is not None:
                         result["binding_composite"] = round(
-                            0.4 * ar_val + 0.3 * ind_val + 0.3 * br_val, 4
+                            0.4 * ar_val + 0.3 * ind_val + 0.3 * bind_val, 4
                         )
                     else:
                         result["binding_composite"] = round(
-                            0.3 * ind_val + 0.3 * br_val, 4
+                            0.3 * ind_val + 0.3 * bind_val, 4
                         )
 
                 logger.info(
@@ -2595,6 +2652,20 @@ class _ExecutionTrainingMixin:
                 result["perf_report"]["avg_throughput_tok_s"] = float(
                     result["throughput"]
                 )
+            perf_gate = _candidate_perf_budget_verdict(result["perf_report"])
+            if perf_gate is not None:
+                result["perf_budget_gate"] = perf_gate
+                if result.get("passed") and not perf_gate.get("passed", True):
+                    result["passed"] = False
+                    result["error_type"] = "perf_budget_exceeded"
+                    result["error"] = (
+                        "Stage-1 candidate exceeded screening perf budget: "
+                        + ", ".join(
+                            check["metric"]
+                            for check in perf_gate.get("checks", [])
+                            if not check.get("passed", False)
+                        )
+                    )
 
             result["starvation_report"] = starvation_detector.get_summary()
             if kernel_timer.enabled:

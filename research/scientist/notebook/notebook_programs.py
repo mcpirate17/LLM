@@ -3,6 +3,7 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
+import sqlite3
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -250,19 +251,52 @@ class _ProgramsMixin:
     def _ensure_experiment_row(self, experiment_id: Optional[str]) -> None:
         if not experiment_id:
             return
-        row = self.conn.execute(
-            "SELECT 1 FROM experiments WHERE experiment_id = ? LIMIT 1",
-            (experiment_id,),
-        ).fetchone()
-        if row is not None:
-            return
         now = time.time()
-        self.conn.execute(
-            """INSERT INTO experiments
-            (experiment_id, timestamp, experiment_type, status, config_json, started_at)
-            VALUES (?, ?, 'unknown', 'running', ?, ?)""",
-            (experiment_id, now, json.dumps({}), now),
-        )
+        insert_params = (experiment_id, now, json.dumps({}), now)
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM experiments WHERE experiment_id = ? LIMIT 1",
+                (experiment_id,),
+            ).fetchone()
+            if row is not None:
+                return
+            self.conn.execute(
+                """INSERT INTO experiments
+                (experiment_id, timestamp, experiment_type, status, config_json, started_at)
+                VALUES (?, ?, 'unknown', 'running', ?, ?)""",
+                insert_params,
+            )
+            return
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Primary experiment row check/insert failed for %s; retrying direct: %s",
+                experiment_id,
+                exc,
+            )
+
+        try:
+            conn = self._direct_db_conn()
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM experiments WHERE experiment_id = ? LIMIT 1",
+                    (experiment_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        """INSERT INTO experiments
+                        (experiment_id, timestamp, experiment_type, status, config_json, started_at)
+                        VALUES (?, ?, 'unknown', 'running', ?, ?)""",
+                        insert_params,
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Direct experiment row check/insert failed for %s; continuing without placeholder row: %s",
+                experiment_id,
+                exc,
+            )
 
     def upsert_induction_metric_v2(
         self,
@@ -407,24 +441,32 @@ class _ProgramsMixin:
     def add_entry(self, entry: ExperimentEntry) -> str:
         """Add a notebook entry."""
         entry_id = str(uuid.uuid4())[:12]
-        self._ensure_experiment_row(entry.experiment_id)
-        self.conn.execute(
-            """INSERT INTO entries
-            (entry_id, experiment_id, timestamp, entry_type, title, content,
-             metadata_json, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                entry_id,
-                entry.experiment_id,
-                time.time(),
-                entry.entry_type,
-                entry.title,
-                entry.content,
-                json.dumps(entry.metadata),
-                ",".join(entry.tags),
-            ),
+        insert_params = (
+            entry_id,
+            entry.experiment_id,
+            time.time(),
+            entry.entry_type,
+            entry.title,
+            entry.content,
+            json.dumps(entry.metadata),
+            ",".join(entry.tags),
         )
-        self._maybe_commit()
+        try:
+            self._ensure_experiment_row(entry.experiment_id)
+            self.conn.execute(
+                """INSERT INTO entries
+                (entry_id, experiment_id, timestamp, entry_type, title, content,
+                 metadata_json, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                insert_params,
+            )
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Entry write failed for %s; continuing without notebook persistence: %s",
+                entry.experiment_id or "unscoped",
+                exc,
+            )
         return entry_id
 
     # ── Program Results ──
@@ -433,11 +475,19 @@ class _ProgramsMixin:
         """Check if a computation graph has already been evaluated."""
         if not graph_fingerprint:
             return False
-        row = self.conn.execute(
-            "SELECT 1 FROM program_results WHERE graph_fingerprint = ? LIMIT 1",
-            (graph_fingerprint,),
-        ).fetchone()
-        return row is not None
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM program_results WHERE graph_fingerprint = ? LIMIT 1",
+                (graph_fingerprint,),
+            ).fetchone()
+            return row is not None
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Fingerprint lookup failed for %s; treating as unseen: %s",
+                graph_fingerprint,
+                exc,
+            )
+            return False
 
     def get_fingerprint_aggregates(self, graph_fingerprint: str) -> dict:
         """Per-fingerprint replication statistics across all persisted runs.

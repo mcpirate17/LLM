@@ -1,10 +1,71 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import ConfigField from './ConfigField';
 import CategoryWeightsControl from './CategoryWeightsControl';
+import { apiCall } from '../../services/apiService';
 
 const detailPanelStyle = { background: 'rgba(255,255,255,0.01)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' };
 const accentSummary = { fontSize: 13, fontWeight: 600, color: 'var(--accent-blue)', cursor: 'pointer', padding: '4px 0' };
 const mutedSummary = { fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0' };
+
+/**
+ * Composite scoring version selector. Reads the active version from
+ * /api/scoring/version on mount and POSTs changes back. Stays adjacent to
+ * the Capability-First toggle because v8.1 is the companion rebalance.
+ */
+function ScoringVersionSelector() {
+  const [version, setVersion] = useState(null);
+  const [supported, setSupported] = useState([]);
+  const [status, setStatus] = useState('');
+
+  useEffect(() => {
+    apiCall('/api/scoring/version')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && d.version) {
+          setVersion(d.version);
+          setSupported(d.supported || []);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const onChange = (e) => {
+    const next = e.target.value;
+    setStatus('saving…');
+    apiCall('/api/scoring/version', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: next }),
+    })
+      .then(r => r.ok ? r.json() : Promise.reject(r))
+      .then(d => {
+        setVersion(d.version);
+        setStatus(`now ${d.version}`);
+        setTimeout(() => setStatus(''), 2000);
+      })
+      .catch(() => setStatus('save failed'));
+  };
+
+  if (!version) return null;
+
+  return (
+    <div style={{ marginTop: 10, padding: '8px 10px', background: 'rgba(134,193,165,0.04)', borderRadius: 6, border: '1px dashed rgba(134,193,165,0.25)' }}>
+      <ConfigField label="Composite Scoring Version (v8 = default, v8.1 = binding-favoring rebalance)">
+        <select value={version} onChange={onChange} style={{ maxWidth: 180 }}>
+          {(supported.length > 0 ? supported : ['v7', 'v8', 'v8.1']).map(v => (
+            <option key={v} value={v}>{v}</option>
+          ))}
+        </select>
+      </ConfigField>
+      {status && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{status}</div>
+      )}
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
+        v8.1: all-binding-signals-below penalty tightens from ×0.80 to ×0.50; +15% boost when 0.4·ar + 0.3·ind + 0.3·bind ≥ 0.05. Historical rows are not rescored.
+      </div>
+    </div>
+  );
+}
 
 /**
  * Four collapsible `<details>` panels for advanced experiment configuration:
@@ -88,6 +149,17 @@ function AdvancedConfigPanels({ config, updateConfig, onCategoryWeightChange }) 
               </ConfigField>
             </div>
           )}
+        </div>
+        <div style={{ marginTop: 12, padding: 12, background: 'rgba(134,193,165,0.06)', borderRadius: 6, border: '1px solid rgba(134,193,165,0.25)' }}>
+          <ConfigField label="Capability-First Mode (trunk+sidecar graphs, promotes role-slot templates, enables gate8_retrieval_dead; overrides exploit/routing_first preset)">
+            <input type="checkbox" checked={!!config._capability_first_mode} onChange={(e) => updateConfig('_capability_first_mode', e.target.checked)} />
+          </ConfigField>
+          {config._capability_first_mode && (
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              Samples from <code>typed_slot_memory_block</code>, <code>sparse_relation_graph_block</code>, <code>token_program_interpreter_block</code>, and the three <code>*_retrieval_v2</code> variants. Boosts retrieval ops (matmul, outer_product, gather_topk, cosine_similarity, token_type_classifier, entropy_score) and rejects graphs with no content-addressed op at screening. Pair with scoring version v8.1 below for the capability-first composite rebalance.
+            </div>
+          )}
+          <ScoringVersionSelector />
         </div>
       </details>
 

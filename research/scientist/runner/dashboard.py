@@ -50,6 +50,9 @@ _PROGRAM_RESULT_FLUSH_BATCH = 10
 class _DashboardMixin:
     """Dashboard data, live loss curve, telemetry."""
 
+    def _log_learning_event_compat(self, nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
+
     def get_dashboard_data(self) -> Dict:
         """Get all data needed for the React dashboard."""
         nb = self._make_notebook()
@@ -895,7 +898,8 @@ class _DashboardMixin:
                 allow_write=True,
             )
             task_id = task.get("task_id", "unknown")
-            nb.log_learning_event(
+            self._log_learning_event_compat(
+                nb,
                 "proactive_reasoning_agent",
                 f"Spawned agent {task_id} from recommendation reasoning: {reasoning[:200]}",
                 task_id=task_id,

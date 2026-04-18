@@ -250,19 +250,28 @@ class TestV8Dispatcher:
         score = compute_composite()
         assert isinstance(score, (int, float))
 
-    def test_dispatcher_uses_v8(self):
-        """When SCORING_VERSION is v8, dispatcher should use v8."""
-        assert SCORING_VERSION == "v8"
-        # v8 with good understanding metrics should score differently than v7
+    def test_dispatcher_uses_active_version(self):
+        """Dispatcher must route to whichever version SCORING_VERSION names.
+
+        As of 2026-04-17 the default is "v8.1" (capability-first). The test
+        no longer pins a specific version — it pins the dispatcher contract:
+        ``compute_composite`` must equal the direct call to whichever version
+        is active.
+        """
+        from research.scientist.leaderboard_scoring import compute_composite_v8_1
+
+        assert SCORING_VERSION in ("v8", "v8.1")
         kw = dict(
             ppl_screening=8.0,
             tier="validation",
             tinystories_score=0.50,
             diagnostic_score=0.40,
         )
-        v8_direct = compute_composite_v8(**kw)
         dispatched = compute_composite(**kw)
-        assert dispatched == v8_direct
+        if SCORING_VERSION == "v8.1":
+            assert dispatched == compute_composite_v8_1(**kw)
+        else:
+            assert dispatched == compute_composite_v8(**kw)
 
 
 @pytest.mark.unit
@@ -270,9 +279,15 @@ class TestV8UnderstandingGateThresholds:
     """Test the threshold constants used by the understanding gate."""
 
     def test_thresholds_exist(self):
-        assert UNDERSTANDING_MIN_DIAGNOSTIC == 0.15
-        assert UNDERSTANDING_MIN_BINDING == 0.05
-        assert HELLASWAG_RANDOM_CHANCE_GATE == 0.28
+        # Strict capability-first thresholds (audit fix 2026-04-17).
+        # The understanding gate requires UNDERSTANDING_MIN_SIGNALS=2 of the
+        # three signals to clear these strict floors. Soft floors used by the
+        # screening filter live alongside as UNDERSTANDING_SOFT_*. The
+        # noise-floor gate (RANDOM_CHANCE_GATE) was raised 0.28 → 0.30 in
+        # the same pass to sit ~1σ above binomial noise at n=50.
+        assert UNDERSTANDING_MIN_DIAGNOSTIC == 0.30
+        assert UNDERSTANDING_MIN_BINDING == 0.10
+        assert HELLASWAG_RANDOM_CHANCE_GATE == 0.30
 
     def test_pure_perplexity_model_scores_lower(self):
         """A model with only perplexity should score much less in v8 than v7."""

@@ -27,6 +27,29 @@ class _ResultsKnowledgeMixin:
 
     __slots__ = ()
 
+    def _start_experiment_compat(
+        self,
+        *,
+        nb,
+        experiment_type: str,
+        config: Dict[str, Any],
+        hypothesis: Optional[str],
+        research_question: Optional[str],
+        hypothesis_metadata: Optional[Dict[str, Any]],
+        preregistration_id: Optional[str],
+        require_preregistration: bool,
+    ) -> str:
+        start_experiment = object.__getattribute__(nb, "start_experiment")
+        return start_experiment(
+            experiment_type=experiment_type,
+            config=config,
+            hypothesis=hypothesis,
+            research_question=research_question,
+            hypothesis_metadata=hypothesis_metadata,
+            preregistration_id=preregistration_id,
+            require_preregistration=require_preregistration,
+        )
+
     def _maybe_extract_knowledge(
         self, config: RunConfig, nb: LabNotebook, n_experiments: int
     ) -> None:
@@ -616,7 +639,8 @@ class _ResultsKnowledgeMixin:
         # Z17: Reset global native-runner counters between experiments
         reset_native_runner_telemetry()
 
-        return nb.start_experiment(
+        return self._start_experiment_compat(
+            nb=nb,
             experiment_type=experiment_type,
             config=config,
             hypothesis=hypothesis,

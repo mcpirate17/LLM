@@ -117,6 +117,288 @@ class _ObservabilityAccumulator:
     templates_per_graph: List[float]
 
 
+_STRUCTURAL_CATEGORY_CACHE: Dict[str, str] = {}
+
+_REFERENCE_TEMPLATES = frozenset({
+    "gpt2_reference", "mamba_reference", "rwkv_block", "rwkv_double_norm",
+    "rwkv_sparse_chain",
+})
+
+_EXOTIC_TEMPLATES = frozenset({
+    "normalized_matmul", "gated_product", "safe_division", "cosine_scoring",
+    "decay_sequence", "hyp_distance_scoring", "tropical_residual",
+    "tropical_center_block", "geometric_product_block", "residual_difference",
+    "tropical_matmul_block", "gated_minimum", "spiking_residual_block",
+    "spiking_moe_block", "hyperbolic_bridge_block", "poincare_add_bridge",
+    "spiking_stdp_block", "reciprocal_gated", "sign_ste_gated", "log_gated",
+})
+
+_ATTENTION_OPS = frozenset({
+    "softmax_attention", "latent_attention_compressor", "graph_attention",
+    "local_window_attn", "linear_attention", "diff_attention",
+    "MOTIF_CLASS_ATTENTION",
+})
+
+_FFN_OPS = frozenset({
+    "swiglu_mlp", "gelu_mlp", "_FFN_CLASSES", "fused_linear_gelu",
+})
+
+
+def _classify_template_structural(name: str) -> str:
+    """Classify a template by its structural family.
+
+    Families:
+      - reference: GPT-2/Mamba/RWKV baselines
+      - exotic: Non-standard math (tropical, spiking, hyperbolic)
+      - strong: Has attention + FFN + 2+ residuals (parallel mixing ideal)
+      - decent: Has attention + FFN but may be sequential
+      - weak: Missing attention or FFN
+    """
+    if name in _STRUCTURAL_CATEGORY_CACHE:
+        return _STRUCTURAL_CATEGORY_CACHE[name]
+
+    if name in _REFERENCE_TEMPLATES:
+        _STRUCTURAL_CATEGORY_CACHE[name] = "reference"
+        return "reference"
+
+    if name in _EXOTIC_TEMPLATES:
+        _STRUCTURAL_CATEGORY_CACHE[name] = "exotic"
+        return "exotic"
+
+    # Name-based heuristics for known strong patterns
+    # Hybrid templates combine attention with SSM/conv in parallel
+    if "_ssm_hybrid" in name or "_conv_hybrid" in name:
+        _STRUCTURAL_CATEGORY_CACHE[name] = "strong"
+        return "strong"
+
+    # Inspect source code — check both the function itself and any
+    # factory function it delegates to
+    import inspect
+    fn = TEMPLATES.get(name)
+    if fn is None:
+        _STRUCTURAL_CATEGORY_CACHE[name] = "weak"
+        return "weak"
+
+    # Collect source from the function and any wrapper it calls
+    src_parts = []
+    try:
+        src_parts.append(inspect.getsource(fn))
+    except (TypeError, OSError):
+        pass
+
+    # For factory-generated templates, also check the factory function
+    if hasattr(fn, "__wrapped__"):
+        try:
+            src_parts.append(inspect.getsource(fn.__wrapped__))
+        except (TypeError, OSError):
+            pass
+
+    src = "\n".join(src_parts) if src_parts else ""
+    # Also check if the function delegates to a known factory
+    is_factory = (
+        "_tpl_attention_ffn_block" in src
+        or "_tpl_attn_op_chain" in src
+        or "_make_attn_ffn_template" in src
+    )
+
+    has_attention = (
+        any(op in src for op in _ATTENTION_OPS)
+        or is_factory
+        or "_MIXER_CLASSES" in src  # MIXER_CLASSES includes ATTENTION
+    )
+    has_ffn = any(op in src for op in _FFN_OPS) or is_factory
+    n_residuals = src.count("_residual(") + src.count("template_add_residual(")
+
+    # Name-based attention detection for factory-generated templates
+    attn_prefixes = ("attn_", "latent_attn_", "local_attn_", "diff_attn_",
+                     "graph_attn_", "linear_attn_")
+    if any(name.startswith(p) for p in attn_prefixes):
+        has_attention = True
+
+    # Factory-generated attention+FFN blocks are at least decent
+    if is_factory:
+        n_residuals = max(n_residuals, 2)
+
+    # Detect parallel structure
+    has_parallel = (
+        src.count("[normed]") >= 2
+        or src.count("[normed,") >= 1
+        or "|| SSM" in src
+        or "|| state_space" in src
+        or "|| padic" in src
+        or "Path A" in src
+        or "Path B" in src
+        or "MOTIF_CLASS_SSM" in src  # Picks SSM as parallel path
+        or ("state_space" in src and "MOTIF_CLASS_ATTENTION" in src)
+    )
+
+    if has_attention and has_ffn and n_residuals >= 2 and has_parallel:
+        cat = "strong"
+    elif has_attention and has_ffn:
+        cat = "decent"
+    elif has_attention or has_ffn:
+        cat = "weak"
+    else:
+        cat = "weak"
+
+    _STRUCTURAL_CATEGORY_CACHE[name] = cat
+    return cat
+
+
+def _capability_signal_count(row: Dict[str, Any]) -> int:
+    hits = 0
+    if (
+        row.get("avg_validation_loss_ratio") is not None
+        and float(row["avg_validation_loss_ratio"]) <= 0.65
+    ):
+        hits += 1
+    if (
+        row.get("avg_induction_auc") is not None
+        and float(row["avg_induction_auc"]) >= 0.03
+    ):
+        hits += 1
+    if (
+        row.get("avg_binding_auc") is not None
+        and float(row["avg_binding_auc"]) >= 0.05
+    ):
+        hits += 1
+    if row.get("avg_ar_auc") is not None and float(row["avg_ar_auc"]) >= 0.05:
+        hits += 1
+    if (
+        row.get("avg_hellaswag_acc") is not None
+        and float(row["avg_hellaswag_acc"]) >= 0.30
+    ):
+        hits += 1
+    return hits
+
+
+def _reference_metric_baselines(rows: List[Dict[str, Any]]) -> Dict[str, float]:
+    baselines: Dict[str, float] = {}
+    reference_rows = [
+        row
+        for row in rows
+        if row.get("structural_family") == "reference" and (row.get("n_used") or 0) >= 3
+    ]
+    if not reference_rows:
+        return baselines
+
+    lower_is_better = ("avg_validation_loss_ratio", "avg_loss_ratio")
+    higher_is_better = (
+        "avg_induction_auc",
+        "avg_binding_auc",
+        "avg_ar_auc",
+        "avg_hellaswag_acc",
+    )
+    for metric in lower_is_better:
+        vals = [
+            float(row[metric])
+            for row in reference_rows
+            if row.get(metric) is not None and math.isfinite(float(row[metric]))
+        ]
+        if vals:
+            baselines[metric] = min(vals)
+    for metric in higher_is_better:
+        vals = [
+            float(row[metric])
+            for row in reference_rows
+            if row.get(metric) is not None and math.isfinite(float(row[metric]))
+        ]
+        if vals:
+            baselines[metric] = max(vals)
+    return baselines
+
+
+def _reference_beating_metrics(
+    row: Dict[str, Any],
+    baselines: Dict[str, float],
+) -> List[str]:
+    beats: List[str] = []
+    val_lr = row.get("avg_validation_loss_ratio")
+    if (
+        val_lr is not None
+        and "avg_validation_loss_ratio" in baselines
+        and float(val_lr) <= baselines["avg_validation_loss_ratio"] * 0.98
+    ):
+        beats.append("val_loss")
+    train_lr = row.get("avg_loss_ratio")
+    if (
+        train_lr is not None
+        and "avg_loss_ratio" in baselines
+        and float(train_lr) <= baselines["avg_loss_ratio"] * 0.98
+    ):
+        beats.append("train_loss")
+    metric_pairs = (
+        ("avg_induction_auc", "induction"),
+        ("avg_binding_auc", "binding"),
+        ("avg_ar_auc", "ar"),
+        ("avg_hellaswag_acc", "hellaswag"),
+    )
+    for metric, label in metric_pairs:
+        value = row.get(metric)
+        baseline = baselines.get(metric)
+        if (
+            value is not None
+            and baseline is not None
+            and float(value) >= float(baseline) + 0.005
+        ):
+            beats.append(label)
+    return beats
+
+
+def _template_label_from_evidence(
+    row: Dict[str, Any],
+    baselines: Dict[str, float],
+) -> str:
+    family = str(row.get("structural_family") or "")
+    if family == "reference":
+        return "reference"
+    if family == "exotic":
+        return "exotic"
+
+    evidence_level = str(row.get("evidence_level") or "")
+    if evidence_level == "insufficient":
+        return "untested"
+    if evidence_level == "sparse":
+        return "data-sparse"
+
+    unique_fingerprints = int(row.get("unique_fingerprints") or 0)
+    s1_unique_fingerprints = int(row.get("stage1_unique_fingerprints") or 0)
+    repeated_low_loss_count = int(row.get("repeated_low_loss_count") or 0)
+    capability_signal_count = int(row.get("capability_signal_count") or 0)
+    reference_beats = len(row.get("reference_beating_metrics") or [])
+    s1_rate = float(row.get("s1_rate") or 0.0)
+
+    if evidence_level == "building" and (
+        unique_fingerprints < 6 or s1_unique_fingerprints < 2
+    ):
+        return "data-sparse"
+
+    if (
+        evidence_level in {"building", "established"}
+        and unique_fingerprints >= 12
+        and s1_unique_fingerprints >= 6
+        and repeated_low_loss_count >= 4
+        and s1_rate >= 0.20
+        and capability_signal_count >= 2
+        and (reference_beats >= 2 or not baselines)
+    ):
+        return "strong"
+
+    if (
+        unique_fingerprints >= 6
+        and s1_unique_fingerprints >= 2
+        and s1_rate >= 0.12
+        and (
+            capability_signal_count >= 1
+            or repeated_low_loss_count >= 2
+            or reference_beats >= 1
+        )
+    ):
+        return "decent"
+
+    return "weak"
+
+
 def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize a single template's accumulated stats into a result dict."""
     losses = stat["losses"]
@@ -312,9 +594,14 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
         actions.append("Keep sampling while collecting more slot-level evidence.")
     repeated_low_loss_count = sum(1 for v in stage1_losses if v <= 0.45)
     very_low_loss_count = sum(1 for v in stage1_losses if v <= 0.40)
+    structural_category = _classify_template_structural(stat["name"])
     return {
         "name": stat["name"],
+        "structural_family": structural_category,
+        "structural_category": structural_category,
         **core,
+        "unique_fingerprints": int(len(stat.get("fingerprints") or ())),
+        "stage1_unique_fingerprints": int(len(stat.get("stage1_fingerprints") or ())),
         "survivor_loss_median": (
             statistics.median(stage1_losses) if stage1_losses else None
         ),
@@ -325,6 +612,40 @@ def _summarize_template_stat(stat: Dict[str, Any]) -> Dict[str, Any]:
         "failure_reasons": dict(sorted(reasons.items(), key=lambda item: -item[1])[:3]),
         "diagnosis": diagnosis[:3],
         "actions": actions[:3],
+    }
+
+
+def _empty_template_stat(name: str, slot_count: int) -> Dict[str, Any]:
+    """Construct a canonical zero-run template stat payload."""
+    return {
+        "name": str(name),
+        "n_used": 0,
+        "n_stage0": 0,
+        "n_stage05": 0,
+        "n_stage1": 0,
+        "losses": [],
+        "stage1_losses": [],
+        "fingerprints": set(),
+        "stage1_fingerprints": set(),
+        "validation_losses": [],
+        "discovery_losses": [],
+        "novelties": [],
+        "novelty_confidences": [],
+        "induction_aucs": [],
+        "binding_aucs": [],
+        "ar_aucs": [],
+        "hellaswag_accs": [],
+        "screening_hellaswag_accs": [],
+        "screening_wikitext_runs": 0,
+        "screening_wikitext_ok": 0,
+        "failure_reasons": {},
+        "slot_count": int(slot_count or 0),
+        "routing_fast_lane_runs": 0,
+        "routing_fast_lane_ok": 0,
+        "routing_fast_lane_positive": 0,
+        "routing_fast_lane_scores": [],
+        "routing_fast_lane_improvements": [],
+        "routing_fast_lane_slopes": [],
     }
 
 
@@ -363,6 +684,15 @@ class _MiscMixin:
             "multiscale_rich_lane_router": 7,
             # 1 motif slot (norm_wrap) + 10 structural stem/lane/merge slots
             "intelligent_multilane_router": 11,
+            # 1 norm slot + role slots for trunk/controller/write/read/merge/mix/stabilize
+            "typed_slot_memory_block": 7,
+            # 1 norm slot + trunk/controller/retrieval/merge/mix/stabilize
+            "sparse_relation_graph_block": 6,
+            # 1 norm slot + trunk/controller/write/read/merge/mix/stabilize
+            "token_program_interpreter_block": 7,
+            # codex capability-first templates emit explicit structural slots only
+            "codex_ssm_retention_block": 4,
+            "codex_ssm_delta_memory_block": 2,
         }
         template_dir = Path(__file__).resolve().parents[2] / "synthesis"
         template_files = sorted(template_dir.glob("_templates*.py"))
@@ -400,6 +730,7 @@ class _MiscMixin:
             SELECT
                 pr.experiment_id,
                 pr.timestamp,
+                pr.graph_fingerprint,
                 gf.templates_json,
                 gf.motifs_json,
                 gf.slot_usage_json,
@@ -416,6 +747,7 @@ class _MiscMixin:
                 pr.failure_details_json,
                 pr.induction_auc,
                 pr.binding_auc,
+                pr.binding_auc_curriculum,
                 pr.ar_auc,
                 pr.hellaswag_acc,
                 pr.screening_hellaswag_correct,
@@ -431,17 +763,29 @@ class _MiscMixin:
             JOIN program_graph_features gf ON gf.result_id = pr.result_id
             """
         ).fetchall()
-        if not rows:
-            return {
-                "top_templates": [],
-                "struggling_templates": [],
-                "motif_slots": [],
-                "loss_distribution": {},
-                "recommendations": [],
-                "summary": {},
-            }
-
         slot_counts = self._infer_template_slot_counts()
+        if not rows:
+            result = self._assemble_observability_result(
+                _ObservabilityAccumulator(
+                    template_stats={},
+                    motif_stats={},
+                    slot_stats={},
+                    experiment_buckets={},
+                    loss_values=[],
+                    validation_losses=[],
+                    discovery_losses=[],
+                    motifs_per_graph=[],
+                    templates_per_graph=[],
+                ),
+                slot_counts,
+                limit,
+            )
+            self._template_observability_cache[limit] = dict(result)
+            self._template_observability_cache_expires_at = (
+                now + self._TEMPLATE_OBSERVABILITY_TTL_S
+            )
+            return result
+
         acc = self._accumulate_observability_stats(rows, slot_counts)
         result = self._assemble_observability_result(acc, slot_counts, limit)
         self._template_observability_cache[limit] = dict(result)
@@ -520,7 +864,11 @@ class _MiscMixin:
             novelty = row["novelty_score"]
             novelty_confidence = row["novelty_confidence"]
             induction_auc = row["induction_auc"]
-            binding_auc = row["binding_auc"]
+            binding_auc = (
+                row["binding_auc_curriculum"]
+                if row["binding_auc_curriculum"] is not None
+                else row["binding_auc"]
+            )
             ar_auc = row["ar_auc"]
             hellaswag_acc = row["hellaswag_acc"]
             screening_hs_correct = row["screening_hellaswag_correct"]
@@ -557,39 +905,20 @@ class _MiscMixin:
             for template in templates:
                 stat = template_stats.setdefault(
                     str(template),
-                    {
-                        "name": str(template),
-                        "n_used": 0,
-                        "n_stage0": 0,
-                        "n_stage05": 0,
-                        "n_stage1": 0,
-                        "losses": [],
-                        "stage1_losses": [],
-                        "validation_losses": [],
-                        "discovery_losses": [],
-                        "novelties": [],
-                        "novelty_confidences": [],
-                        "induction_aucs": [],
-                        "binding_aucs": [],
-                        "ar_aucs": [],
-                        "hellaswag_accs": [],
-                        "screening_hellaswag_accs": [],
-                        "screening_wikitext_runs": 0,
-                        "screening_wikitext_ok": 0,
-                        "failure_reasons": {},
-                        "slot_count": slot_counts.get(str(template), 0),
-                        "routing_fast_lane_runs": 0,
-                        "routing_fast_lane_ok": 0,
-                        "routing_fast_lane_positive": 0,
-                        "routing_fast_lane_scores": [],
-                        "routing_fast_lane_improvements": [],
-                        "routing_fast_lane_slopes": [],
-                    },
+                    _empty_template_stat(
+                        name=str(template),
+                        slot_count=slot_counts.get(str(template), 0),
+                    ),
                 )
                 stat["n_used"] += 1
                 stat["n_stage0"] += 1 if row["stage0_passed"] else 0
                 stat["n_stage05"] += 1 if row["stage05_passed"] else 0
                 stat["n_stage1"] += 1 if row["stage1_passed"] else 0
+                fingerprint = str(row["graph_fingerprint"] or "").strip()
+                if fingerprint:
+                    stat["fingerprints"].add(fingerprint)
+                    if row["stage1_passed"]:
+                        stat["stage1_fingerprints"].add(fingerprint)
                 if loss_ratio is not None and math.isfinite(loss_ratio):
                     stat["losses"].append(float(loss_ratio))
                     if row["stage1_passed"]:
@@ -742,16 +1071,35 @@ class _MiscMixin:
         limit: int,
     ) -> Dict[str, Any]:
         """Sort, rank, and assemble the final observability result dict."""
-        template_rows = [
-            _summarize_template_stat(stat) for stat in acc.template_stats.values()
-        ]
-        template_rows = [row for row in template_rows if row["n_used"] > 0]
         active_template_names = frozenset(TEMPLATES)
+        template_stats = dict(acc.template_stats)
+        for name in active_template_names:
+            template_stats.setdefault(
+                str(name),
+                _empty_template_stat(
+                    name=str(name),
+                    slot_count=slot_counts.get(str(name), 0),
+                ),
+            )
+        template_rows = [
+            _summarize_template_stat(stat) for stat in template_stats.values()
+        ]
+        reference_baselines = _reference_metric_baselines(template_rows)
+        for row in template_rows:
+            row["capability_signal_count"] = _capability_signal_count(row)
+            row["reference_beating_metrics"] = _reference_beating_metrics(
+                row, reference_baselines
+            )
+            row["structural_category"] = _template_label_from_evidence(
+                row, reference_baselines
+            )
         active_template_rows = [
             row for row in template_rows if row["name"] in active_template_names
         ]
         inactive_template_rows = [
-            row for row in template_rows if row["name"] not in active_template_names
+            row
+            for row in template_rows
+            if row["name"] not in active_template_names and row["n_used"] > 0
         ]
         top_templates = sorted(
             active_template_rows,

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from ..runtime_events import publish_runtime_event
 from ._shared import LOGGER
+from .failure_signature_audits import AUDITED_FALSE_FAILURE_SIGNATURE_SET
 from .notebook_analytics import (
     _ALL_CATEGORIES,
     _cached_extract_op_names,
@@ -265,6 +266,9 @@ class _AdvancedAnalyticsMixin:
         risk_signatures: List[Dict[str, Any]] = []
         critical: List[Dict[str, Any]] = []
         for row in rows:
+            signature = str(row["signature"] or "")
+            if signature in AUDITED_FALSE_FAILURE_SIGNATURE_SET:
+                continue
             positive_support = int(support.get(str(row["signature"]), 0))
             if positive_support < 3:
                 continue
@@ -276,7 +280,7 @@ class _AdvancedAnalyticsMixin:
             if weight is None:
                 continue
             item = {
-                "signature": row["signature"],
+                "signature": signature,
                 "support": total,
                 "fail_rate": round(fail_rate, 4),
                 "positive_support": positive_support,
@@ -584,11 +588,14 @@ class _AdvancedAnalyticsMixin:
         ).fetchall()
         blocklist: Dict[str, float] = {}
         for row in rows:
+            signature = str(row[0] or "")
+            if signature in AUDITED_FALSE_FAILURE_SIGNATURE_SET:
+                continue
             total = row[1] + row[2]
             fail_rate = row[1] / total if total else 0
             if fail_rate >= max_fail_rate:
                 penalty = 0.05 + 0.25 * (1.0 - fail_rate) / (1.0 - max_fail_rate)
-                blocklist[row[0]] = round(penalty, 2)
+                blocklist[signature] = round(penalty, 2)
         return blocklist
 
     def get_op_rehabilitation_cache(
@@ -651,7 +658,9 @@ class _AdvancedAnalyticsMixin:
                 },
             )
         except Exception as exc:
-            LOGGER.warning("Runtime telemetry publish failed for %s: %s", event_type, exc)
+            LOGGER.warning(
+                "Runtime telemetry publish failed for %s: %s", event_type, exc
+            )
 
         try:
             self.conn.execute(

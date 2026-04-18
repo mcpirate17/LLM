@@ -43,3 +43,48 @@ def test_sample_micro_train_batch_falls_back_to_random(monkeypatch):
     assert batch.dtype == torch.long
     assert int(batch.min().item()) >= 0
     assert int(batch.max().item()) < 17
+
+
+def test_next_token_cross_entropy_prefers_native(monkeypatch):
+    class _Native:
+        def next_token_cross_entropy(self, logits, targets, vocab_size, reduction):
+            assert vocab_size == 9
+            assert reduction == "mean"
+            return torch.tensor(3.25)
+
+    monkeypatch.setattr(
+        backfill,
+        "next_token_cross_entropy",
+        lambda logits, targets, vocab_size: _Native().next_token_cross_entropy(
+            logits, targets, vocab_size, "mean"
+        ),
+    )
+    logits = torch.randn(2, 4, 9)
+    targets = torch.randint(0, 9, (2, 4))
+
+    loss = backfill.next_token_cross_entropy(logits, targets, 9)
+
+    assert float(loss.item()) == 3.25
+
+
+def test_clip_grad_norm_prefers_native(monkeypatch):
+    class _Native:
+        def clip_grad_norm_(self, grads, max_norm, eps):
+            assert len(grads) == 1
+            assert max_norm == 1.0
+            assert eps == 1e-6
+            return torch.tensor(0.5)
+
+    model = torch.nn.Linear(4, 4)
+    model.weight.grad = torch.ones_like(model.weight)
+    monkeypatch.setattr(
+        backfill,
+        "clip_grad_norm_",
+        lambda model_or_params, max_norm=1.0: _Native().clip_grad_norm_(
+            [model.weight.grad], max_norm, 1e-6
+        ),
+    )
+
+    total_norm = backfill.clip_grad_norm_(model, 1.0)
+
+    assert float(total_norm.item()) == 0.5

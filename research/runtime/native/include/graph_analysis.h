@@ -98,6 +98,18 @@ int32_t aria_graph_build_dim_flow_flags(
     int32_t* op_kind_flags,
     int32_t* full_dim_flags);
 
+int32_t aria_graph_mutation_plan(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    int32_t n_opcodes,
+    const int32_t* opcode_category_ids,
+    const int32_t* opcode_input_arities,
+    uint64_t rng_seed,
+    int32_t max_pairs,
+    int32_t* out_node_indices,
+    int32_t* out_candidate_opcodes,
+    int32_t* out_pair_count);
+
 #ifdef __cplusplus
 }
 #endif

@@ -22,6 +22,7 @@ from research.synthesis.compiler_ops_routing import (
     _op_swiglu_mlp,
 )
 from research.synthesis.compiler_op_utils import _record_routing_telemetry
+from research.synthesis.true_routing_ops import _dispatch_to_experts
 
 pytestmark = pytest.mark.unit
 
@@ -206,6 +207,78 @@ class TestRoutingTelemetryResize:
                 branch_weights=torch.randn(5),
             )
         assert tuple(module.routing_telemetry["branch_weight_sum"].shape) == (5,)
+
+
+class TrueRoutingModule(nn.Module):
+    def __init__(self, gate_weight: torch.Tensor):
+        super().__init__()
+        self.gate_weight = nn.Parameter(gate_weight)
+        self.op_name = "hetero_moe"
+
+
+class TestTrueRoutingDispatch:
+    def test_dispatch_handles_empty_expert_chunks(self):
+        module = TrueRoutingModule(
+            torch.tensor(
+                [
+                    [1.0, 0.0],
+                    [-1.0, 0.0],
+                    [-2.0, 0.0],
+                ]
+            )
+        )
+        x = torch.tensor([[[2.0, 1.0], [3.0, 4.0], [5.0, 6.0]]])
+
+        out = _dispatch_to_experts(
+            x,
+            module,
+            3,
+            [
+                lambda chunk, _module: chunk + 10.0,
+                lambda chunk, _module: chunk + 20.0,
+                lambda chunk, _module: chunk + 30.0,
+            ],
+        )
+
+        expected_weight = torch.sigmoid(x[..., :1])
+        expected = (x + 10.0) * expected_weight
+        assert out.shape == x.shape
+        assert torch.allclose(out, expected)
+
+    def test_dispatch_restores_original_token_order(self):
+        module = TrueRoutingModule(
+            torch.tensor(
+                [
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [-1.0, -1.0],
+                ]
+            )
+        )
+        x = torch.tensor(
+            [
+                [[3.0, 0.0], [0.0, 3.0], [-2.0, -1.0], [2.0, 1.0]],
+            ]
+        )
+
+        expert_fns = [
+            lambda chunk, _module: chunk + 1.0,
+            lambda chunk, _module: chunk + 2.0,
+            lambda chunk, _module: chunk + 3.0,
+        ]
+        out = _dispatch_to_experts(x, module, 3, expert_fns)
+
+        logits = torch.nn.functional.linear(x, module.gate_weight)
+        weights, indices = logits.topk(1, dim=-1)
+        weights = torch.sigmoid(weights)
+        expected = torch.empty_like(x)
+        for b in range(x.shape[0]):
+            for s in range(x.shape[1]):
+                expert_idx = int(indices[b, s, 0].item())
+                expected[b, s] = expert_fns[expert_idx](x[b, s : s + 1], module)[0]
+                expected[b, s] *= weights[b, s, 0]
+
+        assert torch.allclose(out, expected)
 
 
 class TestSwiGLUMlp:

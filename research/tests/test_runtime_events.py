@@ -14,12 +14,16 @@ from research.scientist.persona import get_aria
 from research.scientist.runner.control_actions import _ControlActionsMixin
 from research.scientist.runner.core import _CoreMixin
 from research.scientist.runner.control_start import _ControlStartMixin
-from research.scientist.runner.continuous_investigation import _ContinuousInvestigationMixin
+from research.scientist.runner.continuous_investigation import (
+    _ContinuousInvestigationMixin,
+)
 from research.scientist.runner.continuous_loop import _ContinuousLoopMixin
 from research.scientist.runner.continuous_modes import _ContinuousModesMixin
 from research.scientist.runner.continuous_validation import _ContinuousValidationMixin
 from research.scientist.runner.cycle import _CycleMixin
-from research.scientist.runner.execution_investigation import _ExecutionInvestigationMixin
+from research.scientist.runner.execution_investigation import (
+    _ExecutionInvestigationMixin,
+)
 from research.scientist.runner.execution_screening import _ExecutionScreeningMixin
 from research.scientist.runner.execution_search import _ExecutionSearchMixin
 from research.scientist.runner.execution_validation import _ExecutionValidationMixin
@@ -35,17 +39,19 @@ from research.scientist.runtime_events import (
     build_runtime_event,
     get_runtime_event_services,
     publish_lifecycle_event,
-    publish_runtime_event,
     start_runtime_event_projector,
     stop_runtime_event_services,
 )
 from research.scientist.runtime_events.projectors import LifecycleProjector
 from research.scientist.runtime_events.spool import NdjsonEventSpool
+from research.scientist.runtime_events.bootstrap import _replay_registry_from_spool
 
 pytestmark = pytest.mark.unit
 
 
-def _make_event(event_type: str, *, run_id: str = "exp-1", sequence: int = 0, **payload):
+def _make_event(
+    event_type: str, *, run_id: str = "exp-1", sequence: int = 0, **payload
+):
     return build_runtime_event(
         event_type=event_type,
         producer="test",
@@ -205,6 +211,90 @@ def test_lifecycle_projector_is_idempotent_on_replay(tmp_path):
     assert count == 1
 
 
+def test_lifecycle_projector_skips_conflicting_terminal_event_without_poisoning_state(
+    tmp_path,
+):
+    spool = NdjsonEventSpool(tmp_path / "runtime_events")
+    bus = RuntimeEventBus(spool=spool)
+    conn = _make_projector_db()
+    projector = LifecycleProjector(conn, spool=spool)
+
+    bus.publish(
+        _make_event(
+            "experiment_started",
+            sequence=1,
+            experiment_type="screening",
+            config={"seed": 9},
+        )
+    )
+    bus.publish(
+        _make_event(
+            "experiment_completed",
+            sequence=2,
+            completed_at=20.0,
+            results={"total": 1},
+        )
+    )
+    bus.publish(
+        _make_event(
+            "experiment_failed",
+            sequence=3,
+            completed_at=21.0,
+            error="stale failure",
+        )
+    )
+
+    status = projector.replay_once()
+
+    assert status.applied_count == 2
+    row = conn.execute(
+        "SELECT status FROM experiments WHERE experiment_id = ?",
+        ("exp-1",),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "completed"
+    applied_types = [
+        r[0]
+        for r in conn.execute(
+            "SELECT event_type FROM applied_runtime_events WHERE run_id = ? ORDER BY applied_at ASC",
+            ("exp-1",),
+        ).fetchall()
+    ]
+    assert applied_types == ["experiment_started", "experiment_completed"]
+
+
+def test_registry_replay_ignores_conflict_without_warning_noise(tmp_path, caplog):
+    spool = NdjsonEventSpool(tmp_path / "runtime_events")
+    bus = RuntimeEventBus(spool=spool)
+    registry = RuntimeLifecycleRegistry()
+
+    bus.publish(_make_event("experiment_started", sequence=1))
+    bus.publish(_make_event("experiment_completed", sequence=2, completed_at=20.0))
+    bus.publish(
+        _make_event(
+            "experiment_failed",
+            sequence=3,
+            completed_at=21.0,
+            error="stale failure",
+        )
+    )
+
+    with caplog.at_level("DEBUG"):
+        _replay_registry_from_spool(registry, spool)
+
+    state = registry.get("exp-1")
+    assert state is not None
+    assert state.status == "completed"
+    assert "Ignoring conflicting lifecycle event during registry replay" in caplog.text
+    assert "Traceback" not in caplog.text
+    assert not [
+        rec
+        for rec in caplog.records
+        if rec.levelname == "WARNING"
+        and "Ignoring conflicting lifecycle event during registry replay" in rec.message
+    ]
+
+
 def test_bus_typed_subscriptions_only_receive_matching_events(tmp_path):
     spool = NdjsonEventSpool(tmp_path / "runtime_events")
     bus = RuntimeEventBus(spool=spool)
@@ -323,7 +413,9 @@ class _ResumeRunner(_ControlStartMixin):
         return
 
     def _make_notebook(self) -> LabNotebook:
-        return LabNotebook(self.notebook_path, skip_migrate=True, check_same_thread=False)
+        return LabNotebook(
+            self.notebook_path, skip_migrate=True, check_same_thread=False
+        )
 
     def _emit_event(self, event_type: str, data: dict) -> None:
         self.events.append((event_type, data))
@@ -868,7 +960,8 @@ def test_explicit_terminal_publish_then_notebook_sink_does_not_double_append(tmp
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert len(records) == 1
@@ -878,7 +971,9 @@ def test_explicit_terminal_publish_then_notebook_sink_does_not_double_append(tmp
         nb.close()
 
 
-def test_explicit_search_terminal_publish_then_notebook_sink_does_not_double_append(tmp_path):
+def test_explicit_search_terminal_publish_then_notebook_sink_does_not_double_append(
+    tmp_path,
+):
     nb = _make_status_notebook(tmp_path)
     try:
         exp_id = nb.start_experiment(
@@ -903,7 +998,8 @@ def test_explicit_search_terminal_publish_then_notebook_sink_does_not_double_app
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert len(records) == 1
@@ -914,7 +1010,9 @@ def test_explicit_search_terminal_publish_then_notebook_sink_does_not_double_app
         nb.close()
 
 
-def test_explicit_investigation_terminal_publish_then_notebook_sink_does_not_double_append(tmp_path):
+def test_explicit_investigation_terminal_publish_then_notebook_sink_does_not_double_append(
+    tmp_path,
+):
     nb = _make_status_notebook(tmp_path)
     try:
         exp_id = nb.start_experiment(
@@ -939,7 +1037,8 @@ def test_explicit_investigation_terminal_publish_then_notebook_sink_does_not_dou
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert len(records) == 1
@@ -950,7 +1049,9 @@ def test_explicit_investigation_terminal_publish_then_notebook_sink_does_not_dou
         nb.close()
 
 
-def test_explicit_screening_terminal_publish_then_notebook_sink_does_not_double_append(tmp_path):
+def test_explicit_screening_terminal_publish_then_notebook_sink_does_not_double_append(
+    tmp_path,
+):
     nb = _make_status_notebook(tmp_path)
     try:
         exp_id = nb.start_experiment(
@@ -975,7 +1076,8 @@ def test_explicit_screening_terminal_publish_then_notebook_sink_does_not_double_
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert len(records) == 1
@@ -986,7 +1088,9 @@ def test_explicit_screening_terminal_publish_then_notebook_sink_does_not_double_
         nb.close()
 
 
-def test_explicit_continuous_validation_terminal_publish_then_notebook_sink_does_not_double_append(tmp_path):
+def test_explicit_continuous_validation_terminal_publish_then_notebook_sink_does_not_double_append(
+    tmp_path,
+):
     nb = _make_status_notebook(tmp_path)
     try:
         exp_id = nb.start_experiment(
@@ -1011,7 +1115,8 @@ def test_explicit_continuous_validation_terminal_publish_then_notebook_sink_does
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert len(records) == 1
@@ -1022,7 +1127,9 @@ def test_explicit_continuous_validation_terminal_publish_then_notebook_sink_does
         nb.close()
 
 
-def test_explicit_continuous_investigation_terminal_publish_then_notebook_sink_does_not_double_append(tmp_path):
+def test_explicit_continuous_investigation_terminal_publish_then_notebook_sink_does_not_double_append(
+    tmp_path,
+):
     nb = _make_status_notebook(tmp_path)
     try:
         exp_id = nb.start_experiment(
@@ -1047,18 +1154,23 @@ def test_explicit_continuous_investigation_terminal_publish_then_notebook_sink_d
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert len(records) == 1
-        assert records[0].payload["error"] == "continuous investigation boundary failure"
+        assert (
+            records[0].payload["error"] == "continuous investigation boundary failure"
+        )
         assert records[0].payload["mode"] == "continuous_investigation"
     finally:
         stop_runtime_event_services(nb.db_path)
         nb.close()
 
 
-def test_explicit_continuous_modes_terminal_publish_uses_canonical_completed_event(tmp_path):
+def test_explicit_continuous_modes_terminal_publish_uses_canonical_completed_event(
+    tmp_path,
+):
     nb = _make_status_notebook(tmp_path)
     try:
         exp_id = nb.start_experiment(
@@ -1124,7 +1236,8 @@ def test_cycle_abort_compensation_publishes_failure_without_double_append(tmp_pa
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert failed_exp_id == exp_id
@@ -1159,7 +1272,8 @@ def test_shutdown_compensation_interrupts_without_direct_runner_sql(tmp_path):
         records = [
             record.event
             for record in get_runtime_event_services(nb.db_path).spool.replay()
-            if record.event.run_id == exp_id and record.event.event_type == "experiment_failed"
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
         ]
 
         assert row is not None
@@ -1237,7 +1351,11 @@ def test_start_continuous_publishes_session_event(tmp_path):
             runner._thread.join(timeout=1.0)
 
         records = list(get_runtime_event_services(nb.db_path).spool.replay())
-        session_events = [r.event for r in records if r.event.event_type == "continuous_session_started"]
+        session_events = [
+            r.event
+            for r in records
+            if r.event.event_type == "continuous_session_started"
+        ]
 
         assert session_id == "continuous"
         assert session_events
@@ -1264,7 +1382,9 @@ def test_continuous_limit_reached_publishes_completed_session_event(tmp_path):
 
         records = list(get_runtime_event_services(nb.db_path).spool.replay())
         session_events = [
-            r.event for r in records if r.event.event_type == "continuous_session_completed"
+            r.event
+            for r in records
+            if r.event.event_type == "continuous_session_completed"
         ]
 
         assert session_events
@@ -1298,7 +1418,9 @@ def test_continuous_stop_publishes_stopped_session_event(tmp_path):
 
         records = list(get_runtime_event_services(nb.db_path).spool.replay())
         session_events = [
-            r.event for r in records if r.event.event_type == "continuous_session_stopped"
+            r.event
+            for r in records
+            if r.event.event_type == "continuous_session_stopped"
         ]
 
         assert session_events
@@ -1323,7 +1445,9 @@ def test_continuous_fatal_thread_publishes_failed_session_event(tmp_path):
 
         records = list(get_runtime_event_services(nb.db_path).spool.replay())
         session_events = [
-            r.event for r in records if r.event.event_type == "continuous_session_failed"
+            r.event
+            for r in records
+            if r.event.event_type == "continuous_session_failed"
         ]
 
         assert session_events
@@ -1341,10 +1465,20 @@ def test_start_investigation_emits_canonical_and_mode_specific_start_events(tmp_
         from research.scientist.runner._types import RunConfig
 
         runner = _ModeStartRunner(nb.db_path)
-        exp_id = runner.start_investigation(["rid-1"], RunConfig(), hypothesis="inspect")
+        exp_id = runner.start_investigation(
+            ["rid-1"], RunConfig(), hypothesis="inspect"
+        )
         event_types = [event_type for event_type, _data in runner.events]
-        canonical = [data for event_type, data in runner.events if event_type == "experiment_started"]
-        mode_specific = [data for event_type, data in runner.events if event_type == "investigation_started"]
+        canonical = [
+            data
+            for event_type, data in runner.events
+            if event_type == "experiment_started"
+        ]
+        mode_specific = [
+            data
+            for event_type, data in runner.events
+            if event_type == "investigation_started"
+        ]
 
         assert exp_id == "mode-exp"
         assert "experiment_started" in event_types
@@ -1443,8 +1577,16 @@ def test_resume_publishes_started_for_interrupted_run_id(tmp_path):
 @pytest.mark.parametrize(
     ("method_name", "method_args", "expected_mode_event"),
     [
-        ("start_investigation", (["rid-1"], RunConfig(), "investigate"), "investigation_started"),
-        ("start_validation", (["rid-1"], RunConfig(), "validate"), "validation_started"),
+        (
+            "start_investigation",
+            (["rid-1"], RunConfig(), "investigate"),
+            "investigation_started",
+        ),
+        (
+            "start_validation",
+            (["rid-1"], RunConfig(), "validate"),
+            "validation_started",
+        ),
         ("start_scale_up", (["rid-1"], RunConfig(), "scale"), "scale_up_started"),
         ("start_evolution", (RunConfig(), "evolve"), "evolution_started"),
         ("start_novelty_search", (RunConfig(), "novel"), "novelty_started"),
@@ -1539,9 +1681,11 @@ def test_projector_worker_background_start_and_stop():
 
     def replay_once():
         calls.append(time.time())
+
         class Status:
             degraded = False
             applied_count = 0
+
         return Status()
 
     worker = ProjectorWorker(replay_once, interval_seconds=0.05)

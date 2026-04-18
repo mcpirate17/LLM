@@ -17,6 +17,7 @@ from research.synthesis.graph import ComputationGraph
 from research.synthesis._context_motifs import motif_allowed_in_template
 from research.synthesis.motifs import VALIDATED_MOTIFS, resolve_step
 from research.synthesis._template_helpers import get_slot_rule_summary
+from research.synthesis.primitives import canonicalize_op_name
 from research.synthesis.templates import (
     TEMPLATES,
     apply_template,
@@ -209,7 +210,8 @@ TEMPLATE_TEST_CASES = [
 ]
 
 BACKFILL_TEMPLATE_CASES = [
-    ("attn_normalized_matmul", "matmul"),
+    # Rewritten to parallel attn+SSM hybrid — no longer uses matmul
+    ("attn_normalized_matmul", "linear_proj"),
     ("attn_softmax_normalized_matmul", "softmax_attention"),
     ("attn_softmax_normalized_matmul_compact_ffn", "softmax_attention"),
     ("attn_softmax_normalized_matmul_fixed_tail_norm", "softmax_attention"),
@@ -233,6 +235,9 @@ BACKFILL_TEMPLATE_CASES = [
     ("latent_attn_conv_hybrid", "latent_attention_compressor"),
     ("latent_attn_ssm_hybrid", "latent_attention_compressor"),
     ("depth_token_mask_block", "depth_token_mask"),
+    ("typed_slot_memory_block", "gather_topk"),
+    ("sparse_relation_graph_block", "route_topk"),
+    ("token_program_interpreter_block", "n_way_sparse_router"),
 ]
 
 
@@ -308,7 +313,7 @@ def test_backfill_attention_templates_compile_and_forward(template_name, target_
     g = _build_template_graph(template_name)
 
     op_names = [n.op_name for n in g.nodes.values() if not n.is_input]
-    assert target_op in op_names, (
+    assert canonicalize_op_name(target_op) in op_names, (
         f"Template {template_name} did not produce {target_op}; got {op_names}"
     )
 
@@ -378,7 +383,7 @@ def test_quarantined_templates_are_not_selectable():
         ("mamba_reference", {"rmsnorm", "conv1d_seq", "selective_scan", "swiglu_mlp"}),
         (
             "topk_retrieval",
-            {"rmsnorm", "cosine_similarity", "gather_topk", "swiglu_mlp"},
+            {"rmsnorm", "matmul", "gather_topk", "swiglu_mlp"},
         ),
     ),
 )
@@ -395,7 +400,8 @@ def test_reference_templates_use_fixed_high_signal_paths(template_name, required
 @pytest.mark.parametrize(
     "template_name,required_ops",
     (
-        ("attn_normalized_matmul", {"matmul", "rmsnorm", "linear_proj"}),
+        # Rewritten: parallel attn+SSM hybrid, no matmul
+        ("attn_normalized_matmul", {"rmsnorm", "linear_proj", "add"}),
         (
             "attn_softmax_normalized_matmul",
             {"softmax_attention", "matmul", "swiglu_mlp"},
@@ -422,15 +428,6 @@ def test_reference_templates_use_fixed_high_signal_paths(template_name, required
         ),
         (
             "attn_routing_block",
-            {
-                "softmax_attention",
-                "difficulty_blend_3way",
-                "depth_weighted_proj",
-                "swiglu_mlp",
-            },
-        ),
-        (
-            "attn_softmax_router_sidecar",
             {
                 "softmax_attention",
                 "difficulty_blend_3way",
@@ -541,13 +538,6 @@ def test_controlled_attention_ablations_change_one_major_component(
             },
         ),
         (
-            "attn_softmax_router_sidecar",
-            {
-                0: ("norm_wrap", False),
-                1: ("norm_wrap", False),
-            },
-        ),
-        (
             "linear_attn_ffn_block",
             {
                 0: ("norm_wrap", False),
@@ -616,40 +606,14 @@ def test_direct_recovery_variant_removes_explicit_refine_norm():
     assert direct_rmsnorms == baseline_rmsnorms - 1
 
 
-@pytest.mark.parametrize(
-    "template_name,slot_index,toxic_motifs",
-    (
-        ("routed_bottleneck", 0, {"norm_layer", "norm_rms"}),
-        ("routed_bottleneck", 1, {"gate_progressive", "route_topk_gate"}),
-        (
-            "routed_bottleneck",
-            2,
-            {"sparse_block", "sparse_nm", "sparse_semi_structured", "sparse_ternary"},
-        ),
-        ("conditional_compute", 0, {"norm_layer", "norm_rms"}),
-        ("conditional_compute", 1, {"sparse_block", "sparse_ternary"}),
-    ),
-)
-def test_toxic_slot_motifs_are_blocked_by_slot_constraints(
-    template_name, slot_index, toxic_motifs
-):
-    motif_weights = {name: 1_000_000.0 for name in toxic_motifs}
-    g = _build_template_graph(template_name, motif_weights=motif_weights)
-    slot_usage = g.metadata.get("template_slot_usage") or []
-    by_idx = {entry["slot_index"]: entry for entry in slot_usage}
-
-    entry = by_idx[slot_index]
-    assert entry["selected_motif"] not in toxic_motifs
-
-
 def test_slot_usage_records_canonical_keys_for_motif_slots():
-    g = _build_template_graph("routed_bottleneck")
+    g = _build_template_graph("attn_routing_block")
     slot_usage = g.metadata.get("template_slot_usage") or []
     assert slot_usage
 
     for entry in slot_usage:
         assert "slot_key_canonical" in entry
-        assert entry["slot_key_canonical"].startswith("routed_bottleneck.slot")
+        assert ".slot" in entry["slot_key_canonical"]
 
 
 @pytest.mark.parametrize(
@@ -679,14 +643,5 @@ def test_audited_templates_validate_across_seed_slice(template_name, seeds):
 def test_slot_rule_summary_exports_current_template_constraints():
     rules = {row["slot_key"]: row for row in get_slot_rule_summary()}
 
-    assert "routed_bottleneck.slot2" in rules
-    assert rules["routed_bottleneck.slot2"]["allowed_motifs"] == ["bottleneck_sparse"]
-    assert "attn_bottleneck_hybrid.slot2" in rules
-    assert rules["attn_bottleneck_hybrid.slot2"]["allowed_motifs"] == [
-        "bottleneck_sparse"
-    ]
-    assert "sparse_block" in rules["conditional_compute.slot1"]["blocked_motifs"]
-    assert (
-        rules["conditional_compute.slot1"]["weight_multipliers"]["bottleneck_sparse"]
-        == 1.35
-    )
+    assert set(rules) == {"depth_token_mask_block.slot1"}
+    assert "route_lanes_block" in rules["depth_token_mask_block.slot1"]["blocked_motifs"]

@@ -21,6 +21,7 @@ All threshold comparisons in this file use loss_ratio (= RAW).
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from typing import Any, Dict, List
@@ -41,6 +42,7 @@ from .auto_escalate_flow import (
     merge_unique_result_rows,
     prepare_validation_candidates,
     screening_candidates_above_threshold,
+    screening_understanding_filter,
     sparse_dense_learning_signal,
     strong_investigation_candidates,
 )
@@ -63,6 +65,10 @@ logger = logging.getLogger(__name__)
 
 class _ResultsAutoEscalatePhase7Mixin:
     """Branch helpers extracted from _auto_escalate orchestration."""
+
+    @staticmethod
+    def _log_learning_event_compat(nb: LabNotebook, *args, **kwargs) -> None:
+        getattr(nb, "log_learning_event")(*args, **kwargs)
 
     @staticmethod
     def _meets_empirical_validation_override(
@@ -375,7 +381,8 @@ class _ResultsAutoEscalatePhase7Mixin:
         delta = 0.1
         old_bias = config.grammar_config.structured_sparsity_bias
         config.grammar_config.update_bias(delta)
-        nb.log_learning_event(
+        _ResultsAutoEscalatePhase7Mixin._log_learning_event_compat(
+            nb,
             event_type="grammar_adjustment",
             description=f"Boosted structured_sparsity_bias by {delta} due to sparse dominance.",
             old_weights={"bias": old_bias},
@@ -428,6 +435,86 @@ class _ResultsAutoEscalatePhase7Mixin:
                 logger.info(
                     "Auto-escalate: skipped %d already-investigated archs", skipped
                 )
+
+        # Content-addressed gate: reject candidates whose graph has no
+        # attention-class op. Without Q·K content-based routing, a model
+        # cannot develop induction heads or binding — it will score well
+        # on loss but fail every understanding probe at investigation.
+        from ..runner.execution_screening_graphs import CONTENT_ADDRESSED_OPS
+
+        def _has_content_addressing(row: Dict) -> bool:
+            gj = row.get("graph_json")
+            if not gj:
+                # No graph_json on the row at all — can't audit; allow but log.
+                # This is rare; usually a fingerprint-only row from a backfill.
+                logger.debug(
+                    "Auto-escalate content-addressing: no graph_json for %s; allowing",
+                    str(row.get("result_id", ""))[:12],
+                )
+                return True
+            try:
+                data = json.loads(gj)
+                nodes = data.get("nodes", {})
+                ops = {
+                    n.get("op_name")
+                    for n in nodes.values()
+                    if isinstance(n, dict) and n.get("op_name")
+                }
+                return bool(ops & CONTENT_ADDRESSED_OPS)
+            except (json.JSONDecodeError, TypeError) as e:
+                # Malformed graph_json should not be a free pass: a model that
+                # cannot be audited cannot be promoted. Reject and log.
+                logger.warning(
+                    "Auto-escalate content-addressing: graph_json unparseable for %s "
+                    "(%s); rejecting candidate",
+                    str(row.get("result_id", ""))[:12],
+                    e,
+                )
+                return False
+
+        before_ca = len(top)
+        top = [r for r in top if _has_content_addressing(r)]
+        ca_rejected = before_ca - len(top)
+        if ca_rejected:
+            logger.info(
+                "Auto-escalate: rejected %d candidates with no content-addressed ops "
+                "(no attention/matmul → cannot develop induction/binding)",
+                ca_rejected,
+            )
+
+        # Capability filter: drop candidates whose probes have already been
+        # measured and are uniformly near-zero. Most candidates pass this
+        # vacuously (no probe data yet); the filter only fires for
+        # re-screened rows whose investigation tier proved them incapable.
+        try:
+            _top_ids = [str(r.get("result_id")) for r in top if r.get("result_id")]
+            _, _, _understanding_pre = investigation_support_data(nb, _top_ids)
+            before_uf = len(top)
+            kept: list = []
+            blocked = 0
+            for r in top:
+                rid = str(r.get("result_id") or "")
+                allow, reason = screening_understanding_filter(
+                    _understanding_pre.get(rid, {})
+                )
+                if allow:
+                    kept.append(r)
+                else:
+                    blocked += 1
+                    logger.info(
+                        "Auto-escalate: rejected %s at screening understanding filter (%s)",
+                        rid[:12],
+                        reason,
+                    )
+            top = kept
+            if blocked:
+                logger.info(
+                    "Auto-escalate: %d/%d candidates blocked by screening understanding filter",
+                    blocked,
+                    before_uf,
+                )
+        except (sqlite3.OperationalError, ValueError, TypeError) as _uf_err:
+            logger.debug("Screening understanding filter skipped: %s", _uf_err)
 
         # v7 screening → investigation threshold: see thresholds.py for calibration.
         _screening_floor = V7_SCREENING_THRESHOLD

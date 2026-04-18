@@ -3,10 +3,11 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from ._native_runtime import load_native_runtime_lib
 
 logger = logging.getLogger(__name__)
 
@@ -18,32 +19,10 @@ def load_native_nsga_lib() -> Any:
     if _NATIVE_NSGA_LIB is not False:
         return _NATIVE_NSGA_LIB
 
-    lib = None
-    for path in (
-        Path(__file__).resolve().parents[1]
-        / "runtime"
-        / "native"
-        / "build"
-        / "libaria_native_runtime.so",
-        Path(__file__).resolve().parents[1]
-        / "runtime"
-        / "native"
-        / "build_current"
-        / "libaria_native_runtime.so",
-    ):
-        if not path.exists():
-            continue
-        try:
-            candidate = ctypes.CDLL(
-                str(path), mode=os.RTLD_LOCAL | getattr(os, "RTLD_LAZY", 1)
-            )
-            if hasattr(candidate, "aria_nsga_crowding_distance") and hasattr(
-                candidate, "aria_nsga_pareto_ranks"
-            ):
-                lib = candidate
-                break
-        except OSError as exc:
-            logger.debug("Failed to load NSGA runtime at %s: %s", path, exc)
+    lib = load_native_runtime_lib(
+        ("aria_nsga_crowding_distance", "aria_nsga_pareto_ranks"),
+        logger,
+    )
     if lib is None:
         _NATIVE_NSGA_LIB = None
         return None

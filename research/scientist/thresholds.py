@@ -132,29 +132,36 @@ WIKITEXT_REF_PPL_CEILING: float = 72.68
 # HellaSwag commonsense reasoning gate
 # ---------------------------------------------------------------------------
 
-# Accuracy at or below this = random chance → hard score cap.
-# Random chance on 4-choice = 25%; 28% allows minimal signal above noise.
-# Calibrated 2026-03-31.
-HELLASWAG_RANDOM_CHANCE_GATE: float = 0.28
+# Accuracy at or below this = noise floor → hard score cap, and the
+# screening_understanding_filter treats it as "probe measured but near-random".
+# 4-choice random is 25%; binomial std at n=50 is ~6%, so 0.30 is roughly
+# 1σ above random — tighter than the old 0.28 (~0.5σ) but still below GPT-2
+# Small's ~0.31 so the noise floor doesn't start rejecting GPT-2-class models.
+# Hard promotion gate lives in UNDERSTANDING_MIN_HELLASWAG (0.40).
+# Calibrated 2026-04-17.
+HELLASWAG_RANDOM_CHANCE_GATE: float = 0.30
 
 # Score cap applied when hellaswag_acc <= HELLASWAG_RANDOM_CHANCE_GATE.
 # Prevents perplexity-only optimizers from dominating the leaderboard.
 HELLASWAG_RANDOM_CHANCE_CAP: float = 25.0
 
 # GPT-2 Small HellaSwag acc_norm (~31%) — frontier anchor for S-curve.
-# Measured on d_model=768, 12-layer, 124M param reference.
+# Measured on d_model=768, 12-layer, 124M param reference. Retained as the
+# empirical reference for scoring; the capability-first promotion gate is
+# decoupled (UNDERSTANDING_MIN_HELLASWAG = 0.40).
 HELLASWAG_FRONTIER_ACC: float = 0.31
 
 # Investigation hard gate: 100 examples → lower variance than screening.
-# Models still at random chance with 100 examples → investigation_failed.
-# Calibrated 2026-03-31. Slightly below screening gate because more
-# examples reduce noise (binomial std ~4.3% at n=100 vs ~6% at n=50).
-HELLASWAG_INVESTIGATION_GATE: float = 0.27
+# Models still at noise-floor with 100 examples → investigation_failed.
+# Calibrated 2026-04-17 (moved with RANDOM_CHANCE_GATE). Slightly below the
+# screening gate because more examples reduce noise (binomial std ~4.3% at
+# n=100 vs ~6% at n=50), so the same true accuracy reads tighter here.
+HELLASWAG_INVESTIGATION_GATE: float = 0.29
 
 # Validation hard gate: 200 examples → even lower variance.
-# Blocks investigation→validation promotion for random-chance models.
-# Calibrated 2026-03-31.
-HELLASWAG_VALIDATION_GATE: float = 0.27
+# Blocks investigation→validation promotion for noise-floor models.
+# Calibrated 2026-04-17.
+HELLASWAG_VALIDATION_GATE: float = 0.29
 
 # ---------------------------------------------------------------------------
 # Binding probe thresholds (associative recall + induction head)
@@ -183,19 +190,27 @@ BINDING_BINDING_AUC_SOFT_GATE: float = 0.10
 BINDING_LOCAL_ONLY_PENALTY: float = 0.80  # multiply composite by this
 
 # ---------------------------------------------------------------------------
-# v8 understanding gate (investigation → validation)
-# At least ONE of these must be met for promotion. OR gate — lenient.
-# Calibrated 2026-04-01: diagnostic≥0.15 catches any model that can do
-# at least one synthetic task; binding≥0.05 means non-trivial composite;
-# hellaswag > random means above-chance commonsense reasoning.
+# Understanding gate (investigation → validation)
+# Calibrated 2026-04-17 (capability-first): require ≥ UNDERSTANDING_MIN_SIGNALS
+# of {diagnostic, binding_composite, hellaswag} above the corresponding strict
+# threshold. The legacy soft thresholds (diagnostic=0.15 etc.) are retained
+# below for diagnostic logging only — they are NOT the promotion criterion.
 # ---------------------------------------------------------------------------
-UNDERSTANDING_MIN_DIAGNOSTIC: float = 0.15
-UNDERSTANDING_MIN_BINDING: float = 0.05
-# UNDERSTANDING_MIN_HELLASWAG uses HELLASWAG_RANDOM_CHANCE_GATE (0.28)
+UNDERSTANDING_MIN_DIAGNOSTIC: float = 0.30  # ~2× above 4-task random (~12.5%)
+UNDERSTANDING_MIN_BINDING: float = 0.10  # 2× the soft AND-gate floor
+UNDERSTANDING_MIN_HELLASWAG: float = 0.40  # ~15% above 4-way random
+UNDERSTANDING_MIN_SIGNALS: int = 2  # of 3, must clear the gate above
+
+# Soft diagnostic-only thresholds, used for screening filtering and logging:
+# the screening→investigation filter only blocks candidates whose probes have
+# been measured AND are all below these soft floors (i.e., demonstrably weak).
+UNDERSTANDING_SOFT_DIAGNOSTIC: float = 0.15
+UNDERSTANDING_SOFT_BINDING: float = 0.05
+# UNDERSTANDING_SOFT_HELLASWAG uses HELLASWAG_RANDOM_CHANCE_GATE (0.28)
 
 # ---------------------------------------------------------------------------
-# v8 scoring thresholds (placeholder — calibrate after backfill)
-# These will be set by running backfill_v8_scores.py on frontier references.
+# v8 scoring thresholds (placeholder — calibrate after the current scoring backfill)
+# These should be re-estimated from frontier references before enforcing them.
 # ---------------------------------------------------------------------------
 V8_SCREENING_THRESHOLD: float = 50.0  # placeholder, ~90% of v8 frontier avg
 V8_INVESTIGATION_THRESHOLD: float = 95.0  # placeholder, ~90% of v8 frontier avg

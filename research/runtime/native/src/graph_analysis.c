@@ -3,6 +3,31 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint64_t _aria_xorshift64(uint64_t* state) {
+  uint64_t x = *state;
+  if (x == 0U) {
+    x = 0x9E3779B97F4A7C15ULL;
+  }
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  *state = x;
+  return x;
+}
+
+static void _aria_shuffle_int32(int32_t* values, int32_t n_values, uint64_t* state) {
+  int32_t i;
+  if (values == NULL || n_values <= 1 || state == NULL) {
+    return;
+  }
+  for (i = n_values - 1; i > 0; --i) {
+    int32_t j = (int32_t)(_aria_xorshift64(state) % (uint64_t)(i + 1));
+    int32_t tmp = values[i];
+    values[i] = values[j];
+    values[j] = tmp;
+  }
+}
+
 static void _zero_result(aria_graph_analysis_result_t* out) {
   if (out == NULL) {
     return;
@@ -297,6 +322,158 @@ int32_t aria_graph_validate_edges(
     }
   }
 
+  return 0;
+}
+
+int32_t aria_graph_mutation_plan(
+    int32_t n_nodes,
+    const int32_t* op_codes,
+    int32_t n_opcodes,
+    const int32_t* opcode_category_ids,
+    const int32_t* opcode_input_arities,
+    uint64_t rng_seed,
+    int32_t max_pairs,
+    int32_t* out_node_indices,
+    int32_t* out_candidate_opcodes,
+    int32_t* out_pair_count) {
+  int32_t node_idx;
+  int32_t total_pairs = 0;
+  int32_t eligible_node_count = 0;
+  int32_t write_idx = 0;
+  int32_t* eligible_nodes = NULL;
+  int32_t* candidate_opcodes = NULL;
+  uint64_t rng_state = rng_seed;
+
+  if (out_pair_count == NULL || n_nodes < 0 || n_opcodes <= 0 || op_codes == NULL ||
+      opcode_category_ids == NULL || opcode_input_arities == NULL) {
+    return -1;
+  }
+
+  *out_pair_count = 0;
+  if (n_nodes == 0) {
+    return 0;
+  }
+
+  for (node_idx = 0; node_idx < n_nodes; ++node_idx) {
+    int32_t current_opcode = op_codes[node_idx];
+    int32_t current_category;
+    int32_t current_arity;
+    int32_t candidate_count = 0;
+    int32_t opcode_idx;
+
+    if (current_opcode <= 0 || current_opcode >= n_opcodes) {
+      continue;
+    }
+    current_category = opcode_category_ids[current_opcode];
+    current_arity = opcode_input_arities[current_opcode];
+    if (current_category < 0 || current_arity <= 0) {
+      continue;
+    }
+
+    for (opcode_idx = 1; opcode_idx < n_opcodes; ++opcode_idx) {
+      if (opcode_idx == current_opcode) {
+        continue;
+      }
+      if (opcode_category_ids[opcode_idx] != current_category) {
+        continue;
+      }
+      if (opcode_input_arities[opcode_idx] != current_arity) {
+        continue;
+      }
+      candidate_count += 1;
+    }
+    if (candidate_count == 0) {
+      continue;
+    }
+    eligible_node_count += 1;
+    total_pairs += candidate_count;
+  }
+
+  *out_pair_count = total_pairs;
+  if (total_pairs == 0) {
+    return 0;
+  }
+  if (max_pairs < total_pairs || out_node_indices == NULL || out_candidate_opcodes == NULL) {
+    return -1;
+  }
+
+  eligible_nodes = (int32_t*)malloc((size_t)eligible_node_count * sizeof(int32_t));
+  candidate_opcodes = (int32_t*)malloc((size_t)n_opcodes * sizeof(int32_t));
+  if (eligible_nodes == NULL || candidate_opcodes == NULL) {
+    free(eligible_nodes);
+    free(candidate_opcodes);
+    *out_pair_count = 0;
+    return -1;
+  }
+
+  {
+    int32_t eligible_idx = 0;
+    for (node_idx = 0; node_idx < n_nodes; ++node_idx) {
+      int32_t current_opcode = op_codes[node_idx];
+      int32_t current_category;
+      int32_t current_arity;
+      int32_t opcode_idx;
+      int32_t candidate_count = 0;
+
+      if (current_opcode <= 0 || current_opcode >= n_opcodes) {
+        continue;
+      }
+      current_category = opcode_category_ids[current_opcode];
+      current_arity = opcode_input_arities[current_opcode];
+      if (current_category < 0 || current_arity <= 0) {
+        continue;
+      }
+      for (opcode_idx = 1; opcode_idx < n_opcodes; ++opcode_idx) {
+        if (opcode_idx == current_opcode) {
+          continue;
+        }
+        if (opcode_category_ids[opcode_idx] != current_category) {
+          continue;
+        }
+        if (opcode_input_arities[opcode_idx] != current_arity) {
+          continue;
+        }
+        candidate_count += 1;
+      }
+      if (candidate_count > 0) {
+        eligible_nodes[eligible_idx++] = node_idx;
+      }
+    }
+  }
+
+  _aria_shuffle_int32(eligible_nodes, eligible_node_count, &rng_state);
+
+  for (node_idx = 0; node_idx < eligible_node_count; ++node_idx) {
+    int32_t graph_node_idx = eligible_nodes[node_idx];
+    int32_t current_opcode = op_codes[graph_node_idx];
+    int32_t current_category = opcode_category_ids[current_opcode];
+    int32_t current_arity = opcode_input_arities[current_opcode];
+    int32_t opcode_idx;
+    int32_t candidate_count = 0;
+
+    for (opcode_idx = 1; opcode_idx < n_opcodes; ++opcode_idx) {
+      if (opcode_idx == current_opcode) {
+        continue;
+      }
+      if (opcode_category_ids[opcode_idx] != current_category) {
+        continue;
+      }
+      if (opcode_input_arities[opcode_idx] != current_arity) {
+        continue;
+      }
+      candidate_opcodes[candidate_count++] = opcode_idx;
+    }
+
+    _aria_shuffle_int32(candidate_opcodes, candidate_count, &rng_state);
+    for (opcode_idx = 0; opcode_idx < candidate_count; ++opcode_idx) {
+      out_node_indices[write_idx] = graph_node_idx;
+      out_candidate_opcodes[write_idx] = candidate_opcodes[opcode_idx];
+      write_idx += 1;
+    }
+  }
+
+  free(eligible_nodes);
+  free(candidate_opcodes);
   return 0;
 }
 

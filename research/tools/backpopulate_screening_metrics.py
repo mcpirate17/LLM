@@ -13,6 +13,7 @@ import argparse
 import collections
 import contextlib
 import dataclasses
+import gc
 import json
 import os
 import sqlite3
@@ -27,10 +28,12 @@ import torch
 
 from research.eval.screening_rapid import RapidScreeningCheck
 from research.eval.binding_curriculum import (
+    CURRICULUM_BINDING_PROTOCOL_VERSION,
     CURRICULUM_BINDING_DISTANCES,
     CURRICULUM_BINDING_EVAL_SCREENING,
     curriculum_binding_range_profile,
 )
+from research.eval.binding_range import binding_range_profile
 from research.eval.hellaswag_eval import screening_hellaswag_eval
 from research.eval.native_induction import (
     induction_result_metadata,
@@ -90,6 +93,14 @@ def _parse_optional_int(value: str) -> int | None:
     if parsed <= 0:
         return None
     return parsed
+
+
+def _release_model(model: torch.nn.Module) -> None:
+    del model
+    if torch.cuda.is_available():
+        gc.collect()
+        with contextlib.suppress(RuntimeError):
+            torch.cuda.empty_cache()
 
 
 def _normalize_post_target(raw: str) -> str:
@@ -639,12 +650,7 @@ def _run_rapid(
                 updates[col] = metrics[key]
         return screening_probe_fields(updates)
     finally:
-        del model
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        _release_model(model)
 
 
 def _run_post_train(
@@ -710,12 +716,7 @@ def _run_post_train(
         updates["train_budget_steps"] = int(config.stage1_steps)
         return updates
     finally:
-        del model
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        _release_model(model)
 
 
 def _run_binding_probe_only(
@@ -769,22 +770,29 @@ def _run_binding_probe_only(
                 getattr(config, "binding_probe_offload_source_model", False)
             ),
         )
+        zero = binding_range_profile(
+            model,
+            distances=CURRICULUM_BINDING_DISTANCES,
+            n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
+            device=str(dev),
+            seed=getattr(config, "screening_probe_seed", None),
+        )
         return screening_probe_fields(
             {
-                "binding_auc": br.auc,
-                "binding_distance_accuracies": br.distance_accuracies,
+                "binding_auc": zero.auc,
+                "binding_distance_accuracies": zero.distance_accuracies,
+                "binding_auc_curriculum": br.auc,
+                "binding_distance_accuracies_curriculum": br.distance_accuracies,
                 "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
                 "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
-                "binding_probe_elapsed_ms": br.elapsed_ms,
+                "binding_probe_elapsed_ms": zero.elapsed_ms,
+                "binding_probe_curriculum_steps": br.train_steps,
+                "binding_probe_curriculum_elapsed_ms": br.elapsed_ms,
+                "binding_probe_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
             }
         )
     finally:
-        del model
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        _release_model(model)
 
 
 def _run_compile_only_post_eval(
@@ -835,6 +843,13 @@ def _run_compile_only_post_eval(
             updates.update(induction_result_metadata(ind))
 
         if "binding_auc" in target_set or "binding_composite" in target_set:
+            zero = binding_range_profile(
+                model,
+                distances=CURRICULUM_BINDING_DISTANCES,
+                n_eval=CURRICULUM_BINDING_EVAL_SCREENING,
+                device=str(dev),
+                seed=getattr(config, "screening_probe_seed", None),
+            )
             br = curriculum_binding_range_profile(
                 model,
                 distances=CURRICULUM_BINDING_DISTANCES,
@@ -870,11 +885,16 @@ def _run_compile_only_post_eval(
             )
             updates.update(
                 {
-                    "binding_auc": br.auc,
-                    "binding_distance_accuracies": br.distance_accuracies,
+                    "binding_auc": zero.auc,
+                    "binding_distance_accuracies": zero.distance_accuracies,
                     "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_SCREENING,
                     "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
-                    "binding_probe_elapsed_ms": br.elapsed_ms,
+                    "binding_probe_elapsed_ms": zero.elapsed_ms,
+                    "binding_auc_curriculum": br.auc,
+                    "binding_distance_accuracies_curriculum": br.distance_accuracies,
+                    "binding_probe_curriculum_steps": br.train_steps,
+                    "binding_probe_curriculum_elapsed_ms": br.elapsed_ms,
+                    "binding_probe_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
                 }
             )
 
@@ -933,12 +953,7 @@ def _run_compile_only_post_eval(
         result.update(extra)
         return result
     finally:
-        del model
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        _release_model(model)
 
 
 def _recover_hellaswag_after_gate_failure(

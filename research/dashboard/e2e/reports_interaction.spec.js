@@ -14,6 +14,8 @@ test.describe('Reports interaction', () => {
     await page.locator('button').filter({ hasText: /^Knowledge$/ }).first().click();
     await page.locator('button').filter({ hasText: /^Reports$/ }).first().click();
     await expect(page.getByText('Research Reports')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: /Load Campaigns/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Load Knowledge Base/i })).toBeVisible();
 
     const allTimeCard = page.getByRole('button', { name: /All Time/i }).first();
     await allTimeCard.click();
@@ -26,5 +28,17 @@ test.describe('Reports interaction', () => {
 
     await page.locator('button').filter({ hasText: /^Analytics$/ }).first().click();
     await expect(page.locator('button').filter({ hasText: /^Reports$/ }).first()).toBeVisible();
+  });
+
+  test('campaign and knowledge sections load on demand', async ({ page }) => {
+    await page.locator('button').filter({ hasText: /^Knowledge$/ }).first().click();
+    await page.locator('button').filter({ hasText: /^Reports$/ }).first().click();
+    await expect(page.getByText('Research Reports')).toBeVisible({ timeout: 30000 });
+
+    await page.getByRole('button', { name: /Load Campaigns/i }).click();
+    await expect(page.getByText('Research Campaigns')).toBeVisible({ timeout: 30000 });
+
+    await page.getByRole('button', { name: /Load Knowledge Base/i }).click();
+    await expect(page.getByText('Knowledge Base')).toBeVisible({ timeout: 30000 });
   });
 });

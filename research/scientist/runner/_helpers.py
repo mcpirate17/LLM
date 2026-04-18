@@ -111,7 +111,6 @@ _REF_LOSSES_TTL: float = 300.0
 def get_reference_losses(db_path: str) -> Dict[str, float]:
     """Pull latest reference losses for gate calibration (cached 300s)."""
     global _ref_losses_cache, _ref_losses_ts
-    import sqlite3
 
     now = time.monotonic()
     if _ref_losses_cache and (now - _ref_losses_ts) < _REF_LOSSES_TTL:
@@ -119,8 +118,8 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
 
     ref: Dict[str, float] = {}
     try:
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
+        from ..notebook.shared_conn import get_notebook_conn
+        conn = get_notebook_conn(str(db_path))
         row = conn.execute("""
             SELECT AVG(p.final_loss) as avg_loss
             FROM program_results p
@@ -132,7 +131,6 @@ def get_reference_losses(db_path: str) -> Dict[str, float]:
         """).fetchone()
         if row and row["avg_loss"]:
             ref["gpt2_wikitext103_tiktoken"] = float(row["avg_loss"])
-        conn.close()
     except (OSError, RuntimeError, ValueError) as exc:
         logger.debug("get_reference_losses failed: %s", exc)
     _ref_losses_cache = ref
@@ -596,8 +594,12 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         "induction_probe_speed_mode",
         "induction_probe_pool_size",
         "binding_auc",
+        "binding_auc_curriculum",
         "binding_probe_eval_examples",
         "binding_probe_elapsed_ms",
+        "binding_probe_curriculum_steps",
+        "binding_probe_curriculum_elapsed_ms",
+        "binding_probe_curriculum_protocol_version",
         "binding_composite",
         "local_only",
         "hellaswag_acc",
@@ -606,6 +608,15 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         "screening_hellaswag_correct",
         "screening_hellaswag_total",
         "screening_hellaswag_elapsed_ms",
+        # BLiMP linguistic acceptability (v8 scoring component)
+        "blimp_overall_accuracy",
+        "blimp_n_subtasks",
+        "blimp_status",
+        "blimp_elapsed_ms",
+        # v8 understanding metrics
+        "tinystories_score",
+        "cross_task_score",
+        "diagnostic_score",
         "train_budget_steps",
     ):
         value = row.get(key)
@@ -652,10 +663,28 @@ def screening_probe_fields(row: Dict[str, Any]) -> Dict[str, Any]:
             separators=(",", ":"),
         )
 
+    binding_distance_accuracies_curriculum = row.get(
+        "binding_distance_accuracies_curriculum"
+    )
+    if binding_distance_accuracies_curriculum:
+        fields["binding_distance_accuracies_curriculum_json"] = json.dumps(
+            json_safe(binding_distance_accuracies_curriculum),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     binding_distances = row.get("binding_probe_distances")
     if binding_distances:
         fields["binding_probe_distances_json"] = json.dumps(
             json_safe(binding_distances),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    blimp_subtasks = row.get("blimp_subtask_accuracies")
+    if blimp_subtasks:
+        fields["blimp_subtask_accuracies_json"] = json.dumps(
+            json_safe(blimp_subtasks),
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -1933,6 +1962,19 @@ def run_trajectory_probe(
                 update["binding_probe_distances"] = [4, 8, 16, 32]
                 update["binding_probe_eval_examples"] = 200
                 update["binding_probe_elapsed_ms"] = _probe.binding_elapsed_ms
+                update["binding_auc_curriculum"] = _probe.binding_auc_curriculum
+                update["binding_distance_accuracies_curriculum"] = (
+                    _probe.binding_distance_accuracies_curriculum
+                )
+                update["binding_probe_curriculum_steps"] = (
+                    _probe.binding_curriculum_train_steps
+                )
+                update["binding_probe_curriculum_elapsed_ms"] = (
+                    _probe.binding_curriculum_elapsed_ms
+                )
+                update["binding_probe_curriculum_protocol_version"] = (
+                    "copy_curriculum_v1"
+                )
             if _val_local_only is not None:
                 update["local_only"] = _val_local_only
                 update["binding_composite"] = round(

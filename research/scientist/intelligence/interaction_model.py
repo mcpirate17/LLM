@@ -343,8 +343,8 @@ class InteractionModel:
         # From failure signatures
         if notebook_db.exists():
             try:
-                conn = sqlite3.connect(str(notebook_db), timeout=10)
-                conn.execute("PRAGMA busy_timeout=10000")
+                from ..notebook.shared_conn import get_notebook_conn
+                conn = get_notebook_conn(str(notebook_db))
                 rows = conn.execute(
                     "SELECT signature, n_failures, n_successes, last_updated "
                     "FROM failure_signatures"

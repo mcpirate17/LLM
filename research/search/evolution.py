@@ -12,18 +12,32 @@ from __future__ import annotations
 
 import logging
 import random
+from heapq import nlargest
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from ..synthesis.graph import ComputationGraph
 from ..synthesis.grammar import GrammarConfig, generate_layer_graph
-from ..synthesis.primitives import get_primitive, list_primitives
-from ..scientist.shared_utils import clamp
-from .native_nsga import compute_crowding_distances, compute_pareto_ranks
+from ._mutation import (
+    crossover_graphs as _mutation_crossover_graphs,
+    local_mutate_graph as _local_mutate_graph,
+    mutate_graph as _mutation_mutate_graph,
+    spawn_crossover_individual as _spawn_crossover_individual,
+    spawn_fresh_individual as _spawn_fresh_individual,
+    spawn_mutation_individual as _spawn_mutation_individual,
+)
+from ._nsga import (
+    PARETO_FRONT_RANK as _PARETO_FRONT_RANK,
+    _assign_crowding_distance_in_python,
+    assign_crowding_distance,
+    fast_non_dominated_sort,
+    nsga2_rank,
+)
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass(slots=True)
@@ -65,7 +79,7 @@ class Individual:
         return res
 
 
-@dataclass
+@dataclass(slots=True)
 class EvolutionConfig:
     """Configuration for evolutionary search."""
 
@@ -163,7 +177,7 @@ def evolutionary_search(
         )
 
     # Evaluate initial population
-    _evaluate_population(population, fitness_fn, novelty_fn, config)
+    _evaluate_population(population, fitness_fn, novelty_fn)
     nsga2_rank(population)
     population = _enforce_population_diversity(
         population=population,
@@ -182,6 +196,9 @@ def evolutionary_search(
             break
 
         new_population = []
+        local_mutation_fitness_threshold = _fitness_top_k_threshold(
+            population, config.exploit_top_k
+        )
 
         # Elitism: keep top individuals
         population.sort(key=lambda x: _combined_score(x, config), reverse=True)
@@ -240,24 +257,51 @@ def evolutionary_search(
                         exc_info=True,
                     )
 
-            reproduction_mode = _choose_reproduction_mode(config, rng)
-            mode_handlers = {
-                "crossover": lambda: _spawn_crossover_individual(
-                    population, config, grammar, rng, gen + 1
-                ),
-                "mutation": lambda: _spawn_mutation_individual(
-                    population, config, grammar, rng, gen + 1
-                ),
-                "fresh": lambda: _spawn_fresh_individual(grammar, rng, gen + 1),
-            }
             try:
-                child = mode_handlers[reproduction_mode]()
+                reproduction_mode = _choose_reproduction_mode(config, rng)
+                if reproduction_mode == "crossover":
+                    child = _spawn_crossover_individual(
+                        population,
+                        config,
+                        grammar,
+                        rng,
+                        gen + 1,
+                        tournament_select=_tournament_select,
+                        individual_cls=Individual,
+                        generate_context_valid_graph=_generate_context_valid_graph,
+                    )
+                elif reproduction_mode == "mutation":
+                    child = _spawn_mutation_individual(
+                        population,
+                        config,
+                        grammar,
+                        rng,
+                        gen + 1,
+                        local_mutation_fitness_threshold,
+                        tournament_select=_tournament_select,
+                        individual_cls=Individual,
+                        generate_context_valid_graph=_generate_context_valid_graph,
+                    )
+                else:
+                    child = _spawn_fresh_individual(
+                        grammar,
+                        rng,
+                        gen + 1,
+                        generate_context_valid_graph=_generate_context_valid_graph,
+                        individual_cls=Individual,
+                    )
                 new_population.append(child)
             except (ValueError, RuntimeError):
                 if reproduction_mode != "fresh":
                     try:
                         new_population.append(
-                            _spawn_fresh_individual(grammar, rng, gen + 1)
+                            _spawn_fresh_individual(
+                                grammar,
+                                rng,
+                                gen + 1,
+                                generate_context_valid_graph=_generate_context_valid_graph,
+                                individual_cls=Individual,
+                            )
                         )
                     except (ValueError, RuntimeError):
                         fill_failures += 1
@@ -276,7 +320,7 @@ def evolutionary_search(
         population = new_population
 
         # Evaluate and rank with NSGA-II
-        _evaluate_population(population, fitness_fn, novelty_fn, config)
+        _evaluate_population(population, fitness_fn, novelty_fn)
         nsga2_rank(population)
         population = _enforce_population_diversity(
             population=population,
@@ -317,7 +361,7 @@ def _evaluate_population(
     population: List[Individual],
     fitness_fn: Callable,
     novelty_fn: Optional[Callable],
-    config: EvolutionConfig,
+    _config: Optional[EvolutionConfig] = None,
 ):
     """Evaluate fitness and novelty for all individuals.
 
@@ -350,6 +394,34 @@ def _evaluate_population(
                 ind.novelty = 0.0
                 ind.metadata["novelty_error_type"] = type(exc).__name__
                 ind.metadata["novelty_error"] = str(exc)[:240]
+
+
+def _mutate_graph(
+    graph: ComputationGraph,
+    grammar: GrammarConfig,
+    rng: random.Random,
+) -> ComputationGraph:
+    return _mutation_mutate_graph(
+        graph,
+        grammar,
+        rng,
+        generate_context_valid_graph=_generate_context_valid_graph,
+    )
+
+
+def _crossover_graphs(
+    g1: ComputationGraph,
+    g2: ComputationGraph,
+    grammar: GrammarConfig,
+    rng: random.Random,
+) -> ComputationGraph:
+    return _mutation_crossover_graphs(
+        g1,
+        g2,
+        grammar,
+        rng,
+        generate_context_valid_graph=_generate_context_valid_graph,
+    )
 
 
 def _enforce_population_diversity(
@@ -420,7 +492,7 @@ def _enforce_population_diversity(
 
     # Evaluate only newly generated replacements (deduped survivors already evaluated).
     if new_replacements:
-        _evaluate_population(new_replacements, fitness_fn, novelty_fn, config)
+        _evaluate_population(new_replacements, fitness_fn, novelty_fn)
 
     deduped.extend(new_replacements)
 
@@ -439,12 +511,16 @@ def _enforce_population_diversity(
 
     # Recompute novelty for everyone now that population composition changed.
     if novelty_fn:
-        from ..eval.metrics import batch_novelty_scores
-
         all_graphs = [ind.graph for ind in deduped]
-        novelty_metrics = batch_novelty_scores(all_graphs)
-        for ind, metrics in zip(deduped, novelty_metrics):
-            ind.novelty = metrics.overall_novelty
+        for ind in deduped:
+            try:
+                ind.novelty = novelty_fn(ind.graph, all_graphs)
+                ind.metadata.pop("novelty_error_type", None)
+                ind.metadata.pop("novelty_error", None)
+            except Exception as exc:
+                ind.novelty = 0.0
+                ind.metadata["novelty_error_type"] = type(exc).__name__
+                ind.metadata["novelty_error"] = str(exc)[:240]
 
     for ind in deduped:
         ind.metadata["dedupe_duplicates_replaced"] = duplicates
@@ -463,189 +539,12 @@ def _tournament_select(
     candidates = rng.sample(population, min(tournament_size, len(population)))
 
     def _cmp_key(x: Individual) -> Tuple[float, float]:
-        if x.pareto_rank > 0:
+        if x.pareto_rank != 0:
             # Lower rank better (negate so max works), higher crowding better
             return (-x.pareto_rank, x.crowding_dist)
         return (x.fitness * fitness_weight + x.novelty * novelty_weight, 0.0)
 
     return max(candidates, key=_cmp_key)
-
-
-_DEFAULT_OBJECTIVES: List[Tuple[str, str]] = [("fitness", "max"), ("novelty", "max")]
-
-
-def fast_non_dominated_sort(
-    population: List[Individual],
-    objectives: Sequence[Tuple[str, str]] = _DEFAULT_OBJECTIVES,
-) -> List[List[Individual]]:
-    """NSGA-II fast non-dominated sort.
-
-    Uses NumPy broadcasting for vectorized dominance comparison.
-
-    Args:
-        population: Individuals to rank.
-        objectives: List of ``(attr_name, "min"|"max")`` tuples.
-
-    Returns:
-        List of Pareto fronts (front 0 = non-dominated).
-    """
-    n = len(population)
-    if n == 0:
-        return []
-
-    # Stack all objective values into (n, m) array, sign-flipped so higher=better.
-    signs = np.array(
-        [1.0 if d == "max" else -1.0 for _, d in objectives], dtype=np.float64
-    )
-    attr_names = [o[0] for o in objectives]
-    vals = (
-        np.array(
-            [[getattr(ind, a) for a in attr_names] for ind in population],
-            dtype=np.float64,
-        )
-        * signs
-    )  # (n, m)
-
-    native_ranks = compute_pareto_ranks(vals)
-    if native_ranks is not None:
-        return _fronts_from_rank_array(population, native_ranks)
-
-    return _fast_non_dominated_sort_in_python(population, vals)
-
-
-def _fronts_from_rank_array(
-    population: List[Individual], ranks: np.ndarray
-) -> List[List[Individual]]:
-    fronts: List[List[Individual]] = []
-    if ranks.size == 0:
-        return fronts
-    max_rank = int(np.max(ranks))
-    for rank in range(1, max_rank + 1):
-        indices = np.where(ranks == rank)[0]
-        if indices.size == 0:
-            continue
-        front: List[Individual] = []
-        for idx in indices:
-            population[int(idx)].pareto_rank = rank
-            front.append(population[int(idx)])
-        fronts.append(front)
-    return fronts
-
-
-def _fast_non_dominated_sort_in_python(
-    population: List[Individual], vals: np.ndarray
-) -> List[List[Individual]]:
-    """Reference NumPy implementation for Pareto fronts."""
-    diff = vals[:, np.newaxis, :] - vals[np.newaxis, :, :]
-    ge_all = np.all(diff >= 0, axis=2)
-    gt_any = np.any(diff > 0, axis=2)
-    dominates = ge_all & gt_any
-    domination_count = dominates.sum(axis=0)
-
-    fronts: List[List[Individual]] = []
-    rank = 1
-    remaining = np.ones(len(population), dtype=bool)
-
-    while True:
-        front_mask = remaining & (domination_count == 0)
-        front_indices = np.where(front_mask)[0]
-        if len(front_indices) == 0:
-            break
-
-        front: List[Individual] = []
-        for i in front_indices:
-            population[int(i)].pareto_rank = rank
-            front.append(population[int(i)])
-        fronts.append(front)
-
-        remaining[front_indices] = False
-        for i in front_indices:
-            dominated_by_i = np.where(dominates[int(i)] & remaining)[0]
-            domination_count[dominated_by_i] -= 1
-
-        rank += 1
-
-    return fronts
-
-
-def assign_crowding_distance(
-    front: List[Individual],
-    objectives: Sequence[Tuple[str, str]] = _DEFAULT_OBJECTIVES,
-) -> None:
-    """Compute and assign crowding distance for a single Pareto front."""
-    n = len(front)
-    if n <= 2:
-        for ind in front:
-            ind.crowding_dist = float("inf")
-        return
-
-    attr_names = [attr for attr, _ in objectives]
-    objective_matrix = np.asarray(
-        [[getattr(ind, attr) for attr in attr_names] for ind in front],
-        dtype=np.float32,
-    )
-    native_distances = compute_crowding_distances(objective_matrix)
-    if native_distances is not None:
-        for ind, distance in zip(front, native_distances):
-            ind.crowding_dist = float(distance)
-        return
-
-    _assign_crowding_distance_in_python(front, objective_matrix)
-
-
-def _assign_crowding_distance_in_python(
-    front: List[Individual],
-    objective_matrix: np.ndarray,
-) -> None:
-    """Reference crowding-distance implementation used as fallback and benchmark baseline."""
-    n = len(front)
-    for ind in front:
-        ind.crowding_dist = 0.0
-
-    for objective_idx in range(objective_matrix.shape[1]):
-        order = np.argsort(objective_matrix[:, objective_idx], kind="mergesort")
-        obj_values = objective_matrix[order, objective_idx]
-        obj_min = float(obj_values[0])
-        obj_max = float(obj_values[-1])
-        span = obj_max - obj_min
-        front[int(order[0])].crowding_dist = float("inf")
-        front[int(order[-1])].crowding_dist = float("inf")
-        if span <= 0.0:
-            continue
-        inv_span = 1.0 / span
-        for pos in range(1, n - 1):
-            idx = int(order[pos])
-            if np.isinf(front[idx].crowding_dist):
-                continue
-            front[idx].crowding_dist += float(
-                (obj_values[pos + 1] - obj_values[pos - 1]) * inv_span
-            )
-
-
-def nsga2_rank(
-    population: List[Individual],
-    objectives: Optional[Sequence[Tuple[str, str]]] = None,
-) -> List[Individual]:
-    """Rank population using NSGA-II non-dominated sort + crowding distance.
-
-    Args:
-        population: Individuals to rank.
-        objectives: Objective specs; defaults to fitness(max) + novelty(max).
-
-    Returns:
-        Population sorted by (pareto_rank ASC, crowding_dist DESC).
-    """
-    if not population:
-        return population
-
-    objs = objectives if objectives is not None else _DEFAULT_OBJECTIVES
-    fronts = fast_non_dominated_sort(population, objs)
-    for front in fronts:
-        assign_crowding_distance(front, objs)
-
-    population.sort(key=lambda x: (x.pareto_rank, -x.crowding_dist))
-    return population
-
 
 def pareto_front_op_weights(
     population: List[Individual],
@@ -674,10 +573,14 @@ def pareto_front_op_weights(
     dominated_ops: Dict[str, int] = {}
 
     for ind in population:
-        ops = [n.op_name for n in ind.graph.nodes.values() if not n.is_input]
-        counter = front_ops if ind.pareto_rank == 0 else dominated_ops
-        for op in ops:
-            counter[op] = counter.get(op, 0) + 1
+        counter = (
+            front_ops if ind.pareto_rank == _PARETO_FRONT_RANK else dominated_ops
+        )
+        for node in ind.graph.nodes.values():
+            if node.is_input:
+                continue
+            op_name = node.op_name
+            counter[op_name] = counter.get(op_name, 0) + 1
 
     all_ops = set(front_ops) | set(dominated_ops)
     weights: Dict[str, float] = {}
@@ -700,10 +603,17 @@ def pareto_front_op_weights(
 
 def _combined_score(ind: Individual, config: EvolutionConfig) -> float:
     """Weighted population score used consistently across selection and ranking."""
-    if ind.pareto_rank > 0:
+    if ind.pareto_rank != 0:
         # Lower pareto_rank is better, higher crowding_dist is better
         return -ind.pareto_rank + ind.crowding_dist * 0.001
     return ind.fitness * config.fitness_weight + ind.novelty * config.novelty_weight
+
+
+def _fitness_top_k_threshold(population: List[Individual], top_k: int) -> float | None:
+    if top_k <= 0 or not population:
+        return None
+    top_k = min(top_k, len(population))
+    return float(np.partition([ind.fitness for ind in population], -top_k)[-top_k])
 
 
 def _choose_reproduction_mode(
@@ -726,443 +636,3 @@ def _choose_reproduction_mode(
         if draw <= cumulative:
             return mode
     return "mutation"
-
-
-def _spawn_fresh_individual(
-    grammar: GrammarConfig,
-    rng: random.Random,
-    generation: int,
-) -> Individual:
-    """Generate a fresh individual directly from the grammar."""
-    graph = _generate_context_valid_graph(grammar, rng)
-    child = Individual(graph=graph, generation=generation)
-    child.metadata["fresh_injection"] = True
-    return child
-
-
-def _spawn_mutation_individual(
-    population: List[Individual],
-    config: EvolutionConfig,
-    grammar: GrammarConfig,
-    rng: random.Random,
-    generation: int,
-) -> Individual:
-    """Sample a parent and return a mutation child.
-
-    Top-K parents by fitness use local mutation (single-op swap) with
-    probability local_mutation_prob, preserving winning topology.
-    """
-    parent = _tournament_select(
-        population,
-        config.tournament_size,
-        rng,
-        config.fitness_weight,
-        config.novelty_weight,
-    )
-
-    # Check if parent is in top-K by fitness
-    top_k_fitness = sorted((ind.fitness for ind in population), reverse=True)[
-        : config.exploit_top_k
-    ]
-    is_top_k = parent.fitness >= top_k_fitness[-1] if top_k_fitness else False
-
-    if is_top_k and rng.random() < config.local_mutation_prob:
-        child_graph = _local_mutate_graph(parent.graph, rng)
-        mutation_type = "local"
-    else:
-        child_graph = _mutate_graph(parent.graph, grammar, rng)
-        mutation_type = "standard"
-
-    return Individual(
-        graph=child_graph,
-        generation=generation,
-        parent_fingerprint=parent.fingerprint,
-        metadata={"mutation_type": mutation_type},
-    )
-
-
-def _spawn_crossover_individual(
-    population: List[Individual],
-    config: EvolutionConfig,
-    grammar: GrammarConfig,
-    rng: random.Random,
-    generation: int,
-) -> Individual:
-    """Sample two parents and return a crossover child."""
-    if len(population) < 2:
-        raise ValueError("crossover requires at least two parents")
-    p1 = _tournament_select(
-        population,
-        config.tournament_size,
-        rng,
-        config.fitness_weight,
-        config.novelty_weight,
-    )
-    p2 = _tournament_select(
-        population,
-        config.tournament_size,
-        rng,
-        config.fitness_weight,
-        config.novelty_weight,
-    )
-    child_graph = _crossover_graphs(p1.graph, p2.graph, grammar, rng)
-    parents = sorted([p1.fingerprint, p2.fingerprint])
-    return Individual(
-        graph=child_graph,
-        generation=generation,
-        parent_fingerprint=f"{parents[0]}x{parents[1]}",
-    )
-
-
-def _mutate_graph(
-    graph: ComputationGraph,
-    grammar: GrammarConfig,
-    rng: random.Random,
-) -> ComputationGraph:
-    """Mutate a computation graph using parent-informed grammar perturbation."""
-    parent_fp = graph.fingerprint()
-    mut_grammar = _derive_mutation_grammar(graph, grammar, rng)
-
-    # Try more than once to avoid trivially reproducing parent structure.
-    for _ in range(3):
-        new_graph = _generate_context_valid_graph(mut_grammar, rng)
-        if new_graph.fingerprint() != parent_fp:
-            break
-
-    new_graph.prune_unreachable_nodes()
-
-    new_graph.metadata["lineage"] = {
-        "type": "mutation",
-        "parent": parent_fp,
-        "parent_depth": graph.depth(),
-        "parent_ops": graph.n_ops(),
-    }
-    return new_graph
-
-
-def _local_mutate_graph(
-    graph: ComputationGraph,
-    rng: random.Random,
-) -> ComputationGraph:
-    """Local mutation: swap one random op with a same-category alternative.
-
-    Preserves the winning topology (all edges/connections intact) while
-    exploring nearby alternatives in the op space. Validates context rules
-    to avoid producing graphs with known-fatal op sequences (e.g.
-    full-dim ops after split2, double-routing chains).
-    """
-    import copy
-    from ..synthesis.context_rules import validate_context_rules
-
-    new_graph = copy.deepcopy(graph)
-    non_input_ids = [nid for nid, node in new_graph.nodes.items() if not node.is_input]
-    if not non_input_ids:
-        return new_graph
-
-    # Shuffle node order so we try different targets if first fails
-    targets = list(non_input_ids)
-    rng.shuffle(targets)
-
-    for target_id in targets:
-        target_node = new_graph.nodes[target_id]
-
-        try:
-            current_op = get_primitive(target_node.op_name)
-        except KeyError:
-            continue
-
-        # Find same-category alternatives, shuffled
-        same_cat_ops = [
-            op
-            for op in list_primitives(current_op.category)
-            if op.name != target_node.op_name and op.n_inputs == current_op.n_inputs
-        ]
-        if not same_cat_ops:
-            continue
-        rng.shuffle(same_cat_ops)
-
-        # Try each candidate until one passes context validation
-        original_op = target_node.op_name
-        for candidate in same_cat_ops:
-            target_node.op_name = candidate.name
-            new_graph._cache.clear()
-
-            violation = validate_context_rules(new_graph)
-            if violation is None:
-                new_graph.metadata["lineage"] = {
-                    "type": "local_mutation",
-                    "parent": graph.fingerprint(),
-                    "swapped_node": target_id,
-                    "old_op": original_op,
-                    "new_op": candidate.name,
-                }
-                return new_graph
-
-        # All candidates for this node failed — restore and try next node
-        target_node.op_name = original_op
-        new_graph._cache.clear()
-
-    # No valid swap found — return unmodified copy
-    return new_graph
-
-
-def _crossover_graphs(
-    g1: ComputationGraph,
-    g2: ComputationGraph,
-    grammar: GrammarConfig,
-    rng: random.Random,
-) -> ComputationGraph:
-    """Crossover two graphs by blending parent structure statistics."""
-    p1_fp = g1.fingerprint()
-    p2_fp = g2.fingerprint()
-    cross_grammar = _derive_crossover_grammar(g1, g2, grammar, rng)
-
-    child = _generate_context_valid_graph(cross_grammar, rng)
-    child.prune_unreachable_nodes()
-    child.metadata["lineage"] = {
-        "type": "crossover",
-        "parents": [p1_fp, p2_fp],
-        "parent_depths": [g1.depth(), g2.depth()],
-        "parent_ops": [g1.n_ops(), g2.n_ops()],
-    }
-    return child
-
-
-def _derive_mutation_grammar(
-    graph: ComputationGraph,
-    base: GrammarConfig,
-    rng: random.Random,
-) -> GrammarConfig:
-    """Create a lightly perturbed grammar centered on a parent graph.
-
-    Caps max_depth and max_ops to hard limits to prevent unbounded growth
-    across generations which causes Python recursion depth exceeded errors.
-    """
-    # Hard caps to prevent recursion depth overflow across generations
-    HARD_MAX_DEPTH = 18
-    HARD_MAX_OPS = 28
-
-    parent_depth = max(1, graph.depth())
-    parent_ops = max(1, graph.n_ops())
-    parent_cat = _category_histogram(graph)
-
-    max_depth = min(
-        HARD_MAX_DEPTH,
-        max(3, min(max(base.max_depth, parent_depth + 2), parent_depth + 4)),
-    )
-    max_ops = min(
-        HARD_MAX_OPS,
-        max(parent_ops + 2, min(max(base.max_ops, parent_ops + 4), parent_ops + 8)),
-    )
-
-    category_weights = dict(base.category_weights)
-    for cat_name in category_weights:
-        if parent_cat.get(cat_name, 0) > 0:
-            category_weights[cat_name] = category_weights[cat_name] * 1.25
-        else:
-            category_weights[cat_name] = max(0.1, category_weights[cat_name] * 0.9)
-        category_weights[cat_name] = max(
-            0.1, category_weights[cat_name] * rng.uniform(0.9, 1.1)
-        )
-
-    # Propagate template/motif weights from parent grammar
-    template_weights = dict(base.template_weights) if base.template_weights else {}
-    motif_weights = dict(base.motif_weights) if base.motif_weights else {}
-
-    # If parent has sparse/routing ops, bias child toward efficiency
-    _SPARSE_ROUTING_OPS = frozenset(
-        {
-            "nm_sparse_linear",
-            "block_sparse_linear",
-            "semi_structured_2_4_linear",
-            "ternary_projection",
-            "token_entropy",
-            "moe_topk",
-            "moe_2expert",
-            "adjacent_token_merge",
-        }
-    )
-    parent_has_efficiency = any(
-        n.op_name in _SPARSE_ROUTING_OPS for n in graph.nodes.values() if not n.is_input
-    )
-    sparsity_bias = base.structured_sparsity_bias
-    if parent_has_efficiency:
-        sparsity_bias = max(sparsity_bias, 0.6)
-
-    op_weights = dict(base.op_weights)
-
-    # Binding range bias: if parent has only local-range mixers, boost
-    # templates and ops that provide full-range sequence mixing.
-    from ..synthesis.primitives import graph_binding_range_class
-
-    parent_binding = graph_binding_range_class(graph)
-    if parent_binding in ("local", "none"):
-        for tpl_key in ("transformer_block", "state_space_block"):
-            if tpl_key in template_weights:
-                template_weights[tpl_key] *= 2.5
-        _FULL_RANGE_OPS = frozenset(
-            {
-                "softmax_attention",
-                "linear_attention",
-                "graph_attention",
-                "diff_attention",
-                "state_space",
-                "selective_scan",
-                "rwkv_time_mixing",
-                "gated_delta",
-            }
-        )
-        for op_name in _FULL_RANGE_OPS:
-            op_weights[op_name] = op_weights.get(op_name, 1.0) * 3.0
-
-    return GrammarConfig(
-        model_dim=graph.model_dim,
-        max_depth=max_depth,
-        max_width=base.max_width,
-        max_ops=max_ops,
-        residual_prob=clamp(base.residual_prob + rng.uniform(-0.1, 0.1), 0.0, 1.0),
-        split_prob=clamp(base.split_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        merge_prob=clamp(base.merge_prob + rng.uniform(-0.08, 0.08), 0.0, 1.0),
-        risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0),
-        freq_domain_prob=clamp(
-            base.freq_domain_prob + rng.uniform(-0.05, 0.05), 0.0, 1.0
-        ),
-        category_weights=category_weights,
-        op_weights=op_weights,
-        template_weights=template_weights,
-        motif_weights=motif_weights,
-        structured_sparsity_bias=sparsity_bias,
-        routing_mandatory=base.routing_mandatory,
-    )
-
-
-def _derive_crossover_grammar(
-    g1: ComputationGraph,
-    g2: ComputationGraph,
-    base: GrammarConfig,
-    rng: random.Random,
-) -> GrammarConfig:
-    """Create a blended grammar from two parents.
-
-    Caps max_depth and max_ops to hard limits to prevent unbounded growth.
-    """
-    HARD_MAX_DEPTH = 18
-    HARD_MAX_OPS = 28
-
-    d1, d2 = max(1, g1.depth()), max(1, g2.depth())
-    o1, o2 = max(1, g1.n_ops()), max(1, g2.n_ops())
-
-    target_depth = max(2, int(round((d1 + d2) / 2 + rng.choice([-1, 0, 1]))))
-    target_ops = max(3, int(round((o1 + o2) / 2 + rng.choice([-2, -1, 0, 1, 2]))))
-
-    max_depth = min(
-        HARD_MAX_DEPTH,
-        max(3, min(max(base.max_depth, target_depth + 2), target_depth + 4)),
-    )
-    max_ops = min(
-        HARD_MAX_OPS,
-        max(target_ops + 2, min(max(base.max_ops, target_ops + 4), target_ops + 10)),
-    )
-
-    cat1 = _category_histogram(g1)
-    cat2 = _category_histogram(g2)
-    category_weights = dict(base.category_weights)
-    for cat_name, weight in category_weights.items():
-        used = cat1.get(cat_name, 0) + cat2.get(cat_name, 0)
-        if used > 0:
-            category_weights[cat_name] = max(0.1, weight * 1.2)
-        else:
-            category_weights[cat_name] = max(0.1, weight * 0.85)
-        category_weights[cat_name] = max(
-            0.1, category_weights[cat_name] * rng.uniform(0.92, 1.08)
-        )
-
-    # Propagate template/motif weights from parent grammar
-    template_weights = dict(base.template_weights) if base.template_weights else {}
-    motif_weights = dict(base.motif_weights) if base.motif_weights else {}
-
-    # If either parent has sparse/routing ops, bias child toward efficiency
-    _SPARSE_ROUTING_OPS = frozenset(
-        {
-            "nm_sparse_linear",
-            "block_sparse_linear",
-            "semi_structured_2_4_linear",
-            "ternary_projection",
-            "token_entropy",
-            "moe_topk",
-            "moe_2expert",
-            "adjacent_token_merge",
-        }
-    )
-    sparsity_bias = base.structured_sparsity_bias
-    for g in (g1, g2):
-        if any(
-            n.op_name in _SPARSE_ROUTING_OPS for n in g.nodes.values() if not n.is_input
-        ):
-            sparsity_bias = max(sparsity_bias, 0.6)
-            break
-
-    op_weights = dict(base.op_weights)
-
-    # Binding range bias: if both parents are local-only, boost full-range ops
-    from ..synthesis.primitives import graph_binding_range_class
-
-    g1_binding = graph_binding_range_class(g1)
-    g2_binding = graph_binding_range_class(g2)
-    if g1_binding in ("local", "none") and g2_binding in ("local", "none"):
-        for tpl_key in ("transformer_block", "state_space_block"):
-            if tpl_key in template_weights:
-                template_weights[tpl_key] *= 2.5
-        _FULL_RANGE_OPS = frozenset(
-            {
-                "softmax_attention",
-                "linear_attention",
-                "graph_attention",
-                "diff_attention",
-                "state_space",
-                "selective_scan",
-                "rwkv_time_mixing",
-                "gated_delta",
-            }
-        )
-        for op_name in _FULL_RANGE_OPS:
-            op_weights[op_name] = op_weights.get(op_name, 1.0) * 3.0
-
-    return GrammarConfig(
-        model_dim=g1.model_dim,
-        max_depth=max_depth,
-        max_width=max(base.max_width, 2),
-        max_ops=max_ops,
-        residual_prob=clamp(
-            (base.residual_prob + 0.65) / 2 + rng.uniform(-0.08, 0.08), 0.0, 1.0
-        ),
-        split_prob=clamp(
-            (base.split_prob + 0.35) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0
-        ),
-        merge_prob=clamp(
-            (base.merge_prob + 0.45) / 2 + rng.uniform(-0.06, 0.06), 0.0, 1.0
-        ),
-        risky_op_prob=clamp(base.risky_op_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0),
-        freq_domain_prob=clamp(
-            base.freq_domain_prob + rng.uniform(-0.04, 0.04), 0.0, 1.0
-        ),
-        category_weights=category_weights,
-        op_weights=op_weights,
-        template_weights=template_weights,
-        motif_weights=motif_weights,
-        structured_sparsity_bias=sparsity_bias,
-        routing_mandatory=base.routing_mandatory,
-    )
-
-
-def _category_histogram(graph: ComputationGraph) -> Dict[str, int]:
-    hist: Dict[str, int] = {}
-    for node in graph.nodes.values():
-        if node.is_input:
-            continue
-        try:
-            cat = get_primitive(node.op_name).category.value
-        except KeyError:
-            continue
-        hist[cat] = hist.get(cat, 0) + 1
-    return hist

@@ -24,6 +24,7 @@ from .native_analysis import analyze_ir
 from .native_topology import compute_topological_order
 from .primitives import (
     PrimitiveOp,
+    canonicalize_op_name,
     get_primitive,
     PRIMITIVE_REGISTRY,
 )
@@ -254,7 +255,8 @@ class ComputationGraph:
 
         Raises ValueError if shapes don't compose.
         """
-        if op_name not in PRIMITIVE_REGISTRY and op_name != "input":
+        canonical_name = canonicalize_op_name(op_name)
+        if canonical_name not in PRIMITIVE_REGISTRY and canonical_name != "input":
             raise ValueError(f"Unknown op: {op_name}")
 
         # Get input shapes
@@ -265,14 +267,14 @@ class ComputationGraph:
             input_shapes.append(self.nodes[iid].output_shape)
 
         # Compute output shape
-        op = get_primitive(op_name)
+        op = get_primitive(canonical_name)
         output_shape = self._compute_shape(op, input_shapes, config or {})
 
         node_id = self._next_id
         self._next_id += 1
         node = OpNode(
             id=node_id,
-            op_name=op_name,
+            op_name=canonical_name,
             input_ids=input_ids,
             output_shape=output_shape,
             config=config or {},

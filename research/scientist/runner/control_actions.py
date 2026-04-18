@@ -115,7 +115,9 @@ class _ControlActionsMixin:
                     notebook_path=self.notebook_path,
                     event_type="continuous_session_stopping",
                     producer="runner.control_actions",
-                    run_id=str(getattr(self.progress, "experiment_id", "") or "").strip()
+                    run_id=str(
+                        getattr(self.progress, "experiment_id", "") or ""
+                    ).strip()
                     or None,
                     payload={
                         "mode": "continuous",
@@ -201,7 +203,9 @@ class _ControlActionsMixin:
         if run_id is None:
             return
         try:
-            current = get_runtime_event_services(self.notebook_path).registry.get(run_id)
+            current = get_runtime_event_services(self.notebook_path).registry.get(
+                run_id
+            )
             if current is not None and current.last_event.event_type == event_type:
                 return
         except Exception:
@@ -538,7 +542,8 @@ class _ControlActionsMixin:
 
             elif operation == "vacuum":
                 nb.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                # VACUUM requires isolation_level=None; run on a fresh connection
+                # VACUUM requires isolation_level=None and its own connection —
+                # cannot go through the shared NativeConnectionWrapper.
                 import sqlite3
 
                 vac_conn = sqlite3.connect(nb.db_path, isolation_level=None)

@@ -8,7 +8,7 @@ import torch
 from ._json_compat import dumps_json
 from .compiler_op_utils import _get_stacked_params
 from .graph import ComputationGraph
-from .native_segments import NativeChainSegment
+from .native_segments import NativeChainSegment, _unique_consumers
 from .native_support import (
     BOUND_PARAM_OPS,
     BOUND_POINTWISE_OPS,
@@ -25,10 +25,38 @@ class _BoundChainNode:
     module: torch.nn.Module
 
 
+@dataclass(slots=True)
+class _BoundPayloadSpec:
+    tensor: torch.Tensor | None = None
+    module: torch.nn.Module | None = None
+    stack_attr_name: str | None = None
+    stack_count: int = 0
+
+    def materialize(self, x: torch.Tensor) -> torch.Tensor:
+        if self.tensor is not None:
+            return self.tensor
+        return _get_stacked_params(
+            self.module,
+            self.stack_attr_name,
+            self.stack_count,
+            x.dtype,
+        )
+
+
+@dataclass(slots=True)
+class _BoundIrPlan:
+    ir_json: str
+    output_shape: tuple[int, ...]
+    payload_specs: tuple[_BoundPayloadSpec, ...]
+
+    def payloads(self, x: torch.Tensor) -> list[torch.Tensor]:
+        return [x, *(spec.materialize(x) for spec in self.payload_specs)]
+
+
 class BoundNativeChainDispatcher:
     def __init__(self, chain_nodes: Iterable[_BoundChainNode]):
         self._chain_nodes = tuple(chain_nodes)
-        self._ir_cache: Dict[tuple[int, ...], tuple[str, tuple[int, ...]]] = {}
+        self._plan_cache: Dict[tuple[tuple[int, ...], torch.dtype], _BoundIrPlan] = {}
 
     def _rows(self, x: torch.Tensor) -> int:
         if x.ndim == 3:
@@ -43,6 +71,9 @@ class BoundNativeChainDispatcher:
     def _runtime_shape_key(self, x: torch.Tensor) -> tuple[int, ...]:
         return tuple(int(v) for v in x.shape)
 
+    def _runtime_plan_key(self, x: torch.Tensor) -> tuple[tuple[int, ...], torch.dtype]:
+        return self._runtime_shape_key(x), x.dtype
+
     def _linear_bias(self, module: torch.nn.Module, out_dim: int) -> torch.Tensor:
         bias = getattr(module, "bias", None)
         if bias is not None:
@@ -56,7 +87,7 @@ class BoundNativeChainDispatcher:
         module: torch.nn.Module,
         current_dim: int,
         x: torch.Tensor,
-    ) -> tuple[str, list[torch.Tensor], dict, int]:
+    ) -> tuple[str, list[_BoundPayloadSpec], dict, int]:
         rows = self._rows(x)
         if op_name in BOUND_POINTWISE_OPS:
             return op_name, [], {}, current_dim
@@ -64,7 +95,10 @@ class BoundNativeChainDispatcher:
             out_dim = int(module.weight.shape[0])
             return (
                 "linear",
-                [module.weight, self._linear_bias(module, out_dim)],
+                [
+                    _BoundPayloadSpec(tensor=module.weight),
+                    _BoundPayloadSpec(tensor=self._linear_bias(module, out_dim)),
+                ],
                 {"batch": rows, "dim_in": current_dim, "dim_out": out_dim},
                 out_dim,
             )
@@ -74,7 +108,10 @@ class BoundNativeChainDispatcher:
                 conv_bias = module.conv_weight.new_zeros(module.conv_weight.shape[0])
             return (
                 "conv1d_seq",
-                [module.conv_weight, conv_bias],
+                [
+                    _BoundPayloadSpec(tensor=module.conv_weight),
+                    _BoundPayloadSpec(tensor=conv_bias),
+                ],
                 {
                     "batch": int(x.shape[0]),
                     "seq": int(x.shape[1]) if x.ndim == 3 else 1,
@@ -85,14 +122,17 @@ class BoundNativeChainDispatcher:
         if op_name == "rmsnorm":
             return (
                 "rmsnorm",
-                [module.weight],
+                [_BoundPayloadSpec(tensor=module.weight)],
                 {"batch": rows, "dim": current_dim, "eps": 1e-6},
                 current_dim,
             )
         if op_name == "layernorm":
             return (
                 "layernorm",
-                [module.weight, module.bias],
+                [
+                    _BoundPayloadSpec(tensor=module.weight),
+                    _BoundPayloadSpec(tensor=module.bias),
+                ],
                 {"batch": rows, "dim": current_dim, "eps": 1e-5},
                 current_dim,
             )
@@ -101,10 +141,10 @@ class BoundNativeChainDispatcher:
             return (
                 "gated_linear",
                 [
-                    module.linear_weight,
-                    module.linear_bias,
-                    module.gate_weight,
-                    module.gate_bias,
+                    _BoundPayloadSpec(tensor=module.linear_weight),
+                    _BoundPayloadSpec(tensor=module.linear_bias),
+                    _BoundPayloadSpec(tensor=module.gate_weight),
+                    _BoundPayloadSpec(tensor=module.gate_bias),
                 ],
                 {"batch": rows, "dim_in": current_dim, "dim_out": out_dim},
                 out_dim,
@@ -115,11 +155,11 @@ class BoundNativeChainDispatcher:
             return (
                 "rwkv_time_mixing",
                 [
-                    module.w_decay,
-                    module.u_bonus,
-                    module.W_k,
-                    module.W_v,
-                    module.W_r,
+                    _BoundPayloadSpec(tensor=module.w_decay),
+                    _BoundPayloadSpec(tensor=module.u_bonus),
+                    _BoundPayloadSpec(tensor=module.W_k),
+                    _BoundPayloadSpec(tensor=module.W_v),
+                    _BoundPayloadSpec(tensor=module.W_r),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -134,11 +174,11 @@ class BoundNativeChainDispatcher:
             return (
                 "rwkv_channel",
                 [
-                    module.mix_k,
-                    module.mix_r,
-                    module.key_proj.weight,
-                    module.receptance_proj.weight,
-                    module.value_proj.weight,
+                    _BoundPayloadSpec(tensor=module.mix_k),
+                    _BoundPayloadSpec(tensor=module.mix_r),
+                    _BoundPayloadSpec(tensor=module.key_proj.weight),
+                    _BoundPayloadSpec(tensor=module.receptance_proj.weight),
+                    _BoundPayloadSpec(tensor=module.value_proj.weight),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -173,8 +213,12 @@ class BoundNativeChainDispatcher:
             return (
                 "depth_weighted_proj",
                 [
-                    scorer,
-                    _get_stacked_params(module, stack_name, max_depth, x.dtype),
+                    _BoundPayloadSpec(tensor=scorer),
+                    _BoundPayloadSpec(
+                        module=module,
+                        stack_attr_name=stack_name,
+                        stack_count=max_depth,
+                    ),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -189,12 +233,18 @@ class BoundNativeChainDispatcher:
             return (
                 "swiglu",
                 [
-                    module.gate_proj.weight,
-                    module.up_proj.weight,
-                    module.down_proj.weight,
-                    self._linear_bias(module.gate_proj, hidden_dim),
-                    self._linear_bias(module.up_proj, hidden_dim),
-                    self._linear_bias(module.down_proj, current_dim),
+                    _BoundPayloadSpec(tensor=module.gate_proj.weight),
+                    _BoundPayloadSpec(tensor=module.up_proj.weight),
+                    _BoundPayloadSpec(tensor=module.down_proj.weight),
+                    _BoundPayloadSpec(
+                        tensor=self._linear_bias(module.gate_proj, hidden_dim)
+                    ),
+                    _BoundPayloadSpec(
+                        tensor=self._linear_bias(module.up_proj, hidden_dim)
+                    ),
+                    _BoundPayloadSpec(
+                        tensor=self._linear_bias(module.down_proj, current_dim)
+                    ),
                 ],
                 {
                     "batch": rows,
@@ -207,10 +257,10 @@ class BoundNativeChainDispatcher:
             return (
                 "softmax_attention",
                 [
-                    module.q_proj.weight,
-                    module.k_proj.weight,
-                    module.v_proj.weight,
-                    module.o_proj.weight,
+                    _BoundPayloadSpec(tensor=module.q_proj.weight),
+                    _BoundPayloadSpec(tensor=module.k_proj.weight),
+                    _BoundPayloadSpec(tensor=module.v_proj.weight),
+                    _BoundPayloadSpec(tensor=module.o_proj.weight),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -224,10 +274,10 @@ class BoundNativeChainDispatcher:
             return (
                 "linear_attention",
                 [
-                    module.q_proj.weight,
-                    module.k_proj.weight,
-                    module.v_proj.weight,
-                    module.o_proj.weight,
+                    _BoundPayloadSpec(tensor=module.q_proj.weight),
+                    _BoundPayloadSpec(tensor=module.k_proj.weight),
+                    _BoundPayloadSpec(tensor=module.v_proj.weight),
+                    _BoundPayloadSpec(tensor=module.o_proj.weight),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -240,10 +290,10 @@ class BoundNativeChainDispatcher:
             return (
                 "selective_scan",
                 [
-                    module.A_log,
-                    module.dt_proj,
-                    module.B_proj.weight,
-                    module.C_proj.weight,
+                    _BoundPayloadSpec(tensor=module.A_log),
+                    _BoundPayloadSpec(tensor=module.dt_proj),
+                    _BoundPayloadSpec(tensor=module.B_proj.weight),
+                    _BoundPayloadSpec(tensor=module.C_proj.weight),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -256,12 +306,12 @@ class BoundNativeChainDispatcher:
             return (
                 "state_space",
                 [
-                    module.ssm_A,
-                    module.ssm_B.weight,
-                    module.ssm_C.weight,
-                    module.ssm_D,
-                    module.ssm_dt.weight,
-                    module.ssm_dt.bias,
+                    _BoundPayloadSpec(tensor=module.ssm_A),
+                    _BoundPayloadSpec(tensor=module.ssm_B.weight),
+                    _BoundPayloadSpec(tensor=module.ssm_C.weight),
+                    _BoundPayloadSpec(tensor=module.ssm_D),
+                    _BoundPayloadSpec(tensor=module.ssm_dt.weight),
+                    _BoundPayloadSpec(tensor=module.ssm_dt.bias),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -275,12 +325,12 @@ class BoundNativeChainDispatcher:
             return (
                 "gated_delta",
                 [
-                    module.q_proj.weight,
-                    module.k_proj.weight,
-                    module.v_proj.weight,
-                    module.alpha_proj.weight,
-                    module.beta_proj.weight,
-                    module.o_proj.weight,
+                    _BoundPayloadSpec(tensor=module.q_proj.weight),
+                    _BoundPayloadSpec(tensor=module.k_proj.weight),
+                    _BoundPayloadSpec(tensor=module.v_proj.weight),
+                    _BoundPayloadSpec(tensor=module.alpha_proj.weight),
+                    _BoundPayloadSpec(tensor=module.beta_proj.weight),
+                    _BoundPayloadSpec(tensor=module.o_proj.weight),
                 ],
                 {
                     "batch": int(x.shape[0]),
@@ -291,16 +341,15 @@ class BoundNativeChainDispatcher:
                     ),
                 },
                 current_dim,
-            )
+        )
         raise ValueError(f"Unsupported bound native op: {op_name}")
 
-    def _build_ir(self, x: torch.Tensor) -> tuple[str, tuple[int, ...]]:
-        cache_key = self._runtime_shape_key(x)
-        cached = self._ir_cache.get(cache_key)
+    def _build_plan(self, x: torch.Tensor) -> _BoundIrPlan:
+        cache_key = self._runtime_plan_key(x)
+        cached = self._plan_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        input_payloads: list[torch.Tensor] = [x]
         nodes: list[dict] = [
             {
                 "id": 0,
@@ -312,19 +361,21 @@ class BoundNativeChainDispatcher:
             }
         ]
         edges: list[dict] = []
+        payload_specs: list[_BoundPayloadSpec] = []
         current_id = 0
         next_id = 1
         current_dim = int(x.shape[-1])
 
         for chain_node in self._chain_nodes:
-            native_name, params, config, next_dim = self._op_inputs_and_config(
+            native_name, param_specs, config, next_dim = self._op_inputs_and_config(
                 op_name=chain_node.op_name,
                 module=chain_node.module,
                 current_dim=current_dim,
                 x=x,
             )
             input_ids = [current_id]
-            for param in params:
+            payload_specs.extend(param_specs)
+            for _ in param_specs:
                 param_id = next_id
                 next_id += 1
                 nodes.append(
@@ -337,7 +388,6 @@ class BoundNativeChainDispatcher:
                         "is_output": False,
                     }
                 )
-                input_payloads.append(param)
                 input_ids.append(param_id)
             node_id = next_id
             next_id += 1
@@ -381,46 +431,26 @@ class BoundNativeChainDispatcher:
             output_shape = (int(x.shape[0]), int(x.shape[1]), current_dim)
         else:
             output_shape = (self._rows(x), current_dim)
-        self._ir_cache[cache_key] = (ir_json, output_shape)
-        self._last_inputs = tuple(input_payloads)
-        return ir_json, output_shape
-
-    def _input_payloads(self, x: torch.Tensor) -> list[torch.Tensor]:
-        payloads: list[torch.Tensor] = [x]
-        current_dim = int(x.shape[-1])
-        for chain_node in self._chain_nodes:
-            _, params, _, next_dim = self._op_inputs_and_config(
-                op_name=chain_node.op_name,
-                module=chain_node.module,
-                current_dim=current_dim,
-                x=x,
-            )
-            payloads.extend(params)
-            current_dim = next_dim
-        return payloads
+        plan = _BoundIrPlan(
+            ir_json=ir_json,
+            output_shape=output_shape,
+            payload_specs=tuple(payload_specs),
+        )
+        self._plan_cache[cache_key] = plan
+        return plan
 
     def try_dispatch(self, x: torch.Tensor):
         if getattr(x, "requires_grad", False) or not self._supports_input(x):
             return None
-        payloads = self._input_payloads(x)
+        plan = self._build_plan(x)
+        payloads = plan.payloads(x)
         if not supports_host_array_bridge(*payloads):
             return None
-        ir_json, output_shape = self._build_ir(x)
         return dispatch_graph_native_multi_input_cached(
-            ir_json,
+            plan.ir_json,
             payloads,
-            output_shape=output_shape,
+            output_shape=plan.output_shape,
         )
-
-
-def _unique_consumers(graph: ComputationGraph) -> Dict[int, list[int]]:
-    consumers: Dict[int, list[int]] = {node_id: [] for node_id in graph.nodes}
-    for node_id, node in graph.nodes.items():
-        for parent_id in node.input_ids:
-            if parent_id in consumers:
-                consumers[parent_id].append(node_id)
-    return consumers
-
 
 def _bound_eligible_node(
     graph: ComputationGraph,
@@ -519,7 +549,11 @@ def build_bound_native_chain_segments(
             continue
 
         plan_indices = [node_id_to_plan_idx[current] for current in chain_node_ids]
-        if plan_indices != list(range(plan_indices[0], plan_indices[-1] + 1)):
+        start_plan_index = plan_indices[0]
+        if any(
+            plan_idx != start_plan_index + offset
+            for offset, plan_idx in enumerate(plan_indices)
+        ):
             continue
 
         dispatcher = BoundNativeChainDispatcher(
@@ -534,7 +568,7 @@ def build_bound_native_chain_segments(
 
         segments.append(
             NativeChainSegment(
-                start_plan_index=plan_indices[0],
+                start_plan_index=start_plan_index,
                 end_plan_index=plan_indices[-1],
                 input_ir_idx=node_id_to_ir_idx[parent_id],
                 input_consume_count=1,

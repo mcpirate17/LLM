@@ -25,7 +25,7 @@ def configure_native_execution(
     source_graph,
     *,
     flat_ops: list[object | None],
-    op_codes_list: list[int],
+    n_nodes: int,
     exec_plan_node_indices: tuple[int, ...],
 ) -> NativeExecutionConfig:
     if source_graph is None:
@@ -44,7 +44,7 @@ def configure_native_execution(
         ir_node_ids = (
             ir.node_ids.tolist()
             if ir.node_ids is not None
-            else list(range(len(op_codes_list)))
+            else list(range(n_nodes))
         )
         bound_dispatcher = BoundNativeSubgraphDispatcher(
             source_graph,

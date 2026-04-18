@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from .associative_recall import associative_recall_score
+from .binding_range import binding_range_profile
 from .binding_curriculum import (
+    CURRICULUM_BINDING_PROTOCOL_VERSION,
     CURRICULUM_BINDING_DISTANCES,
     CURRICULUM_BINDING_EVAL_FULL,
     CURRICULUM_BINDING_EVAL_SCREENING,
@@ -28,6 +30,10 @@ class FullBindingProbeResult:
     binding_auc: float
     binding_distance_accuracies: Dict[int, float]
     binding_elapsed_ms: float
+    binding_auc_curriculum: float
+    binding_distance_accuracies_curriculum: Dict[int, float]
+    binding_curriculum_elapsed_ms: float
+    binding_curriculum_train_steps: int
 
     def to_result_dict(self) -> Dict[str, Any]:
         out = {
@@ -40,6 +46,11 @@ class FullBindingProbeResult:
             "binding_probe_distances": list(CURRICULUM_BINDING_DISTANCES),
             "binding_probe_eval_examples": CURRICULUM_BINDING_EVAL_FULL,
             "binding_probe_elapsed_ms": self.binding_elapsed_ms,
+            "binding_auc_curriculum": self.binding_auc_curriculum,
+            "binding_distance_accuracies_curriculum": self.binding_distance_accuracies_curriculum,
+            "binding_probe_curriculum_steps": self.binding_curriculum_train_steps,
+            "binding_probe_curriculum_elapsed_ms": self.binding_curriculum_elapsed_ms,
+            "binding_probe_curriculum_protocol_version": CURRICULUM_BINDING_PROTOCOL_VERSION,
         }
         out.update(self.induction_metadata)
         return out
@@ -71,6 +82,7 @@ def run_screening_binding_probes(
     model, *, device: str, seed: int | None = None
 ) -> Dict[str, Any]:
     ind = induction_score_gold(model, device=device, seed=seed)
+    zero = binding_range_profile(model, device=device, seed=seed)
     br = curriculum_binding_range_profile(
         model,
         distances=CURRICULUM_BINDING_DISTANCES,
@@ -80,13 +92,18 @@ def run_screening_binding_probes(
         seed=seed,
     )
     out = induction_result_metadata(ind)
-    out["binding_auc"] = br.auc
-    out["binding_distance_accuracies"] = br.distance_accuracies
+    out["binding_auc"] = zero.auc
+    out["binding_distance_accuracies"] = zero.distance_accuracies
+    out["binding_probe_elapsed_ms"] = zero.elapsed_ms
+    out["binding_auc_curriculum"] = br.auc
+    out["binding_distance_accuracies_curriculum"] = br.distance_accuracies
+    out["binding_probe_curriculum_steps"] = br.train_steps
+    out["binding_probe_curriculum_elapsed_ms"] = br.elapsed_ms
+    out["binding_probe_curriculum_protocol_version"] = br.protocol_version
     out["binding_probe_eval_examples"] = CURRICULUM_BINDING_EVAL_SCREENING
     out["binding_probe_distances"] = list(CURRICULUM_BINDING_DISTANCES)
-    out["binding_probe_elapsed_ms"] = br.elapsed_ms
     out["ar_auc"] = None
-    out["binding_composite"] = compute_binding_composite(None, ind.auc, br.auc)
+    out["binding_composite"] = compute_binding_composite(None, ind.auc, zero.auc)
     return out
 
 
@@ -100,6 +117,7 @@ def run_full_binding_probes(model, *, device: str) -> FullBindingProbeResult:
         device=device,
     )
     ind = induction_score_gold(model, device=device)
+    zero = binding_range_profile(model, device=device)
     br = curriculum_binding_range_profile(
         model,
         distances=CURRICULUM_BINDING_DISTANCES,
@@ -116,7 +134,11 @@ def run_full_binding_probes(model, *, device: str) -> FullBindingProbeResult:
         induction_auc=ind.auc,
         induction_metadata=induction_result_metadata(ind),
         induction_elapsed_ms=ind.elapsed_ms,
-        binding_auc=br.auc,
-        binding_distance_accuracies=br.distance_accuracies,
-        binding_elapsed_ms=br.elapsed_ms,
+        binding_auc=zero.auc,
+        binding_distance_accuracies=zero.distance_accuracies,
+        binding_elapsed_ms=zero.elapsed_ms,
+        binding_auc_curriculum=br.auc,
+        binding_distance_accuracies_curriculum=br.distance_accuracies,
+        binding_curriculum_elapsed_ms=br.elapsed_ms,
+        binding_curriculum_train_steps=br.train_steps,
     )

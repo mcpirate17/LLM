@@ -109,8 +109,6 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "intelligent_multilane_router",
         "multiscale_difficulty_router",
         "multiscale_difficulty_router_adaptive_attn_ssm",
-        "multiscale_difficulty_router_blocksparse_attn_ssm",
-        "multiscale_difficulty_router_easy_attn_ssm",
         "multiscale_rich_lane_router",
         "multi_head_mix_block",
         "n_way_moe_block",
@@ -133,6 +131,37 @@ COMPONENT_GRAPH_EXEMPT_TEMPLATES = frozenset(
         "tropical_center_block",
         "ultrametric_attention_block",
         "windowed_attention",
+        "recursive_attn_ssm_hybrid",
+        "recursive_attn_ssm_depth",
+        "attn_normalized_matmul_pinned",
+        "difficulty_routed_attention_block",
+        "strided_attention_block",
+        "gated_progressive_attention_block",
+        "gated_linear_attention_block",
+        "long_conv_hyena_block",
+        "associative_memory_block",
+        "mixture_of_recursions_block",
+        "codex_ssm_retention_block",
+        "codex_ssm_delta_memory_block",
+        "codex_ssm_mla_gated_block",
+        "codex_ssm_local_recall_block",
+        "induction_matmul_block",
+        "recursive_moe_attn",
+        "typed_slot_memory_block",
+        "sparse_relation_graph_block",
+        "token_program_interpreter_block",
+        "conv_residual_retrieval_v2",
+        "state_space_retrieval_v2",
+        "latent_attn_retrieval_v2",
+    }
+)
+
+RETIRED_TEMPLATE_NAMES = frozenset(
+    {
+        "attn_reciprocal_gated",
+        "attn_softmax_router_sidecar",
+        "multiscale_difficulty_router_blocksparse_attn_ssm",
+        "multiscale_difficulty_router_easy_attn_ssm",
     }
 )
 
@@ -176,9 +205,13 @@ from ._templates_core import (  # noqa: F401
     tpl_token_merge_block,
     tpl_token_merge_conv,
     tpl_conditional_compute,
+    tpl_recursive_attn_ssm_hybrid,
+    tpl_induction_matmul_block,
+    tpl_recursive_moe_attn,
 )
 
 from ._templates_routing import (  # noqa: F401
+    CAPABILITY_FIRST_TEMPLATES,
     ROUTING_TEMPLATES,
     tpl_difficulty_routed_block,
     tpl_three_lane_adaptive,
@@ -187,8 +220,10 @@ from ._templates_routing import (  # noqa: F401
     tpl_intelligent_multilane_router,
     tpl_multiscale_difficulty_router,
     tpl_multiscale_difficulty_router_adaptive_attn_ssm,
-    tpl_multiscale_difficulty_router_blocksparse_attn_ssm,
-    tpl_multiscale_difficulty_router_easy_attn_ssm,
+    # Retired 2026-04-17: tpl_multiscale_difficulty_router_blocksparse_attn_ssm
+    # and tpl_multiscale_difficulty_router_easy_attn_ssm — both 0% S1 after
+    # 24-25 runs; over-complex routing dominated signal. Names retained in
+    # RETIRED_TEMPLATE_NAMES below for back-compat dedup.
     tpl_multiscale_rich_lane_router,
     tpl_recursive_depth_router,
     tpl_depth_token_mask_block,
@@ -201,7 +236,9 @@ from ._templates_routing import (  # noqa: F401
     tpl_mixed_recursion,
     tpl_topk_retrieval,
     tpl_depth_gated_block,
-    tpl_depth_gated_block_matmul,
+    # Retired 2026-04-17: tpl_depth_gated_block_matmul — depth signal (B,S,1)
+    # cannot meaningfully gate O(S²) matmul compute; weight=0.25 with
+    # _matmul_stable variant already covering the use case.
     tpl_depth_gated_block_matmul_norm,
     tpl_depth_gated_block_matmul_stable,
     tpl_gated_lane_blend_block,
@@ -275,17 +312,22 @@ from ._templates_attention_tail import (  # noqa: F401
     tpl_attn_linear_no_matmul_ffn,
     tpl_attn_linear_no_matmul_ffn_dense_tail,
     tpl_attn_linear_no_matmul_ffn_direct_recovery,
-    tpl_attn_linear_no_matmul_ffn_v2,
+    # Retired 2026-04-17: tpl_attn_linear_no_matmul_ffn_v2 — linear-attention
+    # without matmul lacks expressiveness for in-context learning; weight=0.25
+    # and never recovered.
     tpl_attn_moe_block,
     tpl_attn_normalized_matmul,
-    tpl_attn_reciprocal_gated,
+    # Retired 2026-04-17: tpl_attn_reciprocal_gated — no FFN, numerically
+    # unstable reciprocal, 0% S1 after 23 runs. Function deleted from
+    # _templates_attention_tail.py.
     tpl_attn_safe_division,
     tpl_attn_softmax_normalized_matmul_compact_ffn,
     tpl_attn_softmax_normalized_matmul_fixed_tail_norm,
     tpl_attn_softmax_matmul_sparse_tail,
     tpl_attn_softmax_normalized_matmul,
     tpl_attn_softmax_normalized_matmul_v2,
-    tpl_attn_softmax_router_sidecar,
+    # Retired 2026-04-17: tpl_attn_softmax_router_sidecar — sidecar routing
+    # added noise not signal, 0% S1 after 25+ runs.
     tpl_attn_spiking_hybrid,
     tpl_attn_spectral_filter,
     tpl_diff_attn_conv_hybrid,
@@ -294,15 +336,30 @@ from ._templates_attention_tail import (  # noqa: F401
     tpl_graph_attn_ffn_block,
     tpl_graph_attn_moe,
     tpl_graph_attn_sparse_ffn,
+    tpl_graph_attn_ssm_recursive,
+    tpl_attn_normalized_matmul_pinned,
+    tpl_difficulty_routed_attention_block,
+    tpl_strided_attention_block,
+    tpl_gated_progressive_attention_block,
+    tpl_gated_linear_attention_block,
+    tpl_long_conv_hyena_block,
+    tpl_associative_memory_block,
+    tpl_mixture_of_recursions_block,
+    tpl_codex_ssm_retention_block,
+    tpl_codex_ssm_delta_memory_block,
+    tpl_codex_ssm_mla_gated_block,
+    tpl_codex_ssm_local_recall_block,
     tpl_latent_attn_conv_hybrid,
     tpl_latent_attn_ffn_block,
     tpl_latent_attn_moe,
+    tpl_latent_attn_padic_hybrid,
     tpl_latent_attn_sparse_ffn,
     tpl_latent_attn_ssm_hybrid,
     tpl_linear_attn_ffn_block,
     tpl_linear_attn_sparse_ffn,
     tpl_local_attn_moe,
     tpl_local_attn_ssm_hybrid,
+    tpl_recursive_attn_ssm_depth,
 )
 
 from ._templates_research import (  # noqa: F401
@@ -338,6 +395,18 @@ from ._templates_research import (  # noqa: F401
     tpl_dual_axis_block,
 )
 
+from ._templates_role_slots import (  # noqa: F401
+    tpl_typed_slot_memory_block,
+    tpl_sparse_relation_graph_block,
+    tpl_token_program_interpreter_block,
+)
+
+from ._templates_role_slot_v2 import (  # noqa: F401
+    tpl_conv_residual_retrieval_v2,
+    tpl_state_space_retrieval_v2,
+    tpl_latent_attn_retrieval_v2,
+)
+
 
 # ── Template Registry ───────────────────────────────────────────────
 
@@ -357,6 +426,9 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "token_merge_block": tpl_token_merge_block,
     "token_merge_conv": tpl_token_merge_conv,
     "conditional_compute": tpl_conditional_compute,
+    "recursive_attn_ssm_hybrid": tpl_recursive_attn_ssm_hybrid,
+    "induction_matmul_block": tpl_induction_matmul_block,
+    "recursive_moe_attn": tpl_recursive_moe_attn,
     "difficulty_routed_block": tpl_difficulty_routed_block,
     "three_lane_adaptive": tpl_three_lane_adaptive,
     "cascaded_early_exit": tpl_cascaded_early_exit,
@@ -364,8 +436,6 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "intelligent_multilane_router": tpl_intelligent_multilane_router,
     "multiscale_difficulty_router": tpl_multiscale_difficulty_router,
     "multiscale_difficulty_router_adaptive_attn_ssm": tpl_multiscale_difficulty_router_adaptive_attn_ssm,
-    "multiscale_difficulty_router_blocksparse_attn_ssm": tpl_multiscale_difficulty_router_blocksparse_attn_ssm,
-    "multiscale_difficulty_router_easy_attn_ssm": tpl_multiscale_difficulty_router_easy_attn_ssm,
     "multiscale_rich_lane_router": tpl_multiscale_rich_lane_router,
     "recursive_depth_router": tpl_recursive_depth_router,
     "depth_token_mask_block": tpl_depth_token_mask_block,
@@ -378,7 +448,6 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "mixed_recursion": tpl_mixed_recursion,
     "topk_retrieval": tpl_topk_retrieval,
     "depth_gated_block": tpl_depth_gated_block,
-    "depth_gated_block_matmul": tpl_depth_gated_block_matmul,
     "depth_gated_block_matmul_norm": tpl_depth_gated_block_matmul_norm,
     "depth_gated_block_matmul_stable": tpl_depth_gated_block_matmul_stable,
     "gated_lane_blend_block": tpl_gated_lane_blend_block,
@@ -464,7 +533,6 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "attn_state_space_hybrid": tpl_attn_state_space_hybrid,
     "cascaded_attn_ffn": tpl_cascaded_attn_ffn,
     "attn_exp_gated": tpl_attn_exp_gated,
-    "attn_reciprocal_gated": tpl_attn_reciprocal_gated,
     "attn_decay_sequence": tpl_attn_decay_sequence,
     "attn_gated_product": tpl_attn_gated_product,
     "diff_attn_routing": tpl_diff_attn_routing,
@@ -486,9 +554,7 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "attn_linear_no_matmul_ffn": tpl_attn_linear_no_matmul_ffn,
     "attn_linear_no_matmul_ffn_dense_tail": tpl_attn_linear_no_matmul_ffn_dense_tail,
     "attn_linear_no_matmul_ffn_direct_recovery": tpl_attn_linear_no_matmul_ffn_direct_recovery,
-    "attn_linear_no_matmul_ffn_v2": tpl_attn_linear_no_matmul_ffn_v2,
     "attn_softmax_matmul_sparse_tail": tpl_attn_softmax_matmul_sparse_tail,
-    "attn_softmax_router_sidecar": tpl_attn_softmax_router_sidecar,
     "latent_attn_conv_hybrid": tpl_latent_attn_conv_hybrid,
     "diff_attn_conv_hybrid": tpl_diff_attn_conv_hybrid,
     # Group F
@@ -502,6 +568,31 @@ TEMPLATES: Dict[str, TemplateFn] = {
     "graph_attn_moe": tpl_graph_attn_moe,
     "linear_attn_sparse_ffn": tpl_linear_attn_sparse_ffn,
     "graph_attn_sparse_ffn": tpl_graph_attn_sparse_ffn,
+    # Pinned variant: all components fixed to empirical best
+    "attn_normalized_matmul_pinned": tpl_attn_normalized_matmul_pinned,
+    # Novel mixing templates (2026-04-15): new primitive ops
+    "difficulty_routed_attention_block": tpl_difficulty_routed_attention_block,
+    "strided_attention_block": tpl_strided_attention_block,
+    "gated_progressive_attention_block": tpl_gated_progressive_attention_block,
+    "gated_linear_attention_block": tpl_gated_linear_attention_block,
+    "long_conv_hyena_block": tpl_long_conv_hyena_block,
+    "associative_memory_block": tpl_associative_memory_block,
+    "mixture_of_recursions_block": tpl_mixture_of_recursions_block,
+    "codex_ssm_retention_block": tpl_codex_ssm_retention_block,
+    "codex_ssm_delta_memory_block": tpl_codex_ssm_delta_memory_block,
+    "codex_ssm_mla_gated_block": tpl_codex_ssm_mla_gated_block,
+    "codex_ssm_local_recall_block": tpl_codex_ssm_local_recall_block,
+    # New high-performance templates based on winning pattern analysis
+    "recursive_attn_ssm_depth": tpl_recursive_attn_ssm_depth,
+    "latent_attn_padic_hybrid": tpl_latent_attn_padic_hybrid,
+    "graph_attn_ssm_recursive": tpl_graph_attn_ssm_recursive,
+    # Capability-first role-slot templates.
+    "typed_slot_memory_block": tpl_typed_slot_memory_block,
+    "sparse_relation_graph_block": tpl_sparse_relation_graph_block,
+    "token_program_interpreter_block": tpl_token_program_interpreter_block,
+    "conv_residual_retrieval_v2": tpl_conv_residual_retrieval_v2,
+    "state_space_retrieval_v2": tpl_state_space_retrieval_v2,
+    "latent_attn_retrieval_v2": tpl_latent_attn_retrieval_v2,
 }
 
 DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
@@ -520,6 +611,9 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "token_merge_block": 7.0,
     "token_merge_conv": 6.0,
     "conditional_compute": 3.5,
+    "recursive_attn_ssm_hybrid": 5.0,
+    "induction_matmul_block": 4.5,
+    "recursive_moe_attn": 5.0,
     "difficulty_routed_block": 5.0,
     "three_lane_adaptive": 5.0,
     "cascaded_early_exit": 4.5,
@@ -527,14 +621,12 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "intelligent_multilane_router": 5.5,
     "multiscale_difficulty_router": 5.5,
     "multiscale_difficulty_router_adaptive_attn_ssm": 0.25,
-    "multiscale_difficulty_router_blocksparse_attn_ssm": 0.25,
-    "multiscale_difficulty_router_easy_attn_ssm": 0.25,
     "multiscale_rich_lane_router": 5.0,
     "recursive_depth_router": 6.0,
     "depth_token_mask_block": 4.5,
     # Reduced from 6.0: ops_mining_report shows mean_loss=0.804 inflated by
     # forced_exploration (48% of samples). Organic mean is 0.593 — decent but
-    # not worth 12% of sampling budget. The op itself is sound (test_lac.py passes).
+    # not worth 12% of sampling budget. The op itself is sound.
     "latent_compress_block": 0.5,
     "latent_compress_rwkv": 0.5,
     "signal_routed_compression": 5.0,
@@ -595,9 +687,9 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "arch_router_block": 4.0,
     "compute_budget_block": 4.0,
     "depth_gated_block": 2.0,
-    "depth_gated_block_matmul": 0.25,
     "depth_gated_block_matmul_norm": 1.5,
-    "depth_gated_block_matmul_stable": 0.25,
+    # Rewritten: added FFN sub-block after depth-gated matmul
+    "depth_gated_block_matmul_stable": 3.0,
     "gated_lane_blend_block": 2.0,
     "feature_sparse_block": 2.0,
     "adaptive_sparse": 6.0,
@@ -627,14 +719,14 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "attn_ssm_hybrid": 3.5,
     "attn_conv_hybrid": 3.5,
     "attn_rwkv_hybrid": 3.5,
-    "attn_bottleneck_hybrid": 3.0,
+    # Rewritten: attention + parallel SSM + FFN (was sparse bottleneck, no expansion)
+    "attn_bottleneck_hybrid": 4.0,
     "attn_routing_block": 3.0,
     "dual_attn_block": 3.0,
     "attn_state_space_hybrid": 3.5,
     "cascaded_attn_ffn": 3.0,
     # Group D: attention + exotic ops
     "attn_exp_gated": 3.0,
-    "attn_reciprocal_gated": 3.0,
     "attn_decay_sequence": 3.0,
     "attn_gated_product": 3.0,
     "diff_attn_routing": 3.5,
@@ -647,18 +739,20 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "attn_gated_maximum": 3.0,
     "attn_hyperbolic": 3.0,
     "attn_spectral_filter": 3.5,  # spectral_filter has best S1 rate (0.329)
-    "attn_normalized_matmul": 3.0,
+    # Rewritten: attention || SSM parallel + matmul refinement + FFN
+    "attn_normalized_matmul": 4.0,
     "attn_softmax_normalized_matmul": 3.5,
     "attn_softmax_normalized_matmul_compact_ffn": 2.0,
     "attn_softmax_normalized_matmul_fixed_tail_norm": 2.0,
-    "attn_softmax_normalized_matmul_v2": 0.25,
-    "attn_linear_softmax_recovery_control": 0.25,
+    # Rewritten: parallel attn+SSM hybrid (was sequential matmul bloat)
+    "attn_softmax_normalized_matmul_v2": 4.0,
+    # Rewritten: parallel linear_attn+SSM (was sequential dual-attn bottleneck)
+    "attn_linear_softmax_recovery_control": 4.0,
     "attn_linear_no_matmul_ffn": 3.5,
     "attn_linear_no_matmul_ffn_dense_tail": 2.0,
     "attn_linear_no_matmul_ffn_direct_recovery": 2.0,
-    "attn_linear_no_matmul_ffn_v2": 0.25,
-    "attn_softmax_matmul_sparse_tail": 0.25,
-    "attn_softmax_router_sidecar": 0.25,
+    # Rewritten: softmax_attn+SSM parallel (was matmul+sparse dead gradient path)
+    "attn_softmax_matmul_sparse_tail": 4.0,
     "latent_attn_conv_hybrid": 4.0,  # Best attn + conv parallel
     "diff_attn_conv_hybrid": 3.5,
     # Group F: final templates for 60% threshold
@@ -672,20 +766,69 @@ DEFAULT_TEMPLATE_WEIGHTS: Dict[str, float] = {
     "graph_attn_moe": 3.5,
     "linear_attn_sparse_ffn": 2.5,
     "graph_attn_sparse_ffn": 3.0,
+    "attn_normalized_matmul_pinned": 6.0,  # Fully optimized: softmax_attn || padic + swiglu
+    # Novel mixing templates: new primitive ops with proven hybrid pattern
+    "difficulty_routed_attention_block": 5.0,  # Hard tokens attend, easy tokens skip
+    "strided_attention_block": 5.0,            # Multi-scale dilated attention
+    "gated_progressive_attention_block": 5.0,  # Attention learns to engage
+    "gated_linear_attention_block": 5.5,       # GLA: O(nd²), Qwen3-Next core
+    "long_conv_hyena_block": 4.5,              # Hyena FFT conv + GLA
+    "associative_memory_block": 4.5,           # Modern Hopfield retrieval
+    "mixture_of_recursions_block": 5.0,        # Per-token adaptive depth
+    "codex_ssm_retention_block": 4.5,          # Retention-style GLA + SSM + compression
+    "codex_ssm_delta_memory_block": 4.5,       # Delta-rule memory + linear read path
+    "codex_ssm_mla_gated_block": 4.5,          # MLA-style compression + gated retention
+    "codex_ssm_local_recall_block": 4.0,       # Sparse local attention + recurrent memory
+    "typed_slot_memory_block": 4.5,            # Typed memory write/read over compact trunk
+    "sparse_relation_graph_block": 4.0,        # Sparse relation proposal + algebraic retrieval
+    "token_program_interpreter_block": 4.25,   # Routed token programs with explicit memory path
+    # Role-slot v2: proven trunks + retrieval sidecar (2026-04-16)
+    "conv_residual_retrieval_v2": 4.25,        # conv trunk + matmul/gather_topk sidecar
+    "state_space_retrieval_v2": 4.25,          # SSM trunk + matmul/gather_topk sidecar
+    "latent_attn_retrieval_v2": 4.0,           # latent_attn trunk + complementary retrieval lane
+    # New high-performance templates: proven parallel attn+X + FFN pattern
+    "recursive_attn_ssm_depth": 5.5,  # latent_attn||SSM + adaptive_recursion + FFN
+    "latent_attn_padic_hybrid": 5.0,  # latent_attn||padic_expand + FFN
+    "graph_attn_ssm_recursive": 4.5,  # graph_attn||SSM + FFN
+    # NB: retired template names are tracked in RETIRED_TEMPLATE_NAMES above
+    # for dedup/back-compat. Their templates and weight entries have been
+    # removed — pick_template iterates TEMPLATES.keys() so dangling weight
+    # entries here would just be dead lookups.
 }
 
 
 def pick_template(
     rng: random.Random,
     weights: Optional[Dict[str, float]] = None,
-) -> Tuple[str, TemplateFn]:
-    """Pick a template weighted by success priors."""
+    exploration_budget: float = 0.0,
+) -> Tuple[str, TemplateFn, bool]:
+    """Pick a template weighted by success priors.
+
+    When exploration_budget > 0, that fraction of picks ignore weights
+    and select uniformly from ALL templates — including zero-weighted ones.
+    This guarantees every template gets coverage.
+
+    Returns (name, fn, was_exploration).
+    """
     names = list(TEMPLATES.keys())
+    weighted_pool = [
+        name
+        for name in names
+        if float((weights or {}).get(name, DEFAULT_TEMPLATE_WEIGHTS.get(name, 1.0))) > 0.0
+    ]
+    if not weighted_pool:
+        weighted_pool = names
+    if exploration_budget > 0 and rng.random() < exploration_budget:
+        # Exploration still covers low-prior live templates, but retired
+        # zero-weight templates are excluded unless explicitly forced.
+        name = rng.choice(weighted_pool)
+        return name, TEMPLATES[name], True
     template_weights = [
-        (weights or {}).get(n, DEFAULT_TEMPLATE_WEIGHTS.get(n, 1.0)) for n in names
+        (weights or {}).get(n, DEFAULT_TEMPLATE_WEIGHTS.get(n, 1.0))
+        for n in names
     ]
     name = rng.choices(names, weights=template_weights, k=1)[0]
-    return name, TEMPLATES[name]
+    return name, TEMPLATES[name], False
 
 
 def apply_template(
@@ -696,19 +839,22 @@ def apply_template(
     template_weights: Optional[Dict[str, float]] = None,
     motif_weights: MotifWeights = None,
     op_weights: Optional[Dict[str, float]] = None,
+    exploration_budget: float = 0.0,
 ) -> int:
     """Apply a template to the graph. Main entry point for grammar."""
-    prev_node_ids = set(graph.nodes.keys())
     prev_next_id = graph._next_id
     prev_output_id = graph._output_node_id
     prev_ir_version = graph._ir_version
     prev_metadata = dict(graph.metadata)
 
+    was_exploration = False
     if template_name and template_name in TEMPLATES:
         name = template_name
         fn = TEMPLATES[name]
     else:
-        name, fn = pick_template(rng, template_weights)
+        name, fn, was_exploration = pick_template(rng, template_weights, exploration_budget)
+    if was_exploration:
+        graph.metadata["_template_exploration_used"] = True
     if op_weights:
         graph.metadata["_op_weights"] = op_weights
     graph.metadata.setdefault("templates_used", []).append(name)
@@ -723,8 +869,7 @@ def apply_template(
     try:
         return fn(graph, input_id, rng, motif_weights)
     except Exception:
-        added_ids = set(graph.nodes.keys()) - prev_node_ids
-        for nid in added_ids:
+        for nid in range(prev_next_id, graph._next_id):
             del graph.nodes[nid]
         graph._next_id = prev_next_id
         graph._output_node_id = prev_output_id

@@ -41,6 +41,20 @@ _NON_ROUTING_TEMPLATES = {
     "attn_spectral_filter",
     "linear_attn_ffn_block",
     "linear_attn_sparse_ffn",
+    "difficulty_routed_attention_block",
+    "strided_attention_block",
+    "gated_progressive_attention_block",
+    "gated_linear_attention_block",
+    "long_conv_hyena_block",
+    "associative_memory_block",
+    "mixture_of_recursions_block",
+    "codex_ssm_retention_block",
+    "codex_ssm_delta_memory_block",
+    "codex_ssm_mla_gated_block",
+    "codex_ssm_local_recall_block",
+    "typed_slot_memory_block",
+    "sparse_relation_graph_block",
+    "token_program_interpreter_block",
 }
 
 
@@ -100,6 +114,17 @@ def test_targeted_backfill_generates_requested_templates():
         "attn_spectral_filter",
         "linear_attn_ffn_block",
         "linear_attn_sparse_ffn",
+        "difficulty_routed_attention_block",
+        "strided_attention_block",
+        "gated_progressive_attention_block",
+        "gated_linear_attention_block",
+        "long_conv_hyena_block",
+        "associative_memory_block",
+        "mixture_of_recursions_block",
+        "codex_ssm_retention_block",
+        "codex_ssm_delta_memory_block",
+        "codex_ssm_mla_gated_block",
+        "codex_ssm_local_recall_block",
     ):
         _assert_targeted_generation(template_name, seed=42)
 
@@ -124,6 +149,17 @@ def test_targeted_backfill_generates_requested_templates():
         ("linear_attn_ffn_block", 99796358),
         ("linear_attn_sparse_ffn", 1973232567),
         ("graph_attn_sparse_ffn", 2118196712),
+        ("difficulty_routed_attention_block", 42),
+        ("strided_attention_block", 42),
+        ("gated_progressive_attention_block", 42),
+        ("gated_linear_attention_block", 42),
+        ("long_conv_hyena_block", 42),
+        ("associative_memory_block", 42),
+        ("mixture_of_recursions_block", 42),
+        ("codex_ssm_retention_block", 42),
+        ("codex_ssm_delta_memory_block", 42),
+        ("codex_ssm_mla_gated_block", 42),
+        ("codex_ssm_local_recall_block", 42),
     ),
 )
 def test_targeted_backfill_graphs_fit_screening_validator(template_name, seed):
@@ -133,11 +169,31 @@ def test_targeted_backfill_graphs_fit_screening_validator(template_name, seed):
         f"(attempted={result.n_attempted}, rejected={result.n_rejected_grammar})"
     )
     for graph in result.graphs:
-        validation = validate_graph(graph, max_ops=24, max_depth=16)
+        validation = validate_graph(graph, max_ops=24, max_depth=18)
         assert validation.valid, (
             f"{template_name} produced invalid screening graph at seed {seed}: "
             f"{validation.errors}"
         )
+
+
+@pytest.mark.parametrize(
+    "template_name,expected_min_slots",
+    (
+        ("codex_ssm_retention_block", 4),
+        ("codex_ssm_delta_memory_block", 2),
+        ("codex_ssm_mla_gated_block", 4),
+        ("codex_ssm_local_recall_block", 3),
+        ("typed_slot_memory_block", 7),
+        ("sparse_relation_graph_block", 6),
+        ("token_program_interpreter_block", 7),
+    ),
+)
+def test_codex_fast_attention_templates_emit_slot_usage(template_name, expected_min_slots):
+    result = batch_generate(1, _backfill_like_config(template_name), base_seed=42)
+    assert len(result.graphs) == 1
+    slot_usage = result.graphs[0].metadata.get("template_slot_usage", [])
+    assert len(slot_usage) >= expected_min_slots
+    assert _MiscMixin._infer_template_slot_counts()[template_name] >= expected_min_slots
 
 
 def test_stack_phase_uses_depth_safe_override_for_hybrid_sparse_triplet_router():

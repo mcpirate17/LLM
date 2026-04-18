@@ -33,16 +33,14 @@ from .motifs import (
     Motif,
     resolve_step,
 )
+from ._selection_utils import context_pair_allowed
 from .primitives import (
     AlgebraicType,
     PRIMITIVE_REGISTRY,
     REQUIRES_RESIDUAL_BYPASS,
     algebraic_types_compatible,
 )
-from .context_rules import (
-    CONTEXT_RULES,
-    motif_allowed_in_template as _motif_allowed_in_template,
-)
+from .context_rules import motif_allowed_in_template as _motif_allowed_in_template
 
 # Type alias for motif weight dicts passed from judgment engine
 MotifWeights = Optional[Dict[str, float]]
@@ -165,18 +163,6 @@ def _step_is_compatible(graph: ComputationGraph, node_id: int, op_name: str) -> 
     return algebraic_types_compatible(current_type, next_op.algebraic_type)
 
 
-def _context_pair_allowed(prev_op: str | None, next_op: str) -> bool:
-    if prev_op is None:
-        return True
-    prev_rule = CONTEXT_RULES.get(prev_op)
-    if prev_rule is not None and next_op in prev_rule.forbidden_successors:
-        return False
-    next_rule = CONTEXT_RULES.get(next_op)
-    if next_rule is not None and prev_op in next_rule.forbidden_predecessors:
-        return False
-    return True
-
-
 def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) -> bool:
     current_type = _node_output_type(graph, node_id)
     current_node = graph.nodes[node_id]
@@ -196,7 +182,7 @@ def _motif_is_compatible(graph: ComputationGraph, node_id: int, motif: Motif) ->
             step_op is None
             or step_op.n_inputs != 1
             or not algebraic_types_compatible(current_type, step_op.algebraic_type)
-            or not _context_pair_allowed(previous_op, step.op_name)
+            or not context_pair_allowed(previous_op, step.op_name)
         ):
             return False
         # Reject motif if op requires deeper placement than current position
@@ -226,26 +212,6 @@ def _compatible_from_classes(
 
 
 _SLOT_MOTIF_DENYLIST: dict[str, frozenset[str]] = {
-    # Live telemetry shows these normalization motifs collapse the Mamba
-    # reference block before the selective-scan path can learn anything useful.
-    "mamba_reference.slot0": frozenset({"norm_layer", "norm_rms"}),
-    "mamba_reference.slot1": frozenset({"norm_layer", "norm_rms"}),
-    # gate_bias_act repeatedly destabilizes the retrieval post-processing slot.
-    "topk_retrieval.slot1": frozenset({"gate_bias_act"}),
-    # Both pre-norm variants underperform badly in these templates; leaving the
-    # slot empty is better than forcing a weak normalization choice.
-    "routed_bottleneck.slot0": frozenset({"norm_layer", "norm_rms"}),
-    "conditional_compute.slot0": frozenset({"norm_layer", "norm_rms"}),
-    # Repeatedly toxic sparse placements on the entropy-gated path.
-    "conditional_compute.slot1": frozenset({"sparse_block", "sparse_ternary"}),
-    # The generic sequential carrier still admits a few motifs whose internal
-    # substitutions violate local context rules in this template.
-    "sequential.slot1": frozenset(
-        {"ffn_bottleneck", "ffn_expand_contract", "sparse_gated_ffn"}
-    ),
-    "sequential.slot3": frozenset(
-        {"ffn_bottleneck", "ffn_expand_contract", "sparse_gated_ffn"}
-    ),
     # Post-mask signal is fragile — routing motifs corrupt the masked stream.
     "depth_token_mask_block.slot1": frozenset(
         {
@@ -259,48 +225,9 @@ _SLOT_MOTIF_DENYLIST: dict[str, frozenset[str]] = {
     ),
 }
 
-_SLOT_MOTIF_ALLOWLIST: dict[str, frozenset[str]] = {
-    # This slot is a cheap feature gate inside a D/4 bottleneck, not a full
-    # token-routing stage. Keep it to lightweight gating motifs.
-    "routed_bottleneck.slot1": frozenset(
-        {
-            "conditional_skip",
-            "gate_bias_act",
-            "gate_linear",
-            "gate_scale",
-            "gate_swiglu",
-            "route_identity",
-        }
-    ),
-    # Generic sparse motifs repeatedly degrade this compressed slot; only keep
-    # the bottleneck-aware sparse motif that was designed for reduced-rank use.
-    "routed_bottleneck.slot2": frozenset({"bottleneck_sparse"}),
-    # This compressed post-attention slot is a true bottleneck transform, not a
-    # routing or entropy-gating stage. Keep it on the reduced-rank sparse path.
-    "attn_bottleneck_hybrid.slot2": frozenset({"bottleneck_sparse"}),
-}
+_SLOT_MOTIF_ALLOWLIST: dict[str, frozenset[str]] = {}
 
-_SLOT_MOTIF_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {
-    "conditional_compute.slot1": {
-        "bottleneck_sparse": 1.35,
-        "sparse_nm": 1.2,
-        "sparse_semi_structured": 1.1,
-    },
-    "depth_gated_block.slot1": {
-        # This shell optimizes best when the post-depth mixer behaves like a
-        # smooth refinement stage rather than another heavy routing/gating hop.
-        "channel_rwkv": 1.45,
-        "attn_linear": 1.35,
-        "spectral_filter_mix": 1.25,
-        "clifford_attention_mix": 1.2,
-        "attn_latent_compress": 1.15,
-        "conv_local": 0.8,
-        "conv_dilated": 0.8,
-        "conv_only": 0.85,
-        "mamba_selective": 0.9,
-        "mamba_block": 0.9,
-    },
-}
+_SLOT_MOTIF_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {}
 
 
 def _normalize_slot_key(slot_key: str) -> str:
@@ -409,6 +336,14 @@ def _pick_compatible_motif(
             is_wildcard = True
     candidates = _filter_slot_candidates(graph, candidates)
 
+    # Graph-level wildcard breadcrumb. Per-slot `wildcard` is already on
+    # _record_slot_usage; this aggregate makes it cheap for downstream
+    # filtering to ask "was this graph touched by wildcard fallback at all?"
+    if is_wildcard:
+        graph.metadata["_template_wildcard_used"] = True
+        wildcards = graph.metadata.setdefault("_template_wildcard_slot_keys", [])
+        wildcards.append(_current_slot_key(graph))
+
     selected = _select_from_candidates(graph, candidates, rng, weights)
     _record_slot_usage(
         graph,
@@ -495,12 +430,23 @@ def record_template_slot_binding(
 def _fix_dim(graph: ComputationGraph, node_id: int) -> int:
     """Add projection to fix dimension back to model_dim if needed.
 
-    Uses linear_proj_down when current dim > model_dim to avoid the
-    forbidden linear_proj_up → linear_proj context rule pair.
+    Uses linear_proj_down when current dim > model_dim and linear_proj_up when
+    current dim < model_dim so reduced-rank trunks recover through the explicit
+    up-projection path rather than the stale linear_proj shortcut.
+
+    Also inserts a stabilizing norm after terminal depth_token_mask nodes.
     """
+    op_name = graph.nodes[node_id].op_name
+    if op_name == "depth_token_mask":
+        try:
+            node_id = graph.add_op("rmsnorm", [node_id])
+        except ValueError as exc:
+            raise TemplateBuildError(
+                "Failed to stabilize depth_token_mask before dimension repair"
+            ) from exc
     cur_dim = graph.nodes[node_id].output_shape.dim
     if cur_dim != graph.model_dim:
-        op = "linear_proj_down" if cur_dim > graph.model_dim else "linear_proj"
+        op = "linear_proj_down" if cur_dim > graph.model_dim else "linear_proj_up"
         try:
             return graph.add_op(op, [node_id], config={"out_dim": graph.model_dim})
         except ValueError as exc:
@@ -642,6 +588,14 @@ def _instantiate_motif(
             config.setdefault("k", rng.choice([4, 8, 16]))
         elif op_name in ("swiglu_mlp", "rwkv_channel", "moe_topk", "rwkv_time_mixing"):
             config.setdefault("mlp_ratio", rng.choice([2.0, 3.0, 4.0]))
+        if op_name in ("linear_proj_up", "linear_proj") and prev_op == "linear_proj_down":
+            try:
+                current = graph.add_op("rmsnorm", [current])
+                prev_op = "rmsnorm"
+            except ValueError as exc:
+                raise TemplateBuildError(
+                    f"Motif '{motif.name}' failed to stabilize after linear_proj_down"
+                ) from exc
         pre_op = current
         try:
             current = graph.add_op(op_name, [current], config=config)
@@ -649,6 +603,13 @@ def _instantiate_motif(
             raise TemplateBuildError(
                 f"Motif '{motif.name}' failed on step '{op_name}'"
             ) from exc
+        if op_name == "depth_token_mask":
+            try:
+                current = graph.add_op("rmsnorm", [current])
+            except ValueError as exc:
+                raise TemplateBuildError(
+                    f"Motif '{motif.name}' failed to stabilize depth_token_mask"
+                ) from exc
         # Auto-wrap REQUIRES_RESIDUAL_BYPASS ops with add(input, gated)
         if op_name in REQUIRES_RESIDUAL_BYPASS:
             try:

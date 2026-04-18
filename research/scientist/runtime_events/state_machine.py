@@ -31,6 +31,10 @@ class LifecycleConflictError(RuntimeError):
     """Raised when a lifecycle event conflicts with the accepted state."""
 
 
+def is_terminal_conflict(current_type: Optional[str], new_type: str) -> bool:
+    return current_type in _TERMINAL_TYPES and new_type in _TERMINAL_TYPES
+
+
 class LifecycleStateMachine:
     """Enforces lifecycle ordering and duplicate/conflict policy."""
 
@@ -56,7 +60,8 @@ class LifecycleStateMachine:
 
         allowed = _ALLOWED_TRANSITIONS.get(current_type, set())
         if current_type in _TERMINAL_TYPES and new_event.event_type not in allowed:
-            logger.warning(
+            log = logger.debug if is_terminal_conflict(current_type, new_event.event_type) else logger.warning
+            log(
                 "Rejected lifecycle event: run_id=%s already terminal at %s, cannot accept %s",
                 new_event.run_id,
                 current_type,

@@ -156,6 +156,7 @@ class CompiledOpParamInitMixin:
             "fixed_point_iter": lambda: setattr(
                 self, "weight", nn.Parameter(torch.randn(d_in + 1, d_in) * 0.02)
             ),
+            "kronecker_linear": lambda: self._init_kronecker_linear(d_in),
             "low_rank_proj": lambda: self._init_low_rank_proj(d_in),
             "grouped_linear": lambda: self._init_grouped_linear(d_in),
             "bottleneck_proj": lambda: self._init_bottleneck_proj(d_in),
@@ -229,6 +230,13 @@ class CompiledOpParamInitMixin:
             "hetero_moe": lambda: self._init_hetero_moe(d_in),
             "arch_router": lambda: self._init_arch_router(d_in),
             "compute_budget_router": lambda: self._init_compute_budget_router(d_in),
+            "difficulty_routed_attention": lambda: self._init_difficulty_routed_attention(d_in),
+            "strided_attention": lambda: self._init_strided_attention(d_in),
+            "gated_progressive_attention": lambda: self._init_gated_progressive_attention(d_in),
+            "gated_linear_attention": lambda: self._init_gated_linear_attention(d_in),
+            "long_conv_hyena": lambda: self._init_long_conv_hyena(d_in),
+            "associative_memory": lambda: self._init_associative_memory(d_in),
+            "mixture_of_recursions": lambda: self._init_mixture_of_recursions(d_in),
         }
 
         handler = dispatch.get(op.name)
@@ -299,6 +307,18 @@ class CompiledOpParamInitMixin:
             expert[2].weight.data.normal_(
                 mean=0.0, std=1.0 / math.sqrt(hidden if hidden > 0 else 1)
             )
+
+    def _init_kronecker_linear(self, d_in: int) -> None:
+        p = int(d_in**0.5)
+        q = d_in // p
+        if p * q != d_in:
+            for candidate in range(p, 0, -1):
+                if d_in % candidate == 0:
+                    p = candidate
+                    q = d_in // p
+                    break
+        self.kron_A = nn.Parameter(torch.randn(p, p) * (p**-0.5))
+        self.kron_B = nn.Parameter(torch.randn(q, q) * (q**-0.5))
 
     def _init_low_rank_proj(self, d_in: int) -> None:
         rank = max(d_in // 4, 1)
@@ -378,6 +398,82 @@ class CompiledOpParamInitMixin:
             self.beta_proj,
         ):
             proj.weight.data.normal_(std=0.02)
+
+    def _init_difficulty_routed_attention(self, d_in: int) -> None:
+        """Difficulty-routed: difficulty scorer + QKV for hard tokens + cheap path for easy."""
+        self.difficulty_proj = nn.Linear(d_in, 1, bias=True)
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.easy_proj = nn.Linear(d_in, d_in, bias=False)
+        for p in (self.q_proj, self.k_proj, self.v_proj, self.o_proj, self.easy_proj):
+            p.weight.data.normal_(std=0.02)
+        nn.init.zeros_(self.difficulty_proj.bias)
+
+    def _init_strided_attention(self, d_in: int) -> None:
+        """Strided/dilated multi-head attention with different strides per head."""
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        for p in (self.q_proj, self.k_proj, self.v_proj, self.o_proj):
+            p.weight.data.normal_(std=0.02)
+
+    def _init_gated_progressive_attention(self, d_in: int) -> None:
+        """Progressive attention: learned gate controls attention strength 0->1."""
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.gate_proj = nn.Linear(d_in, d_in, bias=True)
+        for p in (self.q_proj, self.k_proj, self.v_proj, self.o_proj):
+            p.weight.data.normal_(std=0.02)
+        # Initialize gate bias negative so attention starts OFF and learns to engage
+        nn.init.constant_(self.gate_proj.bias, -2.0)
+
+    def _init_gated_linear_attention(self, d_in: int) -> None:
+        """GLA: Q, K, V projections + decay gate for adaptive memory."""
+        self.q_proj = nn.Linear(d_in, d_in, bias=False)
+        self.k_proj = nn.Linear(d_in, d_in, bias=False)
+        self.v_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.gate_proj = nn.Linear(d_in, d_in, bias=False)
+        for p in (self.q_proj, self.k_proj, self.v_proj, self.o_proj, self.gate_proj):
+            p.weight.data.normal_(std=0.02)
+
+    def _init_long_conv_hyena(self, d_in: int) -> None:
+        """Hyena long conv: implicit conv kernel (MLP-parameterized) + gating."""
+        self.in_proj = nn.Linear(d_in, d_in * 2, bias=False)
+        self.out_proj = nn.Linear(d_in, d_in, bias=False)
+        # Implicit kernel: small MLP that maps position -> kernel weight
+        self.kernel_net = nn.Sequential(
+            nn.Linear(1, 32), nn.SiLU(), nn.Linear(32, d_in)
+        )
+        self.in_proj.weight.data.normal_(std=0.02)
+        self.out_proj.weight.data.normal_(std=0.02)
+
+    def _init_associative_memory(self, d_in: int) -> None:
+        """Modern Hopfield: query/key projections for content-addressed retrieval."""
+        self.query_proj = nn.Linear(d_in, d_in, bias=False)
+        self.memory_proj = nn.Linear(d_in, d_in, bias=False)
+        self.value_proj = nn.Linear(d_in, d_in, bias=False)
+        self.o_proj = nn.Linear(d_in, d_in, bias=False)
+        self.beta = nn.Parameter(torch.tensor(1.0))  # inverse temperature
+        for p in (self.query_proj, self.memory_proj, self.value_proj, self.o_proj):
+            p.weight.data.normal_(std=0.02)
+
+    def _init_mixture_of_recursions(self, d_in: int) -> None:
+        """MoR: shared transform block + per-token depth router."""
+        self.block_norm = nn.LayerNorm(d_in)
+        self.block_ffn_up = nn.Linear(d_in, d_in * 2, bias=False)
+        self.block_ffn_down = nn.Linear(d_in * 2, d_in, bias=False)
+        self.block_gate = nn.Linear(d_in, d_in * 2, bias=False)
+        self.depth_router = nn.Linear(d_in, 4, bias=True)  # 4 depth options: 1,2,3,4
+        self.block_ffn_up.weight.data.normal_(std=0.02)
+        self.block_ffn_down.weight.data.normal_(std=0.02)
+        self.block_gate.weight.data.normal_(std=0.02)
+        nn.init.zeros_(self.depth_router.bias)
 
     def _init_gated_lane_blend(self, config: Dict, d_in: int) -> None:
         n_lanes = int(config.get("n_lanes", 3))
@@ -497,7 +593,6 @@ class CompiledOpParamInitMixin:
         self.V_comp = self._make_param((d_out, rank), std=0.02)
 
     def _init_dual_compression_blend(self, d_in: int, d_out: int) -> None:
-        self.expert_weights = nn.Parameter(torch.ones(2))
         rank = max(d_in // 8, 1)
         self.U_lr = self._make_param((rank, d_in), std=0.02)
         self.V_lr = self._make_param((d_out, rank), std=0.02)
@@ -556,9 +651,7 @@ class CompiledOpParamInitMixin:
         self.gate_weight = self._make_param((3, d_in), std=0.02)
         self.attn_qkv = self._make_param((3 * d_in, d_in), std=0.02)
         self.attn_out = self._make_param((d_in, d_in), std=0.02)
-        self.conv_weight = self._make_param((d_in, 1, 3), std=0.02)
         self.conv_proj = self._make_param((d_in, d_in), std=0.02)
-        self.ssm_A_log = self._make_param((d_in,), std=0.1)
         self.ssm_B_proj = self._make_param((d_in, d_in), std=0.02)
         self.ssm_C_proj = self._make_param((d_in, d_in), std=0.02)
         self.ssm_D = self._make_param((d_in,), std=0.02)
@@ -568,9 +661,7 @@ class CompiledOpParamInitMixin:
         self.attn_qkv = self._make_param((3 * d_in, d_in), std=0.02)
         self.attn_out = self._make_param((d_in, d_in), std=0.02)
         self.arch_ffn = self._make_param((d_in, d_in), std=0.02)
-        self.conv_weight = self._make_param((d_in, 1, 3), std=0.02)
         self.conv_proj = self._make_param((d_in, d_in), std=0.02)
-        self.ssm_A_log = self._make_param((d_in,), std=0.1)
         self.ssm_B_proj = self._make_param((d_in, d_in), std=0.02)
         self.ssm_C_proj = self._make_param((d_in, d_in), std=0.02)
         self.ssm_D = self._make_param((d_in,), std=0.02)
@@ -582,7 +673,6 @@ class CompiledOpParamInitMixin:
     def _init_compute_budget_router(self, d_in: int) -> None:
         self.gate_weight = self._make_param((3, d_in), std=0.02)
         self.cheap_proj = self._make_param((d_in, d_in), std=0.02)
-        self.conv_weight = self._make_param((d_in, 1, 3), std=0.02)
         self.conv_proj = self._make_param((d_in, d_in), std=0.02)
         self.attn_qkv = self._make_param((3 * d_in, d_in), std=0.02)
         self.attn_out = self._make_param((d_in, d_in), std=0.02)

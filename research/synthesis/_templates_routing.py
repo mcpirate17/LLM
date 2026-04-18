@@ -65,6 +65,32 @@ ROUTING_TEMPLATES: frozenset = frozenset(
         "local_attn_moe",
         "diff_attn_moe",
         "graph_attn_moe",
+        # Role-slot trunk+sidecar templates (capability-first family).
+        # These enforce explicit binding_write → global_retrieval → binding_read
+        # with a typed-entropy or sparse-router controller and gated merge.
+        "typed_slot_memory_block",
+        "sparse_relation_graph_block",
+        "token_program_interpreter_block",
+        # Role-slot v2: proven trunks + retrieval sidecar.
+        "conv_residual_retrieval_v2",
+        "state_space_retrieval_v2",
+        "latent_attn_retrieval_v2",
+    }
+)
+
+
+# Capability-first subset: templates that wire an explicit exact-retrieval
+# sidecar merged into a compression trunk via a gated add. Used by the
+# ``capability_first`` grammar preset to pressure the search toward graphs
+# that can win ppl AND binding/induction/ar simultaneously.
+CAPABILITY_FIRST_TEMPLATES: frozenset = frozenset(
+    {
+        "typed_slot_memory_block",
+        "sparse_relation_graph_block",
+        "token_program_interpreter_block",
+        "conv_residual_retrieval_v2",
+        "state_space_retrieval_v2",
+        "latent_attn_retrieval_v2",
     }
 )
 
@@ -627,15 +653,9 @@ def tpl_multiscale_difficulty_router(
     graph.metadata["_skip_global_decorators"] = True
     template_name = "multiscale_difficulty_router"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    lane_ids = rng.sample((0, 1, 2), 3)
     hard_classes = rng.choice((3, 4, 5))
     norm = _pick_compatible_motif(
-        graph,
-        input_id,
-        rng,
-        MOTIF_CLASS_NORM,
-        weights,
-        wildcard_prob=0.0,
+        graph, input_id, rng, MOTIF_CLASS_NORM, weights, wildcard_prob=0.0
     )
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
@@ -714,13 +734,6 @@ def tpl_multiscale_difficulty_router(
         _multiscale_sparse_router_config(2),
         context="multiscale_difficulty_router.pair_router",
     )
-    pair_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [pair_routed],
-        {"lane_id": lane_ids[0]},
-        context="multiscale_difficulty_router.pair_lane",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -738,13 +751,6 @@ def tpl_multiscale_difficulty_router(
         [gated],
         _multiscale_sparse_router_config(3),
         context="multiscale_difficulty_router.triplet_router",
-    )
-    triplet_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [triplet_routed],
-        {"lane_id": lane_ids[1]},
-        context="multiscale_difficulty_router.triplet_lane",
     )
     record_template_slot_binding(
         graph,
@@ -764,13 +770,6 @@ def tpl_multiscale_difficulty_router(
         _multiscale_sparse_router_config(4),
         context="multiscale_difficulty_router.quartet_router",
     )
-    quartet_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [quartet_routed],
-        {"lane_id": lane_ids[2]},
-        context="multiscale_difficulty_router.quartet_lane",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -783,36 +782,26 @@ def tpl_multiscale_difficulty_router(
         input_node_id=gated,
     )
 
-    medium_routed = _residual(
+    medium_pre = _residual(
         graph,
-        pair_lane,
-        triplet_lane,
+        pair_routed,
+        triplet_routed,
         context="multiscale_difficulty_router.merge_pair_triplet",
     )
-    medium_routed = _residual(
+    medium_pre = _residual(
         graph,
-        medium_routed,
-        quartet_lane,
+        medium_pre,
+        quartet_routed,
         context="multiscale_difficulty_router.merge_quartet",
     )
-    medium_pre = medium_routed
-    medium_op = rng.choice(DIFFICULTY_ROUTER_MEDIUM_LANE_OPS)
-    medium_inputs = (
-        [medium_pre, medium_pre] if medium_op == "adaptive_lane_mixer" else [medium_pre]
-    )
+    medium_op = "adaptive_lane_mixer"
+    medium_inputs = [medium_pre, medium_pre]
     medium_core = _add(
         graph,
         medium_op,
         medium_inputs,
         _next_multiscale_medium_config(medium_op, rng),
         context="multiscale_difficulty_router.medium_core",
-    )
-    medium_post = _add(
-        graph,
-        "linear_proj",
-        [medium_core],
-        {"out_dim": graph.model_dim},
-        context="multiscale_difficulty_router.medium_post",
     )
     record_template_slot_binding(
         graph,
@@ -833,50 +822,28 @@ def tpl_multiscale_difficulty_router(
         {"n_classes": hard_classes},
         context="multiscale_difficulty_router.hard_signal",
     )
-    hard_op = rng.choice(DIFFICULTY_ROUTER_HARD_LANE_OPS)
-    hard_emit_name = hard_op
-    if hard_op == "mixed_recursion_gate":
-        hard_emit_name = "score_depth_blend"
-        hard_seed = _add(
+    hard_op = "route_recursion"
+    hard_seed = _add(
+        graph,
+        "signal_conditioned_compression",
+        [gated, hard_signal],
+        context="multiscale_difficulty_router.hard_seed",
+    )
+    hard_inputs = [
+        _add(
             graph,
-            "signal_conditioned_compression",
-            [gated, hard_signal],
-            context="multiscale_difficulty_router.hard_seed",
+            "linear_proj",
+            [hard_seed],
+            {"out_dim": graph.model_dim},
+            context="multiscale_difficulty_router.hard_bridge",
         )
-        hard_inputs = [hard_seed, hard_signal]
-    elif hard_op in {
-        "compression_mixture_experts",
-        "routing_conditioned_compression",
-        "dual_compression_blend",
-    }:
-        hard_inputs = [gated, hard_signal]
-    else:
-        hard_seed = _add(
-            graph,
-            "signal_conditioned_compression",
-            [gated, hard_signal],
-            context="multiscale_difficulty_router.hard_seed",
-        )
-        hard_inputs = [hard_seed]
+    ]
     hard_core = _add(
         graph,
-        hard_emit_name,
+        hard_op,
         hard_inputs,
         _next_multiscale_hard_config(hard_op, rng),
         context="multiscale_difficulty_router.hard_core",
-    )
-    hard_attention = rng.choice(DIFFICULTY_ROUTER_HARD_ATTENTION_OPS)
-    hard_attn_input = _add(
-        graph,
-        "rmsnorm",
-        [hard_core],
-        context="multiscale_difficulty_router.hard_attn_input",
-    )
-    hard_post = _add(
-        graph,
-        hard_attention,
-        [hard_attn_input],
-        context="multiscale_difficulty_router.hard_post",
     )
     record_template_slot_binding(
         graph,
@@ -885,7 +852,7 @@ def tpl_multiscale_difficulty_router(
         slot_index=9,
         slot_key=f"{template_name}[{template_instance}].hard_router",
         slot_classes=["hard_router"],
-        selected_name=f"{hard_op}+{hard_attention}",
+        selected_name=hard_op,
         selected_class="hybrid",
         input_node_id=hard_inputs[0],
     )
@@ -893,7 +860,7 @@ def tpl_multiscale_difficulty_router(
     merged = _add(
         graph,
         "calibrated_branch_merge",
-        [default_path, medium_post],
+        [default_path, medium_core],
         _multiscale_merge_config(
             primary_role="default",
             secondary_role="medium",
@@ -908,7 +875,7 @@ def tpl_multiscale_difficulty_router(
     merged = _add(
         graph,
         "calibrated_branch_merge",
-        [merged, hard_post],
+        [merged, hard_core],
         _multiscale_merge_config(
             primary_role="routed",
             secondary_role="hard",
@@ -938,258 +905,6 @@ def tpl_multiscale_difficulty_router(
     return merged
 
 
-def tpl_multiscale_difficulty_router_easy_attn_ssm(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """Variant with an explicit easy attention+SSM lane and a tighter medium router budget."""
-    graph.metadata["_skip_global_decorators"] = True
-    template_name = "multiscale_difficulty_router_easy_attn_ssm"
-    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    lane_ids = rng.sample((0, 1, 2), 2)
-    hard_classes = rng.choice((3, 4, 5))
-    norm = _pick_compatible_motif(
-        graph,
-        input_id,
-        rng,
-        MOTIF_CLASS_NORM,
-        weights,
-        wildcard_prob=0.0,
-    )
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    easy_norm = _add(
-        graph,
-        "rmsnorm",
-        [normed],
-        context="multiscale_difficulty_router_easy_attn_ssm.easy_norm",
-    )
-    easy_attn = _add(
-        graph,
-        "graph_attention",
-        [easy_norm],
-        context="multiscale_difficulty_router_easy_attn_ssm.easy_attn",
-    )
-    easy_ssm = _add(
-        graph,
-        "state_space",
-        [normed],
-        context="multiscale_difficulty_router_easy_attn_ssm.easy_ssm",
-    )
-    easy_merged = _residual(
-        graph,
-        easy_attn,
-        easy_ssm,
-        context="multiscale_difficulty_router_easy_attn_ssm.default_path",
-    )
-    default_path = _add(
-        graph,
-        "default_path",
-        [easy_merged],
-        context="multiscale_difficulty_router_easy_attn_ssm.default_path_wrap",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=1,
-        slot_key=f"{template_name}[{template_instance}].default_path",
-        slot_classes=["fallback"],
-        selected_name="easy_attn_ssm",
-        selected_class="hybrid",
-        input_node_id=normed,
-    )
-
-    gated = _add(
-        graph,
-        "hybrid_token_gate",
-        [normed],
-        _multiscale_gate_config(),
-        context="multiscale_difficulty_router_easy_attn_ssm.token_gate",
-    )
-    gated_with_skip = _residual(
-        graph,
-        normed,
-        gated,
-        context="multiscale_difficulty_router_easy_attn_ssm.token_gate_skip",
-    )
-
-    pair_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(2),
-        context="multiscale_difficulty_router_easy_attn_ssm.pair_router",
-    )
-    pair_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [pair_routed],
-        {"lane_id": lane_ids[0]},
-        context="multiscale_difficulty_router_easy_attn_ssm.pair_lane",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=2,
-        slot_key=f"{template_name}[{template_instance}].pair_router",
-        slot_classes=["pair_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
-    )
-    triplet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(3),
-        context="multiscale_difficulty_router_easy_attn_ssm.triplet_router",
-    )
-    triplet_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [triplet_routed],
-        {"lane_id": lane_ids[1]},
-        context="multiscale_difficulty_router_easy_attn_ssm.triplet_lane",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=3,
-        slot_key=f"{template_name}[{template_instance}].triplet_router",
-        slot_classes=["triplet_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
-    )
-
-    medium_routed = _residual(
-        graph,
-        pair_lane,
-        triplet_lane,
-        context="multiscale_difficulty_router_easy_attn_ssm.merge_pair_triplet",
-    )
-    medium_pre = medium_routed
-    medium_op = rng.choice(DIFFICULTY_ROUTER_MEDIUM_LANE_OPS)
-    medium_inputs = (
-        [medium_pre, medium_pre] if medium_op == "adaptive_lane_mixer" else [medium_pre]
-    )
-    medium_core = _add(
-        graph,
-        medium_op,
-        medium_inputs,
-        _next_multiscale_medium_config(medium_op, rng),
-        context="multiscale_difficulty_router_easy_attn_ssm.medium_core",
-    )
-    medium_post = medium_core
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=4,
-        slot_key=f"{template_name}[{template_instance}].medium_router",
-        slot_classes=["medium_router"],
-        selected_name=medium_op,
-        selected_class="component",
-        input_node_id=medium_pre,
-    )
-
-    hard_signal = _add(
-        graph,
-        "token_class_proj",
-        [gated],
-        {"n_classes": hard_classes},
-        context="multiscale_difficulty_router_easy_attn_ssm.hard_signal",
-    )
-    hard_seed = _add(
-        graph,
-        "signal_conditioned_compression",
-        [gated, hard_signal],
-        context="multiscale_difficulty_router_easy_attn_ssm.hard_seed",
-    )
-    hard_core = _add(
-        graph,
-        "route_recursion",
-        [hard_seed],
-        _next_multiscale_hard_config("route_recursion", rng),
-        context="multiscale_difficulty_router_easy_attn_ssm.hard_core",
-    )
-    hard_attn_input = _add(
-        graph,
-        "rmsnorm",
-        [hard_core],
-        context="multiscale_difficulty_router_easy_attn_ssm.hard_attn_input",
-    )
-    hard_post = _add(
-        graph,
-        "graph_attention",
-        [hard_attn_input],
-        context="multiscale_difficulty_router_easy_attn_ssm.hard_post",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=5,
-        slot_key=f"{template_name}[{template_instance}].hard_router",
-        slot_classes=["hard_router"],
-        selected_name="route_recursion+graph_attention",
-        selected_class="hybrid",
-        input_node_id=hard_seed,
-    )
-
-    merged = _add(
-        graph,
-        "calibrated_branch_merge",
-        [default_path, medium_post],
-        _multiscale_merge_config(
-            primary_role="default",
-            secondary_role="medium",
-            min_secondary_share=0.16,
-            max_secondary_share=0.4,
-            min_secondary_start=0.24,
-            min_secondary_mid=0.2,
-            min_secondary_end=0.16,
-        ),
-        context="multiscale_difficulty_router_easy_attn_ssm.merge_medium",
-    )
-    merged = _add(
-        graph,
-        "calibrated_branch_merge",
-        [merged, hard_post],
-        _multiscale_merge_config(
-            primary_role="routed",
-            secondary_role="hard",
-            min_secondary_share=0.08,
-            max_secondary_share=0.2,
-            min_secondary_start=0.04,
-            min_secondary_mid=0.08,
-            min_secondary_end=0.1,
-            max_secondary_start=0.1,
-            max_secondary_mid=0.16,
-            max_secondary_end=0.22,
-        ),
-        context="multiscale_difficulty_router_easy_attn_ssm.merge_hard",
-    )
-    merged = _residual(
-        graph,
-        gated_with_skip,
-        merged,
-        context="multiscale_difficulty_router_easy_attn_ssm.merge_gate",
-    )
-    merged = _residual(
-        graph,
-        input_id,
-        merged,
-        context="multiscale_difficulty_router_easy_attn_ssm.output_residual",
-    )
-    return merged
-
-
 def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
     graph: ComputationGraph,
     input_id: int,
@@ -1200,7 +915,6 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
     graph.metadata["_skip_global_decorators"] = True
     template_name = "multiscale_difficulty_router_adaptive_attn_ssm"
     template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    lane_ids = rng.sample((0, 1, 2), 2)
     hard_classes = rng.choice((3, 4, 5))
     norm = _pick_compatible_motif(
         graph,
@@ -1212,34 +926,16 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
     )
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    easy_norm = _add(
-        graph,
-        "rmsnorm",
-        [normed],
-        context="multiscale_difficulty_router_adaptive_attn_ssm.easy_norm",
-    )
-    easy_attn = _add(
-        graph,
-        "graph_attention",
-        [easy_norm],
-        context="multiscale_difficulty_router_adaptive_attn_ssm.easy_attn",
-    )
     easy_ssm = _add(
         graph,
         "state_space",
         [normed],
         context="multiscale_difficulty_router_adaptive_attn_ssm.easy_ssm",
     )
-    easy_merged = _residual(
-        graph,
-        easy_attn,
-        easy_ssm,
-        context="multiscale_difficulty_router_adaptive_attn_ssm.default_path",
-    )
     default_path = _add(
         graph,
         "default_path",
-        [easy_merged],
+        [easy_ssm],
         context="multiscale_difficulty_router_adaptive_attn_ssm.default_path_wrap",
     )
     record_template_slot_binding(
@@ -1261,26 +957,12 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         _multiscale_gate_config(),
         context="multiscale_difficulty_router_adaptive_attn_ssm.token_gate",
     )
-    gated_with_skip = _residual(
-        graph,
-        normed,
-        gated,
-        context="multiscale_difficulty_router_adaptive_attn_ssm.token_gate_skip",
-    )
-
     pair_routed = _add(
         graph,
         "hybrid_sparse_router",
         [gated],
         _multiscale_sparse_router_config(2),
         context="multiscale_difficulty_router_adaptive_attn_ssm.pair_router",
-    )
-    pair_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [pair_routed],
-        {"lane_id": lane_ids[0]},
-        context="multiscale_difficulty_router_adaptive_attn_ssm.pair_lane",
     )
     record_template_slot_binding(
         graph,
@@ -1300,13 +982,6 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         _multiscale_sparse_router_config(3),
         context="multiscale_difficulty_router_adaptive_attn_ssm.triplet_router",
     )
-    triplet_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [triplet_routed],
-        {"lane_id": lane_ids[1]},
-        context="multiscale_difficulty_router_adaptive_attn_ssm.triplet_lane",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -1321,8 +996,8 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
 
     medium_pre = _residual(
         graph,
-        pair_lane,
-        triplet_lane,
+        pair_routed,
+        triplet_routed,
         context="multiscale_difficulty_router_adaptive_attn_ssm.merge_pair_triplet",
     )
     medium_core = _add(
@@ -1357,6 +1032,13 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         [gated, hard_signal],
         context="multiscale_difficulty_router_adaptive_attn_ssm.hard_seed",
     )
+    hard_seed = _add(
+        graph,
+        "linear_proj",
+        [hard_seed],
+        {"out_dim": graph.model_dim},
+        context="multiscale_difficulty_router_adaptive_attn_ssm.hard_seed_bridge",
+    )
     hard_core = _add(
         graph,
         "route_recursion",
@@ -1370,12 +1052,7 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
         [hard_core],
         context="multiscale_difficulty_router_adaptive_attn_ssm.hard_attn_input",
     )
-    hard_post = _add(
-        graph,
-        "graph_attention",
-        [hard_attn_input],
-        context="multiscale_difficulty_router_adaptive_attn_ssm.hard_post",
-    )
+    hard_post = _add(graph, "graph_attention", [hard_attn_input], context="multiscale_difficulty_router_adaptive_attn_ssm.hard_post")
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -1423,261 +1100,9 @@ def tpl_multiscale_difficulty_router_adaptive_attn_ssm(
     )
     merged = _residual(
         graph,
-        gated_with_skip,
-        merged,
-        context="multiscale_difficulty_router_adaptive_attn_ssm.merge_gate",
-    )
-    merged = _residual(
-        graph,
         input_id,
         merged,
         context="multiscale_difficulty_router_adaptive_attn_ssm.output_residual",
-    )
-    return merged
-
-
-def tpl_multiscale_difficulty_router_blocksparse_attn_ssm(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    """Controlled router with fixed block-sparse medium lane and attention-bearing hard lane."""
-    graph.metadata["_skip_global_decorators"] = True
-    template_name = "multiscale_difficulty_router_blocksparse_attn_ssm"
-    template_instance = int(graph.metadata.get("_active_template_instance", 0) or 0)
-    lane_ids = rng.sample((0, 1, 2), 2)
-    hard_classes = rng.choice((3, 4, 5))
-    norm = _pick_compatible_motif(
-        graph,
-        input_id,
-        rng,
-        MOTIF_CLASS_NORM,
-        weights,
-        wildcard_prob=0.0,
-    )
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
-    easy_norm = _add(
-        graph,
-        "rmsnorm",
-        [normed],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.easy_norm",
-    )
-    easy_attn = _add(
-        graph,
-        "graph_attention",
-        [easy_norm],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.easy_attn",
-    )
-    easy_ssm = _add(
-        graph,
-        "state_space",
-        [normed],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.easy_ssm",
-    )
-    easy_merged = _residual(
-        graph,
-        easy_attn,
-        easy_ssm,
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.default_path",
-    )
-    default_path = _add(
-        graph,
-        "default_path",
-        [easy_merged],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.default_path_wrap",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=1,
-        slot_key=f"{template_name}[{template_instance}].default_path",
-        slot_classes=["fallback"],
-        selected_name="easy_attn_ssm",
-        selected_class="hybrid",
-        input_node_id=normed,
-    )
-
-    gated = _add(
-        graph,
-        "hybrid_token_gate",
-        [normed],
-        _multiscale_gate_config(),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.token_gate",
-    )
-    gated_with_skip = _residual(
-        graph,
-        normed,
-        gated,
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.token_gate_skip",
-    )
-
-    pair_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(2),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.pair_router",
-    )
-    pair_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [pair_routed],
-        {"lane_id": lane_ids[0]},
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.pair_lane",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=2,
-        slot_key=f"{template_name}[{template_instance}].pair_router",
-        slot_classes=["pair_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
-    )
-    triplet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(3),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.triplet_router",
-    )
-    triplet_lane = _add(
-        graph,
-        "lane_conditioned_block",
-        [triplet_routed],
-        {"lane_id": lane_ids[1]},
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.triplet_lane",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=3,
-        slot_key=f"{template_name}[{template_instance}].triplet_router",
-        slot_classes=["triplet_router"],
-        selected_name="hybrid_sparse_router",
-        selected_class="component",
-        input_node_id=gated,
-    )
-
-    medium_pre = _residual(
-        graph,
-        pair_lane,
-        triplet_lane,
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.merge_pair_triplet",
-    )
-    medium_core = _add(
-        graph,
-        "block_sparse_linear",
-        [medium_pre],
-        _next_multiscale_medium_config("block_sparse_linear", rng),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.medium_core",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=4,
-        slot_key=f"{template_name}[{template_instance}].medium_router",
-        slot_classes=["medium_router"],
-        selected_name="block_sparse_linear",
-        selected_class="component",
-        input_node_id=medium_pre,
-    )
-
-    hard_signal = _add(
-        graph,
-        "token_class_proj",
-        [gated],
-        {"n_classes": hard_classes},
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.hard_signal",
-    )
-    hard_seed = _add(
-        graph,
-        "signal_conditioned_compression",
-        [gated, hard_signal],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.hard_seed",
-    )
-    hard_core = _add(
-        graph,
-        "route_recursion",
-        [hard_seed],
-        _next_multiscale_hard_config("route_recursion", rng),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.hard_core",
-    )
-    hard_attn_input = _add(
-        graph,
-        "rmsnorm",
-        [hard_core],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.hard_attn_input",
-    )
-    hard_post = _add(
-        graph,
-        "graph_attention",
-        [hard_attn_input],
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.hard_post",
-    )
-    record_template_slot_binding(
-        graph,
-        template_name=template_name,
-        template_instance=template_instance,
-        slot_index=5,
-        slot_key=f"{template_name}[{template_instance}].hard_router",
-        slot_classes=["hard_router"],
-        selected_name="route_recursion+graph_attention",
-        selected_class="hybrid",
-        input_node_id=hard_seed,
-    )
-
-    merged = _add(
-        graph,
-        "calibrated_branch_merge",
-        [default_path, medium_core],
-        _multiscale_merge_config(
-            primary_role="default",
-            secondary_role="medium",
-            min_secondary_share=0.16,
-            max_secondary_share=0.4,
-            min_secondary_start=0.24,
-            min_secondary_mid=0.2,
-            min_secondary_end=0.16,
-        ),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.merge_medium",
-    )
-    merged = _add(
-        graph,
-        "calibrated_branch_merge",
-        [merged, hard_post],
-        _multiscale_merge_config(
-            primary_role="routed",
-            secondary_role="hard",
-            min_secondary_share=0.08,
-            max_secondary_share=0.2,
-            min_secondary_start=0.04,
-            min_secondary_mid=0.08,
-            min_secondary_end=0.1,
-            max_secondary_start=0.1,
-            max_secondary_mid=0.16,
-            max_secondary_end=0.22,
-        ),
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.merge_hard",
-    )
-    merged = _residual(
-        graph,
-        gated_with_skip,
-        merged,
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.merge_gate",
-    )
-    merged = _residual(
-        graph,
-        input_id,
-        merged,
-        context="multiscale_difficulty_router_blocksparse_attn_ssm.output_residual",
     )
     return merged
 
@@ -1727,20 +1152,6 @@ def tpl_multiscale_rich_lane_router(
         _multiscale_gate_config(),
         context="multiscale_rich_lane_router.token_gate",
     )
-    gated_with_skip = _residual(
-        graph,
-        normed,
-        gated,
-        context="multiscale_rich_lane_router.token_gate_skip",
-    )
-
-    _add(
-        graph,
-        "sparse_span_builder",
-        [gated],
-        {"span_width": 2, "fallback_behavior": "default_path"},
-        context="multiscale_rich_lane_router.pair_spans",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -1752,13 +1163,6 @@ def tpl_multiscale_rich_lane_router(
         selected_class="component",
         input_node_id=gated,
     )
-    _add(
-        graph,
-        "sparse_span_builder",
-        [gated],
-        {"span_width": 3, "fallback_behavior": "default_path"},
-        context="multiscale_rich_lane_router.triplet_spans",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -1769,13 +1173,6 @@ def tpl_multiscale_rich_lane_router(
         selected_name="sparse_span_builder",
         selected_class="component",
         input_node_id=gated,
-    )
-    _add(
-        graph,
-        "sparse_span_builder",
-        [gated],
-        {"span_width": 4, "fallback_behavior": "default_path"},
-        context="multiscale_rich_lane_router.quartet_spans",
     )
     record_template_slot_binding(
         graph,
@@ -1803,49 +1200,20 @@ def tpl_multiscale_rich_lane_router(
         _multiscale_sparse_router_config(3),
         context="multiscale_rich_lane_router.triplet_router",
     )
-    quartet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        _multiscale_sparse_router_config(4),
-        context="multiscale_rich_lane_router.quartet_router",
-    )
-
-    medium_merge = _residual(
+    medium_pre = _residual(
         graph,
         pair_routed,
         triplet_routed,
         context="multiscale_rich_lane_router.merge_pair_triplet",
     )
-    medium_merge = _residual(
-        graph,
-        medium_merge,
-        quartet_routed,
-        context="multiscale_rich_lane_router.merge_quartet",
-    )
-    medium_pre = _add(
-        graph,
-        "layernorm",
-        [medium_merge],
-        context="multiscale_rich_lane_router.medium_pre",
-    )
-    medium_op = rng.choice(NEXT_MULTISCALE_MEDIUM_LANE_OPS)
-    medium_inputs = (
-        [medium_pre, medium_pre] if medium_op == "adaptive_lane_mixer" else [medium_pre]
-    )
+    medium_op = "adaptive_lane_mixer"
+    medium_inputs = [medium_pre, medium_pre]
     medium_core = _add(
         graph,
         medium_op,
         medium_inputs,
         _next_multiscale_medium_config(medium_op, rng),
         context="multiscale_rich_lane_router.medium_core",
-    )
-    medium_post = _add(
-        graph,
-        "linear_proj",
-        [medium_core],
-        {"out_dim": graph.model_dim},
-        context="multiscale_rich_lane_router.medium_post",
     )
     record_template_slot_binding(
         graph,
@@ -1872,32 +1240,22 @@ def tpl_multiscale_rich_lane_router(
         [gated, hard_signal],
         context="multiscale_rich_lane_router.hard_seed",
     )
-    hard_op = rng.choice(NEXT_MULTISCALE_HARD_LANE_OPS)
-    hard_emit_name = hard_op
-    if hard_op == "mixed_recursion_gate":
-        hard_emit_name = "score_depth_blend"
-        hard_inputs = [hard_seed, hard_signal]
-    elif hard_op in {
-        "compression_mixture_experts",
-        "routing_conditioned_compression",
-        "dual_compression_blend",
-    }:
-        hard_inputs = [gated, hard_signal]
-    else:
-        hard_inputs = [hard_seed]
+    hard_op = "route_recursion"
+    hard_inputs = [
+        _add(
+            graph,
+            "linear_proj",
+            [hard_seed],
+            {"out_dim": graph.model_dim},
+            context="multiscale_rich_lane_router.hard_bridge",
+        )
+    ]
     hard_core = _add(
         graph,
-        hard_emit_name,
+        hard_op,
         hard_inputs,
         _next_multiscale_hard_config(hard_op, rng),
         context="multiscale_rich_lane_router.hard_core",
-    )
-    hard_post = _add(
-        graph,
-        "linear_proj",
-        [hard_core],
-        {"out_dim": graph.model_dim},
-        context="multiscale_rich_lane_router.hard_post",
     )
     record_template_slot_binding(
         graph,
@@ -1914,7 +1272,7 @@ def tpl_multiscale_rich_lane_router(
     merged = _add(
         graph,
         "calibrated_branch_merge",
-        [default_path, medium_post],
+        [default_path, medium_core],
         _multiscale_merge_config(
             primary_role="default",
             secondary_role="medium",
@@ -1929,7 +1287,7 @@ def tpl_multiscale_rich_lane_router(
     merged = _add(
         graph,
         "calibrated_branch_merge",
-        [merged, hard_post],
+        [merged, hard_core],
         _multiscale_merge_config(
             primary_role="routed",
             secondary_role="hard",
@@ -1944,37 +1302,7 @@ def tpl_multiscale_rich_lane_router(
         ),
         context="multiscale_rich_lane_router.merge_hard",
     )
-    merged = _add(
-        graph,
-        "calibrated_branch_merge",
-        [merged, gated_with_skip],
-        _multiscale_merge_config(
-            primary_role="routed",
-            secondary_role="skip",
-            min_secondary_share=0.08,
-            max_secondary_share=0.22,
-            max_secondary_start=0.18,
-            max_secondary_mid=0.2,
-            max_secondary_end=0.22,
-        ),
-        context="multiscale_rich_lane_router.merge_skip",
-    )
-    merged = _add(
-        graph,
-        "calibrated_branch_merge",
-        [merged, input_id],
-        _multiscale_merge_config(
-            primary_role="routed",
-            secondary_role="input",
-            min_secondary_share=0.06,
-            max_secondary_share=0.18,
-            max_secondary_start=0.14,
-            max_secondary_mid=0.16,
-            max_secondary_end=0.18,
-        ),
-        context="multiscale_rich_lane_router.output_residual",
-    )
-    return merged
+    return _residual(graph, input_id, merged, context="multiscale_rich_lane_router.output_residual")
 
 
 def tpl_intelligent_multilane_router(
@@ -2036,7 +1364,16 @@ def tpl_intelligent_multilane_router(
         context="intelligent_multilane_router.token_gate_skip",
     )
 
-    easy_op = rng.choice(INTELLIGENT_EASY_MANDATORY_OPS)
+    easy_op = rng.choice(
+        (
+            "cheap_verify_blend",
+            "conv_only",
+            "conv1d_seq",
+            "linear_proj",
+            "nm_sparse_linear",
+            "default_path",
+        )
+    )
     easy_input = stem
     if easy_op == "conv1d_seq":
         easy_input = _add(
@@ -2093,13 +1430,6 @@ def tpl_intelligent_multilane_router(
         selected_class="component",
         input_node_id=gated,
     )
-    _add(
-        graph,
-        "sparse_span_builder",
-        [gated],
-        {"span_width": 2, "fallback_behavior": "default_path"},
-        context="intelligent_multilane_router.pair_spans",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -2111,13 +1441,6 @@ def tpl_intelligent_multilane_router(
         selected_class="component",
         input_node_id=gated,
     )
-    _add(
-        graph,
-        "sparse_span_builder",
-        [gated],
-        {"span_width": 3, "fallback_behavior": "default_path"},
-        context="intelligent_multilane_router.triplet_spans",
-    )
     record_template_slot_binding(
         graph,
         template_name=template_name,
@@ -2128,13 +1451,6 @@ def tpl_intelligent_multilane_router(
         selected_name="sparse_span_builder",
         selected_class="component",
         input_node_id=gated,
-    )
-    _add(
-        graph,
-        "sparse_span_builder",
-        [gated],
-        {"span_width": 4, "fallback_behavior": "default_path"},
-        context="intelligent_multilane_router.quartet_spans",
     )
 
     pair_routed = _add(
@@ -2151,27 +1467,23 @@ def tpl_intelligent_multilane_router(
         {"span_width": 3, "lane_count": 3, "confidence_threshold": 0.55},
         context="intelligent_multilane_router.triplet_router",
     )
-    quartet_routed = _add(
-        graph,
-        "hybrid_sparse_router",
-        [gated],
-        {"span_width": 4, "lane_count": 4, "confidence_threshold": 0.55},
-        context="intelligent_multilane_router.quartet_router",
-    )
     routed_spans = _residual(
         graph,
         pair_routed,
         triplet_routed,
         context="intelligent_multilane_router.merge_pair_triplet",
     )
-    routed_spans = _residual(
-        graph,
-        routed_spans,
-        quartet_routed,
-        context="intelligent_multilane_router.merge_quartet",
-    )
 
-    medium_op = rng.choice(INTELLIGENT_MEDIUM_MANDATORY_OPS)
+    medium_op = rng.choice(
+        (
+            "route_lanes",
+            "adaptive_lane_mixer",
+            "semi_structured_2_4_linear",
+            "block_sparse_linear",
+            "linear_proj",
+            "nm_sparse_linear",
+        )
+    )
     medium_inputs = (
         [routed_spans, routed_spans]
         if medium_op == "adaptive_lane_mixer"
@@ -2184,7 +1496,7 @@ def tpl_intelligent_multilane_router(
         _single_input_op_config(medium_op, graph.model_dim, rng),
         context="intelligent_multilane_router.medium_mandatory",
     )
-    medium_count = rng.randint(0, min(1, optional_budget))
+    medium_count = 0
     optional_budget -= medium_count
     medium_lane, medium_selected = _apply_optional_single_input_ops(
         graph,
@@ -2209,7 +1521,7 @@ def tpl_intelligent_multilane_router(
     hard_signal = _add(
         graph,
         "token_class_proj",
-        [routed_spans],
+        [gated],
         {"n_classes": 4},
         context="intelligent_multilane_router.hard_signal",
     )
@@ -2222,27 +1534,49 @@ def tpl_intelligent_multilane_router(
         slot_classes=["difficulty_signal"],
         selected_name="token_class_proj",
         selected_class="component",
-        input_node_id=routed_spans,
+        input_node_id=gated,
     )
     hard_seed = _add(
         graph,
         "signal_conditioned_compression",
-        [routed_spans, hard_signal],
+        [gated, hard_signal],
         context="intelligent_multilane_router.hard_seed",
     )
-    hard_op = rng.choice(INTELLIGENT_HARD_MANDATORY_OPS)
-    if hard_op in {"compression_mixture_experts", "routing_conditioned_compression"}:
-        hard_inputs = [routed_spans, hard_signal]
-    else:
-        hard_inputs = [hard_seed]
+    hard_op = rng.choice(
+        (
+            "adaptive_recursion",
+            "route_recursion",
+            "moe_topk",
+            "moe_2expert",
+            "state_space",
+            "linear_proj",
+        )
+    )
+    hard_bridge = _add(
+        graph,
+        "linear_proj",
+        [hard_seed],
+        {"out_dim": graph.model_dim},
+        context="intelligent_multilane_router.hard_bridge",
+    )
+    hard_inputs = [hard_bridge]
     hard_lane = _add(
         graph,
         hard_op,
-        hard_inputs,
+        [
+            _add(
+                graph,
+                "rmsnorm",
+                hard_inputs,
+                context="intelligent_multilane_router.hard_state_norm",
+            )
+        ]
+        if hard_op == "state_space"
+        else hard_inputs,
         _single_input_op_config(hard_op, graph.model_dim, rng),
         context="intelligent_multilane_router.hard_mandatory",
     )
-    hard_count = rng.randint(0, min(1, optional_budget))
+    hard_count = 0
     optional_budget -= hard_count
     hard_lane, hard_selected = _apply_optional_single_input_ops(
         graph,
@@ -2282,16 +1616,10 @@ def tpl_intelligent_multilane_router(
         merged,
         context="intelligent_multilane_router.merge_gate",
     )
-    merge_norm = _add(
-        graph,
-        "rmsnorm",
-        [merged],
-        context="intelligent_multilane_router.merge_pre_norm",
-    )
     merged_tokens = _add(
         graph,
         "linear_proj",
-        [merge_norm],
+        [merged],
         {"out_dim": graph.model_dim},
         context="intelligent_multilane_router.token_merge",
     )
@@ -2313,7 +1641,7 @@ def tpl_intelligent_multilane_router(
         [merged_tokens],
         context="intelligent_multilane_router.post_mandatory",
     )
-    post_count = rng.randint(0, min(1, optional_budget))
+    post_count = 0
     post, post_selected = _apply_optional_single_input_ops(
         graph,
         post,
@@ -2616,6 +1944,13 @@ def tpl_latent_compress_rwkv(
         sparse_cfg,
         context="latent_compress_rwkv.sparse",
     )
+    sparse = _add(
+        graph,
+        "linear_proj",
+        [sparse],
+        {"out_dim": D},
+        context="latent_compress_rwkv.sparse_bridge",
+    )
 
     # Progressive compression gate (if available)
     gated = _add(
@@ -2817,6 +2152,13 @@ def tpl_dual_routing_deep(
         [compressed],
         context="dual_routing_deep.mid_norm",
     )
+    mid_normed = _add(
+        graph,
+        "linear_proj",
+        [mid_normed],
+        {"out_dim": graph.model_dim},
+        context="dual_routing_deep.pre_moe_bridge",
+    )
     routed = _add(
         graph,
         "moe_topk",
@@ -2824,14 +2166,23 @@ def tpl_dual_routing_deep(
         {"num_experts": 4, "top_k": 2},
         context="dual_routing_deep.moe",
     )
+    routed = _add(
+        graph,
+        "linear_proj",
+        [routed],
+        {"out_dim": graph.model_dim},
+        context="dual_routing_deep.post_moe_bridge",
+    )
 
     # Optional FFN motif
     if rng.random() < 0.5:
-        ffn = _pick_compatible_motif_from_classes(
-            graph, routed, rng, list(_FFN_CLASSES), weights
+        routed = _add(
+            graph,
+            "swiglu_mlp",
+            [routed],
+            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+            context="dual_routing_deep.ffn",
         )
-        if ffn:
-            routed = _instantiate_motif(graph, routed, ffn, rng)
 
     routed = _fix_dim(graph, routed)
 
@@ -3081,37 +2432,79 @@ def tpl_depth_gated_block(
     )
 
 
-def tpl_depth_gated_block_matmul(
-    graph: ComputationGraph,
-    input_id: int,
-    rng: random.Random,
-    weights: MotifWeights = None,
-) -> int:
-    return _tpl_depth_gated_block_impl(
-        graph,
-        input_id,
-        rng,
-        weights,
-        template_name="depth_gated_block_matmul",
-        matmul_branch_prob=1.0,
-    )
-
-
 def tpl_depth_gated_block_matmul_stable(
     graph: ComputationGraph,
     input_id: int,
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    return _tpl_depth_gated_block_impl(
+    """norm → depth_gated_transform → {latent_attn || state_space} → merge → residual → FFN → residual.
+
+    Combines depth-gating (variable processing depth per token) with the
+    proven parallel attention+SSM mixing pattern. The depth_gated_transform
+    produces gated features that are then processed by complementary
+    attention (structure) and SSM (long-range) paths.
+    """
+    D = graph.model_dim
+    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
+    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+
+    # Depth gating: variable processing depth per token
+    gated = _add(
+        graph,
+        "depth_gated_transform",
+        [normed],
+        {"out_dim": D},
+        context="depth_gated_block_matmul_stable.gated",
+    )
+
+    # Path A: latent attention on gated features
+    pa = _add(
+        graph,
+        "latent_attention_compressor",
+        [gated],
+        context="depth_gated_block_matmul_stable.latent_attn",
+    )
+    pa = _add(
+        graph,
+        "linear_proj",
+        [pa],
+        {"out_dim": D},
+        context="depth_gated_block_matmul_stable.attn_proj",
+    )
+
+    # Path B: state_space on gated features
+    pb = _add(
+        graph,
+        "state_space",
+        [gated],
+        context="depth_gated_block_matmul_stable.ssm",
+    )
+    pb = _fix_dim(graph, pb)
+
+    # Merge parallel paths
+    merged = _residual(
+        graph, pa, pb, context="depth_gated_block_matmul_stable.merge"
+    )
+    merged = _fix_dim(graph, merged)
+    mid = _residual(
         graph,
         input_id,
-        rng,
-        weights,
-        template_name="depth_gated_block_matmul_stable",
-        matmul_branch_prob=1.0,
-        stabilize_matmul=True,
-        matmul_follower_classes=(MOTIF_CLASS_ATTENTION, MOTIF_CLASS_CHANNEL),
+        merged,
+        context="depth_gated_block_matmul_stable.mid",
+    )
+
+    # FFN sub-block
+    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+    ffn = _pick_compatible_motif_from_classes(graph, normed2, rng, _FFN_CLASSES, weights)
+    ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
+    ffned = _fix_dim(graph, ffned)
+    return _residual(
+        graph,
+        mid,
+        ffned,
+        context="depth_gated_block_matmul_stable.output",
     )
 
 
@@ -3191,6 +2584,13 @@ def tpl_feature_sparse_block(
         {"k": k},
         context="feature_sparse_block.sparse",
     )
+    sparse = _add(
+        graph,
+        "linear_proj",
+        [sparse],
+        {"out_dim": graph.model_dim},
+        context="feature_sparse_block.sparse_bridge",
+    )
 
     ffn = _pick_compatible_motif_from_classes(
         graph, sparse, rng, list(_FFN_CLASSES), weights
@@ -3227,16 +2627,18 @@ def tpl_topk_retrieval(
         {"out_dim": D},
         context="topk_retrieval.proj",
     )
-    scores = _add(
+    scores = _add(graph, "matmul", [proj, proj], context="topk_retrieval.scores")
+    score_proj = _add(
         graph,
-        "cosine_similarity",
-        [normed, proj],
-        context="topk_retrieval.scores",
+        "linear_proj",
+        [scores],
+        {"out_dim": D},
+        context="topk_retrieval.score_proj",
     )
     gathered = _add(
         graph,
         "gather_topk",
-        [normed, scores],
+        [normed, score_proj],
         {"k": rng.choice([4, 8, 16])},
         context="topk_retrieval.gathered",
     )
@@ -3444,6 +2846,12 @@ def tpl_adaptive_lane_recursion(
         "depth_weighted_proj",
         [normed],
         context="adaptive_lane_recursion.recursed",
+    )
+    recursed = _add(
+        graph,
+        "rmsnorm",
+        [recursed],
+        context="adaptive_lane_recursion.recursed_norm",
     )
 
     ffn = _pick_compatible_motif_from_classes(

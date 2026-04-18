@@ -39,6 +39,9 @@ class EvalContext:
     ood_check: Callable | None = None
     sensitivity_check: Callable | None = None
     scaling_compare: Callable | None = None
+    # Threading — set by the validation runner so eval steps can check for
+    # cancellation between (not during) long-running steps like d512 scaling.
+    stop_event: Any = None  # threading.Event | None
 
 
 @dataclass(slots=True)
@@ -324,15 +327,38 @@ def _run_scaling_d256(ctx: EvalContext) -> dict[str, Any]:
 def _run_scaling_d512(ctx: EvalContext) -> dict[str, Any]:
     if not bool(getattr(ctx.config, "scaling_d512_enabled", True)):
         return {}
-    payload = ctx.scaling_compare(
-        config=ctx.config,
-        dev_str=ctx.dev_str,
-        best_seed=ctx.best_seed,
-        val_loss_ratio=ctx.val_loss_ratio,
-        source_params=ctx.source_params,
-        source=ctx.source,
-        d_model=512,
-    )
+    # Run d512 scaling comparison with a timeout guard. This step trains
+    # a full 10K-step model at d=512 and previously hung indefinitely,
+    # blocking the entire continuous loop. The timeout (20 min) lets the
+    # validation pipeline proceed even if the comparison stalls.
+    import concurrent.futures
+
+    _D512_TIMEOUT_SEC = 20 * 60  # 20 minutes — generous but finite
+
+    def _run():
+        return ctx.scaling_compare(
+            config=ctx.config,
+            dev_str=ctx.dev_str,
+            best_seed=ctx.best_seed,
+            val_loss_ratio=ctx.val_loss_ratio,
+            source_params=ctx.source_params,
+            source=ctx.source,
+            d_model=512,
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run)
+            payload = future.result(timeout=_D512_TIMEOUT_SEC)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "d512 scaling comparison timed out after %ds — skipping",
+            _D512_TIMEOUT_SEC,
+        )
+        return {}
+    except Exception as exc:
+        logger.warning("d512 scaling comparison failed: %s", exc)
+        return {}
     if payload is None:
         return {}
     out: dict[str, Any] = {
@@ -636,6 +662,18 @@ def run_eval_suite(
     model = None
     try:
         for spec in EVAL_SPECS:
+            # Check stop event before each eval step — the d512 scaling
+            # comparison trains a full model (~20 min) and previously
+            # hung because cancel couldn't reach the inner training loop.
+            # This at least lets us abort between eval steps so the
+            # continuous loop can resume instead of being wedged.
+            if hasattr(ctx, "stop_event") and ctx.stop_event is not None:
+                if ctx.stop_event.is_set():
+                    logger.info(
+                        "Eval suite aborted at %s — stop event set",
+                        spec.name,
+                    )
+                    break
             if spec.requires_loss_ratio and ctx.val_loss_ratio is None:
                 continue
             if spec.requires_scaling and not ctx.scaling_enabled:

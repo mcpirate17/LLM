@@ -16,7 +16,7 @@ from research.scientist.notebook import LabNotebook
 from research.synthesis.context_rules import find_byte_safety_violations
 from research.synthesis.serializer import graph_from_json
 
-BASE = Path("/home/tim/Projects/LLM")
+BASE = Path(__file__).resolve().parents[2]
 DB_PATH = BASE / "research/lab_notebook.db"
 OUT_DIR = BASE / "research/reports/binding_pilot"
 

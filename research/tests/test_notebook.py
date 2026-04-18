@@ -9,9 +9,12 @@ Run: cd /path/to/LLM && python -m unittest research.tests.test_integration -v
 """
 
 import pytest
+from research.scientist.runtime_events import get_runtime_event_services, stop_runtime_event_services
+from research.scientist.notebook.notebook_core import _ThreadSafeConnectionWrapper
 import importlib
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -83,6 +86,7 @@ class TestNotebook(unittest.TestCase):
         self.nb = LabNotebook(self.db_path)
 
     def tearDown(self):
+        stop_runtime_event_services(self.nb.db_path)
         self.nb.close()
 
     def test_schema_all_tables_exist(self):
@@ -746,12 +750,14 @@ class TestNotebook(unittest.TestCase):
         weak = by_name["attn_sparse_test"]
         strong = by_name["attn_strong_test"]
         self.assertEqual(weak["evidence_level"], "insufficient")
+        self.assertEqual(weak["structural_category"], "untested")
         self.assertGreaterEqual(len(weak["diagnosis"]), 1)
         self.assertGreaterEqual(len(weak["actions"]), 1)
         self.assertEqual(weak["screening_metric_coverage"]["induction"], 1)
         self.assertEqual(weak["screening_metric_coverage"]["hellaswag"], 2)
         self.assertAlmostEqual(strong["avg_induction_auc"], 0.08)
         self.assertAlmostEqual(strong["avg_binding_auc"], 0.09)
+        self.assertEqual(strong["structural_category"], "untested")
         self.assertEqual(summary["summary"]["templates_tracked"], 2)
         self.assertIn("all_slots", summary)
         self.assertEqual(summary["all_slots"][0]["slot_key"], "attn_sparse_test.slot0")
@@ -813,6 +819,132 @@ class TestNotebook(unittest.TestCase):
         self.assertIn("attn_active_test", active_names)
         self.assertNotIn("0_legacy_template", active_names)
         self.assertIn("0_legacy_template", inactive_names)
+
+    def test_template_slot_observability_includes_zero_run_active_templates(self):
+        """Active templates should appear in observability even before any runs land."""
+        with patch(
+            "research.scientist.notebook.notebook_misc.TEMPLATES",
+            {
+                "codex_ssm_retention_block": object(),
+                "codex_ssm_delta_memory_block": object(),
+            },
+        ):
+            summary = self.nb.get_template_slot_observability(limit=8)
+
+        by_name = {row["name"]: row for row in summary["all_templates"]}
+        self.assertIn("codex_ssm_retention_block", by_name)
+        self.assertIn("codex_ssm_delta_memory_block", by_name)
+        self.assertEqual(by_name["codex_ssm_retention_block"]["n_used"], 0)
+        self.assertEqual(
+            by_name["codex_ssm_retention_block"]["evidence_level"], "insufficient"
+        )
+        self.assertEqual(
+            by_name["codex_ssm_retention_block"]["structural_category"], "untested"
+        )
+        self.assertIn(
+            "Backfill this template before changing weights.",
+            by_name["codex_ssm_retention_block"]["actions"],
+        )
+        self.assertEqual(summary["summary"]["templates_tracked"], 2)
+
+    def test_template_slot_observability_requires_real_support_for_strong_label(self):
+        """Strong labels require repeated fingerprint wins, not sparse one-offs."""
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 16},
+            hypothesis="template observability evidence-backed labels",
+        )
+        gpt2_graph = {
+            "metadata": {
+                "templates_used": ["gpt2_reference"],
+                "motifs_used": ["motif_ref"],
+                "template_slot_usage": [],
+            }
+        }
+        strong_graph = {
+            "metadata": {
+                "templates_used": ["attn_family_winner"],
+                "motifs_used": ["motif_win"],
+                "template_slot_usage": [],
+            }
+        }
+        sparse_graph = {
+            "metadata": {
+                "templates_used": ["attn_sparse_candidate"],
+                "motifs_used": ["motif_sparse"],
+                "template_slot_usage": [],
+            }
+        }
+        for idx in range(4):
+            self.nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=f"gpt2_ref_fp_{idx}",
+                graph_json=json.dumps(gpt2_graph),
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.50,
+                validation_loss_ratio=0.52,
+                induction_auc=0.02,
+                binding_auc=0.03,
+                ar_auc=0.03,
+                hellaswag_acc=0.28,
+            )
+        for idx in range(12):
+            self.nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=f"winner_fp_{idx}",
+                graph_json=json.dumps(strong_graph),
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.39 if idx < 8 else 0.44,
+                validation_loss_ratio=0.43 if idx < 8 else 0.46,
+                induction_auc=0.05,
+                binding_auc=0.08,
+                ar_auc=0.07,
+                hellaswag_acc=0.33,
+            )
+        for idx in range(2):
+            self.nb.record_program_result(
+                experiment_id=exp_id,
+                graph_fingerprint=f"sparse_fp_{idx}",
+                graph_json=json.dumps(sparse_graph),
+                stage0_passed=True,
+                stage05_passed=True,
+                stage1_passed=True,
+                loss_ratio=0.36,
+                validation_loss_ratio=0.40,
+                induction_auc=0.06,
+                binding_auc=0.09,
+                ar_auc=0.08,
+                hellaswag_acc=0.34,
+            )
+        self.nb.flush_writes()
+
+        with patch(
+            "research.scientist.notebook.notebook_misc.TEMPLATES",
+            {
+                "gpt2_reference": object(),
+                "attn_family_winner": object(),
+                "attn_sparse_candidate": object(),
+            },
+        ):
+            summary = self.nb.get_template_slot_observability(limit=8)
+
+        by_name = {row["name"]: row for row in summary["all_templates"]}
+        self.assertEqual(by_name["gpt2_reference"]["structural_category"], "reference")
+        self.assertEqual(by_name["attn_family_winner"]["structural_category"], "strong")
+        self.assertEqual(
+            by_name["attn_sparse_candidate"]["structural_category"], "untested"
+        )
+        self.assertEqual(by_name["attn_family_winner"]["unique_fingerprints"], 12)
+        self.assertEqual(
+            by_name["attn_family_winner"]["stage1_unique_fingerprints"], 12
+        )
+        self.assertGreaterEqual(
+            len(by_name["attn_family_winner"]["reference_beating_metrics"]), 2
+        )
 
     def test_template_slot_observability_flags_repeated_low_loss_families(self):
         """Repeated low-loss survivor families should be surfaced explicitly."""
@@ -961,6 +1093,66 @@ class TestNotebook(unittest.TestCase):
         self.assertEqual(latest["event_type"], "chat_config_adjusted")
         self.assertIsInstance(latest.get("evidence"), str)
         self.assertIn("changes", latest.get("evidence") or "")
+
+    def test_log_learning_event_tolerates_sqlite_operational_error(self):
+        """Learning log should be best-effort and not abort on SQLite write failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.nb.log_learning_event(
+                "chat_config_adjusted",
+                "Adjusted chat config",
+                changes={"max_depth": 4},
+            )
+
+    def test_create_preregistration_tolerates_sqlite_operational_error(self):
+        """Preregistration creation should retry on a degraded primary connection."""
+        preregistration = {
+            "hypothesis": {
+                "statement": "Short runs will still persist preregistration rows.",
+                "variables": ["runtime_events"],
+                "expected_direction": "positive",
+                "success_criteria": "row exists",
+            },
+            "analysis_plan": {
+                "primary_metrics": ["launch_success"],
+                "secondary_metrics": ["status_visibility"],
+                "thresholds": {"launch_success": 1.0},
+                "baseline_comparison": "pre-fallback behavior",
+            },
+            "falsification_conditions": ["insert does not persist"],
+            "confounders_checklist": [{"name": "sqlite_primary_connection", "checked": True}],
+            "exploratory": False,
+        }
+
+        original_execute = _ThreadSafeConnectionWrapper.execute
+
+        def flaky_execute(conn, sql, params=()):
+            if "INSERT INTO hypothesis_preregistrations" in sql:
+                raise sqlite3.OperationalError("disk I/O error")
+            return original_execute(conn, sql, params)
+
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            autospec=True,
+            side_effect=flaky_execute,
+        ):
+            prereg_id = self.nb.create_preregistration(
+                experiment_type="synthesis",
+                preregistration=preregistration,
+            )
+
+        row = self.nb.conn.execute(
+            """SELECT preregistration_id, status
+               FROM hypothesis_preregistrations
+               WHERE preregistration_id = ?""",
+            (prereg_id,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "registered")
 
     def test_leaderboard_upsert_and_query(self):
         """Leaderboard CRUD operations."""
@@ -1408,6 +1600,173 @@ class TestNotebook(unittest.TestCase):
 
         entries = self.nb.get_entries()
         self.assertGreater(len(entries), 0)
+
+    def test_add_entry_tolerates_sqlite_operational_error(self):
+        """Notebook entries should be best-effort on a degraded primary connection."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            entry_id = self.nb.add_entry(
+                ExperimentEntry(
+                    entry_type="observation",
+                    title="Transient entry",
+                    content="Should not abort the run.",
+                    experiment_id="exp_transient_1",
+                )
+            )
+        self.assertIsNotNone(entry_id)
+
+    def test_has_fingerprint_tolerates_sqlite_operational_error(self):
+        """Fingerprint existence checks should degrade to a safe miss on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertFalse(self.nb.has_fingerprint("fp_transient_1"))
+
+    def test_create_healer_task_tolerates_sqlite_operational_error(self):
+        """Healer bookkeeping should not cascade another failure during recovery."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            task_id = self.nb.create_healer_task(
+                experiment_id="exp_transient_2",
+                trigger_type="runtime_error",
+                scope="test scope",
+                reproduction_steps=["python -m pytest research/tests/test_notebook.py"],
+                acceptance_tests=["python -m pytest research/tests/test_notebook.py"],
+                model_endpoint="local",
+                sandbox_policy={"allowed_commands": ["python -m pytest"]},
+                trigger_payload={"source": "unit-test"},
+            )
+        self.assertTrue(task_id.startswith("heal-"))
+
+    def test_add_healer_event_tolerates_sqlite_operational_error(self):
+        """Healer event logging should be best-effort under SQLite failures."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            event_id = self.nb.add_healer_event(
+                "heal-transient-1",
+                "opened",
+                state="open",
+                payload={"source": "unit-test"},
+            )
+        self.assertIsNotNone(event_id)
+
+    def test_get_recent_experiments_tolerates_sqlite_operational_error(self):
+        """Recent history queries should degrade to an empty list on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertEqual(self.nb.get_recent_experiments(5), [])
+
+    def test_get_insights_tolerates_sqlite_operational_error(self):
+        """Insight queries should degrade to empty results on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertEqual(self.nb.get_insights(limit=5), [])
+
+    def test_get_knowledge_tolerates_sqlite_operational_error(self):
+        """Knowledge queries should degrade to empty results on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertEqual(self.nb.get_knowledge(), [])
+
+    def test_record_insight_tolerates_sqlite_operational_error(self):
+        """Insight persistence should be best-effort under SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            insight_id = self.nb.record_insight(
+                category="failure_mode",
+                content="Transient failure-mode insight",
+                experiment_id="exp_transient_3",
+                confidence=0.7,
+            )
+        self.assertIsNotNone(insight_id)
+
+    def test_get_healer_task_tolerates_sqlite_operational_error(self):
+        """Healer task lookup should degrade to None on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertIsNone(self.nb.get_healer_task("heal-transient-2"))
+
+    def test_get_recent_healer_tasks_tolerates_sqlite_operational_error(self):
+        """Recent healer task queries should degrade to empty results on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertEqual(self.nb.get_recent_healer_tasks(5), [])
+
+    def test_get_leaderboard_tolerates_sqlite_operational_error(self):
+        """Leaderboard reads should degrade to empty results on SQLite failure."""
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.assertEqual(self.nb.get_leaderboard(limit=5), [])
+
+    def test_complete_experiment_tolerates_sqlite_operational_error(self):
+        """Completion persistence should be best-effort under SQLite failure."""
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 1},
+            hypothesis="completion degradation",
+        )
+
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.nb.complete_experiment(
+                experiment_id=exp_id,
+                results={"stage1_passed": 1, "total": 1},
+                aria_summary="Completed despite notebook I/O failure",
+            )
+
+    def test_fail_experiment_tolerates_sqlite_operational_error(self):
+        """Failure persistence should be best-effort under SQLite failure."""
+        exp_id = self.nb.start_experiment(
+            experiment_type="synthesis",
+            config={"n_programs": 1},
+            hypothesis="failure degradation",
+        )
+
+        with patch.object(
+            _ThreadSafeConnectionWrapper,
+            "execute",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ):
+            self.nb.fail_experiment(
+                experiment_id=exp_id,
+                error="disk I/O error",
+                results={"total": 1},
+            )
 
     def test_dashboard_summary(self):
         """Dashboard summary returns expected keys."""
@@ -1963,6 +2322,14 @@ class TestStaleExperimentCleanup(unittest.TestCase):
             (exp_id,),
         ).fetchone()
         self.assertEqual(row["status"], "failed")
+        records = [
+            record.event
+            for record in get_runtime_event_services(self.nb.db_path).spool.replay()
+            if record.event.run_id == exp_id
+            and record.event.event_type == "experiment_failed"
+        ]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].payload["reason"], "stale_recovery_cleanup")
 
     def test_cleanup_ignores_recent_running(self):
         """Recently started experiments should not be cleaned up."""

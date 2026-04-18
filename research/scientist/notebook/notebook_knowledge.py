@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from ._shared import infer_insight_identity
+from ._shared import LOGGER, infer_insight_identity
 
 
 class _KnowledgeMixin:
@@ -64,19 +64,6 @@ class _KnowledgeMixin:
             beta_ = max(0.01, 2.0 * (1.0 - confidence))
         confidence = alpha / (alpha + beta_)
 
-        if semantic_key:
-            existing = self.conn.execute(
-                """SELECT insight_id FROM insights
-                   WHERE status = 'active' AND semantic_key = ?
-                   ORDER BY confidence DESC, timestamp DESC""",
-                (semantic_key,),
-            ).fetchall()
-            for row in existing:
-                self.conn.execute(
-                    "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
-                    (row["insight_id"],),
-                )
-
         insight_id = str(uuid.uuid4())[:12]
         evidence_json_str = json.dumps(evidence_json) if evidence_json else None
         insert_sql = """INSERT INTO insights
@@ -103,6 +90,19 @@ class _KnowledgeMixin:
             evidence_json_str,
         )
         try:
+            if semantic_key:
+                existing = self.conn.execute(
+                    """SELECT insight_id FROM insights
+                       WHERE status = 'active' AND semantic_key = ?
+                       ORDER BY confidence DESC, timestamp DESC""",
+                    (semantic_key,),
+                ).fetchall()
+                for row in existing:
+                    self.conn.execute(
+                        "UPDATE insights SET status = 'superseded' WHERE insight_id = ?",
+                        (row["insight_id"],),
+                    )
+
             self.conn.execute(insert_sql, insert_params)
         except sqlite3.IntegrityError:
             if semantic_key:
@@ -113,6 +113,13 @@ class _KnowledgeMixin:
                 self.conn.execute(insert_sql, insert_params)
             else:
                 raise
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Insight write failed for experiment %s; continuing without notebook persistence: %s",
+                experiment_id or "unscoped",
+                exc,
+            )
+            return insight_id
         self._maybe_commit()
         return insight_id
 
@@ -144,7 +151,14 @@ class _KnowledgeMixin:
             params.append(insight_level)
         query += " ORDER BY confidence DESC, timestamp DESC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
+        try:
+            rows = self.conn.execute(query, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Insight query failed; returning empty results: %s",
+                exc,
+            )
+            return []
         results = []
         for r in rows:
             d = dict(r)
@@ -380,7 +394,14 @@ class _KnowledgeMixin:
             query += " AND category = ?"
             params.append(category)
         query += " ORDER BY timestamp DESC"
-        rows = self.conn.execute(query, params).fetchall()
+        try:
+            rows = self.conn.execute(query, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Knowledge query failed; returning empty results: %s",
+                exc,
+            )
+            return []
         results = []
         for r in rows:
             d = dict(r)

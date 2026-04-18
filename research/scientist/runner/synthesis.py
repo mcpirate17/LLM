@@ -144,10 +144,16 @@ class _SynthesisMixin:
             cfg.composition_depth = 2
             cfg._efficiency_mode = True
         elif cycle == 4:
-            cfg.math_space_weight = max(config.math_space_weight, 3.0)
-            cfg.residual_prob = 0.4
-            cfg.max_ops = 16
-            cfg.composition_depth = 2
+            # Capability-first: trunk+sidecar graphs with explicit
+            # retrieval path. Promotes role-slot templates (matmul /
+            # gather_topk sidecar) and enables gate8_retrieval_dead to
+            # stop retrieval-dead graphs from wasting investigation
+            # compute. Pairs with v8.1 scoring rebalance.
+            cfg._capability_first_mode = True
+            cfg.max_depth = 12
+            cfg.max_ops = 22
+            cfg.residual_prob = 0.8
+            cfg.composition_depth = 3
         elif cycle == 5:
             cfg.max_depth = 10
             cfg.max_ops = 18
@@ -175,6 +181,13 @@ class _SynthesisMixin:
         cfg.grammar_split_prob = max(cfg.grammar_split_prob, user_split_prob)
         cfg.three_way_split_prob = max(cfg.three_way_split_prob, user_three_way)
         cfg.residual_prob = max(cfg.residual_prob, user_residual)
+
+        # If the user ticked capability_first in the dashboard, honor it
+        # regardless of which cycle we're on. This lets the automatic
+        # cycle 4 exercise it once per rotation, but a user who wants
+        # capability_first everywhere can force it.
+        if getattr(config, "_capability_first_mode", False):
+            cfg._capability_first_mode = True
 
         return cfg
 

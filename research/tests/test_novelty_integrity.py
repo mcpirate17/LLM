@@ -2,7 +2,9 @@ import pytest
 import os
 import tempfile
 
-from research.eval.fingerprint import build_novelty_reference_version
+# `build_novelty_reference_version` moved from `fingerprint` to
+# `fingerprint_scoring` during the fingerprint-module split.
+from research.eval.fingerprint_scoring import build_novelty_reference_version
 from research.eval.novelty_calibration import (
     calibrate_baseline_transformer_novelty,
 )

@@ -345,7 +345,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_compute_reference_cka_with_artifacts(self):
         """_compute_reference_cka uses artifact activations when provided."""
-        from research.eval.fingerprint import _compute_reference_cka
+        from research.eval.fingerprint_cka import compute_reference_cka as _compute_reference_cka
 
         # Create fake candidate reps and reference activations
         S, D = 16, 32
@@ -363,7 +363,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_compute_reference_cka_without_artifacts_fails_closed(self):
         """_compute_reference_cka should not invent reference scores."""
-        from research.eval.fingerprint import _compute_reference_cka
+        from research.eval.fingerprint_cka import compute_reference_cka as _compute_reference_cka
 
         reps = torch.randn(1, 16, 32)
         result = _compute_reference_cka(reps, ref_activations=None)
@@ -373,7 +373,7 @@ class TestCkaReferenceArtifacts(unittest.TestCase):
 
     def test_compute_reference_cka_seq_len_mismatch(self):
         """Artifact CKA handles different seq lengths between candidate and reference."""
-        from research.eval.fingerprint import _compute_reference_cka
+        from research.eval.fingerprint_cka import compute_reference_cka as _compute_reference_cka
 
         reps = torch.randn(1, 16, 32)  # seq_len=16
         ref_activations = {

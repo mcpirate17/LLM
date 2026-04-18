@@ -50,21 +50,24 @@ class LifecycleProjector:
                     last_offset = record.offset
                     last_event_id = record.event.event_id
                     continue
-                self._apply_event(record.event)
-                self._mark_applied(record.event)
+                accepted = self._apply_event(record.event)
+                if accepted:
+                    self._mark_applied(record.event)
                 self._store_checkpoint(record.offset)
                 self.conn.commit()
                 logger.info(
-                    "Projected lifecycle event: type=%s run_id=%s event_id=%s offset=%s:%d",
+                    "Projected lifecycle event: type=%s run_id=%s event_id=%s offset=%s:%d accepted=%s",
                     record.event.event_type,
                     record.event.run_id,
                     record.event.event_id[:12],
                     record.offset.segment,
                     record.offset.line_number,
+                    accepted,
                 )
                 last_offset = record.offset
                 last_event_id = record.event.event_id
-                applied_count += 1
+                if accepted:
+                    applied_count += 1
         except sqlite3.DatabaseError as exc:
             degraded = True
             logger.error(
@@ -80,14 +83,22 @@ class LifecycleProjector:
             degraded=degraded,
         )
 
-    def _apply_event(self, event: RuntimeEvent) -> None:
+    def _apply_event(self, event: RuntimeEvent) -> bool:
         current_type = self._load_current_event_type(event.run_id)
         if event.event_type == current_type:
-            return  # duplicate, already applied
+            return False  # duplicate, already applied
         if not self.machine.is_valid_transition(current_type, event.event_type):
-            return  # invalid transition, skip silently in projector
+            logger.warning(
+                "Skipping conflicting lifecycle event in projector: run_id=%s %r -> %r event_id=%s",
+                event.run_id,
+                current_type,
+                event.event_type,
+                event.event_id,
+            )
+            return False
         handler = getattr(self, f"_apply_{event.event_type}")
         handler(event)
+        return True
 
     def _apply_experiment_start_requested(self, event: RuntimeEvent) -> None:
         # Spool-only in the first cut; checkpoint for ordering but no row write yet.

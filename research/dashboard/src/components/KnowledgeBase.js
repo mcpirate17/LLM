@@ -699,4 +699,4 @@ function KnowledgeBase({ onSelectExperiment }) {
   );
 }
 
-export default KnowledgeBase;
+export default React.memo(KnowledgeBase);

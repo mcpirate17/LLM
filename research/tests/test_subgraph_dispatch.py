@@ -612,6 +612,38 @@ def test_dispatch_graph_native_cached_prefers_compiled_graph_handle(monkeypatch)
     assert result.shape == (1, 2, 4)
 
 
+def test_dispatch_graph_native_cached_uses_compiled_no_stats_when_profiler_off(
+    monkeypatch,
+):
+    g = _make_simple_graph(model_dim=4, ops=["relu"])
+    compiled_graph = object()
+
+    class FakeRust:
+        @staticmethod
+        def profiler_enabled():
+            return False
+
+        @staticmethod
+        def execute_graph_compiled_arrays_handle(handle, input_array):
+            assert handle is compiled_graph
+            assert input_array.shape == (1, 2, 4)
+            return np.ones((8,), dtype=np.float32)
+
+        @staticmethod
+        def execute_graph_with_stats_compiled_arrays(handle, input_array):
+            raise AssertionError("stats path should not be used when profiler is off")
+
+    _setup_rust_dispatch(monkeypatch, FakeRust(), compile_handle=compiled_graph)
+
+    result = native_dispatch_module.dispatch_graph_native_cached(
+        "fake-ir",
+        g,
+        np.zeros((1, 2, 4), dtype=np.float32),
+    )
+
+    assert result.shape == (1, 2, 4)
+
+
 # ---------------------------------------------------------------------------
 # Test 8: CompiledLayer uses subgraph dispatcher when attached
 # ---------------------------------------------------------------------------

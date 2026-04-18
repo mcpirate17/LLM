@@ -1229,7 +1229,7 @@ class TestInlinePhaseMethods(unittest.TestCase):
             config, mode="evolve", auto_harden=True
         )
 
-        self.assertEqual(hardened.max_depth, 16)
+        self.assertEqual(hardened.max_depth, 18)
         self.assertEqual(hardened.max_ops, 24)
         self.assertEqual(hardened.n_generations, 1)
         self.assertGreater(report.get("risk_score", 0), 0)

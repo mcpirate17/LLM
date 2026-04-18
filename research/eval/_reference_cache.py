@@ -20,7 +20,7 @@ def open_sqlite_cache(
 ) -> tuple[Path, sqlite3.Connection]:
     path = Path(cache_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     if wal:
         conn.execute("PRAGMA journal_mode=WAL")
     for statement in schema_statements:

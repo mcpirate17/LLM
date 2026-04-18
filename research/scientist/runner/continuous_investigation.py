@@ -273,6 +273,56 @@ class _ContinuousInvestigationMixin:
                 return []
             # Fall through to reprieve check below
 
+        # ── Capability-first filter: when the user has opted into
+        # capability-first mode, only investigate graphs that contain at
+        # least one content-addressed retrieval op. Without this, the
+        # investigation queue is dominated by ~19K old simple graphs
+        # from before the capability-first templates existed, which
+        # score higher on screening composite (they converge faster in
+        # 200 steps) but will never produce the binding/induction scores
+        # we're targeting. See the 2026-04-17 diagnosis.
+        if getattr(config, "_capability_first_mode", False) and eligible:
+            _RETRIEVAL_OPS = frozenset({
+                "matmul", "gather_topk", "outer_product",
+                "cosine_similarity", "graph_attention",
+                "softmax_attention", "diff_attention",
+                "latent_attention_compressor",
+                "linear_attention", "gated_linear_attention",
+                "associative_memory",
+            })
+            before_capfirst = len(eligible)
+            capfirst_eligible = []
+            for e in eligible:
+                gj = e.get("graph_json") or ""
+                # Parse the graph and check actual op_name fields —
+                # string matching produces false positives from metadata.
+                try:
+                    g = json.loads(gj) if gj else {}
+                    nodes = g.get("nodes") or {}
+                    if isinstance(nodes, dict):
+                        graph_ops = {
+                            n.get("op_name") or n.get("op")
+                            for n in nodes.values()
+                            if isinstance(n, dict)
+                        }
+                    else:
+                        graph_ops = set()
+                    if graph_ops & _RETRIEVAL_OPS:
+                        capfirst_eligible.append(e)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if capfirst_eligible:
+                eligible = capfirst_eligible
+                logger.info(
+                    "Pre-inv gate: capability-first filter kept %d/%d candidates with retrieval ops",
+                    len(eligible), before_capfirst,
+                )
+            else:
+                logger.warning(
+                    "Pre-inv gate: capability-first filter found 0/%d candidates with retrieval ops — falling back to full pool",
+                    before_capfirst,
+                )
+
         logger.info(
             "Pre-inv gate Stage A: %d candidates pass hard filters", len(eligible)
         )

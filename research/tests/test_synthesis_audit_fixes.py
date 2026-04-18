@@ -7,7 +7,10 @@ import torch.nn as nn
 from research.synthesis.compiler import compile_graph, compile_model
 from research.synthesis.grammar import GrammarConfig, _validate_graph
 from research.synthesis.graph import ComputationGraph, ComputationGraphIR
-from research.synthesis.graph_features import extract_graph_features
+from research.synthesis.graph_features import (
+    extract_graph_features,
+    extract_graph_features_bundle,
+)
 from research.synthesis.native_compile import get_supported_native_ops
 from research.synthesis.workflow_converter import workflow_to_computation_graph
 
@@ -36,6 +39,23 @@ def test_graph_features_use_canonical_primitive_names():
     assert features["cat_mixing"] == 1.0
     assert features["cat_functional"] == 1.0
     assert "op_route_lanes" not in features
+
+
+def test_graph_feature_bundle_returns_canonical_ops():
+    graph_json = {
+        "model_dim": 64,
+        "nodes": {
+            "0": {"id": 0, "op_name": "input", "input_ids": []},
+            "1": {"id": 1, "op_name": "route_lanes", "input_ids": [0]},
+            "2": {"id": 2, "op_name": "layernorm", "input_ids": [1]},
+        },
+        "metadata": {},
+    }
+
+    features, ops = extract_graph_features_bundle(graph_json)
+
+    assert features["op_gated_lane_blend"] == 1.0
+    assert ops == ["gated_lane_blend", "layernorm"]
 
 
 def test_validate_graph_rejects_too_shallow_ops_without_mutation():
@@ -97,6 +117,31 @@ def test_compile_graph_prefers_native_subgraph_dispatch(monkeypatch):
     module = compile_graph(graph, use_ir=True)
 
     assert isinstance(module, FakeIRExecutor)
+    assert module.source_graph is graph
+
+
+def test_compile_graph_can_select_ir_executor_v2(monkeypatch):
+    import research.synthesis.ir_executor_v2 as ir_executor_v2_mod
+
+    class FakeIRExecutorV2(nn.Module):
+        def __init__(self, ir, source_graph=None):
+            super().__init__()
+            self.ir = ir
+            self.source_graph = source_graph
+
+        def forward(self, x):
+            return x
+
+    monkeypatch.setattr(ir_executor_v2_mod, "IRExecutorV2", FakeIRExecutorV2)
+
+    graph = ComputationGraph(32)
+    inp = graph.add_input()
+    out = graph.add_op("relu", [inp])
+    graph.set_output(out)
+
+    module = compile_graph(graph, use_ir=True, executor="ir_v2")
+
+    assert isinstance(module, FakeIRExecutorV2)
     assert module.source_graph is graph
 
 

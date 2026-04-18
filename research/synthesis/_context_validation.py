@@ -379,7 +379,7 @@ def _check_op_structural_rules(
             violations.append(f"{op_name} requires normalized predecessor context")
         if not _has_descendant_op(graph, nid, _RESTRICTED_LINEAR_SUCCESSORS, children):
             violations.append(f"{op_name} must feed projection/residual context")
-    elif op_name == "n_way_sparse_router":
+    elif op_name in {"n_way_sparse_router", "sparse_bottleneck_moe"}:
         if not _has_ancestor_op(graph, nid, _LOCAL_WINDOW_VALID_PREDS):
             violations.append(
                 "n_way_sparse_router requires normalized predecessor context"

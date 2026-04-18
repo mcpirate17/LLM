@@ -19,8 +19,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import time
 from pathlib import Path
+from typing import Any
+
+import numpy as np
 
 from research.tools._script_audit import (
     complete_script_experiment,
@@ -34,6 +38,369 @@ _NOTEBOOK_DB = Path("research/lab_notebook.db")
 _PROFILING_DB = Path("research/profiling/component_profiles.db")
 _STATE_DIR = Path("research/runtime/learning")
 _METRICS_REPORT_PATH = _STATE_DIR / "predictor_metrics_report.json"
+
+
+def _safe_report_section(name: str, fn, *args, **kwargs) -> dict[str, Any]:
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        return {"error": str(exc), "section": name}
+
+
+def _load_json_if_exists(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _derive_confusion_from_summary(
+    *,
+    n: int,
+    accuracy: float,
+    precision: float,
+    recall: float,
+) -> dict[str, float]:
+    from research.scientist.intelligence.metrics_utils import (
+        binary_classification_metrics,
+    )
+
+    for positives in range(n + 1):
+        tp_raw = recall * positives
+        tp = int(round(tp_raw))
+        if not np.isclose(tp_raw, tp):
+            continue
+        if precision <= 0.0:
+            pred_pos = tp
+        else:
+            pred_pos_raw = tp / precision
+            pred_pos = int(round(pred_pos_raw))
+            if not np.isclose(pred_pos_raw, pred_pos):
+                continue
+        fp = pred_pos - tp
+        fn = positives - tp
+        tn = n - positives - fp
+        if min(tp, fp, tn, fn) < 0:
+            continue
+        if np.isclose((tp + tn) / max(n, 1), accuracy):
+            return binary_classification_metrics(
+                np.array([1] * positives + [0] * (n - positives), dtype=np.int32),
+                np.array([1] * tp + [0] * fn + [1] * fp + [0] * tn, dtype=np.float64),
+                0.5,
+            )
+    raise ValueError("unable to derive confusion matrix from summary metrics")
+
+
+def _graph_predictor_metrics_report(state_dir: Path) -> dict[str, Any]:
+    graph_meta_path = state_dir / "graph_predictor.json"
+    if not graph_meta_path.exists():
+        return {"error": "graph_predictor_not_fitted"}
+    with open(graph_meta_path, encoding="utf-8") as handle:
+        meta = json.load(handle)
+    train_metrics = dict(meta.get("train_metrics", {}))
+    derived = dict(train_metrics.get("val_gate_metrics", {}))
+    if not derived:
+        derived = _derive_confusion_from_summary(
+            n=int(train_metrics.get("n_val", 0)),
+            accuracy=float(train_metrics.get("val_accuracy", 0.0)),
+            precision=float(train_metrics.get("val_precision", 0.0)),
+            recall=float(train_metrics.get("val_recall", 0.0)),
+        )
+        derived["roc_auc"] = float(train_metrics.get("val_auc", 0.0))
+        derived["threshold"] = float(train_metrics.get("gate_threshold", 0.5))
+    return {
+        "persisted_train_metrics": train_metrics,
+        "derived_val_classification_metrics": derived,
+        "note": (
+            "Uses persisted holdout metrics from graph_predictor.json. "
+            "This is the most faithful report for the saved GraphPredictor artifact."
+        ),
+    }
+
+
+def _gbm_metrics_report(db_path: str, state_dir: Path) -> dict[str, Any]:
+    from research.scientist.intelligence.metrics_utils import (
+        binary_classification_metrics,
+    )
+    from research.scientist.intelligence.ml_corpus import (
+        build_dense_feature_matrix,
+        grouped_stratified_split,
+    )
+    from research.scientist.intelligence.predictor import (
+        GBMPredictor,
+        _query_graph_training_data,
+    )
+
+    feat_dicts, y_gate, y_rank, _sample_weights, graph_signatures = (
+        _query_graph_training_data(db_path)
+    )
+    X, feature_names = build_dense_feature_matrix(feat_dicts)
+    _train_idx, val_idx, split_stats = grouped_stratified_split(
+        graph_signatures, y_gate, seed=42
+    )
+    gbm = GBMPredictor.load(state_dir)
+    if not gbm.is_fitted():
+        return {"error": "gbm_not_fitted"}
+
+    gate_names = gbm.gate_feature_names or gbm.feature_names
+    gate_col_idx = [feature_names.index(name) for name in gate_names if name in feature_names]
+    X_gate = X[:, gate_col_idx] if gate_col_idx else X
+
+    if gbm.train_metrics:
+        operating_points = dict(gbm.train_metrics.get("operating_points", {}))
+        selected = dict(gbm.train_metrics.get("gate_metrics", {}))
+        skip_metrics = binary_classification_metrics(
+            y_gate[val_idx], gbm.gate_model.predict(X_gate[val_idx]), threshold=0.1
+        )
+        skipped = skip_metrics["tn"] + skip_metrics["fn"]
+        false_skip_rate = float(skip_metrics["fn"] / skipped) if skipped else 0.0
+        return {
+            "split_stats": split_stats,
+            "train_metrics": gbm.train_metrics,
+            "val_metrics_selected_threshold": selected,
+            "val_metrics_threshold_0_5": binary_classification_metrics(
+                y_gate[val_idx], gbm.gate_model.predict(X_gate[val_idx]), threshold=0.5
+            ),
+            "val_metrics_threshold_0_1_skip_rule": skip_metrics,
+            "operating_points": operating_points,
+            "skip_rate": float(skipped / max(len(val_idx), 1)),
+            "false_skip_rate": false_skip_rate,
+            "rank_spearman_val": gbm.train_metrics.get("rank_spearman"),
+        }
+
+    gate_scores = gbm.gate_model.predict(X_gate[val_idx])
+    rank_spearman = None
+    if gbm.rank_model is not None:
+        rank_mask = np.isfinite(y_rank[val_idx])
+        if rank_mask.sum() >= 2:
+            from scipy.stats import spearmanr
+
+            rho, _ = spearmanr(
+                y_rank[val_idx][rank_mask],
+                gbm.rank_model.predict(X[val_idx][rank_mask]),
+            )
+            rank_spearman = float(rho) if np.isfinite(rho) else 0.0
+
+    skip_metrics = binary_classification_metrics(
+        y_gate[val_idx], gate_scores, threshold=0.1
+    )
+    skipped = skip_metrics["tn"] + skip_metrics["fn"]
+    false_skip_rate = float(skip_metrics["fn"] / skipped) if skipped else 0.0
+    return {
+        "split_stats": split_stats,
+        "val_metrics_threshold_0_5": binary_classification_metrics(
+            y_gate[val_idx], gate_scores, threshold=0.5
+        ),
+        "val_metrics_threshold_0_1_skip_rule": skip_metrics,
+        "skip_rate": float(skipped / max(len(val_idx), 1)),
+        "false_skip_rate": false_skip_rate,
+        "rank_spearman_val": rank_spearman,
+    }
+
+
+def _component_scores(
+    ensemble,
+    db_path: str,
+    sample_limit: int = 2000,
+) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+    from research.scientist.intelligence.ml_corpus import (
+        grouped_stratified_split,
+        load_deduped_screening_predictor_rows,
+    )
+    from research.synthesis.graph_features import (
+        enrich_with_op_stats,
+        extract_graph_features_bundle,
+        load_op_stats,
+    )
+
+    rows = [
+        row
+        for row in load_deduped_screening_predictor_rows(db_path)
+        if bool(row.get("stage0_any_passed"))
+    ]
+    if len(rows) > sample_limit:
+        rows = random.Random(0).sample(rows, sample_limit)
+
+    op_stats_cache = load_op_stats(db_path)
+    score_rows: list[list[float]] = []
+    labels: list[int] = []
+    graph_signatures: list[str] = []
+
+    for row in rows:
+        graph_json = row["graph_json"]
+        label = int(bool(row["stage1_any_passed"]))
+        signature = str(row.get("canonical_fingerprint") or "")
+        if not signature:
+            continue
+        try:
+            graph = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        component_scores: list[float] = []
+        if ensemble.gbm is not None and ensemble.gbm.is_fitted():
+            feats, ops = extract_graph_features_bundle(graph)
+            if feats:
+                for op in ops:
+                    if op:
+                        feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
+                enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
+                component_scores.append(ensemble.gbm.predict_gate(feats))
+            else:
+                component_scores.append(0.5)
+        else:
+            component_scores.append(0.5)
+
+        if ensemble.graph_pred is not None and ensemble.graph_pred.is_fitted():
+            component_scores.append(ensemble.graph_pred.predict_gate(graph))
+        else:
+            component_scores.append(0.5)
+
+        score_rows.append(component_scores)
+        labels.append(label)
+        graph_signatures.append(signature)
+
+    X = np.array(score_rows, dtype=np.float64)
+    y = np.array(labels, dtype=np.int32)
+    _train_idx, val_idx, split_stats = grouped_stratified_split(
+        graph_signatures, y, seed=42
+    )
+    scores_norm = (X - ensemble._score_mean) / ensemble._score_std
+    val_scores = 1.0 / (
+        1.0
+        + np.exp(
+            -np.clip(
+                scores_norm[val_idx] @ ensemble.w_ensemble + ensemble.b_ensemble,
+                -15,
+                15,
+            )
+        )
+    )
+    return y[val_idx], val_scores, split_stats
+
+
+def _ensemble_metrics_report(
+    db_path: str,
+    profiling_db: str,
+    state_dir: Path,
+    fresh_ensemble: bool,
+) -> dict[str, Any]:
+    from research.scientist.intelligence.metrics_utils import (
+        binary_classification_metrics,
+    )
+    from research.scientist.intelligence.predictor import (
+        EnsemblePredictor,
+        train_ensemble,
+    )
+
+    if fresh_ensemble:
+        ensemble = train_ensemble(db_path=db_path, profiling_db=profiling_db)
+        source = "fresh_train_ensemble"
+    else:
+        ensemble = EnsemblePredictor.load(
+            state_dir=state_dir, profiling_db=profiling_db
+        )
+        source = "saved_runtime_artifacts"
+
+    if (
+        ensemble.w_ensemble.size == 0
+        or ensemble._score_mean.size == 0
+        or ensemble._score_std.size == 0
+    ):
+        return {"error": "ensemble_not_calibrated", "source": source}
+
+    y_true, y_score, split_stats = _component_scores(ensemble, db_path)
+    return {
+        "source": source,
+        "persisted_meta": _load_json_if_exists(state_dir / "ensemble_state.json"),
+        "split_stats": split_stats,
+        "val_metrics_selected_threshold": binary_classification_metrics(
+            y_true, y_score, threshold=ensemble.gate_threshold
+        ),
+        "val_metrics_threshold_0_5": binary_classification_metrics(
+            y_true, y_score, threshold=0.5
+        ),
+        "weights": [float(x) for x in ensemble.w_ensemble.tolist()],
+        "bias": float(ensemble.b_ensemble),
+    }
+
+
+def _interaction_metrics_report(state_dir: Path) -> dict[str, Any]:
+    path = state_dir / "interaction_model.json"
+    with open(path, encoding="utf-8") as handle:
+        meta = json.load(handle)
+    return {
+        "persisted_train_metrics": dict(meta.get("train_metrics", {})),
+        "note": (
+            "Current pipeline does not persist holdout ROC/PPV/NPV metrics for "
+            "InteractionModel; only optimization loss and sample counts are available."
+        ),
+    }
+
+
+def _investigation_predictor_metrics_report(db_path: str) -> dict[str, Any]:
+    from research.scientist.intelligence.predictor import (
+        evaluate as evaluate_investigation_predictor,
+    )
+    from research.scientist.notebook import LabNotebook
+
+    nb = LabNotebook(db_path)
+    try:
+        return evaluate_investigation_predictor(nb)
+    finally:
+        nb.close()
+
+
+def _build_predictor_metrics_report(
+    *,
+    db_path: str,
+    profiling_db: str,
+    state_dir: Path,
+    fresh_ensemble: bool,
+) -> dict[str, Any]:
+    return {
+        "paths": {
+            "db_path": db_path,
+            "profiling_db": profiling_db,
+            "state_dir": str(state_dir),
+        },
+        "graph_predictor": _safe_report_section(
+            "graph_predictor",
+            _graph_predictor_metrics_report,
+            state_dir,
+        ),
+        "gbm_gate": _safe_report_section(
+            "gbm_gate",
+            _gbm_metrics_report,
+            db_path,
+            state_dir,
+        ),
+        "ensemble_calibrated": _safe_report_section(
+            "ensemble_calibrated",
+            _ensemble_metrics_report,
+            db_path,
+            profiling_db,
+            state_dir,
+            fresh_ensemble,
+        ),
+        "interaction_model": _safe_report_section(
+            "interaction_model",
+            _interaction_metrics_report,
+            state_dir,
+        ),
+        "bayesian_tracker": {
+            "note": (
+                "Temporal Bayesian tracker is used as a posterior/ranking component. "
+                "The current saved runtime state does not emit ROC/PPV/NPV metrics."
+            )
+        },
+        "investigation_predictor": _safe_report_section(
+            "investigation_predictor",
+            _investigation_predictor_metrics_report,
+            db_path,
+        ),
+    }
 
 
 def train_bayesian(save: bool = False) -> dict:
@@ -151,9 +518,7 @@ def train_ensemble_full(save: bool = False) -> dict:
 
 def write_metrics_report(fresh_ensemble: bool = False) -> dict:
     """Write predictor metrics report to the runtime state directory."""
-    from research.tools.report_predictor_metrics import build_report
-
-    report = build_report(
+    report = _build_predictor_metrics_report(
         db_path=str(_NOTEBOOK_DB),
         profiling_db=str(_PROFILING_DB),
         state_dir=_STATE_DIR,

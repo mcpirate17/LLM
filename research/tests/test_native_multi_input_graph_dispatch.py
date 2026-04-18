@@ -70,6 +70,47 @@ def test_dispatch_graph_native_multi_input_cached_prefers_array_buffers(monkeypa
     assert calls == {"arrays": 1, "lists": 0}
 
 
+def test_dispatch_graph_native_multi_input_cached_prefers_compiled_no_stats_handle(
+    monkeypatch,
+):
+    import research.scientist.native.dispatch as native_dispatch
+
+    compiled_graph = object()
+
+    class FakeRust:
+        @staticmethod
+        def profiler_enabled():
+            return False
+
+        @staticmethod
+        def execute_graph_multi_input_compiled_arrays_handle(handle, inputs):
+            assert handle is compiled_graph
+            assert len(inputs) == 2
+            return [float(inputs[0].sum()), float(inputs[1].sum())]
+
+        @staticmethod
+        def execute_graph_multi_input_compiled_arrays_with_stats(handle, inputs):
+            raise AssertionError("stats path should not be used when profiler is off")
+
+    monkeypatch.setattr(
+        native_dispatch, "_compile_rust_graph_handle", lambda ir: compiled_graph
+    )
+    monkeypatch.setattr(
+        native_dispatch, "_try_import_rust_scheduler", lambda: FakeRust()
+    )
+
+    x = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    y = torch.tensor([3.0, 4.0], dtype=torch.float32)
+    result = dispatch_graph_native_multi_input_cached(
+        "fake-ir",
+        [x, y],
+        output_shape=(2,),
+    )
+
+    assert isinstance(result, torch.Tensor)
+    torch.testing.assert_close(result, torch.tensor([3.0, 7.0]))
+
+
 def test_dispatch_graph_forward_saved_multi_input_cached_returns_saved(monkeypatch):
     import research.scientist.native.dispatch as native_dispatch
 
@@ -233,6 +274,52 @@ def test_dispatch_graph_forward_saved_multi_input_cached_prefers_compiled_graph_
     assert isinstance(result["output"], torch.Tensor)
     torch.testing.assert_close(result["output"], torch.tensor([3.0, 7.0]))
     assert result["saved_activations"] is saved_state
+
+
+def test_dispatch_graph_native_cached_updates_profiling_module_cache(monkeypatch):
+    import numpy as np
+    import research.scientist.native.dispatch as native_dispatch
+    import research.scientist.native.profiling as native_profiling
+    from research.synthesis.graph import ComputationGraph
+
+    native_profiling._last_profile_data = None
+
+    class FakeRust:
+        @staticmethod
+        def profiler_enabled():
+            return True
+
+        @staticmethod
+        def execute_graph_with_stats_arrays(ir_json, input_array):
+            return {
+                "output": np.ones((8,), dtype=np.float32),
+                "node_profiles": [{"node_id": 1, "op_name": "relu", "duration_us": 1.0}],
+                "peak_memory_bytes": 64,
+                "arena_bytes_used": 32,
+                "arena_capacity": 64,
+                "arena_alloc_count": 1,
+                "heap_fallback_count": 0,
+            }
+
+    monkeypatch.setattr(
+        native_dispatch, "_try_import_rust_scheduler", lambda: FakeRust()
+    )
+    monkeypatch.setattr(native_dispatch, "_compile_rust_graph_handle", lambda ir: None)
+
+    graph = ComputationGraph(4)
+    inp = graph.add_input()
+    out = graph.add_op("relu", [inp])
+    graph.set_output(out)
+
+    result = native_dispatch.dispatch_graph_native_cached(
+        "fake-ir",
+        graph,
+        np.zeros((1, 2, 4), dtype=np.float32),
+    )
+
+    assert result.shape == (1, 2, 4)
+    assert native_profiling._last_profile_data is not None
+    assert native_profiling._last_profile_data["peak_memory_bytes"] == 64
 
 
 def test_dispatch_graph_native_multi_input_cached_rejects_non_cpu_host_bridge(

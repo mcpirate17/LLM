@@ -3,10 +3,11 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from ._native_runtime import load_native_runtime_lib
 
 logger = logging.getLogger(__name__)
 
@@ -18,36 +19,15 @@ def load_native_search_metrics_lib() -> Any:
     if _NATIVE_SEARCH_LIB is not False:
         return _NATIVE_SEARCH_LIB
 
-    lib = None
-    for path in (
-        Path(__file__).resolve().parents[1]
-        / "runtime"
-        / "native"
-        / "build"
-        / "libaria_native_runtime.so",
-        Path(__file__).resolve().parents[1]
-        / "runtime"
-        / "native"
-        / "build_current"
-        / "libaria_native_runtime.so",
-    ):
-        if not path.exists():
-            continue
-        try:
-            candidate = ctypes.CDLL(
-                str(path), mode=os.RTLD_LOCAL | getattr(os, "RTLD_LAZY", 1)
-            )
-            required = (
-                "aria_behavior_mean_k_nearest",
-                "aria_behavior_topk_nearest_indices",
-                "aria_behavior_pairwise_median",
-                "aria_behavior_neighbor_counts",
-            )
-            if all(hasattr(candidate, name) for name in required):
-                lib = candidate
-                break
-        except OSError as exc:
-            logger.debug("Failed to load search-metrics runtime at %s: %s", path, exc)
+    lib = load_native_runtime_lib(
+        (
+            "aria_behavior_mean_k_nearest",
+            "aria_behavior_topk_nearest_indices",
+            "aria_behavior_pairwise_median",
+            "aria_behavior_neighbor_counts",
+        ),
+        logger,
+    )
     if lib is None:
         _NATIVE_SEARCH_LIB = None
         return None

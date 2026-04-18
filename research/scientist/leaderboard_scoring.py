@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from typing import Any, Dict, Optional, Sequence, Union
 
 from .thresholds import (
@@ -78,7 +79,11 @@ _PR_SELECT_COLS = (
     "fingerprint_json, hellaswag_acc, ar_auc, ar_final_acc, ar_timed_out, "
     "ar_above_chance, induction_auc, binding_auc, blimp_overall_accuracy, "
     "tinystories_score, cross_task_score, diagnostic_score, "
-    "fp_gromov_delta, fp_hierarchy_fitness"
+    "fp_gromov_delta, fp_hierarchy_fitness, "
+    # routing_collapse_score is a misnomer: it is actually a routing-health
+    # score in [0,1] (higher = healthier). Selected here so consumers can
+    # build a routing-quality subscore. Not yet used by composite scoring.
+    "routing_collapse_score"
 )
 
 
@@ -150,6 +155,9 @@ def _pr_dict_to_score_kwargs(
         "quant_retention": d.get("quant_int8_retention"),
         "long_ctx_score": d.get("robustness_long_ctx_combined_score")
         or d.get("robustness_long_ctx_score"),
+        # Routing health (passed through; composite scoring may use this in
+        # a future revision — not yet wired into the points formula).
+        "routing_health_score": pr_dict.get("routing_collapse_score"),
         "is_reference": is_reference,
         # Binding probes
         "ar_auc": pr_dict.get("ar_auc") or d.get("ar_auc"),
@@ -414,6 +422,25 @@ _V8_CONFIG: Dict[str, float] = {
     "hierarchy": 0.50,
 }
 
+# v8.1 rebalance (2026-04-16) — capability-first: make binding a multiplicative
+# signal instead of a mostly-additive bonus. The scoring_v8 penalty structure
+# let ppl-dominant graphs with zero binding still clear screening; v8.1 makes
+# that significantly more expensive while rewarding graphs that actually bind.
+_V8_1_CONFIG: Dict[str, float] = {
+    **_V8_CONFIG,
+    # Multiplier applied when all three binding signals fall below the soft
+    # gate thresholds. v7/v8 used 0.80 (a 20% haircut); 0.50 halves composite
+    # so a ppl-only graph cannot quietly occupy the investigation queue.
+    "binding_all_below_penalty": 0.50,
+    # Multiplier applied when binding_composite clears the floor. Small boost
+    # — large enough to let a graph that is 1-2 ppl worse than the frontier
+    # but actually binds outscore a ppl-only graph with zero binding.
+    "binding_composite_boost": 1.15,
+    # Threshold on binding_composite = 0.4*ar + 0.3*induction + 0.3*binding
+    # above which the boost activates.
+    "binding_composite_boost_floor": 0.05,
+}
+
 
 def _scurve(ratio: float, k: float = 4.0) -> float:
     """Sigmoid S-curve centered at ratio=1.0.
@@ -633,7 +660,7 @@ def _score_robustness_linguistics(
 
     long_ctx_pts = 0.0
     if (
-        is_validation
+        (is_investigated or is_validation)
         and long_ctx_score is not None
         and long_ctx_score > 0
         and cfg["long_ctx"] > 0
@@ -689,7 +716,11 @@ def _score_understanding_v8(
     w_ts = cfg["w_tinystories"]
     if w_ts > 0:
         pts = 0.0
-        if is_validation and tinystories_score is not None and tinystories_score > 0:
+        if (
+            (is_investigated or is_validation)
+            and tinystories_score is not None
+            and tinystories_score > 0
+        ):
             pts = min(w_ts, w_ts * _scurve(tinystories_score / cfg["tinystories"]))
         bd["tinystories"] = pts
         total += pts
@@ -705,7 +736,11 @@ def _score_understanding_v8(
     w_diag = cfg["w_diagnostic"]
     if w_diag > 0:
         pts = 0.0
-        if is_validation and diagnostic_score is not None and diagnostic_score > 0:
+        if (
+            (is_investigated or is_validation)
+            and diagnostic_score is not None
+            and diagnostic_score > 0
+        ):
             pts = min(w_diag, w_diag * _scurve(diagnostic_score / cfg["diagnostic"]))
         bd["diagnostic"] = pts
         total += pts
@@ -775,8 +810,19 @@ def _apply_scoring_penalties(
     binding_auc_val: Optional[float],
     effective_ar_auc: Optional[float],
     ar_above_chance: Optional[bool],
+    cfg: Optional[Dict[str, float]] = None,
 ) -> tuple[float, float, float]:
-    """Apply binding soft gate and param-size penalties. Returns (score, binding_pen, param_pen)."""
+    """Apply binding soft gate and param-size penalties.
+
+    Returns (score, binding_pen, param_pen).
+
+    When ``cfg`` provides ``binding_all_below_penalty`` and/or
+    ``binding_composite_boost``, those override the default thresholds-based
+    multipliers. This lets v8.1 tighten the penalty from 0.80 → 0.50 and add
+    a +15% boost for graphs that actually bind, without disturbing the v7/v8
+    scoring behavior for historical rows.
+    """
+    cfg = cfg or {}
     _induction_below = (
         induction_auc is not None and induction_auc < BINDING_INDUCTION_SOFT_GATE
     )
@@ -804,8 +850,27 @@ def _apply_scoring_penalties(
     )
     binding_penalty = 1.0
     if not inv_failed and _signals >= 2 and _all_below:
-        binding_penalty = BINDING_LOCAL_ONLY_PENALTY
+        binding_penalty = float(
+            cfg.get("binding_all_below_penalty", BINDING_LOCAL_ONLY_PENALTY)
+        )
         score *= binding_penalty
+
+    # v8.1 optional boost: reward graphs that clear a binding_composite floor.
+    # binding_composite matches the understanding gate convention:
+    #   0.4 * ar + 0.3 * induction + 0.3 * binding
+    boost_mult = float(cfg.get("binding_composite_boost", 1.0))
+    boost_floor = float(cfg.get("binding_composite_boost_floor", 0.0))
+    if not inv_failed and boost_mult > 1.0 and boost_floor > 0.0:
+        _ind = float(induction_auc) if induction_auc is not None else 0.0
+        _bind = float(binding_auc_val) if binding_auc_val is not None else 0.0
+        _ar = float(effective_ar_auc) if effective_ar_auc is not None else 0.0
+        _composite = 0.4 * _ar + 0.3 * _ind + 0.3 * _bind
+        if _composite >= boost_floor:
+            score *= boost_mult
+            # Fold the boost into binding_penalty so the breakdown reflects
+            # it as part of the binding-path multiplier rather than a
+            # separate surprise.
+            binding_penalty *= boost_mult
 
     _TARGET_PARAMS = 5_000_000
     param_penalty = 1.0
@@ -977,6 +1042,7 @@ def _compute_composite_generic(
         binding_auc_val=binding_auc,
         effective_ar_auc=_effective_ar_auc,
         ar_above_chance=ar_above_chance,
+        cfg=cfg,
     )
 
     if decompose:
@@ -1028,16 +1094,77 @@ def compute_composite_v8(
     return _compute_composite_generic(_V8_CONFIG, decompose=decompose, **kw)
 
 
+def compute_composite_v8_1(
+    *,
+    decompose: bool = False,
+    **kw: Any,
+) -> Union[float, Dict[str, Any]]:
+    """Composite score v8.1 -- capability-first rebalance (2026-04-16).
+
+    Same component weights as v8, but reshapes the binding signal from a
+    mostly-additive bonus into a multiplicative discriminator:
+
+    - All-binding-signals-below-soft-gate penalty: 0.80x -> 0.50x.
+      A ppl-dominant graph with zero binding now loses half its composite
+      instead of 20%. This is the change that stops ppl-only winners from
+      quietly occupying the investigation queue.
+    - Binding-composite boost: +15% when 0.4*ar + 0.3*ind + 0.3*bind >= 0.05.
+      Lets a graph that is 1-2 ppl behind the frontier but actually binds
+      outscore a ppl-only graph on the tuple.
+
+    Opt-in via ``ARIA_SCORING_VERSION=v8.1`` env var or by calling this
+    function directly. Historical rows stay on v8 for comparability.
+    """
+    return _compute_composite_generic(_V8_1_CONFIG, decompose=decompose, **kw)
+
+
 # ---------------------------------------------------------------------------
 # Version dispatcher
 # ---------------------------------------------------------------------------
-SCORING_VERSION = "v8"
+# Default to v8 for backward compatibility; ARIA_SCORING_VERSION sets the
+# initial value at process start. The dashboard can change it at runtime via
+# set_scoring_version() / API so operators don't need to restart the server
+# just to flip between v8 and v8.1.
+SUPPORTED_SCORING_VERSIONS: tuple[str, ...] = ("v7", "v8", "v8.1")
+# v8.1 is the capability-first default (2026-04-17): tightens the binding-all-
+# below penalty to 0.50× and rewards graphs that clear the binding_composite
+# floor. Set ARIA_SCORING_VERSION=v8 to reproduce historical scoring.
+SCORING_VERSION = os.environ.get("ARIA_SCORING_VERSION", "v8.1")
+
+
+def get_scoring_version() -> str:
+    """Return the currently active scoring version string."""
+    return SCORING_VERSION
+
+
+def set_scoring_version(version: str) -> str:
+    """Change the active scoring version at runtime.
+
+    Raises ``ValueError`` if the version is not one of
+    :data:`SUPPORTED_SCORING_VERSIONS`. Returns the new value on success.
+    Callers should treat this as process-global: all subsequent calls to
+    :func:`compute_composite` dispatch to the new version. Historical
+    rows already written under the previous version are not rescored.
+    """
+    global SCORING_VERSION
+    if version not in SUPPORTED_SCORING_VERSIONS:
+        raise ValueError(
+            f"unsupported scoring version {version!r}; "
+            f"expected one of {SUPPORTED_SCORING_VERSIONS}"
+        )
+    SCORING_VERSION = version
+    return SCORING_VERSION
 
 
 def compute_composite(
     *, decompose: bool = False, **kw: Any
 ) -> Union[float, Dict[str, Any]]:
     """Dispatch to the active scoring version."""
-    if SCORING_VERSION == "v8":
+    # Read the module attribute at call time so runtime changes via
+    # set_scoring_version() take effect without re-importing.
+    version = SCORING_VERSION
+    if version == "v8.1":
+        return compute_composite_v8_1(decompose=decompose, **kw)
+    if version == "v8":
         return compute_composite_v8(decompose=decompose, **kw)
     return compute_composite_v7(decompose=decompose, **kw)

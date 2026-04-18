@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,9 +22,8 @@ from research.scientist.intelligence.ml_corpus import (
 from research.synthesis.context_rules import find_byte_safety_violations
 from research.synthesis.graph_features import (
     _build_adjacency,
-    _canonicalize_op_name,
     enrich_with_op_stats,
-    extract_graph_features,
+    extract_graph_features_bundle,
     load_op_stats,
 )
 from research.synthesis.serializer import graph_from_json
@@ -172,23 +170,20 @@ def load_stage05_native_segment_corpus(
     db_path: str | Path,
 ) -> List[SegmentCorpusRow]:
     db_path = str(Path(db_path))
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            """
-            SELECT graph_json, graph_fingerprint, stage0_passed, stage05_passed, stage1_passed,
-                   loss_ratio, wikitext_perplexity, binding_auc, induction_auc, hellaswag_acc,
-                   timestamp
-            FROM program_results
-            WHERE TRIM(COALESCE(graph_json, '')) <> ''
-              AND graph_json <> '{}'
-              AND COALESCE(stage0_passed, 0) = 1
-              AND COALESCE(stage05_passed, 0) = 1
-            """
-        ).fetchall()
-    finally:
-        conn.close()
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(db_path)
+    rows = conn.execute(
+        """
+        SELECT graph_json, graph_fingerprint, stage0_passed, stage05_passed, stage1_passed,
+               loss_ratio, wikitext_perplexity, binding_auc, induction_auc, hellaswag_acc,
+               timestamp
+        FROM program_results
+        WHERE TRIM(COALESCE(graph_json, '')) <> ''
+          AND graph_json <> '{}'
+          AND COALESCE(stage0_passed, 0) = 1
+          AND COALESCE(stage05_passed, 0) = 1
+        """
+    ).fetchall()
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -297,18 +292,10 @@ def build_feature_matrices(
     baseline_feature_dicts: List[Dict[str, float]] = []
     for row in rows:
         graph_dict = _loads_graph_json(row.graph_json)
-        feats = extract_graph_features(graph_dict)
-        nodes = graph_dict.get("nodes") or {}
-        ops = [
-            str(node.get("op_name", ""))
-            for node in nodes.values()
-            if str(node.get("op_name", "")) != "input"
-        ]
+        feats, ops = extract_graph_features_bundle(graph_dict)
         for op in ops:
             if op:
-                feats[f"op_{_canonicalize_op_name(op)}"] = (
-                    feats.get(f"op_{_canonicalize_op_name(op)}", 0.0) + 1.0
-                )
+                feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
         enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
         baseline_feature_dicts.append(feats)
 

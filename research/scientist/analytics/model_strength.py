@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -440,11 +439,9 @@ def _compose_score(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_strength_datasets(db_path: str | Path) -> StrengthDatasets:
-    conn = sqlite3.connect(str(db_path))
-    try:
-        df = pd.read_sql_query(BASE_ANALYSIS_QUERY, conn)
-    finally:
-        conn.close()
+    from ..notebook.shared_conn import get_notebook_conn
+    conn = get_notebook_conn(str(db_path))
+    df = pd.read_sql_query(BASE_ANALYSIS_QUERY, conn)
 
     config_df = pd.DataFrame(
         [_parse_config_features(value) for value in df["config_json"]]

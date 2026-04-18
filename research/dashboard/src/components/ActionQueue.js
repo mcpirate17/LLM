@@ -106,6 +106,82 @@ function UndoTimer({ seconds }) {
   );
 }
 
+// ── Template Screening Control ────────────────────────────────────
+
+function TemplateScreeningControl({ onStart }) {
+  const [templates, setTemplates] = useState([]);
+  const [selected, setSelected] = useState('');
+  const [nPrograms, setNPrograms] = useState(50);
+  const [launching, setLaunching] = useState(false);
+
+  useEffect(() => {
+    apiCall('/api/template-names').then(r => r.ok ? r.json() : { names: [] })
+      .then(d => setTemplates(d.names || []))
+      .catch(() => {});
+  }, []);
+
+  const handleLaunch = async () => {
+    if (!selected) return;
+    setLaunching(true);
+    try {
+      await onStart?.({
+        mode: 'single',
+        n_programs: nPrograms,
+        forced_template: selected,
+        source: 'template_screening',
+      });
+    } catch { /* ignore */ }
+    setLaunching(false);
+  };
+
+  return (
+    <div style={{
+      display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
+      padding: '8px 10px', background: 'rgba(255,255,255,0.02)',
+      borderRadius: 6, border: '1px solid var(--border)',
+    }}>
+      <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+        Screen template:
+      </span>
+      <select
+        value={selected}
+        onChange={(e) => setSelected(e.target.value)}
+        style={{
+          fontSize: 11, padding: '3px 6px', flex: 1, minWidth: 140, maxWidth: 220,
+          background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+          border: '1px solid var(--border)', borderRadius: 4,
+        }}
+      >
+        <option value="">select template...</option>
+        {templates.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <input
+        type="number" min={5} max={200} value={nPrograms}
+        onChange={(e) => setNPrograms(Math.max(5, Math.min(200, parseInt(e.target.value) || 50)))}
+        style={{
+          fontSize: 11, padding: '3px 6px', width: 48, textAlign: 'center',
+          background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+          border: '1px solid var(--border)', borderRadius: 4,
+        }}
+        title="Number of programs"
+      />
+      <button
+        className="refresh-btn"
+        disabled={!selected || launching}
+        onClick={handleLaunch}
+        style={{
+          fontSize: 11, padding: '4px 10px', whiteSpace: 'nowrap',
+          borderColor: selected ? 'var(--accent-green)' : 'var(--border)',
+          color: selected ? 'var(--accent-green)' : 'var(--text-muted)',
+          opacity: launching ? 0.6 : 1,
+        }}
+      >
+        {launching ? 'Starting...' : 'Run'}
+      </button>
+    </div>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────
 
 function ActionQueue({
@@ -394,6 +470,11 @@ function ActionQueue({
             </div>
           );
         })
+      )}
+
+      {/* Quick template screening */}
+      {!isRunning && !autonomousMode && (
+        <TemplateScreeningControl onStart={onStart} />
       )}
 
       {/* Controls row: autonomous mode + activity toggle */}

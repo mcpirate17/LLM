@@ -33,7 +33,6 @@ _ref_lr_ceiling  # notebook_misc.py get_investigation_eligible
 _exc_type  # perf.py __exit__
 _config_device  # shared_utils.py resolve_device
 _use_adaptive_synthesis  # grammar.py generate_weighted_batch
-eos_token_id  # scale_test.py _model_generate interface parameter
 hellaswag_acc_screening  # leaderboard_scoring.py compute_composite_score API param
 routing_fast_fraction  # leaderboard_scoring.py compute_composite_score API param
 routing_balance_score  # leaderboard_scoring.py compute_composite_score API param

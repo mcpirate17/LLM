@@ -61,7 +61,9 @@ class _ContinuousLoopMixin:
                 e,
                 traceback.format_exc(),
             )
-            session_run_id = str(getattr(config, "resume_experiment_id", "") or "continuous")
+            session_run_id = str(
+                getattr(config, "resume_experiment_id", "") or "continuous"
+            )
             self._publish_continuous_session_event(
                 event_type="continuous_session_failed",
                 run_id=session_run_id,
@@ -793,6 +795,28 @@ class _ContinuousLoopMixin:
         return rec
 
     @staticmethod
+    def _apply_periodic_refinement_override(
+        rec: Dict[str, Any], n_experiments: int
+    ) -> Dict[str, Any]:
+        """Force refinement mode every 5th experiment.
+
+        Periodically re-exploiting proven winners prevents the pipeline from
+        spending too long in pure exploration. Only triggers when the current
+        mode is synthesis/novelty/evolve (never overrides investigation or
+        validation).
+        """
+        if n_experiments > 0 and (n_experiments + 1) % 5 == 0:
+            if rec.get("mode") not in {"investigation", "validation", "refinement"}:
+                rec["mode"] = "refinement"
+                rec["reasoning"] = (
+                    f"Periodic refinement trigger (experiment {n_experiments + 1}, "
+                    f"every 5th). Re-exploiting Stage-1 winners. "
+                    f"(Original: {rec.get('reasoning', '')})"
+                )
+                rec["confidence"] = max(float(rec.get("confidence", 0.5) or 0.5), 0.75)
+        return rec
+
+    @staticmethod
     def _apply_exploration_first_override(
         rec: Dict[str, Any], n_experiments: int
     ) -> Dict[str, Any]:
@@ -973,6 +997,7 @@ class _ContinuousLoopMixin:
                 rec = compression_override
             rec, trigger = self._apply_mode_selection_safety_valve(rec, nb, config)
             rec = self._apply_mode_selection_refinement(rec, nb, config)
+            rec = self._apply_periodic_refinement_override(rec, n_experiments)
             rec = self._apply_exploration_first_override(rec, n_experiments)
             self._record_mode_selection(nb, rec, selection_state, trigger)
             return rec

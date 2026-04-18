@@ -20,6 +20,23 @@ import time
 from typing import Dict, Optional
 
 
+def _fetch_template_stats(db_path: str, query: str) -> list[tuple]:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn.execute(query).fetchall()
+
+
+def _normalize_weight_map(weights: Dict[str, float]) -> Dict[str, float]:
+    if not weights:
+        return weights
+    max_w = max(weights.values())
+    min_w = min(weights.values())
+    span = max_w - min_w if max_w > min_w else 1.0
+    for key, value in list(weights.items()):
+        weights[key] = 0.5 + 7.5 * (value - min_w) / span
+    return weights
+
+
 class ExplorationScheduler:
     """UCB1-based template exploration scheduler.
 
@@ -62,13 +79,11 @@ class ExplorationScheduler:
             return self._cache
 
         try:
-            conn = sqlite3.connect(self._db_path, timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            rows = conn.execute(
+            rows = _fetch_template_stats(
+                self._db_path,
                 "SELECT template_name, eval_count, s1_pass_count, mean_loss "
-                "FROM template_stats"
-            ).fetchall()
-            conn.close()
+                "FROM template_stats",
+            )
         except Exception:
             return self._cache or {}
 
@@ -100,17 +115,9 @@ class ExplorationScheduler:
                 )
                 weights[tpl_name] = reward + ucb_bonus
 
-        # Normalize to [0.5, 8.0] range
-        if weights:
-            max_w = max(weights.values())
-            min_w = min(weights.values())
-            span = max_w - min_w if max_w > min_w else 1.0
-            for tpl in weights:
-                weights[tpl] = 0.5 + 7.5 * (weights[tpl] - min_w) / span
-
-        self._cache = weights
+        self._cache = _normalize_weight_map(weights)
         self._cache_expires = now + self._cache_ttl
-        return weights
+        return self._cache
 
     def invalidate_cache(self) -> None:
         """Force next step() to reload from DB."""
@@ -165,15 +172,7 @@ class ThompsonScheduler:
             theta = self._rng.betavariate(alpha, beta)
             weights[tpl_name] = theta
 
-        # Normalize to [0.5, 8.0] range
-        if weights:
-            max_w = max(weights.values())
-            min_w = min(weights.values())
-            span = max_w - min_w if max_w > min_w else 1.0
-            for tpl in weights:
-                weights[tpl] = 0.5 + 7.5 * (weights[tpl] - min_w) / span
-
-        return weights
+        return _normalize_weight_map(weights)
 
     def _load_stats(self) -> Dict[str, tuple]:
         """Load Beta parameters from template_stats table.
@@ -185,12 +184,10 @@ class ThompsonScheduler:
             return self._cache
 
         try:
-            conn = sqlite3.connect(self._db_path, timeout=5.0)
-            conn.execute("PRAGMA busy_timeout=5000")
-            rows = conn.execute(
-                "SELECT template_name, eval_count, s1_pass_count FROM template_stats"
-            ).fetchall()
-            conn.close()
+            rows = _fetch_template_stats(
+                self._db_path,
+                "SELECT template_name, eval_count, s1_pass_count FROM template_stats",
+            )
         except Exception:
             return self._cache or {}
 

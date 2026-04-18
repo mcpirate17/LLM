@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
-from .baseline import _BaselineTransformer
+# `_BaselineTransformer` was renamed to public `BaselineTransformer` and
+# moved from `baseline` to `reference_training` during the baseline-vs-
+# reference module split.
+from .reference_training import BaselineTransformer as _BaselineTransformer
 from .fingerprint_runtime import compute_fingerprint
 from .fingerprint_scoring import build_novelty_reference_version
 

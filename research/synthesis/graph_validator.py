@@ -21,11 +21,8 @@ from typing import FrozenSet, Optional
 
 import numpy as np
 
-from .dim_flow_support import (
-    FULL_DIM_OPS,
-    KV_CACHE_BREAKING_OPS,
-    build_dim_flow_inputs,
-)
+from .dim_flow_opcode_tables import FULL_DIM_OPS, KV_CACHE_BREAKING_OPS
+from .dim_flow_support import build_dim_flow_inputs
 from .graph import ComputationGraph
 from .native_analysis import summarize_dim_flow, validate_edges
 from .native_dim_flow import dead_parameterized_mask

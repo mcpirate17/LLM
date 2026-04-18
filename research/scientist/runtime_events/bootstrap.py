@@ -62,11 +62,10 @@ def get_runtime_event_services(
         registry = RuntimeLifecycleRegistry()
         _replay_registry_from_spool(registry, spool)
         bus.subscribe(registry.consume)
-        projector_conn = sqlite3.connect(
-            str(Path(notebook_path).resolve()), check_same_thread=False
+        from ..notebook.native_conn import NativeConnectionWrapper
+        projector_conn = NativeConnectionWrapper(
+            str(Path(notebook_path).resolve())
         )
-        projector_conn.execute("PRAGMA synchronous=NORMAL")
-        projector_conn.execute("PRAGMA busy_timeout=15000")
         lifecycle_projector = LifecycleProjector(projector_conn, spool=spool)
         projector_worker = ProjectorWorker(lifecycle_projector.replay_once)
         services = RuntimeEventServices(
@@ -155,11 +154,13 @@ def _replay_registry_from_spool(
     for record in spool.replay():
         try:
             registry.consume(record.event)
-        except LifecycleConflictError:
-            logger.warning(
-                "Ignoring conflicting lifecycle event during registry replay: %s",
+        except LifecycleConflictError as exc:
+            logger.debug(
+                "Ignoring conflicting lifecycle event during registry replay: event_id=%s run_id=%s type=%s reason=%s",
                 record.event.event_id,
-                exc_info=True,
+                record.event.run_id,
+                record.event.event_type,
+                exc,
             )
 
 
@@ -177,7 +178,7 @@ def _shutdown_services(services: RuntimeEventServices) -> None:
     except Exception:
         logger.debug("Failed to stop projector worker cleanly", exc_info=True)
     try:
-        services.projector_conn.close()
+        services.projector_conn.close()  # No-op for NativeConnectionWrapper
     except Exception:
         logger.debug("Failed to close projector connection cleanly", exc_info=True)
 

@@ -47,8 +47,9 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
   const analyticsLoadedAtRef = useRef(0);
   const coreRetryDelayRef = useRef(0);
   const coreRetryAfterRef = useRef(0);
+  const fullDashboardModeRef = useRef(false);
 
-  const fetchCoreData = useCallback(async ({ force = false } = {}) => {
+  const fetchCoreData = useCallback(async ({ force = false, includeFullDashboard = false } = {}) => {
     if (!force && coreRetryAfterRef.current > Date.now()) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
@@ -56,8 +57,11 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     abortRef.current = controller;
 
     try {
+      const dashboardEndpoint = (includeFullDashboard || fullDashboardModeRef.current)
+        ? `/api/dashboard`
+        : `/api/dashboard/summary`;
       const [dashRes, cycleRes, historyRes] = await Promise.all([
-        apiCall(`/api/dashboard/summary`, { signal: controller.signal }),
+        apiCall(dashboardEndpoint, { signal: controller.signal }),
         apiCall(`/api/aria/cycle-status`, { signal: controller.signal }).catch(() => ({ ok: false })),
         apiCall(`/api/aria/cycle-history?n=60&compact=1`, { signal: controller.signal }).catch(() => ({ ok: false })),
       ]);
@@ -232,6 +236,10 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
     }
   }, []);
 
+  const setDashboardDetailMode = useCallback((enabled) => {
+    fullDashboardModeRef.current = Boolean(enabled);
+  }, []);
+
   const sseTimersRef = useRef([]);
   const debouncedRefresh = useCallback(() => {
     sseTimersRef.current.push(setTimeout(fetchCoreData, 2000));
@@ -271,6 +279,7 @@ export function AriaDataProvider({ apiBase, isRunning, children }) {
       error,
       lastUpdated,
       refreshSharedData: fetchCoreData,
+      setDashboardDetailMode,
       refreshAnalyticsData: fetchAnalyticsData,
       fetchTabData,
       invalidateTabCache,

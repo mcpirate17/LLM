@@ -187,7 +187,11 @@ OP_NAME_ALIASES: Dict[str, str] = {
     "adaptive_recursion": "depth_weighted_proj",
     "cascade": "learned_token_gate",
     "compression_mixture_experts": "dual_compression_blend",
-    "difficulty_scorer": "token_difficulty_proj",
+    # NOTE: removed "difficulty_scorer": "token_difficulty_proj" alias — target
+    # was never registered, so get_primitive("difficulty_scorer") raised KeyError
+    # rather than acting as a back-compat shim. Old serialized graphs using
+    # "difficulty_scorer" should be re-fingerprinted to use token_class_proj /
+    # token_entropy depending on intent.
     "early_exit": "confidence_token_gate",
     "entropy_score": "token_entropy",
     "mixed_recursion_gate": "score_depth_blend",
@@ -834,6 +838,90 @@ _register(
         has_params=True,
         param_formula="D*D*4",
         description="Gated delta rule: linear recurrence with decay + update gates for targeted state writes (ICLR 2025)",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "difficulty_routed_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*5+D+1",
+        description="Difficulty-routed attention: dense causal attention plus learned difficulty gate and easy-path projection",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "strided_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4",
+        description="Dilated/strided attention: dense-query attention over stride-subsampled key/value positions",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "gated_progressive_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*5+D",
+        description="Progressive attention with learned output gate over dense causal attention",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "gated_linear_attention",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*5",
+        description="Gated Linear Attention (GLA): linear attention with data-dependent decay gates for adaptive memory control, O(nd^2) cost",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "long_conv_hyena",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*3+D*33+64",
+        description="Hyena-style long convolution: FFT convolution with input/output projections and an implicit kernel MLP",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "associative_memory",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*4+1",
+        description="Modern Hopfield associative memory implemented as dense causal retrieval with a learnable temperature",
+        binding_range_class="full",
+    )
+)
+_register(
+    PrimitiveOp(
+        "mixture_of_recursions",
+        OpCategory.MIXING,
+        1,
+        "identity",
+        has_params=True,
+        param_formula="D*D*6+D*6+4",
+        description="Mixture-of-Recursions: four-step shared recurrent FFN stack with a soft depth router",
         binding_range_class="full",
     )
 )
@@ -1766,6 +1854,35 @@ OP_WIRING_RULES: Dict[str, dict] = {
             },
         },
     },
+    # Retrieval-family pair hints (advisory, used by role-slot-aware samplers).
+    # When a sampler places one of these ops into a ``global_retrieval`` or
+    # ``binding_read`` role slot, ``preferred_pair_consumer`` names the op
+    # that turns a bare bilinear into a real content-addressed retrieval. The
+    # validator does not enforce this — it is a bias the grammar can consult
+    # when picking the follow-on op. Pairing `matmul → softmax` produces
+    # softmax-attention, `cosine_similarity → gather_topk` produces nearest-
+    # neighbor retrieval, `outer_product → reduce_sum` produces a binding
+    # write. Without these pairs, the op is legal but retrieval-dead.
+    "matmul": {
+        "preferred_pair_consumer": "softmax",
+        "pair_alternatives": ["gather_topk", "mul", "softmax_attention"],
+        "retrieval_role": "bilinear",
+    },
+    "outer_product": {
+        "preferred_pair_consumer": "reduce_sum",
+        "pair_alternatives": ["mul", "add"],
+        "retrieval_role": "bind_write",
+    },
+    "cosine_similarity": {
+        "preferred_pair_consumer": "gather_topk",
+        "pair_alternatives": ["softmax", "mul"],
+        "retrieval_role": "similarity",
+    },
+    "gather_topk": {
+        "preferred_pair_consumer": "linear_proj",
+        "pair_alternatives": ["mul", "add"],
+        "retrieval_role": "retrieve",
+    },
     # Ops that MUST have residual bypass (information-destructive)
     "adjacent_token_merge": {"requires_residual": True},
     "depth_token_mask": {"requires_residual": True},
@@ -1780,6 +1897,28 @@ OP_WIRING_RULES: Dict[str, dict] = {
 def get_wiring_rule(op_name: str) -> Optional[dict]:
     """Get wiring constraints for an op, or None if unconstrained."""
     return OP_WIRING_RULES.get(op_name)
+
+
+# Retrieval-family ops that should be paired with a follow-on consumer to
+# actually do content-addressed retrieval. Used by the capability-first
+# sampler to boost motifs that include both halves of the pair.
+RETRIEVAL_PAIR_OPS: frozenset = frozenset(
+    {"matmul", "outer_product", "cosine_similarity", "gather_topk"}
+)
+
+
+def retrieval_pair_for(op_name: str) -> Optional[str]:
+    """Return the preferred pair consumer for a retrieval-family op, if any.
+
+    ``matmul → softmax`` turns a bilinear into softmax-attention.
+    ``cosine_similarity → gather_topk`` turns similarity into NN retrieval.
+    ``outer_product → reduce_sum`` turns a tensor outer into a binding write.
+    Returns None for ops that have no paired hint.
+    """
+    rule = OP_WIRING_RULES.get(op_name)
+    if rule is None:
+        return None
+    return rule.get("preferred_pair_consumer")
 
 
 def validate_wiring(graph, errors: Optional[List[str]] = None) -> List[str]:
@@ -1861,9 +2000,14 @@ def default_algebraic_type_for_space(space: str) -> AlgebraicType:
 # ── Helper Functions ──────────────────────────────────────────────────
 
 
+def canonicalize_op_name(name: str) -> str:
+    """Return the canonical primitive name for a possibly aliased op."""
+    return OP_NAME_ALIASES.get(name, name)
+
+
 def get_primitive(name: str) -> PrimitiveOp:
     """Get a primitive by name, resolving aliases for renamed ops."""
-    resolved = OP_NAME_ALIASES.get(name, name)
+    resolved = canonicalize_op_name(name)
     if resolved not in PRIMITIVE_REGISTRY:
         # Lazily register mathspace ops on first miss
         from ..mathspaces.registry import register_all_mathspaces

@@ -3,9 +3,12 @@ from __future__ import annotations
 """Auto-extracted mixin for LabNotebook."""
 
 import json
+import sqlite3
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+
+from ._shared import LOGGER
 
 
 class _HealerMixin:
@@ -28,26 +31,33 @@ class _HealerMixin:
     ) -> str:
         task_id = f"heal-{uuid.uuid4().hex[:10]}"
         now = time.time()
-        self.conn.execute(
-            """INSERT INTO healer_tasks
-            (task_id, timestamp, experiment_id, trigger_type, trigger_payload_json,
-             scope, reproduction_steps_json, acceptance_tests_json, model_endpoint,
-             sandbox_policy_json, state)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
-            (
-                task_id,
-                now,
-                experiment_id,
-                trigger_type,
-                json.dumps(trigger_payload or {}),
-                scope,
-                json.dumps(reproduction_steps or []),
-                json.dumps(acceptance_tests or []),
-                model_endpoint,
-                json.dumps(sandbox_policy or {}),
-            ),
-        )
-        self._maybe_commit()
+        try:
+            self.conn.execute(
+                """INSERT INTO healer_tasks
+                (task_id, timestamp, experiment_id, trigger_type, trigger_payload_json,
+                 scope, reproduction_steps_json, acceptance_tests_json, model_endpoint,
+                 sandbox_policy_json, state)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                (
+                    task_id,
+                    now,
+                    experiment_id,
+                    trigger_type,
+                    json.dumps(trigger_payload or {}),
+                    scope,
+                    json.dumps(reproduction_steps or []),
+                    json.dumps(acceptance_tests or []),
+                    model_endpoint,
+                    json.dumps(sandbox_policy or {}),
+                ),
+            )
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Healer task write failed for experiment %s; continuing without notebook persistence: %s",
+                experiment_id or "unscoped",
+                exc,
+            )
         return task_id
 
     def update_healer_task(
@@ -93,27 +103,42 @@ class _HealerMixin:
         payload: Optional[Dict[str, Any]] = None,
     ) -> str:
         event_id = str(uuid.uuid4())[:12]
-        self.conn.execute(
-            """INSERT INTO healer_task_events
-            (event_id, task_id, timestamp, state, message, payload_json)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                event_id,
+        try:
+            self.conn.execute(
+                """INSERT INTO healer_task_events
+                (event_id, task_id, timestamp, state, message, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    task_id,
+                    time.time(),
+                    state,
+                    message,
+                    json.dumps(payload or {}),
+                ),
+            )
+            self._maybe_commit()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Healer event write failed for task %s; continuing without notebook persistence: %s",
                 task_id,
-                time.time(),
-                state,
-                message,
-                json.dumps(payload or {}),
-            ),
-        )
-        self._maybe_commit()
+                exc,
+            )
         return event_id
 
     def get_healer_task(self, task_id: str) -> Optional[Dict[str, Any]]:
-        row = self.conn.execute(
-            "SELECT * FROM healer_tasks WHERE task_id = ?",
-            (task_id,),
-        ).fetchone()
+        try:
+            row = self.conn.execute(
+                "SELECT * FROM healer_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Healer task query failed for %s; returning no task: %s",
+                task_id,
+                exc,
+            )
+            return None
         if row is None:
             return None
         out = dict(row)
@@ -133,12 +158,19 @@ class _HealerMixin:
         return out
 
     def get_recent_healer_tasks(self, limit: int = 20) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            """SELECT * FROM healer_tasks
-               ORDER BY timestamp DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
+        try:
+            rows = self.conn.execute(
+                """SELECT * FROM healer_tasks
+                   ORDER BY timestamp DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Recent healer task query failed; returning empty results: %s",
+                exc,
+            )
+            return []
         out: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)

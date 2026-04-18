@@ -246,6 +246,26 @@ function CompareView({ comparisonList, onRemoveProgram, onSelectProgram }) {
                 {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.induction_auc, 3)}</td>)}
               </tr>
               <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>AR AUC</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.ar_auc, 3)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>Binding AUC</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.binding_auc, 3)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>BLiMP</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.blimp_overall_accuracy, 3)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>WikiText PPL</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.wikitext_perplexity, 1)}</td>)}
+              </tr>
+              <tr>
+                <td style={{ padding: 8, fontWeight: 600 }}>Composite</td>
+                {details.map(d => <td key={d.result_id} style={{ padding: 8, textAlign: 'center' }}>{fmt(d.program?.composite_score, 1)}</td>)}
+              </tr>
+              <tr>
                 <td style={{ padding: 8, fontWeight: 600 }}>Params</td>
                 {details.map(d => {
                   const params = Number(d.program?.param_count);

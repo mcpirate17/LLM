@@ -553,7 +553,14 @@ class _LeaderboardMixin:
         )
         params.append(oversample)
 
-        rows = self.conn.execute(query, params).fetchall()
+        try:
+            rows = self.conn.execute(query, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning(
+                "Leaderboard query failed; returning empty results: %s",
+                exc,
+            )
+            return []
         results = []
         for r in rows:
             d = dict(r)

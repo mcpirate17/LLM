@@ -24,7 +24,7 @@ use crate::executor::{
 use crate::ffi;
 use crate::graph::GraphIR;
 use crate::intelligence::{
-    extract_topology_features_json, train_interaction_model_native,
+    extract_edge_op_pairs_json, extract_topology_features_json, train_interaction_model_native,
     train_op_embeddings_epoch_native,
 };
 use crate::notebook_graph::{extract_graph_feature_payload_json, extract_graph_ops_json};
@@ -474,6 +474,33 @@ fn extract_topology_features_native(
 }
 
 #[pyfunction]
+fn extract_topology_features_batch_native(
+    graphs: Vec<String>,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> PyResult<Vec<String>> {
+    graphs
+        .into_iter()
+        .map(|graph| {
+            extract_topology_features_json(
+                &graph,
+                op_profiles_json,
+                pair_stability_json,
+                op_metadata_json,
+            )
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+        })
+        .collect()
+}
+
+#[pyfunction]
+fn extract_edge_op_pairs_native(graph_json: &str) -> PyResult<String> {
+    extract_edge_op_pairs_json(graph_json)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
 fn train_interaction_model_native_py<'py>(
     py: Python<'py>,
     u: PyReadonlyArrayDyn<'py, f64>,
@@ -759,6 +786,18 @@ fn execute_graph_with_stats_compiled_arrays<'py>(
     Ok(dict.into())
 }
 
+#[pyfunction]
+fn execute_graph_compiled_arrays_handle<'py>(
+    py: Python<'py>,
+    graph: PyRef<'py, CompiledGraphHandle>,
+    input: PyReadonlyArrayDyn<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let input_slice = readonly_array_slice(&input)?;
+    let result = execute_with_arena(&graph.graph, &NativeKernelDispatch, input_slice)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(result.output.into_pyarray_bound(py))
+}
+
 /// Execute a graph IR using multiple distinct input buffers.
 ///
 /// Inputs are bound to input nodes in ascending input-node order.
@@ -787,6 +826,19 @@ fn execute_graph_multi_input_arrays<'py>(
     Ok(result.output.into_pyarray_bound(py))
 }
 
+/// Execute a compiled graph IR using multiple contiguous float32 array inputs.
+#[pyfunction]
+fn execute_graph_multi_input_compiled_arrays_handle<'py>(
+    py: Python<'py>,
+    graph: PyRef<'py, CompiledGraphHandle>,
+    inputs: Vec<PyReadonlyArrayDyn<'py, f32>>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let input_slices = readonly_array_slices(&inputs)?;
+    let result = execute_with_arena_multi_input(&graph.graph, &NativeKernelDispatch, &input_slices)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(result.output.into_pyarray_bound(py))
+}
+
 /// Execute a graph IR with distinct input buffers and return arena stats.
 #[pyfunction]
 fn execute_graph_multi_input_with_stats(
@@ -802,6 +854,29 @@ fn execute_graph_multi_input_with_stats(
 
     let dict = PyDict::new_bound(py);
     dict.set_item("output", result.output)?;
+    dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
+    dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
+    dict.set_item("arena_alloc_count", result.arena_stats.arena_alloc_count)?;
+    dict.set_item(
+        "heap_fallback_count",
+        result.arena_stats.heap_fallback_count,
+    )?;
+    Ok(dict.into())
+}
+
+/// Execute a compiled graph IR with contiguous float32 array inputs and return arena stats.
+#[pyfunction]
+fn execute_graph_multi_input_compiled_arrays_with_stats<'py>(
+    py: Python<'py>,
+    graph: PyRef<'py, CompiledGraphHandle>,
+    inputs: Vec<PyReadonlyArrayDyn<'py, f32>>,
+) -> PyResult<PyObject> {
+    let input_slices = readonly_array_slices(&inputs)?;
+    let result = execute_with_arena_multi_input(&graph.graph, &NativeKernelDispatch, &input_slices)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("output", result.output.into_pyarray_bound(py))?;
     dict.set_item("arena_bytes_used", result.arena_stats.arena_bytes_used)?;
     dict.set_item("arena_capacity", result.arena_stats.arena_capacity)?;
     dict.set_item("arena_alloc_count", result.arena_stats.arena_alloc_count)?;
@@ -1305,17 +1380,28 @@ fn aria_scheduler(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_graph_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(build_predictor_training_corpus, m)?)?;
     m.add_function(wrap_pyfunction!(extract_topology_features_native, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_topology_features_batch_native, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_edge_op_pairs_native, m)?)?;
     m.add_function(wrap_pyfunction!(train_interaction_model_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(train_op_embeddings_epoch_native_py, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_with_stats, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_with_stats_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_with_stats_compiled_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(execute_graph_compiled_arrays_handle, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_multi_input, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_multi_input_with_stats, m)?)?;
     m.add_function(wrap_pyfunction!(execute_graph_multi_input_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(
+        execute_graph_multi_input_compiled_arrays_handle,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         execute_graph_multi_input_arrays_with_stats,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        execute_graph_multi_input_compiled_arrays_with_stats,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(execute_graph_forward_saved, m)?)?;

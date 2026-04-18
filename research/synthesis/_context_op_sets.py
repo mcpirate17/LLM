@@ -68,6 +68,11 @@ _MIXING_OPS: FrozenSet[str] = frozenset(
         "diff_attention",
         "local_window_attn",
         "clifford_attention",
+        "difficulty_routed_attention",
+        "strided_attention",
+        "gated_progressive_attention",
+        "gated_linear_attention",
+        "associative_memory",
     }
 )
 
@@ -120,6 +125,13 @@ _CAUSAL_SENSITIVE_OPS: FrozenSet[str] = frozenset(
         "conv1d_seq",
         "integral_kernel",
         "transpose_sd",
+        "difficulty_routed_attention",
+        "strided_attention",
+        "gated_progressive_attention",
+        "gated_linear_attention",
+        "long_conv_hyena",
+        "associative_memory",
+        "mixture_of_recursions",
     }
 )
 
@@ -142,6 +154,13 @@ _FULL_DIM_OPS: FrozenSet[str] = frozenset(
         "padic_expand",
         "softmax_attention",
         "gated_delta",
+        "difficulty_routed_attention",
+        "strided_attention",
+        "gated_progressive_attention",
+        "gated_linear_attention",
+        "long_conv_hyena",
+        "associative_memory",
+        "mixture_of_recursions",
         "low_rank_proj",
         "basis_expansion",
         "ternary_projection",

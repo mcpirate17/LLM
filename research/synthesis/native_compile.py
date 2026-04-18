@@ -34,10 +34,7 @@ def try_compile_native_subgraph_layer(
 
     layer = layer_factory(graph)
     try:
-        flat_ops = []
-        ir_node_ids = []
-        if graph_has_bound_params(graph):
-            flat_ops, ir_node_ids = _bound_dispatcher_inputs_from_layer(layer, graph)
+        flat_ops, ir_node_ids = _bound_dispatcher_inputs_from_layer(layer, graph)
         dispatcher = _select_native_subgraph_dispatcher(
             graph,
             supported_ops=supported_ops,

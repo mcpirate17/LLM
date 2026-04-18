@@ -497,7 +497,10 @@ def _op_depth_token_mask(module, inputs, config):
     x = inputs[0]
     B, S, D = x.shape
     capacity = float(config.get("capacity_factor", 0.75))
-    scores = _routing_scores_from_x(x)
+    if hasattr(module, "router_weight"):
+        scores = _safe_linear(x, module.router_weight.to(x.dtype)).squeeze(-1)
+    else:
+        scores = _routing_scores_from_x(x)
     # Causal sparsity: deterministic stride-based mask that keeps
     # ~capacity fraction of positions without peeking at future tokens.
     # Every position knows its own index — no future information needed.

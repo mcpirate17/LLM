@@ -8,6 +8,8 @@ import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from .primitives import canonicalize_op_name
+
 # Configuration file location
 _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent.parent
@@ -62,10 +64,11 @@ class ComponentRegistry:
         )
 
     def get_primitive_name(self, component_type: str) -> str:
-        """Map component type to primitive name (leaf extraction)."""
+        """Map component type to a canonical primitive name when possible."""
         if not component_type:
             return "identity"
-        return component_type.split("/")[-1]
+        leaf_id = component_type.split("/")[-1]
+        return canonicalize_op_name(leaf_id)
 
     def is_passthrough(self, component_type: str) -> bool:
         """Check if component is a passthrough (identity)."""

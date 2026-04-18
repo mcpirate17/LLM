@@ -79,6 +79,13 @@ _OP_ROLE_MAP: Dict[str, OpRole] = {
     "latent_attention_compressor": OpRole.MIX,
     "diff_attention": OpRole.MIX,
     "gated_delta": OpRole.MIX,
+    "difficulty_routed_attention": OpRole.MIX,
+    "strided_attention": OpRole.MIX,
+    "gated_progressive_attention": OpRole.MIX,
+    "gated_linear_attention": OpRole.MIX,
+    "long_conv_hyena": OpRole.MIX,
+    "associative_memory": OpRole.MIX,
+    "mixture_of_recursions": OpRole.MIX,
     "conv_only": OpRole.MIX,
     "multi_head_mix": OpRole.MIX,
     # ── ROUTE: information flow control ─────────────────────────────

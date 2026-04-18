@@ -174,6 +174,10 @@ class TestFullBindingProbeResult:
             binding_auc=0.18,
             binding_distance_accuracies={5: 0.9, 10: 0.7, 20: 0.5},
             binding_elapsed_ms=3000.0,
+            binding_auc_curriculum=0.27,
+            binding_distance_accuracies_curriculum={4: 0.3, 8: 0.2},
+            binding_curriculum_elapsed_ms=4000.0,
+            binding_curriculum_train_steps=800,
         )
         defaults.update(overrides)
         return FullBindingProbeResult(**defaults)
@@ -191,6 +195,7 @@ class TestFullBindingProbeResult:
         d = r.to_result_dict()
         assert d["binding_auc"] == 0.18
         assert isinstance(d["binding_distance_accuracies"], dict)
+        assert d["binding_auc_curriculum"] == 0.27
 
     def test_to_result_dict_merges_induction_metadata(self):
         r = self._make_result()

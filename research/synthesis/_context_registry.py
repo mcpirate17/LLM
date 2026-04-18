@@ -1032,6 +1032,15 @@ CONTEXT_RULES["shared_basis_proj"] = ContextRule(
 )
 
 
+# Built once at module load so the grammar can enforce the contract without
+# re-scanning CONTEXT_RULES on every graph. Audit fix 2026-04-17: this field
+# was declared on 30+ ops but never enforced anywhere — every "requires
+# residual context" claim was nominal until now.
+REQUIRES_RESIDUAL_CONTEXT_OPS: frozenset[str] = frozenset(
+    name for name, rule in CONTEXT_RULES.items() if rule.requires_residual_context
+)
+
+
 # ── Query helpers ─────────────────────────────────────────────────
 
 

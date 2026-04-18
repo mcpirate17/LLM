@@ -10,6 +10,10 @@ from ..thresholds import (
     HELLASWAG_RANDOM_CHANCE_GATE,
     UNDERSTANDING_MIN_BINDING,
     UNDERSTANDING_MIN_DIAGNOSTIC,
+    UNDERSTANDING_MIN_HELLASWAG,
+    UNDERSTANDING_MIN_SIGNALS,
+    UNDERSTANDING_SOFT_BINDING,
+    UNDERSTANDING_SOFT_DIAGNOSTIC,
     VALIDATION_BEST_LR_HARD,
 )
 from ._types import RunConfig
@@ -118,6 +122,13 @@ def sparse_dense_learning_signal(
 def understanding_gate_metrics(
     understanding: Dict[str, float],
 ) -> tuple[bool, float, float, float]:
+    """Investigation→validation gate.
+
+    Requires at least UNDERSTANDING_MIN_SIGNALS (default: 2) of the three
+    capability signals to clear their *strict* thresholds. This replaces the
+    pre-2026-04-17 OR-gate, which let a single barely-above-random signal
+    promote a model that lacked all other capabilities.
+    """
     diagnostic = float(understanding.get("diagnostic_score", 0.0) or 0.0)
     binding_composite = (
         0.4 * float(understanding.get("ar_auc", 0.0) or 0.0)
@@ -125,12 +136,63 @@ def understanding_gate_metrics(
         + 0.3 * float(understanding.get("binding_auc", 0.0) or 0.0)
     )
     hellaswag = float(understanding.get("hellaswag_acc", 0.0) or 0.0)
-    passes = (
-        diagnostic >= UNDERSTANDING_MIN_DIAGNOSTIC
-        or binding_composite >= UNDERSTANDING_MIN_BINDING
-        or hellaswag > HELLASWAG_RANDOM_CHANCE_GATE
+    signals_passed = sum(
+        (
+            diagnostic >= UNDERSTANDING_MIN_DIAGNOSTIC,
+            binding_composite >= UNDERSTANDING_MIN_BINDING,
+            hellaswag >= UNDERSTANDING_MIN_HELLASWAG,
+        )
     )
+    passes = signals_passed >= UNDERSTANDING_MIN_SIGNALS
     return passes, diagnostic, binding_composite, hellaswag
+
+
+def screening_understanding_filter(
+    understanding: Dict[str, float],
+) -> tuple[bool, str]:
+    """Screening→investigation filter (best-effort).
+
+    Probe scores are usually NULL at screening time (probes run during
+    investigation). This filter only blocks a candidate when all three
+    capability signals have been measured AND all are below the *soft*
+    floors — i.e., this candidate has been investigated before and is
+    known-incapable. Returns ``(allow, reason)``.
+
+    Allow when:
+      - any signal is None/missing (no measurement) — let normal screening proceed
+      - any one signal exceeds its soft floor — capability evidence exists
+    Block when:
+      - all three measurements are present AND below their soft floors
+    """
+    diag_raw = understanding.get("diagnostic_score")
+    ar_raw = understanding.get("ar_auc")
+    ind_raw = understanding.get("induction_auc")
+    bind_raw = understanding.get("binding_auc")
+    hella_raw = understanding.get("hellaswag_acc")
+
+    if diag_raw is None or hella_raw is None or (
+        ar_raw is None and ind_raw is None and bind_raw is None
+    ):
+        return True, "no_probe_data"
+
+    diagnostic = float(diag_raw or 0.0)
+    binding_composite = (
+        0.4 * float(ar_raw or 0.0)
+        + 0.3 * float(ind_raw or 0.0)
+        + 0.3 * float(bind_raw or 0.0)
+    )
+    hellaswag = float(hella_raw or 0.0)
+
+    if (
+        diagnostic < UNDERSTANDING_SOFT_DIAGNOSTIC
+        and binding_composite < UNDERSTANDING_SOFT_BINDING
+        and hellaswag <= HELLASWAG_RANDOM_CHANCE_GATE
+    ):
+        return False, (
+            f"all_signals_near_zero(diag={diagnostic:.3f},"
+            f"bind={binding_composite:.3f},hella={hellaswag:.3f})"
+        )
+    return True, "above_soft_floor"
 
 
 def strong_investigation_candidates(

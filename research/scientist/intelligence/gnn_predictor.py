@@ -42,6 +42,7 @@ from .ml_corpus import (
     CorpusIntegrityError,
     build_dense_feature_matrix,
     grouped_stratified_split,
+    load_deduped_graph_training_rows,
     load_screening_predictor_corpus_rows,
     rerun_confidence_weight,
 )
@@ -54,6 +55,7 @@ _DEFAULT_PROFILING_DB = (
 )
 
 _MIN_SAMPLES = 50
+_FEATURE_Z_CLIP = 6.0
 _POLY_FEATURE_BASES = (
     "meta_n_templates",
     "meta_n_motifs",
@@ -81,6 +83,12 @@ class _NativeTopologyContext:
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -15, 15)))
+
+
+def _clip_normalized_features(x: np.ndarray) -> np.ndarray:
+    if x.size == 0:
+        return x
+    return np.clip(x, -_FEATURE_Z_CLIP, _FEATURE_Z_CLIP)
 
 
 def _augment_feature_space(
@@ -519,6 +527,154 @@ def _extract_topology_features_python(
     return features
 
 
+def _extract_edge_op_pairs_python(graph_json: Any) -> Optional[List[Tuple[str, str]]]:
+    if isinstance(graph_json, str):
+        try:
+            graph_json = json.loads(graph_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(graph_json, dict):
+        return None
+    nodes = graph_json.get("nodes") or {}
+    if len(nodes) < 2:
+        return None
+
+    node_ids = list(nodes.keys())
+    id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
+    op_names = [nodes[nid].get("op_name", "") for nid in node_ids]
+    pairs: List[Tuple[str, str]] = []
+    for nid in node_ids:
+        child_idx = id_to_idx[nid]
+        child_op = op_names[child_idx]
+        if not child_op or child_op == "input":
+            continue
+        for inp in (nodes[nid].get("input_ids") or []):
+            parent_idx = id_to_idx.get(str(inp))
+            if parent_idx is None:
+                continue
+            parent_op = op_names[parent_idx]
+            if not parent_op or parent_op == "input":
+                continue
+            pairs.append((parent_op, child_op))
+    return pairs
+
+
+def _extract_edge_op_pairs_native(graph_payload: str) -> Optional[List[Tuple[str, str]]]:
+    rust = _try_import_rust_scheduler()
+    if rust is None or not hasattr(rust, "extract_edge_op_pairs_native"):
+        return None
+    try:
+        payload = rust.extract_edge_op_pairs_native(graph_payload)
+        loaded = json.loads(payload)
+    except Exception as exc:
+        logger.warning("Native edge-pair extraction failed; falling back to Python: %s", exc)
+        return None
+    if not isinstance(loaded, list):
+        return None
+    pairs: List[Tuple[str, str]] = []
+    for item in loaded:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) == 2
+            and all(isinstance(part, str) for part in item)
+        ):
+            pairs.append((item[0], item[1]))
+    return pairs
+
+
+def _extract_topology_features_batch(
+    graph_payloads: List[Any],
+    op_profiles: Dict[str, Dict[str, float]],
+    pair_stability: Dict[Tuple[str, str], float],
+    *,
+    imodel: Optional[Any] = None,
+    native_ctx: Optional[_NativeTopologyContext] = None,
+) -> List[Optional[Dict[str, float]]]:
+    if not graph_payloads:
+        return []
+
+    serialized: List[str] = []
+    for payload in graph_payloads:
+        if isinstance(payload, str):
+            serialized.append(payload)
+        else:
+            try:
+                serialized.append(
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                )
+            except (TypeError, ValueError):
+                serialized.append("")
+
+    rust = _try_import_rust_scheduler()
+    if rust is not None and hasattr(rust, "extract_topology_features_batch_native"):
+        try:
+            ctx = native_ctx or _make_native_topology_context(op_profiles, pair_stability)
+            raw_result = rust.extract_topology_features_batch_native(
+                serialized,
+                ctx.op_profiles_json,
+                ctx.pair_stability_json,
+                ctx.op_metadata_json,
+            )
+            if isinstance(raw_result, list):
+                base_features: List[Optional[Dict[str, float]]] = []
+                for payload in raw_result:
+                    if not isinstance(payload, str):
+                        base_features.append(None)
+                        continue
+                    decoded = json.loads(payload)
+                    if isinstance(decoded, dict):
+                        base_features.append(
+                            {str(key): float(value) for key, value in decoded.items()}
+                        )
+                    else:
+                        base_features.append(None)
+                if len(base_features) == len(serialized):
+                    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
+                        return base_features
+                    enriched: List[Optional[Dict[str, float]]] = []
+                    for graph_payload, feats in zip(serialized, base_features, strict=False):
+                        if feats is None:
+                            enriched.append(None)
+                            continue
+                        edge_pairs = _extract_edge_op_pairs_native(graph_payload)
+                        if edge_pairs is None:
+                            edge_pairs = _extract_edge_op_pairs_python(graph_payload)
+                        if edge_pairs:
+                            imodel_stabilities = [
+                                imodel.predict_stability(left, right)
+                                for left, right in edge_pairs
+                            ]
+                            imodel_losses = [
+                                imodel.predict_loss(left, right)
+                                for left, right in edge_pairs
+                            ]
+                            feats["imodel_min_stability"] = float(min(imodel_stabilities))
+                            feats["imodel_mean_stability"] = float(np.mean(imodel_stabilities))
+                            feats["imodel_mean_loss"] = float(np.mean(imodel_losses))
+                        else:
+                            feats["imodel_min_stability"] = 0.5
+                            feats["imodel_mean_stability"] = 0.5
+                            feats["imodel_mean_loss"] = 0.7
+                        enriched.append(feats)
+                    return enriched
+        except Exception as exc:
+            logger.warning(
+                "Native topology batch extraction failed; falling back per-graph: %s",
+                exc,
+            )
+
+    return [
+        extract_topology_features(
+            payload,
+            op_profiles,
+            pair_stability,
+            imodel=imodel,
+            native_ctx=native_ctx,
+        )
+        for payload in graph_payloads
+    ]
+
+
 def extract_topology_features(
     graph_json: Any,
     op_profiles: Dict[str, Dict[str, float]],
@@ -565,47 +721,23 @@ def extract_topology_features(
             graph_payload, op_profiles, pair_stability, imodel=imodel
         )
 
-    parsed_graph = None
-    if imodel is not None and hasattr(imodel, "_trained") and imodel._trained:
-        try:
-            parsed_graph = (
-                json.loads(graph_payload)
-                if isinstance(graph_payload, str)
-                else graph_payload
-            )
-        except (json.JSONDecodeError, TypeError):
-            parsed_graph = None
-
-    if parsed_graph is None or not (
-        imodel is not None and hasattr(imodel, "_trained") and imodel._trained
-    ):
+    if not (imodel is not None and hasattr(imodel, "_trained") and imodel._trained):
         base_features["imodel_min_stability"] = 0.5
         base_features["imodel_mean_stability"] = 0.5
         base_features["imodel_mean_loss"] = 0.7
         return base_features
 
-    nodes = parsed_graph.get("nodes") or {}
-    node_ids = list(nodes.keys())
-    id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
-    children: Dict[int, List[int]] = defaultdict(list)
-    for nid in node_ids:
-        node = nodes[nid]
-        idx = id_to_idx[nid]
-        for inp in node.get("input_ids") or []:
-            parent_idx = id_to_idx.get(str(inp))
-            if parent_idx is not None:
-                children[parent_idx].append(idx)
+    edge_pairs = _extract_edge_op_pairs_native(graph_payload)
+    if edge_pairs is None:
+        edge_pairs = _extract_edge_op_pairs_python(graph_payload)
+    if not edge_pairs:
+        base_features["imodel_min_stability"] = 0.5
+        base_features["imodel_mean_stability"] = 0.5
+        base_features["imodel_mean_loss"] = 0.7
+        return base_features
 
-    imodel_stabilities: List[float] = []
-    imodel_losses: List[float] = []
-    op_names = [nodes[nid].get("op_name", "") for nid in node_ids]
-    for idx in range(len(node_ids)):
-        for child_idx in children[idx]:
-            left = op_names[idx]
-            right = op_names[child_idx]
-            if left and right and left != "input" and right != "input":
-                imodel_stabilities.append(imodel.predict_stability(left, right))
-                imodel_losses.append(imodel.predict_loss(left, right))
+    imodel_stabilities = [imodel.predict_stability(left, right) for left, right in edge_pairs]
+    imodel_losses = [imodel.predict_loss(left, right) for left, right in edge_pairs]
 
     if imodel_stabilities:
         base_features["imodel_min_stability"] = float(min(imodel_stabilities))
@@ -628,6 +760,8 @@ class GraphPredictor:
     # Rank model (linear regression on log-ppl)
     w_rank: np.ndarray  # (n_features,)
     b_rank: float
+    rank_log_min: float = 0.0
+    rank_log_max: float = 20.0
     # Feature metadata
     feature_names: List[str] = field(default_factory=list)
     feature_mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -669,7 +803,7 @@ class GraphPredictor:
         feats = _materialize_feature_dict(feats)
         x = np.array([feats.get(k, 0.0) for k in self.feature_names], dtype=np.float64)
         x = (x - self.feature_mean) / self.feature_std
-        return x
+        return _clip_normalized_features(x)
 
     def predict_gate(self, graph_json: Any) -> float:
         """Predict P(pass_s1). Returns 0.5 if not fitted."""
@@ -690,6 +824,7 @@ class GraphPredictor:
         if x is None:
             return 1e6
         log_ppl = float(x @ self.w_rank + self.b_rank)
+        log_ppl = float(np.clip(log_ppl, self.rank_log_min, self.rank_log_max))
         return float(np.exp(log_ppl))
 
     def predict_loss(self, graph_json: Any) -> float:
@@ -754,6 +889,8 @@ class GraphPredictor:
             gate_calibration_b=0.0,
             w_rank=np.zeros(0),
             b_rank=5.0,
+            rank_log_min=float(np.log(1.0)),
+            rank_log_max=float(np.log(1e6)),
             w_loss=np.zeros(0),
             b_loss=0.7,
             w_induction=np.zeros(0),
@@ -784,7 +921,16 @@ class GraphPredictor:
         gate_sample_weights: List[float] = []
         graph_signatures: List[str] = []
 
-        for row in rows:
+        graph_payloads = [row["graph_json"] for row in rows]
+        batch_features = _extract_topology_features_batch(
+            graph_payloads,
+            op_profiles,
+            pair_stability,
+            imodel=trained_imodel,
+            native_ctx=native_ctx,
+        )
+
+        for row, feats in zip(rows, batch_features, strict=False):
             gj = row["graph_json"]
             s1 = bool(row["stage1_any_passed"])
             ppl = row.get("wikitext_perplexity_best")
@@ -796,13 +942,6 @@ class GraphPredictor:
             signature = str(row.get("canonical_fingerprint") or "")
             if not signature:
                 continue
-            feats = extract_topology_features(
-                gj,
-                op_profiles,
-                pair_stability,
-                imodel=trained_imodel,
-                native_ctx=native_ctx,
-            )
             if feats is None:
                 continue
             feat_dicts.append(feats)
@@ -842,6 +981,8 @@ class GraphPredictor:
                 gate_threshold=0.5,
                 w_rank=np.zeros(0),
                 b_rank=5.0,
+                rank_log_min=float(np.log(1.0)),
+                rank_log_max=float(np.log(1e6)),
                 w_induction=np.zeros(0),
                 b_induction=0.0,
                 op_profiles=op_profiles,
@@ -897,6 +1038,7 @@ class GraphPredictor:
         feat_std = X[train_idx].std(axis=0)
         feat_std[feat_std < 1e-8] = 1.0
         X_norm = (X - feat_mean) / feat_std
+        X_norm = _clip_normalized_features(X_norm)
 
         X_tr, X_va = X_norm[train_idx], X_norm[val_idx]
         y_gate_tr, y_gate_va = y_gate[train_idx], y_gate[val_idx]
@@ -1010,9 +1152,15 @@ class GraphPredictor:
         rank_mask = np.isfinite(y_rank[train_idx])
         w_rank = np.zeros(n_features, dtype=np.float64)
         b_rank = 5.0
+        rank_log_min = float(np.log(1.0))
+        rank_log_max = float(np.log(1e6))
         if rank_mask.sum() >= 20:
             X_rank = X_tr[rank_mask]
             y_log_ppl = np.log(np.maximum(y_rank[train_idx][rank_mask], 1.0))
+            rank_log_min = float(np.percentile(y_log_ppl, 0.5))
+            rank_log_max = float(np.percentile(y_log_ppl, 99.5))
+            if rank_log_max < rank_log_min:
+                rank_log_max = rank_log_min
             XtX = X_rank.T @ X_rank + alpha * np.eye(n_features)
             Xty = X_rank.T @ y_log_ppl
             try:
@@ -1093,6 +1241,8 @@ class GraphPredictor:
             gate_calibration_b=float(gate_calibration_b),
             w_rank=w_rank.astype(np.float32),
             b_rank=float(b_rank),
+            rank_log_min=float(rank_log_min),
+            rank_log_max=float(rank_log_max),
             w_loss=w_loss.astype(np.float32),
             b_loss=float(b_loss),
             w_induction=w_induction.astype(np.float32),
@@ -1112,6 +1262,8 @@ class GraphPredictor:
                 "val_auc": val_auc,
                 "val_precision": val_precision,
                 "val_recall": val_recall,
+                "rank_log_min": float(rank_log_min),
+                "rank_log_max": float(rank_log_max),
                 "gate_threshold": float(gate_threshold),
                 "val_gate_metrics": val_gate_metrics,
                 "operating_points": operating_points,
@@ -1152,6 +1304,8 @@ class GraphPredictor:
                     "gate_calibration_a": self.gate_calibration_a,
                     "gate_calibration_b": self.gate_calibration_b,
                     "b_rank": self.b_rank,
+                    "rank_log_min": self.rank_log_min,
+                    "rank_log_max": self.rank_log_max,
                     "b_loss": self.b_loss,
                     "b_induction": self.b_induction,
                     "feature_names": self.feature_names,
@@ -1200,6 +1354,8 @@ class GraphPredictor:
             gate_calibration_b=float(meta.get("gate_calibration_b", 0.0)),
             w_rank=data["w_rank"],
             b_rank=float(meta.get("b_rank", 5.0)),
+            rank_log_min=float(meta.get("rank_log_min", np.log(1.0))),
+            rank_log_max=float(meta.get("rank_log_max", np.log(1e6))),
             w_loss=data["w_loss"],
             w_induction=data["w_induction"] if "w_induction" in data else np.zeros(0),
             b_loss=float(meta.get("b_loss", 0.7)),

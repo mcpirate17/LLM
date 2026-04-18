@@ -21,16 +21,12 @@ import json
 import logging
 import multiprocessing as mp
 import os
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from research.defaults import VOCAB_SIZE
 from research.scientist.leaderboard_scoring import (
@@ -42,6 +38,7 @@ from research.scientist.notebook import LabNotebook
 from research.synthesis.compiler import compile_model
 from research.synthesis.serializer import graph_from_json
 from research.training.data_pipeline import CorpusConfig, CorpusTokenBatcher
+from research.training.loss_ops import clip_grad_norm_, next_token_cross_entropy
 from research.tools._script_audit import (
     build_metric_backfill_context,
     complete_script_experiment,
@@ -151,10 +148,10 @@ def micro_train(
             generator=generator,
         )
         logits = model(data)
-        loss = F.cross_entropy(logits[:, :-1].reshape(-1, vs), data[:, 1:].reshape(-1))
+        loss = next_token_cross_entropy(logits, data, int(vs))
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        clip_grad_norm_(model, 1.0)
         opt.step()
     model.eval()
 
@@ -552,16 +549,42 @@ _PROBE_NULL_COLUMN: Dict[str, str] = {
     "fingerprint": "fp_cka_vs_transformer",
 }
 
-
-def _probe_has_data(nb: LabNotebook, result_id: str, probe_name: str) -> bool:
-    """Check if a probe's key column already has data for this entry."""
-    col = _PROBE_NULL_COLUMN.get(probe_name)
-    if not col:
-        return False
-    row = nb.conn.execute(
-        f"SELECT {col} FROM program_results WHERE result_id = ?", (result_id,)
-    ).fetchone()
-    return row is not None and row[0] is not None
+def _prefetch_probe_state(
+    nb: LabNotebook, result_ids: Sequence[str], probes: Sequence[str]
+) -> dict[str, dict[str, bool]]:
+    """Bulk-load probe completeness once instead of querying SQLite per probe."""
+    if not result_ids:
+        return {}
+    columns = {
+        _PROBE_NULL_COLUMN[probe_name]
+        for probe_name in probes
+        if probe_name in _PROBE_NULL_COLUMN
+    }
+    if not columns:
+        return {result_id: {} for result_id in result_ids}
+    placeholders = ",".join("?" for _ in result_ids)
+    select_cols = ", ".join(sorted(columns))
+    rows = nb.conn.execute(
+        f"SELECT result_id, {select_cols} FROM program_results "
+        f"WHERE result_id IN ({placeholders})",
+        tuple(result_ids),
+    ).fetchall()
+    by_result = {
+        str(row["result_id"]): {
+            probe_name: row[_PROBE_NULL_COLUMN[probe_name]] is not None
+            for probe_name in probes
+            if probe_name in _PROBE_NULL_COLUMN
+        }
+        for row in rows
+    }
+    missing_default = {
+        probe_name: False
+        for probe_name in probes
+        if probe_name in _PROBE_NULL_COLUMN
+    }
+    for result_id in result_ids:
+        by_result.setdefault(str(result_id), dict(missing_default))
+    return by_result
 
 
 # ── Main loop ───────────────────────────────────────────────────────────
@@ -679,6 +702,7 @@ def run_backfill(
     # Pre-fetch for rescoring
     all_ids = [c.result_id for c in candidates]
     pr_cache = prefetch_program_results(nb.conn, all_ids)
+    probe_state = _prefetch_probe_state(nb, all_ids, probes)
 
     needs_model = bool(set(probes) & _PROBE_NEEDS_MODEL)
     needs_train = bool(set(probes) & _PROBE_NEEDS_TRAIN)
@@ -697,7 +721,9 @@ def run_backfill(
 
             # Determine which probes to actually run for this candidate
             active_probes = [
-                p for p in probes if force or not _probe_has_data(nb, cand.result_id, p)
+                p
+                for p in probes
+                if force or not probe_state.get(cand.result_id, {}).get(p, False)
             ]
             if not active_probes:
                 continue
@@ -744,6 +770,9 @@ def run_backfill(
                         all_updates,
                         provenance_context=provenance_context,
                     )
+                    cand_state = probe_state.setdefault(cand.result_id, {})
+                    for probe_name in active_probes:
+                        cand_state[probe_name] = True
 
                 # Rescore with new data
                 new_score, old_score = rescore_entry(

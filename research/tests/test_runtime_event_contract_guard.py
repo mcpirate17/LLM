@@ -99,7 +99,9 @@ def _scan_contract_violations() -> set[str]:
     for root in _SCAN_ROOTS:
         for path in sorted(root.rglob("*.py")):
             rel_path = path.relative_to(_ROOT).as_posix()
-            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for lineno, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            ):
                 for name, pattern in _FORBIDDEN_PATTERNS.items():
                     if pattern.search(line):
                         matches.add(f"{rel_path}:{lineno}:{name}")

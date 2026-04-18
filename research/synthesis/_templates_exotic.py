@@ -21,6 +21,7 @@ from ._template_helpers import (
     _pick_compatible_motif,
     _pick_compatible_motif_from_classes,
     _tpl_norm_dual_op_residual,
+    template_add_op as _add,
 )
 from ._templates_core import tpl_residual_block
 
@@ -240,6 +241,7 @@ def tpl_tropical_center_block(
         attended = graph.add_op("tropical_attention", [normed])
         gated = graph.add_op("tropical_gate", [attended])
         centered = graph.add_op("tropical_center", [gated])
+        centered = graph.add_op("rmsnorm", [centered])
         out = graph.add_op("linear_proj", [centered], config={"out_dim": D})
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
@@ -686,22 +688,36 @@ def tpl_causal_mix_block(
     except (ValueError, KeyError):
         return tpl_residual_block(graph, input_id, rng, weights)
 
-    # 50% chance: attention after causal mixing
+    # Keep the post-causal mixer inside a grammar-safe attention scaffold.
     if rng.random() < 0.5:
-        attn = _pick_compatible_motif(
-            graph, projected, rng, MOTIF_CLASS_ATTENTION, weights
+        attended = _add(
+            graph,
+            "softmax_attention",
+            [projected],
+            context="causal_mix_block.attn",
         )
-        if attn:
-            attended = _instantiate_motif(graph, projected, attn, rng)
-            projected = _fix_dim(graph, attended)
+        attended = _add(
+            graph,
+            "rmsnorm",
+            [attended],
+            context="causal_mix_block.attn_norm",
+        )
+        attended = _add(
+            graph,
+            "linear_proj",
+            [attended],
+            {"out_dim": D},
+            context="causal_mix_block.attn_proj",
+        )
+        projected = _fix_dim(graph, attended)
 
-    ffn = _pick_compatible_motif_from_classes(
-        graph, projected, rng, list(_FFN_CLASSES), weights
+    processed = _add(
+        graph,
+        "swiglu_mlp",
+        [projected],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="causal_mix_block.ffn",
     )
-    if ffn:
-        processed = _instantiate_motif(graph, projected, ffn, rng)
-    else:
-        processed = projected
 
     processed = _fix_dim(graph, processed)
     try:

@@ -44,7 +44,6 @@ import math
 import random
 import time
 import traceback
-from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..json_utils import fast_dumps, json_safe
@@ -53,9 +52,8 @@ from ..runtime_events import publish_lifecycle_event
 import torch
 
 from ...synthesis.grammar import GrammarConfig, batch_generate
-from ...synthesis.motifs import VALIDATED_MOTIFS
-from ...synthesis.templates import DEFAULT_TEMPLATE_WEIGHTS, TEMPLATES
-from ..native_runner import compile_model_native_first as compile_model
+from ..native_runner import compile_model_native_first as _compile_model_native
+from ...synthesis.compiler import compile_model as _compile_model_legacy
 from ...synthesis.validator import validate_graph
 from ..refinement_scoring import rank_synthesis_candidates_by_stability
 from ...eval.flops import estimate_flops
@@ -64,6 +62,11 @@ from .execution_screening_graphs import (
     analyze_graph_for_screening,
     structural_gate_failure,
     toxic_failure_ratio,
+)
+from .screening_candidate_rank import judgment_rerank
+from .screening_signal_weights import (
+    apply_insight_adjustments,
+    build_signal_weight_maps,
 )
 from .failure_provenance import infer_graph_failure_provenance
 from ..notebook import LabNotebook, ExperimentEntry
@@ -75,6 +78,7 @@ logger = logging.getLogger(__name__)
 
 def _log_learning_event_compat(nb: LabNotebook, *args, **kwargs) -> None:
     getattr(nb, "log_learning_event")(*args, **kwargs)
+
 
 # Gate 5 constant: routing/MoE/sparse/compression ops required for efficiency scoring.
 # Module-level to avoid re-instantiation per graph in the screening loop.
@@ -186,15 +190,6 @@ from ._helpers import (
     screening_wikitext_fields,
 )
 
-try:
-    from ..judgment import score_candidate, JudgmentContext
-
-    _HAS_JUDGMENT = True
-except ImportError:
-    _HAS_JUDGMENT = False
-
-_EXPLORATION_BUDGET = 0.15
-
 # S0.75 initial-loss threshold: architectures with initial CE loss above this
 # are killed before rapid screening. Calibrated from diagnosis (2026-03-20):
 # architectures with init_loss > 50 have deep unscaled projection chains and
@@ -205,44 +200,6 @@ INITIAL_LOSS_THRESHOLD: float = 50.0
 # Number of gradient steps for S0.75 mini-train probe
 _S075_PROBE_STEPS: int = 5
 
-_BUCKET_TEMPLATE_BOOSTS: Dict[str, Dict[str, float]] = {
-    "attention-heavy": {
-        "transformer_block": 1.6,
-        "hybrid_parallel": 1.2,
-        "residual_block": 0.5,
-    },
-    "mixing-heavy": {
-        "hybrid_parallel": 1.4,
-        "sequential": 0.9,
-        "residual_block": 0.5,
-    },
-    "sparse": {
-        "sparse_ffn": 1.8,
-        "bottleneck": 1.1,
-        "moe": 0.8,
-    },
-    "hybrid": {
-        "hybrid_parallel": 1.8,
-        "transformer_block": 1.3,
-        "parallel_split": 0.8,
-    },
-    "exotic": {
-        "parallel_split": 1.0,
-        "gated_residual": 0.7,
-        "dense_cascade": 0.5,
-    },
-}
-_TOP_OP_TEMPLATE_HINTS: Dict[str, Dict[str, float]] = {
-    "attention": {"transformer_block": 1.1, "hybrid_parallel": 0.7},
-    "scan": {"hybrid_parallel": 1.0, "sequential": 0.5},
-    "state_space": {"hybrid_parallel": 1.0, "sequential": 0.5},
-    "conv": {"hybrid_parallel": 0.8, "sequential": 0.5},
-    "sparse": {"sparse_ffn": 1.2, "bottleneck": 0.6},
-    "rank": {"bottleneck": 0.8, "sparse_ffn": 0.4},
-    "moe": {"moe": 1.2, "gated_residual": 0.4},
-    "gate": {"gated_residual": 0.9, "moe": 0.4},
-    "norm": {"residual_block": 0.6, "transformer_block": 0.5},
-}
 
 
 def _make_experiment_results() -> Dict[str, Any]:
@@ -297,546 +254,29 @@ def _make_stage1_screening_config(config: RunConfig) -> RunConfig:
     HellaSwag (~3.9s) and BLiMP (~2s) are fast enough to run on every S1
     passer.  They feed composite_score which drives auto-escalation —
     without them, screening entries stay below the 62.7 threshold and the
-    investigation queue starves.  Binding probes remain disabled (slow).
+    investigation queue starves. Keep a cheap real-token LM probe and the
+    lightweight binding/induction probes enabled so Stage 1 can reject
+    retrieval-dead or text-dead architectures early.
     """
     stage1_config = config.copy()
     # Keep post-eval ENABLED so fast probes run on S1 passers.
     stage1_config.profile_disable_post_eval = False
     stage1_config.stage1_compute_val_loss = False
     stage1_config.stage1_compute_discovery_loss = False
-    stage1_config.skip_screening_wikitext = True
+    stage1_config.skip_screening_wikitext = False
     stage1_config.skip_screening_hellaswag = False  # ~3.9s, feeds composite
     stage1_config.skip_screening_blimp = False  # ~2s, feeds composite
-    stage1_config.skip_binding_probes = True  # slow, backfill later
+    stage1_config.skip_binding_probes = False
+    stage1_config.binding_probe_train_batch_size = max(
+        1, int(getattr(config, "binding_probe_train_batch_size", 0) or 2)
+    )
+    stage1_config.binding_probe_eval_batch_size = max(
+        1, int(getattr(config, "binding_probe_eval_batch_size", 0) or 4)
+    )
     stage1_config.skip_post_s1_fingerprint = True
     stage1_config.skip_post_s1_triage = True
     stage1_config.collect_training_curve = False
     return stage1_config
-
-
-def _freeze_op_pair_priors(
-    priors: List[Dict[str, Any]],
-) -> Tuple[Tuple[str, float], ...]:
-    return tuple(
-        (
-            str(row.get("signature") or ""),
-            round(float(row.get("success_rate") or 0.0), 4),
-        )
-        for row in priors
-        if row.get("signature")
-    )
-
-
-def _freeze_fingerprint_buckets(
-    buckets: List[Dict[str, Any]],
-) -> Tuple[Tuple[str, int, float, Tuple[str, ...]], ...]:
-    return tuple(
-        (
-            str(row.get("bucket") or ""),
-            int(row.get("n_graphs") or 0),
-            round(float(row.get("s1_rate") or 0.0), 4),
-            tuple(
-                str(op.get("op_name") or "")
-                for op in (row.get("top_ops") or [])
-                if op.get("op_name")
-            ),
-        )
-        for row in buckets
-        if row.get("bucket")
-    )
-
-
-@lru_cache(maxsize=32)
-def _cached_signal_weight_maps(
-    op_pair_priors: Tuple[Tuple[str, float], ...],
-    fingerprint_buckets: Tuple[Tuple[str, int, float, Tuple[str, ...]], ...],
-) -> Tuple[Dict[str, float], Dict[str, float]]:
-    pair_rates = {
-        signature: success_rate
-        for signature, success_rate in op_pair_priors
-        if success_rate > 0.3
-    }
-    motif_weights = {
-        motif_name: round(
-            sum(
-                pair_rates.get(
-                    f"{motif.steps[index].op_name}->{motif.steps[index + 1].op_name}",
-                    0.0,
-                )
-                for index in range(len(motif.steps) - 1)
-            ),
-            4,
-        )
-        for motif_name, motif in VALIDATED_MOTIFS.items()
-    }
-    motif_weights = {
-        motif_name: weight
-        for motif_name, weight in motif_weights.items()
-        if weight > 0.0
-    }
-
-    template_bonuses: Dict[str, float] = {}
-    for bucket_name, n_graphs, s1_rate, top_ops in fingerprint_buckets:
-        dominance = max(1.0, float(n_graphs)) * max(0.25, s1_rate)
-        for template_name, boost in _BUCKET_TEMPLATE_BOOSTS.get(
-            bucket_name, {}
-        ).items():
-            if template_name in TEMPLATES:
-                template_bonuses[template_name] = template_bonuses.get(
-                    template_name, 0.0
-                ) + (boost * dominance)
-        for op_name in top_ops:
-            lowered = op_name.lower()
-            for token, boosts in _TOP_OP_TEMPLATE_HINTS.items():
-                if token not in lowered:
-                    continue
-                for template_name, boost in boosts.items():
-                    if template_name in TEMPLATES:
-                        template_bonuses[template_name] = template_bonuses.get(
-                            template_name, 0.0
-                        ) + (boost * dominance)
-
-    template_weights = {
-        template_name: round(
-            DEFAULT_TEMPLATE_WEIGHTS.get(template_name, 1.0) + bonus, 4
-        )
-        for template_name, bonus in template_bonuses.items()
-        if bonus > 0.0
-    }
-    return template_weights, motif_weights
-
-
-def _apply_insight_adjustments(
-    nb: LabNotebook,
-    grammar: GrammarConfig,
-    template_weights: Dict[str, float],
-    motif_weights: Dict[str, float],
-) -> None:
-    """Apply high-confidence Bayesian insights to grammar config.
-
-    - Structural insights: adjust max_ops, residual_prob
-    - Template insights: scale template weights
-    - Composition insights: boost motif weights for winning op combos
-    """
-    _MIN_CONFIDENCE = 0.6
-
-    # ── Structural insights ──
-    try:
-        structural = nb.get_insights(
-            exclude_display_only=True,
-            insight_level="structural",
-            limit=20,
-        )
-    except (AttributeError, TypeError, ValueError) as e:
-        logger.debug("Failed fetching structural insights: %s", e)
-        structural = []
-
-    for ins in structural:
-        alpha = float(ins.get("alpha") or 1.0)
-        beta_ = float(ins.get("beta_") or 1.0)
-        conf = alpha / (alpha + beta_)
-        if conf < _MIN_CONFIDENCE:
-            continue
-
-        subject = str(ins.get("subject_key") or "")
-        evidence = ins.get("evidence_json")
-        if isinstance(evidence, str):
-            try:
-                import json as _json
-
-                evidence = _json.loads(evidence)
-            except (json.JSONDecodeError, ValueError, TypeError) as e:
-                logger.debug("Malformed structural evidence JSON: %s", e)
-                evidence = {}
-        if not isinstance(evidence, dict):
-            evidence = {}
-
-        if subject == "graph_size_cap" and evidence.get("recommended_max"):
-            recommended = int(evidence["recommended_max"])
-            grammar.max_ops = min(grammar.max_ops, recommended)
-        elif subject == "graph_size_optimal":
-            # Nudge composition_depth toward the optimal bucket
-            best = evidence.get("best_bucket", "")
-            if "7-9" in best:
-                grammar.composition_depth = min(grammar.composition_depth, 2)
-                grammar.max_ops = min(grammar.max_ops, 12)
-        else:
-            # ── Data-driven structural rules from profiling ──
-            # Composition rates → residual_prob (nudge if residual > sequential)
-            comp_rates = evidence.get("composition_rates")
-            if isinstance(comp_rates, dict):
-                res_info = comp_rates.get("residual")
-                seq_info = comp_rates.get("sequential")
-                res_rate = (
-                    float(res_info.get("rate", 0)) if isinstance(res_info, dict) else 0
-                )
-                seq_rate = (
-                    float(seq_info.get("rate", 0)) if isinstance(seq_info, dict) else 0
-                )
-                if res_rate > seq_rate:
-                    grammar.residual_prob = min(
-                        0.85, grammar.residual_prob + conf * 0.1
-                    )
-            # Also check param_param_residual as standalone evidence
-            ppr = evidence.get("param_param_residual")
-            if isinstance(ppr, dict) and float(ppr.get("rate", 0)) > 0.7:
-                grammar.residual_prob = min(0.85, grammar.residual_prob + conf * 0.05)
-
-            # Corrector ops → boost
-            correctors = evidence.get("corrector_ops")
-            if isinstance(correctors, dict):
-                for op_name, stats in correctors.items():
-                    rate = (
-                        float(stats.get("correction_rate", 0))
-                        if isinstance(stats, dict)
-                        else 0
-                    )
-                    if rate >= 0.5:
-                        cur = grammar.op_weights.get(op_name, 1.0)
-                        grammar.op_weights[op_name] = cur * (1.0 + conf * 0.15 * rate)
-
-    # ── Template insights ──
-    try:
-        template_insights = nb.get_insights(
-            exclude_display_only=True,
-            insight_level="template",
-            limit=20,
-        )
-    except (AttributeError, TypeError, ValueError) as e:
-        logger.debug("Failed fetching template insights: %s", e)
-        template_insights = []
-
-    for ins in template_insights:
-        alpha = float(ins.get("alpha") or 1.0)
-        beta_ = float(ins.get("beta_") or 1.0)
-        conf = alpha / (alpha + beta_)
-        if conf < _MIN_CONFIDENCE:
-            continue
-
-        subject = str(ins.get("subject_key") or "")
-        # Suppress templates matching the subject
-        subject_parts = {
-            s.strip().lower()
-            for s in subject.replace("+", " ").replace("_", " ").split()
-            if len(s.strip()) >= 3
-        }
-        for tpl_name in list(template_weights.keys()):
-            tpl_parts = {s.lower() for s in tpl_name.replace("_", " ").split()}
-            if subject_parts & tpl_parts:
-                template_weights[tpl_name] *= max(0.2, 1.0 - conf * 0.6)
-
-    # ── Composition insights ──
-    try:
-        composition = nb.get_insights(
-            exclude_display_only=True,
-            insight_level="composition",
-            limit=50,
-        )
-    except (AttributeError, TypeError, ValueError) as e:
-        logger.debug("Failed fetching composition insights: %s", e)
-        composition = []
-
-    for ins in composition:
-        alpha = float(ins.get("alpha") or 1.0)
-        beta_ = float(ins.get("beta_") or 1.0)
-        conf = alpha / (alpha + beta_)
-        if conf < _MIN_CONFIDENCE:
-            continue
-
-        subject = str(ins.get("subject_key") or "")
-        evidence = ins.get("evidence_json")
-        if isinstance(evidence, str):
-            try:
-                import json as _json
-
-                evidence = _json.loads(evidence)
-            except (json.JSONDecodeError, ValueError, TypeError) as e:
-                logger.debug("Malformed composition evidence JSON: %s", e)
-                evidence = {}
-        if not isinstance(evidence, dict):
-            evidence = {}
-        insight_type = str(ins.get("insight_type") or "")
-        semantic = str(ins.get("semantic_key") or "")
-
-        # ── Profiling composition rules ──
-        if insight_type == "composition_rule" and semantic.startswith("profiling:"):
-            _apply_profiling_composition_rule(grammar, subject, evidence, conf)
-            continue
-
-        # ── Universal stabilizer / top_op boosting ──
-        if insight_type == "top_op" and semantic.startswith("profiling:"):
-            stabilizer_set = evidence.get("stabilizer_set") or {}
-            for op_name, stats in stabilizer_set.items():
-                rate = float(stats.get("rate", 0))
-                if rate >= 0.8:
-                    cur = grammar.op_weights.get(op_name, 1.0)
-                    grammar.op_weights[op_name] = cur * (1.0 + conf * 0.4)
-            continue
-
-        # ── Legacy motif boosting ──
-        subject_ops = {s.strip() for s in subject.split("+") if s.strip()}
-        if not subject_ops:
-            continue
-
-        for motif_name, motif in VALIDATED_MOTIFS.items():
-            motif_ops = {step.op_name for step in motif.steps}
-            if subject_ops & motif_ops:
-                base = motif_weights.get(motif_name, motif.lift)
-                motif_weights[motif_name] = base * (1.0 + conf * 0.3)
-
-
-def _apply_profiling_composition_rule(
-    grammar: GrammarConfig,
-    subject: str,
-    evidence: dict,
-    conf: float,
-) -> None:
-    """Apply a profiling-derived composition rule to grammar config.
-
-    Fully data-driven: reads evidence_json to decide what to adjust.
-    No hard-coded subject keys — any insight with the right evidence
-    structure will be applied.  As Bayesian confidence (alpha/beta)
-    changes through experiments, the adjustment strength scales linearly.
-
-    Recognized evidence_json patterns:
-      - risk_score + valid_followers → penalize subject op, boost followers
-      - best_followers / bridge_ops → boost named ops by their stability rate
-      - dampener_ops → boost named ops
-      - composition_rates.residual → nudge residual_prob
-      - corrector_ops → boost distribution correctors
-      - stabilizer_set → boost universal stabilizers
-    """
-    # ── 1. Op-specific risk rule: penalize the subject op, boost its valid followers ──
-    risk = evidence.get("risk_score")
-    if risk is not None and float(risk) > 50:
-        penalty = max(0.15, 1.0 - (float(risk) / 100.0) * conf)
-        cur = grammar.op_weights.get(subject, 1.0)
-        grammar.op_weights[subject] = cur * penalty
-        # Also boost the ops that rescue it
-        for follower in evidence.get("valid_followers", []):
-            cur_f = grammar.op_weights.get(follower, 1.0)
-            grammar.op_weights[follower] = cur_f * (1.0 + conf * 0.1)
-        return
-
-    # ── 2. Composition rates with residual data → nudge residual_prob ──
-    comp_rates = evidence.get("composition_rates")
-    if isinstance(comp_rates, dict):
-        res_info = comp_rates.get("residual")
-        seq_info = comp_rates.get("sequential")
-        if isinstance(res_info, dict) and isinstance(seq_info, dict):
-            res_rate = float(res_info.get("rate", 0))
-            seq_rate = float(seq_info.get("rate", 0))
-            if res_rate > seq_rate:
-                grammar.residual_prob = min(0.85, grammar.residual_prob + conf * 0.1)
-        return
-
-    # ── 3. Named op sets with stability rates → boost high-stability ops ──
-    for key in ("best_followers", "bridge_ops", "stabilizer_set"):
-        named_set = evidence.get(key)
-        if isinstance(named_set, dict) and named_set:
-            for op_name, stats in named_set.items():
-                if isinstance(stats, dict):
-                    rate = float(stats.get("rate", 0))
-                else:
-                    rate = float(stats) if stats else 0
-                if rate >= 0.7:
-                    cur = grammar.op_weights.get(op_name, 1.0)
-                    boost = 1.0 + conf * 0.2 * rate
-                    grammar.op_weights[op_name] = cur * boost
-            return
-
-    # ── 4. Dampener ops list → boost ──
-    dampeners = evidence.get("dampener_ops")
-    if isinstance(dampeners, list) and dampeners:
-        for op_name in dampeners:
-            cur = grammar.op_weights.get(op_name, 1.0)
-            grammar.op_weights[op_name] = cur * (1.0 + conf * 0.25)
-        return
-
-    # ── 5. Distribution corrector ops → boost ──
-    correctors = evidence.get("corrector_ops")
-    if isinstance(correctors, dict) and correctors:
-        for op_name, stats in correctors.items():
-            rate = (
-                float(stats.get("correction_rate", 0)) if isinstance(stats, dict) else 0
-            )
-            if rate >= 0.5:
-                cur = grammar.op_weights.get(op_name, 1.0)
-                grammar.op_weights[op_name] = cur * (1.0 + conf * 0.15 * rate)
-        return
-
-    # ── 6. Insights with valid_followers but no risk_score → informational boost only ──
-    valid_followers = evidence.get("valid_followers")
-    if isinstance(valid_followers, list) and valid_followers:
-        for op_name in valid_followers:
-            cur = grammar.op_weights.get(op_name, 1.0)
-            grammar.op_weights[op_name] = cur * (1.0 + conf * 0.1)
-        return
-
-
-def _build_signal_weight_maps(
-    nb: LabNotebook,
-) -> Tuple[Dict[str, float], Dict[str, float]]:
-    try:
-        op_pair_priors = nb.get_op_pair_priors(min_support=5, limit=50)
-        fingerprint_buckets = nb.get_fingerprint_buckets(limit=5)
-    except (AttributeError, TypeError, ValueError) as e:
-        logger.debug("Failed fetching signal weight data: %s", e)
-        return {}, {}
-    if not op_pair_priors and not fingerprint_buckets:
-        return {}, {}
-    return _cached_signal_weight_maps(
-        _freeze_op_pair_priors(op_pair_priors or []),
-        _freeze_fingerprint_buckets(fingerprint_buckets or []),
-    )
-
-
-def _judgment_rerank(
-    graphs: List,
-    nb: LabNotebook,
-    log: logging.Logger,
-) -> List[Tuple[Any, float]]:
-    """Rerank candidates by judgment score, preserving exploration budget.
-
-    Fetches research signals from the notebook, scores each candidate,
-    sorts by total_score descending, but reserves the bottom 15% of slots
-    for under-sampled candidates (lowest support counts).
-
-    Returns list of (graph, judgment_score) tuples with hard-failure candidates removed.
-    Falls back to original order with neutral scores if judgment module unavailable.
-    """
-    if not _HAS_JUDGMENT or not graphs:
-        return [(g, 0.5) for g in graphs]
-
-    # Fetch signals from notebook (fast — cached in DB)
-    try:
-        signals: Dict[str, Any] = {}
-        signals["op_pair_priors"] = nb.get_op_pair_priors(min_support=5, limit=50)
-        risk = nb.get_failure_risk_signatures(limit=50)
-        signals["failure_risk_signatures"] = risk.get("failure_risk_signatures", [])
-        signals["critical_failures"] = risk.get("critical_failures", [])
-        signals["fingerprint_buckets"] = nb.get_fingerprint_buckets(limit=5)
-        signals["lineage_successors"] = nb.get_lineage_successor_stats(limit=50)
-    except Exception as exc:
-        log.debug(
-            "judgment_rerank: signals fetch failed (%s), using original order", exc
-        )
-        return [(g, 0.5) for g in graphs]
-
-    # Pre-build bucket name lookup for per-candidate context
-    bucket_names = {
-        b["bucket"] for b in signals.get("fingerprint_buckets", []) if b.get("bucket")
-    }
-
-    scored: List[tuple] = []
-    skipped = 0
-
-    for graph in graphs:
-        try:
-            # Build per-candidate context and signals
-            candidate_signals = signals
-            fp = graph.fingerprint() if hasattr(graph, "fingerprint") else None
-
-            # Populate nearest_peers for this candidate's fingerprint
-            if fp and hasattr(nb, "get_nearest_peers"):
-                try:
-                    peers = nb.get_nearest_peers(fp, n=5)
-                    if peers:
-                        # Shallow copy to avoid mutating shared dict
-                        candidate_signals = {**signals, "nearest_peers": peers}
-                except (AttributeError, TypeError, KeyError) as e:
-                    logger.debug("nearest_peers lookup failed: %s", e)
-
-            # Determine fingerprint bucket from candidate ops
-            ctx_bucket = ""
-            if bucket_names:
-                ops = set()
-                for node in getattr(graph, "nodes", {}).values():
-                    if not getattr(node, "is_input", False):
-                        op = getattr(node, "op_name", "")
-                        if op:
-                            ops.add(op)
-                # Simple bucket assignment matching notebook_analytics logic
-                has_attention = any("attention" in op for op in ops)
-                has_mixing = any(
-                    t in op
-                    for op in ops
-                    for t in ("state_space", "scan", "conv", "mix")
-                )
-                if has_attention and has_mixing and "hybrid" in bucket_names:
-                    ctx_bucket = "hybrid"
-                elif has_attention and "attention-heavy" in bucket_names:
-                    ctx_bucket = "attention-heavy"
-                elif has_mixing and "mixing-heavy" in bucket_names:
-                    ctx_bucket = "mixing-heavy"
-                elif (
-                    any(
-                        t in op for op in ops for t in ("sparse", "gate", "topk", "moe")
-                    )
-                    and "sparse" in bucket_names
-                ):
-                    ctx_bucket = "sparse"
-                elif "exotic" in bucket_names:
-                    ctx_bucket = "exotic"
-
-            ctx = JudgmentContext(fingerprint_bucket=ctx_bucket)
-            result = score_candidate(graph, ctx, candidate_signals)
-        except Exception as e:
-            logger.debug("score_candidate failed, using neutral score: %s", e)
-            scored.append((graph, 0.5, 0))  # neutral score on error
-            continue
-
-        if result.risk_flags:
-            log.info(
-                "judgment_rerank: discarding candidate with risk flags: %s",
-                result.risk_flags,
-            )
-            skipped += 1
-            continue
-
-        support_total = sum(result.support_counts.values())
-        scored.append((graph, result.total_score, support_total))
-
-    if skipped:
-        log.info(
-            "judgment_rerank: filtered %d candidates with critical failures", skipped
-        )
-
-    if not scored:
-        return [(g, 0.5) for g in graphs]
-
-    # Sort by score descending
-    scored.sort(key=lambda t: t[1], reverse=True)
-
-    n = len(scored)
-    n_explore = max(1, int(n * _EXPLORATION_BUDGET))
-    n_exploit = n - n_explore
-
-    if n > n_explore + 1:
-        exploit = scored[:n_exploit]
-        explore_pool = scored[n_exploit:]
-        # Sort explore pool by support (lowest first = most novel)
-        explore_pool.sort(key=lambda t: t[2])
-        scored = exploit + explore_pool
-
-    # Decision trace: log judgment summary for observability
-    try:
-        scores = [t[1] for t in scored]
-        _log_learning_event_compat(
-            nb,
-            "judgment_rerank",
-            f"Reranked {n} candidates ({skipped} filtered)",
-            n_candidates=n,
-            n_filtered=skipped,
-            score_min=round(min(scores), 3),
-            score_max=round(max(scores), 3),
-            score_mean=round(sum(scores) / len(scores), 3),
-            n_explore=n_explore,
-        )
-    except (TypeError, ValueError, AttributeError) as e:
-        logger.debug("Failed logging judgment_rerank event: %s", e)
-
-    return [(t[0], t[1]) for t in scored]
 
 
 class _ExecutionScreeningMixin:
@@ -1287,7 +727,7 @@ class _ExecutionScreeningMixin:
 
         if screening_signal_allowed:
             try:
-                template_weights, motif_weights = _build_signal_weight_maps(nb)
+                template_weights, motif_weights = build_signal_weight_maps(nb)
             except (AttributeError, TypeError, ValueError) as e:
                 logger.debug("Failed building signal weight maps: %s", e)
                 template_weights, motif_weights = {}, {}
@@ -1348,7 +788,7 @@ class _ExecutionScreeningMixin:
         # Apply Bayesian insight adjustments to grammar config
         if screening_signal_allowed:
             try:
-                _apply_insight_adjustments(
+                apply_insight_adjustments(
                     nb, grammar, grammar.template_weights, grammar.motif_weights
                 )
             except Exception as e:
@@ -1584,7 +1024,12 @@ class _ExecutionScreeningMixin:
             before_judgment = len(graphs)
             graphs = rank_synthesis_candidates_by_stability(graphs)
             results["stability_reranked"] = True
-            ranked = _judgment_rerank(graphs, nb, logger)
+            ranked = judgment_rerank(
+                graphs,
+                nb,
+                logger,
+                log_event=_log_learning_event_compat,
+            )
             if len(ranked) != before_judgment:
                 results["judgment_filtered"] = before_judgment - len(ranked)
             _judgment_scores = {id(g): s for g, s in ranked}
@@ -1593,134 +1038,13 @@ class _ExecutionScreeningMixin:
                 0, before_judgment - len(graphs)
             )
         results["funnel_counts"]["post_judgment"] = len(graphs)
-
-        # ── Ensemble ranker: score and SORT graphs by predicted quality ──
-        # Graphs are evaluated in predicted-quality order (best first).
-        # Only skip graphs with extremely low scores (hard floor at threshold)
-        # to avoid wasting compute on obviously broken graphs — but the
-        # primary mechanism is RANKING, not gating. This ensures graphs with
-        # novel or unusual ops still get evaluated (just later in the queue).
-        _ensemble = None
-        from ..ml_influence_policy import component_is_allowed
-
-        if (
-            config.gbm_prescreener_enabled
-            and component_is_allowed("screening_ensemble", config)
-            and graphs
-        ):
-            try:
-                from ..intelligence.predictor import (
-                    load_runtime_ensemble,
-                )
-                from ...synthesis.graph_features import (
-                    extract_graph_features,
-                    enrich_with_op_stats,
-                    load_op_stats,
-                )
-
-                db_path = (
-                    str(nb.db_path)
-                    if hasattr(nb, "db_path")
-                    else "research/lab_notebook.db"
-                )
-                profiling_db = "research/profiling/component_profiles.db"
-
-                _ensemble = load_runtime_ensemble(profiling_db=profiling_db)
-
-                if _ensemble is not None and _ensemble.is_fitted():
-                    _op_stats_cache = load_op_stats(db_path)
-                    scored: List[tuple] = []
-                    for g in graphs:
-                        gd = g.to_dict()
-                        feats = extract_graph_features(gd)
-                        if feats:
-                            nodes = gd.get("nodes") or {}
-                            ops = [
-                                n.get("op_name", "")
-                                for n in nodes.values()
-                                if n.get("op_name", "") != "input"
-                            ]
-                            enrich_with_op_stats(feats, ops, preloaded=_op_stats_cache)
-                        planning = _ensemble.predict_planning_score(
-                            graph_json=gd,
-                            graph_features=feats if feats else None,
-                        )
-                        scored.append((planning, g, gd))
-
-                    # Sort by predicted quality (best first for evaluation priority)
-                    scored.sort(key=lambda x: -x[0]["planning_score"])
-
-                    # Hard floor is defined on P(pass_s1); planning_score is only for ranking.
-                    kept: List = []
-                    skipped = 0
-                    for planning, g, gd in scored:
-                        planning_score = float(planning.get("planning_score", 0.0))
-                        p_pass = float(planning.get("p_pass", 0.0))
-                        p_ind = float(planning.get("p_induction_learner", 0.0))
-                        pred_auc = float(planning.get("predicted_induction_auc", 0.0))
-                        quality_score = float(
-                            planning.get("predicted_quality_score", 0.0)
-                        )
-                        if p_pass < config.gbm_gate_threshold:
-                            skipped += 1
-                            try:
-                                nb.record_program_result(
-                                    experiment_id=exp_id,
-                                    graph=g,
-                                    graph_json=fast_dumps(gd),
-                                    status="predictor_skip",
-                                    metrics={
-                                        "predicted_p_s1": p_pass,
-                                        "predicted_induction_auc": pred_auc,
-                                        "predicted_p_induction_learner": p_ind,
-                                        "predicted_quality_score": quality_score,
-                                        "predictor_planning_score": planning_score,
-                                    },
-                                )
-                            except (TypeError, ValueError) as e:
-                                logger.debug(
-                                    "Failed recording predictor_skip result: %s", e
-                                )
-                        else:
-                            kept.append(g)
-
-                    graphs = kept
-                    results["funnel_counts"]["gbm_prescreener_skipped"] = skipped
-                    results["funnel_counts"]["post_gbm_prescreener"] = len(graphs)
-                    scores_arr = [float(s[0]["planning_score"]) for s in scored]
-                    pass_arr = [float(s[0]["p_pass"]) for s in scored]
-                    induction_arr = [float(s[0]["p_induction_learner"]) for s in scored]
-                    _diag = (
-                        _ensemble.diagnostics()
-                        if hasattr(_ensemble, "diagnostics")
-                        else {}
-                    )
-                    logger.info(
-                        "Ensemble ranker: %d graphs scored plan=[%.3f–%.3f] "
-                        "pass=[%.3f–%.3f] induction=[%.3f–%.3f], "
-                        "%d below P(pass_s1) floor (%.2f), %d kept, components=%d",
-                        len(scored),
-                        min(scores_arr) if scores_arr else 0,
-                        max(scores_arr) if scores_arr else 0,
-                        min(pass_arr) if pass_arr else 0,
-                        max(pass_arr) if pass_arr else 0,
-                        min(induction_arr) if induction_arr else 0,
-                        max(induction_arr) if induction_arr else 0,
-                        skipped,
-                        config.gbm_gate_threshold,
-                        len(kept),
-                        _diag.get("n_components", 1),
-                    )
-                else:
-                    logger.debug(
-                        "Ensemble pre-screener disabled: no persisted predictor artifacts loaded"
-                    )
-            except Exception as e:
-                logger.debug("Ensemble pre-screener unavailable: %s", e)
-        elif config.gbm_prescreener_enabled and graphs:
-            logger.info(
-                "Ensemble pre-screener requested but blocked by ML trust policy"
-            )
+        graphs = self._run_gbm_prescreener(
+            nb=nb,
+            graphs=graphs,
+            config=config,
+            exp_id=exp_id,
+            results=results,
+        )
 
         self._update_progress(total_programs=len(graphs))
         return (
@@ -1864,11 +1188,20 @@ class _ExecutionScreeningMixin:
 
         # ── Structural gates + toxic pre-screen (single-pass analysis) ──
         graph_analysis = analyze_graph_for_screening(graph, _get_primitive)
+        # gate8_retrieval_dead is opt-in via capability_first mode. The flag
+        # lives on RunConfig as ``_capability_first_mode`` (the UI toggle);
+        # the corresponding ``binding_capable_required`` field on
+        # GrammarConfig is not visible at this call site. Use the RunConfig
+        # flag as the source of truth so gate8 actually fires when the user
+        # enables capability-first.
         gate_fail = structural_gate_failure(
             graph,
             routing_mandatory=bool(config.routing_mandatory),
             efficiency_ops=_EFFICIENCY_OPS,
             analysis=graph_analysis,
+            binding_capable_required=bool(
+                getattr(config, "_capability_first_mode", False)
+            ),
         )
         if gate_fail is not None:
             results["funnel_counts"].setdefault("dropped_structural_gate", 0)
@@ -2015,7 +1348,18 @@ class _ExecutionScreeningMixin:
 
         layer_graphs = [graph] * config.n_layers
         _compile_t0 = time.perf_counter()
-        model = compile_model(
+        # Capability-first templates produce novel graph topologies that
+        # can trigger segfaults in the native C/Rust/Cython dispatch path
+        # (the native kernels were written before these templates existed).
+        # Fall back to pure PyTorch compilation which is slower but never
+        # segfaults. Once the native kernels are hardened for the role-slot
+        # op combinations, this guard can be removed.
+        _compiler = (
+            _compile_model_legacy
+            if getattr(config, "_capability_first_mode", False)
+            else _compile_model_native
+        )
+        model = _compiler(
             layer_graphs,
             vocab_size=_phase1_vocab,
             max_seq_len=config.max_seq_len,
@@ -2267,7 +1611,12 @@ class _ExecutionScreeningMixin:
             del model
             clear_gpu_memory()
             _compile_t0 = time.perf_counter()
-            model = compile_model(
+            _prog_compiler = (
+                _compile_model_legacy
+                if getattr(config, "_capability_first_mode", False)
+                else _compile_model_native
+            )
+            model = _prog_compiler(
                 layer_graphs,
                 vocab_size=config.vocab_size,
                 max_seq_len=config.max_seq_len,
@@ -2287,7 +1636,12 @@ class _ExecutionScreeningMixin:
                 from ...eval.wikitext_eval import screening_wikitext_eval
 
                 _compile_t0 = time.perf_counter()
-                fast_lane_model = compile_model(
+                _fl_compiler = (
+                    _compile_model_legacy
+                    if getattr(config, "_capability_first_mode", False)
+                    else _compile_model_native
+                )
+                fast_lane_model = _fl_compiler(
                     layer_graphs,
                     vocab_size=config.vocab_size,
                     max_seq_len=config.max_seq_len,

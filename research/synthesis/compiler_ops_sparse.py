@@ -274,7 +274,7 @@ def _op_adaptive_rank_gate(module, inputs, config):
 def _op_dual_compression_blend(module, inputs, config):
     x = inputs[0]
     routing_signal = inputs[1] if len(inputs) > 1 else x
-    if not hasattr(module, "expert_weights"):
+    if not hasattr(module, "U_lr"):
         return x
     weights = F.softmax(routing_signal, dim=-1)
     out0 = _safe_linear(_safe_linear(x, module.U_lr), module.V_lr)

@@ -6,7 +6,7 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AriaError;
-use crate::notebook_graph::NotebookGraph;
+use crate::notebook_graph::{NotebookGraph, NotebookNode};
 
 const HUBER_DELTA: f64 = 0.2;
 
@@ -111,51 +111,29 @@ fn profile_grad_risk(profiles: &HashMap<String, OpProfile>, op: &str) -> f64 {
         + profile.has_nan.unwrap_or(0.0)
 }
 
-pub fn extract_topology_features_json(
-    graph_json: &str,
-    op_profiles_json: &str,
-    pair_stability_json: &str,
-    op_metadata_json: &str,
-) -> Result<String, AriaError> {
-    let graph = NotebookGraph::from_json(graph_json)?;
-    if graph.nodes.len() < 2 {
+struct TopologyIndex<'a> {
+    sorted_nodes: Vec<&'a NotebookNode>,
+    id_to_idx: HashMap<i64, usize>,
+    op_names: Vec<&'a str>,
+    children: Vec<Vec<usize>>,
+    parents: Vec<Vec<usize>>,
+}
+
+fn build_topology_index(graph: &NotebookGraph) -> Result<TopologyIndex<'_>, AriaError> {
+    let mut sorted_nodes: Vec<&NotebookNode> = graph.nodes.values().collect();
+    sorted_nodes.sort_unstable_by_key(|node| node.id);
+    if sorted_nodes.len() < 2 {
         return Err(AriaError::InvalidIR("graph has fewer than 2 nodes".into()));
     }
 
-    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
-    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
-    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
-        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
-
-    let mut node_ids: Vec<i64> = graph.nodes.values().map(|node| node.id).collect();
-    node_ids.sort_unstable();
-    let mut id_to_idx = HashMap::with_capacity(node_ids.len());
-    for (idx, node_id) in node_ids.iter().enumerate() {
-        id_to_idx.insert(*node_id, idx);
+    let mut id_to_idx = HashMap::with_capacity(sorted_nodes.len());
+    for (idx, node) in sorted_nodes.iter().enumerate() {
+        id_to_idx.insert(node.id, idx);
     }
-    let n = node_ids.len();
 
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut op_names: Vec<String> = Vec::with_capacity(n);
-    for node_id in &node_ids {
-        let node = graph
-            .nodes
-            .values()
-            .find(|node| node.id == *node_id)
-            .ok_or_else(|| AriaError::InvalidIR(format!("node {} missing", node_id)))?;
-        op_names.push(node.op_name.clone());
-    }
-    for node_id in &node_ids {
-        let node = graph
-            .nodes
-            .values()
-            .find(|node| node.id == *node_id)
-            .ok_or_else(|| AriaError::InvalidIR(format!("node {} missing", node_id)))?;
-        let idx = *id_to_idx
-            .get(node_id)
-            .ok_or_else(|| AriaError::InvalidIR(format!("node {} index missing", node_id)))?;
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); sorted_nodes.len()];
+    let mut parents: Vec<Vec<usize>> = vec![Vec::new(); sorted_nodes.len()];
+    for (idx, node) in sorted_nodes.iter().enumerate() {
         for input_id in &node.input_ids {
             if let Some(&parent_idx) = id_to_idx.get(input_id) {
                 children[parent_idx].push(idx);
@@ -163,6 +141,39 @@ pub fn extract_topology_features_json(
             }
         }
     }
+
+    let op_names = sorted_nodes
+        .iter()
+        .map(|node| node.op_name.as_str())
+        .collect();
+
+    Ok(TopologyIndex {
+        sorted_nodes,
+        id_to_idx,
+        op_names,
+        children,
+        parents,
+    })
+}
+
+pub fn extract_topology_features_json(
+    graph_json: &str,
+    op_profiles_json: &str,
+    pair_stability_json: &str,
+    op_metadata_json: &str,
+) -> Result<String, AriaError> {
+    let graph = NotebookGraph::from_json(graph_json)?;
+    let op_profiles: HashMap<String, OpProfile> = serde_json::from_str(op_profiles_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let pair_stability = parse_pair_stability_map(pair_stability_json)?;
+    let op_metadata: HashMap<String, OpCategoryMeta> = serde_json::from_str(op_metadata_json)
+        .map_err(|e| AriaError::InvalidIR(e.to_string()))?;
+    let topo = build_topology_index(&graph)?;
+    let n = topo.sorted_nodes.len();
+    let op_names = topo.op_names;
+    let id_to_idx = topo.id_to_idx;
+    let children = topo.children;
+    let parents = topo.parents;
 
     let mut roots: Vec<usize> = parents
         .iter()
@@ -194,7 +205,8 @@ pub fn extract_topology_features_json(
 
     let n_ops = op_names
         .iter()
-        .filter(|op| !op.is_empty() && op.as_str() != "input")
+        .copied()
+        .filter(|op| !op.is_empty() && *op != "input")
         .count() as f64;
     let n_edges: usize = children.iter().map(|ch| ch.len()).sum();
 
@@ -245,7 +257,7 @@ pub fn extract_topology_features_json(
 
     let mut lip_values = vec![1.0_f64; n];
     let mut grad_risks = vec![0.0_f64; n];
-    for (idx, op) in op_names.iter().enumerate() {
+    for (idx, &op) in op_names.iter().enumerate() {
         lip_values[idx] = profile_lipschitz(&op_profiles, op);
         grad_risks[idx] = profile_grad_risk(&op_profiles, op);
     }
@@ -297,7 +309,7 @@ pub fn extract_topology_features_json(
     let mut weighted_std = 0.0_f64;
     let mut weighted_grad = 0.0_f64;
     let mut weight_sum = 0.0_f64;
-    for (idx, op) in op_names.iter().enumerate() {
+    for (idx, &op) in op_names.iter().enumerate() {
         if op.is_empty() || op == "input" {
             continue;
         }
@@ -315,12 +327,16 @@ pub fn extract_topology_features_json(
     let mut pair_values = Vec::new();
     for idx in 0..n {
         for &child_idx in &children[idx] {
-            let a = &op_names[idx];
-            let b = &op_names[child_idx];
+            let a = op_names[idx];
+            let b = op_names[child_idx];
             if a.is_empty() || b.is_empty() || a == "input" || b == "input" {
                 continue;
             }
-            pair_values.push(*pair_stability.get(&(a.clone(), b.clone())).unwrap_or(&0.5));
+            pair_values.push(
+                *pair_stability
+                    .get(&(a.to_string(), b.to_string()))
+                    .unwrap_or(&0.5),
+            );
         }
     }
     if pair_values.is_empty() {
@@ -407,7 +423,7 @@ pub fn extract_topology_features_json(
     let mut param_ops = 0usize;
     let mut math_late = 0.0_f64;
     let mut mixing_late = 0.0_f64;
-    for (idx, op) in op_names.iter().enumerate() {
+    for (idx, &op) in op_names.iter().enumerate() {
         if op.is_empty() || op == "input" {
             continue;
         }
@@ -485,7 +501,7 @@ pub fn extract_topology_features_json(
             let output_parents = &parents[output_idx];
             let has_norm = output_parents.iter().any(|&parent_idx| {
                 matches!(
-                    op_names[parent_idx].as_str(),
+                    op_names[parent_idx],
                     "layernorm" | "rmsnorm" | "layer_norm" | "rms_norm"
                 )
             });
@@ -514,6 +530,26 @@ pub fn extract_topology_features_json(
     }
 
     serde_json::to_string(&features).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
+}
+
+pub fn extract_edge_op_pairs_json(graph_json: &str) -> Result<String, AriaError> {
+    let graph = NotebookGraph::from_json(graph_json)?;
+    let topo = build_topology_index(&graph)?;
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (idx, children) in topo.children.iter().enumerate() {
+        let left = topo.op_names[idx];
+        if left.is_empty() || left == "input" {
+            continue;
+        }
+        for &child_idx in children {
+            let right = topo.op_names[child_idx];
+            if right.is_empty() || right == "input" {
+                continue;
+            }
+            pairs.push((left.to_string(), right.to_string()));
+        }
+    }
+    serde_json::to_string(&pairs).map_err(|e| AriaError::ExecutionFailed(e.to_string()))
 }
 
 fn checked_flat_copy(flat: &[f64], rows: usize, cols: usize) -> Result<Vec<f64>, AriaError> {

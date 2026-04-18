@@ -37,15 +37,20 @@ class _ExperimentsMixin:
 
     __slots__ = ()
 
-    def _direct_db_conn(self) -> sqlite3.Connection:
-        """Open a one-off SQLite connection for critical lifecycle writes.
+    def _direct_db_conn(self):
+        """Return the shared native connection for critical lifecycle writes.
 
-        This bypasses any degraded long-lived connection state when the main
-        notebook connection has already hit intermittent disk I/O errors.
+        Previously opened a one-off sqlite3.Connection which caused SHM
+        teardown on close.  Now returns the shared NativeConnectionWrapper
+        which delegates to the Rust singleton — no close, no SHM teardown.
         """
+        if getattr(self, "_use_native", False):
+            return self.conn
+        # Fallback for in-memory test DBs.
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         for pragma in (
             "PRAGMA foreign_keys=ON",
+            "PRAGMA wal_autocheckpoint=0",
             "PRAGMA busy_timeout=15000",
         ):
             try:
@@ -356,10 +361,10 @@ class _ExperimentsMixin:
             prereg_id,
             now,
             experiment_type,
-            json.dumps(preregistration.get("hypothesis") or {}),
-            json.dumps(preregistration.get("analysis_plan") or {}),
-            json.dumps(preregistration.get("falsification_conditions") or []),
-            json.dumps(preregistration.get("confounders_checklist") or []),
+            json.dumps(preregistration.get("hypothesis") or {}, default=str),
+            json.dumps(preregistration.get("analysis_plan") or {}, default=str),
+            json.dumps(preregistration.get("falsification_conditions") or [], default=str),
+            json.dumps(preregistration.get("confounders_checklist") or [], default=str),
             int(bool(preregistration.get("exploratory"))),
             created_by,
             notes,
@@ -508,7 +513,7 @@ class _ExperimentsMixin:
             hypothesis,
             research_question,
             preregistration_id,
-            json.dumps(config_payload),
+            json.dumps(config_payload, default=str),
             now,
         )
 

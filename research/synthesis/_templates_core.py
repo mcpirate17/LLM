@@ -98,6 +98,13 @@ def tpl_sequential(
         )
         if motif:
             processed = _instantiate_motif(graph, normed, motif, rng)
+            if graph.nodes[processed].op_name == "linear_proj_down":
+                processed = _add(
+                    graph,
+                    "rmsnorm",
+                    [processed],
+                    context="dense_cascade.post_down_norm",
+                )
             processed = _fix_dim(graph, processed)
             # Per-step residual
             current = _residual(
@@ -172,34 +179,23 @@ def tpl_parallel_split(
     if shape.dim < 16:
         raise TemplateBuildError("parallel_split requires input dim >= 16")
 
-    # Pre-norm
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
+    normed = _add(graph, "rmsnorm", [input_id], context="parallel_split.norm")
     split_a = _add(
         graph, "split2", [normed], {"part": 0}, context="parallel_split.split_a"
     )
     split_b = _add(
         graph, "split2", [normed], {"part": 1}, context="parallel_split.split_b"
     )
-
-    # Per-lane norm + motif. split2 halves width, so both lanes must stay in
-    # bottleneck-safe motif classes until concat. Letting a lane restore to
-    # full width before the join is what created the asymmetric concat
-    # scaffolds now rejected by validation.
-    norm_a = _pick_compatible_motif(graph, split_a, rng, MOTIF_CLASS_NORM, weights)
-    lane_a = _instantiate_motif(graph, split_a, norm_a, rng) if norm_a else split_a
-    motif_a = _pick_compatible_motif_from_classes(
-        graph, lane_a, rng, _BOTTLENECK_CLASSES, weights
+    path_a = _add(graph, "rmsnorm", [split_a], context="parallel_split.path_a_norm")
+    path_a = _add(graph, "conv1d_seq", [path_a], context="parallel_split.path_a")
+    path_b = _add(
+        graph,
+        "linear_proj",
+        [split_b],
+        {"out_dim": graph.nodes[split_b].output_shape.dim},
+        context="parallel_split.path_b",
     )
-    path_a = _instantiate_motif(graph, lane_a, motif_a, rng) if motif_a else lane_a
-
-    norm_b = _pick_compatible_motif(graph, split_b, rng, MOTIF_CLASS_NORM, weights)
-    lane_b = _instantiate_motif(graph, split_b, norm_b, rng) if norm_b else split_b
-
-    # 30% chance: channel-shuffle wrap around a bottleneck-safe path_b motif.
-    path_b = _shuffle_wrap(graph, lane_b, rng, _BOTTLENECK_CLASSES, weights, prob=0.3)
-
+    path_b = _add(graph, "gelu", [path_b], context="parallel_split.path_b_act")
     merged = _add(graph, "concat", [path_a, path_b], context="parallel_split.concat")
 
     merged = _fix_dim(graph, merged)
@@ -249,9 +245,7 @@ def tpl_three_way_split(
     Lane 2: routing (MoE/gate/guarded activation)
     """
     D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
-
+    normed = _add(graph, "rmsnorm", [input_id], context="three_way_split.norm")
     routed = _add(
         graph,
         "gated_lane_blend",
@@ -260,86 +254,46 @@ def tpl_three_way_split(
         context="three_way_split.route",
     )
 
-    shape = graph.nodes[routed].output_shape
-    if shape.dim % 3 != 0:
-        target_dim = max(24, (shape.dim // 3) * 3)
+    if graph.nodes[routed].output_shape.dim % 3 != 0:
         routed = _add(
             graph,
             "linear_proj",
             [routed],
-            {"out_dim": target_dim},
+            {"out_dim": 255},
             context="three_way_split.reproject",
         )
 
-    part0 = _add(
-        graph, "split3", [routed], {"part": 0}, context="three_way_split.part0"
-    )
-    part1 = _add(
-        graph, "split3", [routed], {"part": 1}, context="three_way_split.part1"
-    )
-    part2 = _add(
-        graph, "split3", [routed], {"part": 2}, context="three_way_split.part2"
-    )
+    part0 = _add(graph, "split3", [routed], {"part": 0}, context="three_way_split.part0")
+    part1 = _add(graph, "split3", [routed], {"part": 1}, context="three_way_split.part1")
+    part2 = _add(graph, "split3", [routed], {"part": 2}, context="three_way_split.part2")
 
-    lane0 = _add(
-        graph,
-        "linear_proj_up",
-        [part0],
-        {"out_dim": D},
-        context="three_way_split.lane0",
-    )
-    lane1 = _add(
-        graph,
-        "linear_proj_up",
-        [part1],
-        {"out_dim": D},
-        context="three_way_split.lane1",
-    )
-    lane2 = _add(
-        graph,
-        "linear_proj_up",
-        [part2],
-        {"out_dim": D},
-        context="three_way_split.lane2",
-    )
-
-    m0 = _pick_compatible_motif_from_classes(graph, lane0, rng, _MIXER_CLASSES, weights)
-    p0 = _instantiate_motif(graph, lane0, m0, rng) if m0 else lane0
-
-    m1 = _pick_compatible_motif_from_classes(graph, lane1, rng, _FFN_CLASSES, weights)
-    p1 = _instantiate_motif(graph, lane1, m1, rng) if m1 else lane1
-
-    _GATE_CLASSES = (MOTIF_CLASS_MOE, MOTIF_CLASS_GATE, MOTIF_CLASS_GUARDED_ACT)
-    m2 = _pick_compatible_motif_from_classes(graph, lane2, rng, _GATE_CLASSES, weights)
-    p2 = _instantiate_motif(graph, lane2, m2, rng) if m2 else lane2
-
-    lane_dim0 = D // 3
-    lane_dim1 = D // 3
-    lane_dim2 = D - lane_dim0 - lane_dim1
-    p0 = _add(
-        graph,
-        "linear_proj_down",
-        [p0],
-        {"out_dim": lane_dim0},
-        context="three_way_split.down0",
-    )
+    p0 = _add(graph, "conv1d_seq", [part0], context="three_way_split.lane0")
     p1 = _add(
         graph,
-        "linear_proj_down",
-        [p1],
-        {"out_dim": lane_dim1},
-        context="three_way_split.down1",
+        "linear_proj",
+        [part1],
+        {"out_dim": graph.nodes[part1].output_shape.dim},
+        context="three_way_split.lane1",
     )
+    p1 = _add(graph, "gelu", [p1], context="three_way_split.lane1_act")
     p2 = _add(
         graph,
-        "linear_proj_down",
-        [p2],
-        {"out_dim": lane_dim2},
-        context="three_way_split.down2",
+        "linear_proj",
+        [part2],
+        {"out_dim": graph.nodes[part2].output_shape.dim},
+        context="three_way_split.lane2",
     )
+    p2 = _add(graph, "sigmoid", [p2], context="three_way_split.lane2_gate")
 
-    combined01 = _add(graph, "concat", [p0, p1], context="three_way_split.concat01")
-    combined = _add(graph, "concat", [combined01, p2], context="three_way_split.concat")
+    combined01 = _residual(graph, p0, p1, context="three_way_split.merge01")
+    combined = _residual(graph, combined01, p2, context="three_way_split.merge")
+    combined = _add(
+        graph,
+        "linear_proj",
+        [combined],
+        {"out_dim": D},
+        context="three_way_split.project",
+    )
     return _residual(graph, input_id, combined, context="three_way_split.output")
 
 
@@ -396,10 +350,18 @@ def tpl_moe(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    moe = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_MOE, weights)
-    if moe is None:
-        raise TemplateBuildError("moe template requires a compatible MoE motif")
-    routed = _instantiate_motif(graph, normed, moe, rng)
+    bridge = _add(
+        graph,
+        "linear_proj",
+        [normed],
+        {"out_dim": graph.model_dim},
+        context="moe.bridge",
+    )
+    moe_op = rng.choice(["moe_2expert", "moe_topk"])
+    moe_config: dict = {}
+    if moe_op == "moe_topk":
+        moe_config = {"num_experts": rng.choice([2, 4]), "top_k": 1}
+    routed = _add(graph, moe_op, [bridge], moe_config, context="moe.route")
 
     routed = _fix_dim(graph, routed)
     return _residual(graph, input_id, routed, context="moe.output")
@@ -478,35 +440,21 @@ def tpl_dense_cascade(
 
     DenseNet-style: each motif receives all prior outputs, with pre-norm.
     """
-    outputs = [input_id]
+    norm1 = _add(graph, "rmsnorm", [input_id], context="dense_cascade.norm1")
+    stage1 = _add(graph, "conv1d_seq", [norm1], context="dense_cascade.stage1")
+    mid1 = _residual(graph, input_id, stage1, context="dense_cascade.mid1")
 
-    for i in range(3):
-        prev = outputs[-1]
-        # Pre-norm before each motif
-        norm = _pick_compatible_motif(graph, prev, rng, MOTIF_CLASS_NORM, weights)
-        normed = _instantiate_motif(graph, prev, norm, rng) if norm else prev
-
-        motif = _pick_compatible_motif_from_classes(
-            graph, normed, rng, _ALL_CLASSES, weights
-        )
-        if motif:
-            processed = _instantiate_motif(graph, normed, motif, rng)
-            processed = _fix_dim(graph, processed)
-        else:
-            processed = normed
-
-        # Dense skip: add to first available prior output
-        if i > 0 and processed != outputs[0]:
-            processed = _residual(
-                graph, outputs[0], processed, context="dense_cascade.dense_add"
-            )
-        outputs.append(processed)
-
-    # Outer residual
-    result = outputs[-1]
-    if result != input_id:
-        return _residual(graph, input_id, result, context="dense_cascade.output")
-    return result
+    norm2 = _add(graph, "rmsnorm", [mid1], context="dense_cascade.norm2")
+    stage2 = _add(
+        graph,
+        "swiglu_mlp",
+        [norm2],
+        {"mlp_ratio": rng.choice([2.0, 3.0])},
+        context="dense_cascade.stage2",
+    )
+    stage2 = _fix_dim(graph, stage2)
+    stage2 = _residual(graph, input_id, stage2, context="dense_cascade.dense_add")
+    return _residual(graph, mid1, stage2, context="dense_cascade.output")
 
 
 def tpl_sparse_ffn(
@@ -612,6 +560,13 @@ def tpl_routed_bottleneck(
     else:
         processed = routed
 
+    # Insert a norm barrier between sparse/gate output and the up-projection
+    # to break forbidden context rule (linear_proj_up → linear_proj_up).
+    last_op = graph.nodes.get(processed)
+    if last_op and last_op.op_name in ("linear_proj_up", "linear_proj"):
+        processed = _add(
+            graph, "rmsnorm", [processed], context="routed_bottleneck.pre_up_norm"
+        )
     up = _add(
         graph,
         "linear_proj_up",
@@ -787,3 +742,252 @@ def tpl_conditional_compute(
         graph, "mul", [processed, difficulty], context="conditional_compute.gated"
     )
     return _residual(graph, input_id, gated, context="conditional_compute.output")
+
+
+def tpl_recursive_attn_ssm_hybrid(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → latent_attention_compressor → norm → state_space →
+    depth_weighted_proj → [sparse] → activation → proj → residual_add.
+
+    Combines the three strongest op families: latent attention (28.5% S1),
+    state space (28.7% S1), and adaptive recursion (41.3% S1). Attention
+    for pattern recognition, SSM for sequential state tracking, recursion
+    for depth-adaptive refinement. Intermediate norms satisfy must_precede
+    rules for LAC and state_space. Recursion is last because it cannot be
+    followed by mixing ops (attention/SSM).
+    """
+    D = graph.model_dim
+    norm_op = rng.choice(["rmsnorm", "layernorm"])
+
+    # Pre-norm (satisfies LAC must_precede)
+    normed = _add(
+        graph, norm_op, [input_id],
+        context="recursive_attn_ssm_hybrid.pre_norm",
+    )
+
+    # Latent attention compressor — best attention op
+    compressed = _add(
+        graph, "latent_attention_compressor", [normed],
+        context="recursive_attn_ssm_hybrid.lac",
+    )
+
+    # Norm before state_space (satisfies must_precede={rmsnorm, layernorm})
+    mid_norm_op = rng.choice(["rmsnorm", "layernorm"])
+    mid_norm = _add(
+        graph, mid_norm_op, [compressed],
+        context="recursive_attn_ssm_hybrid.mid_norm",
+    )
+
+    # State space — sequential state tracking
+    ssm_out = _add(
+        graph, "state_space", [mid_norm],
+        context="recursive_attn_ssm_hybrid.ssm",
+    )
+
+    # Adaptive recursion (depth_weighted_proj) — depth-adaptive refinement
+    # Must come after SSM; cannot be followed by mixing/attention ops
+    max_depth = rng.choice([2, 3, 4])
+    recursed = _add(
+        graph, "depth_weighted_proj", [ssm_out],
+        {"max_depth": max_depth},
+        context="recursive_attn_ssm_hybrid.recursion",
+    )
+
+    # Optional sparse linear after recursion (50% chance)
+    current = recursed
+    if rng.random() < 0.5:
+        sparse_op = rng.choice([
+            "nm_sparse_linear", "low_rank_proj", "ternary_projection",
+        ])
+        current = _add(
+            graph, sparse_op, [current],
+            context="recursive_attn_ssm_hybrid.sparse",
+        )
+
+    # Activation for nonlinearity
+    act_op = rng.choice(["gelu", "silu", "relu"])
+    current = _add(
+        graph, act_op, [current],
+        context="recursive_attn_ssm_hybrid.activation",
+    )
+
+    # Final projection
+    proj = _add(
+        graph, "linear_proj", [current],
+        {"out_dim": D},
+        context="recursive_attn_ssm_hybrid.proj",
+    )
+
+    proj = _fix_dim(graph, proj)
+    return _residual(graph, input_id, proj, context="recursive_attn_ssm_hybrid.output")
+
+
+def tpl_induction_matmul_block(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → cumsum → matmul → norm → kronecker_linear → [activation] →
+    proj → residual_add.
+
+    Combines the ops with the strongest induction signal: cumsum (ind 0.024),
+    matmul (ind 0.007), kronecker_linear (ind 0.006). Cumulative accumulation
+    feeds into explicit matrix multiplication for proto-attention, then
+    Kronecker-structured linear for efficient parameter sharing. Intermediate
+    norms satisfy must_precede rules for kronecker_linear.
+    """
+    D = graph.model_dim
+    norm_op = rng.choice(["rmsnorm", "layernorm"])
+
+    # Pre-norm
+    normed = _add(
+        graph, norm_op, [input_id],
+        context="induction_matmul_block.pre_norm",
+    )
+
+    # Cumulative sum — accumulation for positional/temporal signal
+    accumulated = _add(
+        graph, "cumsum", [normed],
+        context="induction_matmul_block.cumsum",
+    )
+    stabilized = _add(
+        graph,
+        "rmsnorm",
+        [accumulated],
+        context="induction_matmul_block.post_cumsum_norm",
+    )
+    projected = _add(
+        graph,
+        "linear_proj",
+        [stabilized],
+        {"out_dim": D},
+        context="induction_matmul_block.pre_matmul_proj",
+    )
+
+    # Matmul — explicit matrix ops for induction
+    # matmul requires 2 inputs of same shape and prefers projection input.
+    matmul_out = _add(
+        graph, "matmul", [projected, projected],
+        context="induction_matmul_block.matmul",
+    )
+
+    # Norm before kronecker_linear (satisfies must_precede={rmsnorm, layernorm})
+    mid_norm_op = rng.choice(["rmsnorm", "layernorm"])
+    mid_norm = _add(
+        graph, mid_norm_op, [matmul_out],
+        context="induction_matmul_block.mid_norm",
+    )
+
+    # Kronecker-structured linear — efficient structured projection
+    kron = _add(
+        graph, "kronecker_linear", [mid_norm],
+        context="induction_matmul_block.kronecker",
+    )
+
+    # Activation for nonlinearity
+    act_op = rng.choice(["gelu", "silu", "relu"])
+    activated = _add(
+        graph, act_op, [kron],
+        context="induction_matmul_block.activation",
+    )
+
+    # Final projection
+    proj = _add(
+        graph, "linear_proj", [activated],
+        {"out_dim": D},
+        context="induction_matmul_block.proj",
+    )
+
+    proj = _fix_dim(graph, proj)
+    return _residual(graph, input_id, proj, context="induction_matmul_block.output")
+
+
+def tpl_recursive_moe_attn(
+    graph: ComputationGraph,
+    input_id: int,
+    rng: random.Random,
+    weights: MotifWeights = None,
+) -> int:
+    """norm → latent_attention_compressor → linear_proj → moe →
+    depth_weighted_proj → [sparse] → activation → proj → residual_add.
+
+    Combines MoE routing with recursion and attention: latent attention for
+    pattern recognition, MoE for conditional specialization, adaptive
+    recursion for depth. Linear proj between LAC and MoE satisfies MoE's
+    forbidden_predecessors (no direct norm->MoE). Recursion last because it
+    cannot precede mixing ops.
+    """
+    D = graph.model_dim
+    norm_op = rng.choice(["rmsnorm", "layernorm"])
+
+    # Pre-norm (satisfies LAC must_precede)
+    normed = _add(
+        graph, norm_op, [input_id],
+        context="recursive_moe_attn.pre_norm",
+    )
+
+    # Latent attention compressor — pattern recognition
+    compressed = _add(
+        graph, "latent_attention_compressor", [normed],
+        context="recursive_moe_attn.lac",
+    )
+
+    # Linear proj — bridge between attention and MoE
+    # moe_2expert/moe_topk forbid rmsnorm/layernorm as predecessor
+    bridge = _add(
+        graph, "linear_proj", [compressed],
+        {"out_dim": D},
+        context="recursive_moe_attn.bridge",
+    )
+
+    # MoE — conditional computation / specialization
+    moe_op = rng.choice(["moe_2expert", "moe_topk"])
+    moe_config: dict = {}
+    if moe_op == "moe_topk":
+        moe_config = {"num_experts": rng.choice([2, 4]), "top_k": 1}
+    expert = _add(
+        graph, moe_op, [bridge],
+        moe_config,
+        context="recursive_moe_attn.moe",
+    )
+
+    # Adaptive recursion (depth_weighted_proj) — depth refinement
+    max_depth = rng.choice([2, 3, 4])
+    recursed = _add(
+        graph, "depth_weighted_proj", [expert],
+        {"max_depth": max_depth},
+        context="recursive_moe_attn.recursion",
+    )
+
+    # Optional sparse linear after recursion (50% chance)
+    current = recursed
+    if rng.random() < 0.5:
+        sparse_op = rng.choice([
+            "nm_sparse_linear", "low_rank_proj", "ternary_projection",
+        ])
+        current = _add(
+            graph, sparse_op, [current],
+            context="recursive_moe_attn.sparse",
+        )
+
+    # Activation for nonlinearity
+    act_op = rng.choice(["gelu", "silu", "relu"])
+    current = _add(
+        graph, act_op, [current],
+        context="recursive_moe_attn.activation",
+    )
+
+    # Final projection
+    proj = _add(
+        graph, "linear_proj", [current],
+        {"out_dim": D},
+        context="recursive_moe_attn.proj",
+    )
+
+    proj = _fix_dim(graph, proj)
+    return _residual(graph, input_id, proj, context="recursive_moe_attn.output")

@@ -48,7 +48,9 @@ def get_runner(notebook_path: str) -> ExperimentRunner:
     return _runner
 
 
-def reset_runner_launch_state(runner: ExperimentRunner, *, error: Optional[str] = None) -> None:
+def reset_runner_launch_state(
+    runner: ExperimentRunner, *, error: Optional[str] = None
+) -> None:
     """Clear phantom in-memory launch state after a failed start attempt."""
     with runner._lock:
         if runner._thread is not None and not runner._thread.is_alive():

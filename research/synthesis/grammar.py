@@ -72,7 +72,7 @@ class GrammarConfig:
     """Configuration for the graph generator."""
 
     model_dim: int = MODEL_DIM
-    max_depth: int = 16  # depth budget (triple-lane templates need ~12-14)
+    max_depth: int = 18  # depth budget (triple-lane templates need ~12-14)
     max_width: int = 4  # max parallel paths (2 or 3 way splits)
     max_ops: int = 24  # max total operations (triple-lane split3 needs ~21)
     residual_prob: float = 0.7  # probability of residual connection
@@ -141,10 +141,27 @@ class GrammarConfig:
     # Also used as fallback when a slot's prescribed classes yield zero candidates.
     wildcard_slot_prob: float = 0.15
 
+    # ── Template exploration budget ────────────────────────────────────
+    # Fraction of template picks that ignore weights and select uniformly
+    # from ALL templates (including zero-weighted). Ensures every template
+    # gets coverage regardless of routing_mandatory or weight settings.
+    template_exploration_budget: float = 0.10
+
+    # Force every graph to use this specific template (bypass pick_template).
+    # Set to a template name from TEMPLATES dict, e.g. "transformer_block".
+    forced_template: Optional[str] = None
+
     # ── Routing-First Config (Phase 2) ────────────────────────────────
     routing_mandatory: bool = True  # Force routing structure in every graph
     routing_min_lanes: int = 2  # Minimum routing lanes (2 or 3)
     difficulty_scorer_type: str = "entropy"  # "entropy" or "learned"
+
+    # ── Capability-First Config ───────────────────────────────────────
+    # When True, screening requires at least one content-addressed op
+    # (attention family or bare matmul/outer_product/gather_topk/
+    # cosine_similarity). Used by ``capability_first`` preset to stop the
+    # search burning investigation compute on retrieval-dead trunks.
+    binding_capable_required: bool = False
 
     def update_bias(self, delta: float):
         """Adjust structured sparsity bias."""
@@ -220,7 +237,7 @@ class GrammarConfig:
         """Config tuned for exotic architecture exploration."""
         return cls(
             model_dim=model_dim,
-            max_depth=16,
+            max_depth=18,
             max_ops=24,
             split_prob=0.6,
             residual_prob=0.4,
@@ -313,7 +330,7 @@ class GrammarConfig:
         }
         return cls(
             model_dim=model_dim,
-            max_depth=16,
+            max_depth=18,
             max_ops=24,
             residual_prob=0.8,
             split_prob=0.3,
@@ -354,6 +371,95 @@ class GrammarConfig:
         )
 
     @classmethod
+    def capability_first(cls, model_dim: int = 256) -> "GrammarConfig":
+        """Preset that pressures the search toward trunk+sidecar graphs.
+
+        Samples only from role-slot templates that wire an explicit
+        exact-retrieval sidecar (matmul / gather_topk) merged into a
+        compression trunk via a typed-entropy or sparse-router controller.
+        Boosts retrieval-family ops (matmul, outer_product, gather_topk,
+        cosine_similarity, token_type_classifier, token_entropy) so the
+        motif slots inside the sidecar actually pick content-addressed
+        primitives.
+
+        Use this preset when seeding runs aimed at the full metric tuple
+        (ppl + binding_auc + induction + ar + hellaswag). The companion
+        ``routing_first`` preset still exists for pure MoE/difficulty
+        routing experiments.
+        """
+        from .templates import CAPABILITY_FIRST_TEMPLATES, DEFAULT_TEMPLATE_WEIGHTS
+
+        # Promote capability-first templates; keep a small positive weight on
+        # the core routing templates so composition can still interleave a
+        # difficulty router, but let the role-slot templates dominate.
+        tpl_weights: Dict[str, float] = {}
+        for name in DEFAULT_TEMPLATE_WEIGHTS:
+            if name in CAPABILITY_FIRST_TEMPLATES:
+                tpl_weights[name] = 6.0
+            else:
+                tpl_weights[name] = 0.0
+        # Keep a couple of known-good low-ppl trunks at minority weight so the
+        # grammar can compose them before the retrieval sidecar. Without this
+        # the trunk choice is fully owned by the role-slot template internals.
+        for trunk_name, weight in (
+            ("conv_residual_block", 1.5),
+            ("state_space_block", 1.5),
+            ("mamba_reference", 1.0),
+            ("adaptive_conv_ffn", 1.5),
+            ("adaptive_ssm_chain", 1.5),
+        ):
+            if trunk_name in tpl_weights:
+                tpl_weights[trunk_name] = weight
+
+        return cls(
+            model_dim=model_dim,
+            max_depth=18,
+            max_ops=24,
+            residual_prob=0.8,
+            split_prob=0.3,
+            risky_op_prob=0.5,
+            routing_mandatory=True,
+            routing_min_lanes=2,
+            difficulty_scorer_type="entropy",
+            binding_capable_required=True,
+            category_weights={
+                "elementwise_unary": 1.0,
+                "elementwise_binary": 1.5,
+                "reduction": 0.5,
+                "linear_algebra": 2.5,  # matmul, outer_product, cosine_similarity
+                "structural": 2.0,      # gather_topk lives here
+                "parameterized": 2.5,
+                "mixing": 2.0,
+                "sequence": 1.0,
+                "frequency": 0.3,
+                "math_space": 2.0,
+                "functional": 3.5,
+            },
+            template_weights=tpl_weights,
+            op_weights={
+                # Retrieval sidecar: pair these with routing signals.
+                "matmul": 4.0,
+                "outer_product": 3.5,
+                "gather_topk": 4.0,
+                "cosine_similarity": 3.5,
+                "token_type_classifier": 4.0,
+                "token_class_proj": 4.0,
+                "token_entropy": 4.0,
+                "entropy_score": 4.0,
+                # Trunk: ppl-winner family.
+                "conv1d_seq": 3.5,
+                "selective_scan": 3.0,
+                "swiglu_mlp": 2.5,
+                "adjacent_token_merge": 3.0,
+                "nm_sparse_linear": 3.0,
+                "moe_2expert": 2.5,
+                # Quarantine: Python-loop ops without native kernels.
+                "tropical_router": 0.01,
+                "tropical_moe": 0.01,
+            },
+        )
+
+    @classmethod
     def exploration(
         cls,
         target_ops: FrozenSet[str],
@@ -371,7 +477,7 @@ class GrammarConfig:
         # graphs. The target ops are the priority here.
         return cls(
             model_dim=model_dim,
-            max_depth=16,
+            max_depth=18,
             max_ops=24,
             residual_prob=0.6,
             split_prob=0.4,
@@ -388,6 +494,71 @@ class GrammarConfig:
 _db_weight_cache = DBTemplateWeightCache(ttl=60.0)
 _slot_adaptation_cache = SlotAdaptationCache(ttl=120.0)
 _ROUTING_COMPRESSION_MOE_OPS = ROUTING_COMPRESSION_MOE_OPS
+
+
+_ROUTING_CAPABLE_TEMPLATES_CACHE: Optional[FrozenSet[str]] = None
+
+
+_ROUTING_PROBE_SEEDS: int = 8
+_ROUTING_PROBE_MIN_HITS: int = 7  # ≥ 7/8 seeds must emit routing
+
+
+def _get_routing_capable_templates() -> FrozenSet[str]:
+    """Return names of templates that reliably emit a ROUTING_COMPRESSION_MOE op.
+
+    Built once on first call by dry-running each registered template across
+    several seeds. A template qualifies only if it emits a routing op in at
+    least ``_ROUTING_PROBE_MIN_HITS`` of ``_ROUTING_PROBE_SEEDS`` probes —
+    templates that emit routing only stochastically via motif lottery (e.g.
+    residual_block, diff_attention_block) would defeat the rescue since the
+    actual composition picks its own seed. Used by the routing_mandatory
+    rescue in generate_layer_graph to restrict the final composition slot
+    to a guaranteed-routing pool.
+    """
+    global _ROUTING_CAPABLE_TEMPLATES_CACHE
+    if _ROUTING_CAPABLE_TEMPLATES_CACHE is not None:
+        return _ROUTING_CAPABLE_TEMPLATES_CACHE
+
+    # Import here to avoid circular imports at module load.
+    from .templates import TEMPLATES
+
+    routing_capable: List[str] = []
+    for tpl_name in TEMPLATES:
+        hits = 0
+        for seed in range(_ROUTING_PROBE_SEEDS):
+            try:
+                probe_graph = ComputationGraph(MODEL_DIM)
+                probe_inp = probe_graph.add_input()
+                apply_template(
+                    probe_graph,
+                    probe_inp,
+                    random.Random(seed),
+                    template_name=tpl_name,
+                )
+                ops = {
+                    node.op_name
+                    for node in probe_graph.nodes.values()
+                    if not node.is_input
+                }
+                if ops & _ROUTING_COMPRESSION_MOE_OPS:
+                    hits += 1
+            except Exception:
+                # One seed's probe failure doesn't disqualify the template;
+                # continue and let the hit ratio decide.
+                continue
+        if hits >= _ROUTING_PROBE_MIN_HITS:
+            routing_capable.append(tpl_name)
+
+    _ROUTING_CAPABLE_TEMPLATES_CACHE = frozenset(routing_capable)
+    logger.info(
+        "Routing-capable templates: %d of %d registered "
+        "(>=%d/%d probe hits; cached for routing_mandatory rescue).",
+        len(_ROUTING_CAPABLE_TEMPLATES_CACHE),
+        len(TEMPLATES),
+        _ROUTING_PROBE_MIN_HITS,
+        _ROUTING_PROBE_SEEDS,
+    )
+    return _ROUTING_CAPABLE_TEMPLATES_CACHE
 
 
 def _config_with_efficiency_prior(
@@ -421,6 +592,21 @@ def generate_layer_graph(
     """
     if config is None:
         config = GrammarConfig()
+
+    # A single positive template weight is not a soft preference; it's a
+    # targeted generation request. Treat it as forced_template so routing
+    # rescue and fallback selection cannot silently swap in unrelated graphs.
+    if not config.forced_template and config.template_weights:
+        positive_templates = [
+            name for name, weight in config.template_weights.items() if weight > 0.0
+        ]
+        if len(positive_templates) == 1:
+            config = replace(config, forced_template=positive_templates[0])
+
+    # Forced template: default to 1 block (stacking the same template 3x
+    # usually exceeds depth/ops limits and fails validation).
+    if config.forced_template and config.composition_depth > 1:
+        config = replace(config, composition_depth=1)
 
     rng = random.Random(seed)
     graph = ComputationGraph(config.model_dim)
@@ -504,6 +690,32 @@ def generate_layer_graph(
             else tpl_weights
         )
 
+        # routing_mandatory bias: on the FIRST slot (cheap, fits budget), pick
+        # from templates that reliably emit a routing/compression/MoE op. The
+        # remaining slots are unrestricted, so downstream composition can still
+        # add attention / FFN / etc. Without this, ~(1 - routing_frac)^n of
+        # compositions drop into the hard-reject path post-build. Putting the
+        # bias on the LAST slot instead creates a budget collision because the
+        # routing templates are typically larger. Audit fix 2026-04-17.
+        #
+        # Zero out (not drop) non-routing templates: pick_template falls back
+        # to DEFAULT_TEMPLATE_WEIGHTS for any key not present in the passed
+        # dict, so a drop-based filter gets silently re-expanded to the full
+        # registry. An explicit zero weight does stick.
+        if (
+            config.routing_mandatory
+            and t_idx == 0
+            and not config.forced_template
+        ):
+            from .templates import TEMPLATES as _ALL_TEMPLATES
+
+            _routing_tpls = _get_routing_capable_templates()
+            _base_weights = dict(_iter_weights) if _iter_weights else {}
+            _iter_weights = {
+                name: (_base_weights.get(name, 1.0) if name in _routing_tpls else 0.0)
+                for name in _ALL_TEMPLATES
+            }
+
         # Depth-aware template biasing: early blocks favor FFN/conv,
         # late blocks favor attention/SSM (per GPT-2 layer importance research).
         # Note: "attn" matches new attention templates (attn_*).
@@ -533,7 +745,6 @@ def generate_layer_graph(
 
         # Snapshot graph state for lightweight rollback instead of full copy.
         # Only need to track node IDs added and metadata changes.
-        prev_node_ids = set(graph.nodes.keys())
         prev_next_id = graph._next_id
         prev_output_id = graph._output_node_id
         prev_metadata = dict(graph.metadata)
@@ -543,15 +754,17 @@ def generate_layer_graph(
             graph,
             current,
             rng,
+            template_name=config.forced_template,
             template_weights=_iter_weights,
             motif_weights=motif_weights,
             op_weights=config.op_weights or None,
+            exploration_budget=config.template_exploration_budget,
         )
 
         if _graph_exceeds_final_budget(graph, config):
-            # Rollback: remove added nodes, restore metadata
-            added_ids = set(graph.nodes.keys()) - prev_node_ids
-            for nid in added_ids:
+            # Roll back only the suffix allocated by this template. Node IDs are
+            # monotonic, so there is no reason to rebuild a full key set here.
+            for nid in range(prev_next_id, graph._next_id):
                 del graph.nodes[nid]
             graph._next_id = prev_next_id
             graph._output_node_id = prev_output_id
@@ -591,6 +804,7 @@ def generate_layer_graph(
             # numerical drift, so we must not keep it.
             graph.prune_unreachable_nodes()
             current = pre_spectral
+            graph.metadata["_grammar_spectral_fallback"] = True
 
     # Ensure output shape is (B, S, D)
     result_shape = graph.nodes[current].output_shape
@@ -598,6 +812,7 @@ def generate_layer_graph(
         current = graph.add_op(
             "linear_proj", [current], config={"out_dim": config.model_dim}
         )
+        graph.metadata["_grammar_output_dim_coerced"] = True
 
     # Optional outer residual connection (if not already added by template)
     # Check if the last op is already an add with input_id
@@ -662,8 +877,13 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     if space_err is not None:
         raise ValueError(space_err)
 
-    # Routing-mandatory check: every graph must have routing, compression, or MoE
-    if config.routing_mandatory:
+    # Routing-mandatory check: every graph must have routing, compression, or MoE.
+    # Skipped when forced_template is set or exploration budget selected the template.
+    _skip_routing_check = (
+        config.forced_template
+        or graph.metadata.get("_template_exploration_used")
+    )
+    if config.routing_mandatory and not _skip_routing_check:
         op_names = {n.op_name for n in graph.nodes.values() if not n.is_input}
         if not op_names & _ROUTING_COMPRESSION_MOE_OPS:
             raise ValueError(
@@ -715,6 +935,47 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
             raise ValueError(
                 f"{node.op_name} (id={nid}) requires residual bypass but none found"
             )
+
+    # requires_residual_context: weaker than residual_bypass — the op's
+    # output must reach SOME downstream `add` node (not necessarily one that
+    # also takes the op's input), so the unbounded output rejoins a residual
+    # stream rather than feeding raw into another transform. Built from
+    # CONTEXT_RULES at module load. Audit fix 2026-04-17.
+    from ._context_registry import REQUIRES_RESIDUAL_CONTEXT_OPS
+
+    if REQUIRES_RESIDUAL_CONTEXT_OPS:
+        # Per-node: does any descendant of `nid` participate as input to an
+        # `add` op? Cheap BFS using the `successors` map already built above.
+        add_consumers: set[int] = {
+            other_nid
+            for other_nid, other_node in graph.nodes.items()
+            if other_node.op_name == "add"
+        }
+        for nid, node in graph.nodes.items():
+            if (
+                node.is_input
+                or node.op_name not in REQUIRES_RESIDUAL_CONTEXT_OPS
+                or node.op_name in REQUIRES_RESIDUAL_BYPASS
+            ):
+                continue
+            # BFS forward from nid; any reachable add is sufficient context.
+            seen: set[int] = {nid}
+            queue: List[int] = [nid]
+            reaches_add = False
+            while queue:
+                cur = queue.pop()
+                if cur in add_consumers:
+                    reaches_add = True
+                    break
+                for child in successors.get(cur, ()):
+                    if child not in seen:
+                        seen.add(child)
+                        queue.append(child)
+            if not reaches_add:
+                raise ValueError(
+                    f"{node.op_name} (id={nid}) requires residual context but "
+                    f"no downstream add is reachable from its output"
+                )
 
     # Op wiring constraint check: validate signal producer/consumer chains
     wiring_errors = validate_wiring(graph)
@@ -823,12 +1084,15 @@ def _validate_graph(graph: ComputationGraph, config: GrammarConfig) -> None:
     if ctx_err is not None:
         raise ValueError(ctx_err)
 
-    # Template-level structural invariants (metadata only, don't reject)
+    # Template-level structural invariants are part of legality, not metadata-only
+    # guidance. Preserve the warning payload for observability, but reject the
+    # graph so template-invalid programs never count as valid survivors.
     tpl_errors = validate_template_graph(graph)
     if tpl_errors:
         for err in tpl_errors:
             logger.debug("template_rule: %s", err)
         graph.metadata["template_rule_warnings"] = tpl_errors
+        raise ValueError(f"Template rule violations: {tpl_errors}")
 
 
 def _graph_exceeds_final_budget(
@@ -878,6 +1142,50 @@ def batch_generate(
         except (ValueError, RuntimeError):
             n_rejected_grammar += 1
             continue
+
+    rejection_rate = (n_rejected_grammar + n_rejected_dedup) / max(attempts, 1)
+
+    # Exhaustion recovery: if 0 graphs produced, relax constraints and retry.
+    # Reduces composition_depth, raises max_ops/max_depth, increases exploration
+    # budget. This prevents complete stalls when the grammar is saturated.
+    if len(graphs) == 0 and n_rejected_grammar > 0:
+        relaxed = replace(
+            config,
+            composition_depth=max(1, config.composition_depth - 1),
+            max_ops=config.max_ops + 6,
+            max_depth=config.max_depth + 6,
+            template_exploration_budget=max(
+                config.template_exploration_budget, 0.25
+            ),
+            forced_template=None,  # clear forced template on recovery
+        )
+        logger.info(
+            "batch_generate: exhaustion recovery — relaxing constraints "
+            "(depth %d→%d, ops %d→%d, composition %d→%d, exploration %.0f%%)",
+            config.max_depth,
+            relaxed.max_depth,
+            config.max_ops,
+            relaxed.max_ops,
+            config.composition_depth,
+            relaxed.composition_depth,
+            relaxed.template_exploration_budget * 100,
+        )
+        retry_attempts = 0
+        retry_max = n * 5
+        while len(graphs) < n and retry_attempts < retry_max:
+            retry_attempts += 1
+            attempts += 1
+            seed = base_seed + attempts * 137 + 99999
+            try:
+                g = generate_layer_graph(relaxed, seed=seed)
+                fp = g.fingerprint()
+                if fp not in fingerprints:
+                    fingerprints.add(fp)
+                    graphs.append(g)
+                else:
+                    n_rejected_dedup += 1
+            except (ValueError, RuntimeError):
+                n_rejected_grammar += 1
 
     rejection_rate = (n_rejected_grammar + n_rejected_dedup) / max(attempts, 1)
     logger.info(

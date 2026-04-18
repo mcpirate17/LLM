@@ -176,6 +176,7 @@ function AppContent({ onRunningChange }) {
     error,
     lastUpdated: dashboardUpdatedAt,
     refreshSharedData,
+    setDashboardDetailMode,
     refreshAnalyticsData,
     fetchTabData,
     invalidateTabCache,
@@ -193,6 +194,8 @@ function AppContent({ onRunningChange }) {
   const [showChat, setShowChat] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [reportsDeferredReady, setReportsDeferredReady] = useState(false);
+  const [reportsCampaignsVisible, setReportsCampaignsVisible] = useState(false);
+  const [reportsKnowledgeVisible, setReportsKnowledgeVisible] = useState(false);
 
   const [experimentsPageSize, setExperimentsPageSize] = useState(DEFAULT_EXPERIMENTS_PAGE_SIZE);
   const [experimentsHasMore, setExperimentsHasMore] = useState(true);
@@ -208,6 +211,15 @@ function AppContent({ onRunningChange }) {
     }
     refreshAnalyticsData();
   }, [activeTab, refreshAnalyticsData]);
+
+  useEffect(() => {
+    if (typeof setDashboardDetailMode === 'function') {
+      setDashboardDetailMode(activeTab === 'templates');
+    }
+    if (activeTab === 'templates' && typeof refreshSharedData === 'function') {
+      refreshSharedData({ force: true, includeFullDashboard: true });
+    }
+  }, [activeTab, refreshSharedData, setDashboardDetailMode]);
 
   useEffect(() => {
     if (activeTab !== 'reports') {
@@ -267,6 +279,15 @@ function AppContent({ onRunningChange }) {
   const [leaderboardHighlight, setLeaderboardHighlight] = useState(null);
   const [selectedCampaignId, setSelectedCampaignId] = useState(null);
   const [controlPanelPrefill, setControlPanelPrefill] = useState(null);
+
+  useEffect(() => {
+    if (activeTab !== 'reports') {
+      return;
+    }
+    if (selectedCampaignId) {
+      setReportsCampaignsVisible(true);
+    }
+  }, [activeTab, selectedCampaignId]);
   const [activeOverviewStrategy, setActiveOverviewStrategy] = useState(null);
   const [cycleControlBusy, setCycleControlBusy] = useState(false);
   const [fingerprintLookup, setFingerprintLookup] = useState('');
@@ -1465,17 +1486,55 @@ function AppContent({ onRunningChange }) {
             {reportsDeferredReady ? (
               <>
                 <div style={{ marginTop: 16 }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Campaigns</h3>
-                  <CampaignView
-                    onSelectExperiment={handleSelectExperiment}
-                    selectedCampaignId={selectedCampaignId}
-                    onCampaignIdClear={() => setSelectedCampaignId(null)}
-                    onHypothesisHandoff={handleHypothesisHandoff}
-                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                    <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Campaigns</h3>
+                    {!reportsCampaignsVisible && (
+                      <button
+                        className="refresh-btn"
+                        onClick={() => setReportsCampaignsVisible(true)}
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                      >
+                        Load Campaigns
+                      </button>
+                    )}
+                  </div>
+                  {reportsCampaignsVisible ? (
+                    <CampaignView
+                      onSelectExperiment={handleSelectExperiment}
+                      selectedCampaignId={selectedCampaignId}
+                      onCampaignIdClear={() => setSelectedCampaignId(null)}
+                      onHypothesisHandoff={handleHypothesisHandoff}
+                    />
+                  ) : (
+                    <div className="card">
+                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+                        Campaign details are available on demand to keep the reports page responsive.
+                      </p>
+                    </div>
+                  )}
                 </div>
                 <div style={{ marginTop: 16 }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Knowledge Base</h3>
-                  <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                    <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Knowledge Base</h3>
+                    {!reportsKnowledgeVisible && (
+                      <button
+                        className="refresh-btn"
+                        onClick={() => setReportsKnowledgeVisible(true)}
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                      >
+                        Load Knowledge Base
+                      </button>
+                    )}
+                  </div>
+                  {reportsKnowledgeVisible ? (
+                    <KnowledgeBase onSelectExperiment={handleSelectExperiment} />
+                  ) : (
+                    <div className="card">
+                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+                        Knowledge clustering is deferred until requested so the reports landing page stays light.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </>
             ) : (

@@ -19,10 +19,12 @@ from ._template_helpers import (
     MOTIF_CLASS_ATTENTION,
     _BOTTLENECK_CLASSES,
     MOTIF_CLASS_CONV,
+    MOTIF_CLASS_EFFICIENT_PROJ,
     MOTIF_CLASS_GATE,
     MOTIF_CLASS_GUARDED_ACT,
     MOTIF_CLASS_MOE,
     MOTIF_CLASS_NORM,
+    MOTIF_CLASS_SPARSE,
     MOTIF_CLASS_SSM,
     MotifWeights,
     TemplateBuildError,
@@ -37,6 +39,7 @@ from ._template_helpers import (
     template_add_op as _add,
     template_add_residual as _residual,
 )
+from ._selection_utils import with_local_wildcard_probability
 
 
 def _pick_with_local_wildcard(
@@ -48,12 +51,11 @@ def _pick_with_local_wildcard(
     *,
     wildcard_prob: float,
 ):
-    previous = graph.metadata.get("_wildcard_slot_prob", 0.0)
-    graph.metadata["_wildcard_slot_prob"] = wildcard_prob
-    try:
-        return _pick_compatible_motif(graph, node_id, rng, motif_classes, weights)
-    finally:
-        graph.metadata["_wildcard_slot_prob"] = previous
+    return with_local_wildcard_probability(
+        graph,
+        lambda: _pick_compatible_motif(graph, node_id, rng, motif_classes, weights),
+        wildcard_prob=wildcard_prob,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -122,14 +124,13 @@ def tpl_attn_three_way_split(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → route(3) → split3 → {attention | FFN | gate} → add → residual.
+    """norm → route(3) → split3 → {attention | FFN | gate} → concat → residual.
 
-    Forced-attention variant of three_way_split (86.4% S1).
-    Lane 0 is forced to attention instead of random _MIXER_CLASSES.
+    Forced-attention variant of three_way_split with lane-local processing only.
+    Avoids the old up/down lane scaffold that repeatedly produced illegal
+    projection pairs inside attention and gate motifs.
     """
-    D = graph.model_dim
-    norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
-    normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
+    normed = _add(graph, "rmsnorm", [input_id], context="attn_three_way_split.norm")
 
     routed = _add(
         graph,
@@ -161,45 +162,48 @@ def tpl_attn_three_way_split(
 
     lane0 = _add(
         graph,
-        "linear_proj_up",
+        "linear_proj",
         [part0],
-        {"out_dim": D},
-        context="attn_three_way_split.lane0",
+        {"out_dim": graph.model_dim},
+        context="attn_three_way_split.attn_up",
     )
-    lane1 = _add(
+    lane0 = _add(graph, "softmax_attention", [lane0], context="attn_three_way_split.attn_lane")
+    lane0 = _add(graph, "rmsnorm", [lane0], context="attn_three_way_split.attn_norm")
+    p0 = _add(
         graph,
-        "linear_proj_up",
+        "linear_proj",
+        [lane0],
+        {"out_dim": graph.nodes[part0].output_shape.dim},
+        context="attn_three_way_split.attn_down",
+    )
+
+    p1 = _add(
+        graph,
+        "linear_proj",
         [part1],
-        {"out_dim": D},
-        context="attn_three_way_split.lane1",
+        {"out_dim": graph.nodes[part1].output_shape.dim},
+        context="attn_three_way_split.ffn_lane",
     )
-    lane2 = _add(
+    p1 = _add(graph, "gelu", [p1], context="attn_three_way_split.ffn_act")
+
+    p2 = _add(
         graph,
-        "linear_proj_up",
+        "linear_proj",
         [part2],
-        {"out_dim": D},
-        context="attn_three_way_split.lane2",
+        {"out_dim": graph.nodes[part2].output_shape.dim},
+        context="attn_three_way_split.gate_lane",
     )
+    p2 = _add(graph, "sigmoid", [p2], context="attn_three_way_split.gate_act")
 
-    m0 = _pick_compatible_motif(graph, lane0, rng, MOTIF_CLASS_ATTENTION, weights)
-    if m0 is None:
-        raise TemplateBuildError(
-            "attn_three_way_split lane0 requires an attention motif"
-        )
-    p0 = _instantiate_motif(graph, lane0, m0, rng)
-
-    m1 = _pick_compatible_motif_from_classes(graph, lane1, rng, _FFN_CLASSES, weights)
-    p1 = _instantiate_motif(graph, lane1, m1, rng) if m1 else lane1
-
-    _GATE_CLASSES = (MOTIF_CLASS_MOE, MOTIF_CLASS_GATE, MOTIF_CLASS_GUARDED_ACT)
-    m2 = _pick_compatible_motif_from_classes(graph, lane2, rng, _GATE_CLASSES, weights)
-    p2 = _instantiate_motif(graph, lane2, m2, rng) if m2 else lane2
-
-    p0 = _fix_dim(graph, p0)
-    p1 = _fix_dim(graph, p1)
-    p2 = _fix_dim(graph, p2)
     combined01 = _residual(graph, p0, p1, context="attn_three_way_split.merge01")
     combined = _residual(graph, combined01, p2, context="attn_three_way_split.merge")
+    combined = _add(
+        graph,
+        "linear_proj",
+        [combined],
+        {"out_dim": graph.model_dim},
+        context="attn_three_way_split.project",
+    )
     return _residual(graph, input_id, combined, context="attn_three_way_split.output")
 
 
@@ -302,10 +306,12 @@ def tpl_attn_cross_dim(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
-    if attn is None:
-        raise TemplateBuildError("attn_cross_dim requires a compatible attention motif")
-    attended = _instantiate_motif(graph, normed, attn, rng)
+    attended = _add(
+        graph,
+        "softmax_attention",
+        [normed],
+        context="attn_cross_dim.attn",
+    )
     attended = _fix_dim(graph, attended)
 
     transposed = _add(
@@ -377,6 +383,11 @@ def tpl_local_attn_ffn_block(
         weights,
         attn_op="local_window_attn",
         attn_config={"window_size": rng.choice(choices)},
+        ffn_classes=(
+            MOTIF_CLASS_SPARSE,
+            MOTIF_CLASS_EFFICIENT_PROJ,
+            MOTIF_CLASS_GUARDED_ACT,
+        ),
     )
 
 
@@ -462,11 +473,20 @@ def tpl_attn_ssm_hybrid(
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
-    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
-    path_attn = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    path_attn = _add(
+        graph,
+        "softmax_attention",
+        [normed],
+        context="attn_ssm_hybrid.attn",
+    )
     path_attn = _fix_dim(graph, path_attn)
 
-    path_ssm = _shuffle_wrap(graph, normed, rng, (MOTIF_CLASS_SSM,), weights, prob=0.3)
+    path_ssm = _add(
+        graph,
+        "state_space",
+        [normed],
+        context="attn_ssm_hybrid.ssm",
+    )
     path_ssm = _fix_dim(graph, path_ssm)
 
     merged = _residual(graph, path_attn, path_ssm, context="attn_ssm_hybrid.merge")
@@ -477,10 +497,13 @@ def tpl_attn_ssm_hybrid(
     # FFN sub-block
     norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
-    ffn = _pick_compatible_motif_from_classes(
-        graph, normed2, rng, _FFN_CLASSES, weights
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="attn_ssm_hybrid.ffn",
     )
-    ffned = _instantiate_motif(graph, normed2, ffn, rng) if ffn else normed2
     ffned = _fix_dim(graph, ffned)
 
     return _residual(graph, mid, ffned, context="attn_ssm_hybrid.output")
@@ -537,9 +560,19 @@ def tpl_attn_rwkv_hybrid(
     D = graph.model_dim
     normed = _add(graph, "layernorm", [input_id], context="attn_rwkv_hybrid.norm")
 
-    attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
-    path_attn = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    path_attn = _add(
+        graph,
+        "softmax_attention",
+        [normed],
+        context="attn_rwkv_hybrid.attn",
+    )
     path_attn = _fix_dim(graph, path_attn)
+    path_attn = _add(
+        graph,
+        "rmsnorm",
+        [path_attn],
+        context="attn_rwkv_hybrid.attn_norm",
+    )
     path_attn = _add(
         graph,
         "linear_proj",
@@ -563,40 +596,22 @@ def tpl_attn_rwkv_hybrid(
 
     mid = _residual(graph, input_id, merged, context="attn_rwkv_hybrid.mid")
     normed2 = _add(graph, "layernorm", [mid], context="attn_rwkv_hybrid.norm2")
-    channel_refine = _pick_compatible_motif_from_classes(
-        graph,
-        normed2,
-        rng,
-        (MOTIF_CLASS_SSM, MOTIF_CLASS_CONV),
-        weights,
-    )
-    if channel_refine:
-        normed2 = _instantiate_motif(graph, normed2, channel_refine, rng)
+    if rng.random() < 0.5:
+        normed2 = _add(
+            graph,
+            "conv1d_seq",
+            [normed2],
+            context="attn_rwkv_hybrid.channel_refine",
+        )
         normed2 = _fix_dim(graph, normed2)
 
-    previous_wildcard = graph.metadata.get("_wildcard_slot_prob", 0.0)
-    graph.metadata["_wildcard_slot_prob"] = 0.12
-    try:
-        post_ffn = _pick_compatible_motif_from_classes(
-            graph,
-            normed2,
-            rng,
-            _FFN_CLASSES,
-            weights,
-        )
-    finally:
-        graph.metadata["_wildcard_slot_prob"] = previous_wildcard
-
-    if post_ffn:
-        ffned = _instantiate_motif(graph, normed2, post_ffn, rng)
-    else:
-        ffned = _add(
-            graph,
-            "swiglu_mlp",
-            [normed2],
-            {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
-            context="attn_rwkv_hybrid.ffn",
-        )
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": rng.choice([2.0, 3.0, 4.0])},
+        context="attn_rwkv_hybrid.ffn",
+    )
     ffned = _fix_dim(graph, ffned)
     return _residual(graph, mid, ffned, context="attn_rwkv_hybrid.output")
 
@@ -607,42 +622,49 @@ def tpl_attn_bottleneck_hybrid(
     rng: random.Random,
     weights: MotifWeights = None,
 ) -> int:
-    """norm → attention(full D) → proj_down → sparse → proj_up → residual.
+    """norm → {attention || SSM} → merge → residual → norm → FFN → residual.
 
-    Full-width attention followed by compressed sparse transform.
+    Parallel attention + SSM hybrid with full-width FFN. Replaces the
+    original sparse bottleneck (D→D//2→sparse→D) which killed gradient
+    flow through 50% of dimensions.
     """
     D = graph.model_dim
     norm = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed = _instantiate_motif(graph, input_id, norm, rng) if norm else input_id
 
+    D = graph.model_dim
+
+    # Path A: attention
     attn = _pick_compatible_motif(graph, normed, rng, MOTIF_CLASS_ATTENTION, weights)
-    attended = _instantiate_motif(graph, normed, attn, rng) if attn else normed
-    attended = _fix_dim(graph, attended)
+    pa = _instantiate_motif(graph, normed, attn, rng) if attn else normed
+    pa = _fix_dim(graph, pa)
 
-    mid = _residual(graph, input_id, attended, context="attn_bottleneck_hybrid.mid")
-
-    # Bottleneck FFN path
-    down = _add(
+    # Path B: state_space (safe SSM op, no context constraints)
+    pb = _add(
         graph,
-        "linear_proj_down",
-        [mid],
-        {"out_dim": D // 2},
-        context="attn_bottleneck_hybrid.down",
+        "state_space",
+        [normed],
+        context="attn_bottleneck_hybrid.ssm",
     )
+    pb = _fix_dim(graph, pb)
 
-    sparse = _pick_compatible_motif_from_classes(
-        graph, down, rng, _BOTTLENECK_CLASSES, weights
+    # Merge parallel paths
+    merged = _residual(graph, pa, pb, context="attn_bottleneck_hybrid.merge")
+    merged = _fix_dim(graph, merged)
+    mid = _residual(graph, input_id, merged, context="attn_bottleneck_hybrid.mid")
+
+    # Full-width FFN sub-block
+    norm2 = _pick_compatible_motif(graph, mid, rng, MOTIF_CLASS_NORM, weights)
+    normed2 = _instantiate_motif(graph, mid, norm2, rng) if norm2 else mid
+    ffned = _add(
+        graph,
+        "swiglu_mlp",
+        [normed2],
+        {"mlp_ratio": rng.choice([2.0, 3.0])},
+        context="attn_bottleneck_hybrid.ffn",
     )
-    processed = _instantiate_motif(graph, down, sparse, rng) if sparse else down
-    if graph.nodes[processed].op_name == "linear_proj_up":
-        processed = _add(
-            graph,
-            "rmsnorm",
-            [processed],
-            context="attn_bottleneck_hybrid.up_bridge",
-        )
-    up = _fix_dim(graph, processed)
-    return _residual(graph, mid, up, context="attn_bottleneck_hybrid.output")
+    ffned = _fix_dim(graph, ffned)
+    return _residual(graph, mid, ffned, context="attn_bottleneck_hybrid.output")
 
 
 def tpl_attn_routing_block(
@@ -834,20 +856,24 @@ def tpl_cascaded_attn_ffn(
     # First attention
     norm1 = _pick_compatible_motif(graph, input_id, rng, MOTIF_CLASS_NORM, weights)
     normed1 = _instantiate_motif(graph, input_id, norm1, rng) if norm1 else input_id
-    attn1 = _pick_compatible_motif(graph, normed1, rng, MOTIF_CLASS_ATTENTION, weights)
-    if attn1 is None:
-        raise TemplateBuildError("cascaded_attn_ffn first stage requires attention")
-    out1 = _instantiate_motif(graph, normed1, attn1, rng)
+    out1 = _add(
+        graph,
+        "softmax_attention",
+        [normed1],
+        context="cascaded_attn_ffn.attn1",
+    )
     out1 = _fix_dim(graph, out1)
     mid1 = _residual(graph, input_id, out1, context="cascaded_attn_ffn.mid1")
 
     # Second attention
     norm2 = _pick_compatible_motif(graph, mid1, rng, MOTIF_CLASS_NORM, weights)
     normed2 = _instantiate_motif(graph, mid1, norm2, rng) if norm2 else mid1
-    attn2 = _pick_compatible_motif(graph, normed2, rng, MOTIF_CLASS_ATTENTION, weights)
-    if attn2 is None:
-        raise TemplateBuildError("cascaded_attn_ffn second stage requires attention")
-    out2 = _instantiate_motif(graph, normed2, attn2, rng)
+    out2 = _add(
+        graph,
+        "softmax_attention",
+        [normed2],
+        context="cascaded_attn_ffn.attn2",
+    )
     out2 = _fix_dim(graph, out2)
     mid2 = _residual(graph, mid1, out2, context="cascaded_attn_ffn.mid2")
 
@@ -886,7 +912,9 @@ def tpl_attn_exp_gated(
     proj = _add(
         graph, "linear_proj", [attended], {"out_dim": D}, context="attn_exp_gated.proj"
     )
-    gated = _add(graph, "exp", [proj], context="attn_exp_gated.gated")
+    bounded = _add(graph, "sigmoid", [proj], context="attn_exp_gated.bounded")
+    gated = _add(graph, "exp", [bounded], context="attn_exp_gated.gated")
+    gated = _add(graph, "rmsnorm", [gated], context="attn_exp_gated.stabilized")
     gated = _fix_dim(graph, gated)
     return _residual(graph, input_id, gated, context="attn_exp_gated.output")
 

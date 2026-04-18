@@ -229,9 +229,17 @@ class _CycleMixin:
         # no events emitted, no progress updates for `stall_timeout` seconds.
         # A long-running but healthy cycle (training big models, running evals)
         # will keep resetting the liveness clock via _emit_event/_update_progress.
+        # 1 hour default stall timeout. The real safety net for runaway
+        # evals is the d512 timeout guard (20 min) in _eval_registry.py,
+        # not this watchdog. Prior values (600s, 1800s) killed healthy
+        # validation runs that legitimately need 30+ min for 5 seeds ×
+        # 10K steps + full eval suite. 3600s lets validation complete
+        # without interference; truly stuck processes will be caught by
+        # the d512 timeout or CUDA OOM.
+        _default_stall = 3600
         stall_timeout = (
-            int(getattr(config, "max_cycle_stall_seconds", 0) or 0) or 600
-        )  # default 10 min of zero activity
+            int(getattr(config, "max_cycle_stall_seconds", 0) or 0) or _default_stall
+        )
         _watchdog_fired = False
         _last_activity = [time.time()]  # mutable container for closure
 

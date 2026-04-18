@@ -214,6 +214,12 @@ class _ExecutionExperimentPhase3Mixin:
 
         if not config.gbm_prescreener_enabled or not graphs:
             return graphs
+        # Capability-first templates are structurally novel — the GBM was
+        # trained before they existed and systematically rejects them.
+        # Bypass the prescreener when capability_first is active so the
+        # new templates actually reach screening.
+        if getattr(config, "_capability_first_mode", False):
+            return graphs
         from ..ml_influence_policy import component_is_allowed
 
         if not component_is_allowed("screening_ensemble", config):
@@ -225,7 +231,7 @@ class _ExecutionExperimentPhase3Mixin:
         try:
             from ..intelligence.predictor import load_runtime_ensemble
             from ...synthesis.graph_features import (
-                extract_graph_features,
+                extract_graph_features_bundle,
                 enrich_with_op_stats,
                 load_op_stats,
             )
@@ -247,14 +253,11 @@ class _ExecutionExperimentPhase3Mixin:
             scored: List[tuple[float, float, float, float, Any, Dict[str, Any]]] = []
             for graph in graphs:
                 graph_dict = graph.to_dict()
-                features = extract_graph_features(graph_dict)
+                features, ops = extract_graph_features_bundle(graph_dict)
                 if features:
-                    nodes = graph_dict.get("nodes") or {}
-                    ops = [
-                        node.get("op_name", "")
-                        for node in nodes.values()
-                        if node.get("op_name", "") != "input"
-                    ]
+                    for op in ops:
+                        if op:
+                            features[f"op_{op}"] = features.get(f"op_{op}", 0.0) + 1.0
                     enrich_with_op_stats(features, ops, preloaded=op_stats_cache)
                 planning = ensemble.predict_planning_score(
                     graph_json=graph_dict,

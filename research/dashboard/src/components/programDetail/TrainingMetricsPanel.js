@@ -42,7 +42,12 @@ export function CoreMetricsColumn({ program, leaderboardEntry, refineAnalysis, f
           </span> : null} />
         <MetricRow label="HellaSwag" value={program.hellaswag_acc != null ? fmt(program.hellaswag_acc, 3) : null} />
         <MetricRow label="Induction AUC" value={program.induction_auc != null ? fmt(program.induction_auc, 3) : null} />
+        <MetricRow label="AR AUC" value={program.ar_auc != null ? fmt(program.ar_auc, 3) : null} />
         <MetricRow label="Binding AUC" value={program.binding_auc != null ? fmt(program.binding_auc, 3) : null} />
+        <MetricRow label="BLiMP" value={program.blimp_overall_accuracy != null ? fmt(program.blimp_overall_accuracy, 3) : null} />
+        <MetricRow label="WikiText PPL" value={program.wikitext_perplexity != null ? fmt(program.wikitext_perplexity, 1) : null} />
+        <MetricRow label="Composite" value={(program.composite_score ?? leaderboardEntry?.composite_score) != null ?
+          fmt(program.composite_score ?? leaderboardEntry?.composite_score, 1) : null} />
         <MetricRow label="Throughput" value={program.throughput_tok_s != null ? `${Number(program.throughput_tok_s).toFixed(0)} tok/s` : null} />
         <MetricRow label="Param Efficiency" value={program.param_efficiency != null ? fmt(program.param_efficiency) : (leaderboardEntry?.param_efficiency != null ? fmt(leaderboardEntry.param_efficiency) : null)} />
         <MetricRow label="Sample Efficiency" value={program.sample_efficiency != null ?

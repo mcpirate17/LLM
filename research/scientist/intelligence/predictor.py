@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -394,9 +395,9 @@ def _load_screening_predictor_corpus_rows(
     if not db_file.exists():
         return load_deduped_graph_training_rows(db_path, validate=validate)
     try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
+        from ..notebook.shared_conn import get_notebook_conn
+        conn = get_notebook_conn(db_path)
         cols = {row[1] for row in conn.execute("PRAGMA table_info(program_results)")}
-        conn.close()
     except sqlite3.Error:
         return load_deduped_graph_training_rows(db_path, validate=validate)
     required = {
@@ -413,15 +414,13 @@ def _load_screening_predictor_corpus_rows(
 def analyze_graph_label_quality(db_path: str) -> Dict[str, Any]:
     """Summarize duplicate-graph ambiguity and hard-negative composition."""
     try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
+        from ..notebook.shared_conn import get_notebook_conn
+        conn = get_notebook_conn(db_path)
         rows = conn.execute(
             """SELECT graph_json, stage1_passed, stage0_passed, stage05_passed
                FROM program_results
                WHERE graph_json IS NOT NULL"""
         ).fetchall()
-        conn.close()
     except Exception as e:
         return {"error": f"label_quality_query_failed: {e}"}
 
@@ -493,7 +492,7 @@ def _query_graph_training_data(
       - y_rank: float array of composite_score (NaN where unavailable)
     """
     from ...synthesis.graph_features import (
-        extract_graph_features,
+        extract_graph_features_bundle,
         enrich_with_op_stats,
         load_op_stats,
     )
@@ -528,16 +527,9 @@ def _query_graph_training_data(
             signature = _graph_signature(gj_dict) or ""
         if not signature:
             continue
-        feats = extract_graph_features(gj_dict)
+        feats, ops = extract_graph_features_bundle(gj_dict)
         if not feats:
             continue
-        # Add per-op counts for ALL ops in this graph (full op histogram)
-        nodes = gj_dict.get("nodes") or {}
-        ops = [
-            n.get("op_name", "")
-            for n in nodes.values()
-            if n.get("op_name", "") != "input"
-        ]
         for op in ops:
             if op:
                 feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
@@ -932,6 +924,26 @@ def evaluate_gbm(
 
     X, feature_names = build_dense_feature_matrix(feat_dicts)
 
+    # Strip post-eval probe features from gate evaluation — same as train_gbm().
+    # These features leak the gate label (only non-NaN for entries that completed
+    # training). Kept for rank model; excluded from gate.
+    _PROBE_FEATURE_NAMES = {
+        "hellaswag_acc_best",
+        "induction_auc_best",
+        "ar_auc_best",
+        "blimp_overall_accuracy_best",
+        "binding_composite_best",
+        "initial_loss_best",
+        "mean_grad_norm_best",
+        "max_grad_norm_best",
+        "grad_norm_std_best",
+    }
+    gate_col_mask = np.array(
+        [fn not in _PROBE_FEATURE_NAMES for fn in feature_names], dtype=bool
+    )
+    gate_feature_names = [fn for fn in feature_names if fn not in _PROBE_FEATURE_NAMES]
+    X_gate = X[:, gate_col_mask]
+
     n_pos = int(y_gate.sum())
     n_neg = n_total - n_pos
     if n_pos < 5 or n_neg < 5:
@@ -943,6 +955,7 @@ def evaluate_gbm(
     if len(train_idx) == 0 or len(val_idx) == 0:
         return {"error": "grouped_split_failed", "n_total": n_total}
 
+    X_gate_train, X_gate_test = X_gate[train_idx], X_gate[val_idx]
     X_train, X_test = X[train_idx], X[val_idx]
     y_gate_train, y_gate_test = y_gate[train_idx], y_gate[val_idx]
     y_rank_train_full, y_rank_test_full = y_rank[train_idx], y_rank[val_idx]
@@ -971,16 +984,16 @@ def evaluate_gbm(
         "seed": 42,
     }
     train_set = lgb.Dataset(
-        X_train,
+        X_gate_train,
         label=y_gate_train,
         weight=w_train,
-        feature_name=feature_names,
+        feature_name=gate_feature_names,
     )
     val_set = lgb.Dataset(
-        X_test,
+        X_gate_test,
         label=y_gate_test,
         weight=w_test,
-        feature_name=feature_names,
+        feature_name=gate_feature_names,
         reference=train_set,
     )
 
@@ -992,8 +1005,8 @@ def evaluate_gbm(
         callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
     )
 
-    # Gate AUC
-    gate_preds = gate_model.predict(X_test)
+    # Gate AUC (use probe-stripped features, matching train_gbm)
+    gate_preds = gate_model.predict(X_gate_test)
     operating_points = operating_point_profiles(y_gate_test, gate_preds)
     gate_threshold = float(operating_points["f1"]["threshold"])
     gate_metrics = binary_classification_metrics(
@@ -1057,7 +1070,7 @@ def evaluate_gbm(
 
     # Top feature importances
     importance = dict(
-        zip(feature_names, gate_model.feature_importance("gain").tolist())
+        zip(gate_feature_names, gate_model.feature_importance("gain").tolist())
     )
     top_features = sorted(importance.items(), key=lambda x: -x[1])[:10]
 
@@ -1088,7 +1101,7 @@ def evaluate_gbm_induction(
         return {"error": "lightgbm_not_installed"}
 
     from ...synthesis.graph_features import (
-        extract_graph_features,
+        extract_graph_features_bundle,
         enrich_with_op_stats,
         load_op_stats,
     )
@@ -1122,15 +1135,9 @@ def evaluate_gbm_induction(
             signature = _graph_signature(gj_dict) or ""
         if not signature:
             continue
-        feats = extract_graph_features(gj_dict)
+        feats, ops = extract_graph_features_bundle(gj_dict)
         if not feats:
             continue
-        nodes = gj_dict.get("nodes") or {}
-        ops = [
-            n.get("op_name", "")
-            for n in nodes.values()
-            if n.get("op_name", "") != "input"
-        ]
         for op in ops:
             if op:
                 feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
@@ -1330,13 +1337,10 @@ class EnsemblePredictor:
         Returns P(pass_s1) in [0, 1].
         """
         scores = []
-        uncertainties = []
 
         # GBM prediction
         if self.gbm is not None and self.gbm.is_fitted() and graph_features is not None:
-            p = self.gbm.predict_gate(graph_features)
-            scores.append(p)
-            uncertainties.append(0.1)  # GBM has fixed uncertainty estimate
+            scores.append(self.gbm.predict_gate(graph_features))
 
         # Topology predictor
         if (
@@ -1344,9 +1348,7 @@ class EnsemblePredictor:
             and self.graph_pred.is_fitted()
             and graph_json is not None
         ):
-            p = self.graph_pred.predict_gate(graph_json)
-            scores.append(p)
-            uncertainties.append(0.15)
+            scores.append(self.graph_pred.predict_gate(graph_json))
 
         # Bayesian worst-op excluded from scoring — calibration weight was
         # -0.006 (noise).  Bayesian tracker remains active for grammar
@@ -1449,14 +1451,17 @@ class EnsemblePredictor:
         quality_score = (
             float(np.clip(np.mean(quality_terms), 0.0, 1.0)) if quality_terms else 0.0
         )
+        # Induction head has Spearman 0.21 — not useful for ranking.
+        # Removed from blend until induction predictor achieves Spearman >= 0.5.
+        # Previous: 0.5*p_pass + 0.25*quality + 0.25*induction (25% noise).
         if quality_terms:
             blended = float(
                 np.clip(
-                    0.5 * p_pass + 0.25 * quality_score + 0.25 * p_induction, 0.0, 1.0
+                    0.65 * p_pass + 0.35 * quality_score, 0.0, 1.0
                 )
             )
         else:
-            blended = float(np.clip(0.65 * p_pass + 0.35 * p_induction, 0.0, 1.0))
+            blended = float(np.clip(p_pass, 0.0, 1.0))
         return {
             "p_pass": float(p_pass),
             "predicted_induction_auc": float(induction_auc),
@@ -1755,7 +1760,7 @@ def _calibrate_ensemble(
 
     # Collect component scores for each graph
     from ...synthesis.graph_features import (
-        extract_graph_features,
+        extract_graph_features_bundle,
         enrich_with_op_stats,
         load_op_stats,
     )
@@ -1784,14 +1789,11 @@ def _calibrate_ensemble(
 
         # GBM score
         if ensemble.gbm is not None and ensemble.gbm.is_fitted():
-            feats = extract_graph_features(gj_dict)
+            feats, ops = extract_graph_features_bundle(gj_dict)
             if feats:
-                nodes = gj_dict.get("nodes") or {}
-                ops = [
-                    n.get("op_name", "")
-                    for n in nodes.values()
-                    if n.get("op_name", "") != "input"
-                ]
+                for op in ops:
+                    if op:
+                        feats[f"op_{op}"] = feats.get(f"op_{op}", 0.0) + 1.0
                 enrich_with_op_stats(feats, ops, preloaded=op_stats_cache)
                 scores.append(ensemble.gbm.predict_gate(feats))
             else:

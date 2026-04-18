@@ -38,6 +38,12 @@ def register_general_routes(app, context: ApiRouteContext):
     _dashboard_missing_response = context.dashboard_missing_response
     _is_asset_path = context.is_asset_path
 
+    @app.route("/api/template-names")
+    def api_template_names():
+        """Return sorted list of all available template names."""
+        from ...synthesis.templates import TEMPLATES
+        return jsonify({"names": sorted(TEMPLATES.keys())})
+
     @app.route("/api/aria/cycle-status")
     @wnb
     def api_aria_cycle_status(nb=None):

@@ -257,8 +257,10 @@ class TestAPI(unittest.TestCase):
 
     def setUp(self):
         from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runtime_events import stop_runtime_event_services
 
         _helpers_mod._runner = None
+        stop_runtime_event_services(self.db_path)
         nb = LabNotebook(self.db_path)
         try:
             nb.conn.execute(
@@ -270,8 +272,10 @@ class TestAPI(unittest.TestCase):
 
     def tearDown(self):
         from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runtime_events import stop_runtime_event_services
 
         _helpers_mod._runner = None
+        stop_runtime_event_services(self.db_path)
 
     def test_api_designer_lineage_sync_and_fetch(self):
         payload = {
@@ -525,6 +529,46 @@ class TestAPI(unittest.TestCase):
         self.assertIn("progress", data)
         self.assertIn("native_runner", data)
         self.assertIn("native_runner", data["progress"])
+
+    def test_api_status_prefers_runtime_lifecycle_registry_end_to_end(self):
+        from research.scientist.runtime_events import publish_lifecycle_event
+
+        publish_lifecycle_event(
+            notebook_path=self.db_path,
+            event_type="experiment_started",
+            producer="test.api_integration",
+            run_id="registry-e2e-exp",
+            sequence=1,
+            payload={
+                "experiment_type": "screening",
+                "hypothesis": "registry e2e",
+                "config": {"mode": "screening", "source": "e2e"},
+                "started_at": 11.0,
+            },
+        )
+
+        r = self.client.get("/api/status")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["is_running"])
+        self.assertEqual(data["progress"]["experiment_id"], "registry-e2e-exp")
+        self.assertEqual(
+            data["progress"]["run_source"],
+            "runtime_lifecycle_registry",
+        )
+        self.assertEqual(
+            data["progress"]["current_stage"],
+            "runtime_events",
+        )
+        self.assertEqual(
+            data["run_trigger_source"],
+            "unknown",
+        )
+        self.assertEqual(
+            data["run_trigger"]["source"],
+            "unknown",
+        )
 
     def test_api_status_degrades_on_malformed_db(self):
         with patch(
@@ -2131,6 +2175,45 @@ class TestAPI(unittest.TestCase):
             len(reply) <= 260, f"Fallback reply too long: {len(reply)} chars"
         )
 
+    def test_runtime_event_state_does_not_break_observability_or_aria_chat(self):
+        from research.scientist.runtime_events import publish_lifecycle_event
+
+        publish_lifecycle_event(
+            notebook_path=self.db_path,
+            event_type="experiment_started",
+            producer="test.api_integration",
+            run_id="observability-live-exp",
+            sequence=1,
+            payload={
+                "experiment_type": "screening",
+                "hypothesis": "observability live state",
+                "config": {"mode": "single", "n_programs": 1},
+                "started_at": time.time(),
+            },
+        )
+
+        report_resp = self.client.get("/api/report")
+        self.assertEqual(report_resp.status_code, 200)
+        report_data = report_resp.get_json()
+        self.assertIn("template_observability", report_data.get("summary", {}))
+
+        slot_resp = self.client.get("/api/reporting/slot-compatibility")
+        self.assertEqual(slot_resp.status_code, 200)
+
+        op_resp = self.client.get("/api/observability/op-pairs")
+        self.assertEqual(op_resp.status_code, 200)
+
+        chat_resp = self.client.post(
+            "/api/aria/chat",
+            json={
+                "message": "What is currently running?",
+                "session_id": "runtime-event-chat-smoke",
+            },
+        )
+        self.assertEqual(chat_resp.status_code, 200)
+        chat_data = chat_resp.get_json()
+        self.assertIn("reply", chat_data)
+
     def test_api_aria_chat_returns_local_hits_and_spawned_agent_summary(self):
         """Chat should return local file hits and spawned agent metadata when action block requests spawn_agent."""
 
@@ -3125,6 +3208,38 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(row["trust_label"], "candidate_grade")
         self.assertEqual(row["comparability_label"], "candidate_comparable")
 
+    def test_promote_template_backfill_result_to_screening(self):
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "template_backfill",
+            {"mode": "template_backfill", "backfill_template": "router_v1"},
+            "template backfill promotion",
+        )
+        result_id = nb.record_program_result(
+            experiment_id=exp_id,
+            graph_fingerprint="fp_template_backfill_promote",
+            graph_json=_MINIMAL_GRAPH_JSON,
+            stage0_passed=True,
+            stage05_passed=True,
+            stage1_passed=True,
+            loss_ratio=0.19,
+            novelty_score=0.61,
+        )
+        nb.flush_writes()
+        nb.close()
+
+        r = self.client.post(f"/api/programs/{result_id}/promote-screening")
+        self.assertEqual(r.status_code, 200)
+
+        nb = LabNotebook(self.db_path)
+        entry = nb.get_leaderboard_entry(result_id)
+        row = nb.get_program_detail(result_id)
+        nb.close()
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["tier"], "screening")
+        self.assertEqual(row["experiment_id"], exp_id)
+
     def test_api_start_validation_rejects_non_investigation_passed_with_payload(self):
         nb = LabNotebook(self.db_path)
         exp_id = nb.start_experiment(
@@ -3795,6 +3910,304 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data.get("experiment_id"), "exp-rerun-new")
         self.assertEqual(data.get("mode"), "evolve")
         fake_runner.start_evolution.assert_called_once()
+
+    def test_api_cancel_experiment_clears_running_state_end_to_end(self):
+        from research.scientist.runtime_events import get_runtime_event_services
+
+        nb = LabNotebook(self.db_path)
+        exp_id = nb.start_experiment(
+            "validation",
+            {"mode": "validation", "n_programs": 1},
+            "cancel e2e",
+        )
+        nb.close()
+
+        cancel_resp = self.client.post(f"/api/experiments/{exp_id}/cancel")
+        self.assertEqual(cancel_resp.status_code, 200)
+        self.assertEqual(cancel_resp.get_json()["status"], "cancelled")
+
+        status_resp = self.client.get("/api/status")
+        self.assertEqual(status_resp.status_code, 200)
+        status_data = status_resp.get_json()
+        self.assertFalse(status_data["is_running"])
+        self.assertEqual(status_data["run_trigger_source"], "unknown")
+        self.assertFalse(status_data["run_trigger"]["matched"])
+
+        nb = LabNotebook(self.db_path)
+        try:
+            row = nb.conn.execute(
+                "SELECT status, aria_summary FROM experiments WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["status"], "failed")
+            self.assertIn("Cancelled by user", row["aria_summary"])
+        finally:
+            nb.close()
+
+        registry = get_runtime_event_services(self.db_path).registry
+        state = registry.get(exp_id)
+        self.assertIsNotNone(state)
+        self.assertEqual(state.status, "failed")
+
+    def test_api_continuous_start_emits_failed_session_event_on_io_error_end_to_end(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runtime_events import get_runtime_event_services
+        from research.scientist.runner import ExperimentRunner
+
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+
+        def _boom(self, config):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        with (
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+            patch.object(ExperimentRunner, "_run_continuous_thread_inner", _boom),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={"mode": "continuous", "n_programs": 1},
+            )
+
+            self.assertEqual(r.status_code, 200)
+            data = r.get_json()
+            self.assertEqual(data.get("experiment_id"), "continuous")
+
+            deadline = time.time() + 5.0
+            session_events = []
+            while time.time() < deadline:
+                runner = _helpers_mod._runner
+                if runner is not None and runner._thread is not None:
+                    runner._thread.join(timeout=0.1)
+                session_events = [
+                    record.event
+                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    if record.event.event_type == "continuous_session_failed"
+                ]
+                if session_events:
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(session_events)
+            self.assertIn("disk I/O error", session_events[-1].payload["error"])
+            self.assertEqual(session_events[-1].run_id, "continuous")
+
+            status_data = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                status_resp = self.client.get("/api/status")
+                self.assertEqual(status_resp.status_code, 200)
+                status_data = status_resp.get_json()
+                if not status_data["is_running"]:
+                    break
+                time.sleep(0.05)
+
+            self.assertIsNotNone(status_data)
+            self.assertFalse(status_data["is_running"])
+            self.assertEqual(status_data["progress"]["status"], "failed")
+            self.assertIn("disk I/O error", status_data["progress"]["error"])
+
+    def test_api_single_start_emits_failed_lifecycle_on_io_error_end_to_end(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runtime_events import get_runtime_event_services
+        from research.scientist.runner import ExperimentRunner
+
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+
+        def _boom(self, exp_id, config, nb):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        with (
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+            patch.object(ExperimentRunner, "_execute_experiment", _boom),
+            patch.object(ExperimentRunner, "_invoke_code_healer", return_value=None),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={"mode": "single", "n_programs": 1, "preflight_override": True},
+            )
+
+            self.assertEqual(r.status_code, 200)
+            exp_id = r.get_json()["experiment_id"]
+
+            deadline = time.time() + 5.0
+            failed_events = []
+            while time.time() < deadline:
+                runner = _helpers_mod._runner
+                if runner is not None and runner._thread is not None:
+                    runner._thread.join(timeout=0.1)
+                failed_events = [
+                    record.event
+                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    if record.event.run_id == exp_id
+                    and record.event.event_type == "experiment_failed"
+                ]
+                if failed_events:
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(failed_events)
+            self.assertIn("disk I/O error", failed_events[-1].payload["error"])
+            self.assertEqual(failed_events[-1].payload["mode"], "screening")
+
+            status_data = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                status_resp = self.client.get("/api/status")
+                self.assertEqual(status_resp.status_code, 200)
+                status_data = status_resp.get_json()
+                if not status_data["is_running"]:
+                    break
+                time.sleep(0.05)
+
+            self.assertIsNotNone(status_data)
+            self.assertFalse(status_data["is_running"])
+            self.assertEqual(status_data["progress"]["status"], "failed")
+            self.assertIn("disk I/O error", status_data["progress"]["error"])
+
+    def test_api_evolution_start_emits_failed_lifecycle_on_io_error_end_to_end(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runtime_events import get_runtime_event_services
+        from research.scientist.runner import ExperimentRunner
+
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+
+        def _boom(self, config):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        with (
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+            patch.object(ExperimentRunner, "_build_grammar_config", _boom),
+            patch.object(ExperimentRunner, "_invoke_code_healer", return_value=None),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={"mode": "evolve", "n_programs": 2, "preflight_override": True},
+            )
+
+            self.assertEqual(r.status_code, 200)
+            exp_id = r.get_json()["experiment_id"]
+
+            deadline = time.time() + 5.0
+            failed_events = []
+            while time.time() < deadline:
+                runner = _helpers_mod._runner
+                if runner is not None and runner._thread is not None:
+                    runner._thread.join(timeout=0.1)
+                failed_events = [
+                    record.event
+                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    if record.event.run_id == exp_id
+                    and record.event.event_type == "experiment_failed"
+                ]
+                if failed_events:
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(failed_events)
+            self.assertIn("disk I/O error", failed_events[-1].payload["error"])
+            self.assertEqual(failed_events[-1].payload["mode"], "evolution")
+
+            status_data = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                status_resp = self.client.get("/api/status")
+                self.assertEqual(status_resp.status_code, 200)
+                status_data = status_resp.get_json()
+                if not status_data["is_running"]:
+                    break
+                time.sleep(0.05)
+
+            self.assertIsNotNone(status_data)
+            self.assertFalse(status_data["is_running"])
+            self.assertEqual(status_data["progress"]["status"], "failed")
+            self.assertIn("disk I/O error", status_data["progress"]["error"])
+
+    def test_api_novelty_start_emits_failed_lifecycle_on_io_error_end_to_end(self):
+        from research.scientist.api_routes import _helpers as _helpers_mod
+        from research.scientist.runtime_events import get_runtime_event_services
+        from research.scientist.runner import ExperimentRunner
+
+        _pass_preflight = {
+            "verdict": "pass",
+            "checks": [{"name": "all_clear", "status": "pass", "details": None}],
+            "sample_n": 4,
+        }
+
+        def _boom(self, config):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        with (
+            patch(
+                "research.scientist.api_routes.experiments_bp.run_launch_preflight",
+                return_value=_pass_preflight,
+            ),
+            patch.object(ExperimentRunner, "_build_grammar_config", _boom),
+            patch.object(ExperimentRunner, "_invoke_code_healer", return_value=None),
+        ):
+            r = self.client.post(
+                "/api/experiments/start",
+                json={"mode": "novelty", "n_programs": 2, "preflight_override": True},
+            )
+
+            self.assertEqual(r.status_code, 200)
+            exp_id = r.get_json()["experiment_id"]
+
+            deadline = time.time() + 5.0
+            failed_events = []
+            while time.time() < deadline:
+                runner = _helpers_mod._runner
+                if runner is not None and runner._thread is not None:
+                    runner._thread.join(timeout=0.1)
+                failed_events = [
+                    record.event
+                    for record in get_runtime_event_services(self.db_path).spool.replay()
+                    if record.event.run_id == exp_id
+                    and record.event.event_type == "experiment_failed"
+                ]
+                if failed_events:
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(failed_events)
+            self.assertIn("disk I/O error", failed_events[-1].payload["error"])
+            self.assertEqual(failed_events[-1].payload["mode"], "novelty")
+
+            status_data = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                status_resp = self.client.get("/api/status")
+                self.assertEqual(status_resp.status_code, 200)
+                status_data = status_resp.get_json()
+                if not status_data["is_running"]:
+                    break
+                time.sleep(0.05)
+
+            self.assertIsNotNone(status_data)
+            self.assertFalse(status_data["is_running"])
+            self.assertEqual(status_data["progress"]["status"], "failed")
+            self.assertIn("disk I/O error", status_data["progress"]["error"])
 
     def test_api_rerun_experiment_when_runner_busy(self):
         from research.scientist.api_routes import _helpers as _helpers_mod

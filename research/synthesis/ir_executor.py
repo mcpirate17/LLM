@@ -71,9 +71,7 @@ class IRExecutor(nn.Module):
         self.ops = plan.ops
         self.idx_to_op_idx = plan.idx_to_op_idx
         self._flat_ops = plan.flat_ops
-        self._op_codes_list = plan.op_codes_list
-        self._in1_list = plan.in1_list
-        self._in2_list = plan.in2_list
+        self._n_nodes = plan.n_nodes
         self._counts_original = plan.counts_original
         self._counts_buf = plan.counts_buf
         self._input_node_indices = plan.input_node_indices
@@ -98,7 +96,7 @@ class IRExecutor(nn.Module):
             self,
             self.source_graph,
             flat_ops=self._flat_ops,
-            op_codes_list=self._op_codes_list,
+            n_nodes=self._n_nodes,
             exec_plan_node_indices=self._exec_node_indices,
         )
         self._subgraph_dispatcher = native_cfg.subgraph_dispatcher
@@ -135,7 +133,7 @@ class IRExecutor(nn.Module):
             "native_chain_dispatches"
         ]
         counts, node_outputs, captured = initialize_execution_state(
-            n_nodes=len(self._op_codes_list),
+            n_nodes=self._n_nodes,
             counts_buf=self._counts_buf,
             counts_original=self._counts_original,
             input_node_indices=self._input_node_indices,

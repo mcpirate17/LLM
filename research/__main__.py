@@ -88,6 +88,12 @@ def main():
         action="store_true",
         help="In register-references mode, skip investigation/validation",
     )
+    parser.add_argument(
+        "--forced-template",
+        type=str,
+        default=None,
+        help="Force all generated graphs to use this template (e.g. transformer_block, residual_block)",
+    )
 
     args = parser.parse_args()
 
@@ -124,6 +130,7 @@ def _run_synthesis(args):
         model_dim=args.dim,
         n_layers=args.n_layers,
         device=args.device,
+        forced_template=args.forced_template,
     )
 
     runner = ExperimentRunner(args.db)
@@ -143,6 +150,7 @@ def _run_continuous(args):
         device=args.device,
         continuous=True,
         max_experiments=100,
+        forced_template=args.forced_template,
     )
 
     runner = ExperimentRunner(args.db)

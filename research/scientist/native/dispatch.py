@@ -17,6 +17,7 @@ from .tensor_bridge import (
 )
 
 logger = logging.getLogger(__name__)
+_last_profile_data: Dict[str, Any] | None = None
 
 NATIVE_STRUCTURAL_OPS: Set[str] = {
     "input",
@@ -75,7 +76,12 @@ _NATIVE_C_KERNEL_OPS: Set[str] = {
     "rwkv_channel",
     "swiglu",
     "conv1d_seq",
-    "depth_weighted_proj",
+    # depth_weighted_proj deliberately excluded (2026-04-16): the C kernel
+    # has forward but no backward, so native dispatch crashes on backward
+    # with "no backward kernel for op: depth_weighted_proj". 5 aliased ops
+    # (gated_lane_blend, route_lanes, depth_gated_transform, route_recursion,
+    # adaptive_recursion) inherit the same state. Forcing the PyTorch path
+    # for all six until the Rust backward kernel lands.
 }
 _PER_OP_BRIDGE_ONLY_OPS: Set[str] = set()
 _CYTHON_WRAPPER_OPS: Set[str] = set(_NATIVE_C_KERNEL_OPS)
@@ -112,6 +118,25 @@ def _compile_rust_graph_handle(graph_json: str) -> Any:
     except Exception as exc:
         logger.debug("Rust graph-handle compilation failed: %s", exc)
         return None
+
+
+def _native_profiling_enabled(rust: Any) -> bool:
+    return bool(
+        rust is not None
+        and hasattr(rust, "profiler_enabled")
+        and rust.profiler_enabled()
+    )
+
+
+def _set_last_profile_data(value: Dict[str, Any] | None) -> None:
+    global _last_profile_data
+    _last_profile_data = value
+    try:
+        from . import profiling as native_profiling
+
+        native_profiling._last_profile_data = value
+    except Exception:
+        logger.debug("Failed to sync native profiling cache", exc_info=True)
 
 
 def _check_native_op_support(
@@ -856,10 +881,8 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
 
     # Flatten input for the scheduler (expects Vec<f32>)
     try:
-        x_flat = x_np.ravel().tolist()
-        global _last_profile_data
-        # Prefer execute_graph_with_stats for arena usage observability.
-        if hasattr(rust, "execute_graph_with_stats_arrays"):
+        profiling_enabled = _native_profiling_enabled(rust)
+        if profiling_enabled and hasattr(rust, "execute_graph_with_stats_arrays"):
             result = rust.execute_graph_with_stats_arrays(graph_json, x_np)
             y_flat = result["output"]
             logger.debug(
@@ -870,13 +893,14 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _last_profile_data = {
+                _set_last_profile_data({
                     "node_profiles": list(result["node_profiles"]),
                     "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                }
+                })
             else:
-                _last_profile_data = None
-        elif hasattr(rust, "execute_graph_with_stats"):
+                _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
+            x_flat = x_np.ravel().tolist()
             result = rust.execute_graph_with_stats(graph_json, x_flat)
             y_flat = result["output"]
             logger.debug(
@@ -888,24 +912,24 @@ def dispatch_graph_native(graph: Any, input_data: Any) -> Any:
             )
             # Cache profiling data if present.
             if "node_profiles" in result:
-                _last_profile_data = {
+                _set_last_profile_data({
                     "node_profiles": list(result["node_profiles"]),
                     "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                }
+                })
                 logger.debug(
                     "Profiling: %d node events, peak memory %d bytes",
                     len(_last_profile_data["node_profiles"]),
                     _last_profile_data["peak_memory_bytes"],
                 )
             else:
-                _last_profile_data = None
+                _set_last_profile_data(None)
         elif hasattr(rust, "execute_graph_arrays"):
             y_flat = rust.execute_graph_arrays(graph_json, x_np)
-            _last_profile_data = None
+            _set_last_profile_data(None)
         else:
             x_flat = x_np.ravel().tolist()
             y_flat = rust.execute_graph(graph_json, x_flat)
-            _last_profile_data = None
+            _set_last_profile_data(None)
         return _reshape_graph_output(graph, x_np, y_flat)
     except Exception as exc:
         logger.error("Rust scheduler execution failed: %s", exc)
@@ -1103,10 +1127,16 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
 
     x_np = to_native_array(input_data)
     try:
-        x_flat = x_np.ravel().tolist()
-        global _last_profile_data
         graph_handle = _compile_rust_graph_handle(ir_json)
-        if graph_handle is not None and hasattr(
+        profiling_enabled = _native_profiling_enabled(rust)
+        if (
+            not profiling_enabled
+            and graph_handle is not None
+            and hasattr(rust, "execute_graph_compiled_arrays_handle")
+        ):
+            y_flat = rust.execute_graph_compiled_arrays_handle(graph_handle, x_np)
+            _set_last_profile_data(None)
+        elif graph_handle is not None and hasattr(
             rust, "execute_graph_with_stats_compiled_arrays"
         ):
             result = rust.execute_graph_with_stats_compiled_arrays(graph_handle, x_np)
@@ -1119,13 +1149,13 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _last_profile_data = {
+                _set_last_profile_data({
                     "node_profiles": list(result["node_profiles"]),
                     "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                }
+                })
             else:
-                _last_profile_data = None
-        elif hasattr(rust, "execute_graph_with_stats_arrays"):
+                _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_with_stats_arrays"):
             result = rust.execute_graph_with_stats_arrays(ir_json, x_np)
             y_flat = result["output"]
             logger.debug(
@@ -1136,13 +1166,13 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _last_profile_data = {
+                _set_last_profile_data({
                     "node_profiles": list(result["node_profiles"]),
                     "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                }
+                })
             else:
-                _last_profile_data = None
-        elif hasattr(rust, "execute_graph_with_stats"):
+                _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_with_stats"):
             x_flat = x_np.ravel().tolist()
             result = rust.execute_graph_with_stats(ir_json, x_flat)
             y_flat = result["output"]
@@ -1154,19 +1184,19 @@ def dispatch_graph_native_cached(ir_json: str, graph: Any, input_data: Any) -> A
                 result.get("heap_fallback_count", 0),
             )
             if "node_profiles" in result:
-                _last_profile_data = {
+                _set_last_profile_data({
                     "node_profiles": list(result["node_profiles"]),
                     "peak_memory_bytes": int(result.get("peak_memory_bytes", 0)),
-                }
+                })
             else:
-                _last_profile_data = None
+                _set_last_profile_data(None)
         elif hasattr(rust, "execute_graph_arrays"):
             y_flat = rust.execute_graph_arrays(ir_json, x_np)
-            _last_profile_data = None
+            _set_last_profile_data(None)
         else:
             x_flat = x_np.ravel().tolist()
             y_flat = rust.execute_graph(ir_json, x_flat)
-            _last_profile_data = None
+            _set_last_profile_data(None)
         return _reshape_graph_output(graph, x_np, y_flat)
     except Exception as exc:
         logger.error("Rust scheduler execution failed: %s", exc)
@@ -1193,8 +1223,35 @@ def dispatch_graph_native_multi_input_cached(
     native_inputs = [to_native_array(value) for value in input_data]
 
     try:
-        global _last_profile_data
-        if hasattr(rust, "execute_graph_multi_input_arrays_with_stats"):
+        graph_handle = _compile_rust_graph_handle(ir_json)
+        profiling_enabled = _native_profiling_enabled(rust)
+        if (
+            not profiling_enabled
+            and graph_handle is not None
+            and hasattr(rust, "execute_graph_multi_input_compiled_arrays_handle")
+        ):
+            y_flat = rust.execute_graph_multi_input_compiled_arrays_handle(
+                graph_handle,
+                native_inputs,
+            )
+            _set_last_profile_data(None)
+        elif graph_handle is not None and hasattr(
+            rust, "execute_graph_multi_input_compiled_arrays_with_stats"
+        ):
+            result = rust.execute_graph_multi_input_compiled_arrays_with_stats(
+                graph_handle,
+                native_inputs,
+            )
+            y_flat = result["output"]
+            logger.debug(
+                "Arena stats: %d/%d bytes used, %d arena allocs, %d heap fallbacks",
+                result.get("arena_bytes_used", 0),
+                result.get("arena_capacity", 0),
+                result.get("arena_alloc_count", 0),
+                result.get("heap_fallback_count", 0),
+            )
+            _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_multi_input_arrays_with_stats"):
             result = rust.execute_graph_multi_input_arrays_with_stats(
                 ir_json,
                 native_inputs,
@@ -1207,8 +1264,8 @@ def dispatch_graph_native_multi_input_cached(
                 result.get("arena_alloc_count", 0),
                 result.get("heap_fallback_count", 0),
             )
-            _last_profile_data = None
-        elif hasattr(rust, "execute_graph_multi_input_with_stats"):
+            _set_last_profile_data(None)
+        elif profiling_enabled and hasattr(rust, "execute_graph_multi_input_with_stats"):
             flat_inputs = [value.ravel().tolist() for value in native_inputs]
             result = rust.execute_graph_multi_input_with_stats(ir_json, flat_inputs)
             y_flat = result["output"]
@@ -1219,14 +1276,14 @@ def dispatch_graph_native_multi_input_cached(
                 result.get("arena_alloc_count", 0),
                 result.get("heap_fallback_count", 0),
             )
-            _last_profile_data = None
+            _set_last_profile_data(None)
         elif hasattr(rust, "execute_graph_multi_input_arrays"):
             y_flat = rust.execute_graph_multi_input_arrays(ir_json, native_inputs)
-            _last_profile_data = None
+            _set_last_profile_data(None)
         elif hasattr(rust, "execute_graph_multi_input"):
             flat_inputs = [value.ravel().tolist() for value in native_inputs]
             y_flat = rust.execute_graph_multi_input(ir_json, flat_inputs)
-            _last_profile_data = None
+            _set_last_profile_data(None)
         else:
             raise RuntimeError(
                 "Rust scheduler does not expose multi-input graph execution."

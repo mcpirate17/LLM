@@ -71,8 +71,13 @@ class RapidScreeningCheck:
 
     GRAD_NORM_HARD_LIMIT: float = 500.0
     GRAD_NORM_WARNING: float = 50.0
+    # Cross-entropy is bounded above by ln(vocab_size); the historical 500/300
+    # limits were tuned implicitly against vocab=256 (ln=5.55). Larger vocabs
+    # legitimately produce higher initial loss, so the per-step limits below
+    # are scaled by max(1, ln(vocab)/ln(256)) at check time. Calibrated 2026-04-17.
     LOSS_AT_STEP_25_LIMIT: float = 500.0
     LOSS_AT_STEP_50_LIMIT: float = 300.0
+    LOSS_LIMIT_VOCAB_BASELINE: int = 256  # vocab the absolute limits are tuned for
     LOSS_SPIKE_RATIO: float = 2.0
     ROUTING_ENTROPY_MINIMUM: float = 0.05
     NAN_GRACE_STEPS: int = 5
@@ -202,24 +207,37 @@ class RapidScreeningCheck:
         min_loss_so_far: float,
         vocab_size: int,
     ) -> bool:
-        if step == 25 and loss_val > self.loss_at_step_25_limit:
+        # Cross-entropy is upper-bounded by ln(vocab_size); the absolute limits
+        # were tuned for vocab=256 (ln=5.55). Scale linearly in entropy floor
+        # so a vocab=50000 model isn't unfairly killed for a higher initial loss
+        # that's still well under its entropy ceiling.
+        vocab_norm = max(
+            1.0,
+            math.log(max(int(vocab_size), 2))
+            / math.log(self.LOSS_LIMIT_VOCAB_BASELINE),
+        )
+        limit_25 = self.loss_at_step_25_limit * vocab_norm
+        limit_50 = self.loss_at_step_50_limit * vocab_norm
+        if step == 25 and loss_val > limit_25:
             self._kill(
                 result,
                 step,
                 "loss_stalled_25",
                 loss_val,
-                self.loss_at_step_25_limit,
-                f"Loss {loss_val:.1f} > {self.loss_at_step_25_limit} at step 25",
+                limit_25,
+                f"Loss {loss_val:.1f} > {limit_25:.1f} at step 25 "
+                f"(vocab_norm={vocab_norm:.2f}, base={self.loss_at_step_25_limit:.0f})",
             )
             return False
-        if step == 50 and loss_val > self.loss_at_step_50_limit:
+        if step == 50 and loss_val > limit_50:
             self._kill(
                 result,
                 step,
                 "loss_stalled_50",
                 loss_val,
-                self.loss_at_step_50_limit,
-                f"Loss {loss_val:.1f} > {self.loss_at_step_50_limit} at step 50",
+                limit_50,
+                f"Loss {loss_val:.1f} > {limit_50:.1f} at step 50 "
+                f"(vocab_norm={vocab_norm:.2f}, base={self.loss_at_step_50_limit:.0f})",
             )
             return False
         if step == 50 and has_routing:

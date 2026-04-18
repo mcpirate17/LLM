@@ -20,6 +20,56 @@ def register_config_routes(app, context: ApiRouteContext):
         """Get the default RunConfig."""
         return jsonify(RunConfig().to_dict())
 
+    @app.route("/api/scoring/version", methods=["GET"])
+    def api_get_scoring_version():
+        """Return the active composite scoring version.
+
+        ``v8`` (default) uses the original v8 weights. ``v8.1`` applies the
+        capability-first rebalance (tighter binding penalty + boost for
+        graphs that actually bind). See research/tasks/todo.md for the full
+        rationale.
+        """
+        from ..leaderboard_scoring import (
+            SUPPORTED_SCORING_VERSIONS,
+            get_scoring_version,
+        )
+
+        return jsonify(
+            {
+                "version": get_scoring_version(),
+                "supported": list(SUPPORTED_SCORING_VERSIONS),
+            }
+        )
+
+    @app.route("/api/scoring/version", methods=["POST"])
+    def api_set_scoring_version():
+        """Switch the active composite scoring version at runtime.
+
+        Historical rows scored under the previous version are not
+        rescored — the switch only affects composites computed after the
+        call returns.
+        """
+        from ..leaderboard_scoring import (
+            SUPPORTED_SCORING_VERSIONS,
+            set_scoring_version,
+        )
+
+        body = request.get_json(silent=True) or {}
+        version = str(body.get("version", "")).strip()
+        if not version:
+            return jsonify({"error": "version is required"}), 400
+        try:
+            new_version = set_scoring_version(version)
+        except ValueError as exc:
+            return jsonify(
+                {
+                    "error": str(exc),
+                    "supported": list(SUPPORTED_SCORING_VERSIONS),
+                }
+            ), 400
+        logger.info("Scoring version changed to %s via API", new_version)
+        return jsonify({"version": new_version})
+
     @app.route("/api/llm/config")
     def api_llm_config():
         """Get current LLM backend configuration."""

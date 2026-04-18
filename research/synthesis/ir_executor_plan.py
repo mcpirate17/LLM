@@ -17,9 +17,7 @@ class ExecutorPlan:
     ops: nn.ModuleList
     idx_to_op_idx: dict[int, int]
     flat_ops: list[Optional[nn.Module]]
-    op_codes_list: list[int]
-    in1_list: list[int]
-    in2_list: list[int]
+    n_nodes: int
     counts_original: list[int]
     counts_buf: list[int]
     input_node_indices: tuple[int, ...]
@@ -97,8 +95,10 @@ def _build_consumer_counts(ir: ComputationGraphIR) -> np.ndarray:
 
 def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
     node_dims = _infer_node_dims(ir)
+    n_nodes = len(ir.op_codes)
     ops = nn.ModuleList()
     idx_to_op_idx: dict[int, int] = {}
+    flat_ops: list[Optional[nn.Module]] = [None] * n_nodes
 
     for idx, opcode in enumerate(ir.op_codes):
         if opcode == 0:
@@ -119,22 +119,15 @@ def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
         )
         idx_to_op_idx[idx] = len(ops)
         ops.append(op_mod)
+        flat_ops[idx] = op_mod
 
-    n_nodes = len(ir.op_codes)
-    flat_ops: list[Optional[nn.Module]] = [None] * n_nodes
-    for ir_idx, op_idx in idx_to_op_idx.items():
-        flat_ops[ir_idx] = ops[op_idx]
-
-    op_codes_list = (
-        ir.op_codes.tolist() if hasattr(ir.op_codes, "tolist") else list(ir.op_codes)
-    )
     if hasattr(ir.input_indices, "tolist"):
         input_indices_list = ir.input_indices.tolist()
-        in1_list = [row[0] for row in input_indices_list]
-        in2_list = [row[1] for row in input_indices_list]
     else:
-        in1_list = [int(ir.input_indices[idx, 0]) for idx in range(n_nodes)]
-        in2_list = [int(ir.input_indices[idx, 1]) for idx in range(n_nodes)]
+        input_indices_list = [
+            [int(ir.input_indices[idx, 0]), int(ir.input_indices[idx, 1])]
+            for idx in range(n_nodes)
+        ]
 
     consumer_counts = _build_consumer_counts(ir)
     counts_original = (
@@ -145,11 +138,11 @@ def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
     exec_entries = tuple(
         (
             idx,
-            in1_list[idx],
-            in2_list[idx],
+            input_indices_list[idx][0],
+            input_indices_list[idx][1],
             flat_ops[idx],
         )
-        for idx, opcode in enumerate(op_codes_list)
+        for idx, opcode in enumerate(ir.op_codes)
         if opcode != 0 and flat_ops[idx] is not None
     )
     return ExecutorPlan(
@@ -157,13 +150,11 @@ def build_executor_plan(ir: ComputationGraphIR) -> ExecutorPlan:
         ops=ops,
         idx_to_op_idx=idx_to_op_idx,
         flat_ops=flat_ops,
-        op_codes_list=op_codes_list,
-        in1_list=in1_list,
-        in2_list=in2_list,
+        n_nodes=n_nodes,
         counts_original=counts_original,
         counts_buf=list(counts_original),
         input_node_indices=tuple(
-            idx for idx, opcode in enumerate(op_codes_list) if opcode == 0
+            idx for idx, opcode in enumerate(ir.op_codes) if opcode == 0
         ),
         exec_node_indices=tuple(entry[0] for entry in exec_entries),
         exec_in1_indices=tuple(entry[1] for entry in exec_entries),

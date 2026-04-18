@@ -11,7 +11,7 @@ from pathlib import Path
 
 from research.scientist.notebook import LabNotebook
 
-BASE = Path("/home/tim/Projects/LLM")
+BASE = Path(__file__).resolve().parents[2]
 DB_PATH = BASE / "research/lab_notebook.db"
 OUT_DIR = BASE / "research/reports/backpopulate_lanes"
 

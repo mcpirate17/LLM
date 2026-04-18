@@ -259,6 +259,7 @@ class _ContinuousValidationMixin:
             ood_check=self._ood_robustness_check,
             sensitivity_check=self._sensitivity_check,
             scaling_compare=self._run_scaling_reference_compare,
+            stop_event=self._stop_event,
         )
 
         run_eval_suite(ctx=ctx, result=result, vstatus=_vstatus)

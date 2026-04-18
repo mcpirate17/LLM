@@ -21,6 +21,16 @@ class ScreeningGraphAnalysis:
     toxic_bigrams: Tuple[str, ...]
     has_parameterized_op: bool
 
+    @property
+    def has_content_addressed_op(self) -> bool:
+        """Graph contains an attention-class op capable of content-based retrieval."""
+        return bool(self.op_names & CONTENT_ADDRESSED_OPS)
+
+    @property
+    def has_sequence_mixing(self) -> bool:
+        """Graph contains any op that mixes information across positions."""
+        return bool(self.op_names & SEQUENCE_MIXING_OPS)
+
 
 def analyze_graph_for_screening(
     graph: Any,
@@ -115,12 +125,68 @@ def analyze_graph_for_screening(
     )
 
 
+# ── Sequence mixing capability tiers ─────────────────────────────────
+#
+# Attention computes content-based all-to-all similarity (Q·K^T) and
+# routes information accordingly (softmax · V). This is the ONLY
+# mechanism that enables:
+#   - Induction heads (copy patterns from earlier in context)
+#   - Binding (associate and retrieve distant tokens by content)
+#   - Long-range dependency (subject-verb agreement across 100+ tokens)
+#
+# SSM/recurrent ops provide long-range mixing through state accumulation
+# but with exponential decay — they can approximate but not sharply
+# retrieve. Conv provides only local mixing (window 3-5 tokens).
+#
+# We use two tiers:
+#   CONTENT_ADDRESSED_OPS: Can learn content-based retrieval (attention
+#       family). Required for investigation/validation promotion.
+#   SEQUENCE_MIXING_OPS: Any cross-position information flow (attention +
+#       SSM + conv + accumulation). Required to pass screening.
+
+CONTENT_ADDRESSED_OPS: FrozenSet[str] = frozenset({
+    "softmax_attention", "latent_attention_compressor", "graph_attention",
+    "local_window_attn", "linear_attention", "diff_attention",
+    "tropical_attention", "ultrametric_attention", "stdp_attention",
+    "clifford_attention",
+    # Bilinear / retrieval-family ops that, when wired into a query-key-value
+    # style path, enable exact content-addressed retrieval. Not every use of
+    # these ops is retrieval-capable; gate8 treats their presence as a
+    # necessary (not sufficient) condition and the deeper binding probe does
+    # the final check.
+    "matmul",
+    "outer_product",
+    "gather_topk",
+    "cosine_similarity",
+    # New attention-class ops (2026-04-15)
+    "difficulty_routed_attention", "strided_attention",
+    "gated_progressive_attention", "gated_linear_attention",
+    "associative_memory",
+})
+
+SEQUENCE_MIXING_OPS: FrozenSet[str] = CONTENT_ADDRESSED_OPS | frozenset({
+    # SSM / recurrent (long-range but lossy)
+    "state_space", "selective_scan", "rwkv_channel", "rwkv_time_mixing",
+    # Convolution (local mixing only)
+    "conv1d_seq",
+    # Accumulation (proto-attention)
+    "cumsum", "cumprod_safe",
+    # Token interaction (local)
+    "token_merge", "adjacent_token_merge",
+    "sliding_window_mask", "causal_mix",
+    # New mixing ops (2026-04-15) — long_conv_hyena and mixture_of_recursions
+    # are SSM-class (long-range mixing without content addressing)
+    "long_conv_hyena", "mixture_of_recursions",
+})
+
+
 def structural_gate_failure(
     graph: Any,
     *,
     routing_mandatory: bool,
     efficiency_ops: FrozenSet[str],
     analysis: ScreeningGraphAnalysis,
+    binding_capable_required: bool = False,
 ) -> str | None:
     """Return the first failing structural gate code, or ``None``."""
 
@@ -134,6 +200,27 @@ def structural_gate_failure(
         return "gate4_no_params"
     if routing_mandatory and not (analysis.op_names & efficiency_ops):
         return "gate5_no_routing"
+    # Gate 6: must contain at least one sequence-mixing op (attention, SSM,
+    # conv, or equivalent). Graphs without mixing cannot learn token
+    # relationships — they achieve low loss by memorization but score zero
+    # on induction, binding, and associative recall probes.
+    if not (analysis.op_names & SEQUENCE_MIXING_OPS):
+        return "gate6_no_mixing"
+    # Gate 7: need minimum op diversity — a graph of 8 linear_proj ops
+    # has no functional variety. Require at least 4 distinct op types
+    # (e.g., norm + attention + FFN + residual).
+    if len(analysis.op_names) < 4:
+        return "gate7_low_diversity"
+    # Gate 8: when the grammar preset declares binding-capable required,
+    # reject graphs that contain no content-addressed retrieval op. SSM and
+    # conv can mix sequences but cannot bind — they pass gate 6 yet will
+    # score zero on binding/induction probes and waste investigation compute.
+    # Keeping this gate opt-in preserves backward compatibility for presets
+    # that deliberately explore retrieval-free trunks (e.g. exploration).
+    if binding_capable_required and not (
+        analysis.op_names & CONTENT_ADDRESSED_OPS
+    ):
+        return "gate8_retrieval_dead"
     return None
 
 
