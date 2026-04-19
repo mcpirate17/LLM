@@ -1,47 +1,107 @@
-"""Investigation-tier binding probe (v2, 2026-04-18).
+"""Investigation-tier binding probe (v2, 2026-04-18, native-accelerated 2026-04-19).
 
 Drop-in addition that lives alongside the production screening-tier binding
 probe (`research.eval.binding_curriculum.curriculum_binding_range_profile`).
 
-Key differences vs screening-tier:
+Differences from screening-tier:
   * Longer training budget (2400 steps vs 400/800) so slow-converging
-    architectures (e.g. 2-layer attention at lr=3e-4) reach their true
-    capability ceiling. The PROBE_CALIBRATION_2026-04-17.md sweep showed
-    attn_2l stuck at 0.026 while attn_4l reached 0.976 at 1600 steps —
-    that looked like a convergence issue, not an architectural limit.
+    architectures reach their capability ceiling (attn_2l at 1600 steps
+    was stuck at 0.026 while attn_4l hit 0.976).
   * Extended distance set {4, 8, 16, 32, 64} (screening uses {4,8,16,32}).
-    The distance=64 eval requires seq_len ≥ 128 which all investigation-
-    tier candidates satisfy.
   * Dedicated protocol-versioned columns so scoring can swap v1→v2 when
     both are present.
+  * Median-of-3 seeds — single-seed fails ~1-in-5 at the capability
+    frontier (dead-optimizer seeds).
 
-This module does NOT modify the screening probe. Integration steps match
-induction_probe_v2_investigation.py.
+Performance notes (2026-04-19 native-first rewrite):
+  * Pre-generate all 2400 training batches up-front in a single
+    vectorized randint — eliminates per-step dispatch overhead.
+  * Single deepcopy per fingerprint + state_dict reload for seeds 2/3
+    (cuts deepcopy cost by ~65%).
+  * Seq_len is fixed at 128 for both train and eval regardless of
+    distance, so the forward graph is shape-invariant. torch.compile
+    works cleanly here (gated on ``ARIA_PROBE_COMPILE``) — but remains
+    opt-in because the IR executor has Python-side bookkeeping that
+    still triggers recompiles on model families that use the
+    rich-telemetry path.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ._probe_runtime import disable_native_probe_dispatch
-from .binding_curriculum import curriculum_binding_range_profile
+from .utils import clip_grad_norm, make_adamw
 
 logger = logging.getLogger(__name__)
 
-BINDING_V2_PROTOCOL_VERSION = "binding_investigation_extended_v1"
+BINDING_V2_PROTOCOL_VERSION = "binding_investigation_extended_v2"
 BINDING_V2_DISTANCES: Tuple[int, ...] = (4, 8, 16, 32, 64)
 BINDING_V2_TRAIN_STEPS = 2400
 BINDING_V2_EVAL_EXAMPLES = 200
 BINDING_V2_TRAIN_SEQ_LEN = 128
 BINDING_V2_EVAL_SEQ_LEN = 128
+BINDING_V2_TRAIN_BATCH_SIZE = 16
+BINDING_V2_EVAL_BATCH_SIZE = 32
 BINDING_V2_LR = 3e-4
 BINDING_V2_TIMEOUT_S = 240.0
 BINDING_V2_SEEDS: Tuple[int, ...] = (11, 23, 47)
+
+
+def _maybe_compile(model: nn.Module) -> nn.Module:
+    """Optionally wrap with ``torch.compile``.
+
+    Shape-invariant here (seq_len=128 always), so compile *could* amortize
+    across the 2400 training steps. Gated behind ``ARIA_PROBE_COMPILE``
+    because some IR-executor graphs still trigger Python-side side-effect
+    recompiles that erase the gain.
+    """
+    import os as _os
+
+    if _os.environ.get("ARIA_PROBE_COMPILE", "") != "1":
+        return model
+    if not torch.cuda.is_available():
+        return model
+    try:
+        return torch.compile(model, mode="default", dynamic=False, fullgraph=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("torch.compile unavailable for binding probe model: %s", exc)
+        return model
+
+
+def _generate_copy_batches_bulk(
+    n_batches: int,
+    batch_size: int,
+    seq_len: int,
+    distance: int,
+    vocab_size: int,
+    device: str,
+    generator: torch.Generator | None,
+) -> torch.Tensor:
+    """Vectorized bulk generator for copy-at-distance sequences.
+
+    Shape: (n_batches, batch_size, seq_len). Each row is a repeated seed
+    of length ``distance`` tiled to fill ``seq_len`` — same as the v1
+    probe but built in one kernel dispatch for the whole training budget.
+    """
+    # Seed tokens, one per example
+    seeds = torch.randint(
+        1,
+        vocab_size,
+        (n_batches, batch_size, distance),
+        device=device,
+        generator=generator,
+    )
+    n_rep = (seq_len + distance - 1) // distance
+    return seeds.repeat(1, 1, n_rep)[:, :, :seq_len].contiguous()
 
 
 @dataclass(slots=True)
@@ -68,6 +128,146 @@ class BindingV2Result:
         }
 
 
+@torch.inference_mode()
+def _eval_distances_bulk(
+    model: nn.Module,
+    *,
+    distances: Tuple[int, ...],
+    n_eval: int,
+    seq_len: int,
+    batch_size: int,
+    vocab_size: int,
+    device: str,
+    generator: torch.Generator | None,
+) -> Dict[int, float]:
+    accs: Dict[int, float] = {}
+    for distance in distances:
+        if distance <= 0 or distance + 1 >= seq_len:
+            accs[int(distance)] = 0.0
+            continue
+        n_batches = (n_eval + batch_size - 1) // batch_size
+        batches = _generate_copy_batches_bulk(
+            n_batches, batch_size, seq_len, distance, vocab_size, device, generator
+        )
+        correct = 0
+        total = 0
+        seen = 0
+        for b in range(n_batches):
+            if seen >= n_eval:
+                break
+            take = min(batch_size, n_eval - seen)
+            batch = batches[b, :take]
+            logits = model(batch)
+            preds = logits[:, distance - 1 : seq_len - 1, :vocab_size].argmax(dim=-1)
+            targets = batch[:, distance:seq_len]
+            correct += preds.eq(targets).sum().item()
+            total += targets.numel()
+            seen += take
+        accs[int(distance)] = round(correct / max(total, 1), 4)
+    return accs
+
+
+def _run_binding_v2_on(
+    probe_model: nn.Module,
+    *,
+    distances: Tuple[int, ...],
+    n_train_steps: int,
+    n_eval: int,
+    train_seq_len: int,
+    eval_seq_len: int,
+    train_batch_size: int,
+    eval_batch_size: int,
+    lr: float,
+    device: str,
+    timeout_s: float,
+    generator: torch.Generator | None,
+) -> BindingV2Result:
+    """Run the probe training+eval on an already-prepared ``probe_model``."""
+    t0 = time.perf_counter()
+    result = BindingV2Result(distance_accuracies={})
+    valid_distances = tuple(
+        int(d) for d in distances if int(d) > 0 and int(d) + 1 < train_seq_len
+    )
+    if not valid_distances:
+        result.status = "no_valid_distances"
+        result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return result
+
+    vocab_size = int(getattr(probe_model, "vocab_size", 256) or 256)
+    probe_model.train()
+    compiled = _maybe_compile(probe_model)
+
+    # Pre-generate all training batches per distance up-front.
+    n_dists = len(valid_distances)
+    steps_per_dist: Dict[int, int] = {d: 0 for d in valid_distances}
+    for s in range(n_train_steps):
+        steps_per_dist[valid_distances[s % n_dists]] += 1
+
+    pre_train: Dict[int, torch.Tensor] = {}
+    for d in valid_distances:
+        cnt = steps_per_dist[d]
+        if cnt > 0:
+            pre_train[d] = _generate_copy_batches_bulk(
+                cnt, train_batch_size, train_seq_len, d, vocab_size, device, generator
+            )
+    cursor = {d: 0 for d in valid_distances}
+
+    optimizer_kwargs = {"lr": lr}
+    if device == "cuda" and torch.cuda.is_available():
+        optimizer_kwargs["fused"] = True
+    optimizer = torch.optim.AdamW(probe_model.parameters(), **optimizer_kwargs)
+    use_autocast = device == "cuda" and torch.cuda.is_available()
+
+    try:
+        with disable_native_probe_dispatch(probe_model, device=device):
+            for step in range(n_train_steps):
+                if time.perf_counter() - t0 > timeout_s:
+                    result.status = "timeout"
+                    break
+                distance = valid_distances[step % n_dists]
+                batch = pre_train[distance][cursor[distance]]
+                cursor[distance] += 1
+
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=use_autocast
+                ):
+                    logits = compiled(batch)
+                    pred_logits = logits[:, distance - 1 : train_seq_len - 1, :vocab_size]
+                    targets = batch[:, distance:train_seq_len]
+                    loss = F.cross_entropy(
+                        pred_logits.reshape(-1, vocab_size),
+                        targets.reshape(-1),
+                    )
+                if not torch.isfinite(loss):
+                    result.status = "diverged"
+                    break
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                clip_grad_norm(probe_model.parameters(), 1.0)
+                optimizer.step()
+                result.train_steps = step + 1
+
+            probe_model.eval()
+            result.distance_accuracies = _eval_distances_bulk(
+                compiled,
+                distances=valid_distances,
+                n_eval=n_eval,
+                seq_len=eval_seq_len,
+                batch_size=eval_batch_size,
+                vocab_size=vocab_size,
+                device=device,
+                generator=generator,
+            )
+            vals = list(result.distance_accuracies.values())
+            result.auc = round(sum(vals) / len(vals), 4) if vals else 0.0
+            result.max_distance_acc = round(max(vals), 4) if vals else 0.0
+    except Exception as exc:
+        result.status = f"train_failed: {exc}"
+
+    result.elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+    return result
+
+
 def _run_binding_v2_single_seed(
     model: nn.Module,
     *,
@@ -76,44 +276,44 @@ def _run_binding_v2_single_seed(
     n_eval: int = BINDING_V2_EVAL_EXAMPLES,
     train_seq_len: int = BINDING_V2_TRAIN_SEQ_LEN,
     eval_seq_len: int = BINDING_V2_EVAL_SEQ_LEN,
+    train_batch_size: int = BINDING_V2_TRAIN_BATCH_SIZE,
+    eval_batch_size: int = BINDING_V2_EVAL_BATCH_SIZE,
     lr: float = BINDING_V2_LR,
     device: str = "cuda",
+    timeout_s: float = BINDING_V2_TIMEOUT_S,
     seed: int | None = None,
 ) -> BindingV2Result:
     """Single-seed binding v2 probe. Prefer
-    :func:`run_binding_v2_investigation` which takes the median across seeds
-    to avoid occasional optimizer-state-death (attn_2l@2400 seeds: 4 of 5
-    reached 0.995 but one seed flatlined at 0.005; see
-    `tasks/probe_calibration_results/variance_summary.md`, 2026-04-18).
+    :func:`run_binding_v2_investigation` which takes the median across
+    seeds.
     """
-    t0 = time.perf_counter()
-
-    with disable_native_probe_dispatch(model, device=device):
-        raw = curriculum_binding_range_profile(
-            model,
+    generator: torch.Generator | None = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(seed))
+    try:
+        probe_model = copy.deepcopy(model).to(device)
+    except Exception as exc:
+        return BindingV2Result(status=f"copy_failed: {exc}", distance_accuracies={})
+    try:
+        return _run_binding_v2_on(
+            probe_model,
             distances=distances,
             n_train_steps=n_train_steps,
             n_eval=n_eval,
             train_seq_len=train_seq_len,
             eval_seq_len=eval_seq_len,
+            train_batch_size=train_batch_size,
+            eval_batch_size=eval_batch_size,
             lr=lr,
             device=device,
-            seed=seed,
+            timeout_s=timeout_s,
+            generator=generator,
         )
-
-    dist_accs = dict(raw.distance_accuracies or {})
-    vals = list(dist_accs.values())
-    auc = round(sum(vals) / len(vals), 4) if vals else 0.0
-    peak = round(max(vals), 4) if vals else 0.0
-
-    return BindingV2Result(
-        auc=auc,
-        max_distance_acc=peak,
-        distance_accuracies=dist_accs,
-        train_steps=int(raw.train_steps),
-        status=str(raw.status),
-        elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
-    )
+    finally:
+        del probe_model
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
 
 def run_binding_v2_investigation(
@@ -125,31 +325,53 @@ def run_binding_v2_investigation(
     n_eval: int = BINDING_V2_EVAL_EXAMPLES,
     train_seq_len: int = BINDING_V2_TRAIN_SEQ_LEN,
     eval_seq_len: int = BINDING_V2_EVAL_SEQ_LEN,
+    train_batch_size: int = BINDING_V2_TRAIN_BATCH_SIZE,
+    eval_batch_size: int = BINDING_V2_EVAL_BATCH_SIZE,
     lr: float = BINDING_V2_LR,
     device: str = "cuda",
+    timeout_s: float = BINDING_V2_TIMEOUT_S,
 ) -> BindingV2Result:
     """Median-of-N-seeds binding v2 probe (public API).
 
-    Runs :func:`_run_binding_v2_single_seed` once per seed and returns the
-    result from the seed whose AUC is the median. Protects against the
-    occasional dead-optimizer seed at the capability frontier (see
-    `tasks/probe_calibration_results/variance_summary.md`, 2026-04-18).
+    One deepcopy, then state_dict reload between seeds.
     """
     t0 = time.perf_counter()
-    runs: list[BindingV2Result] = []
-    for seed in seeds:
-        r = _run_binding_v2_single_seed(
-            model,
-            distances=distances,
-            n_train_steps=n_train_steps,
-            n_eval=n_eval,
-            train_seq_len=train_seq_len,
-            eval_seq_len=eval_seq_len,
-            lr=lr,
-            device=device,
-            seed=int(seed),
+    try:
+        probe_model = copy.deepcopy(model).to(device)
+    except Exception as exc:
+        return BindingV2Result(
+            status=f"copy_failed: {exc}",
+            elapsed_ms=round((time.perf_counter() - t0) * 1000, 1),
+            distance_accuracies={},
         )
-        runs.append(r)
+    init_state = {k: v.detach().clone() for k, v in probe_model.state_dict().items()}
+
+    runs: List[BindingV2Result] = []
+    try:
+        for idx, seed in enumerate(seeds):
+            if idx > 0:
+                probe_model.load_state_dict(init_state, strict=False)
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+            r = _run_binding_v2_on(
+                probe_model,
+                distances=distances,
+                n_train_steps=n_train_steps,
+                n_eval=n_eval,
+                train_seq_len=train_seq_len,
+                eval_seq_len=eval_seq_len,
+                train_batch_size=train_batch_size,
+                eval_batch_size=eval_batch_size,
+                lr=lr,
+                device=device,
+                timeout_s=timeout_s,
+                generator=generator,
+            )
+            runs.append(r)
+    finally:
+        del probe_model, init_state
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     runs.sort(key=lambda r: r.auc)
     median = runs[len(runs) // 2]
